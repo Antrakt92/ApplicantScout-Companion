@@ -1,0 +1,491 @@
+from __future__ import annotations
+
+from pathlib import Path
+import threading
+
+from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox, QLineEdit, QPushButton
+
+from applicant_scout.config import Config
+from applicant_scout.metric_preferences import MetricPreferences
+import applicant_scout.settings_dialog as settings_mod
+from applicant_scout.settings_dialog import SettingsDialog
+
+
+def _cfg(tmp_path: Path, *, client_id: str = "client", secret: str = "secret") -> Config:
+    retail_root = tmp_path / "World of Warcraft" / "_retail_"
+    (retail_root / "Interface" / "AddOns").mkdir(parents=True, exist_ok=True)
+    return Config(
+        wcl_client_id=client_id,
+        wcl_client_secret=secret,
+        chatlog_path=retail_root / "Logs" / "WoWChatLog.txt",
+        region="EU",
+        cache_dir=tmp_path / "cache",
+        config_dir=tmp_path / "config",
+        screenshots_path=retail_root / "Screenshots",
+        log_dir=tmp_path / "logs",
+    )
+
+
+def test_settings_dialog_exposes_config_values(qtbot, tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    cfg.sync_with_wow = True
+    cfg.metric_preferences = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    values = dialog.values()
+
+    assert values.wcl_client_id == "client"
+    assert values.wcl_client_secret == "secret"
+    assert values.region == "EU"
+    assert values.screenshots_path.endswith(r"_retail_\Screenshots") or values.screenshots_path.endswith("_retail_/Screenshots")
+    assert values.metric_preferences == MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    assert values.sync_with_wow is True
+
+
+def test_settings_dialog_prefers_draft_wcl_credentials(qtbot, tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    cfg.draft_wcl_client_id = "draft-client"
+    cfg.draft_wcl_client_secret = "draft-secret"
+
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    values = dialog.values()
+
+    assert values.wcl_client_id == "draft-client"
+    assert values.wcl_client_secret == "draft-secret"
+
+
+def test_settings_dialog_has_wow_lifecycle_checkbox_near_bottom(qtbot, tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    checkbox = dialog.findChild(QCheckBox, "syncWithWow")
+
+    assert checkbox is not None
+    assert checkbox.text() == "Start and stop with WoW"
+    assert not checkbox.isChecked()
+    checkbox.setChecked(True)
+    assert dialog.values().sync_with_wow is True
+
+
+def test_settings_dialog_orders_wcl_data_with_mplus_last(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    assert [
+        dialog.raid_normal_check,
+        dialog.raid_heroic_check,
+        dialog.raid_mythic_check,
+        dialog.mplus_check,
+    ] == [
+        dialog.raid_normal_check.parent().layout().itemAt(i).widget()
+        for i in range(4)
+    ]
+
+
+def test_settings_dialog_rejects_all_wcl_data_disabled(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    for checkbox in (
+        dialog.mplus_check,
+        dialog.raid_normal_check,
+        dialog.raid_heroic_check,
+        dialog.raid_mythic_check,
+    ):
+        checkbox.blockSignals(True)
+        checkbox.setChecked(False)
+        checkbox.blockSignals(False)
+    dialog.accept()
+
+    assert not dialog.result()
+    assert "at least one" in dialog.status_label.text()
+
+
+def test_settings_dialog_rejects_missing_credentials(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""))
+    qtbot.addWidget(dialog)
+
+    dialog.accept()
+
+    assert not dialog.result()
+    assert "required" in dialog.status_label.text()
+
+
+def test_first_run_dialog_explains_wcl_client_creation(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""), first_run=True)
+    qtbot.addWidget(dialog)
+
+    visible_text = "\n".join(
+        label.text() for label in dialog.findChildren(type(dialog.status_label))
+    )
+
+    assert "http://localhost" in visible_text
+    assert "Public Client" in visible_text
+    assert "unchecked" in visible_text
+    assert "Client ID" in visible_text
+    assert "Client Secret" in visible_text
+
+
+def test_wcl_setup_example_button_opens_local_screenshot_popup(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    shown: list[settings_mod.QDialog] = []
+
+    def fake_exec(popup: settings_mod.QDialog) -> int:
+        shown.append(popup)
+        return 0
+
+    monkeypatch.setattr(settings_mod.QDialog, "exec", fake_exec)
+    dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""), first_run=True)
+    qtbot.addWidget(dialog)
+
+    dialog.wcl_example_button.click()
+
+    assert shown
+    popup = shown[0]
+    visible_text = "\n".join(
+        label.text() for label in popup.findChildren(type(dialog.status_label))
+    )
+    image_labels = [
+        label
+        for label in popup.findChildren(type(dialog.status_label))
+        if label.pixmap() is not None and not label.pixmap().isNull()
+    ]
+
+    assert popup.windowTitle() == "Warcraft Logs API client example"
+    assert "http://localhost" in visible_text
+    assert "Public Client" in visible_text
+    assert "unchecked" in visible_text
+    assert image_labels
+
+
+def test_wcl_setup_example_button_sits_next_to_clients_link(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""), first_run=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.wcl_example_button.text() == "Show example"
+    assert dialog.wcl_example_button.parent() is dialog.wcl_clients_link.parent()
+
+
+def test_wcl_clients_link_visually_points_to_setup_example_button(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""), first_run=True)
+    qtbot.addWidget(dialog)
+    row = dialog.wcl_clients_link.parent()
+    layout = row.layout()
+
+    assert dialog.wcl_example_arrow.text() == "→"
+    assert dialog.wcl_example_arrow.parent() is row
+    assert [
+        layout.itemAt(i).widget()
+        for i in range(3)
+    ] == [
+        dialog.wcl_clients_link,
+        dialog.wcl_example_arrow,
+        dialog.wcl_example_button,
+    ]
+
+
+def test_wcl_setup_example_exposes_copyable_create_client_values(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    clipboard_text = ""
+
+    class FakeClipboard:
+        def setText(self, value: str) -> None:
+            nonlocal clipboard_text
+            clipboard_text = value
+
+    monkeypatch.setattr(settings_mod.QApplication, "clipboard", lambda: FakeClipboard())
+    dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""), first_run=True)
+    qtbot.addWidget(dialog)
+    popup = dialog._build_wcl_setup_example_dialog()
+    qtbot.addWidget(popup)
+
+    app_name = popup.findChild(QLineEdit, "wclExampleApplicationName")
+    redirect_url = popup.findChild(QLineEdit, "wclExampleRedirectUrl")
+    public_client = popup.findChild(QCheckBox, "wclExamplePublicClientUnchecked")
+    copy_app_name = popup.findChild(QPushButton, "copyWclExampleApplicationName")
+    copy_redirect = popup.findChild(QPushButton, "copyWclExampleRedirectUrl")
+
+    assert app_name is not None
+    assert app_name.text() == "ApplicantScout"
+    assert app_name.isReadOnly()
+    assert redirect_url is not None
+    assert redirect_url.text() == "http://localhost"
+    assert redirect_url.isReadOnly()
+    assert public_client is not None
+    assert not public_client.isChecked()
+    assert not public_client.isEnabled()
+    assert copy_app_name is not None
+    assert copy_redirect is not None
+
+    copy_app_name.click()
+    assert clipboard_text == "ApplicantScout"
+    copy_redirect.click()
+    assert clipboard_text == "http://localhost"
+
+
+def test_settings_dialog_rejects_suspicious_screenshots_path(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    dialog.screenshots_edit.setText(str(tmp_path / "not-wow" / "Shots"))
+
+    assert "Screenshots folder warning" in dialog.status_label.text()
+    assert "#ff6666" in dialog.status_label.styleSheet()
+
+    dialog.accept()
+
+    assert not dialog.result()
+    assert "Screenshots folder warning" in dialog.status_label.text()
+
+
+def test_settings_dialog_does_not_emit_values_changed_for_suspicious_screenshots_path(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.valuesChanged.connect(seen.append)
+
+    dialog.screenshots_edit.setText(str(tmp_path / "not-wow" / "Shots"))
+
+    assert not dialog.flush_pending_values()
+    assert seen == []
+    assert "Screenshots folder warning" in dialog.status_label.text()
+
+
+def test_settings_dialog_suggests_wow_screenshots_folder_from_chatlog_path(
+    qtbot, tmp_path: Path
+):
+    root = tmp_path / "World of Warcraft" / "_retail_"
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    cfg = _cfg(tmp_path)
+    cfg.screenshots_path = None
+    cfg.chatlog_path = root / "Logs" / "WoWChatLog.txt"
+
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    assert dialog.values().screenshots_path == str(root / "Screenshots")
+    assert dialog.screenshots_edit.placeholderText().startswith("Example:")
+    assert dialog.screenshots_edit.toolTip()
+    assert any(
+        label.text() == "WoW Screenshots folder"
+        for label in dialog.findChildren(type(dialog.status_label))
+    )
+
+
+def test_settings_dialog_finds_common_wow_screenshots_folder(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "Common" / "World of Warcraft" / "_retail_"
+    (root / "WTF").mkdir(parents=True)
+    cfg = _cfg(tmp_path)
+    cfg.screenshots_path = None
+    cfg.chatlog_path = tmp_path / "missing" / "Logs" / "WoWChatLog.txt"
+    monkeypatch.setattr(settings_mod, "COMMON_WOW_RETAIL_ROOTS", (root,))
+
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    assert dialog.values().screenshots_path == str(root / "Screenshots")
+
+
+def test_settings_dialog_runs_action_callbacks(qtbot, tmp_path: Path):
+    calls: list[str] = []
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        credential_tester=lambda *_args: calls.append("test") or "credentials ok",
+        open_logs=lambda: calls.append("logs") or "logs opened",
+        clear_cache=lambda: calls.append("cache") or "cache cleared",
+        check_updates=lambda: calls.append("updates") or "up to date",
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.test_button.click()
+    qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
+    assert dialog.status_label.text() == "credentials ok"
+    dialog.logs_button.click()
+    dialog.cache_button.click()
+    dialog.update_button.click()
+    qtbot.waitUntil(lambda: dialog.status_label.text() == "up to date")
+
+    assert dialog.update_button.text() == "Update"
+    assert calls == ["test", "logs", "cache", "updates"]
+    assert dialog.status_label.text() == "up to date"
+
+
+def test_normal_settings_has_hide_and_quit_buttons_not_save_cancel(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    assert dialog.findChild(QPushButton, "hideToTray") is not None
+    assert dialog.findChild(QPushButton, "quitApplicantScout") is not None
+    assert dialog.findChild(QDialogButtonBox) is None
+
+
+def test_settings_dialog_emits_values_changed_after_text_debounce(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.valuesChanged.connect(seen.append)
+
+    dialog.client_id_edit.setText("new-client")
+
+    qtbot.waitUntil(lambda: bool(seen), timeout=1500)
+    assert seen[-1].wcl_client_id == "new-client"
+
+
+def test_settings_dialog_flush_pending_values_emits_debounced_text(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.valuesChanged.connect(seen.append)
+
+    dialog.client_id_edit.setText("new-client")
+
+    assert not seen
+    assert dialog.flush_pending_values()
+
+    assert seen[-1].wcl_client_id == "new-client"
+
+
+def test_settings_dialog_emits_values_changed_for_immediate_controls(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.valuesChanged.connect(seen.append)
+
+    dialog.sync_with_wow_check.setChecked(True)
+
+    qtbot.waitUntil(lambda: bool(seen), timeout=1000)
+    assert seen[-1].sync_with_wow is True
+
+
+def test_settings_dialog_emits_validated_credentials_after_successful_test(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        credential_tester=lambda *_args: "credentials ok",
+    )
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.credentialsValidated.connect(seen.append)
+
+    dialog.client_id_edit.setText("new-client")
+    dialog.client_secret_edit.setText("new-secret")
+    dialog.test_button.click()
+
+    qtbot.waitUntil(lambda: bool(seen), timeout=1500)
+    assert seen[-1].wcl_client_id == "new-client"
+    assert seen[-1].wcl_client_secret == "new-secret"
+
+
+def test_settings_dialog_ignores_stale_credentials_test_result(
+    qtbot, tmp_path: Path
+):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        assert release_tester.wait(2)
+        return "credentials ok"
+
+    dialog = SettingsDialog(_cfg(tmp_path), credential_tester=tester)
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.credentialsValidated.connect(seen.append)
+
+    dialog.client_id_edit.setText("new-client")
+    dialog.client_secret_edit.setText("new-secret")
+    dialog.test_button.click()
+    assert tester_entered.wait(2)
+    dialog.client_secret_edit.setText("changed-during-test")
+    release_tester.set()
+
+    qtbot.waitUntil(
+        lambda: "changed" in dialog.status_label.text().lower(),
+        timeout=1500,
+    )
+    assert seen == []
+
+
+def test_settings_dialog_rejects_validated_credentials_when_current_values_invalid(
+    qtbot, tmp_path: Path
+):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+    invalid_file = tmp_path / "not-a-folder"
+    invalid_file.write_text("x", encoding="utf-8")
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        assert release_tester.wait(2)
+        return "credentials ok"
+
+    dialog = SettingsDialog(_cfg(tmp_path), credential_tester=tester)
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.credentialsValidated.connect(seen.append)
+
+    dialog.test_button.click()
+    assert tester_entered.wait(2)
+    dialog.screenshots_edit.setText(str(invalid_file))
+    release_tester.set()
+
+    qtbot.waitUntil(
+        lambda: "points to a file" in dialog.status_label.text(),
+        timeout=1500,
+    )
+    assert seen == []
+
+
+def test_settings_dialog_prevents_unchecking_last_wcl_data_type(qtbot, tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    cfg.metric_preferences = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.valuesChanged.connect(seen.append)
+
+    dialog.raid_normal_check.setChecked(False)
+
+    assert dialog.raid_normal_check.isChecked()
+    assert dialog.values().metric_preferences.any_enabled
+    assert "at least one" in dialog.status_label.text()
+    assert seen == []
+
+
+def test_first_run_dialog_uses_start_companion_button(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+
+    start_button = dialog.findChild(QPushButton, "startCompanion")
+
+    assert start_button is not None
+    assert start_button.text() == "Start companion"
+    assert dialog.findChild(QDialogButtonBox) is None

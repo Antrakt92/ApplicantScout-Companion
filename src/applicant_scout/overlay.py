@@ -1,0 +1,2806 @@
+"""PyQt6 frameless always-on-top overlay window with applicant table."""
+
+from __future__ import annotations
+
+
+import html
+import logging
+import math
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import Path
+
+import httpx
+from PyQt6.QtCore import (
+    Qt,
+    QSize,
+    pyqtSignal,
+    QTimer,
+    QRunnable,
+    QThreadPool,
+    QObject,
+    QRect,
+)
+from PyQt6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QGuiApplication,
+    QIcon,
+    QMouseEvent,
+    QPalette,
+)
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QSizeGrip,
+    QStyledItemDelegate,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    QHeaderView,
+    QStyle,
+    QStyleOptionViewItem,
+)
+
+
+from .constants import (
+    ALL_ROLES,
+    CLASS_COLOURS,
+    ROLE_COLOURS,
+    ROLE_GLYPHS,
+    ROLE_LABELS,
+    SPEC_SHORT_NAMES,
+    group_id_colour,
+    percentile_colour,
+    rio_score_colour,
+)
+from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from .scoring import (
+    CONTEXT_MPLUS,
+    CONTEXT_RAID,
+    PackageFit,
+    candidate_fit,
+    detect_listing_context,
+    effective_rio_score,
+    mplus_dungeon_fit_rows,
+    package_fit,
+)
+from .state import (
+    Applicant,
+    AppState,
+    Listing,
+    WindowGeometry,
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
+    WINDOW_GEOMETRY_LAYOUT_VERSION,
+    save_geometry,
+    load_geometry,
+)
+from .wcl import (
+    WCLClient,
+    WCLApiError,
+    WCLAuthError,
+    WCL_ERROR_AUTH,
+    WCL_ERROR_NETWORK,
+    WCL_ERROR_QUOTA_GUARD,
+    WCL_ERROR_RATE_LIMITED,
+    CharacterCache,
+    CharacterRanks,
+    derive_server_slug,
+    default_realm_from_player,
+    split_name_realm,
+    wcl_metric_role,
+)
+
+
+_log = logging.getLogger("applicant_scout.overlay")
+
+
+# Compact column layout. Name can grow a little for real applicants, but is
+# capped so one long character name cannot force the whole overlay wide.
+COLUMN_HEADERS = ["Spec", "Name", "iLvl", "RIO", "N", "H", "M", "M+"]
+COLUMN_WIDTHS = [74, 112, 44, 84, 50, 50, 50, 88]
+NAME_COLUMN_MAX_WIDTH = 126
+DUNGEON_NAME_WIDTH = 188
+DUNGEON_KEY_WIDTH = 34
+DUNGEON_METRIC_WIDTH = 64
+COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
+
+
+# Auto-hide delay (seconds) when applicants drain to zero but listing is still
+# active. M+ keystone listings don't auto-delist after the group fills, so the
+# addon keeps emitting snapshots with `applicants=[]` indefinitely. Hiding
+# immediately on the first empty snapshot would flicker the window when
+# applicants come and go in churn — the timer rate-limits to one hide per
+# quiet period.
+EMPTY_HIDE_DELAY_S = 5
+MAX_WCL_RETRY_BATCH = 3
+WCL_RETRY_CUSHION_MS = 250
+WCL_RETRY_BATCH_DELAY_MS = 1500
+LEGACY_COMPACT_WINDOW_WIDTH = 526
+_RETRYABLE_WCL_ERROR_KINDS = frozenset(
+    {WCL_ERROR_QUOTA_GUARD, WCL_ERROR_RATE_LIMITED}
+)
+ROLE_ICON_SIZE = QSize(16, 16)
+ROLE_ICON_FILES = {
+    "TANK": "role_tank.png",
+    "HEALER": "role_healer.png",
+    "DAMAGER": "role_dps.png",
+}
+_ROLE_ICON_CACHE: dict[str, QIcon | None] = {}
+
+
+def _role_icon(role: str) -> QIcon | None:
+    if role not in _ROLE_ICON_CACHE:
+        icon_name = ROLE_ICON_FILES.get(role)
+        icon_path = (
+            Path(__file__).with_name("assets") / "role_icons" / icon_name
+            if icon_name
+            else None
+        )
+        icon = QIcon(str(icon_path)) if icon_path and icon_path.is_file() else QIcon()
+        _ROLE_ICON_CACHE[role] = icon if not icon.isNull() else None
+    return _ROLE_ICON_CACHE[role]
+
+
+# Per-column legend shown when the user hovers a header cell. Surfaces the
+# meaning of each column without requiring docs / a separate help screen,
+# and explains the raid pair + context-fit conventions used by score cells.
+# Indexed by column INDEX (matches COLUMN_HEADERS positions) so refactors
+# of header text don't desync the lookup.
+HEADER_TOOLTIPS: list[str] = [
+    # Spec
+    "Applicant's spec at the time they applied to your group.\n\n"
+    "Compact name (e.g. 'Brm', 'Holy', 'Resto'). '#NNNN' means the\n"
+    "spec_id is unknown to the companion — likely a new spec that needs\n"
+    "to be added to constants.py SPEC_SHORT_NAMES.",
+    # Name
+    "Applicant's character name (Charname-Realm in the hover panel).\n\n"
+    "Coloured by class (warrior brown, mage cyan, rogue yellow, etc.).\n"
+    "Hover the row for the full scout summary in the top panel.",
+    # iLvl
+    "Equipped item level reported by Blizzard's LFG API.\n\n"
+    "Higher = better gear ceiling, but doesn't tell skill on its own —\n"
+    "use alongside RIO + raid/M+ percentiles.",
+    # RIO
+    "RaiderIO M+ score for this character. If RaiderIO is installed and exposes\n"
+    "a higher main score for an alt, the cell shows current [main] and sorting\n"
+    "uses the higher score.\n\n"
+    "Coloured by tier band (gold ≥3200, purple ≥2700, blue ≥2200,\n"
+    "green ≥1700, white below). Mid-Midnight-S1 thresholds.",
+    # N
+    "Raid Normal — best/median per-encounter parse percentile.\n\n"
+    "Format: 'best/median' (e.g. '88/72'). Best = ceiling on a single boss.\n"
+    "Median = consistency across encounters at this difficulty.\n"
+    "Single value (no slash) = only one encounter logged → no median signal.\n\n"
+    "Background colour = best percentile tier (WCL standard palette:\n"
+    "gold ≥95%, purple ≥75%, blue ≥50%, green ≥25%).",
+    # H
+    "Raid Heroic — best/median per-encounter parse percentile.\n\n"
+    "Same format and colour scheme as the Normal column. Use Heroic as\n"
+    "the primary raid signal — most pugs that care about parses run\n"
+    "Heroic, fewer have meaningful Mythic data.",
+    # M
+    "Raid Mythic — best/median per-encounter parse percentile.\n\n"
+    "Same format as Normal/Heroic. Few pug applicants will have data\n"
+    "here; '—' means no Mythic logs in current spec.",
+    # M+
+    "Mythic+ fit for the current listing when the companion knows your\n"
+    "hosted key level; otherwise falls back to the old best/median headline.\n\n"
+    "Metric: DPS for tank / damage applicants, HPS for healers.\n"
+    "Fit labels weight key level, relevant bracket performance, coverage,\n"
+    "same-dungeon signal, and RIO support. Group rows show a package rating\n"
+    "on the leader row because group applicants are accepted together.\n\n"
+    "Hover the row for the per-dungeon breakdown in the top panel.",
+]
+
+
+# ───────────────────────────────────────────────────────────────────
+# WCL fetch worker (off main thread)
+
+
+class _FetchSignals(QObject):
+    done = pyqtSignal(object, object)  # _FetchIdentity, CharacterRanks
+
+
+@dataclass(frozen=True)
+class _FetchIdentity:
+    applicant_id: str
+    charname_key: str
+    server_slug: str
+    region: str
+    spec_id: int
+    metric_role: str
+    runtime_generation: int = 0
+    metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES
+
+
+@dataclass(frozen=True)
+class _GroupMarker:
+    colour: str
+    first_visible: bool
+    last_visible: bool
+
+
+def _fetch_identity_for_applicant(
+    applicant: Applicant,
+    player_full_name: str,
+    region: str,
+    metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+    runtime_generation: int = 0,
+) -> tuple[_FetchIdentity, str] | None:
+    charname, realm = split_name_realm(
+        applicant.name, default_realm_from_player(player_full_name)
+    )
+    server_slug = derive_server_slug(realm)
+    if not charname or not server_slug:
+        return None
+    return (
+        _FetchIdentity(
+            applicant_id=applicant.applicant_id,
+            charname_key=charname.lower(),
+            server_slug=server_slug,
+            region=region,
+            spec_id=applicant.spec_id,
+            metric_role=wcl_metric_role(applicant.role),
+            runtime_generation=runtime_generation,
+            metric_preferences=metric_preferences,
+        ),
+        charname,
+    )
+
+
+def _same_fetch_target_except_preferences(
+    left: _FetchIdentity, right: _FetchIdentity
+) -> bool:
+    return (
+        left.applicant_id == right.applicant_id
+        and left.charname_key == right.charname_key
+        and left.server_slug == right.server_slug
+        and left.region == right.region
+        and left.spec_id == right.spec_id
+        and left.metric_role == right.metric_role
+        and left.runtime_generation == right.runtime_generation
+    )
+
+
+class _FetchTask(QRunnable):
+    def __init__(
+        self,
+        identity: _FetchIdentity,
+        name: str,
+        client: WCLClient,
+        cache: CharacterCache,
+    ):
+        super().__init__()
+        self.signals = _FetchSignals()
+        self._identity = identity
+        self._name = name
+        self._client = client
+        self._cache = cache
+
+    def run(self) -> None:
+        identity = self._identity
+        cached = self._cache.get(
+            self._name,
+            identity.server_slug,
+            identity.region,
+            identity.spec_id,
+            identity.metric_role,
+            identity.metric_preferences,
+        )
+        if cached is not None:
+            self.signals.done.emit(identity, cached)
+            return
+        try:
+            ranks = self._client.fetch_character_ranks(
+                self._name,
+                identity.server_slug,
+                identity.spec_id,
+                identity.metric_role,
+                region=identity.region,
+                metric_preferences=identity.metric_preferences,
+            )
+        except WCLApiError as e:
+            ranks = CharacterRanks.empty(error=str(e), error_kind=e.error_kind)
+        except WCLAuthError as e:
+            ranks = CharacterRanks.empty(error=str(e), error_kind=WCL_ERROR_AUTH)
+        except (httpx.TimeoutException, httpx.RequestError) as e:
+            ranks = CharacterRanks.empty(error=str(e), error_kind=WCL_ERROR_NETWORK)
+        except Exception as e:  # noqa: BLE001 — pass error string to UI for surfacing
+            # MUST use .empty() factory — raw `CharacterRanks(None, None, ...)`
+            # silently TypeErrors (8 required positional args), kills QRunnable,
+            # applicant row stays on 'loading' forever.
+            ranks = CharacterRanks.empty(error=str(e))
+        if not ranks.error and not ranks.not_found:
+            self._cache.put(
+                self._name,
+                identity.server_slug,
+                identity.region,
+                identity.spec_id,
+                ranks,
+                identity.metric_role,
+                identity.metric_preferences,
+            )
+        self.signals.done.emit(identity, ranks)
+
+
+# ───────────────────────────────────────────────────────────────────
+# Tooltip-rendering subclass (Qt-on-Windows translucent-overlay workaround)
+
+
+def _render_tooltip(parent_widget, tip: str, global_pos) -> bool:
+    """Renders or hides the tooltip via QToolTip.showText() bypass.
+
+    Used by OverlayWindow.eventFilter for header-viewport (column legends)
+    and title-label (listing tooltip) branches. Both bypasses are needed
+    because Qt's default tooltip path silently fails on this overlay's
+    flag combo (FramelessWindowHint + Tool + WA_TranslucentBackground +
+    WindowStaysOnTopHint) — default QToolTip widget inherits the
+    translucent attribute and paints invisible. showText routes through
+    Qt's global tooltip widget (screen-parented) which paints reliably.
+
+    Returns True so callers can `return _render_tooltip(...)` to consume."""
+    from PyQt6.QtWidgets import QToolTip
+
+    if tip:
+        QToolTip.showText(global_pos, tip, parent_widget)
+    else:
+        QToolTip.hideText()
+    return True
+
+
+# ───────────────────────────────────────────────────────────────────
+# Row sort + group-marker support (pure data; no Qt). Group-aware sort lives
+# here so the delegate (next class down) can stay focused on paint.
+
+
+# Fetch states that count as terminal-bad (used as a sort tiebreak so
+# unfetchable applicants sink within their RIO bucket). Module-level frozenset
+# so the pure sort fn can see it without rebuilding per state change.
+_SUNK_STATES: frozenset[str] = frozenset({"error", "not_found"})
+
+
+def _split_composite(composite_id: str) -> tuple[str, int]:
+    """Parse 'aid:m' → ('aid', m). Inverse of the composite-key construction
+    in __main__.StateMachine.apply_snapshot.
+
+    Defensive fallbacks on every edge — missing colon, non-numeric m, empty
+    parts, empty input — never raises. Lives in overlay.py because the only
+    consumers are the sort fn and the delegate-marker build (both overlay-
+    internal). state.py treats applicant_id as opaque; __main__ only constructs
+    it. Single parse point keeps the composite-format invariant local."""
+    if ":" not in composite_id:
+        return composite_id, 1
+    raw, m = composite_id.split(":", 1)
+    try:
+        return raw, int(m)
+    except ValueError:
+        return raw, 1
+
+
+def _rio_display_text(applicant: Applicant) -> str:
+    if applicant.main_score > applicant.score and applicant.score:
+        return f"{applicant.score} [{applicant.main_score}]"
+    if applicant.main_score > applicant.score:
+        return f"[{applicant.main_score}]"
+    return str(applicant.score) if applicant.score else "—"
+
+
+def sort_applicants_grouped(
+    applicants: Iterable[Applicant], listing: Listing | None = None
+) -> list[Applicant]:
+    """Sort applicants with multi-member group adjacency.
+
+    Unknown/no listing preserves the original max-RIO ordering. Known M+/raid
+    listings rank groups by package fit, not best-member fit, while keeping all
+    members adjacent and leader/member order stable.
+    """
+    apps = list(applicants)
+    group_max: dict[str, int] = {}
+    group_fit: dict[str, float] = {}
+    group_has_ready: dict[str, bool] = {}
+    use_fit = detect_listing_context(listing) in (CONTEXT_MPLUS, CONTEXT_RAID)
+    group_members: dict[str, list[Applicant]] = {}
+    for a in apps:
+        raw_aid, _ = _split_composite(a.applicant_id)
+        group_members.setdefault(raw_aid, []).append(a)
+        rio_score = effective_rio_score(a)
+        if rio_score > group_max.get(raw_aid, -1):
+            group_max[raw_aid] = rio_score
+        if a.fetch_status not in _SUNK_STATES:
+            group_has_ready[raw_aid] = True
+    if use_fit:
+        for raw_aid, members in group_members.items():
+            group_fit[raw_aid] = package_fit(members, listing).score
+
+    def _key(a: Applicant):
+        raw_aid, member_idx = _split_composite(a.applicant_id)
+        gmax = group_max.get(raw_aid, 0)
+        gfit = group_fit.get(raw_aid, 0.0)
+        all_sunk = not group_has_ready.get(raw_aid, False)
+        sunk = a.fetch_status in _SUNK_STATES
+        if use_fit:
+            return (all_sunk, gfit <= 0.0, -gfit, -gmax, raw_aid, member_idx, sunk)
+        return (gmax == 0, -gmax, all_sunk, raw_aid, member_idx, sunk)
+
+    return sorted(apps, key=_key)
+
+
+def _build_group_markers(
+    visible_id_by_row: Iterable[tuple[int, str]],
+) -> dict[int, _GroupMarker]:
+    """Build visible-row grouping metadata for the table paint delegate.
+
+    Only rows whose raw applicant id appears at least twice get markers. The
+    caller passes visible rows so role filters can keep the bracket shape
+    aligned to what the user actually sees.
+    """
+    members_by_raw: dict[str, list[tuple[int, str]]] = {}
+    for row, applicant_id in visible_id_by_row:
+        raw_aid, _member_idx = _split_composite(applicant_id)
+        members_by_raw.setdefault(raw_aid, []).append((row, applicant_id))
+
+    markers: dict[int, _GroupMarker] = {}
+    for raw_aid, members in members_by_raw.items():
+        size = len(members)
+        if size < 2:
+            continue
+        colour = group_id_colour(raw_aid)
+        for position, (row, _applicant_id) in enumerate(members, start=1):
+            markers[row] = _GroupMarker(
+                colour=colour,
+                first_visible=position == 1,
+                last_visible=position == size,
+            )
+    return markers
+
+
+class _HoverHighlightDelegate(QStyledItemDelegate):
+    """Paints hover/pin row stripes and stronger multi-member group markers.
+
+    Group rows get a wide coloured bracket in the spec column. This stays
+    visible beside saturated WCL cells and still works when the M+ package cell
+    is absent or filtered.
+
+    Stripe colours intentionally match the existing percentile-tier visual
+    language: gold #e5cc80 (matches gold percentile cells, unambiguous "this
+    is selected"), white #ffffff (high contrast on any background, neutral
+    "this is just hovered")."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hover_row = -1
+        self._pinned_row = -1
+        self._group_marker_by_row: dict[int, _GroupMarker] = {}
+
+    def set_rows(self, hover_row: int, pinned_row: int) -> None:
+        self._hover_row = hover_row
+        self._pinned_row = pinned_row
+
+    def set_group_markers(self, markers: dict[int, _GroupMarker]) -> None:
+        """row index → group paint metadata; solo rows are absent."""
+        if markers != self._group_marker_by_row:
+            self._group_marker_by_row = markers
+
+    def paint(self, painter, option, index):  # type: ignore[override]
+        # Item paints first (preserves QTableWidgetItem.setBackground colours
+        # for raid/M+ percentile cells). Stripe overlays after — visible over
+        # any background, never desaturates the text behind it.
+        group_marker = self._group_marker_by_row.get(index.row())
+        if index.column() == COL_SPEC:
+            role = index.data(Qt.ItemDataRole.UserRole)
+            icon = _role_icon(role) if isinstance(role, str) else None
+            if (icon is not None or group_marker is not None) and painter is not None:
+                opt = QStyleOptionViewItem(option)
+                self.initStyleOption(opt, index)
+                text = opt.text
+                opt.text = ""
+                opt.icon = QIcon()
+                widget = opt.widget
+                style = widget.style() if widget is not None else QApplication.style()
+                if style is None:
+                    super().paint(painter, option, index)
+                    return
+                style.drawControl(
+                    QStyle.ControlElement.CE_ItemViewItem,
+                    opt,
+                    painter,
+                    widget,
+                )
+
+                if icon is not None:
+                    icon_rect = QRect(
+                        opt.rect.left() + 8,
+                        opt.rect.top()
+                        + max(0, (opt.rect.height() - ROLE_ICON_SIZE.height()) // 2),
+                        ROLE_ICON_SIZE.width(),
+                        ROLE_ICON_SIZE.height(),
+                    )
+                    text_rect = opt.rect.adjusted(28, 0, -3, 0)
+                    icon.paint(painter, icon_rect)
+                else:
+                    text_rect = opt.rect.adjusted(8, 0, -3, 0)
+                painter.save()
+                painter.setFont(opt.font)
+                painter.setPen(opt.palette.color(QPalette.ColorRole.Text))
+                painter.drawText(
+                    text_rect,
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    text,
+                )
+                painter.restore()
+            else:
+                super().paint(painter, option, index)
+        else:
+            super().paint(painter, option, index)
+        if painter is None:
+            return
+        r = option.rect
+        # Per-cell hover/pin stripe at x=0..2 — paints in EVERY column
+        # deliberately: interaction state needs constant visual reinforcement
+        # (cursor moves, eye scans columns). Pinned wins on same row.
+        if index.row() == self._pinned_row:
+            painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#e5cc80"))
+        elif index.row() == self._hover_row:
+            painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#ffffff"))
+        # Group bracket at x=3..9, COLUMN 0 ONLY. The wider rail + caps answer
+        # "these adjacent rows are one application" without adding table text.
+        if index.column() == COL_SPEC and group_marker is not None:
+            colour = QColor(group_marker.colour)
+            rail_x = r.left() + 3
+            painter.fillRect(QRect(rail_x, r.top(), 7, r.height()), colour)
+            cap_width = 42
+            if group_marker.first_visible:
+                painter.fillRect(QRect(rail_x, r.top(), cap_width, 3), colour)
+            if group_marker.last_visible:
+                painter.fillRect(QRect(rail_x, r.bottom() - 2, cap_width, 3), colour)
+
+
+class _TooltipTableWidget(QTableWidget):
+    """QTableWidget with a viewportEvent override kept as the documented
+    tooltip-bypass anchor.
+
+    Post-refactor (custom row-hover panel replaced per-cell tooltips on
+    applicant rows), the viewportEvent body is INERT for cell tooltips —
+    `item.toolTip()` returns "" for every applicant cell, so _render_tooltip
+    just calls QToolTip.hideText() (no-op). The subclass and override stay
+    as a stable type and the documented anchor; if cell tooltips ever come
+    back here, the bypass machinery is already wired.
+
+    Header tooltips (column legends) and title-label tooltip route through
+    OverlayWindow.eventFilter, NOT through this override."""
+
+    def viewportEvent(self, e):  # type: ignore[override]
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QHelpEvent
+
+        if (
+            e is not None
+            and e.type() == QEvent.Type.ToolTip
+            and isinstance(e, QHelpEvent)
+        ):
+            tip = ""
+            idx = self.indexAt(e.pos())
+            if idx.isValid():
+                item = self.item(idx.row(), idx.column())
+                if item is not None:
+                    tip = item.toolTip()
+            return _render_tooltip(self, tip, e.globalPos())
+        return super().viewportEvent(e)
+
+
+# ───────────────────────────────────────────────────────────────────
+# Custom title bar (frameless windows must implement their own drag)
+
+
+class TitleBar(QWidget):
+    hideClicked = pyqtSignal()
+    settingsClicked = pyqtSignal()
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setFixedHeight(28)
+        self.setObjectName("titleBar")
+        self._drag_offset = None  # type: ignore[assignment]
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 0, 4, 0)
+        layout.setSpacing(4)
+
+        self.title_label = QLabel("M+ Applicants")
+        self.title_label.setObjectName("titleLabel")
+        layout.addWidget(self.title_label, stretch=1)
+
+        self.settings_button = QPushButton()
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setFixedSize(20, 20)
+        self.settings_button.setToolTip("Settings")
+        style = self.style()
+        if style is not None:
+            self.settings_button.setIcon(
+                style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+            )
+        self.settings_button.clicked.connect(self.settingsClicked.emit)
+        layout.addWidget(self.settings_button)
+
+        self.hide_button = QPushButton("-")
+        self.hide_button.setObjectName("hideButton")
+        self.hide_button.setFixedSize(20, 20)
+        self.hide_button.setToolTip("Hide overlay")
+        self.hide_button.clicked.connect(self.hideClicked.emit)
+        layout.addWidget(self.hide_button)
+
+    def setTitleText(self, text: str) -> None:
+        self.title_label.setText(text)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            window = self.window()
+            if window is None:
+                return
+            self._drag_offset = (
+                event.globalPosition().toPoint()
+                - window.frameGeometry().topLeft()
+            )
+            event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.buttons() & Qt.MouseButton.LeftButton
+            and self._drag_offset is not None
+        ):
+            window = self.window()
+            if window is None:
+                return
+            window.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._drag_offset = None
+
+
+# ───────────────────────────────────────────────────────────────────
+# Role filter bar (above the info panel, below the title bar)
+
+
+ROLE_FILTER_TOOLTIPS: dict[str, str] = {
+    "TANK": "Show only tank applicants",
+    "HEALER": "Show only healer applicants",
+    "DAMAGER": "Show only damage dealer applicants",
+}
+ROLE_FILTER_RESET_TEXT = "All"
+ROLE_FILTER_RESET_TOOLTIP = "Show all roles"
+ROLE_FILTER_RESET_SIZE = QSize(34, 20)
+
+
+class RoleFilterBar(QWidget):
+    """Top toolbar with 3 toggle buttons (TANK / HEAL / DPS) + reset/status.
+
+    Empty filter set = show all (default). All-3-selected is semantically
+    equivalent to empty for count-display purposes — `set_status()` checks
+    against `ALL_ROLES`; OverlayWindow uses `_is_filter_active()` for the
+    same check before deciding row visibility math.
+
+    Each role toggle adds/removes its role from the active filter set. The reset
+    button clears all toggles and emits a single empty filter set. Buttons have
+    NoFocus policy — frameless overlay isn't a focus participant for
+    keyboard nav, mouse-only interaction matches the rest of the overlay."""
+
+    filterChanged = pyqtSignal(set)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("roleFilterBar")
+        self.setFixedHeight(30)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setSpacing(5)
+
+        self._buttons: dict[str, QPushButton] = {}
+        self._active: set[str] = set()
+        # Order: TANK | HEAL | DPS — matches Blizzard role-checkbox UI in
+        # Group Finder for muscle-memory consistency.
+        for role in ("TANK", "HEALER", "DAMAGER"):
+            btn = QPushButton(ROLE_LABELS[role])
+            btn.setCheckable(True)
+            btn.setObjectName(f"roleBtn_{role}")
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setToolTip(ROLE_FILTER_TOOLTIPS[role])
+            icon = _role_icon(role)
+            if icon is not None:
+                btn.setIcon(icon)
+                btn.setIconSize(ROLE_ICON_SIZE)
+            else:
+                btn.setText(f"{ROLE_GLYPHS[role]} {ROLE_LABELS[role]}")
+            btn.toggled.connect(lambda on, r=role: self._on_toggled(r, on))
+            self._buttons[role] = btn
+            layout.addWidget(btn)
+
+        layout.addStretch(1)
+        self._reset_btn = QPushButton(ROLE_FILTER_RESET_TEXT)
+        self._reset_btn.setObjectName("roleFilterReset")
+        self._reset_btn.setFixedSize(ROLE_FILTER_RESET_SIZE)
+        self._reset_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._reset_btn.setToolTip(ROLE_FILTER_RESET_TOOLTIP)
+        self._reset_btn.clicked.connect(lambda _checked=False: self._reset())
+        self._reset_btn.hide()
+        layout.addWidget(self._reset_btn)
+
+        self._status = QLabel("")
+        self._status.setObjectName("roleFilterStatus")
+        layout.addWidget(self._status)
+
+    def _on_toggled(self, role: str, on: bool) -> None:
+        if on:
+            self._active.add(role)
+        else:
+            self._active.discard(role)
+        self._sync_reset_button()
+        self.filterChanged.emit(set(self._active))
+
+    def _reset(self) -> None:
+        if not self._active:
+            return
+        for btn in self._buttons.values():
+            was_blocked = btn.blockSignals(True)
+            btn.setChecked(False)
+            btn.blockSignals(was_blocked)
+        self._active.clear()
+        self._status.setText("")
+        self._sync_reset_button()
+        self.filterChanged.emit(set())
+
+    def _sync_reset_button(self) -> None:
+        self._reset_btn.setVisible(bool(self._active))
+
+    def tooltip_widgets(self) -> tuple[QWidget, ...]:
+        return (
+            self._buttons["TANK"],
+            self._buttons["HEALER"],
+            self._buttons["DAMAGER"],
+            self._reset_btn,
+        )
+
+    def set_status(self, visible: int, total: int) -> None:
+        """Show 'showing N / total' only when filter is active AND some rows
+        are hidden. All-3-selected (== ALL_ROLES) treated as inactive for
+        display purposes — empty status."""
+        is_active = bool(self._active) and self._active != ALL_ROLES
+        if not is_active or visible == total:
+            self._status.setText("")
+        else:
+            self._status.setText(f"showing {visible} / {total}")
+
+
+# ───────────────────────────────────────────────────────────────────
+# Applicant info hover/pin panel (above the table, below the title bar)
+
+
+class ApplicantInfoPanel(QFrame):
+    """Compact QWidget scout card shown above the applicant table.
+
+    The panel is always present so hover/pin changes never resize the table
+    below it. Child widgets are created once and updated in-place on each
+    hover; this keeps fast mouse movement cheap and avoids layout churn."""
+
+    def __init__(
+        self,
+        parent: QWidget,
+        metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+    ):
+        super().__init__(parent)
+        self._metric_preferences = metric_preferences
+        self.setObjectName("infoPanel")
+        # Three-layer translucency mitigation: panel is a child of rootContainer
+        # which sits on the WA_TranslucentBackground top-level overlay window.
+        # Without these, panel inherits transparent painting and renders
+        # invisible — same bug that motivated the QToolTip.showText bypass.
+        # (Third layer is QSS background-color in _STYLESHEET.)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAutoFillBackground(True)
+        self.setFixedHeight(220)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 6, 10, 6)
+        outer.setSpacing(4)
+
+        header = QWidget(self)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(5)
+        self._name_label = QLabel("")
+        self._name_label.setObjectName("infoName")
+        self._realm_label = QLabel("")
+        self._realm_label.setObjectName("infoRealm")
+        header_layout.addWidget(self._name_label)
+        header_layout.addWidget(self._realm_label)
+        header_layout.addStretch(1)
+        outer.addWidget(header)
+
+        identity = QWidget(self)
+        identity_layout = QHBoxLayout(identity)
+        identity_layout.setContentsMargins(0, 0, 0, 0)
+        identity_layout.setSpacing(4)
+        self._spec_label = QLabel("")
+        self._spec_label.setObjectName("infoSpecBadge")
+        self._role_label = QLabel("")
+        self._role_label.setObjectName("infoRoleBadge")
+        self._ilvl_label = QLabel("")
+        self._ilvl_label.setObjectName("infoMeta")
+        self._rio_label = QLabel("")
+        self._rio_label.setObjectName("infoMeta")
+        for label in (
+            self._spec_label,
+            self._role_label,
+            self._ilvl_label,
+            self._rio_label,
+        ):
+            identity_layout.addWidget(label)
+        identity_layout.addStretch(1)
+        outer.addWidget(identity)
+
+        metrics = QWidget(self)
+        metrics_layout = QHBoxLayout(metrics)
+        metrics_layout.setContentsMargins(0, 0, 0, 0)
+        metrics_layout.setSpacing(4)
+        self._metric_labels: dict[str, QLabel] = {
+            key: QLabel("") for key in ("N", "H", "M", "M+")
+        }
+        for key in ("N", "H", "M", "M+"):
+            label = self._metric_labels[key]
+            label.setObjectName("infoMetricBadge")
+            metrics_layout.addWidget(label)
+        metrics_layout.addStretch(1)
+        outer.addWidget(metrics)
+
+        self._package_label = QLabel("")
+        self._package_label.setObjectName("infoPackageBadge")
+        outer.addWidget(self._package_label)
+
+        self._status_label = QLabel("")
+        self._status_label.setObjectName("infoPanelStatus")
+        self._status_label.setWordWrap(True)
+        outer.addWidget(self._status_label)
+
+        self._dungeon_widget = QWidget(self)
+        self._dungeon_grid = QGridLayout(self._dungeon_widget)
+        self._dungeon_grid.setContentsMargins(0, 2, 0, 0)
+        self._dungeon_grid.setHorizontalSpacing(6)
+        self._dungeon_grid.setVerticalSpacing(1)
+        self._dungeon_rows: list[tuple[QLabel, QLabel, QLabel]] = []
+        for row in range(8):
+            name = QLabel("")
+            name.setObjectName("infoDungeonName")
+            key = QLabel("")
+            key.setObjectName("infoDungeonKey")
+            value = QLabel("")
+            value.setObjectName("infoDungeonMetric")
+            name.setFixedWidth(DUNGEON_NAME_WIDTH)
+            key.setFixedWidth(DUNGEON_KEY_WIDTH)
+            value.setFixedWidth(DUNGEON_METRIC_WIDTH)
+            key.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self._dungeon_grid.addWidget(name, row, 0)
+            self._dungeon_grid.addWidget(key, row, 1)
+            self._dungeon_grid.addWidget(value, row, 2)
+            self._dungeon_rows.append((name, key, value))
+        self._dungeon_grid.setColumnStretch(3, 1)
+        outer.addWidget(self._dungeon_widget)
+        outer.addStretch(1)
+
+        for label in self.findChildren(QLabel):
+            label.setTextFormat(Qt.TextFormat.PlainText)
+
+        self.setPlaceholder()
+
+    def set_metric_preferences(self, metric_preferences: MetricPreferences) -> None:
+        self._metric_preferences = metric_preferences
+
+    def setPlaceholder(self) -> None:
+        """Show the compact hint when nothing is hovered/pinned."""
+        self._hide_data_widgets()
+        self._status_label.setText("Hover a row for applicant details.")
+        self._status_label.setVisible(True)
+
+    def setApplicantData(
+        self,
+        applicant: Applicant,
+        listing: Listing | None = None,
+        package: PackageFit | None = None,
+    ) -> None:
+        """Show full applicant scout data in the fixed widget layout."""
+        self._set_identity(applicant)
+        self._set_package(package)
+        self._set_status_or_data(applicant, listing)
+
+    def _hide_data_widgets(self) -> None:
+        for label in (
+            self._name_label,
+            self._realm_label,
+            self._spec_label,
+            self._role_label,
+            self._ilvl_label,
+            self._rio_label,
+        ):
+            label.setText("")
+            label.setVisible(False)
+        for label in self._metric_labels.values():
+            label.setText("")
+            label.setVisible(False)
+        self._package_label.setText("")
+        self._package_label.setVisible(False)
+        for row in self._dungeon_rows:
+            for label in row:
+                label.setText("")
+                label.setVisible(False)
+        self._dungeon_widget.setVisible(False)
+
+    def _set_identity(self, applicant: Applicant) -> None:
+        raw_name, _, raw_realm = applicant.name.partition("-")
+        class_hex = CLASS_COLOURS.get(applicant.cls, "#FFFFFF")
+        self._name_label.setText(raw_name or "?")
+        self._name_label.setStyleSheet(f"color: {class_hex};")
+        self._name_label.setVisible(True)
+        self._realm_label.setText(raw_realm)
+        self._realm_label.setVisible(bool(raw_realm))
+
+        spec = SPEC_SHORT_NAMES.get(applicant.spec_id, f"#{applicant.spec_id}")
+        self._set_badge(self._spec_label, spec, class_hex, _text_colour_for_bg(class_hex))
+
+        role_bg = ROLE_COLOURS.get(applicant.role, "#555555")
+        role_text = ROLE_LABELS.get(applicant.role, applicant.role[:4] or "?")
+        self._set_badge(self._role_label, role_text, role_bg, "#ffffff")
+
+        self._ilvl_label.setText(f"ilvl {applicant.ilvl}" if applicant.ilvl else "")
+        self._ilvl_label.setVisible(bool(applicant.ilvl))
+        rio_score = effective_rio_score(applicant)
+        if rio_score:
+            self._rio_label.setText(f"RIO {_rio_display_text(applicant)}")
+            self._rio_label.setStyleSheet(
+                f"color: {rio_score_colour(rio_score)}; font-weight: bold;"
+            )
+            self._rio_label.setVisible(True)
+        else:
+            self._rio_label.setText("")
+            self._rio_label.setVisible(False)
+
+    def _set_package(self, package: PackageFit | None) -> None:
+        if package is None or package.size < 2 or not package.display:
+            self._package_label.setText("")
+            self._package_label.setVisible(False)
+            return
+        text = (
+            f"Group {package.label} {int(round(package.score))} · "
+            f"high {int(round(package.high_score))} · "
+            f"avg {int(round(package.average_score))} · "
+            f"low {int(round(package.low_score))} · "
+            f"conf {int(round(package.confidence * 100))}%"
+        )
+        bg = package.colour or "#2a2a33"
+        self._set_badge(self._package_label, text, bg, _text_colour_for_bg(bg))
+
+    def _set_status_or_data(
+        self, applicant: Applicant, listing: Listing | None = None
+    ) -> None:
+        status = applicant.fetch_status
+        self._clear_metrics_and_dungeons()
+        self._status_label.setVisible(False)
+        if status in ("loading", "pending"):
+            self._show_status("Fetching from Warcraft Logs…")
+            return
+        if status == "error":
+            msg = applicant.error_message or "unknown"
+            self._show_status(f"WCL error: {msg}", error=True)
+            return
+        if status == "not_found":
+            self._show_status("Not found on Warcraft Logs")
+            return
+        if status != "ready":
+            self._show_status("")
+            return
+
+        visible_metrics = self._set_metric_badges(applicant, listing)
+        visible_rows = self._set_dungeon_rows(applicant, listing)
+        if not visible_metrics and not visible_rows:
+            self._show_status("No Warcraft Logs data")
+
+    def _show_status(self, text: str, *, error: bool = False) -> None:
+        self._status_label.setText(text)
+        color = "#ff6666" if error else "#8d8d98"
+        self._status_label.setStyleSheet(f"color: {color};")
+        self._status_label.setVisible(bool(text))
+
+    def _clear_metrics_and_dungeons(self) -> None:
+        for label in self._metric_labels.values():
+            label.setText("")
+            label.setVisible(False)
+        for row in self._dungeon_rows:
+            for label in row:
+                label.setText("")
+                label.setVisible(False)
+        self._dungeon_widget.setVisible(False)
+
+    def _set_metric_badges(
+        self, applicant: Applicant, listing: Listing | None = None
+    ) -> int:
+        shown = 0
+        fit = candidate_fit(applicant, listing)
+        raid_sources = [
+            (
+                "N",
+                applicant.raid_normal,
+                applicant.raid_normal_median,
+                self._metric_preferences.raid_normal,
+            ),
+            (
+                "H",
+                applicant.raid_heroic,
+                applicant.raid_heroic_median,
+                self._metric_preferences.raid_heroic,
+            ),
+            (
+                "M",
+                applicant.raid_mythic,
+                applicant.raid_mythic_median,
+                self._metric_preferences.raid_mythic,
+            ),
+        ]
+        for key, best, median, enabled in raid_sources:
+            if not enabled:
+                self._metric_labels[key].setVisible(False)
+                continue
+            text, _fg, bg = _raid_cell_visuals(best, median, applicant.fetch_status)
+            if bg is None:
+                self._metric_labels[key].setVisible(False)
+                continue
+            prefix = f"{key} "
+            if fit.context == CONTEXT_RAID and fit.target_raid == key:
+                prefix = f"{key} {fit.label} "
+            self._set_badge(
+                self._metric_labels[key],
+                f"{prefix}{text}",
+                bg,
+                _text_colour_for_bg(bg),
+            )
+            shown += 1
+
+        if self._metric_preferences.mplus:
+            metric_label, _breakdown, _best, _median = _mplus_view(applicant)
+            text, _fg, bg = _mplus_cell_visuals(applicant, listing)
+            if bg is not None:
+                self._set_badge(
+                    self._metric_labels["M+"],
+                    f"M+ {metric_label} {text}",
+                    bg,
+                    _text_colour_for_bg(bg),
+                )
+                shown += 1
+            else:
+                self._metric_labels["M+"].setVisible(False)
+        else:
+            self._metric_labels["M+"].setVisible(False)
+        return shown
+
+    def _set_dungeon_rows(
+        self, applicant: Applicant, listing: Listing | None = None
+    ) -> int:
+        if not self._metric_preferences.mplus:
+            self._dungeon_widget.setVisible(False)
+            return 0
+        fit_rows = mplus_dungeon_fit_rows(applicant, listing)[:8]
+        if fit_rows:
+            for row_idx, labels in enumerate(self._dungeon_rows):
+                name_label, key_label, value_label = labels
+                if row_idx >= len(fit_rows):
+                    for label in labels:
+                        label.setText("")
+                        label.setVisible(False)
+                    continue
+                row = fit_rows[row_idx]
+                dungeon_name = row.dungeon_name
+                name_label.setText(
+                    name_label.fontMetrics().elidedText(
+                        dungeon_name,
+                        Qt.TextElideMode.ElideRight,
+                        DUNGEON_NAME_WIDTH,
+                    )
+                )
+                name_label.setToolTip(
+                    dungeon_name if name_label.text() != dungeon_name else ""
+                )
+                key_label.setText(f"+{row.key_level}" if row.key_level > 0 else "?")
+                value_label.setText(row.text)
+                fg = _text_colour_for_bg(row.colour)
+                value_label.setStyleSheet(
+                    f"background-color: {row.colour}; color: {fg}; "
+                    "border-radius: 2px; padding: 0 4px; font-weight: bold;"
+                )
+                for label in labels:
+                    label.setVisible(True)
+            self._dungeon_widget.setVisible(True)
+            return len(fit_rows)
+
+        _metric_label, breakdown, _best, _median = _mplus_view(applicant)
+        entries = sorted(
+            [entry for entry in breakdown if isinstance(entry, dict)],
+            key=_mplus_sort_key,
+        )[:8]
+        for row_idx, labels in enumerate(self._dungeon_rows):
+            name_label, key_label, value_label = labels
+            if row_idx >= len(entries):
+                for label in labels:
+                    label.setText("")
+                    label.setVisible(False)
+                continue
+            entry = entries[row_idx]
+            dungeon_name = str(entry.get("name") or "?")
+            name_label.setText(
+                name_label.fontMetrics().elidedText(
+                    dungeon_name,
+                    Qt.TextElideMode.ElideRight,
+                    DUNGEON_NAME_WIDTH,
+                )
+            )
+            name_label.setToolTip(dungeon_name if name_label.text() != dungeon_name else "")
+            key = _mplus_key_level(entry)
+            key_label.setText(f"+{key}" if key > 0 else "?")
+            value = _mplus_dungeon_metric_text(entry)
+            value_label.setText(value)
+            best = _safe_percent(entry.get("parse_percent"))
+            bg = percentile_colour(best) if best is not None else "#2a2a33"
+            fg = _text_colour_for_bg(bg)
+            value_label.setStyleSheet(
+                f"background-color: {bg}; color: {fg}; border-radius: 2px; "
+                "padding: 0 4px; font-weight: bold;"
+            )
+            for label in labels:
+                label.setVisible(True)
+        visible = len(entries)
+        self._dungeon_widget.setVisible(visible > 0)
+        return visible
+
+    def _set_badge(self, label: QLabel, text: str, bg: str, fg: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(
+            f"background-color: {bg}; color: {fg}; border-radius: 2px; "
+            "padding: 1px 5px; font-weight: bold;"
+        )
+        label.setVisible(True)
+
+
+# ───────────────────────────────────────────────────────────────────
+# Main window
+
+
+class OverlayWindow(QMainWindow):
+    def __init__(
+        self,
+        state: AppState,
+        wcl_client: WCLClient,
+        cache: CharacterCache,
+        config_dir,
+        metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+        show_settings: Callable[[], None] | None = None,
+    ):
+        super().__init__()
+
+        self._state = state
+        self._wcl_client = wcl_client
+        self._cache = cache
+        self._config_dir = config_dir
+        self._metric_preferences = metric_preferences
+        self._show_settings = show_settings
+        self._pool = QThreadPool.globalInstance()
+        if self._pool is not None:
+            self._pool.setMaxThreadCount(3)
+
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        # Compact minimum covers sum(COLUMN_WIDTHS)=552 plus the scrollbar
+        # budget. The M+ column stretches to consume any remaining viewport
+        # width so the right edge never becomes a transparent dead strip.
+        self.setMinimumSize(QSize(DEFAULT_WINDOW_WIDTH, 370))
+
+        # Central container with QSS-stylable background
+        container = QWidget()
+        container.setObjectName("rootContainer")
+        self.setCentralWidget(container)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._title_bar = TitleBar(container)
+        self._title_bar.hideClicked.connect(self.hide)
+        if self._show_settings is not None:
+            self._title_bar.settingsClicked.connect(self._show_settings)
+        layout.addWidget(self._title_bar)
+
+        # Role filter bar — toggle TANK / HEAL / DPS to hide other-role rows.
+        # Inserted between title bar and info panel. Filter state is session-
+        # only (transient lens, not persisted setting). See RoleFilterBar
+        # docstring + OverlayWindow._apply_role_filter.
+        self._role_filter_bar = RoleFilterBar(container)
+        self._role_filter_bar.filterChanged.connect(self._on_role_filter_changed)
+        layout.addWidget(self._role_filter_bar)
+        self._action_tooltip_widgets = (
+            *self._role_filter_bar.tooltip_widgets(),
+            self._title_bar.settings_button,
+            self._title_bar.hide_button,
+        )
+        for action_widget in self._action_tooltip_widgets:
+            action_widget.installEventFilter(self)
+
+        # Applicant info panel — fixed-height QWidget scout card. It updates
+        # existing labels on hover/pin so the table below never jolts.
+        self._panel = ApplicantInfoPanel(container, metric_preferences)
+        layout.addWidget(self._panel)
+
+        # Table — _TooltipTableWidget overrides viewportEvent to render tooltips
+        # via QToolTip.showText(). Required because Qt's default tooltip path
+        # silently fails on this overlay's flag combo (Tool + WA_Translucent
+        # Background + WindowStaysOnTopHint) — see _TooltipTableWidget docstring.
+        self._table = _TooltipTableWidget(0, len(COLUMN_HEADERS), container)
+        self._table.setHorizontalHeaderLabels(COLUMN_HEADERS)
+        # Per-column legend tooltips. setHorizontalHeaderLabels creates default
+        # QTableWidgetItem objects we can fetch + decorate; the actual tooltip
+        # rendering routes through the OverlayWindow eventFilter installed on
+        # the header viewport below — same QToolTip.showText() bypass.
+        for col, tip_text in enumerate(HEADER_TOOLTIPS):
+            header_item = self._table.horizontalHeaderItem(col)
+            if header_item is not None:
+                header_item.setToolTip(tip_text)
+        # Header viewport doesn't go through _TooltipTableWidget.viewportEvent
+        # (it's a separate child QHeaderView with its own viewport). Install an
+        # event filter on the header viewport so QHelpEvents there route to
+        # OverlayWindow.eventFilter, which renders the same QToolTip.showText
+        # path. Without this, header tooltips silently fail on the translucent
+        # overlay just like cell tooltips did before _TooltipTableWidget.
+        header_widget = self._table.horizontalHeader()
+        if header_widget is not None:
+            header_vp = header_widget.viewport()
+            if header_vp is not None:
+                header_vp.installEventFilter(self)
+        # Title-label tooltip — same bypass machinery, independent branch in
+        # eventFilter. setToolTip on title_label is updated from _update_title;
+        # only rendering goes through eventFilter → _render_tooltip.
+        self._title_bar.title_label.installEventFilter(self)
+        # Mouse-tracking + viewport event filter feed the row-hover panel.
+        # Filter catches Leave (cursor exits viewport) and MouseMove over the
+        # empty area below the last row (rowAt(y)<0) — both clear hover. The
+        # filter also catches WindowDeactivate on `self` so Alt-Tab clears the
+        # stale hover that would otherwise stick when window regains focus.
+        self._table.setMouseTracking(True)
+        table_vp = self._table.viewport()
+        if table_vp is not None:
+            table_vp.setMouseTracking(True)
+            table_vp.installEventFilter(self)
+        self.installEventFilter(self)
+        # Install the row-highlight delegate (3 px left-edge stripe). Caches
+        # current hover/pinned row indices; OverlayWindow updates via
+        # self._delegate.set_rows on every state change.
+        self._delegate = _HoverHighlightDelegate(self._table)
+        self._table.setItemDelegate(self._delegate)
+        # Hover & click signals — Qt built-ins do row math for us. cellClicked
+        # is left-button-only by Qt convention (right/middle clicks don't fire
+        # it), so no manual button filter is needed.
+        self._table.cellEntered.connect(self._on_cell_entered)
+        self._table.cellClicked.connect(self._on_cell_clicked)
+        # Scroll changes the row under a stationary cursor without firing
+        # cellEntered — re-resolve hover from cursor position on scroll.
+        scrollbar = self._table.verticalScrollBar()
+        if scrollbar is not None:
+            scrollbar.valueChanged.connect(self._reresolve_hover_from_cursor)
+        vertical_header = self._table.verticalHeader()
+        if vertical_header is not None:
+            vertical_header.setVisible(False)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._table.setShowGrid(False)
+        self._table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        for i, w in enumerate(COLUMN_WIDTHS):
+            self._table.setColumnWidth(i, w)
+        h = self._table.horizontalHeader()
+        if h is None:
+            raise RuntimeError("QTableWidget horizontal header is unavailable")
+        # Keep non-M+ columns at their compact widths; M+ is the fill column.
+        # Without a stretched final section, wider saved geometries leave a
+        # transparent strip after M+ that looks like broken unused UI.
+        for col in range(self._table.columnCount()):
+            if col != COL_MPLUS:
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(COL_MPLUS, QHeaderView.ResizeMode.Stretch)
+        h.setStretchLastSection(True)
+        self._apply_metric_column_visibility()
+        self._max_name_width_px = COLUMN_WIDTHS[COL_NAME]
+        layout.addWidget(self._table, stretch=1)
+
+        # Bottom row: status label + size grip
+        bottom = QWidget()
+        bottom_layout = QHBoxLayout(bottom)
+        bottom_layout.setContentsMargins(8, 2, 0, 0)
+        bottom_layout.setSpacing(8)
+        self._status_label = QLabel("")
+        self._status_label.setObjectName("statusLabel")
+        bottom_layout.addWidget(self._status_label, stretch=1)
+        # Health indicator — "shot Xs ago" lit by snapshotReceived signal slot
+        # note_decode. Stale-pipeline detection: if the watcher Observer thread
+        # silently dies, the timestamp stops advancing and the user sees the
+        # delta climb. Right-aligned (no stretch) next to the size grip.
+        self._health_label = QLabel("shot —")
+        self._health_label.setObjectName("healthLabel")
+        bottom_layout.addWidget(self._health_label)
+        bottom_layout.addWidget(QSizeGrip(bottom))
+        layout.addWidget(bottom)
+
+        self.setStyleSheet(_STYLESHEET)
+
+        # Constructor-time Qt geometry events can fire synchronously during
+        # setGeometry(), so every field read by moveEvent/resizeEvent/hover
+        # re-resolution must exist before geometry restore.
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(500)
+        self._save_timer.timeout.connect(self._persist_geometry)
+
+        # Map of applicant_id -> table row (kept in sync with _id_by_row).
+        self._row_for_id: dict[str, int] = {}
+        # Reverse lookup: row -> applicant_id. Rebuilt in _refresh_table.
+        # Used by hover/click signal handlers to translate row index → id.
+        self._id_by_row: list[str] = []
+        self._group_size_by_raw: dict[str, int] = {}
+        self._package_fit_by_raw: dict[str, PackageFit] = {}
+        self._package_owner_by_raw: dict[str, str] = {}
+        # Hover & pin tracking. Display priority: hover > pin > hidden.
+        # Pin survives applicant churn (preserved by id across re-sort);
+        # hover is preserved by id when prev row's id still exists, falls
+        # back to cursor re-resolution otherwise.
+        self._hover_id: str | None = None
+        self._pinned_id: str | None = None
+        # Role filter — empty set = show all (default). All-3-selected
+        # (== ALL_ROLES) is semantically equivalent for count-display via
+        # _is_filter_active(). Session-only — not persisted across launches.
+        self._role_filter: set[str] = set()
+        # Dedup WCL fetches: skip launching another task while one is in flight
+        # for the same applicant. Without this, rapid APP+ then APP= for the
+        # same id fires 2 concurrent identical HTTP requests against WCL.
+        self._fetches_in_flight: set[str] = set()
+        self._wcl_runtime_generation = 0
+
+        # Restore geometry, clamped to a visible screen so off-monitor positions
+        # from a previous multi-monitor session don't render the window invisibly
+        # off-screen. Picks first screen whose geometry intersects the saved
+        # rect; falls back to centering on primary screen if none match.
+        geo = _normalize_loaded_geometry(load_geometry(self._config_dir))
+        x, y, w, h = _clamp_geometry_to_screen(geo.x, geo.y, geo.w, geo.h)
+        if (x, y) != (geo.x, geo.y):
+            _log.info(
+                "Window geometry off-screen (%d,%d) → clamped to (%d,%d)",
+                geo.x,
+                geo.y,
+                x,
+                y,
+            )
+        self.setGeometry(x, y, w, h)
+
+        # Auto-hide timer for "listing active but applicants empty" case.
+        # M+ keystone listings don't auto-delist when group fills — the host
+        # has to manually click Delist. After all applicants are accepted
+        # (count=0), listing remains active so the addon keeps emitting
+        # snapshots with listing!=None and applicants=[]. on_applicant_removed
+        # already hides on count==0, but if a NEW listing event re-shows the
+        # window (e.g. comment edit, dungeon change), we need a safety net.
+        # Timer: starts when applicants reach 0 with listing active; fires
+        # after EMPTY_HIDE_DELAY_S to hide the window. Cancelled if a new
+        # applicant arrives.
+        self._empty_hide_timer = QTimer(self)
+        self._empty_hide_timer.setSingleShot(True)
+        self._empty_hide_timer.setInterval(EMPTY_HIDE_DELAY_S * 1000)
+        self._empty_hide_timer.timeout.connect(self._on_empty_hide_timeout)
+
+        # Last-decode timestamp populated by note_decode slot connected to
+        # ScreenshotWatcher.snapshotReceived. Read by _refresh_health_label.
+        # GUI-thread only (signal queues across thread → slot runs on GUI),
+        # no lock needed.
+        self._last_decode_time: float | None = None
+
+        # Bottom status-row poller — fires both quota and health refreshes on
+        # the same 1s cadence. 1Hz keeps "shot Xs ago" smooth (vs 3s jumps);
+        # both refresh slots are O(1) string format. quota itself is updated
+        # on every WCL fetch via rateLimitData GraphQL field — timer just
+        # pushes the latest snapshot to the label.
+        self._wcl_retry_timer = QTimer(self)
+        self._wcl_retry_timer.setSingleShot(True)
+        self._wcl_retry_timer.timeout.connect(self._retry_failed_wcl_fetches)
+        self._quota_timer = QTimer(self)
+        self._quota_timer.setInterval(1000)
+        self._quota_timer.timeout.connect(self._refresh_status_row)
+        self._quota_timer.start()
+        self._refresh_status_row()  # initial paint of "WCL: —/—" + "shot —"
+        for applicant in self._state.applicants.values():
+            applicant.project_wcl_data_to_preferences(self._metric_preferences)
+        self._schedule_wcl_retry()
+
+    # ─── public slots called from main app ─────
+
+    def on_applicant_added(self, applicant: Applicant) -> None:
+        self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
+        # Order matters: launch fetch FIRST so applicant.fetch_status flips to
+        # "loading" before _refresh_table reads it. Otherwise the cell briefly
+        # renders the default "pending" state (which displays as "no data") for
+        # the fetch duration (50-500ms), then flips to "loading" then "ready".
+        self._launch_fetch(applicant)
+        self._refresh_table()
+        self._update_title()
+        self._maybe_show()
+
+    def on_applicant_updated(self, applicant: Applicant) -> None:
+        self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
+        # Re-fetch ONLY when fetch_status is "pending" — apply_snapshot resets
+        # to pending on (a) newly seen applicant id and (b) spec_id change.
+        # Other field updates (score, ilvl, role) don't invalidate WCL data, so
+        # firing _launch_fetch on every update was wasted cache-hit + signal +
+        # row-rebuild. Errors are NOT auto-retried here — they'd just re-error
+        # under the same WCL state (rate limit, OAuth); manual `/apscout reset`
+        # from addon side restarts the pipeline if user wants a retry cycle.
+        if applicant.fetch_status == "pending":
+            self._launch_fetch(applicant)
+        self._refresh_table()
+        self._update_title()
+        # Edge case: if the very first event for an applicant arrives as APP=
+        # (e.g., addon emits "=" because it cached state across /reload), the
+        # state-machine emits applicantUpdated rather than applicantAdded.
+        # Window must still pop up — check visibility here too.
+        self._maybe_show()
+
+    def on_applicant_removed(self, applicant_id: str) -> None:
+        # Clear hover/pin if THIS removed applicant was the one we were
+        # showing — _refresh_table also preserves-by-id (so an unrelated
+        # remove doesn't clobber pin), but we still need to NULL the field
+        # for the removed-id case so panel hides instead of orphaning.
+        if applicant_id == self._hover_id:
+            self._hover_id = None
+        if applicant_id == self._pinned_id:
+            self._pinned_id = None
+        self._refresh_table()
+        self._update_title()
+        if self._state.count() == 0:
+            # No applicants left. Two reasons: (a) addon delisted (handled by
+            # on_cleared), (b) host invited everyone, listing still active.
+            # Case (b): listing remains, snapshots keep arriving with apps=[].
+            # Hide immediately AND start a guard timer — if a new listing event
+            # re-shows the window (comment change, etc.), the timer hides it
+            # again after a quiet period.
+            # Defensive: clear both ids on hide so next show doesn't bring back
+            # ghost panel content from a stale id.
+            self._hover_id = None
+            self._pinned_id = None
+            self.hide()
+            if self._state.listing is not None:
+                self._empty_hide_timer.start()
+
+    def on_listing_changed(self) -> None:
+        self._update_title()
+        # Pop the window when listing is created — but only if there's actual
+        # work to look at (applicants present). After group fills (apps=[]),
+        # listing comment edits would re-show the window otherwise.
+        if self._state.listing is not None and self._state.count() > 0:
+            self._maybe_show()
+        elif self._state.listing is not None and self._state.count() == 0:
+            # Listing active but empty — start guard timer to auto-hide if no
+            # new applicants arrive in EMPTY_HIDE_DELAY_S.
+            if not self._empty_hide_timer.isActive():
+                self._empty_hide_timer.start()
+
+    def on_cleared(self) -> None:
+        self._empty_hide_timer.stop()  # listing gone, no need for guard timer
+        self._table.setRowCount(0)
+        self._row_for_id.clear()
+        self._id_by_row = []
+        self._hover_id = None
+        self._pinned_id = None
+        self._sync_delegate_and_panel()
+        self._update_title()
+        # Only hide if there's also no active listing. EMPTY arrives transiently
+        # when applicants come and go between listing-active periods; hiding on
+        # every EMPTY would flicker the window. Real "all done" = NOLISTING.
+        if self._state.listing is None:
+            self.hide()
+
+    def note_decode(self, _snap: object) -> None:
+        """Slot for ScreenshotWatcher.snapshotReceived. Bumps the local last-
+        decode timestamp; _refresh_health_label reads it on the next tick.
+        Arg typed `object` so overlay.py stays Snapshot-import-free; under
+        score-prefixed to signal intentional unused.
+
+        Runs on GUI thread (Qt queues cross-thread emits from the watchdog
+        Observer thread onto the GUI thread automatically). Read by the timer
+        slot also runs on GUI thread — no lock needed for the float field."""
+        self._last_decode_time = time.time()
+
+    def _refresh_status_row(self) -> None:
+        """One-shot update of both bottom-row labels. Driven by _quota_timer
+        at 1Hz. Quota refresh is idempotent (just reads last_quota snapshot);
+        health refresh advances the "Xs ago" counter."""
+        self._refresh_quota_label()
+        self._refresh_health_label()
+
+    def _refresh_health_label(self) -> None:
+        """Updates _health_label text from _last_decode_time. None → "shot —"
+        (no decode yet). Otherwise formats `time.time() - last` via _format_age.
+
+        max(0, delta) clamp guards against a system-clock backwards-jump (DST
+        transition, manual change). No color escalation in v1 — idle listings
+        legitimately have no decodes for minutes; coloring would false-alarm.
+        Absolute "shot Xm ago" text is enough to spot a dead pipeline."""
+        last = self._last_decode_time
+        if last is None:
+            self._health_label.setText("shot —")
+            return
+        delta = max(0.0, time.time() - last)
+        self._health_label.setText(f"shot {_format_age(delta)}")
+
+    def _refresh_quota_label(self) -> None:
+        """Pull latest quota snapshot from wcl_client and format into status
+        label. Format: "WCL: spent/limit (Xm to reset)" — e.g. "WCL: 245/3600
+        (52m to reset)". Shows "—" before first fetch.
+
+        Visual urgency: turns yellow at 70% spent, red at 90%."""
+        q = getattr(self._wcl_client, "last_quota", None)
+        if q is None:
+            self._status_label.setText("WCL: — / — (no fetch yet)")
+            self._status_label.setStyleSheet("")
+            return
+        spent = int(round(q.points_spent))
+        limit = int(round(q.limit_per_hour))
+        remaining = self._wcl_client.quota_reset_remaining_seconds()
+        if remaining is None:
+            remaining = q.reset_in_seconds
+        reset_min = int(remaining / 60) if remaining > 0 else 0
+        reset_str = f"{reset_min}m to reset" if reset_min > 0 else "resetting"
+        self._status_label.setText(f"WCL: {spent} / {limit}  ({reset_str})")
+        # Color escalation
+        ratio = q.points_spent / q.limit_per_hour if q.limit_per_hour > 0 else 0
+        if ratio >= 0.9:
+            self._status_label.setStyleSheet("color: #ff5555;")
+        elif ratio >= 0.7:
+            self._status_label.setStyleSheet("color: #ffcc55;")
+        else:
+            self._status_label.setStyleSheet("")
+
+    def _retryable_wcl_error_applicants(self) -> list[Applicant]:
+        return [
+            applicant
+            for applicant in self._state.applicants.values()
+            if applicant.fetch_status == "error"
+            and applicant.wcl_error_kind in _RETRYABLE_WCL_ERROR_KINDS
+        ]
+
+    def _schedule_wcl_retry(self, delay_ms: int | None = None) -> None:
+        if not self._metric_preferences.any_enabled:
+            return
+        if self._wcl_retry_timer.isActive():
+            return
+        if not self._retryable_wcl_error_applicants():
+            return
+        if delay_ms is None:
+            remaining = self._wcl_client.retry_block_remaining_seconds()
+            delay_ms = max(
+                WCL_RETRY_CUSHION_MS,
+                int(remaining * 1000) + WCL_RETRY_CUSHION_MS,
+            )
+        self._wcl_retry_timer.start(delay_ms)
+
+    def _retry_failed_wcl_fetches(self) -> int:
+        if not self._metric_preferences.any_enabled:
+            return 0
+        remaining = self._wcl_client.retry_block_remaining_seconds()
+        if remaining > 0:
+            self._schedule_wcl_retry(
+                int(remaining * 1000) + WCL_RETRY_CUSHION_MS
+            )
+            return 0
+        launched = 0
+        for applicant in self._retryable_wcl_error_applicants():
+            if launched >= MAX_WCL_RETRY_BATCH:
+                break
+            if applicant.applicant_id in self._fetches_in_flight:
+                continue
+            applicant.clear_wcl_data()
+            self._launch_fetch(applicant)
+            launched += 1
+        if launched:
+            self._refresh_table()
+            self._update_title()
+        if any(
+            applicant.applicant_id not in self._fetches_in_flight
+            for applicant in self._retryable_wcl_error_applicants()
+        ):
+            self._schedule_wcl_retry(WCL_RETRY_BATCH_DELAY_MS)
+        return launched
+
+    def _on_empty_hide_timeout(self) -> None:
+        """Fired EMPTY_HIDE_DELAY_S after applicants reached 0 with listing
+        still active. Auto-hide as a safety net for cases where M+ keystone
+        listing isn't auto-delisted by Blizzard after group fills."""
+        if self._state.count() == 0:
+            self.hide()
+
+    # ─── hover/pin panel orchestration ─────
+
+    def _resolve_visible_id(self) -> str | None:
+        """Hover wins over pin; both must reference an applicant currently in
+        state. Returns None when nothing should display."""
+        if (
+            self._hover_id
+            and self._hover_id in self._state.applicants
+            and self._is_row_visible_for_applicant(self._hover_id)
+        ):
+            return self._hover_id
+        if (
+            self._pinned_id
+            and self._pinned_id in self._state.applicants
+            and self._is_row_visible_for_applicant(self._pinned_id)
+        ):
+            return self._pinned_id
+        return None
+
+    def _is_row_visible_for_applicant(self, applicant_id: str) -> bool:
+        row = self._row_for_id.get(applicant_id)
+        return row is not None and not self._table.isRowHidden(row)
+
+    def _refresh_panel(self) -> None:
+        """Push current visible applicant into the panel, OR show the
+        placeholder when nothing is hovered/pinned. Centralized — called from
+        _sync_delegate_and_panel only, never independently, so delegate cache
+        and panel content can never desync.
+
+        Panel is always-visible (fixed-height layout, no oscillation/jolt on
+        hover transitions). Visibility toggle removed; only content swaps
+        between the dim placeholder and an applicant's scout card."""
+        visible_id = self._resolve_visible_id()
+        if visible_id is None:
+            self._panel.setPlaceholder()
+            return
+        applicant = self._state.applicants.get(visible_id)
+        if applicant is None:
+            self._panel.setPlaceholder()
+            return
+        raw_aid, _ = _split_composite(applicant.applicant_id)
+        self._panel.setApplicantData(
+            applicant,
+            self._state.listing,
+            self._package_fit_by_raw.get(raw_aid),
+        )
+
+    def _sync_delegate_and_panel(self) -> None:
+        """Single bookkeeping point for (delegate hover/pin row caches →
+        viewport repaint → panel content). Called from EVERY mutation site
+        (cell entered/clicked/closed, leave, scroll, resize, fetch-done,
+        applicant removed, on_cleared, etc). Avoids drift if any of the
+        three pieces (hover, pin, panel) get out of sync."""
+        hover_row = self._row_for_id.get(self._hover_id, -1) if self._hover_id else -1
+        pinned_row = (
+            self._row_for_id.get(self._pinned_id, -1) if self._pinned_id else -1
+        )
+        self._delegate.set_rows(hover_row, pinned_row)
+        vp = self._table.viewport()
+        if vp is not None:
+            vp.update()
+        self._refresh_panel()
+
+    def _on_cell_entered(self, row: int, _col: int) -> None:
+        # Bounds check guards against (a) ever-zero state during init,
+        # (b) any conceivable race between setRowCount and _id_by_row rebuild.
+        if not (0 <= row < len(self._id_by_row)):
+            return
+        new_id = self._id_by_row[row]
+        if new_id == self._hover_id:
+            return  # de-dup same-row entries
+        self._hover_id = new_id
+        self._sync_delegate_and_panel()
+
+    def _on_cell_clicked(self, row: int, _col: int) -> None:
+        # cellClicked is left-button-only by Qt convention. REPLACE pin every
+        # click — never toggle. The X close button is the only un-pin path
+        # (avoids "click pinned row to confirm" surprising the user with
+        # silent un-pin).
+        if not (0 <= row < len(self._id_by_row)):
+            return
+        self._pinned_id = self._id_by_row[row]
+        self._sync_delegate_and_panel()
+
+    def _resolve_hover_from_cursor(self) -> str | None:
+        """Map global cursor position to an applicant_id under it (or None
+        if cursor is outside the table viewport / over an empty area)."""
+        if not self._table.hasMouseTracking():
+            return None
+        vp = self._table.viewport()
+        if vp is None or not vp.hasMouseTracking():
+            return None
+        local = vp.mapFromGlobal(QCursor.pos())
+        if not vp.rect().contains(local):
+            return None
+        row = self._table.rowAt(local.y())
+        if 0 <= row < len(self._id_by_row):
+            return self._id_by_row[row]
+        return None
+
+    def _reresolve_hover_from_cursor(self) -> None:
+        """Called when scrolling or window resize shifts cells under the
+        stationary cursor without firing cellEntered. Re-derive hover_id
+        from current cursor position; sync if changed."""
+        new_id = self._resolve_hover_from_cursor()
+        if new_id != self._hover_id:
+            self._hover_id = new_id
+            self._sync_delegate_and_panel()
+
+    # ─── internals ─────
+
+    def _maybe_show(self) -> None:
+        if not self.isVisible():
+            g = self.geometry()
+            _log.info(
+                "Showing overlay at (%d,%d) %dx%d",
+                g.x(),
+                g.y(),
+                g.width(),
+                g.height(),
+            )
+            self.show()
+            self.raise_()
+
+    def _render_row(self, row: int, applicant: Applicant) -> None:
+        """Write applicant data into an existing table row. Caller manages
+        row creation / position — used by _refresh_table after sort.
+
+        Per-cell tooltips removed: applicant data now lives in the top
+        ApplicantInfoPanel which is row-hover/pin driven. Cell items are
+        plain text + colour only."""
+        spec_text = SPEC_SHORT_NAMES.get(applicant.spec_id, f"#{applicant.spec_id}")
+        spec_item = QTableWidgetItem(spec_text)
+        spec_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        spec_item.setData(Qt.ItemDataRole.UserRole, applicant.role)
+        icon = _role_icon(applicant.role)
+        if icon is not None:
+            spec_item.setIcon(icon)
+        # Class-coloured cell background mirrors the panel's `_class_pill` so
+        # the table and info-panel use the same visual language for class
+        # identity. Black foreground + bold reads cleanly across all 13
+        # saturated class colours (PRIEST #FFFFFF is high-contrast WCAG AAA;
+        # darker classes like DK red still pass at this weight). Hover/pin
+        # stripe is painted by `_HoverHighlightDelegate` ON TOP of this cell
+        # background (delegate paints last in cell-rect render order), so the
+        # 3 px left-edge stripe still wins where they overlap.
+        cls_hex = CLASS_COLOURS.get(applicant.cls, "#888888")
+        spec_item.setBackground(QColor(cls_hex))
+        spec_item.setForeground(QColor("#000000"))
+        spec_bold = QFont()
+        spec_bold.setBold(True)
+        spec_item.setFont(spec_bold)
+        self._table.setItem(row, COL_SPEC, spec_item)
+
+        # Display Charname only (without -Realm) for compactness; full in panel
+        display_name = applicant.name.split("-", 1)[0]
+        name_item = QTableWidgetItem(display_name)
+        name_item.setForeground(QColor(CLASS_COLOURS.get(applicant.cls, "#FFFFFF")))
+        f = QFont()
+        f.setBold(True)
+        name_item.setFont(f)
+        self._table.setItem(row, COL_NAME, name_item)
+
+        # iLvl + RIO numeric cells. RIO shows the applying character's score,
+        # plus a higher RaiderIO main score in brackets when available.
+        ilvl_item = QTableWidgetItem(str(applicant.ilvl) if applicant.ilvl else "—")
+        ilvl_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(row, COL_ILVL, ilvl_item)
+
+        rio_score = effective_rio_score(applicant)
+        rio_item = QTableWidgetItem(_rio_display_text(applicant))
+        rio_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        rio_item.setFont(f)  # bold — primary scouting signal alongside name
+        # Tier-band foreground colour (gold/purple/blue/green/white) matches
+        # RaiderIO addon's score-tier visual language, mirrors raid percentile
+        # cell palette so eye-tracking across columns reads consistently.
+        rio_item.setForeground(QColor(rio_score_colour(rio_score)))
+        self._table.setItem(row, COL_RIO, rio_item)
+
+        # Raid percentile cells: dual "best/median" display.
+        raid_cells = [
+            (COL_N, applicant.raid_normal, applicant.raid_normal_median),
+            (COL_H, applicant.raid_heroic, applicant.raid_heroic_median),
+            (COL_M, applicant.raid_mythic, applicant.raid_mythic_median),
+        ]
+        for col, best, median in raid_cells:
+            self._table.setItem(
+                row, col, _raid_dual_cell(best, median, applicant.fetch_status)
+            )
+        raw_aid, _ = _split_composite(applicant.applicant_id)
+        package = self._package_fit_by_raw.get(raw_aid)
+        if (
+            package is not None
+            and package.display
+            and self._group_size_by_raw.get(raw_aid, 1) >= 2
+            and self._package_owner_by_raw.get(raw_aid) == applicant.applicant_id
+        ):
+            self._table.setItem(
+                row, COL_MPLUS, _package_fit_cell(package.display, package.colour)
+            )
+        else:
+            # M+ cell: context-fit display for M+ listings, legacy headline otherwise.
+            self._table.setItem(
+                row, COL_MPLUS, _mplus_dual_cell(applicant, self._state.listing)
+            )
+
+    def _refresh_table(self) -> None:
+        """Rebuild table sorted by effective RIO score DESC.
+        Called on every state change — full rebuild is trivial at our applicant
+        counts (≤30) and avoids row-bookkeeping on insert/sort.
+
+        Hover & pin preservation:
+        - Capture prev_hover_id / prev_pinned_id BEFORE rebuild.
+        - Reset delegate row caches to (-1, -1) BEFORE setRowCount so any
+          intra-rebuild repaint can't paint stripe at a stale row index.
+        - After rebuild: if prev_hover_id is gone, fall back to cursor-resolved;
+          if prev_pinned_id is gone, drop pin (no fallback — pin is intentional
+          state, don't auto-replace).
+        - End with _sync_delegate_and_panel — single bookkeeping point that
+          re-applies correct stripe rows + refreshes panel content.
+
+        Sort: see `sort_applicants_grouped` docstring. Known M+/raid listings
+        use context package fit; unknown listings preserve prior max-RIO order
+        with higher RaiderIO main score folded into the max when available.
+
+        Group markers: multi-member-group rows get a per-group hashed-hue
+        bracket in the spec column. Solo rows get nothing — chrome reserved for
+        actual grouping signal."""
+        prev_hover = self._hover_id
+        prev_pinned = self._pinned_id
+
+        # Reset delegate to "no highlight anywhere" BEFORE we tear down items.
+        # Avoids a stripe / band paint at a row index that no longer maps if Qt
+        # issues an intermediate paint event between setRowCount and the post-
+        # rebuild marker reset. Symmetric with set_group_markers({}) below.
+        self._delegate.set_rows(-1, -1)
+        self._delegate.set_group_markers({})
+
+        sorted_applicants = sort_applicants_grouped(
+            self._state.applicants.values(), self._state.listing
+        )
+        self._group_size_by_raw = {}
+        group_members: dict[str, list[Applicant]] = {}
+        for applicant in sorted_applicants:
+            raw_aid, _ = _split_composite(applicant.applicant_id)
+            self._group_size_by_raw[raw_aid] = self._group_size_by_raw.get(raw_aid, 0) + 1
+            group_members.setdefault(raw_aid, []).append(applicant)
+        self._package_fit_by_raw = {}
+        self._package_owner_by_raw = {}
+        if detect_listing_context(self._state.listing) in (CONTEXT_MPLUS, CONTEXT_RAID):
+            for raw_aid, members in group_members.items():
+                if len(members) < 2:
+                    continue
+                fit = package_fit(members, self._state.listing)
+                if fit.display:
+                    self._package_fit_by_raw[raw_aid] = fit
+                    self._package_owner_by_raw[raw_aid] = members[0].applicant_id
+
+        self._table.setRowCount(len(sorted_applicants))
+        self._row_for_id.clear()
+        self._id_by_row = [a.applicant_id for a in sorted_applicants]
+        for row, applicant in enumerate(sorted_applicants):
+            self._row_for_id[applicant.applicant_id] = row
+            self._render_row(row, applicant)
+        self._maybe_grow_name_column(sorted_applicants)
+
+        self._delegate.set_group_markers(
+            _build_group_markers(
+                (row_idx, a.applicant_id)
+                for row_idx, a in enumerate(sorted_applicants)
+            )
+        )
+
+        # Preserve hover/pin BY ID; cursor fallback only when prev id is gone.
+        if prev_hover not in self._state.applicants:
+            self._hover_id = self._resolve_hover_from_cursor()
+        if prev_pinned not in self._state.applicants:
+            self._pinned_id = None
+
+        # Apply current role filter to the freshly-rebuilt rows so newly-
+        # arrived applicants in a filtered-out role come in pre-hidden.
+        # Also re-feeds visible-only group markers — must run AFTER the
+        # set_group_markers call above so it's the final word on markers.
+        self._apply_role_filter()
+        # Re-apply correct stripe rows + refresh panel content (single point).
+        self._sync_delegate_and_panel()
+
+    def _is_filter_active(self) -> bool:
+        """True iff the role filter actually hides anything. Empty set OR
+        all-3-selected (== ALL_ROLES) both mean 'show all' — count display
+        and row visibility math both branch on this single helper."""
+        return bool(self._role_filter) and self._role_filter != ALL_ROLES
+
+    def _on_role_filter_changed(self, active: set) -> None:
+        """RoleFilterBar.filterChanged slot. Mutates _role_filter, possibly
+        clears the pin if pinned applicant is now filtered out, then re-
+        applies filter + re-resolves hover + refreshes panel + updates title."""
+        self._role_filter = active
+        if self._pinned_id is not None and self._is_filter_active():
+            raw_aid, _ = _split_composite(self._pinned_id)
+            if raw_aid not in self._role_filter_visible_raw_ids():
+                self._pinned_id = None
+        self._apply_role_filter()
+        # Hovered row may now be hidden — re-resolve from cursor position.
+        self._reresolve_hover_from_cursor()
+        self._sync_delegate_and_panel()
+        self._update_title()
+
+    def _role_filter_visible_raw_ids(self) -> set[str]:
+        """Raw applicant groups visible under the role filter.
+
+        Group applications are package decisions: if one member matches the
+        selected role lens, every member must stay visible so the package risk
+        can still be judged honestly.
+        """
+        raw_ids: set[str] = set()
+        if not self._is_filter_active():
+            for applicant_id in self._state.applicants:
+                raw_aid, _ = _split_composite(applicant_id)
+                raw_ids.add(raw_aid)
+            return raw_ids
+        for applicant in self._state.applicants.values():
+            if applicant.role in self._role_filter:
+                raw_aid, _ = _split_composite(applicant.applicant_id)
+                raw_ids.add(raw_aid)
+        return raw_ids
+
+    def _apply_role_filter(self) -> None:
+        """Apply role lens while preserving accepted-together group packages."""
+        is_active = self._is_filter_active()
+        visible_raw_ids = self._role_filter_visible_raw_ids()
+        visible_count = 0
+        visible_id_by_row: list[tuple[int, str]] = []
+        for row, applicant_id in enumerate(self._id_by_row):
+            applicant = self._state.applicants.get(applicant_id)
+            if applicant is None:
+                continue
+            raw_aid, _ = _split_composite(applicant_id)
+            is_visible = (not is_active) or raw_aid in visible_raw_ids
+            self._table.setRowHidden(row, not is_visible)
+            if is_visible:
+                visible_count += 1
+                visible_id_by_row.append((row, applicant_id))
+
+        self._role_filter_bar.set_status(visible_count, len(self._id_by_row))
+
+        # Rebuild group markers from visible-only rows so filtered views keep
+        # the bracket shape aligned to what is actually on screen.
+        self._delegate.set_group_markers(_build_group_markers(visible_id_by_row))
+
+    def _maybe_grow_name_column(self, applicants: list[Applicant]) -> None:
+        """Grow Name column a little, capped to preserve compact overlay width."""
+        if not applicants:
+            return
+        fm = self._table.fontMetrics()
+        widest = max(fm.horizontalAdvance(a.name.split("-", 1)[0]) for a in applicants)
+        target = max(COLUMN_WIDTHS[COL_NAME], min(NAME_COLUMN_MAX_WIDTH, widest + 18))
+        if target > self._max_name_width_px:
+            self._max_name_width_px = target
+            self._table.setColumnWidth(COL_NAME, target)
+
+    def _apply_metric_column_visibility(self) -> None:
+        prefs = self._metric_preferences
+        self._table.setColumnHidden(COL_N, not prefs.raid_normal)
+        self._table.setColumnHidden(COL_H, not prefs.raid_heroic)
+        self._table.setColumnHidden(COL_M, not prefs.raid_mythic)
+        self._table.setColumnHidden(COL_MPLUS, not prefs.mplus)
+
+    def apply_metric_preferences(
+        self,
+        metric_preferences: MetricPreferences,
+        *,
+        refetch_missing: bool = True,
+    ) -> None:
+        self._metric_preferences = metric_preferences
+        self._wcl_client.metric_preferences = metric_preferences
+        self._panel.set_metric_preferences(metric_preferences)
+        self._apply_metric_column_visibility()
+        for applicant in self._state.applicants.values():
+            if not metric_preferences.any_enabled:
+                applicant.clear_wcl_data(fetch_status="ready")
+                continue
+            applicant.project_wcl_data_to_preferences(metric_preferences)
+            if (
+                refetch_missing
+                and applicant.fetch_status == "ready"
+                and not applicant.wcl_data_covers(metric_preferences)
+            ):
+                applicant.clear_wcl_data()
+                self._launch_fetch(applicant)
+            elif applicant.fetch_status == "pending":
+                self._launch_fetch(applicant)
+        self._refresh_table()
+        self._update_title()
+
+    def bump_wcl_runtime_generation(self) -> None:
+        self._wcl_runtime_generation += 1
+        for applicant in self._state.applicants.values():
+            applicant.clear_wcl_data()
+        self._refresh_table()
+        self._update_title()
+        for applicant in self._state.applicants.values():
+            self._launch_fetch(applicant)
+
+    def _launch_fetch(self, applicant: Applicant) -> None:
+        if not self._metric_preferences.any_enabled:
+            applicant.clear_wcl_data(fetch_status="ready")
+            return
+        if applicant.applicant_id in self._fetches_in_flight:
+            return  # avoid duplicate concurrent fetches for same applicant
+        resolved = _fetch_identity_for_applicant(
+            applicant,
+            self._state.player.full_name,
+            self._wcl_client.region,
+            self._metric_preferences,
+            self._wcl_runtime_generation,
+        )
+        if resolved is None:
+            applicant.fetch_status = "error"
+            applicant.error_message = "missing realm"
+            applicant.wcl_error_kind = ""
+            return  # caller (on_applicant_added/_updated) refreshes table after
+        identity, charname = resolved
+        applicant.fetch_status = "loading"
+        applicant.error_message = ""
+        applicant.wcl_error_kind = ""
+        self._fetches_in_flight.add(applicant.applicant_id)
+        task = _FetchTask(identity, charname, self._wcl_client, self._cache)
+        task.signals.done.connect(self._on_fetch_done)
+        if self._pool is not None:
+            self._pool.start(task)
+
+    def _on_fetch_done(
+        self,
+        fetched_identity: _FetchIdentity,
+        ranks: CharacterRanks,
+    ) -> None:
+        self._fetches_in_flight.discard(fetched_identity.applicant_id)
+        applicant = self._state.applicants.get(fetched_identity.applicant_id)
+        if applicant is None:
+            return
+        current = _fetch_identity_for_applicant(
+            applicant,
+            self._state.player.full_name,
+            self._wcl_client.region,
+            self._metric_preferences,
+            self._wcl_runtime_generation,
+        )
+        if current is None:
+            applicant.clear_wcl_data(fetch_status="error")
+            applicant.error_message = "missing realm"
+            applicant.wcl_error_kind = ""
+            self._sync_delegate_and_panel()
+            return
+        current_identity, _ = current
+        if not _same_fetch_target_except_preferences(
+            current_identity, fetched_identity
+        ) or not fetched_identity.metric_preferences.covers(
+            current_identity.metric_preferences
+        ):
+            applicant.clear_wcl_data()
+            self._launch_fetch(applicant)
+            self._sync_delegate_and_panel()
+            return
+        if ranks.not_found:
+            applicant.fetch_status = "not_found"
+            applicant.error_message = ""
+            applicant.wcl_error_kind = ""
+        elif ranks.error:
+            applicant.fetch_status = "error"
+            applicant.error_message = ranks.error
+            applicant.wcl_error_kind = ranks.error_kind
+            self._schedule_wcl_retry()
+        else:
+            applicant.fetch_status = "ready"
+            applicant.error_message = ""
+            applicant.wcl_error_kind = ""
+            applicant.wcl_metric_preferences = fetched_identity.metric_preferences
+            applicant.raid_normal = ranks.raid_normal
+            applicant.raid_heroic = ranks.raid_heroic
+            applicant.raid_mythic = ranks.raid_mythic
+            applicant.raid_normal_median = ranks.raid_normal_median
+            applicant.raid_heroic_median = ranks.raid_heroic_median
+            applicant.raid_mythic_median = ranks.raid_mythic_median
+            applicant.mplus_dps = ranks.mplus_dps
+            applicant.mplus_hps = ranks.mplus_hps
+            applicant.mplus_dps_median = ranks.mplus_dps_median
+            applicant.mplus_hps_median = ranks.mplus_hps_median
+            # Convert DungeonPerf → list[dict] for cross-module storage
+            # (Applicant lives in state.py without WCL dependency).
+            def _dungeon_perf_dict(d) -> dict:
+                return {
+                    "name": d.name,
+                    "parse_percent": d.parse_percent,
+                    "median_percent": d.median_percent,
+                    "key_level": d.key_level,
+                    "run_count": d.run_count,
+                    "brackets": [
+                        {
+                            "key_level": b.key_level,
+                            "parse_percent": b.parse_percent,
+                            "median_percent": b.median_percent,
+                            "run_count": b.run_count,
+                        }
+                        for b in d.brackets
+                    ],
+                }
+
+            applicant.mplus_dps_breakdown = [
+                _dungeon_perf_dict(d)
+                for d in ranks.mplus_dps_breakdown
+            ]
+            applicant.mplus_hps_breakdown = [
+                _dungeon_perf_dict(d)
+                for d in ranks.mplus_hps_breakdown
+            ]
+            applicant.project_wcl_data_to_preferences(self._metric_preferences)
+        # Re-sort: this fetch may have produced a new M+ value that changes the
+        # applicant's row position. _refresh_table ends with sync — so a pinned
+        # panel showing this applicant rebuilds its HTML automatically here.
+        # Don't add another _refresh_panel call — single bookkeeping point.
+        self._refresh_table()
+
+    def _update_title(self) -> None:
+        listing = self._state.listing
+        n = self._state.count()
+        # Filter-aware count: show (visible / total) when filter actually
+        # hides rows; plain (total) otherwise. Single helper avoids the
+        # ambiguity of "(20)" when 15 are hidden.
+        if self._is_filter_active():
+            visible_raw_ids = self._role_filter_visible_raw_ids()
+            n_visible = sum(
+                1
+                for applicant_id in self._state.applicants
+                if _split_composite(applicant_id)[0] in visible_raw_ids
+            )
+            count_str = f"({n_visible} / {n})"
+        else:
+            count_str = f"({n})"
+        if listing is not None:
+            level = f" +{listing.key_level}" if listing.key_level > 0 else ""
+            # Skip the dungeon-name segment when it's just the generic LFG
+            # activity name "Mythic+" (host listed "any keystone" rather than a
+            # specific dungeon). "M+ Applicants — Mythic+ (12)" is redundant —
+            # collapse to "M+ Applicants (12)" or "M+ Applicants +12 (3)".
+            dn = listing.dungeon_name
+            generic = (not dn) or dn == "?" or dn.lower() in ("mythic+", "mythic plus")
+            if generic:
+                self._title_bar.setTitleText(f"M+ Applicants{level} {count_str}")
+            else:
+                self._title_bar.setTitleText(f"M+ Applicants — {dn}{level} {count_str}")
+        else:
+            self._title_bar.setTitleText(f"M+ Applicants {count_str}")
+        # Listing tooltip — host's listing_name + comment from in-game LFG UI.
+        # Read by eventFilter title-label branch on hover.
+        self._title_bar.title_label.setToolTip(_format_listing_tooltip(listing))
+
+    def _persist_geometry(self) -> None:
+        g = self.geometry()
+        save_geometry(
+            self._config_dir, WindowGeometry(g.x(), g.y(), g.width(), g.height())
+        )
+
+    # ─── overrides ─────
+
+    def eventFilter(self, obj, event):  # type: ignore[override]
+        """Routes tooltip events through QToolTip.showText(), AND handles
+        hover-bookkeeping events on the table viewport + WindowDeactivate on self.
+
+        Branches A/B/E handle ToolTip rendering (header column legends, title-
+        bar listing tooltip, role-filter buttons) — kept after refactor since
+        Qt's standard tooltip path silently fails on this overlay's translucent
+        flag combo. Tooltip branches return True to consume the event.
+
+        Branches C/D handle row-hover panel state:
+        - C: viewport Leave → clear hover; viewport MouseMove over empty area
+          (rowAt(y) < 0) → clear hover.
+        - D: WindowDeactivate (Alt-Tab away) → clear hover, KEEP pin.
+
+        Hover/window branches return False so Qt continues normal processing
+        after our bookkeeping runs."""
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QHelpEvent
+
+        if (
+            event is not None
+            and event.type() == QEvent.Type.ToolTip
+            and isinstance(event, QHelpEvent)
+        ):
+            # Branch A — header viewport (column header tooltips).
+            header = self._table.horizontalHeader()
+            if header is not None and obj is header.viewport():
+                col = header.logicalIndexAt(event.pos())
+                tip = ""
+                if 0 <= col < self._table.columnCount():
+                    item = self._table.horizontalHeaderItem(col)
+                    if item is not None:
+                        tip = item.toolTip()
+                return _render_tooltip(obj, tip, event.globalPos())
+            # Branch B — title-bar label (listing tooltip). Independent from
+            # Branch A: only one matches per call by `obj is` identity.
+            if obj is self._title_bar.title_label:
+                return _render_tooltip(
+                    obj, self._title_bar.title_label.toolTip(), event.globalPos()
+                )
+            # Branch E — action buttons (role filter/reset/title hide tooltips).
+            # Identity match only: objectName/text can change without affecting
+            # which child widgets need the translucent-overlay tooltip bypass.
+            if any(obj is widget for widget in self._action_tooltip_widgets):
+                return _render_tooltip(obj, obj.toolTip(), event.globalPos())
+        # Branch C — table viewport Leave / MouseMove (hover bookkeeping).
+        table_vp = self._table.viewport()
+        if event is not None and table_vp is not None and obj is table_vp:
+            if event.type() == QEvent.Type.Leave:
+                if self._hover_id is not None:
+                    self._hover_id = None
+                    self._sync_delegate_and_panel()
+            elif event.type() == QEvent.Type.MouseMove:
+                # Cursor over the empty area below the last row → clear hover.
+                # event has position() in Qt6 (returns QPointF).
+                pos = event.position().toPoint()  # type: ignore[attr-defined]
+                if self._table.rowAt(pos.y()) < 0 and self._hover_id is not None:
+                    self._hover_id = None
+                    self._sync_delegate_and_panel()
+            return False  # never consume — let Qt continue normal processing
+        # Branch D — Alt-Tab away from window.
+        if (
+            event is not None
+            and obj is self
+            and event.type() == QEvent.Type.WindowDeactivate
+        ):
+            if self._hover_id is not None:
+                self._hover_id = None
+                self._sync_delegate_and_panel()
+            return False
+        return super().eventFilter(obj, event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Mouse may have moved while window was hidden — drop stale hover.
+        # Pin survives intentionally (it's persistent user state).
+        if self._hover_id is not None:
+            self._hover_id = None
+            self._sync_delegate_and_panel()
+        # Defer cursor-resolve to next event-loop tick: showEvent fires BEFORE
+        # the show actually completes (Qt hasn't laid out the table viewport
+        # yet, so viewport().rect() is zero-sized). singleShot(0, ...) runs
+        # after Qt's layout pass, so rowAt(y) returns the row under the cursor
+        # if the window pops up under a stationary mouse — no wiggle required.
+        QTimer.singleShot(0, self._reresolve_hover_from_cursor)
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._save_timer.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._save_timer.start()
+        # Geometry change can shift cells under a stationary cursor without
+        # firing cellEntered — re-resolve hover from cursor position.
+        self._reresolve_hover_from_cursor()
+
+    def closeEvent(self, event):
+        self._persist_geometry()
+        super().closeEvent(event)
+
+
+# ───────────────────────────────────────────────────────────────────
+# Geometry helper
+
+
+def _normalize_loaded_geometry(geo: WindowGeometry) -> WindowGeometry:
+    """Migrate saved geometry that came from wider pre-compact layouts."""
+    if geo.layout_version >= WINDOW_GEOMETRY_LAYOUT_VERSION:
+        return geo
+    if LEGACY_COMPACT_WINDOW_WIDTH < geo.w <= 780:
+        height = DEFAULT_WINDOW_HEIGHT if 420 <= geo.h <= 580 else geo.h
+        return WindowGeometry(
+            geo.x,
+            geo.y,
+            DEFAULT_WINDOW_WIDTH,
+            height,
+            WINDOW_GEOMETRY_LAYOUT_VERSION,
+        )
+    return WindowGeometry(
+        geo.x, geo.y, geo.w, geo.h, WINDOW_GEOMETRY_LAYOUT_VERSION
+    )
+
+
+def _clamp_geometry_to_screen(
+    x: int, y: int, w: int, h: int
+) -> tuple[int, int, int, int]:
+    """Clamp window rect to a visible screen. Picks first screen whose
+    geometry intersects the saved rect by ≥80px on each axis (ensures the
+    title bar is visibly grabbable, not just a 1-pixel sliver). Falls back
+    to centering on primary screen.
+
+    Why: Qt's setGeometry happily places windows at any coordinates including
+    far off the visible desktop (e.g. (3000, 0) when a previous monitor at
+    that position is now disconnected). The window would render but be
+    invisible — looks identical to "overlay broken" from user's POV."""
+    screens = QGuiApplication.screens()
+    if not screens:
+        return (x, y, w, h)
+    for s in screens:
+        sg = s.geometry()
+        # Visible overlap on each axis
+        ox = max(0, min(x + w, sg.x() + sg.width()) - max(x, sg.x()))
+        oy = max(0, min(y + h, sg.y() + sg.height()) - max(y, sg.y()))
+        if ox >= 80 and oy >= 80:
+            return (x, y, w, h)
+    # No good intersection — center on primary
+    primary = QGuiApplication.primaryScreen()
+    if primary is None:
+        return (x, y, w, h)
+    pg = primary.geometry()
+    cw = min(w, pg.width())
+    ch = min(h, pg.height())
+    cx = pg.x() + (pg.width() - cw) // 2
+    cy = pg.y() + (pg.height() - ch) // 2
+    return (cx, cy, cw, ch)
+
+
+# ───────────────────────────────────────────────────────────────────
+# Cell rendering helper
+
+
+def _text_colour_for_bg(bg_hex: str | None) -> str:
+    """Return readable foreground for saturated percentile/class badges."""
+    if not bg_hex or len(bg_hex) != 7 or not bg_hex.startswith("#"):
+        return "#ffffff"
+    try:
+        red = int(bg_hex[1:3], 16)
+        green = int(bg_hex[3:5], 16)
+        blue = int(bg_hex[5:7], 16)
+    except ValueError:
+        return "#ffffff"
+    luminance = (0.299 * red) + (0.587 * green) + (0.114 * blue)
+    return "#000000" if luminance >= 145 else "#ffffff"
+
+
+def _raid_dual_cell(
+    best: float | None,
+    median: float | None,
+    fetch_status: str,
+) -> QTableWidgetItem:
+    """Raid difficulty cell — shows "best/median" pair (WCL UI's "Best Perf.
+    Avg." vs "Median Perf. Avg."). Best is the headline (skill ceiling);
+    median is consistency signal. Background colour from BEST since that's
+    the primary scouting signal — gold cell with low median tells "lucky
+    pulls" story; same gold with high median tells "stable pumper".
+
+    Per-cell tooltip removed: full context now lives in the row-hover panel."""
+    text, fg, bg = _raid_cell_visuals(best, median, fetch_status)
+    item = QTableWidgetItem(text)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    if fg is not None:
+        item.setForeground(QColor(fg))
+    if bg is not None:
+        item.setBackground(QColor(bg))
+        f = QFont()
+        f.setBold(True)
+        item.setFont(f)
+    return item
+
+
+def _raid_cell_visuals(
+    best: float | None,
+    median: float | None,
+    fetch_status: str,
+) -> tuple[str, str | None, str | None]:
+    """Returns (text, foreground_hex|None, background_hex|None).
+    Pure function — no Qt dependency — keeps cell-rendering logic testable
+    and deterministic. None on fg/bg means "leave at default"."""
+    if fetch_status == "loading":
+        return "…", "#888", None
+    if fetch_status == "error":
+        return "?", "#ff5555", None
+    if fetch_status == "not_found":
+        return "—", "#5d5d5d", None
+    if best is None and median is None:
+        return "—", "#5d5d5d", None
+
+    best_str = f"{int(round(best))}" if best is not None else "—"
+    # When median is missing (single-run, or only one encounter logged at this
+    # difficulty), the literal "/—" added visual noise without information
+    # ("89/—" reads like a broken value). Suppress the slash and second value
+    # entirely; row-hover panel carries the explanation.
+    if median is None:
+        text = best_str if best is not None else "—"
+    else:
+        text = f"{best_str}/{int(round(median))}"
+    bg = percentile_colour(best) if best is not None else None
+    fg = _text_colour_for_bg(bg) if bg is not None else None
+    return text, fg, bg
+
+
+def _safe_percent(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if not isinstance(value, int | float | str):
+        return None
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(pct) or pct < 0.0 or pct > 100.0:
+        return None
+    return pct
+
+
+def _nonnegative_int(value: object) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, int):
+        return value if value >= 0 else 0
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return 0
+
+
+def _positive_int(value: object) -> int:
+    parsed = _nonnegative_int(value)
+    return parsed if parsed > 0 else 0
+
+
+def _mplus_view(
+    applicant: Applicant,
+) -> tuple[str, list[dict], float | None, float | None]:
+    if applicant.role == "HEALER":
+        return (
+            "HPS",
+            applicant.mplus_hps_breakdown,
+            _safe_percent(applicant.mplus_hps),
+            _safe_percent(applicant.mplus_hps_median),
+        )
+    return (
+        "DPS",
+        applicant.mplus_dps_breakdown,
+        _safe_percent(applicant.mplus_dps),
+        _safe_percent(applicant.mplus_dps_median),
+    )
+
+
+def _mplus_key_level(entry: object) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    return _positive_int(entry.get("key_level"))
+
+
+def _mplus_run_count(entry: object) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    return _nonnegative_int(entry.get("run_count"))
+
+
+def _mplus_sort_key(entry: dict) -> tuple[int, str]:
+    name = entry.get("name")
+    return (-_mplus_key_level(entry), str(name or ""))
+
+
+def _highest_mplus_key_level(breakdown: Iterable[object]) -> int:
+    highest = 0
+    for entry in breakdown:
+        highest = max(highest, _mplus_key_level(entry))
+    return highest
+
+
+def _mplus_cell_visuals(
+    applicant: Applicant, listing: Listing | None = None
+) -> tuple[str, str | None, str | None]:
+    """Returns table text/colours for the role-relevant M+ headline cell."""
+    status = applicant.fetch_status
+    if status in {"loading", "pending"}:
+        return "…", "#888", None
+    if status == "error":
+        return "?", "#ff5555", None
+    if status == "not_found":
+        return "—", "#5d5d5d", None
+
+    fit = candidate_fit(applicant, listing)
+    if fit.context == CONTEXT_MPLUS and fit.display:
+        bg = fit.colour
+        fg = _text_colour_for_bg(bg) if bg is not None else None
+        return fit.display, fg, bg
+
+    _metric_label, breakdown, best, median = _mplus_view(applicant)
+    if best is None and median is None:
+        return "—", "#5d5d5d", None
+
+    best_str = f"{int(round(best))}" if best is not None else "—"
+    if median is None:
+        text = best_str if best is not None else "—"
+    else:
+        text = f"{best_str}/{int(round(median))}"
+
+    highest_key = _highest_mplus_key_level(breakdown)
+    if highest_key > 0:
+        text = f"{text} +{highest_key}"
+
+    bg = percentile_colour(best) if best is not None else None
+    fg = _text_colour_for_bg(bg) if bg is not None else None
+    return text, fg, bg
+
+
+def _mplus_dungeon_metric_text(entry: object) -> str:
+    if not isinstance(entry, dict):
+        return "—"
+    best = _safe_percent(entry.get("parse_percent"))
+    median = _safe_percent(entry.get("median_percent"))
+    run_count = _mplus_run_count(entry)
+    if best is None:
+        return "—"
+    if run_count >= 2 and median is not None:
+        return _metric_text(best, median)
+    return _metric_text(best, None)
+
+
+def _mplus_dual_cell(
+    applicant: Applicant, listing: Listing | None = None
+) -> QTableWidgetItem:
+    """Qt adapter over the pure M+ headline render boundary."""
+    text, fg, bg = _mplus_cell_visuals(applicant, listing)
+    item = QTableWidgetItem(text)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    if fg is not None:
+        item.setForeground(QColor(fg))
+    if bg is not None:
+        item.setBackground(QColor(bg))
+        f = QFont()
+        f.setBold(True)
+        item.setFont(f)
+    return item
+
+
+def _package_fit_cell(text: str, bg: str | None) -> QTableWidgetItem:
+    item = QTableWidgetItem(text)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    if bg is not None:
+        item.setBackground(QColor(bg))
+        item.setForeground(QColor(_text_colour_for_bg(bg)))
+        f = QFont()
+        f.setBold(True)
+        item.setFont(f)
+    return item
+
+
+def _format_age(delta_sec: float) -> str:
+    """Formats "X ago" relative-time strings for the health indicator.
+
+    24h cap returns "—" so a forgotten companion left running overnight
+    doesn't display "27h ago" garbage — at that age the indicator is
+    meaningless. Bands are coarse on purpose: the goal is failure-mode
+    spotting (decode pipeline alive vs dead), not millisecond accuracy."""
+    if delta_sec >= 86400.0:  # 24h
+        return "—"
+    if delta_sec >= 3600.0:
+        return f"{int(delta_sec // 3600)}h ago"
+    if delta_sec >= 60.0:
+        return f"{int(delta_sec // 60)}m ago"
+    return f"{int(delta_sec)}s ago"
+
+
+def _format_listing_tooltip(listing: Listing | None) -> str:
+    """Composes the title-bar tooltip text from listing_name + comment.
+
+    Both fields come from the in-game LFG UI as user-typed strings — `<3`,
+    `<-->`, etc. are legitimate content. Qt's tooltip widget auto-detects
+    HTML mode by `<` presence, which would mangle plain-text comments.
+    html.escape forces plain-text rendering; literal `\\n` line breaks are
+    preserved (not converted to entities) so the two-line layout still works.
+
+    Dedup safety: some addons mirror comment into listing_name. When both
+    fields strip-equal we emit one line, not two."""
+    if listing is None:
+        return ""
+    name_raw = (listing.listing_name or "").strip()
+    comment_raw = (listing.comment or "").strip()
+    if not name_raw and not comment_raw:
+        return ""
+    name = html.escape(name_raw, quote=False)
+    comment = html.escape(comment_raw, quote=False)
+    if not name:
+        return comment
+    if not comment:
+        return name
+    if name_raw == comment_raw:
+        return name
+    return f"{name}\n\n{comment}"
+
+
+def _percent_text(value: object) -> str:
+    pct = _safe_percent(value)
+    return "—" if pct is None else str(int(round(pct)))
+
+
+def _metric_text(best: object, median: object) -> str:
+    best_pct = _safe_percent(best)
+    median_pct = _safe_percent(median)
+    if best_pct is None and median_pct is None:
+        return "—"
+    best_text = _percent_text(best_pct)
+    if median_pct is None:
+        return best_text
+    return f"{best_text}/{_percent_text(median_pct)}"
+
+
+# ───────────────────────────────────────────────────────────────────
+# Stylesheet
+
+
+_STYLESHEET = """
+#rootContainer {
+    background-color: rgba(10, 10, 14, 220);
+    border: 1px solid rgba(80, 80, 100, 200);
+    border-radius: 4px;
+}
+#titleBar {
+    background-color: rgba(20, 20, 28, 240);
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+#titleLabel {
+    color: #d8d8e0;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 4px;
+}
+#settingsButton,
+#hideButton {
+    background-color: transparent;
+    color: #d8d8e0;
+    border: none;
+    font-size: 16px;
+    font-weight: bold;
+}
+#settingsButton:hover,
+#hideButton:hover {
+    background-color: rgba(52, 52, 66, 205);
+    border-radius: 2px;
+}
+#statusLabel {
+    color: #888;
+    font-size: 10px;
+}
+#healthLabel {
+    color: #888;
+    font-size: 10px;
+}
+/* Hover/pin info panel — opaque QWidget scout card. */
+#infoPanel {
+    background-color: rgba(12, 12, 18, 248);
+    border: 1px solid rgba(70, 70, 92, 200);
+    border-radius: 4px;
+}
+#infoPanel QLabel {
+    background-color: transparent;
+    font-family: 'Segoe UI', 'Cantarell', 'Helvetica Neue', sans-serif;
+}
+#infoName {
+    color: #e8e8f0;
+    font-size: 16px;
+    font-weight: bold;
+}
+#infoRealm, #infoMeta, #infoDungeonKey {
+    color: #8d8d98;
+    font-size: 11px;
+}
+#infoPanelStatus {
+    color: #8d8d98;
+    font-size: 12px;
+    padding-top: 2px;
+}
+#infoDungeonName {
+    color: #d2d2dc;
+    font-size: 11px;
+}
+#infoDungeonMetric {
+    font-size: 11px;
+}
+/* Role filter bar — toggle buttons checked-state lights up in the role
+   colour for at-a-glance "what's filtered" reading. Per-role :checked
+   selectors via objectName for distinct active colours. */
+#roleFilterBar {
+    background-color: rgba(18, 18, 26, 205);
+    border-bottom: 1px solid rgba(66, 66, 86, 130);
+}
+#roleFilterBar QPushButton {
+    color: #c9c9d4;
+    background-color: rgba(34, 34, 44, 165);
+    border: 1px solid rgba(78, 78, 98, 135);
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-weight: bold;
+    font-size: 12px;
+}
+#roleFilterBar QPushButton:hover {
+    background-color: rgba(52, 52, 66, 205);
+}
+#roleFilterBar QPushButton#roleBtn_DAMAGER:checked {
+    background-color: #b04545;
+    color: #ffffff;
+    border-color: #d06060;
+}
+#roleFilterBar QPushButton#roleBtn_HEALER:checked {
+    background-color: #2f9450;
+    color: #ffffff;
+    border-color: #50b070;
+}
+#roleFilterBar QPushButton#roleBtn_TANK:checked {
+    background-color: #3a6fb0;
+    color: #ffffff;
+    border-color: #5a8fd0;
+}
+#roleFilterBar QPushButton#roleFilterReset {
+    padding: 0 6px;
+    font-size: 11px;
+    color: #b8b8c8;
+    background-color: rgba(48, 48, 60, 190);
+    border-color: rgba(100, 100, 120, 170);
+}
+#roleFilterBar QPushButton#roleFilterReset:hover {
+    color: #ffffff;
+    background-color: rgba(78, 78, 96, 230);
+}
+#roleFilterStatus {
+    color: #888;
+    font-size: 11px;
+}
+QTableWidget {
+    background-color: transparent;
+    color: #e0e0e0;
+    gridline-color: transparent;
+    selection-background-color: transparent;
+    font-size: 11px;
+}
+QTableWidget::item {
+    padding: 1px 3px;
+}
+QHeaderView::section {
+    background-color: rgba(28, 28, 38, 240);
+    color: #b8b8c0;
+    padding: 2px;
+    border: none;
+    font-size: 10px;
+}
+/* Explicit QToolTip styling so tooltips render reliably on this overlay. */
+/* WHY: Qt.Tool + WA_TranslucentBackground + WindowStaysOnTopHint hits a Qt-on-Windows */
+/* corner where the default platform tooltip widget paints with a transparent backing */
+/* and becomes invisible (the text is set, but the user never sees it). Forcing an */
+/* explicit background + opaque colours via QSS makes Qt route the tooltip through */
+/* the styled-widget path, which paints reliably. */
+QToolTip {
+    background-color: #14141a;
+    color: #e8e8f0;
+    border: 1px solid #555;
+    padding: 6px;
+    font-size: 11px;
+    /* opacity must be 255 — translucency on tooltip in this overlay setup hides it */
+    opacity: 255;
+}
+"""

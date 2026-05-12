@@ -1,0 +1,26 @@
+{
+    "include": ["src", "scripts"],
+    "exclude": [".venv", "**/__pycache__"],
+    "venvPath": ".",
+    "venv": ".venv",
+    "pythonVersion": "3.13",
+    "typeCheckingMode": "basic",
+
+    // Defensive isinstance guards (e.g. _dict_to_dungeon_perf, CharacterRanks.empty
+    // callers) trip Pyright's reachability analysis as info-level hints. Inline
+    // `# pyright: ignore[reportUnreachable]` does NOT suppress hint-class
+    // diagnostics — only the project-level setting takes effect.
+    "reportUnreachable": "none",
+
+    // Watchdog's FileSystemEvent.src_path is typed `bytes | str` but on Windows +
+    // WoW's screenshot path it's always str. We don't want to litter
+    // `# type: ignore` across every Path(event.src_path) call site.
+    "reportArgumentType": "warning",
+
+    // pyzbar ships no type stubs; the import is real and works at runtime.
+    "reportMissingImports": "warning",
+
+    // watchdog Observer is exported via factory pattern that confuses static
+    // analysis when used in type expressions.
+    "reportInvalidTypeForm": "warning"
+}

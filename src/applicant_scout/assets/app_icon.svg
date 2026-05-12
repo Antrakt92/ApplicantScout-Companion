@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">ApplicantScout Companion app icon</title>
+  <desc id="desc">A dark rounded shield with an amber scout lens and small data-grid squares.</desc>
+  <defs>
+    <linearGradient id="bg" x1="36" y1="24" x2="220" y2="232" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0d1826"/>
+      <stop offset="0.58" stop-color="#14243a"/>
+      <stop offset="1" stop-color="#07101c"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="72" y1="50" x2="196" y2="196" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffd86a"/>
+      <stop offset="0.48" stop-color="#f2a51a"/>
+      <stop offset="1" stop-color="#c8750a"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="104" y1="82" x2="184" y2="166" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#79e4ff"/>
+      <stop offset="1" stop-color="#25a4d8"/>
+    </linearGradient>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <path
+    d="M128 25 207 55v66c0 53-31 88-79 110-48-22-79-57-79-110V55l79-30Z"
+    fill="#0a1321"
+    opacity="0.68"
+  />
+  <path
+    d="M128 36 195 61v58c0 45-26 75-67 94-41-19-67-49-67-94V61l67-25Z"
+    fill="none"
+    stroke="#24415d"
+    stroke-width="8"
+    opacity="0.9"
+  />
+
+  <g filter="url(#softShadow)">
+    <circle cx="118" cy="111" r="52" fill="none" stroke="url(#gold)" stroke-width="18"/>
+    <circle cx="118" cy="111" r="27" fill="none" stroke="#ffe89b" stroke-width="6" opacity="0.82"/>
+    <path d="M154 148 203 197" stroke="url(#gold)" stroke-width="22" stroke-linecap="round"/>
+    <path d="M154 148 203 197" stroke="#ffe89b" stroke-width="7" stroke-linecap="round" opacity="0.74"/>
+  </g>
+
+  <g fill="url(#cyan)">
+    <rect x="91" y="84" width="15" height="15" rx="3"/>
+    <rect x="113" y="84" width="15" height="15" rx="3"/>
+    <rect x="135" y="84" width="15" height="15" rx="3"/>
+    <rect x="91" y="106" width="15" height="15" rx="3"/>
+    <rect x="135" y="106" width="15" height="15" rx="3"/>
+    <rect x="91" y="128" width="15" height="15" rx="3"/>
+    <rect x="113" y="128" width="15" height="15" rx="3"/>
+  </g>
+
+  <circle cx="118" cy="111" r="66" fill="none" stroke="#101b2a" stroke-width="6" opacity="0.9"/>
+  <path d="M65 63 128 40 191 63" fill="none" stroke="#4e6f8c" stroke-width="3" opacity="0.45"/>
+</svg>

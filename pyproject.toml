@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "applicant-scout-companion"
+version = "0.1.0"
+description = "Personal-tool overlay showing WCL N/H/M/M+ percentiles for M+ applicants in WoW"
+authors = [{ name = "Antrakt" }]
+requires-python = ">=3.13"
+dependencies = [
+    "PyQt6>=6.7",
+    "httpx>=0.27",
+    "watchdog>=4.0",
+    "python-dotenv>=1.0",
+    "Pillow>=10.0",
+    "pyzbar>=0.1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "PyInstaller>=6.0",
+    "pyright>=1.1.409",
+    "pytest>=8",
+    "pytest-qt>=4.4",
+    "ruff>=0.15.12",
+]
+
+[project.scripts]
+applicant-scout = "applicant_scout.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+applicant_scout = ["assets/*", "assets/role_icons/*.png"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

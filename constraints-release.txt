@@ -1,0 +1,35 @@
+# Release build constraints for ApplicantScout Companion 0.1.0.
+# Refresh deliberately before publishing a new release artifact.
+altgraph==0.17.5
+anyio==4.13.0
+build==1.5.0
+certifi==2026.4.22
+colorama==0.4.6
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.13
+iniconfig==2.3.0
+nodeenv==1.10.0
+numpy==2.4.4
+packaging==26.2
+pefile==2024.8.26
+Pillow==12.2.0
+pluggy==1.6.0
+Pygments==2.20.0
+PyInstaller==6.20.0
+pyinstaller-hooks-contrib==2026.5
+pyproject_hooks==1.2.0
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.0
+PyQt6-sip==13.11.1
+pyright==1.1.409
+pytest==9.0.3
+pytest-qt==4.5.0
+ruff==0.15.12
+pywin32-ctypes==0.2.3
+pyzbar==0.1.9
+python-dotenv==1.2.2
+setuptools==82.0.1
+typing_extensions==4.15.0
+watchdog==6.0.0

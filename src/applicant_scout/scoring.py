@@ -1,0 +1,640 @@
+"""Context-aware applicant fit scoring for the current LFG listing."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+import math
+
+from .constants import MPLUS_ENCOUNTERS, percentile_colour
+from .state import Applicant, Listing
+
+
+CONTEXT_MPLUS = "mplus"
+CONTEXT_RAID = "raid"
+CONTEXT_UNKNOWN = "unknown"
+
+RAID_TARGET_BY_DIFFICULTY_ID = {
+    14: "N",
+    15: "H",
+    16: "M",
+}
+RAID_CATEGORY_ID = 3
+MPLUS_DUNGEON_COUNT = len(MPLUS_ENCOUNTERS)
+
+FIT_BUCKETS: list[tuple[float, str, str]] = [
+    (85.0, "TOP", "#e5cc80"),
+    (70.0, "FIT", "#a335ee"),
+    (55.0, "OK", "#0070dd"),
+    (0.0, "RISK", "#9d9d9d"),
+]
+
+
+@dataclass(frozen=True)
+class CandidateFit:
+    context: str = CONTEXT_UNKNOWN
+    score: float = 0.0
+    label: str = ""
+    source: str = ""
+    display: str = ""
+    colour: str | None = None
+    target_key: int = 0
+    primary_key: int = 0
+    target_raid: str = ""
+    confidence: float = 0.0
+    coverage: float = 0.0
+    same_dungeon_score: float = 0.0
+
+
+@dataclass(frozen=True)
+class PackageFit:
+    context: str = CONTEXT_UNKNOWN
+    score: float = 0.0
+    label: str = ""
+    display: str = ""
+    colour: str | None = None
+    size: int = 0
+    confidence: float = 0.0
+    high_score: float = 0.0
+    best_score: float = 0.0
+    average_score: float = 0.0
+    low_score: float = 0.0
+    worst_score: float = 0.0
+    spread: float = 0.0
+    member_scores: tuple[float, ...] = ()
+    status_penalty: float = 0.0
+
+
+@dataclass(frozen=True)
+class _PackageParams:
+    center: float
+    scale: float
+    carry_threshold: float
+    carry_coeff: float
+    carry_cap: float
+    spread_threshold: float
+    spread_coeff: float
+    spread_cap: float
+    low_carry_floor: float
+
+
+@dataclass(frozen=True)
+class _BracketFit:
+    dungeon_name: str
+    key_level: int
+    fit: float
+    run_count: int
+
+
+@dataclass(frozen=True)
+class MPlusDungeonFit:
+    dungeon_name: str
+    key_level: int
+    score: float
+    text: str
+    colour: str
+
+
+def detect_listing_context(listing: Listing | None) -> str:
+    if listing is None:
+        return CONTEXT_UNKNOWN
+    if listing.key_level > 0:
+        return CONTEXT_MPLUS
+    if listing.difficulty_id in RAID_TARGET_BY_DIFFICULTY_ID:
+        return CONTEXT_RAID
+    if listing.category_id == RAID_CATEGORY_ID:
+        return CONTEXT_RAID
+    return CONTEXT_UNKNOWN
+
+
+def effective_rio_score(applicant: Applicant) -> int:
+    """Score used for ranking/support: current character or better RaiderIO main."""
+    return max(applicant.score, applicant.main_score)
+
+
+def candidate_fit(applicant: Applicant, listing: Listing | None) -> CandidateFit:
+    context = detect_listing_context(listing)
+    if context == CONTEXT_MPLUS and listing is not None:
+        return _mplus_candidate_fit(applicant, listing)
+    if context == CONTEXT_RAID and listing is not None:
+        return _raid_candidate_fit(applicant, listing)
+    return CandidateFit(context=CONTEXT_UNKNOWN)
+
+
+def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> PackageFit:
+    members = list(applicants)
+    if not members:
+        return PackageFit()
+    context = detect_listing_context(listing)
+    size = len(members)
+    if context == CONTEXT_UNKNOWN:
+        member_scores = tuple(float(effective_rio_score(a)) for a in members)
+        score = float(max(member_scores, default=0.0))
+        low = float(min(member_scores, default=0.0))
+        average = sum(member_scores) / len(member_scores)
+        return PackageFit(
+            context=context,
+            score=score,
+            label="",
+            display="",
+            colour=None,
+            size=size,
+            confidence=0.0,
+            high_score=score,
+            best_score=score,
+            average_score=average,
+            low_score=low,
+            worst_score=low,
+            spread=score - low,
+            member_scores=member_scores,
+            status_penalty=0.0,
+        )
+
+    fits = [candidate_fit(member, listing) for member in members]
+    scores = tuple(fit.score for fit in fits)
+    high = max(scores)
+    low = min(scores)
+    average = sum(scores) / len(scores)
+    spread = high - low
+    confidence = _package_confidence(members, fits)
+    status_penalty = _package_status_penalty(members)
+    if size == 1:
+        score = high
+        display = ""
+    else:
+        params = _package_params(context)
+        # Group applications are accepted as one package. Geometric mean in
+        # probability space behaves like a soft weak-link: it rewards several
+        # solid players without letting one superstar hide a risky friend.
+        probabilities = [
+            _sigmoid((score - params.center) / params.scale) for score in scores
+        ]
+        group_probability = _geometric_mean_probability(probabilities)
+        base = params.center + params.scale * _logit(group_probability)
+        carry_credit = min(
+            params.carry_cap,
+            sum(max(0.0, score - params.carry_threshold) for score in scores)
+            * params.carry_coeff,
+        )
+        if low < params.low_carry_floor:
+            carry_credit *= 0.35
+        spread_penalty = min(
+            params.spread_cap,
+            max(0.0, spread - params.spread_threshold) * params.spread_coeff,
+        )
+        score = base + carry_credit - spread_penalty - status_penalty
+        display = ""
+    score = _clamp(score, 0.0, 105.0)
+    label = fit_label(score)
+    if size > 1:
+        display = f"G{size} {label} {int(round(score))}"
+    return PackageFit(
+        context=context,
+        score=score,
+        label=label,
+        display=display,
+        colour=fit_colour(score),
+        size=size,
+        confidence=confidence,
+        high_score=high,
+        best_score=high,
+        average_score=average,
+        low_score=low,
+        worst_score=low,
+        spread=spread,
+        member_scores=scores,
+        status_penalty=status_penalty,
+    )
+
+
+def mplus_dungeon_fit_rows(
+    applicant: Applicant, listing: Listing | None
+) -> list[MPlusDungeonFit]:
+    if detect_listing_context(listing) != CONTEXT_MPLUS or listing is None:
+        return []
+    _metric_label, breakdown, _best, _median = _role_mplus_view(applicant)
+    rows: list[MPlusDungeonFit] = []
+    for entry in breakdown:
+        if not isinstance(entry, dict):
+            continue
+        dungeon_name = str(entry.get("name") or "?")
+        best_row: MPlusDungeonFit | None = None
+        window_row: MPlusDungeonFit | None = None
+        for bracket in _iter_mplus_brackets(entry):
+            fit = _mplus_bracket_fit(bracket, listing.key_level)
+            if fit is None:
+                continue
+            key_level = _positive_int(bracket.get("key_level"))
+            text = _bracket_metric_text(bracket)
+            best_percent = _safe_percent(bracket.get("parse_percent"))
+            row = MPlusDungeonFit(
+                dungeon_name=dungeon_name,
+                key_level=key_level,
+                score=fit,
+                text=text,
+                # The row is ordered by context fit, but the badge text is the
+                # raw WCL percentile. Keep the colour tied to the printed value.
+                colour=percentile_colour(best_percent),
+            )
+            if best_row is None or row.score > best_row.score:
+                best_row = row
+            if abs(key_level - listing.key_level) <= 2:
+                if window_row is None or row.score > window_row.score:
+                    window_row = row
+        if window_row is not None:
+            rows.append(window_row)
+        elif best_row is not None:
+            rows.append(best_row)
+    rows.sort(key=lambda row: (-row.score, -row.key_level, row.dungeon_name))
+    return rows
+
+
+def fit_label(score: float) -> str:
+    for threshold, label, _colour in FIT_BUCKETS:
+        if score >= threshold:
+            return label
+    return "RISK"
+
+
+def fit_colour(score: float) -> str:
+    for threshold, _label, colour in FIT_BUCKETS:
+        if score >= threshold:
+            return colour
+    return "#9d9d9d"
+
+
+def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
+    target_key = listing.key_level
+    metric_label, breakdown, _best, _median = _role_mplus_view(applicant)
+    bracket_fits: list[_BracketFit] = []
+    best_by_dungeon: dict[str, _BracketFit] = {}
+    same_dungeon_score = 0.0
+    total_runs = 0
+    listing_dungeon = _normalise_name(listing.dungeon_name)
+
+    for entry in breakdown:
+        if not isinstance(entry, dict):
+            continue
+        dungeon_name = str(entry.get("name") or "?")
+        dungeon_best: _BracketFit | None = None
+        for bracket in _iter_mplus_brackets(entry):
+            fit = _mplus_bracket_fit(bracket, target_key)
+            if fit is None:
+                continue
+            row = _BracketFit(
+                dungeon_name=dungeon_name,
+                key_level=_positive_int(bracket.get("key_level")),
+                fit=fit,
+                run_count=_nonnegative_int(bracket.get("run_count")),
+            )
+            bracket_fits.append(row)
+            total_runs += row.run_count
+            if dungeon_best is None or row.fit > dungeon_best.fit:
+                dungeon_best = row
+        if dungeon_best is not None:
+            best_by_dungeon[_normalise_name(dungeon_name)] = dungeon_best
+            if listing_dungeon and _normalise_name(dungeon_name) == listing_dungeon:
+                same_dungeon_score = dungeon_best.fit
+
+    rio_score = effective_rio_score(applicant)
+    rio_fit = _mplus_rio_fit(rio_score, target_key)
+    if not bracket_fits:
+        score = _clamp(rio_fit * 0.75, 0.0, 79.0)
+        label = fit_label(score)
+        return CandidateFit(
+            context=CONTEXT_MPLUS,
+            score=score,
+            label=label,
+            source="rio_fallback",
+            display=f"RIO {int(round(score))}",
+            colour=fit_colour(score),
+            target_key=target_key,
+            confidence=0.25 if rio_score > 0 else 0.0,
+        )
+
+    primary_row = max(bracket_fits, key=lambda row: row.fit)
+    top_dungeon_rows = sorted(best_by_dungeon.values(), key=lambda row: row.fit, reverse=True)
+    top3 = _weighted_top(top_dungeon_rows[:3])
+    coverage = _clamp(len(best_by_dungeon) / max(MPLUS_DUNGEON_COUNT, 1), 0.0, 1.0)
+    score = (
+        0.60 * primary_row.fit
+        + 0.17 * top3
+        + 0.08 * coverage * 100.0
+        + 0.08 * same_dungeon_score
+        + 0.07 * rio_fit
+    )
+    score = _clamp(score, 0.0, 105.0)
+    label = fit_label(score)
+    confidence = _clamp(0.35 + 0.45 * coverage + 0.20 * min(total_runs / 16.0, 1.0), 0.0, 1.0)
+    return CandidateFit(
+        context=CONTEXT_MPLUS,
+        score=score,
+        label=label,
+        source="wcl_mplus",
+        display=f"{label} {int(round(score))} +{primary_row.key_level}",
+        colour=fit_colour(score),
+        target_key=target_key,
+        primary_key=primary_row.key_level,
+        confidence=confidence,
+        coverage=coverage,
+        same_dungeon_score=same_dungeon_score,
+    )
+
+
+def _raid_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
+    target = RAID_TARGET_BY_DIFFICULTY_ID.get(listing.difficulty_id, "")
+    raid = {
+        "N": _raid_perf(applicant.raid_normal, applicant.raid_normal_median),
+        "H": _raid_perf(applicant.raid_heroic, applicant.raid_heroic_median),
+        "M": _raid_perf(applicant.raid_mythic, applicant.raid_mythic_median),
+    }
+    order = ["N", "H", "M"]
+    target_idx = order.index(target) if target in order else -1
+
+    if target_idx >= 0:
+        exact = raid[target]
+        higher = _present_scores(raid[key] for key in order[target_idx + 1 :])
+        lower = _present_scores(raid[key] for key in order[:target_idx])
+    else:
+        exact = None
+        higher = _present_scores(raid.values())
+        lower = []
+
+    target_score = exact
+    source = "raid_exact" if exact is not None else "raid_missing_exact"
+    if target_score is None and higher:
+        target_score = max(higher) * 0.88
+        source = "raid_higher_fallback"
+    if target_score is None and lower:
+        target_score = max(lower) * 0.55
+        source = "raid_lower_fallback"
+    if target_score is None:
+        target_score = 0.0
+        source = "support_fallback"
+
+    higher_bonus = max(higher) if higher else 0.0
+    mplus_support = _mplus_support_percent(applicant)
+    rio_support = _clamp(effective_rio_score(applicant) / 35.0, 0.0, 100.0)
+    score = (
+        0.84 * target_score
+        + 0.08 * higher_bonus
+        + 0.04 * mplus_support
+        + 0.04 * rio_support
+    )
+    score = _clamp(score, 0.0, 105.0)
+    label = fit_label(score)
+    target_label = target or "?"
+    return CandidateFit(
+        context=CONTEXT_RAID,
+        score=score,
+        label=label,
+        source=source,
+        display=f"{target_label} {label} {int(round(score))}",
+        colour=fit_colour(score),
+        target_raid=target_label,
+        confidence=1.0 if source == "raid_exact" else (0.65 if target_score > 0 else 0.2),
+    )
+
+
+def _role_mplus_view(applicant: Applicant) -> tuple[str, list[dict], float | None, float | None]:
+    if applicant.role == "HEALER":
+        return (
+            "HPS",
+            applicant.mplus_hps_breakdown,
+            _safe_percent(applicant.mplus_hps),
+            _safe_percent(applicant.mplus_hps_median),
+        )
+    return (
+        "DPS",
+        applicant.mplus_dps_breakdown,
+        _safe_percent(applicant.mplus_dps),
+        _safe_percent(applicant.mplus_dps_median),
+    )
+
+
+def _present_scores(values: Iterable[float | None]) -> list[float]:
+    return [value for value in values if value is not None]
+
+
+def _iter_mplus_brackets(entry: dict) -> Iterable[dict]:
+    raw_brackets = entry.get("brackets")
+    if isinstance(raw_brackets, list) and raw_brackets:
+        for raw in raw_brackets:
+            if isinstance(raw, dict):
+                yield raw
+        return
+    yield entry
+
+
+def _mplus_bracket_fit(bracket: dict, target_key: int) -> float | None:
+    key_level = _positive_int(bracket.get("key_level"))
+    best = _safe_percent(bracket.get("parse_percent"))
+    if key_level <= 0 or target_key <= 0 or best is None:
+        return None
+    median = _safe_percent(bracket.get("median_percent"))
+    run_count = _nonnegative_int(bracket.get("run_count"))
+    perf = best if median is None else (best * 0.60 + median * 0.40)
+    delta = key_level - target_key
+    return _clamp(
+        _key_capacity(delta) + (perf - 50.0) * _perf_weight(delta) * _run_conf(run_count),
+        0.0,
+        110.0,
+    )
+
+
+def _key_capacity(delta: int) -> float:
+    if delta <= -5:
+        return 0.0
+    if delta == -4:
+        return 4.0
+    if delta == -3:
+        return 10.0
+    if delta == -2:
+        return 22.0
+    if delta == -1:
+        return 52.0
+    if delta == 0:
+        return 58.0
+    if delta == 1:
+        return 74.0
+    if delta == 2:
+        return 86.0
+    if delta == 3:
+        return 94.0
+    return 100.0
+
+
+def _perf_weight(delta: int) -> float:
+    if delta <= -3:
+        return 0.02
+    if delta == -2:
+        return 0.08
+    if delta == -1:
+        return 0.14
+    if delta == 0:
+        return 0.30
+    if delta == 1:
+        return 0.26
+    return 0.18
+
+
+def _run_conf(run_count: int) -> float:
+    if run_count >= 3:
+        return 1.0
+    if run_count == 2:
+        return 0.90
+    return 0.75
+
+
+def _package_params(context: str) -> _PackageParams:
+    if context == CONTEXT_RAID:
+        return _PackageParams(
+            center=52.0,
+            scale=15.0,
+            carry_threshold=82.0,
+            carry_coeff=0.035,
+            carry_cap=4.0,
+            spread_threshold=38.0,
+            spread_coeff=0.06,
+            spread_cap=6.0,
+            low_carry_floor=42.0,
+        )
+    return _PackageParams(
+        center=58.0,
+        scale=11.0,
+        carry_threshold=86.0,
+        carry_coeff=0.06,
+        carry_cap=7.0,
+        spread_threshold=30.0,
+        spread_coeff=0.12,
+        spread_cap=10.0,
+        low_carry_floor=48.0,
+    )
+
+
+def _package_status_penalty(members: Iterable[Applicant]) -> float:
+    penalties = {
+        "error": 4.0,
+        "not_found": 6.0,
+    }
+    return min(12.0, sum(penalties.get(member.fetch_status, 0.0) for member in members))
+
+
+def _package_confidence(members: Iterable[Applicant], fits: Iterable[CandidateFit]) -> float:
+    factors = {
+        "ready": 1.0,
+        "loading": 0.65,
+        "pending": 0.65,
+        "error": 0.45,
+        "not_found": 0.35,
+    }
+    values = [
+        fit.confidence * factors.get(member.fetch_status, 0.5)
+        for member, fit in zip(members, fits, strict=True)
+    ]
+    return _clamp(min(values, default=0.0), 0.0, 1.0)
+
+
+def _sigmoid(value: float) -> float:
+    if value >= 0.0:
+        return 1.0 / (1.0 + math.exp(-value))
+    exp_value = math.exp(value)
+    return exp_value / (1.0 + exp_value)
+
+
+def _logit(probability: float) -> float:
+    clean = _clamp(probability, 1e-6, 1.0 - 1e-6)
+    return math.log(clean / (1.0 - clean))
+
+
+def _geometric_mean_probability(probabilities: Iterable[float]) -> float:
+    values = [_clamp(probability, 1e-6, 1.0 - 1e-6) for probability in probabilities]
+    if not values:
+        return 1e-6
+    return math.exp(sum(math.log(value) for value in values) / len(values))
+
+
+def _weighted_top(rows: list[_BracketFit]) -> float:
+    if not rows:
+        return 0.0
+    weights = [0.50, 0.30, 0.20]
+    used_weights = weights[: len(rows)]
+    total_weight = sum(used_weights)
+    return sum(row.fit * weight for row, weight in zip(rows, used_weights, strict=True)) / total_weight
+
+
+def _mplus_rio_fit(score: int, target_key: int) -> float:
+    return _clamp(55.0 + (score - (1700.0 + target_key * 100.0)) / 18.0, 0.0, 105.0)
+
+
+def _raid_perf(best: float | None, median: float | None) -> float | None:
+    clean_best = _safe_percent(best)
+    clean_median = _safe_percent(median)
+    if clean_best is None and clean_median is None:
+        return None
+    if clean_best is None:
+        return clean_median * 0.85 if clean_median is not None else None
+    if clean_median is None:
+        return clean_best * 0.90
+    return clean_best * 0.55 + clean_median * 0.45
+
+
+def _mplus_support_percent(applicant: Applicant) -> float:
+    _metric_label, _breakdown, best, median = _role_mplus_view(applicant)
+    if best is None and median is None:
+        return 0.0
+    if best is None:
+        return median or 0.0
+    if median is None:
+        return best * 0.90
+    return best * 0.60 + median * 0.40
+
+
+def _bracket_metric_text(bracket: dict) -> str:
+    best = _safe_percent(bracket.get("parse_percent"))
+    if best is None:
+        return "—"
+    median = _safe_percent(bracket.get("median_percent"))
+    run_count = _nonnegative_int(bracket.get("run_count"))
+    if run_count >= 2 and median is not None:
+        return f"{int(round(best))}/{int(round(median))}"
+    return f"{int(round(best))}"
+
+
+def _safe_percent(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if not isinstance(value, int | float | str):
+        return None
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(pct) or pct < 0.0 or pct > 100.0:
+        return None
+    return pct
+
+
+def _nonnegative_int(value: object) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, int):
+        return value if value >= 0 else 0
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return 0
+
+
+def _positive_int(value: object) -> int:
+    parsed = _nonnegative_int(value)
+    return parsed if parsed > 0 else 0
+
+
+def _normalise_name(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return "".join(ch.lower() for ch in value if ch.isalnum())
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
