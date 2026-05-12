@@ -35,7 +35,7 @@ Initial Windows companion build for ApplicantScout addon `0.1.0`.
 
 - Requires the ApplicantScout WoW addon `0.1.0`.
 - Public companion releases are published from
-  `Antrakt92/ApplicantScout-WoWCompanion`.
+  `Antrakt92/ApplicantScout-Addon-Companion`.
 - Windows installer builds install under
   `%LOCALAPPDATA%\Programs\ApplicantScout Companion`; unsigned builds may still
   trigger Windows trust prompts until a code-signing path is chosen.

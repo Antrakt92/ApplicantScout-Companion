@@ -5,12 +5,12 @@
 > The WoW addon captures applicant data; this companion decodes the screenshots
 > and shows the Warcraft Logs / RaiderIO parse overlay. Install the paired addon
 > release too:
-> [ApplicantScout 0.1.0](https://github.com/Antrakt92/ApplicantScout/releases/tag/v0.1.0).
+> [ApplicantScout 0.1.0](https://github.com/Antrakt92/ApplicantScout-Addon-Addon/releases/tag/v0.1.0).
 
 Personal-tool overlay showing Warcraft Logs raid and Mythic+ percentiles for
 players who apply to your WoW Mythic+ listing.
 
-Pairs with the [ApplicantScout](https://github.com/Antrakt92/ApplicantScout)
+Pairs with the [ApplicantScout](https://github.com/Antrakt92/ApplicantScout-Addon-Addon)
 WoW addon. The addon renders a QR code in-game and triggers screenshots while
 you are hosting a listing. This companion watches the WoW `Screenshots` folder,
 decodes ApplicantScout `APS1` QR payloads, queries Warcraft Logs, and renders
@@ -19,13 +19,13 @@ the overlay.
 ## Quick Start
 
 1. Install the WoW addon side: download `ApplicantScout-0.1.0.zip` from
-   [the paired addon release](https://github.com/Antrakt92/ApplicantScout/releases/tag/v0.1.0),
+   [the paired addon release](https://github.com/Antrakt92/ApplicantScout-Addon-Addon/releases/tag/v0.1.0),
    then extract it so the TOC is at
    `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`. Do not use
    GitHub's automatic source-code ZIP for normal installs; it extracts to the
    wrong folder name for WoW. Reload WoW after installing or updating the addon.
 2. Install ApplicantScout Companion from
-   [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-WoWCompanion/releases/tag/v0.1.0).
+   [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-Addon-Addon-Companion/releases/tag/v0.1.0).
 3. Get Warcraft Logs API credentials:
    1. Open https://www.warcraftlogs.com/api/clients/.
    2. Click **Create Client**.
@@ -116,7 +116,7 @@ ApplicantScout Companion `0.1.0` is paired with the ApplicantScout WoW addon
 ## Updates
 
 Use Settings -> Update. The companion checks stable GitHub Releases for
-`Antrakt92/ApplicantScout-WoWCompanion`, prefers the Windows installer asset,
+`Antrakt92/ApplicantScout-Addon-Companion`, prefers the Windows installer asset,
 downloads the installer, verifies its `.sha256` checksum, and launches the
 installer from inside the app. Portable ZIP artifacts are published for
 manual/dev use but are not launched by the in-app updater.
@@ -128,8 +128,8 @@ Windows SmartScreen or antivirus warnings until a code-signing path is chosen.
 
 ## Support
 
-Use GitHub Issues in `Antrakt92/ApplicantScout-WoWCompanion` for companion
-setup, installer, WCL, or overlay issues and `Antrakt92/ApplicantScout` for
+Use GitHub Issues in `Antrakt92/ApplicantScout-Addon-Companion` for companion
+setup, installer, WCL, or overlay issues and `Antrakt92/ApplicantScout-Addon` for
 in-game addon issues. Keep support links out of the in-game addon UI.
 
 ## Local Data And Security
@@ -194,7 +194,7 @@ build emits `dist\ApplicantScoutCompanionSetup-<version>.exe`, its matching
 the portable ZIP. Use `.\scripts\build-windows.ps1 -SkipInstaller` for a
 portable ZIP-only smoke build.
 
-The WoW addon is packaged from the `Antrakt92/ApplicantScout` repo with
+The WoW addon is packaged from the `Antrakt92/ApplicantScout-Addon` repo with
 `.\scripts\package-addon.ps1`; that artifact is named
 `ApplicantScout-<version>.zip` and is separate from the companion portable ZIP.
 

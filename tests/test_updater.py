@@ -64,7 +64,7 @@ class _DownloadClient:
 
 
 def test_default_release_repo_points_to_public_companion_repo():
-    assert DEFAULT_RELEASE_REPO == "Antrakt92/ApplicantScout-WoWCompanion"
+    assert DEFAULT_RELEASE_REPO == "Antrakt92/ApplicantScout-Addon-Companion"
 
 
 def _release(
@@ -609,7 +609,7 @@ def test_download_and_launch_update_returns_uninstallable_release_message(monkey
         ),
         current_version="0.1.0",
         latest_version="v0.2.0",
-        release_url="https://github.com/Antrakt92/ApplicantScout-WoWCompanion/releases/tag/v0.2.0",
+        release_url="https://github.com/Antrakt92/ApplicantScout-Addon-Addon-Companion/releases/tag/v0.2.0",
     )
 
     monkeypatch.setattr("applicant_scout.updater.check_for_update", lambda _version: result)

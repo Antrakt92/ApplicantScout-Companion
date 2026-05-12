@@ -15,7 +15,7 @@ import httpx
 from .config import user_cache_dir
 
 
-DEFAULT_RELEASE_REPO = "Antrakt92/ApplicantScout-WoWCompanion"
+DEFAULT_RELEASE_REPO = "Antrakt92/ApplicantScout-Addon-Companion"
 GITHUB_API_BASE = "https://api.github.com"
 _SEMVER_RE = re.compile(r"^\s*[vV]?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?\s*$")
 
