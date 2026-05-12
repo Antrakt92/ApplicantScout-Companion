@@ -1,5 +1,12 @@
 # Applicant Scout Companion
 
+> [!IMPORTANT]
+> Applicant Scout Companion is the **required second half** of ApplicantScout.
+> The WoW addon captures applicant data; this companion decodes the screenshots
+> and shows the Warcraft Logs / RaiderIO parse overlay. Install the paired addon
+> release too:
+> [ApplicantScout 0.1.0](https://github.com/Antrakt92/ApplicantScout/releases/tag/v0.1.0).
+
 Personal-tool overlay showing Warcraft Logs raid and Mythic+ percentiles for
 players who apply to your WoW Mythic+ listing.
 
@@ -12,14 +19,13 @@ the overlay.
 ## Quick Start
 
 1. Install the WoW addon side: download `ApplicantScout-0.1.0.zip` from
-   `Antrakt92/ApplicantScout` GitHub Releases when a release is published, then
-   extract it so the TOC is at
+   [the paired addon release](https://github.com/Antrakt92/ApplicantScout/releases/tag/v0.1.0),
+   then extract it so the TOC is at
    `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`. Do not use
    GitHub's automatic source-code ZIP for normal installs; it extracts to the
    wrong folder name for WoW. Reload WoW after installing or updating the addon.
 2. Install ApplicantScout Companion from
-   `Antrakt92/ApplicantScout-WoWCompanion` GitHub Releases when a release is
-   published. Until then, build from source with the Development commands below.
+   [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-WoWCompanion/releases/tag/v0.1.0).
 3. Get Warcraft Logs API credentials:
    1. Open https://www.warcraftlogs.com/api/clients/.
    2. Click **Create Client**.
