@@ -64,7 +64,7 @@ class _DownloadClient:
 
 
 def test_default_release_repo_points_to_public_companion_repo():
-    assert DEFAULT_RELEASE_REPO == "Antrakt92/ApplicantScout-Addon-Companion"
+    assert DEFAULT_RELEASE_REPO == "Antrakt92/ApplicantScout-Companion"
 
 
 def _release(

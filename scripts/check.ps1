@@ -23,7 +23,14 @@ $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $RepoRoot
 
 if (-not $AddonRoot) {
-    $AddonRoot = Join-Path $RepoRoot "..\..\ApplicantScout"
+    $AddonRootCandidates = @(
+        (Join-Path $RepoRoot "..\..\ApplicantScout-Addon"),
+        (Join-Path $RepoRoot "..\ApplicantScout-Addon")
+    )
+    $AddonRoot = $AddonRootCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $AddonRoot) {
+        throw "Could not find ApplicantScout-Addon checkout. Pass -AddonRoot explicitly."
+    }
 }
 $AddonRoot = (Resolve-Path $AddonRoot).Path
 

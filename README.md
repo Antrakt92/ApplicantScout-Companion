@@ -116,7 +116,7 @@ ApplicantScout Companion `0.1.0` is paired with the ApplicantScout WoW addon
 ## Updates
 
 Use Settings -> Update. The companion checks stable GitHub Releases for
-`Antrakt92/ApplicantScout-Addon-Companion`, prefers the Windows installer asset,
+`Antrakt92/ApplicantScout-Companion`, prefers the Windows installer asset,
 downloads the installer, verifies its `.sha256` checksum, and launches the
 installer from inside the app. Portable ZIP artifacts are published for
 manual/dev use but are not launched by the in-app updater.
@@ -128,7 +128,7 @@ Windows SmartScreen or antivirus warnings until a code-signing path is chosen.
 
 ## Support
 
-Use GitHub Issues in `Antrakt92/ApplicantScout-Addon-Companion` for companion
+Use GitHub Issues in `Antrakt92/ApplicantScout-Companion` for companion
 setup, installer, WCL, or overlay issues and `Antrakt92/ApplicantScout-Addon` for
 in-game addon issues. Keep support links out of the in-game addon UI.
 
