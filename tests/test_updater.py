@@ -609,7 +609,7 @@ def test_download_and_launch_update_returns_uninstallable_release_message(monkey
         ),
         current_version="0.1.0",
         latest_version="v0.2.0",
-        release_url="https://github.com/Antrakt92/ApplicantScout-Addon-Addon-Companion/releases/tag/v0.2.0",
+        release_url="https://github.com/Antrakt92/ApplicantScout-Companion/releases/tag/v0.2.0",
     )
 
     monkeypatch.setattr("applicant_scout.updater.check_for_update", lambda _version: result)
