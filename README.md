@@ -25,7 +25,7 @@ the overlay.
    GitHub's automatic source-code ZIP for normal installs; it extracts to the
    wrong folder name for WoW. Reload WoW after installing or updating the addon.
 2. Install ApplicantScout Companion from
-   [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-Companion/releases/tag/v0.1.0).
+   [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest).
 3. Get Warcraft Logs API credentials:
    1. Open https://www.warcraftlogs.com/api/clients/.
    2. Click **Create Client**.
