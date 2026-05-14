@@ -375,10 +375,14 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert test_button.text() == "Test WCL"
     assert not update_button.icon().isNull()
     assert update_button.isHidden()
-    assert support_button.text() == "♡ Support ↗"
+    assert support_button.text() == "♡"
     assert "ko-fi" in support_button.toolTip().lower()
+    assert support_button.width() == 26
+    assert support_button.height() == 24
+    assert "background: transparent" in support_button.styleSheet()
     assert "#ffe45e" in support_button.styleSheet()
     assert more_button.text() == "More"
+    assert footer.layout().itemAt(0).widget() is support_button
     assert test_button.parent() is footer
     assert update_button.parent() is footer
     assert support_button.parent() is footer

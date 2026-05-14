@@ -271,6 +271,32 @@ class SettingsDialog(QDialog):
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(0, 0, 0, 0)
         footer_layout.setSpacing(8)
+        self.support_button = QToolButton(footer)
+        self.support_button.setObjectName("supportApplicantScout")
+        self.support_button.setText("♡")
+        self.support_button.setToolTip("Support ApplicantScout on Ko-fi.")
+        self.support_button.setFixedSize(26, 24)
+        self.support_button.setStyleSheet(
+            "QToolButton {"
+            "background: transparent;"
+            "color: #d6d9e6;"
+            "border: 1px solid transparent;"
+            "border-radius: 4px;"
+            "font-size: 17px;"
+            "font-weight: 600;"
+            "padding-bottom: 1px;"
+            "}"
+            "QToolButton:hover {"
+            "background: #151b33;"
+            "color: #ffe45e;"
+            "border-color: #2e3a63;"
+            "}"
+            "QToolButton:pressed {"
+            "background: #10162a;"
+            "}"
+        )
+        self.support_button.clicked.connect(self._open_support)
+        footer_layout.addWidget(self.support_button)
         footer_layout.addWidget(self.status_label, stretch=1)
         self.test_button = QPushButton("Test WCL", footer)
         self.test_button.setObjectName("testWcl")
@@ -302,30 +328,6 @@ class SettingsDialog(QDialog):
         self.update_button.hide()
         self.update_button.clicked.connect(self._check_for_updates)
         footer_layout.addWidget(self.update_button)
-        self.support_button = QToolButton(footer)
-        self.support_button.setObjectName("supportApplicantScout")
-        self.support_button.setText("♡ Support ↗")
-        self.support_button.setToolTip("Support ApplicantScout on Ko-fi.")
-        self.support_button.setStyleSheet(
-            "QToolButton {"
-            "background: #151b33;"
-            "color: #f7f0a8;"
-            "border: 1px solid #2e3a63;"
-            "border-radius: 4px;"
-            "font-weight: 600;"
-            "padding: 3px 8px;"
-            "}"
-            "QToolButton:hover {"
-            "background: #1d2748;"
-            "color: #ffe45e;"
-            "border-color: #d7b94d;"
-            "}"
-            "QToolButton:pressed {"
-            "background: #10162a;"
-            "}"
-        )
-        self.support_button.clicked.connect(self._open_support)
-        footer_layout.addWidget(self.support_button)
         footer_layout.addWidget(self._build_more_actions_button(footer))
         root.addWidget(footer)
 
