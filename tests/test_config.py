@@ -1146,6 +1146,45 @@ def test_settings_saved_status_preserves_screenshots_path_warning(tmp_path: Path
     assert "Screenshots folder warning" in text
 
 
+def test_settings_wcl_test_success_status_does_not_look_like_plain_autosave(
+    tmp_path: Path,
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
+
+    text, is_error = main_mod._settings_wcl_test_success_status(values, [])
+
+    assert not is_error
+    assert text == "WCL credentials are valid."
+
+
+def test_settings_wcl_test_success_status_keeps_override_warning(tmp_path: Path):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
+
+    text, is_error = main_mod._settings_wcl_test_success_status(
+        values,
+        ["APSCOUT_WCL_CLIENT_ID"],
+    )
+
+    assert is_error
+    assert text.startswith("WCL credentials are valid, but ")
+    assert "environment overrides" in text
+    assert "APSCOUT_WCL_CLIENT_ID" in text
+
+
+def test_settings_wcl_test_success_status_keeps_screenshots_warning(tmp_path: Path):
+    values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
+
+    text, is_error = main_mod._settings_wcl_test_success_status(values, [])
+
+    assert is_error
+    assert text.startswith("WCL credentials are valid.")
+    assert "Screenshots folder warning" in text
+
+
 def test_update_result_has_installable_asset_accepts_case_insensitive_setup_name():
     class Result:
         asset_name = "applicantscoutcompanionsetup-0.2.0.EXE"

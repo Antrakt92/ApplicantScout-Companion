@@ -765,6 +765,23 @@ def _settings_saved_status(values, override_keys: list[str]) -> tuple[str, bool]
     return "Saved.", False
 
 
+def _settings_wcl_test_success_status(
+    values,
+    override_keys: list[str],
+) -> tuple[str, bool]:
+    saved_text, saved_error = _settings_saved_status(values, override_keys)
+    if not saved_error:
+        return "WCL credentials are valid.", False
+    session_override_prefix = "Saved for this app session, but "
+    if saved_text.startswith(session_override_prefix):
+        return (
+            "WCL credentials are valid, but "
+            + saved_text.removeprefix(session_override_prefix),
+            True,
+        )
+    return f"WCL credentials are valid. {saved_text}", True
+
+
 def _persist_settings_values(
     cfg: Config,
     values,
@@ -1075,7 +1092,13 @@ def main(argv: list[str] | None = None) -> int:
                 log.warning("Could not apply settings change: %s", exc)
                 dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
                 return
-            status_text, status_error = _settings_saved_status(values, overrides)
+            if apply_credentials:
+                status_text, status_error = _settings_wcl_test_success_status(
+                    values,
+                    overrides,
+                )
+            else:
+                status_text, status_error = _settings_saved_status(values, overrides)
             dialog.set_status(status_text, error=status_error)
 
         def _handle_values_changed(values) -> None:
