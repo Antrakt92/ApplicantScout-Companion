@@ -257,6 +257,8 @@ class SettingsDialog(QDialog):
         self.sync_with_wow_check.setChecked(cfg.sync_with_wow)
         form.addRow("", self.sync_with_wow_check)
 
+        root.addStretch(1)
+
         self.status_label = QLabel("")
         self.status_label.setObjectName("settingsStatus")
         self.status_label.setWordWrap(True)
@@ -266,7 +268,17 @@ class SettingsDialog(QDialog):
         footer_layout.setContentsMargins(0, 0, 0, 0)
         footer_layout.setSpacing(8)
         footer_layout.addWidget(self.status_label, stretch=1)
-        footer_layout.addWidget(self._build_actions_button())
+        self.test_button = QPushButton("Test WCL", footer)
+        self.test_button.setObjectName("testWcl")
+        self.test_button.setToolTip("Validate the current Warcraft Logs credentials.")
+        self.test_button.clicked.connect(self._test_credentials)
+        footer_layout.addWidget(self.test_button)
+        self.update_button = QPushButton("Update", footer)
+        self.update_button.setObjectName("checkUpdates")
+        self.update_button.setToolTip("Check for and prepare the latest companion update.")
+        self.update_button.clicked.connect(self._check_for_updates)
+        footer_layout.addWidget(self.update_button)
+        footer_layout.addWidget(self._build_more_actions_button(footer))
         root.addWidget(footer)
 
         if first_run:
@@ -285,31 +297,25 @@ class SettingsDialog(QDialog):
         self._connect_value_change_signals()
         self._update_screenshots_warning(self.screenshots_edit.text())
 
-    def _build_actions_button(self) -> QToolButton:
-        self.actions_button = QToolButton(self)
-        self.actions_button.setObjectName("settingsActions")
-        self.actions_button.setText("Actions")
-        self.actions_button.setToolTip("Test WCL, update, open logs, or clear cache.")
-        self.actions_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        actions_menu = QMenu(self.actions_button)
-        self.test_action = QAction("Test WCL", self.actions_button)
-        self.test_action.setObjectName("testWcl")
-        self.test_action.triggered.connect(self._test_credentials)
-        actions_menu.addAction(self.test_action)
-        self.update_action = QAction("Update", self.actions_button)
-        self.update_action.setObjectName("checkUpdates")
-        self.update_action.triggered.connect(self._check_for_updates)
-        actions_menu.addAction(self.update_action)
-        self.logs_action = QAction("Open logs", self.actions_button)
+    def _build_more_actions_button(self, parent: QWidget) -> QToolButton:
+        self.more_actions_button = QToolButton(parent)
+        self.more_actions_button.setObjectName("settingsMoreActions")
+        self.more_actions_button.setText("More")
+        self.more_actions_button.setToolTip("Open logs or clear cached Warcraft Logs data.")
+        self.more_actions_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        actions_menu = QMenu(self.more_actions_button)
+        self.logs_action = QAction("Open logs", self.more_actions_button)
         self.logs_action.setObjectName("openLogs")
         self.logs_action.triggered.connect(self._open_log_folder)
         actions_menu.addAction(self.logs_action)
-        self.cache_action = QAction("Clear cache", self.actions_button)
+        self.cache_action = QAction("Clear cache", self.more_actions_button)
         self.cache_action.setObjectName("clearCache")
         self.cache_action.triggered.connect(self._clear_cache_dir)
         actions_menu.addAction(self.cache_action)
-        self.actions_button.setMenu(actions_menu)
-        return self.actions_button
+        self.more_actions_button.setMenu(actions_menu)
+        return self.more_actions_button
 
     def values(self) -> SettingsValues:
         return SettingsValues(
@@ -627,7 +633,7 @@ class SettingsDialog(QDialog):
             self._set_status("Enter WCL Client ID and Secret first.", error=True)
             return
         self._start_async_action(
-            button=self.test_action,
+            button=self.test_button,
             busy_text="Testing WCL credentials...",
             error_prefix="WCL test failed",
             action=lambda: credential_tester(
@@ -662,7 +668,7 @@ class SettingsDialog(QDialog):
             return
         check_updates = self._check_updates
         self._start_async_action(
-            button=self.update_action,
+            button=self.update_button,
             busy_text="Checking and preparing update...",
             error_prefix="Update failed",
             action=check_updates,

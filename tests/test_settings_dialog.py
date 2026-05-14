@@ -343,15 +343,15 @@ def test_settings_dialog_runs_action_callbacks(qtbot, tmp_path: Path):
     )
     qtbot.addWidget(dialog)
 
-    dialog.test_action.trigger()
+    dialog.test_button.click()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
     assert dialog.status_label.text() == "credentials ok"
     dialog.logs_action.trigger()
     dialog.cache_action.trigger()
-    dialog.update_action.trigger()
+    dialog.update_button.click()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "up to date")
 
-    assert dialog.update_action.text() == "Update"
+    assert dialog.update_button.text() == "Update"
     assert calls == ["test", "logs", "cache", "updates"]
     assert dialog.status_label.text() == "up to date"
 
@@ -361,18 +361,26 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     qtbot.addWidget(dialog)
 
     footer = dialog.findChild(QWidget, "settingsFooter")
-    actions_button = dialog.findChild(QToolButton, "settingsActions")
+    test_button = dialog.findChild(QPushButton, "testWcl")
+    update_button = dialog.findChild(QPushButton, "checkUpdates")
+    more_button = dialog.findChild(QToolButton, "settingsMoreActions")
     assert footer is not None
-    assert actions_button is not None
-    assert actions_button.text() == "Actions"
-    assert actions_button.parent() is footer
+    assert test_button is not None
+    assert update_button is not None
+    assert more_button is not None
+    assert test_button.text() == "Test WCL"
+    assert update_button.text() == "Update"
+    assert more_button.text() == "More"
+    assert test_button.parent() is footer
+    assert update_button.parent() is footer
+    assert more_button.parent() is footer
     assert dialog.status_label.parent() is footer
-    assert actions_button.menu() is not None
+    assert more_button.menu() is not None
     assert [
         action.objectName()
-        for action in actions_button.menu().actions()
+        for action in more_button.menu().actions()
         if isinstance(action, QAction)
-    ] == ["testWcl", "checkUpdates", "openLogs", "clearCache"]
+    ] == ["openLogs", "clearCache"]
     assert dialog.findChild(QPushButton, "hideToTray") is None
     assert dialog.findChild(QPushButton, "quitApplicantScout") is None
     assert dialog.findChild(QDialogButtonBox) is None
@@ -446,7 +454,7 @@ def test_settings_dialog_emits_validated_credentials_after_successful_test(
 
     dialog.client_id_edit.setText("new-client")
     dialog.client_secret_edit.setText("new-secret")
-    dialog.test_action.trigger()
+    dialog.test_button.click()
 
     qtbot.waitUntil(lambda: bool(seen), timeout=1500)
     assert seen[-1].wcl_client_id == "new-client"
@@ -471,7 +479,7 @@ def test_settings_dialog_ignores_stale_credentials_test_result(
 
     dialog.client_id_edit.setText("new-client")
     dialog.client_secret_edit.setText("new-secret")
-    dialog.test_action.trigger()
+    dialog.test_button.click()
     assert tester_entered.wait(2)
     dialog.client_secret_edit.setText("changed-during-test")
     release_tester.set()
@@ -501,7 +509,7 @@ def test_settings_dialog_rejects_validated_credentials_when_current_values_inval
     seen = []
     dialog.credentialsValidated.connect(seen.append)
 
-    dialog.test_action.trigger()
+    dialog.test_button.click()
     assert tester_entered.wait(2)
     dialog.screenshots_edit.setText(str(invalid_file))
     release_tester.set()
