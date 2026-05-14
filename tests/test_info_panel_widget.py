@@ -25,7 +25,7 @@ from applicant_scout.overlay import (
     ApplicantInfoPanel,
     OverlayWindow,
 )
-from applicant_scout.metric_preferences import MetricPreferences
+from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from applicant_scout.scoring import PackageFit
 from applicant_scout.state import DEFAULT_WINDOW_WIDTH, AppState, Applicant, Listing
 from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
@@ -323,7 +323,13 @@ def test_overlay_window_minimum_size_matches_compact_contract(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
-    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        metric_preferences=MetricPreferences(),
+    )
     qtbot.addWidget(window)
 
     try:
@@ -471,6 +477,27 @@ def test_overlay_panel_uses_group_package_fit_for_any_member(qtbot, tmp_path):
 
         assert window._panel._package_label.text().startswith("Group ")
         assert not window._panel._package_label.isHidden()
+    finally:
+        client.close()
+
+
+def test_overlay_window_mplus_only_uses_narrower_minimum_width(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=DEFAULT_METRIC_PREFERENCES)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        metric_preferences=DEFAULT_METRIC_PREFERENCES,
+    )
+    qtbot.addWidget(window)
+
+    try:
+        assert window.minimumSize().width() < DEFAULT_WINDOW_WIDTH
+        assert window.geometry().width() == window.minimumSize().width()
+        assert window.minimumSize().height() == 370
     finally:
         client.close()
 

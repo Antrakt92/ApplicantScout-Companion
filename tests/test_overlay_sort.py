@@ -61,10 +61,16 @@ def test_build_group_markers_adds_caps_for_visible_groups():
     assert markers[0].colour == group_id_colour("10")
     assert markers[0].first_visible
     assert not markers[0].last_visible
+    assert markers[0].position == 1
+    assert markers[0].size == 2
     assert markers[1].last_visible
+    assert markers[1].position == 2
+    assert markers[1].size == 2
     assert markers[4].first_visible
     assert not markers[5].first_visible
     assert not markers[5].last_visible
+    assert markers[5].position == 2
+    assert markers[5].size == 3
     assert markers[6].last_visible
 
 

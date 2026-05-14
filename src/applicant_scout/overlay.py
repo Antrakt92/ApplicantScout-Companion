@@ -113,13 +113,16 @@ DUNGEON_NAME_WIDTH = 188
 DUNGEON_KEY_WIDTH = 34
 DUNGEON_METRIC_WIDTH = 64
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
+WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
+MIN_VISIBLE_WINDOW_WIDTH = 420
+MPLUS_GROUP_COLUMN_WIDTH = 188
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
 MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
 MPLUS_INDIVIDUAL_TEXT_ROLE = Qt.ItemDataRole.UserRole + 22
 MPLUS_INDIVIDUAL_FG_ROLE = Qt.ItemDataRole.UserRole + 23
 MPLUS_INDIVIDUAL_BG_ROLE = Qt.ItemDataRole.UserRole + 24
-MPLUS_GROUP_LANE_MAX_WIDTH = 96
-MPLUS_GROUP_LANE_MIN_WIDTH = 46
+MPLUS_GROUP_LANE_MAX_WIDTH = 72
+MPLUS_GROUP_LANE_MIN_WIDTH = 42
 MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 56
 
 
@@ -241,6 +244,8 @@ class _GroupMarker:
     colour: str
     first_visible: bool
     last_visible: bool
+    position: int
+    size: int
 
 
 def _fetch_identity_for_applicant(
@@ -478,8 +483,40 @@ def _build_group_markers(
                 colour=colour,
                 first_visible=position == 1,
                 last_visible=position == size,
+                position=position,
+                size=size,
             )
     return markers
+
+
+def _minimum_window_width_for_metrics(
+    metric_preferences: MetricPreferences,
+    *,
+    name_width: int = COLUMN_WIDTHS[COL_NAME],
+) -> int:
+    mplus_width = (
+        MPLUS_GROUP_COLUMN_WIDTH
+        if metric_preferences.mplus and not metric_preferences.raid_enabled
+        else COLUMN_WIDTHS[COL_MPLUS]
+    )
+    width = (
+        COLUMN_WIDTHS[COL_SPEC]
+        + max(COLUMN_WIDTHS[COL_NAME], name_width)
+        + COLUMN_WIDTHS[COL_ILVL]
+        + COLUMN_WIDTHS[COL_RIO]
+        + (COLUMN_WIDTHS[COL_N] if metric_preferences.raid_normal else 0)
+        + (COLUMN_WIDTHS[COL_H] if metric_preferences.raid_heroic else 0)
+        + (COLUMN_WIDTHS[COL_M] if metric_preferences.raid_mythic else 0)
+        + (mplus_width if metric_preferences.mplus else 0)
+        + WINDOW_CHROME_WIDTH
+    )
+    return max(MIN_VISIBLE_WINDOW_WIDTH, width)
+
+
+def _should_draw_group_package_text(group_marker: _GroupMarker | None) -> bool:
+    if group_marker is None:
+        return True
+    return group_marker.position == (group_marker.size // 2) + 1
 
 
 class _HoverHighlightDelegate(QStyledItemDelegate):
@@ -593,12 +630,18 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         self.initStyleOption(opt, index)
         rect = opt.rect
         width = max(1, rect.width())
+        package_text = str(index.data(MPLUS_PACKAGE_TEXT_ROLE) or "")
+        package_bg = str(index.data(MPLUS_PACKAGE_BG_ROLE) or "#2a2a33")
+        individual_text = str(index.data(MPLUS_INDIVIDUAL_TEXT_ROLE) or "")
+        individual_fg = index.data(MPLUS_INDIVIDUAL_FG_ROLE)
+        individual_bg = index.data(MPLUS_INDIVIDUAL_BG_ROLE)
+        package_text_width = opt.fontMetrics.horizontalAdvance(package_text) + 12
         if width <= MPLUS_GROUP_LANE_MIN_WIDTH + 1:
             package_width = max(1, width // 2)
         else:
             package_width = min(
                 MPLUS_GROUP_LANE_MAX_WIDTH,
-                max(MPLUS_GROUP_LANE_MIN_WIDTH, width // 3),
+                max(MPLUS_GROUP_LANE_MIN_WIDTH, package_text_width),
             )
             if width - package_width < MPLUS_INDIVIDUAL_LANE_MIN_WIDTH:
                 package_width = max(
@@ -616,12 +659,6 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
             rect.height(),
         )
 
-        package_text = str(index.data(MPLUS_PACKAGE_TEXT_ROLE) or "")
-        package_bg = str(index.data(MPLUS_PACKAGE_BG_ROLE) or "#2a2a33")
-        individual_text = str(index.data(MPLUS_INDIVIDUAL_TEXT_ROLE) or "")
-        individual_fg = index.data(MPLUS_INDIVIDUAL_FG_ROLE)
-        individual_bg = index.data(MPLUS_INDIVIDUAL_BG_ROLE)
-
         painter.save()
         painter.setFont(opt.font)
         painter.fillRect(package_rect, QColor(package_bg))
@@ -635,15 +672,23 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
                 individual_fg if isinstance(individual_fg, str) else "#e0e0e0"
             )
 
-        if group_marker is None or group_marker.first_visible:
+        if _should_draw_group_package_text(group_marker):
+            text_rect = package_rect
+            if group_marker is not None and group_marker.size % 2 == 0:
+                text_rect = QRect(
+                    package_rect.left(),
+                    package_rect.top() - package_rect.height(),
+                    package_rect.width(),
+                    package_rect.height() * 2,
+                )
             painter.setPen(QColor(_text_colour_for_bg(package_bg)))
             painter.drawText(
-                package_rect.adjusted(4, 0, -4, 0),
+                text_rect.adjusted(4, 0, -4, 0),
                 Qt.AlignmentFlag.AlignCenter,
                 opt.fontMetrics.elidedText(
                     package_text,
                     Qt.TextElideMode.ElideRight,
-                    max(1, package_rect.width() - 8),
+                    max(1, text_rect.width() - 8),
                 ),
             )
         painter.setPen(QColor(individual_text_colour))
@@ -1304,10 +1349,9 @@ class OverlayWindow(QMainWindow):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        # Compact minimum covers sum(COLUMN_WIDTHS)=552 plus the scrollbar
-        # budget. The M+ column stretches to consume any remaining viewport
-        # width so the right edge never becomes a transparent dead strip.
-        self.setMinimumSize(QSize(DEFAULT_WINDOW_WIDTH, 370))
+        self.setMinimumSize(
+            QSize(_minimum_window_width_for_metrics(metric_preferences), 370)
+        )
 
         # Central container with QSS-stylable background
         container = QWidget()
@@ -1421,8 +1465,8 @@ class OverlayWindow(QMainWindow):
                 h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
         h.setSectionResizeMode(COL_MPLUS, QHeaderView.ResizeMode.Stretch)
         h.setStretchLastSection(True)
-        self._apply_metric_column_visibility()
         self._max_name_width_px = COLUMN_WIDTHS[COL_NAME]
+        self._apply_metric_column_visibility()
         layout.addWidget(self._table, stretch=1)
 
         # Bottom row: status label + size grip
@@ -1481,8 +1525,14 @@ class OverlayWindow(QMainWindow):
         # from a previous multi-monitor session don't render the window invisibly
         # off-screen. Picks first screen whose geometry intersects the saved
         # rect; falls back to centering on primary screen if none match.
+        has_saved_geometry = (self._config_dir / "window.json").exists()
         geo = _normalize_loaded_geometry(load_geometry(self._config_dir))
         x, y, w, h = _clamp_geometry_to_screen(geo.x, geo.y, geo.w, geo.h)
+        min_width = self.minimumWidth()
+        if not has_saved_geometry and geo.w == DEFAULT_WINDOW_WIDTH:
+            w = min_width
+        else:
+            w = max(w, min_width)
         if (x, y) != (geo.x, geo.y):
             _log.info(
                 "Window geometry off-screen (%d,%d) → clamped to (%d,%d)",
@@ -2103,6 +2153,7 @@ class OverlayWindow(QMainWindow):
         if target > self._max_name_width_px:
             self._max_name_width_px = target
             self._table.setColumnWidth(COL_NAME, target)
+            self._apply_metric_minimum_width()
 
     def _apply_metric_column_visibility(self) -> None:
         prefs = self._metric_preferences
@@ -2110,6 +2161,18 @@ class OverlayWindow(QMainWindow):
         self._table.setColumnHidden(COL_H, not prefs.raid_heroic)
         self._table.setColumnHidden(COL_M, not prefs.raid_mythic)
         self._table.setColumnHidden(COL_MPLUS, not prefs.mplus)
+        self._apply_metric_minimum_width()
+
+    def _apply_metric_minimum_width(self, *, old_min_width: int | None = None) -> None:
+        new_min_width = _minimum_window_width_for_metrics(
+            self._metric_preferences,
+            name_width=self._max_name_width_px,
+        )
+        self.setMinimumWidth(new_min_width)
+        if self.width() < new_min_width:
+            self.resize(new_min_width, self.height())
+        elif old_min_width is not None and self.width() <= old_min_width + 1:
+            self.resize(new_min_width, self.height())
 
     def apply_metric_preferences(
         self,
@@ -2117,10 +2180,12 @@ class OverlayWindow(QMainWindow):
         *,
         refetch_missing: bool = True,
     ) -> None:
+        old_min_width = self.minimumWidth()
         self._metric_preferences = metric_preferences
         self._wcl_client.metric_preferences = metric_preferences
         self._panel.set_metric_preferences(metric_preferences)
         self._apply_metric_column_visibility()
+        self._apply_metric_minimum_width(old_min_width=old_min_width)
         for applicant in self._state.applicants.values():
             if not metric_preferences.any_enabled:
                 applicant.clear_wcl_data(fetch_status="ready")

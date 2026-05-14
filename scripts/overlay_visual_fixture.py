@@ -5,13 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from applicant_scout.state import (
-    DEFAULT_WINDOW_HEIGHT,
-    DEFAULT_WINDOW_WIDTH,
-    AppState,
-    Applicant,
-    Listing,
-)
+from applicant_scout.state import DEFAULT_WINDOW_HEIGHT, AppState, Applicant, Listing
 
 if TYPE_CHECKING:
     from applicant_scout.overlay import OverlayWindow
@@ -201,7 +195,7 @@ def build_overlay_visual_state() -> AppState:
 
 
 def prepare_overlay_visual_window(window: OverlayWindow) -> None:
-    window.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
+    window.resize(window.minimumWidth(), DEFAULT_WINDOW_HEIGHT)
     window._refresh_table()
     window._update_title()
     # Fixture stability: real overlay hover intentionally wins over pin, but
