@@ -221,6 +221,7 @@ class _FetchIdentity:
     metric_role: str
     runtime_generation: int = 0
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES
+    listing_session_generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -236,6 +237,7 @@ def _fetch_identity_for_applicant(
     region: str,
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
     runtime_generation: int = 0,
+    listing_session_generation: int = 0,
 ) -> tuple[_FetchIdentity, str] | None:
     charname, realm = split_name_realm(
         applicant.name, default_realm_from_player(player_full_name)
@@ -253,6 +255,7 @@ def _fetch_identity_for_applicant(
             metric_role=wcl_metric_role(applicant.role),
             runtime_generation=runtime_generation,
             metric_preferences=metric_preferences,
+            listing_session_generation=listing_session_generation,
         ),
         charname,
     )
@@ -269,6 +272,7 @@ def _same_fetch_target_except_preferences(
         and left.spec_id == right.spec_id
         and left.metric_role == right.metric_role
         and left.runtime_generation == right.runtime_generation
+        and left.listing_session_generation == right.listing_session_generation
     )
 
 
@@ -286,6 +290,7 @@ class _FetchTask(QRunnable):
         self._name = name
         self._client = client
         self._cache = cache
+        self._cache_generation = cache.generation
 
     def run(self) -> None:
         identity = self._identity
@@ -329,6 +334,7 @@ class _FetchTask(QRunnable):
                 ranks,
                 identity.metric_role,
                 identity.metric_preferences,
+                expected_generation=self._cache_generation,
             )
         self.signals.done.emit(identity, ranks)
 
@@ -1377,11 +1383,12 @@ class OverlayWindow(QMainWindow):
         # (== ALL_ROLES) is semantically equivalent for count-display via
         # _is_filter_active(). Session-only — not persisted across launches.
         self._role_filter: set[str] = set()
-        # Dedup WCL fetches: skip launching another task while one is in flight
-        # for the same applicant. Without this, rapid APP+ then APP= for the
-        # same id fires 2 concurrent identical HTTP requests against WCL.
-        self._fetches_in_flight: set[str] = set()
+        # Dedup WCL fetches by the full identity we intend to fetch, not just
+        # applicant_id. Old listing-session workers can complete after the same
+        # id has been reused by a new listing.
+        self._fetches_in_flight: dict[str, _FetchIdentity] = {}
         self._wcl_runtime_generation = 0
+        self._listing_session_generation = 0
 
         # Restore geometry, clamped to a visible screen so off-monitor positions
         # from a previous multi-monitor session don't render the window invisibly
@@ -1509,6 +1516,8 @@ class OverlayWindow(QMainWindow):
                 self._empty_hide_timer.start()
 
     def on_cleared(self) -> None:
+        self._listing_session_generation += 1
+        self._fetches_in_flight.clear()
         self._empty_hide_timer.stop()  # listing gone, no need for guard timer
         self._table.setRowCount(0)
         self._row_for_id.clear()
@@ -1620,7 +1629,10 @@ class OverlayWindow(QMainWindow):
         for applicant in self._retryable_wcl_error_applicants():
             if launched >= MAX_WCL_RETRY_BATCH:
                 break
-            if applicant.applicant_id in self._fetches_in_flight:
+            current_identity = self._current_fetch_identity_for(applicant)
+            if current_identity is not None and self._is_fetch_in_flight_for(
+                current_identity
+            ):
                 continue
             applicant.clear_wcl_data()
             self._launch_fetch(applicant)
@@ -1629,7 +1641,10 @@ class OverlayWindow(QMainWindow):
             self._refresh_table()
             self._update_title()
         if any(
-            applicant.applicant_id not in self._fetches_in_flight
+            not (
+                (identity := self._current_fetch_identity_for(applicant)) is not None
+                and self._is_fetch_in_flight_for(identity)
+            )
             for applicant in self._retryable_wcl_error_applicants()
         ):
             self._schedule_wcl_retry(WCL_RETRY_BATCH_DELAY_MS)
@@ -2032,7 +2047,7 @@ class OverlayWindow(QMainWindow):
             ):
                 applicant.clear_wcl_data()
                 self._launch_fetch(applicant)
-            elif applicant.fetch_status == "pending":
+            elif applicant.fetch_status in ("pending", "loading"):
                 self._launch_fetch(applicant)
         self._refresh_table()
         self._update_title()
@@ -2046,18 +2061,51 @@ class OverlayWindow(QMainWindow):
         for applicant in self._state.applicants.values():
             self._launch_fetch(applicant)
 
-    def _launch_fetch(self, applicant: Applicant) -> None:
-        if not self._metric_preferences.any_enabled:
-            applicant.clear_wcl_data(fetch_status="ready")
-            return
-        if applicant.applicant_id in self._fetches_in_flight:
-            return  # avoid duplicate concurrent fetches for same applicant
+    def _in_flight_identity(self, applicant_id: str) -> _FetchIdentity | None:
+        return self._fetches_in_flight.get(applicant_id)
+
+    def _mark_fetch_in_flight(self, identity: _FetchIdentity) -> None:
+        self._fetches_in_flight[identity.applicant_id] = identity
+
+    def _discard_fetch_if_current(self, identity: _FetchIdentity) -> None:
+        if self._fetches_in_flight.get(identity.applicant_id) == identity:
+            self._fetches_in_flight.pop(identity.applicant_id, None)
+
+    def _is_fetch_in_flight_for(self, identity: _FetchIdentity) -> bool:
+        current = self._fetches_in_flight.get(identity.applicant_id)
+        return (
+            current is not None
+            and _same_fetch_target_except_preferences(current, identity)
+            and current.metric_preferences.covers(identity.metric_preferences)
+        )
+
+    def _current_fetch_identity_for(
+        self, applicant: Applicant
+    ) -> _FetchIdentity | None:
         resolved = _fetch_identity_for_applicant(
             applicant,
             self._state.player.full_name,
             self._wcl_client.region,
             self._metric_preferences,
             self._wcl_runtime_generation,
+            self._listing_session_generation,
+        )
+        if resolved is None:
+            return None
+        identity, _ = resolved
+        return identity
+
+    def _launch_fetch(self, applicant: Applicant) -> None:
+        if not self._metric_preferences.any_enabled:
+            applicant.clear_wcl_data(fetch_status="ready")
+            return
+        resolved = _fetch_identity_for_applicant(
+            applicant,
+            self._state.player.full_name,
+            self._wcl_client.region,
+            self._metric_preferences,
+            self._wcl_runtime_generation,
+            self._listing_session_generation,
         )
         if resolved is None:
             applicant.fetch_status = "error"
@@ -2065,10 +2113,12 @@ class OverlayWindow(QMainWindow):
             applicant.wcl_error_kind = ""
             return  # caller (on_applicant_added/_updated) refreshes table after
         identity, charname = resolved
+        if self._is_fetch_in_flight_for(identity):
+            return  # avoid duplicate concurrent fetches for the same WCL scope
         applicant.fetch_status = "loading"
         applicant.error_message = ""
         applicant.wcl_error_kind = ""
-        self._fetches_in_flight.add(applicant.applicant_id)
+        self._mark_fetch_in_flight(identity)
         task = _FetchTask(identity, charname, self._wcl_client, self._cache)
         task.signals.done.connect(self._on_fetch_done)
         if self._pool is not None:
@@ -2079,7 +2129,7 @@ class OverlayWindow(QMainWindow):
         fetched_identity: _FetchIdentity,
         ranks: CharacterRanks,
     ) -> None:
-        self._fetches_in_flight.discard(fetched_identity.applicant_id)
+        self._discard_fetch_if_current(fetched_identity)
         applicant = self._state.applicants.get(fetched_identity.applicant_id)
         if applicant is None:
             return
@@ -2089,6 +2139,7 @@ class OverlayWindow(QMainWindow):
             self._wcl_client.region,
             self._metric_preferences,
             self._wcl_runtime_generation,
+            self._listing_session_generation,
         )
         if current is None:
             applicant.clear_wcl_data(fetch_status="error")
@@ -2102,8 +2153,11 @@ class OverlayWindow(QMainWindow):
         ) or not fetched_identity.metric_preferences.covers(
             current_identity.metric_preferences
         ):
-            applicant.clear_wcl_data()
-            self._launch_fetch(applicant)
+            if not self._is_fetch_in_flight_for(
+                current_identity
+            ) and not applicant.wcl_data_covers(self._metric_preferences):
+                applicant.clear_wcl_data()
+                self._launch_fetch(applicant)
             self._sync_delegate_and_panel()
             return
         if ranks.not_found:

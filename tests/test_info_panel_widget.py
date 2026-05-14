@@ -346,6 +346,7 @@ def test_overlay_constructor_initializes_geometry_event_state_before_set_geometr
             "_pinned_id",
             "_role_filter",
             "_fetches_in_flight",
+            "_listing_session_generation",
         )
         missing = [name for name in required if not hasattr(self, name)]
         assert missing == []

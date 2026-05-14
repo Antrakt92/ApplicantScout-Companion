@@ -1288,6 +1288,12 @@ class CharacterCache:
         # during iteration"). Not caught by `except OSError` → kills the
         # QRunnable, signal never fires, applicant row stuck on "loading".
         self._lock = threading.Lock()
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
 
     @staticmethod
     def _key_prefix(
@@ -1382,6 +1388,7 @@ class CharacterCache:
     def clear(self) -> None:
         """Drop both in-memory and persisted character-rank cache."""
         with self._lock:
+            self._generation += 1
             self._data.clear()
             try:
                 if self._path.exists():
@@ -1476,8 +1483,16 @@ class CharacterCache:
         ranks: CharacterRanks,
         role: str = "DAMAGER",
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
-    ) -> None:
+        *,
+        expected_generation: int | None = None,
+    ) -> bool:
         key = self._key(name, server_slug, region, spec_id, role, metric_preferences)
         with self._lock:
+            if (
+                expected_generation is not None
+                and expected_generation != self._generation
+            ):
+                return False
             self._data[key] = _CacheEntry(fetched_at=time.time(), ranks=asdict(ranks))
             self._save_locked()
+        return True

@@ -1258,6 +1258,48 @@ def test_character_cache_clear_drops_memory_and_disk_entries(tmp_path):
     assert not cache._path.exists()
 
 
+def test_character_cache_clear_rejects_stale_generation_put(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    old_generation = cache.generation
+
+    cache.clear()
+    stored = cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        expected_generation=old_generation,
+    )
+
+    assert stored is False
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+    assert not cache._path.exists()
+
+
+def test_character_cache_put_accepts_current_generation_after_clear(tmp_path):
+    cache = CharacterCache(tmp_path)
+    old_generation = cache.generation
+
+    cache.clear()
+    current_generation = cache.generation
+    stored = cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        expected_generation=current_generation,
+    )
+
+    assert current_generation > old_generation
+    assert stored is True
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is not None
+
+
 def test_character_cache_get_discards_entries_missing_required_scalars(tmp_path):
     cache = CharacterCache(tmp_path)
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")

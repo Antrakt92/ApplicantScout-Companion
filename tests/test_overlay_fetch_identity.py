@@ -26,6 +26,14 @@ class _SyncPool:
         task.run()
 
 
+class _QueuedPool:
+    def __init__(self) -> None:
+        self.tasks = []
+
+    def start(self, task) -> None:
+        self.tasks.append(task)
+
+
 def _app(**overrides) -> Applicant:
     base = Applicant(
         applicant_id="42:1",
@@ -53,6 +61,13 @@ def _ranks() -> CharacterRanks:
         mplus_dps=77.0,
         mplus_hps=None,
     )
+
+
+def _ranks_with(*, raid_heroic: float, mplus_dps: float) -> CharacterRanks:
+    ranks = _ranks()
+    ranks.raid_heroic = raid_heroic
+    ranks.mplus_dps = mplus_dps
+    return ranks
 
 
 def _window(
@@ -90,7 +105,7 @@ def test_matching_fetch_identity_applies_ranks(qtbot, tmp_path):
         assert resolved is not None
         identity, _charname = resolved
 
-        window._fetches_in_flight.add(app.applicant_id)
+        window._mark_fetch_in_flight(identity)
         window._on_fetch_done(identity, _ranks())
 
         assert app.fetch_status == "ready"
@@ -252,7 +267,7 @@ def test_broader_fetch_scope_applies_after_current_scope_narrows(qtbot, tmp_path
             metric_role="DPS",
             metric_preferences=DEFAULT_METRIC_PREFERENCES,
         )
-        window._fetches_in_flight.add(app.applicant_id)
+        window._mark_fetch_in_flight(broad_identity)
 
         window._on_fetch_done(broad_identity, _ranks())
 
@@ -311,7 +326,7 @@ def test_fetch_done_for_removed_applicant_only_clears_in_flight(qtbot, tmp_path)
         spec_id=71,
         metric_role="DPS",
     )
-    window._fetches_in_flight.add(identity.applicant_id)
+    window._mark_fetch_in_flight(identity)
 
     try:
         window._on_fetch_done(identity, _ranks())
@@ -387,7 +402,7 @@ def test_retry_failed_wcl_fetches_skips_permanent_failures(qtbot, tmp_path):
         assert missing.fetch_status == "error"
         assert auth.fetch_status == "error"
         assert not_found.fetch_status == "not_found"
-        assert window._fetches_in_flight == set()
+        assert window._fetches_in_flight == {}
     finally:
         client.close()
 
@@ -534,7 +549,7 @@ def test_stale_in_flight_same_realm_fetch_relaunches_after_default_realm_change(
         assert resolved is not None
         stale_identity, _charname = resolved
         assert stale_identity.server_slug == "realma"
-        window._fetches_in_flight.add(app.applicant_id)
+        window._mark_fetch_in_flight(stale_identity)
 
         state.player = WoWPlayer(full_name="Host-RealmB")
         window._on_fetch_done(stale_identity, _ranks())
@@ -570,6 +585,38 @@ def test_fetch_task_persists_successful_results(qtbot, tmp_path):
         cached = window._cache.get("Scout", "realma", "EU", 71, "DPS")
         assert cached is not None
         assert cached.raid_heroic == 22.0
+    finally:
+        client.close()
+
+
+def test_fetch_task_started_before_clear_does_not_repopulate_character_cache(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    def fake_fetch(*_args, **_kwargs):
+        return _ranks()
+
+    client.fetch_character_ranks = fake_fetch  # type: ignore[method-assign]
+
+    try:
+        window._launch_fetch(app)
+        assert len(queued_pool.tasks) == 1
+
+        window._cache.clear()
+        queued_pool.tasks[0].run()
+
+        assert app.fetch_status == "ready"
+        assert app.raid_heroic == 22.0
+        assert window._cache.get("Scout", "realma", "EU", 71, "DPS") is None
+        assert not window._cache._path.exists()
     finally:
         client.close()
 
@@ -611,6 +658,178 @@ def test_fetch_task_uses_broader_cached_scope_for_narrow_identity(qtbot, tmp_pat
         assert app.raid_mythic is None
         assert app.mplus_dps is None
         assert app.wcl_metric_preferences == narrow
+    finally:
+        client.close()
+
+
+def test_relist_same_applicant_id_launches_new_fetch_despite_old_in_flight(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    old_app = _app(fetch_status="pending")
+    state.add_or_update(old_app)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window._launch_fetch(old_app)
+        old_identity = window._in_flight_identity(old_app.applicant_id)
+        assert old_identity is not None
+
+        window.on_cleared()
+        state.applicants.clear()
+        new_app = _app(fetch_status="pending")
+        state.add_or_update(new_app)
+
+        window._launch_fetch(new_app)
+        new_identity = window._in_flight_identity(new_app.applicant_id)
+
+        assert new_app.fetch_status == "loading"
+        assert new_identity is not None
+        assert new_identity != old_identity
+        assert new_identity.listing_session_generation > old_identity.listing_session_generation
+    finally:
+        client.close()
+
+
+def test_stale_completion_after_relist_does_not_clear_new_in_flight(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    old_app = _app(fetch_status="pending")
+    state.add_or_update(old_app)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window._launch_fetch(old_app)
+        old_identity = window._in_flight_identity(old_app.applicant_id)
+        assert old_identity is not None
+
+        window.on_cleared()
+        state.applicants.clear()
+        new_app = _app(fetch_status="pending")
+        state.add_or_update(new_app)
+        window._launch_fetch(new_app)
+        new_identity = window._in_flight_identity(new_app.applicant_id)
+        assert new_identity is not None
+
+        window._on_fetch_done(old_identity, _ranks_with(raid_heroic=44.0, mplus_dps=88.0))
+
+        assert new_app.fetch_status == "loading"
+        assert new_app.raid_heroic is None
+        assert new_app.mplus_dps is None
+        assert window._in_flight_identity(new_app.applicant_id) == new_identity
+    finally:
+        client.close()
+
+
+def test_stale_completion_after_relist_does_not_overwrite_ready_new_results(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    old_app = _app(fetch_status="pending")
+    state.add_or_update(old_app)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window._launch_fetch(old_app)
+        old_identity = window._in_flight_identity(old_app.applicant_id)
+        assert old_identity is not None
+
+        window.on_cleared()
+        state.applicants.clear()
+        new_app = _app(fetch_status="pending")
+        state.add_or_update(new_app)
+        window._launch_fetch(new_app)
+        new_identity = window._in_flight_identity(new_app.applicant_id)
+        assert new_identity is not None
+
+        window._on_fetch_done(new_identity, _ranks_with(raid_heroic=55.0, mplus_dps=66.0))
+        assert new_app.fetch_status == "ready"
+        assert new_app.raid_heroic == 55.0
+        assert new_app.mplus_dps == 66.0
+        assert window._in_flight_identity(new_app.applicant_id) is None
+
+        window._on_fetch_done(old_identity, _ranks_with(raid_heroic=11.0, mplus_dps=22.0))
+
+        assert new_app.fetch_status == "ready"
+        assert new_app.raid_heroic == 55.0
+        assert new_app.mplus_dps == 66.0
+        assert window._in_flight_identity(new_app.applicant_id) is None
+    finally:
+        client.close()
+
+
+def test_metric_broadening_allows_broader_fetch_when_narrow_fetch_in_flight(
+    qtbot,
+    tmp_path,
+):
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=narrow)
+
+    try:
+        window._launch_fetch(app)
+        narrow_identity = window._in_flight_identity(app.applicant_id)
+        assert narrow_identity is not None
+        assert narrow_identity.metric_preferences == narrow
+
+        window.apply_metric_preferences(DEFAULT_METRIC_PREFERENCES)
+        broad_identity = window._in_flight_identity(app.applicant_id)
+
+        assert broad_identity is not None
+        assert broad_identity != narrow_identity
+        assert broad_identity.metric_preferences == DEFAULT_METRIC_PREFERENCES
+    finally:
+        client.close()
+
+
+def test_old_narrow_completion_does_not_clear_ready_broad_data(qtbot, tmp_path):
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=narrow)
+
+    try:
+        window._launch_fetch(app)
+        narrow_identity = window._in_flight_identity(app.applicant_id)
+        assert narrow_identity is not None
+
+        window.apply_metric_preferences(DEFAULT_METRIC_PREFERENCES)
+        broad_identity = window._in_flight_identity(app.applicant_id)
+        assert broad_identity is not None
+
+        window._on_fetch_done(broad_identity, _ranks_with(raid_heroic=55.0, mplus_dps=66.0))
+        assert app.fetch_status == "ready"
+        assert app.raid_heroic == 55.0
+        assert app.mplus_dps == 66.0
+
+        window._on_fetch_done(narrow_identity, _ranks_with(raid_heroic=11.0, mplus_dps=22.0))
+
+        assert app.fetch_status == "ready"
+        assert app.raid_heroic == 55.0
+        assert app.mplus_dps == 66.0
+        assert window._in_flight_identity(app.applicant_id) is None
     finally:
         client.close()
 
