@@ -162,7 +162,6 @@ class SettingsDialog(QDialog):
         self.wcl_example_button.clicked.connect(self._show_wcl_setup_example)
         wcl_link_layout.addWidget(self.wcl_example_button)
         wcl_link_layout.addStretch(1)
-        wcl_link_layout.addWidget(self._build_actions_button())
         root.addWidget(wcl_link_row)
         credentials_help = QLabel(
             "Create a Warcraft Logs API client with Redirect URL "
@@ -261,7 +260,14 @@ class SettingsDialog(QDialog):
         self.status_label = QLabel("")
         self.status_label.setObjectName("settingsStatus")
         self.status_label.setWordWrap(True)
-        root.addWidget(self.status_label)
+        footer = QWidget(self)
+        footer.setObjectName("settingsFooter")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(8)
+        footer_layout.addWidget(self.status_label, stretch=1)
+        footer_layout.addWidget(self._build_actions_button())
+        root.addWidget(footer)
 
         if first_run:
             buttons = QHBoxLayout()
@@ -282,8 +288,8 @@ class SettingsDialog(QDialog):
     def _build_actions_button(self) -> QToolButton:
         self.actions_button = QToolButton(self)
         self.actions_button.setObjectName("settingsActions")
-        self.actions_button.setText("☰")
-        self.actions_button.setToolTip("More settings actions.")
+        self.actions_button.setText("Actions")
+        self.actions_button.setToolTip("Test WCL, update, open logs, or clear cache.")
         self.actions_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         actions_menu = QMenu(self.actions_button)
         self.test_action = QAction("Test WCL", self.actions_button)

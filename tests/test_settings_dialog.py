@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QToolButton,
+    QWidget,
 )
 
 from applicant_scout.config import Config
@@ -359,9 +360,13 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
 
+    footer = dialog.findChild(QWidget, "settingsFooter")
     actions_button = dialog.findChild(QToolButton, "settingsActions")
+    assert footer is not None
     assert actions_button is not None
-    assert actions_button.text() == "☰"
+    assert actions_button.text() == "Actions"
+    assert actions_button.parent() is footer
+    assert dialog.status_label.parent() is footer
     assert actions_button.menu() is not None
     assert [
         action.objectName()
