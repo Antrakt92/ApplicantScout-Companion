@@ -322,10 +322,22 @@ def load_config() -> Config:
     region = _value(values, "APSCOUT_REGION", "EU").upper()
     cache_ttl_seconds = _parse_cache_ttl_seconds(_value(values, "APSCOUT_CACHE_TTL_SECONDS", ""))
     metric_preferences = MetricPreferences(
-        mplus=_parse_bool_setting(_value(values, "APSCOUT_FETCH_MPLUS", "1")),
-        raid_normal=_parse_bool_setting(_value(values, "APSCOUT_FETCH_RAID_NORMAL", "1")),
-        raid_heroic=_parse_bool_setting(_value(values, "APSCOUT_FETCH_RAID_HEROIC", "1")),
-        raid_mythic=_parse_bool_setting(_value(values, "APSCOUT_FETCH_RAID_MYTHIC", "1")),
+        mplus=_parse_bool_setting(
+            _value(values, "APSCOUT_FETCH_MPLUS", ""),
+            default=DEFAULT_METRIC_PREFERENCES.mplus,
+        ),
+        raid_normal=_parse_bool_setting(
+            _value(values, "APSCOUT_FETCH_RAID_NORMAL", ""),
+            default=DEFAULT_METRIC_PREFERENCES.raid_normal,
+        ),
+        raid_heroic=_parse_bool_setting(
+            _value(values, "APSCOUT_FETCH_RAID_HEROIC", ""),
+            default=DEFAULT_METRIC_PREFERENCES.raid_heroic,
+        ),
+        raid_mythic=_parse_bool_setting(
+            _value(values, "APSCOUT_FETCH_RAID_MYTHIC", ""),
+            default=DEFAULT_METRIC_PREFERENCES.raid_mythic,
+        ),
     )
     sync_with_wow = _parse_bool_setting(
         _value(values, "APSCOUT_SYNC_WITH_WOW", "0"),

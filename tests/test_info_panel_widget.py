@@ -94,7 +94,7 @@ def test_panel_reuses_child_labels_across_hover_updates(qtbot):
 
 
 def test_ready_panel_renders_identity_metrics_and_dungeons(qtbot):
-    panel = ApplicantInfoPanel(None)
+    panel = ApplicantInfoPanel(None, MetricPreferences())
     qtbot.addWidget(panel)
 
     panel.setApplicantData(_app())
@@ -547,7 +547,13 @@ def test_apply_metric_preferences_narrowing_prunes_without_refetch(qtbot, tmp_pa
     state = AppState()
     app = _app(wcl_metric_preferences=MetricPreferences())
     state.add_or_update(app)
-    window = OverlayWindow(state, client, cache, tmp_path)
+    window = OverlayWindow(
+        state,
+        client,
+        cache,
+        tmp_path,
+        metric_preferences=MetricPreferences(),
+    )
     window._pool = None
     qtbot.addWidget(window)
     prefs = MetricPreferences(

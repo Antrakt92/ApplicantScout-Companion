@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from applicant_scout.metric_preferences import MetricPreferences
+from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+
+
+def test_default_metric_preferences_enable_only_mplus():
+    assert DEFAULT_METRIC_PREFERENCES == MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
 
 
 def test_metric_preferences_cache_key_round_trips():

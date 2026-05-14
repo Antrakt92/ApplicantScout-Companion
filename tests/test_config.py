@@ -373,6 +373,39 @@ def test_load_config_round_trips_metric_preferences(
     )
 
 
+def test_load_config_defaults_to_mplus_only_for_first_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.metric_preferences == MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+
+
+def test_save_config_defaults_write_mplus_only_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+
+    config_path = save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+    )
+
+    saved = config_path.read_text(encoding="utf-8")
+    assert 'APSCOUT_FETCH_MPLUS="1"' in saved
+    assert 'APSCOUT_FETCH_RAID_NORMAL="0"' in saved
+    assert 'APSCOUT_FETCH_RAID_HEROIC="0"' in saved
+    assert 'APSCOUT_FETCH_RAID_MYTHIC="0"' in saved
+
+
 def test_load_config_round_trips_sync_with_wow(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

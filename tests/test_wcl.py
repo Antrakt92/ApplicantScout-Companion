@@ -518,6 +518,7 @@ def test_fetch_character_ranks_healer_routes_mplus_to_hps_breakdown():
         spec_id=270,
         role="HEALER",
         region="US",
+        metric_preferences=MetricPreferences(),
     )
 
     assert len(http.calls) == 1
@@ -567,6 +568,7 @@ def test_fetch_character_ranks_dps_roles_route_mplus_to_dps_breakdown(role):
         "twisting-nether",
         spec_id=253,
         role=role,
+        metric_preferences=MetricPreferences(),
     )
 
     assert len(http.calls) == 1
@@ -611,6 +613,7 @@ def test_fetch_character_ranks_devourer_filters_other_dh_specs():
         "ravencrest",
         spec_id=1480,
         role="DAMAGER",
+        metric_preferences=MetricPreferences(),
     )
 
     assert len(http.calls) == 1
@@ -1211,9 +1214,24 @@ def test_character_cache_ttl_override_is_instance_local(tmp_path):
 
 def test_character_cache_get_sanitizes_scalar_percentiles(tmp_path):
     cache = CharacterCache(tmp_path)
-    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
     raw = json.loads(cache._path.read_text(encoding="utf-8"))
-    key = CharacterCache._key("Scout", "ravencrest", "EU", 71, "DAMAGER")
+    key = CharacterCache._key(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        MetricPreferences(),
+    )
     ranks = raw["entries"][key]["ranks"]
     ranks.update(
         {
@@ -1232,7 +1250,14 @@ def test_character_cache_get_sanitizes_scalar_percentiles(tmp_path):
     cache._path.write_text(json.dumps(raw), encoding="utf-8")
 
     loaded = CharacterCache(tmp_path)
-    result = loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER")
+    result = loaded.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
 
     assert result is not None
     assert result.raid_normal == pytest.approx(88.5)

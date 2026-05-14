@@ -63,9 +63,9 @@ APSCOUT_SCREENSHOTS_PATH=C:\Games\World of Warcraft\_retail_\Screenshots
 APSCOUT_REGION=EU
 APSCOUT_CACHE_TTL_SECONDS=43200
 APSCOUT_FETCH_MPLUS=1
-APSCOUT_FETCH_RAID_NORMAL=1
-APSCOUT_FETCH_RAID_HEROIC=1
-APSCOUT_FETCH_RAID_MYTHIC=1
+APSCOUT_FETCH_RAID_NORMAL=0
+APSCOUT_FETCH_RAID_HEROIC=0
+APSCOUT_FETCH_RAID_MYTHIC=0
 ```
 
 `APSCOUT_SCREENSHOTS_PATH` must point at the active WoW retail
@@ -74,8 +74,9 @@ can only transport snapshots through WoW screenshots. `APSCOUT_REGION` is a
 startup fallback; the addon sends the live region in its version snapshot when
 available. `APSCOUT_CACHE_TTL_SECONDS` overrides the 12-hour WCL character cache
 for debugging or support sessions; leave it unset for normal use. The
-`APSCOUT_FETCH_*` flags are the same WCL data checkboxes from Settings; disabled
-metrics are not included in Warcraft Logs API requests.
+`APSCOUT_FETCH_*` flags are the same WCL data checkboxes from Settings. First
+run defaults to M+ only; disabled metrics are not included in Warcraft Logs API
+requests.
 
 ## In-Game Commands
 

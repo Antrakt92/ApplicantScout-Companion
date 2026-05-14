@@ -7,7 +7,7 @@ from applicant_scout.overlay import (
     _fetch_identity_for_applicant,
     OverlayWindow,
 )
-from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.state import AppState, Applicant, WoWPlayer
 from applicant_scout.wcl import (
     CharacterCache,
@@ -19,6 +19,8 @@ from applicant_scout.wcl import (
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_RATE_LIMITED,
 )
+
+ALL_METRIC_PREFERENCES = MetricPreferences()
 
 
 class _SyncPool:
@@ -76,7 +78,7 @@ def _window(
     state: AppState,
     *,
     region: str = "EU",
-    metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+    metric_preferences: MetricPreferences = ALL_METRIC_PREFERENCES,
 ):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth, region=region, metric_preferences=metric_preferences)
@@ -101,7 +103,12 @@ def test_matching_fetch_identity_applies_ranks(qtbot, tmp_path):
     window, client = _window(qtbot, tmp_path, state)
 
     try:
-        resolved = _fetch_identity_for_applicant(app, state.player.full_name, "EU")
+        resolved = _fetch_identity_for_applicant(
+            app,
+            state.player.full_name,
+            "EU",
+            ALL_METRIC_PREFERENCES,
+        )
         assert resolved is not None
         identity, _charname = resolved
 
@@ -112,7 +119,7 @@ def test_matching_fetch_identity_applies_ranks(qtbot, tmp_path):
         assert app.error_message == ""
         assert app.raid_heroic == 22.0
         assert app.mplus_dps == 77.0
-        assert app.wcl_metric_preferences == DEFAULT_METRIC_PREFERENCES
+        assert app.wcl_metric_preferences == ALL_METRIC_PREFERENCES
         assert app.applicant_id not in window._fetches_in_flight
     finally:
         client.close()
@@ -126,7 +133,12 @@ def test_fetch_done_prefers_not_found_over_error_text(qtbot, tmp_path):
     window, client = _window(qtbot, tmp_path, state)
 
     try:
-        resolved = _fetch_identity_for_applicant(app, state.player.full_name, "EU")
+        resolved = _fetch_identity_for_applicant(
+            app,
+            state.player.full_name,
+            "EU",
+            ALL_METRIC_PREFERENCES,
+        )
         assert resolved is not None
         identity, _charname = resolved
 
@@ -150,7 +162,12 @@ def test_fetch_error_stores_error_kind(qtbot, tmp_path):
     window, client = _window(qtbot, tmp_path, state)
 
     try:
-        resolved = _fetch_identity_for_applicant(app, state.player.full_name, "EU")
+        resolved = _fetch_identity_for_applicant(
+            app,
+            state.player.full_name,
+            "EU",
+            ALL_METRIC_PREFERENCES,
+        )
         assert resolved is not None
         identity, _charname = resolved
 
@@ -205,7 +222,12 @@ def test_successful_fetch_clears_error_kind(qtbot, tmp_path):
     window, client = _window(qtbot, tmp_path, state)
 
     try:
-        resolved = _fetch_identity_for_applicant(app, state.player.full_name, "EU")
+        resolved = _fetch_identity_for_applicant(
+            app,
+            state.player.full_name,
+            "EU",
+            ALL_METRIC_PREFERENCES,
+        )
         assert resolved is not None
         identity, _charname = resolved
 
@@ -265,7 +287,7 @@ def test_broader_fetch_scope_applies_after_current_scope_narrows(qtbot, tmp_path
             region="EU",
             spec_id=app.spec_id,
             metric_role="DPS",
-            metric_preferences=DEFAULT_METRIC_PREFERENCES,
+            metric_preferences=ALL_METRIC_PREFERENCES,
         )
         window._mark_fetch_in_flight(broad_identity)
 
@@ -582,7 +604,14 @@ def test_fetch_task_persists_successful_results(qtbot, tmp_path):
     try:
         window._launch_fetch(app)
 
-        cached = window._cache.get("Scout", "realma", "EU", 71, "DPS")
+        cached = window._cache.get(
+            "Scout",
+            "realma",
+            "EU",
+            71,
+            "DPS",
+            ALL_METRIC_PREFERENCES,
+        )
         assert cached is not None
         assert cached.raid_heroic == 22.0
     finally:
@@ -641,7 +670,7 @@ def test_fetch_task_uses_broader_cached_scope_for_narrow_identity(qtbot, tmp_pat
         71,
         _ranks(),
         "DPS",
-        DEFAULT_METRIC_PREFERENCES,
+        ALL_METRIC_PREFERENCES,
     )
 
     def fail_fetch(*_args, **_kwargs):
@@ -787,12 +816,12 @@ def test_metric_broadening_allows_broader_fetch_when_narrow_fetch_in_flight(
         assert narrow_identity is not None
         assert narrow_identity.metric_preferences == narrow
 
-        window.apply_metric_preferences(DEFAULT_METRIC_PREFERENCES)
+        window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
         broad_identity = window._in_flight_identity(app.applicant_id)
 
         assert broad_identity is not None
         assert broad_identity != narrow_identity
-        assert broad_identity.metric_preferences == DEFAULT_METRIC_PREFERENCES
+        assert broad_identity.metric_preferences == ALL_METRIC_PREFERENCES
     finally:
         client.close()
 
@@ -815,7 +844,7 @@ def test_old_narrow_completion_does_not_clear_ready_broad_data(qtbot, tmp_path):
         narrow_identity = window._in_flight_identity(app.applicant_id)
         assert narrow_identity is not None
 
-        window.apply_metric_preferences(DEFAULT_METRIC_PREFERENCES)
+        window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
         broad_identity = window._in_flight_identity(app.applicant_id)
         assert broad_identity is not None
 

@@ -65,4 +65,9 @@ class MetricPreferences:
         )
 
 
-DEFAULT_METRIC_PREFERENCES = MetricPreferences()
+DEFAULT_METRIC_PREFERENCES = MetricPreferences(
+    mplus=True,
+    raid_normal=False,
+    raid_heroic=False,
+    raid_mythic=False,
+)

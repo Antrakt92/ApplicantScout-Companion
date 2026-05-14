@@ -6,7 +6,7 @@ import threading
 from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox, QLineEdit, QPushButton
 
 from applicant_scout.config import Config
-from applicant_scout.metric_preferences import MetricPreferences
+from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 import applicant_scout.settings_dialog as settings_mod
 from applicant_scout.settings_dialog import SettingsDialog
 
@@ -51,6 +51,22 @@ def test_settings_dialog_exposes_config_values(qtbot, tmp_path: Path):
         raid_mythic=True,
     )
     assert values.sync_with_wow is True
+
+
+def test_settings_dialog_first_run_defaults_to_mplus_only(qtbot, tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    dialog = SettingsDialog(cfg, first_run=True)
+    qtbot.addWidget(dialog)
+
+    values = dialog.values()
+
+    assert cfg.metric_preferences == DEFAULT_METRIC_PREFERENCES
+    assert values.metric_preferences == MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
 
 
 def test_settings_dialog_prefers_draft_wcl_credentials(qtbot, tmp_path: Path):
