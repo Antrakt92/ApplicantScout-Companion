@@ -68,7 +68,10 @@ def _is_newer(latest: str, current: str) -> bool:
 
 def _asset_download_url(asset: dict[str, Any]) -> str | None:
     value = asset.get("browser_download_url")
-    return value if isinstance(value, str) and value else None
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
 
 
 def _asset_name(asset: dict[str, Any]) -> str:
@@ -258,6 +261,8 @@ def check_for_update(
 
 
 def _is_setup_asset_name(name: str) -> bool:
+    if "/" in name or "\\" in name:
+        return False
     normalized = name.lower()
     return normalized.startswith(_INSTALLER_PREFIX.lower()) and normalized.endswith(".exe")
 
@@ -311,28 +316,32 @@ def download_update_installer(
     launched from the in-app updater because they cannot update the installed
     application safely.
     """
-    if result.status != "available" or not result.asset_url or not result.asset_name:
+    asset_url = result.asset_url.strip() if result.asset_url else ""
+    asset_name = result.asset_name.strip() if result.asset_name else ""
+    checksum_url = result.checksum_url.strip() if result.checksum_url else ""
+    checksum_name = result.checksum_name.strip() if result.checksum_name else ""
+    if result.status != "available" or not asset_url or not asset_name:
         raise RuntimeError("No update installer asset is available.")
-    if not _is_setup_asset_name(result.asset_name):
+    if not _is_setup_asset_name(asset_name):
         raise RuntimeError("Latest release does not include an installer asset.")
-    if not result.checksum_url or not result.checksum_name:
+    if not checksum_url or not checksum_name:
         raise RuntimeError("Latest release does not include an installer checksum.")
 
     target_dir = download_dir or _default_update_download_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / result.asset_name
+    target = target_dir / asset_name
 
     owns_client = client is None
     http = client or httpx.Client(timeout=120.0, follow_redirects=True)
     tmp_path: Path | None = None
     try:
-        response = http.get(result.asset_url, follow_redirects=True)
+        response = http.get(asset_url, follow_redirects=True)
         response.raise_for_status()
-        checksum_response = http.get(result.checksum_url, follow_redirects=True)
+        checksum_response = http.get(checksum_url, follow_redirects=True)
         checksum_response.raise_for_status()
         expected_digest = _parse_sha256_checksum(
             _response_bytes(checksum_response).decode("utf-8"),
-            expected_name=result.asset_name,
+            expected_name=asset_name,
         )
         fd, tmp_name = tempfile.mkstemp(
             prefix=f".{target.name}.",

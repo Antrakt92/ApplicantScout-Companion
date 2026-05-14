@@ -122,7 +122,9 @@ class TrayController:
         self.update_action.triggered.connect(lambda *_args: run_update())
 
         self.open_logs_action = _add_menu_action(self.menu, "Open logs")
-        self.open_logs_action.triggered.connect(lambda *_args: open_logs())
+        self.open_logs_action.triggered.connect(
+            lambda *_args: self._open_logs(open_logs)
+        )
 
         self.menu.addSeparator()
         self.quit_action = _add_menu_action(self.menu, "Quit ApplicantScout")
@@ -158,6 +160,18 @@ class TrayController:
         window.show()
         window.raise_()
         window.activateWindow()
+
+    def _open_logs(self, open_logs: Callable[[], str]) -> None:
+        try:
+            open_logs()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not open logs from tray: %s", exc)
+            self.tray.showMessage(
+                "ApplicantScout logs",
+                f"Could not open logs: {exc}",
+                QSystemTrayIcon.MessageIcon.Warning,
+                7000,
+            )
 
     def _handle_activation(
         self,
@@ -706,6 +720,8 @@ def _update_result_has_installable_asset(result: object) -> bool:
     checksum_url = getattr(result, "checksum_url", None)
     metadata = (asset_name, asset_url, checksum_name, checksum_url)
     if not all(isinstance(value, str) and value.strip() for value in metadata):
+        return False
+    if "/" in asset_name or "\\" in asset_name:
         return False
     normalized = asset_name.lower()
     return normalized.startswith("applicantscoutcompanionsetup-") and normalized.endswith(

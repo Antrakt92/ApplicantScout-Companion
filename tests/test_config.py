@@ -1186,6 +1186,16 @@ def test_update_result_has_installable_asset_rejects_portable_zip():
     assert not main_mod._update_result_has_installable_asset(Result())
 
 
+def test_update_result_has_installable_asset_rejects_path_separator():
+    class Result:
+        asset_name = r"ApplicantScoutCompanionSetup-0.2.0.exe\evil.exe"
+        asset_url = "https://example.test/setup.exe"
+        checksum_name = "ApplicantScoutCompanionSetup-0.2.0.exe.sha256"
+        checksum_url = "https://example.test/setup.exe.sha256"
+
+    assert not main_mod._update_result_has_installable_asset(Result())
+
+
 def test_update_checks_run_hourly_after_initial_startup():
     assert main_mod.UPDATE_CHECK_INITIAL_MS == 30_000
     assert main_mod.UPDATE_CHECK_INTERVAL_MS == 60 * 60 * 1000
@@ -1484,6 +1494,100 @@ def test_tray_controller_skips_unavailable_system_tray(
         is None
     )
     assert not app.quit_on_last_window_closed
+
+
+def test_tray_open_logs_failure_surfaces_notification_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in self._callbacks:
+                callback(*args)
+
+    class FakeAction:
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.triggered = FakeSignal()
+            self.enabled = True
+
+        def trigger(self) -> None:
+            self.triggered.emit()
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    class FakeMenu:
+        def addAction(self, text: str) -> FakeAction:
+            return FakeAction(text)
+
+        def addSeparator(self) -> None:
+            pass
+
+    class FakeTray:
+        class ActivationReason:
+            DoubleClick = "double-click"
+
+        MessageIcon = main_mod.QSystemTrayIcon.MessageIcon
+
+        def __init__(self, *_args) -> None:
+            self.activated = FakeSignal()
+            self.messages: list[tuple[str, str, object, int]] = []
+
+        @staticmethod
+        def isSystemTrayAvailable() -> bool:
+            return True
+
+        def setToolTip(self, _value: str) -> None:
+            pass
+
+        def setContextMenu(self, _menu) -> None:
+            pass
+
+        def show(self) -> None:
+            pass
+
+        def showMessage(self, title: str, body: str, icon, timeout_ms: int) -> None:
+            self.messages.append((title, body, icon, timeout_ms))
+
+    class FakeApp:
+        def setQuitOnLastWindowClosed(self, _value: bool) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "QMenu", FakeMenu)
+    monkeypatch.setattr(main_mod, "QSystemTrayIcon", FakeTray)
+
+    controller = main_mod._create_tray_controller(
+        FakeApp(),
+        icon=object(),
+        window=object(),
+        show_settings=lambda: None,
+        open_logs=lambda: (_ for _ in ()).throw(RuntimeError("folder missing")),
+        run_update=lambda: None,
+        quit_app=lambda: None,
+    )
+
+    assert controller is not None
+    controller.tray.messages.clear()
+
+    controller.open_logs_action.trigger()
+
+    assert controller.tray.messages == [
+        (
+            "ApplicantScout logs",
+            "Could not open logs: folder missing",
+            FakeTray.MessageIcon.Warning,
+            7000,
+        )
+    ]
 
 
 def test_wcl_credential_test_ignores_shared_cached_token(

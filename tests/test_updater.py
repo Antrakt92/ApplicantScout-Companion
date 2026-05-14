@@ -146,6 +146,37 @@ def test_update_check_does_not_select_portable_asset_for_in_app_update():
     assert "no installer asset" in result.message
 
 
+def test_update_check_rejects_blank_asset_download_url():
+    client = _Client(
+        _Response(
+            200,
+            [
+                _release(
+                    "v0.2.0",
+                    assets=[
+                        {
+                            "name": "ApplicantScoutCompanionSetup-0.2.0.exe",
+                            "browser_download_url": "   ",
+                        },
+                        {
+                            "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+                            "browser_download_url": "https://example.test/setup.exe.sha256",
+                        },
+                    ],
+                )
+            ],
+        )
+    )
+
+    result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
+
+    assert result.status == "available"
+    assert result.asset_name is None
+    assert result.asset_url is None
+    assert result.open_url == "https://github.test/releases/tag/v0.2.0"
+    assert "no installer asset" in result.message
+
+
 def test_update_check_ignores_assets_for_other_versions():
     client = _Client(
         _Response(
@@ -480,6 +511,26 @@ def test_download_update_installer_requires_setup_asset(tmp_path):
         raise AssertionError("portable asset should not be launched as an installer")
 
 
+def test_download_update_installer_rejects_setup_asset_with_path_separator(tmp_path):
+    result = UpdateResult(
+        status="available",
+        message="available",
+        current_version="0.1.0",
+        latest_version="v0.2.0",
+        asset_url="https://example.test/setup.exe",
+        asset_name=r"ApplicantScoutCompanionSetup-0.2.0.exe\evil.exe",
+        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+    )
+
+    try:
+        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        assert "installer asset" in str(exc)
+    else:
+        raise AssertionError("setup asset names must not contain path separators")
+
+
 def test_download_update_installer_requires_checksum_asset(tmp_path):
     result = UpdateResult(
         status="available",
@@ -496,6 +547,44 @@ def test_download_update_installer_requires_checksum_asset(tmp_path):
         assert "checksum" in str(exc).lower()
     else:
         raise AssertionError("installer without checksum should not be launched")
+
+
+def test_download_update_installer_rejects_blank_download_urls(tmp_path):
+    result = UpdateResult(
+        status="available",
+        message="available",
+        current_version="0.1.0",
+        latest_version="v0.2.0",
+        asset_url="   ",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+    )
+
+    try:
+        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        assert "installer asset" in str(exc)
+    else:
+        raise AssertionError("blank installer URL should be rejected")
+
+    result = UpdateResult(
+        status="available",
+        message="available",
+        current_version="0.1.0",
+        latest_version="v0.2.0",
+        asset_url="https://example.test/setup.exe",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        checksum_url="   ",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+    )
+
+    try:
+        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        assert "checksum" in str(exc).lower()
+    else:
+        raise AssertionError("blank checksum URL should be rejected")
 
 
 def test_download_update_installer_rejects_malformed_checksum(tmp_path):
