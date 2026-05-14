@@ -24,7 +24,6 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
-    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -305,24 +304,31 @@ class SettingsDialog(QDialog):
         footer_layout.addWidget(self.test_button)
         self.update_button = QToolButton(footer)
         self.update_button.setObjectName("installUpdate")
-        style = self.style()
-        if style is not None:
-            self.update_button.setIcon(
-                style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
-            )
+        self.update_button.setText("↓")
         self.update_button.setToolTip("Install available ApplicantScout update.")
+        self.update_button.setFixedSize(28, 24)
         self.update_button.setStyleSheet(
             "QToolButton {"
-            "background: #0a84ff;"
-            "color: white;"
-            "border: 1px solid #66b2ff;"
+            "background: transparent;"
+            "color: #4da3ff;"
+            "border: 1px solid transparent;"
             "border-radius: 4px;"
+            "font-size: 17px;"
             "font-weight: 700;"
-            "padding: 3px 8px;"
+            "padding-bottom: 2px;"
+            "}"
+            "QToolButton:hover {"
+            "background: #10203a;"
+            "color: #74baff;"
+            "border-color: #2f5f9e;"
+            "}"
+            "QToolButton:pressed {"
+            "background: #0b172b;"
             "}"
             "QToolButton:disabled {"
-            "background: #315f91;"
-            "color: #c7d8ee;"
+            "background: transparent;"
+            "color: #315f91;"
+            "border-color: transparent;"
             "}"
         )
         self.update_button.hide()

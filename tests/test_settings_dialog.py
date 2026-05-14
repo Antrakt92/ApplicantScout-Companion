@@ -353,7 +353,7 @@ def test_settings_dialog_runs_action_callbacks(qtbot, tmp_path: Path):
     dialog.update_button.click()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "up to date")
 
-    assert not dialog.update_button.icon().isNull()
+    assert dialog.update_button.text() == "↓"
     assert calls == ["test", "logs", "cache", "updates"]
     assert dialog.status_label.text() == "up to date"
 
@@ -373,8 +373,13 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert support_button is not None
     assert more_button is not None
     assert test_button.text() == "Test WCL"
-    assert not update_button.icon().isNull()
+    assert update_button.text() == "↓"
     assert update_button.isHidden()
+    assert update_button.width() == 28
+    assert update_button.height() == 24
+    assert "background: transparent" in update_button.styleSheet()
+    assert "#4da3ff" in update_button.styleSheet()
+    assert "#74baff" in update_button.styleSheet()
     assert support_button.text() == "♡"
     assert "ko-fi" in support_button.toolTip().lower()
     assert support_button.width() == 26
@@ -448,7 +453,7 @@ def test_settings_dialog_shows_blue_update_icon_only_when_update_available(
 
     assert not update_button.isHidden()
     assert "v0.2.0" in update_button.toolTip()
-    assert "#0a84ff" in update_button.styleSheet()
+    assert "#4da3ff" in update_button.styleSheet()
 
     dialog.set_update_available(None)
 
