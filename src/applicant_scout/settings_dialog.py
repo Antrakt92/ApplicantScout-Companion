@@ -11,6 +11,7 @@ from PyQt6.QtCore import QObject, QSignalBlocker, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QAbstractButton,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -65,7 +67,7 @@ class SettingsValues:
 
 @dataclass(frozen=True)
 class _AsyncActionResult:
-    button: QPushButton | QAction
+    button: QAbstractButton | QAction
     message: str
     error: bool = False
     open_url: str | None = None
@@ -273,9 +275,29 @@ class SettingsDialog(QDialog):
         self.test_button.setToolTip("Validate the current Warcraft Logs credentials.")
         self.test_button.clicked.connect(self._test_credentials)
         footer_layout.addWidget(self.test_button)
-        self.update_button = QPushButton("Update", footer)
-        self.update_button.setObjectName("checkUpdates")
-        self.update_button.setToolTip("Check for and prepare the latest companion update.")
+        self.update_button = QToolButton(footer)
+        self.update_button.setObjectName("installUpdate")
+        style = self.style()
+        if style is not None:
+            self.update_button.setIcon(
+                style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+            )
+        self.update_button.setToolTip("Install available ApplicantScout update.")
+        self.update_button.setStyleSheet(
+            "QToolButton {"
+            "background: #0a84ff;"
+            "color: white;"
+            "border: 1px solid #66b2ff;"
+            "border-radius: 4px;"
+            "font-weight: 700;"
+            "padding: 3px 8px;"
+            "}"
+            "QToolButton:disabled {"
+            "background: #315f91;"
+            "color: #c7d8ee;"
+            "}"
+        )
+        self.update_button.hide()
         self.update_button.clicked.connect(self._check_for_updates)
         footer_layout.addWidget(self.update_button)
         footer_layout.addWidget(self._build_more_actions_button(footer))
@@ -331,6 +353,16 @@ class SettingsDialog(QDialog):
             ),
             sync_with_wow=self.sync_with_wow_check.isChecked(),
         )
+
+    def set_update_available(self, latest_version: str | None) -> None:
+        if latest_version:
+            self.update_button.setToolTip(
+                f"Install ApplicantScout Companion {latest_version}."
+            )
+            self.update_button.show()
+            return
+        self.update_button.hide()
+        self.update_button.setToolTip("Install available ApplicantScout update.")
 
     def accept(self) -> None:  # type: ignore[override]
         values = self.values()
@@ -436,7 +468,7 @@ class SettingsDialog(QDialog):
     def _start_async_action(
         self,
         *,
-        button: QPushButton | QAction,
+        button: QAbstractButton | QAction,
         busy_text: str,
         error_prefix: str,
         action: Callable[[], str | tuple[str, str | None]],
@@ -473,6 +505,8 @@ class SettingsDialog(QDialog):
             return
         raw.button.setEnabled(True)
         self._set_status(raw.message, error=raw.error)
+        if raw.button is self.update_button and not raw.error:
+            self.set_update_available(None)
         if not raw.error and raw.open_url:
             QDesktopServices.openUrl(QUrl(raw.open_url))
         if not raw.error and isinstance(raw.success_payload, SettingsValues):
@@ -669,7 +703,7 @@ class SettingsDialog(QDialog):
         check_updates = self._check_updates
         self._start_async_action(
             button=self.update_button,
-            busy_text="Checking and preparing update...",
+            busy_text="Installing update...",
             error_prefix="Update failed",
             action=check_updates,
         )

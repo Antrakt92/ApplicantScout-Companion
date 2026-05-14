@@ -62,7 +62,7 @@ CONTROL_SHUTDOWN_ARG = "--shutdown-running-instance"
 SHOW_SETTINGS_ARG = "--show-settings"
 WOW_EXIT_POLL_MS = 5000
 UPDATE_CHECK_INITIAL_MS = 30_000
-UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 _QT_APPLICATION_CLASS = QApplication
 
 
@@ -868,6 +868,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     settings_dialog: SettingsDialog | None = None
+    pending_update_version: str | None = None
 
     def _flush_settings_before_quit() -> None:
         if settings_dialog is not None:
@@ -956,6 +957,7 @@ def main(argv: list[str] | None = None) -> int:
             parent=window,
         )
         dialog.setWindowIcon(_app_icon())
+        dialog.set_update_available(pending_update_version)
         settings_dialog = dialog
 
         def _forget_dialog() -> None:
@@ -1070,9 +1072,15 @@ def main(argv: list[str] | None = None) -> int:
         threading.Thread(target=_worker, name="ApplicantScoutUpdater", daemon=True).start()
 
     def _handle_update_completed(message: str, error: bool) -> None:
+        nonlocal pending_update_version
         if error:
             QMessageBox.warning(window, "ApplicantScout update", message)
             return
+        pending_update_version = None
+        if settings_dialog is not None:
+            settings_dialog.set_update_available(None)
+        if tray_controller is not None:
+            tray_controller.set_update_available(None)
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",
@@ -1093,15 +1101,18 @@ def main(argv: list[str] | None = None) -> int:
         ).start()
 
     def _handle_update_checked(result: object) -> None:
-        if tray_controller is None:
-            return
+        nonlocal pending_update_version
         latest_version = getattr(result, "latest_version", None)
         if getattr(result, "status", None) == "available" and _update_result_has_installable_asset(
             result
         ):
-            tray_controller.set_update_available(str(latest_version or "available"))
+            pending_update_version = str(latest_version or "available")
         else:
-            tray_controller.set_update_available(None)
+            pending_update_version = None
+        if tray_controller is not None:
+            tray_controller.set_update_available(pending_update_version)
+        if settings_dialog is not None:
+            settings_dialog.set_update_available(pending_update_version)
 
     update_signals.checked.connect(_handle_update_checked)
     update_signals.completed.connect(_handle_update_completed)

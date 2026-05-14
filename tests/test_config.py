@@ -1160,6 +1160,11 @@ def test_update_result_has_installable_asset_rejects_portable_zip():
     assert not main_mod._update_result_has_installable_asset(Result())
 
 
+def test_update_checks_run_hourly_after_initial_startup():
+    assert main_mod.UPDATE_CHECK_INITIAL_MS == 30_000
+    assert main_mod.UPDATE_CHECK_INTERVAL_MS == 60 * 60 * 1000
+
+
 def test_settings_dialog_gets_explicit_app_icon_before_exec(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

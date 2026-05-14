@@ -214,10 +214,12 @@ def test_readme_documents_verified_self_update_flow():
     readme = _read_repo_text("README.md")
 
     assert "does not self-replace" not in readme
-    assert "Use Settings -> Update." in readme
+    assert "checks for updates hourly" in readme
+    assert "blue download button" in readme
     assert ".exe.sha256" in readme
     assert "%LOCALAPPDATA%\\Programs\\ApplicantScout Companion" in readme
     assert "downloads the installer, verifies its `.sha256` checksum" in readme
+    assert "relaunches it after the update" in readme
     assert "Start and stop with WoW" in readme
 
 

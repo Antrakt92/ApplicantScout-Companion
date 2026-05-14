@@ -348,10 +348,11 @@ def test_settings_dialog_runs_action_callbacks(qtbot, tmp_path: Path):
     assert dialog.status_label.text() == "credentials ok"
     dialog.logs_action.trigger()
     dialog.cache_action.trigger()
+    dialog.set_update_available("v0.2.0")
     dialog.update_button.click()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "up to date")
 
-    assert dialog.update_button.text() == "Update"
+    assert not dialog.update_button.icon().isNull()
     assert calls == ["test", "logs", "cache", "updates"]
     assert dialog.status_label.text() == "up to date"
 
@@ -362,14 +363,15 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
 
     footer = dialog.findChild(QWidget, "settingsFooter")
     test_button = dialog.findChild(QPushButton, "testWcl")
-    update_button = dialog.findChild(QPushButton, "checkUpdates")
+    update_button = dialog.findChild(QToolButton, "installUpdate")
     more_button = dialog.findChild(QToolButton, "settingsMoreActions")
     assert footer is not None
     assert test_button is not None
     assert update_button is not None
     assert more_button is not None
     assert test_button.text() == "Test WCL"
-    assert update_button.text() == "Update"
+    assert not update_button.icon().isNull()
+    assert update_button.isHidden()
     assert more_button.text() == "More"
     assert test_button.parent() is footer
     assert update_button.parent() is footer
@@ -384,6 +386,27 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert dialog.findChild(QPushButton, "hideToTray") is None
     assert dialog.findChild(QPushButton, "quitApplicantScout") is None
     assert dialog.findChild(QDialogButtonBox) is None
+
+
+def test_settings_dialog_shows_blue_update_icon_only_when_update_available(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    update_button = dialog.findChild(QToolButton, "installUpdate")
+
+    assert update_button is not None
+    assert update_button.isHidden()
+
+    dialog.set_update_available("v0.2.0")
+
+    assert not update_button.isHidden()
+    assert "v0.2.0" in update_button.toolTip()
+    assert "#0a84ff" in update_button.styleSheet()
+
+    dialog.set_update_available(None)
+
+    assert update_button.isHidden()
 
 
 def test_normal_settings_close_button_hides_to_tray(qtbot, tmp_path: Path):

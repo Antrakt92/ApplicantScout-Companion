@@ -47,10 +47,9 @@ the overlay.
 
 Use the Settings button in the companion title bar to edit WCL credentials,
 region fallback, screenshots path, WCL data scope, WoW lifecycle sync, cache,
-logs, or update checks. Settings save automatically as you change them. Use
-**Hide to tray** to keep ApplicantScout running in the background, or
-**Quit ApplicantScout** to close the companion completely. Settings are stored
-locally under
+or logs. Settings save automatically as you change them. Closing the settings
+window hides it back to the tray; use the tray menu's **Quit ApplicantScout**
+action to close the companion completely. Settings are stored locally under
 `%LOCALAPPDATA%\applicant-scout\config\config.env`.
 
 Developer/source runs may still use a repo-local `.env` when the local config
@@ -116,11 +115,12 @@ ApplicantScout Companion `0.1.0` is paired with the ApplicantScout WoW addon
 
 ## Updates
 
-Use Settings -> Update. The companion checks stable GitHub Releases for
-`Antrakt92/ApplicantScout-Companion`, prefers the Windows installer asset,
+ApplicantScout checks for updates hourly. When an installable stable GitHub
+Release is available, Settings shows a blue download button. Clicking it
 downloads the installer, verifies its `.sha256` checksum, and launches the
-installer from inside the app. Portable ZIP artifacts are published for
-manual/dev use but are not launched by the in-app updater.
+silent installer from inside the app. If the companion is running, the installer
+closes it and relaunches it after the update. Portable ZIP artifacts are
+published for manual/dev use but are not launched by the in-app updater.
 
 Normal installs use the per-user directory
 `%LOCALAPPDATA%\Programs\ApplicantScout Companion`, so routine installs and
