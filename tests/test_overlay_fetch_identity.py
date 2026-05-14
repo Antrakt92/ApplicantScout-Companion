@@ -129,6 +129,12 @@ def test_fetch_done_prefers_not_found_over_error_text(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")
     app = _app()
+    app.fetch_status = "ready"
+    app.raid_heroic = 88.0
+    app.mplus_dps = 77.0
+    app.mplus_dps_breakdown = [
+        {"name": "Skyreach", "parse_percent": 90.0, "key_level": 16, "run_count": 3}
+    ]
     state.add_or_update(app)
     window, client = _window(qtbot, tmp_path, state)
 
@@ -150,6 +156,9 @@ def test_fetch_done_prefers_not_found_over_error_text(qtbot, tmp_path):
         assert app.fetch_status == "not_found"
         assert app.error_message == ""
         assert app.wcl_error_kind == ""
+        assert app.raid_heroic is None
+        assert app.mplus_dps is None
+        assert app.mplus_dps_breakdown == []
     finally:
         client.close()
 
@@ -158,6 +167,12 @@ def test_fetch_error_stores_error_kind(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")
     app = _app()
+    app.fetch_status = "ready"
+    app.raid_heroic = 88.0
+    app.mplus_dps = 77.0
+    app.mplus_dps_breakdown = [
+        {"name": "Skyreach", "parse_percent": 90.0, "key_level": 16, "run_count": 3}
+    ]
     state.add_or_update(app)
     window, client = _window(qtbot, tmp_path, state)
 
@@ -182,6 +197,9 @@ def test_fetch_error_stores_error_kind(qtbot, tmp_path):
         assert app.fetch_status == "error"
         assert app.error_message == "WCL quota guard 90% used"
         assert app.wcl_error_kind == WCL_ERROR_QUOTA_GUARD
+        assert app.raid_heroic is None
+        assert app.mplus_dps is None
+        assert app.mplus_dps_breakdown == []
     finally:
         client.close()
 

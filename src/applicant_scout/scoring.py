@@ -115,8 +115,30 @@ def effective_rio_score(applicant: Applicant) -> int:
 def candidate_fit(applicant: Applicant, listing: Listing | None) -> CandidateFit:
     context = detect_listing_context(listing)
     if context == CONTEXT_MPLUS and listing is not None:
+        if _is_terminal_fetch_status(applicant.fetch_status):
+            return CandidateFit(
+                context=CONTEXT_MPLUS,
+                score=0.0,
+                label=fit_label(0.0),
+                source=applicant.fetch_status,
+                display="",
+                colour=fit_colour(0.0),
+                target_key=listing.key_level,
+                confidence=0.0,
+            )
         return _mplus_candidate_fit(applicant, listing)
     if context == CONTEXT_RAID and listing is not None:
+        if _is_terminal_fetch_status(applicant.fetch_status):
+            return CandidateFit(
+                context=CONTEXT_RAID,
+                score=0.0,
+                label=fit_label(0.0),
+                source=applicant.fetch_status,
+                display="",
+                colour=fit_colour(0.0),
+                target_raid=RAID_TARGET_BY_DIFFICULTY_ID.get(listing.difficulty_id, ""),
+                confidence=0.0,
+            )
         return _raid_candidate_fit(applicant, listing)
     return CandidateFit(context=CONTEXT_UNKNOWN)
 
@@ -258,6 +280,10 @@ def fit_label(score: float) -> str:
 
 def fit_colour(score: float) -> str:
     return percentile_colour(score)
+
+
+def _is_terminal_fetch_status(status: str) -> bool:
+    return status in {"error", "not_found"}
 
 
 def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:

@@ -426,6 +426,25 @@ def test_package_fit_status_confidence_and_penalty():
     assert error_group.score < loading_group.score
 
 
+def test_package_fit_terminal_member_does_not_score_from_stale_wcl_metrics():
+    target = _listing(key_level=16)
+    ready = _app(
+        dps_breakdown=[_dungeon("Skyreach", [(16, 82.0, 74.0, 3)])],
+        score=3300,
+    )
+    stale_error = _app(
+        dps_breakdown=[_dungeon("Skyreach", [(16, 99.0, 95.0, 3)])],
+        score=3300,
+        fetch_status="error",
+    )
+
+    group = package_fit([ready, stale_error], target)
+
+    assert group.member_scores[1] == 0.0
+    assert group.label == "RISK"
+    assert group.display.startswith("G2 RISK ")
+
+
 def test_raid_heroic_listing_prioritises_heroic_parse():
     target = _listing(category_id=3, difficulty_id=15)
     heroic = _app(raid_heroic=90.0, raid_heroic_median=80.0, score=2500)

@@ -651,11 +651,17 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
             package_width = min(package_width, width - 1)
 
         package_rect = QRect(rect.left(), rect.top(), package_width, rect.height())
-        separator_rect = QRect(package_rect.right(), rect.top(), 1, rect.height())
-        individual_rect = QRect(
-            package_rect.right() + 1,
+        separator_rect = QRect(
+            rect.left() + package_width,
             rect.top(),
-            max(1, rect.width() - package_width - 1),
+            1,
+            rect.height(),
+        )
+        individual_left = separator_rect.right() + 1
+        individual_rect = QRect(
+            individual_left,
+            rect.top(),
+            max(1, rect.right() - individual_left + 1),
             rect.height(),
         )
 
@@ -2312,11 +2318,11 @@ class OverlayWindow(QMainWindow):
             self._sync_delegate_and_panel()
             return
         if ranks.not_found:
-            applicant.fetch_status = "not_found"
+            applicant.clear_wcl_data(fetch_status="not_found")
             applicant.error_message = ""
             applicant.wcl_error_kind = ""
         elif ranks.error:
-            applicant.fetch_status = "error"
+            applicant.clear_wcl_data(fetch_status="error")
             applicant.error_message = ranks.error
             applicant.wcl_error_kind = ranks.error_kind
             self._schedule_wcl_retry()

@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QLabel
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtGui import QColor, QImage, QPainter
+from PyQt6.QtWidgets import QApplication, QLabel, QStyleOptionViewItem, QTableWidget
 
 import applicant_scout.overlay as overlay_mod
 from applicant_scout.constants import percentile_colour
@@ -24,6 +25,8 @@ from applicant_scout.overlay import (
     MPLUS_PACKAGE_TEXT_ROLE,
     ApplicantInfoPanel,
     OverlayWindow,
+    _HoverHighlightDelegate,
+    _mplus_group_cell,
 )
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from applicant_scout.scoring import PackageFit
@@ -713,6 +716,62 @@ def test_package_cell_keeps_package_and_individual_mplus_for_every_group_member(
         assert window._delegate._group_marker_by_row[follower_row].last_visible
     finally:
         client.close()
+
+
+def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="10:1", name="Ready-Realm"))
+    state.add_or_update(
+        _app(applicant_id="10:2", name="Error-Realm", fetch_status="error")
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window._refresh_table()
+        error_row = window._row_for_id["10:2"]
+        item = window._table.item(error_row, COL_MPLUS)
+
+        assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == "?"
+        assert item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 RISK ")
+    finally:
+        client.close()
+
+
+def test_group_mplus_delegate_paints_full_cell_width(qtbot):
+    table = QTableWidget(1, COL_MPLUS + 1)
+    qtbot.addWidget(table)
+    delegate = _HoverHighlightDelegate(table)
+    table.setItem(
+        0,
+        COL_MPLUS,
+        _mplus_group_cell(
+            PackageFit(size=2, display="G2 OK 58", colour="#0070ff"),
+            _app(),
+            _listing(),
+        ),
+    )
+    index = table.model().index(0, COL_MPLUS)
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 100, 24)
+    option.widget = table
+    image = QImage(option.rect.size(), QImage.Format.Format_ARGB32)
+    image.fill(QColor("#000000"))
+    painter = QPainter(image)
+    try:
+        delegate.paint(painter, option, index)
+    finally:
+        painter.end()
+
+    assert image.pixelColor(option.rect.width() - 1, option.rect.height() // 2) != QColor(
+        "#000000"
+    )
 
 
 def test_overlay_table_mplus_listing_status_precedes_stale_fit_for_solo_row(

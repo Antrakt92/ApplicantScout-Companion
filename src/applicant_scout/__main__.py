@@ -63,6 +63,7 @@ SHOW_SETTINGS_ARG = "--show-settings"
 WOW_EXIT_POLL_MS = 5000
 UPDATE_CHECK_INITIAL_MS = 30_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
+_UPDATE_INSTALL_LOCK = threading.Lock()
 _QT_APPLICATION_CLASS = QApplication
 
 
@@ -552,22 +553,27 @@ def _test_wcl_credentials(cache_dir: Path, client_id: str, client_secret: str, _
 
 
 def _check_updates() -> tuple[str, str | None]:
-    result = check_for_update(__version__)
-    status = getattr(result, "status", None)
-    message = getattr(result, "message", "Update check failed.")
-    if status == "unavailable":
-        raise RuntimeError(str(message))
-    if status != "available":
-        return str(message), None
-    if not _update_result_has_installable_asset(result):
-        raise RuntimeError(str(message))
-    installer = download_update_installer(result)
-    launch_update_installer(installer)
-    return (
-        f"Installing ApplicantScout Companion {getattr(result, 'latest_version', 'update')}. "
-        "The companion may close and reopen during the update.",
-        None,
-    )
+    if not _UPDATE_INSTALL_LOCK.acquire(blocking=False):
+        raise RuntimeError("Update is already in progress.")
+    try:
+        result = check_for_update(__version__)
+        status = getattr(result, "status", None)
+        message = getattr(result, "message", "Update check failed.")
+        if status == "unavailable":
+            raise RuntimeError(str(message))
+        if status != "available":
+            return str(message), None
+        if not _update_result_has_installable_asset(result):
+            raise RuntimeError(str(message))
+        installer = download_update_installer(result)
+        launch_update_installer(installer)
+        return (
+            f"Installing ApplicantScout Companion {getattr(result, 'latest_version', 'update')}. "
+            "The companion may close and reopen during the update.",
+            None,
+        )
+    finally:
+        _UPDATE_INSTALL_LOCK.release()
 
 
 def _should_show_settings_on_start(
@@ -698,11 +704,8 @@ def _update_result_has_installable_asset(result: object) -> bool:
     asset_url = getattr(result, "asset_url", None)
     checksum_name = getattr(result, "checksum_name", None)
     checksum_url = getattr(result, "checksum_url", None)
-    if not (
-        isinstance(asset_url, str)
-        and isinstance(checksum_name, str)
-        and isinstance(checksum_url, str)
-    ):
+    metadata = (asset_name, asset_url, checksum_name, checksum_url)
+    if not all(isinstance(value, str) and value.strip() for value in metadata):
         return False
     normalized = asset_name.lower()
     return normalized.startswith("applicantscoutcompanionsetup-") and normalized.endswith(

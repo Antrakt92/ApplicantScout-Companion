@@ -1166,6 +1166,16 @@ def test_update_result_has_installable_asset_rejects_missing_checksum():
     assert not main_mod._update_result_has_installable_asset(Result())
 
 
+def test_update_result_has_installable_asset_rejects_blank_metadata():
+    class Result:
+        asset_name = "ApplicantScoutCompanionSetup-0.2.0.exe"
+        asset_url = ""
+        checksum_name = "ApplicantScoutCompanionSetup-0.2.0.exe.sha256"
+        checksum_url = "   "
+
+    assert not main_mod._update_result_has_installable_asset(Result())
+
+
 def test_update_result_has_installable_asset_rejects_portable_zip():
     class Result:
         asset_name = "ApplicantScoutCompanion-0.2.0-portable.zip"
@@ -1216,6 +1226,15 @@ def test_check_updates_treats_uninstallable_available_release_as_error(
 
     with pytest.raises(RuntimeError, match="no installer asset"):
         main_mod._check_updates()
+
+
+def test_check_updates_rejects_parallel_installer_runs():
+    assert main_mod._UPDATE_INSTALL_LOCK.acquire(blocking=False)
+    try:
+        with pytest.raises(RuntimeError, match="already in progress"):
+            main_mod._check_updates()
+    finally:
+        main_mod._UPDATE_INSTALL_LOCK.release()
 
 
 def test_check_updates_downloads_and_launches_installable_release(
