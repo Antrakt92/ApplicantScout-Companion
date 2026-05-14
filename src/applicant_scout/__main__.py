@@ -66,6 +66,29 @@ UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 _QT_APPLICATION_CLASS = QApplication
 
 
+class _WCLRegionRuntime:
+    def __init__(self, fallback_region: str):
+        self._fallback_region = (fallback_region or "EU").upper()
+        self._live_region: str | None = None
+
+    @property
+    def effective_region(self) -> str:
+        return self._live_region or self._fallback_region
+
+    def set_fallback(self, region: str) -> bool:
+        before = self.effective_region
+        self._fallback_region = (region or "EU").upper()
+        return self.effective_region != before
+
+    def set_live_region_id(self, region_id: int) -> bool:
+        region = REGION_ID_TO_WCL.get(region_id)
+        if region is None:
+            return False
+        before = self.effective_region
+        self._live_region = region
+        return self.effective_region != before
+
+
 class TrayController:
     def __init__(
         self,
@@ -867,6 +890,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg, screenshots_dir, startup_settings_shown = loaded
     region = cfg.region or REGION_ID_TO_WCL.get(3, "EU")  # default EU
+    region_runtime = _WCLRegionRuntime(region)
     log.info("Screenshots: %s", screenshots_dir)
     path_warning = screenshots_path_health_warning(screenshots_dir)
     if path_warning:
@@ -883,7 +907,11 @@ def main(argv: list[str] | None = None) -> int:
     _validate_oauth_async(auth)
 
     cache = CharacterCache(cfg.cache_dir, ttl_seconds=cfg.cache_ttl_seconds)
-    wcl_client = WCLClient(auth, region=region, metric_preferences=cfg.metric_preferences)
+    wcl_client = WCLClient(
+        auth,
+        region=region_runtime.effective_region,
+        metric_preferences=cfg.metric_preferences,
+    )
 
     # Ctrl+C → graceful quit (PyQt's C event loop swallows SIGINT by default;
     # the no-op timer wakes Python every 500 ms so signal handlers actually run)
@@ -960,9 +988,8 @@ def main(argv: list[str] | None = None) -> int:
                     old_cfg.wcl_client_id != new_cfg.wcl_client_id
                     or old_cfg.wcl_client_secret != new_cfg.wcl_client_secret
                 )
-                wcl_runtime_changed = (
-                    credentials_promoted or old_cfg.region != new_cfg.region
-                )
+                region_effective_changed = region_runtime.set_fallback(new_cfg.region)
+                wcl_runtime_changed = credentials_promoted or region_effective_changed
                 if new_cfg.wcl_client_id and new_cfg.wcl_client_secret:
                     if credentials_promoted:
                         auth = WCLAuth(
@@ -971,7 +998,8 @@ def main(argv: list[str] | None = None) -> int:
                             new_cfg.cache_dir,
                         )
                         wcl_client.reconfigure_auth(auth)
-                    wcl_client.region = new_cfg.region
+                if wcl_runtime_changed:
+                    wcl_client.region = region_runtime.effective_region
                 if wcl_runtime_changed:
                     window.apply_metric_preferences(
                         new_cfg.metric_preferences,
@@ -1113,12 +1141,14 @@ def main(argv: list[str] | None = None) -> int:
     machine.cleared.connect(window.on_cleared)
 
     def _sync_region_to_wcl(region_id: int) -> None:
-        new_region = REGION_ID_TO_WCL.get(region_id)
-        if new_region and new_region != wcl_client.region:
+        old_region = wcl_client.region
+        if region_runtime.set_live_region_id(region_id):
             log.info(
-                "Region updated from VERSION: %s -> %s", wcl_client.region, new_region
+                "Region updated from VERSION: %s -> %s",
+                old_region,
+                region_runtime.effective_region,
             )
-            wcl_client.region = new_region
+            wcl_client.region = region_runtime.effective_region
 
     machine.versionUpdated.connect(_sync_region_to_wcl)
 

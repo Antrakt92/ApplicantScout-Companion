@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 
+import httpx
 import pytest
 
 from applicant_scout import atomic_io
@@ -18,6 +19,7 @@ from applicant_scout.wcl import (
     KeyBracketPerf,
     RateLimitInfo,
     _RU_REALM_MAP_LOWER,
+    WCL_ERROR_AUTH,
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_RATE_LIMITED,
@@ -204,6 +206,37 @@ class _FakeHTTP:
             self._status_code,
             json_error=self._json_error,
         )
+
+    def close(self) -> None:
+        pass
+
+
+class _SequenceHTTP:
+    def __init__(self, responses: list[_FakeResponse]):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def post(self, url: str, *, json: dict, headers: dict) -> _FakeResponse:
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        if not self._responses:
+            raise AssertionError("unexpected HTTP call")
+        return self._responses.pop(0)
+
+    def close(self) -> None:
+        pass
+
+
+class _ReentrantHTTP:
+    def __init__(self, body: object, callback):
+        self._body = body
+        self._callback = callback
+        self.calls: list[dict] = []
+
+    def post(self, url: str, *, json: dict, headers: dict) -> _FakeResponse:
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        if len(self.calls) == 1:
+            self._callback()
+        return _FakeResponse(self._body)
 
     def close(self) -> None:
         pass
@@ -626,6 +659,192 @@ def test_fetch_character_ranks_respects_metric_preferences():
     assert result.mplus_dps_breakdown == []
 
 
+def test_fetch_character_ranks_second_401_is_auth_error_kind():
+    auth = _FakeAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _SequenceHTTP(
+        [
+            _FakeResponse({"error": "expired"}, status_code=401),
+            _FakeResponse({"error": "still bad"}, status_code=401),
+        ]
+    )
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert excinfo.value.error_kind == WCL_ERROR_AUTH
+    assert auth.invalidations == 1
+    assert len(http.calls) == 2
+
+
+def test_fetch_character_ranks_401_retry_success_preserves_token_refresh():
+    auth = _FakeAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _SequenceHTTP(
+        [
+            _FakeResponse({"error": "expired"}, status_code=401),
+            _FakeResponse(_wcl_payload(_character())),
+        ]
+    )
+    client._http = http  # type: ignore[assignment]
+
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.error == ""
+    assert auth.invalidations == 1
+    assert len(http.calls) == 2
+    assert client.last_quota is not None
+    assert client.last_quota.points_spent == pytest.approx(10.0)
+
+
+def test_fetch_character_ranks_403_is_auth_error_kind():
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP({"error": "forbidden"}, status_code=403)
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert excinfo.value.error_kind == WCL_ERROR_AUTH
+    assert len(http.calls) == 1
+
+
+def test_quota_reservation_blocks_second_cache_miss_before_http(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = 1_000.0
+    second_result: list[CharacterRanks] = []
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._record_quota_snapshot(
+        RateLimitInfo(limit_per_hour=100.0, points_spent=84.0, reset_in_seconds=60.0),
+        now=now,
+    )
+
+    def fetch_second() -> None:
+        second_result.append(
+            client.fetch_character_ranks("Second", "ravencrest", spec_id=71)
+        )
+
+    client._http.close()
+    http = _ReentrantHTTP(_wcl_payload(_character()), fetch_second)
+    client._http = http  # type: ignore[assignment]
+
+    first = client.fetch_character_ranks("First", "ravencrest", spec_id=71)
+
+    assert first.error == ""
+    assert len(second_result) == 1
+    assert second_result[0].error_kind == WCL_ERROR_QUOTA_GUARD
+    assert len(http.calls) == 1
+
+
+def test_quota_reservation_releases_after_network_exception(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = 1_000.0
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._record_quota_snapshot(
+        RateLimitInfo(limit_per_hour=100.0, points_spent=84.0, reset_in_seconds=60.0),
+        now=now,
+    )
+
+    class RaisingHTTP:
+        calls = 0
+
+        def post(self, *_args, **_kwargs):
+            self.calls += 1
+            raise httpx.RequestError("network down")
+
+        def close(self) -> None:
+            pass
+
+    failing_http = RaisingHTTP()
+    client._http.close()
+    client._http = failing_http  # type: ignore[assignment]
+
+    with pytest.raises(httpx.RequestError):
+        client.fetch_character_ranks("First", "ravencrest", spec_id=71)
+
+    http = _FakeHTTP(_wcl_payload(_character()))
+    client._http = http  # type: ignore[assignment]
+    result = client.fetch_character_ranks("Second", "ravencrest", spec_id=71)
+
+    assert result.error == ""
+    assert len(http.calls) == 1
+
+
+def test_reconfigure_auth_clears_quota_reservation_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = 1_000.0
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._record_quota_snapshot(
+        RateLimitInfo(limit_per_hour=100.0, points_spent=84.0, reset_in_seconds=60.0),
+        now=now,
+    )
+    reservation = client._reserve_quota_for_fetch(12.0, now=now)
+    assert not isinstance(reservation, CharacterRanks)
+    assert client.quota_guard_retry_remaining_seconds(now=now) == pytest.approx(60.0)
+
+    client.reconfigure_auth(_FakeAuth())  # type: ignore[arg-type]
+
+    assert client.last_quota is None
+    assert client.quota_guard_retry_remaining_seconds(now=now) == 0.0
+
+
+def test_reconfigure_auth_ignores_stale_quota_snapshot_from_in_flight_fetch():
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+
+    def reconfigure_before_response() -> None:
+        client.reconfigure_auth(_FakeAuth())  # type: ignore[arg-type]
+
+    client._http.close()
+    client._http = _ReentrantHTTP(  # type: ignore[assignment]
+        _wcl_payload(_character()),
+        reconfigure_before_response,
+    )
+
+    result = client.fetch_character_ranks("First", "ravencrest", spec_id=71)
+
+    assert result.error == ""
+    assert client.last_quota is None
+    assert client.quota_guard_retry_remaining_seconds() == 0.0
+
+
+def test_reconfigure_auth_ignores_stale_429_from_in_flight_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = 1_000.0
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+
+    class ReconfigureThenRateLimitHTTP:
+        calls = 0
+
+        def post(self, *_args, **_kwargs):
+            self.calls += 1
+            client.reconfigure_auth(_FakeAuth())  # type: ignore[arg-type]
+            return _FakeResponse({"error": "rate limited"}, status_code=429)
+
+        def close(self) -> None:
+            pass
+
+    client._http.close()
+    client._http = ReconfigureThenRateLimitHTTP()  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_ranks("First", "ravencrest", spec_id=71)
+
+    assert excinfo.value.error_kind == WCL_ERROR_RATE_LIMITED
+    assert client.rate_limit_retry_remaining_seconds(now=now) == 0.0
+
+
 def test_quota_guard_blocks_before_reset_without_spending_http_call(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -743,6 +962,199 @@ def test_character_cache_reads_current_entry_without_error_kind(tmp_path):
 
     assert result is not None
     assert result.error_kind == ""
+
+
+def test_character_cache_reuses_broader_metric_scope_for_narrow_request(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+
+    loaded = CharacterCache(tmp_path)
+    result = loaded.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=narrow,
+    )
+
+    assert result is not None
+    assert result.raid_normal is None
+    assert result.raid_heroic == pytest.approx(22.0)
+    assert result.raid_mythic is None
+    assert result.mplus_dps is None
+    assert result.mplus_dps_breakdown == []
+
+
+def test_character_cache_does_not_reuse_narrow_scope_for_broad_request(tmp_path):
+    cache = CharacterCache(tmp_path)
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        metric_preferences=narrow,
+    )
+
+    loaded = CharacterCache(tmp_path)
+    result = loaded.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+
+    assert result is None
+
+
+def test_character_cache_prefers_exact_scope_over_broader_scope(tmp_path):
+    cache = CharacterCache(tmp_path)
+    broad = _ranks()
+    exact = _ranks()
+    exact.raid_heroic = 44.0
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        broad,
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        exact,
+        role="DAMAGER",
+        metric_preferences=narrow,
+    )
+
+    loaded = CharacterCache(tmp_path)
+    result = loaded.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=narrow,
+    )
+
+    assert result is not None
+    assert result.raid_heroic == pytest.approx(44.0)
+
+
+def test_character_cache_tie_breaks_same_timestamp_broader_scopes(tmp_path):
+    cache = CharacterCache(tmp_path)
+    normal_heroic = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    heroic_mythic = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    requested = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    first = _ranks()
+    first.raid_heroic = 31.0
+    second = _ranks()
+    second.raid_heroic = 32.0
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        first,
+        role="DAMAGER",
+        metric_preferences=normal_heroic,
+    )
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        second,
+        role="DAMAGER",
+        metric_preferences=heroic_mythic,
+    )
+    same_time = time.time()
+    for entry in cache._data.values():
+        entry.fetched_at = same_time
+
+    result = cache.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=requested,
+    )
+
+    assert result is not None
+    assert result.raid_heroic in {31.0, 32.0}
+
+
+def test_character_cache_ignores_malformed_scope_key_entries(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+    valid_key = CharacterCache._key("Scout", "ravencrest", "EU", 71, "DAMAGER")
+    raw["entries"][
+        "EU:ravencrest:scout:71:DPS:not-a-preference-key"
+    ] = raw["entries"].pop(valid_key)
+    cache._path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = CharacterCache(tmp_path)
+    result = loaded.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=MetricPreferences(mplus=False),
+    )
+
+    assert result is None
 
 
 def test_character_cache_discards_v4_entries_after_devourer_mapping_change(tmp_path):

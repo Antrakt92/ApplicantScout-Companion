@@ -58,6 +58,32 @@ def _retail_root(tmp_path: Path) -> Path:
     return tmp_path / "World of Warcraft" / "_retail_"
 
 
+def test_wcl_region_runtime_uses_fallback_until_live_region_known():
+    runtime = main_mod._WCLRegionRuntime("EU")
+
+    assert runtime.effective_region == "EU"
+    assert runtime.set_fallback("US") is True
+    assert runtime.effective_region == "US"
+
+
+def test_wcl_region_runtime_live_region_overrides_fallback_changes():
+    runtime = main_mod._WCLRegionRuntime("EU")
+
+    assert runtime.set_live_region_id(1) is True
+    assert runtime.effective_region == "US"
+    assert runtime.set_fallback("KR") is False
+    assert runtime.effective_region == "US"
+
+
+def test_wcl_region_runtime_unknown_live_region_does_not_override():
+    runtime = main_mod._WCLRegionRuntime("EU")
+
+    assert runtime.set_live_region_id(99) is False
+    assert runtime.effective_region == "EU"
+    assert runtime.set_fallback("TW") is True
+    assert runtime.effective_region == "TW"
+
+
 def test_explicit_nonexistent_screenshots_override_returns_path(tmp_path: Path):
     root = _retail_root(tmp_path)
     (root / "Interface" / "AddOns").mkdir(parents=True)
@@ -511,6 +537,7 @@ def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
     root = _retail_root(tmp_path)
     cfg = _cfg(tmp_path, chatlog_path=root / "Logs" / "WoWChatLog.txt")
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(main_mod, "_has_running_instance", lambda *_args: False)
     monkeypatch.setattr(main_mod, "_run_settings_dialog", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(main_mod.QMessageBox, "warning", lambda *_args, **_kwargs: None)
 
@@ -544,6 +571,7 @@ def test_main_returns_before_startup_when_cache_ttl_is_invalid(
         raise ConfigError("APSCOUT_CACHE_TTL_SECONDS must be a positive integer")
 
     monkeypatch.setattr(main_mod, "load_config", raise_config_error)
+    monkeypatch.setattr(main_mod, "_has_running_instance", lambda *_args: False)
 
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("startup continued after ConfigError")

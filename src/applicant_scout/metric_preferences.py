@@ -44,5 +44,25 @@ class MetricPreferences:
         ]
         return ".".join(parts)
 
+    @classmethod
+    def from_cache_key(cls, raw: str) -> "MetricPreferences | None":
+        parts = raw.split(".")
+        if len(parts) != 4:
+            return None
+        expected = (
+            ("mp0", "mp1"),
+            ("n0", "n1"),
+            ("h0", "h1"),
+            ("m0", "m1"),
+        )
+        if any(part not in allowed for part, allowed in zip(parts, expected)):
+            return None
+        return cls(
+            mplus=parts[0] == "mp1",
+            raid_normal=parts[1] == "n1",
+            raid_heroic=parts[2] == "h1",
+            raid_mythic=parts[3] == "m1",
+        )
+
 
 DEFAULT_METRIC_PREFERENCES = MetricPreferences()

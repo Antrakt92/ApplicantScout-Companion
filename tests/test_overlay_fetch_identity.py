@@ -574,6 +574,47 @@ def test_fetch_task_persists_successful_results(qtbot, tmp_path):
         client.close()
 
 
+def test_fetch_task_uses_broader_cached_scope_for_narrow_identity(qtbot, tmp_path):
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=narrow)
+    window._pool = _SyncPool()
+    window._cache.put(
+        "Scout",
+        "realma",
+        "EU",
+        71,
+        _ranks(),
+        "DPS",
+        DEFAULT_METRIC_PREFERENCES,
+    )
+
+    def fail_fetch(*_args, **_kwargs):
+        raise AssertionError("cache hit should avoid WCL fetch")
+
+    client.fetch_character_ranks = fail_fetch  # type: ignore[method-assign]
+
+    try:
+        window._launch_fetch(app)
+
+        assert app.fetch_status == "ready"
+        assert app.raid_normal is None
+        assert app.raid_heroic == 22.0
+        assert app.raid_mythic is None
+        assert app.mplus_dps is None
+        assert app.wcl_metric_preferences == narrow
+    finally:
+        client.close()
+
+
 def test_fetch_task_does_not_persist_not_found_results(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")

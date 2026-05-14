@@ -8,7 +8,7 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -157,6 +157,11 @@ class RateLimitInfo:
 class _QuotaSnapshot:
     info: RateLimitInfo
     observed_at: float
+
+
+@dataclass(frozen=True)
+class _QuotaReservation:
+    points: float
 
 
 @dataclass
@@ -514,29 +519,47 @@ class WCLClient:
         # next N seconds returns immediately with rate_limited error instead of
         # hitting the API and earning more 429s. WCL's "points" budget per
         # client is per-hour rolling. Once we hit it, sleep ~5 min and resume.
+        self._quota_lock = threading.Lock()
         self._rate_limited_until: float = 0.0
         # Latest API quota snapshot, parsed from rateLimitData on every fetch.
         # Overlay polls this via QTimer to display "spent / limit" in status bar.
         # None until first successful fetch.
         self.last_quota: Optional[RateLimitInfo] = None
         self._quota_snapshot: Optional[_QuotaSnapshot] = None
+        self._reserved_quota_points: float = 0.0
+        self._auth_generation: int = 0
 
     def close(self) -> None:
         self._http.close()
 
     def reconfigure_auth(self, auth: WCLAuth) -> None:
-        self._auth = auth
-        self._rate_limited_until = 0.0
-        self.last_quota = None
-        self._quota_snapshot = None
+        with self._quota_lock:
+            self._auth = auth
+            self._auth_generation += 1
+            self._rate_limited_until = 0.0
+            self.last_quota = None
+            self._quota_snapshot = None
+            self._reserved_quota_points = 0.0
 
-    def _record_quota_snapshot(self, quota: RateLimitInfo, now: float | None = None) -> None:
+    def _record_quota_snapshot(
+        self,
+        quota: RateLimitInfo,
+        now: float | None = None,
+        auth_generation: int | None = None,
+    ) -> None:
         observed_at = time.time() if now is None else now
-        self.last_quota = quota
-        self._quota_snapshot = _QuotaSnapshot(info=quota, observed_at=observed_at)
+        with self._quota_lock:
+            if (
+                auth_generation is not None
+                and auth_generation != self._auth_generation
+            ):
+                return
+            self.last_quota = quota
+            self._quota_snapshot = _QuotaSnapshot(info=quota, observed_at=observed_at)
 
     def quota_reset_remaining_seconds(self, now: float | None = None) -> float | None:
-        snapshot = self._quota_snapshot
+        with self._quota_lock:
+            snapshot = self._quota_snapshot
         if snapshot is None:
             return None
         current_time = time.time() if now is None else now
@@ -545,15 +568,80 @@ class WCLClient:
 
     def rate_limit_retry_remaining_seconds(self, now: float | None = None) -> float:
         current_time = time.time() if now is None else now
-        return max(0.0, self._rate_limited_until - current_time)
+        with self._quota_lock:
+            rate_limited_until = self._rate_limited_until
+        return max(0.0, rate_limited_until - current_time)
 
     def quota_guard_retry_remaining_seconds(self, now: float | None = None) -> float:
-        if self.last_quota is None or self.last_quota.limit_per_hour <= 0:
+        with self._quota_lock:
+            quota = self.last_quota
+            reserved = self._reserved_quota_points
+        if quota is None or quota.limit_per_hour <= 0:
             return 0.0
-        ratio = self.last_quota.points_spent / self.last_quota.limit_per_hour
+        ratio = (quota.points_spent + reserved) / quota.limit_per_hour
         if ratio < QUOTA_GUARD_RATIO:
             return 0.0
         return self.quota_reset_remaining_seconds(now=now) or 0.0
+
+    def _estimate_query_quota_points(
+        self, metric_preferences: MetricPreferences
+    ) -> float:
+        if not metric_preferences.any_enabled:
+            return 0.0
+        points = 1.0
+        if metric_preferences.mplus:
+            points += float(len(MPLUS_ENCOUNTERS))
+        points += float(
+            sum(
+                (
+                    metric_preferences.raid_normal,
+                    metric_preferences.raid_heroic,
+                    metric_preferences.raid_mythic,
+                )
+            )
+        )
+        return points
+
+    def _quota_guard_error_locked(
+        self, now: float
+    ) -> CharacterRanks | None:
+        quota = self.last_quota
+        snapshot = self._quota_snapshot
+        if quota is None or quota.limit_per_hour <= 0 or snapshot is None:
+            return None
+        elapsed = max(0.0, now - snapshot.observed_at)
+        remaining = max(0.0, quota.reset_in_seconds - elapsed)
+        if remaining <= 0:
+            return None
+        usage = quota.points_spent + self._reserved_quota_points
+        ratio = usage / quota.limit_per_hour
+        if ratio < QUOTA_GUARD_RATIO:
+            return None
+        return CharacterRanks.empty(
+            error=f"WCL quota guard {int(ratio * 100)}% used — pausing"
+            f" fetches; resets in {int(remaining / 60)}m",
+            error_kind=WCL_ERROR_QUOTA_GUARD,
+        )
+
+    def _reserve_quota_for_fetch(
+        self, points: float, now: float | None = None
+    ) -> CharacterRanks | _QuotaReservation:
+        current_time = time.time() if now is None else now
+        with self._quota_lock:
+            guard_error = self._quota_guard_error_locked(current_time)
+            if guard_error is not None:
+                return guard_error
+            reserved = max(0.0, points)
+            self._reserved_quota_points += reserved
+            return _QuotaReservation(points=reserved)
+
+    def _release_quota_reservation(self, reservation: _QuotaReservation) -> None:
+        if reservation.points <= 0:
+            return
+        with self._quota_lock:
+            self._reserved_quota_points = max(
+                0.0, self._reserved_quota_points - reservation.points
+            )
 
     def retry_block_remaining_seconds(self, now: float | None = None) -> float:
         return max(
@@ -593,88 +681,99 @@ class WCLClient:
         metric_preferences = metric_preferences or self.metric_preferences
         if not metric_preferences.any_enabled:
             return CharacterRanks.empty()
-        if time.time() < self._rate_limited_until:
+        now = time.time()
+        with self._quota_lock:
+            auth = self._auth
+            auth_generation = self._auth_generation
+            rate_limited_until = self._rate_limited_until
+        if now < rate_limited_until:
             return CharacterRanks.empty(
-                error=f"WCL rate-limited; retrying in {int(self._rate_limited_until - time.time())}s",
+                error=f"WCL rate-limited; retrying in {int(rate_limited_until - now)}s",
                 error_kind=WCL_ERROR_RATE_LIMITED,
             )
 
-        # Quota-aware gate: when we've used ≥QUOTA_GUARD_RATIO of the rolling-
+        # Quota-aware gate: when we've used >=QUOTA_GUARD_RATIO of the rolling-
         # hour budget, refuse new fetches and surface a guard error instead of
         # racing toward a hard 429 (which triggers a 5-min full cooldown that
         # blocks ALL applicants). The budget recovers gradually as the rolling
         # window slides, so the gate auto-lifts within minutes once usage falls
         # below the threshold. Only kicks in if we have a real quota snapshot
         # (limit_per_hour > 0) — first fetch of a session always passes.
-        if self.last_quota is not None and self.last_quota.limit_per_hour > 0:
-            ratio = self.last_quota.points_spent / self.last_quota.limit_per_hour
-            remaining = self.quota_reset_remaining_seconds()
-            if ratio >= QUOTA_GUARD_RATIO and remaining is not None and remaining > 0:
-                return CharacterRanks.empty(
-                    error=f"WCL quota guard {int(ratio * 100)}% used — pausing"
-                    f" fetches; resets in {int(remaining / 60)}m",
-                    error_kind=WCL_ERROR_QUOTA_GUARD,
-                )
+        quota_reservation = self._reserve_quota_for_fetch(
+            self._estimate_query_quota_points(metric_preferences),
+            now=now,
+        )
+        if isinstance(quota_reservation, CharacterRanks):
+            return quota_reservation
 
-        # Resolve region once: explicit param wins, else snapshot self.region
-        # AT METHOD ENTRY (single read). Without snapshotting, a state-machine
-        # versionUpdated firing between this point and the GraphQL POST below
-        # would query a different region than the caller passed to cache.get.
-        region_used = region if region is not None else self.region
-        raid_metric = ROLE_TO_RAID_METRIC.get(role, "dps")
-        spec_name = SPEC_ID_TO_WCL_NAME.get(spec_id, "")
-        # Unknown / unmapped spec_id: SPEC_ID_TO_WCL_NAME returns "" so the
-        # downstream spec filter would silently let all of the applicant's
-        # OTHER specs into the result. Log loud — _process_encounter_ranks
-        # short-circuits to None (M+ cell shows "—") rather than ship wrong-spec
-        # numbers. Trips for unmapped retail spec_ids (future expansions, or
-        # garbage values from a corrupted snapshot).
-        if spec_id != 0 and not spec_name:
-            _log.warning(
-                "Unmapped spec_id=%d (no SPEC_ID_TO_WCL_NAME entry) — M+ "
-                "breakdown for %s will be empty to avoid mixing other specs",
-                spec_id,
-                name,
-            )
-        is_healer = role == "HEALER"
+        try:
+            # Resolve region once: explicit param wins, else snapshot self.region
+            # AT METHOD ENTRY (single read). Without snapshotting, a state-machine
+            # versionUpdated firing between this point and the GraphQL POST below
+            # would query a different region than the caller passed to cache.get.
+            region_used = region if region is not None else self.region
+            raid_metric = ROLE_TO_RAID_METRIC.get(role, "dps")
+            spec_name = SPEC_ID_TO_WCL_NAME.get(spec_id, "")
+            # Unknown / unmapped spec_id: SPEC_ID_TO_WCL_NAME returns "" so the
+            # downstream spec filter would silently let all of the applicant's
+            # OTHER specs into the result. Log loud — _process_encounter_ranks
+            # short-circuits to None (M+ cell shows "—") rather than ship wrong-spec
+            # numbers. Trips for unmapped retail spec_ids (future expansions, or
+            # garbage values from a corrupted snapshot).
+            if spec_id != 0 and not spec_name:
+                _log.warning(
+                    "Unmapped spec_id=%d (no SPEC_ID_TO_WCL_NAME entry) — M+ "
+                    "breakdown for %s will be empty to avoid mixing other specs",
+                    spec_id,
+                    name,
+                )
+            is_healer = role == "HEALER"
 
-        query = _build_character_ranks_query(role, metric_preferences)
-        variables: dict[str, object] = {
-            "name": name,
-            "serverSlug": server_slug,
-            "serverRegion": region_used,
-        }
-        if metric_preferences.raid_enabled:
-            variables["raidZoneID"] = CURRENT_RAID_ZONE_ID
-            variables["raidMetric"] = raid_metric
-        body = {"query": query, "variables": variables}
+            query = _build_character_ranks_query(role, metric_preferences)
+            variables: dict[str, object] = {
+                "name": name,
+                "serverSlug": server_slug,
+                "serverRegion": region_used,
+            }
+            if metric_preferences.raid_enabled:
+                variables["raidZoneID"] = CURRENT_RAID_ZONE_ID
+                variables["raidMetric"] = raid_metric
+            body = {"query": query, "variables": variables}
 
-        for attempt in range(2):
-            token = self._auth.get_token()
-            resp = self._http.post(
-                WCL_API_URL,
-                json=body,
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            if resp.status_code == 401 and attempt == 0:
-                self._auth.invalidate()
-                continue
-            if resp.status_code == 429:
-                self._rate_limited_until = time.time() + 300
-                raise WCLApiError(
-                    "Rate limited (HTTP 429) — cooldown 5min",
-                    error_kind=WCL_ERROR_RATE_LIMITED,
+            for attempt in range(2):
+                token = auth.get_token()
+                resp = self._http.post(
+                    WCL_API_URL,
+                    json=body,
+                    headers={"Authorization": f"Bearer {token}"},
                 )
-            if resp.status_code >= 500:
-                raise WCLApiError(
-                    f"Server error (HTTP {resp.status_code})",
-                    error_kind=WCL_ERROR_SERVER,
-                )
-            if resp.status_code != 200:
-                raise WCLApiError(
-                    f"Unexpected HTTP {resp.status_code}: {resp.text[:200]}",
-                    error_kind=WCL_ERROR_SERVER,
-                )
+                if resp.status_code == 401 and attempt == 0:
+                    auth.invalidate()
+                    continue
+                if resp.status_code in (401, 403):
+                    raise WCLApiError(
+                        f"Authentication failed (HTTP {resp.status_code})",
+                        error_kind=WCL_ERROR_AUTH,
+                    )
+                if resp.status_code == 429:
+                    with self._quota_lock:
+                        if auth_generation == self._auth_generation:
+                            self._rate_limited_until = time.time() + 300
+                    raise WCLApiError(
+                        "Rate limited (HTTP 429) — cooldown 5min",
+                        error_kind=WCL_ERROR_RATE_LIMITED,
+                    )
+                if resp.status_code >= 500:
+                    raise WCLApiError(
+                        f"Server error (HTTP {resp.status_code})",
+                        error_kind=WCL_ERROR_SERVER,
+                    )
+                if resp.status_code != 200:
+                    raise WCLApiError(
+                        f"Unexpected HTTP {resp.status_code}: {resp.text[:200]}",
+                        error_kind=WCL_ERROR_SERVER,
+                    )
+                break
 
             data = _json_object_response(resp, WCLApiError, "WCL response")
             # Update quota snapshot regardless of errors — rateLimitData is at
@@ -687,7 +786,10 @@ class WCLClient:
             data_root = data["data"]
             quota = _rate_limit_info_from_dict(data_root.get("rateLimitData"))
             if quota is not None:
-                self._record_quota_snapshot(quota)
+                self._record_quota_snapshot(
+                    quota,
+                    auth_generation=auth_generation,
+                )
             if "characterData" not in data_root or not isinstance(
                 data_root.get("characterData"), dict
             ):
@@ -775,9 +877,11 @@ class WCLClient:
                 mplus_hps_median=mplus_hps_med,
                 mplus_dps_breakdown=dps_breakdown,
                 mplus_hps_breakdown=hps_breakdown,
-            )
-        # Unreachable in practice (401 then non-401)
-        return CharacterRanks.empty(error="auth retry exhausted")
+                )
+            # Unreachable in practice (401 then non-401)
+            return CharacterRanks.empty(error="auth retry exhausted")
+        finally:
+            self._release_quota_reservation(quota_reservation)
 
 
 def _safe_nonnegative_cache_int(v) -> int:
@@ -842,6 +946,53 @@ def _dict_to_dungeon_perf(d: dict) -> "DungeonPerf":
         key_level=_safe_nonnegative_cache_int(d.get("key_level")),
         run_count=_safe_nonnegative_cache_int(d.get("run_count")),
         brackets=brackets,
+    )
+
+
+def _project_ranks_to_metric_preferences(
+    ranks: CharacterRanks,
+    metric_preferences: MetricPreferences,
+) -> CharacterRanks:
+    projected = ranks
+    if not metric_preferences.raid_normal:
+        projected = replace(
+            projected,
+            raid_normal=None,
+            raid_normal_median=None,
+        )
+    if not metric_preferences.raid_heroic:
+        projected = replace(
+            projected,
+            raid_heroic=None,
+            raid_heroic_median=None,
+        )
+    if not metric_preferences.raid_mythic:
+        projected = replace(
+            projected,
+            raid_mythic=None,
+            raid_mythic_median=None,
+        )
+    if not metric_preferences.mplus:
+        projected = replace(
+            projected,
+            mplus_dps=None,
+            mplus_hps=None,
+            mplus_dps_median=None,
+            mplus_hps_median=None,
+            mplus_dps_breakdown=[],
+            mplus_hps_breakdown=[],
+        )
+    return projected
+
+
+def _metric_preference_breadth(metric_preferences: MetricPreferences) -> int:
+    return sum(
+        (
+            metric_preferences.mplus,
+            metric_preferences.raid_normal,
+            metric_preferences.raid_heroic,
+            metric_preferences.raid_mythic,
+        )
     )
 
 
@@ -1139,13 +1290,12 @@ class CharacterCache:
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(
+    def _key_prefix(
         name: str,
         server_slug: str,
         region: str,
         spec_id: int = 0,
         role: str = "DAMAGER",
-        metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
     ) -> str:
         # spec_id in key: M+ percentiles are per-spec (encounterRankings filters
         # by spec field); cache ignoring spec would serve stale data when
@@ -1157,9 +1307,20 @@ class CharacterCache:
         # (mplus_hps fields stay None — UI shows "—" though the player
         # has HPS data). Tank and damager share the dps metric so they
         # cache-collide intentionally (single stored value reused across both).
+        return f"{region}:{server_slug}:{name.lower()}:{spec_id}:{wcl_metric_role(role)}"
+
+    @staticmethod
+    def _key(
+        name: str,
+        server_slug: str,
+        region: str,
+        spec_id: int = 0,
+        role: str = "DAMAGER",
+        metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+    ) -> str:
         return (
-            f"{region}:{server_slug}:{name.lower()}:{spec_id}:"
-            f"{wcl_metric_role(role)}:{metric_preferences.cache_key()}"
+            f"{CharacterCache._key_prefix(name, server_slug, region, spec_id, role)}:"
+            f"{metric_preferences.cache_key()}"
         )
 
     def _load(self) -> dict[str, _CacheEntry]:
@@ -1237,13 +1398,37 @@ class CharacterCache:
         role: str = "DAMAGER",
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
     ) -> Optional[CharacterRanks]:
-        key = self._key(name, server_slug, region, spec_id, role, metric_preferences)
+        prefix = self._key_prefix(name, server_slug, region, spec_id, role)
+        key = f"{prefix}:{metric_preferences.cache_key()}"
+        now = time.time()
         with self._lock:
-            entry = self._data.get(key)
-        if entry is None:
+            candidates: list[tuple[int, float, int, _CacheEntry]] = []
+            exact_entry = self._data.get(key)
+            if exact_entry is not None and now - exact_entry.fetched_at <= self._ttl_seconds:
+                candidates.append((0, -exact_entry.fetched_at, -1, exact_entry))
+            for index, (stored_key, entry) in enumerate(self._data.items()):
+                if stored_key == key or not stored_key.startswith(f"{prefix}:"):
+                    continue
+                stored_raw = stored_key[len(prefix) + 1 :]
+                stored_preferences = MetricPreferences.from_cache_key(stored_raw)
+                if stored_preferences is None:
+                    continue
+                if not stored_preferences.covers(metric_preferences):
+                    continue
+                if now - entry.fetched_at > self._ttl_seconds:
+                    continue
+                breadth = _metric_preference_breadth(stored_preferences)
+                candidates.append((breadth, -entry.fetched_at, index, entry))
+        if not candidates:
             return None
-        if time.time() - entry.fetched_at > self._ttl_seconds:
-            return None
+        candidates.sort()
+        for _breadth, _fetched_at, _index, entry in candidates:
+            ranks = self._ranks_from_entry(entry)
+            if ranks is not None:
+                return _project_ranks_to_metric_preferences(ranks, metric_preferences)
+        return None
+
+    def _ranks_from_entry(self, entry: _CacheEntry) -> Optional[CharacterRanks]:
         # Rebuild DungeonPerf list from dicts — asdict flattens dataclass
         # fields recursively, so cached breakdown is list[dict]. Without this
         # rebuild, overlay's `d.name` attribute access would fail on cache hit.
