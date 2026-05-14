@@ -279,7 +279,7 @@ class SettingsDialog(QDialog):
         self.support_button.setStyleSheet(
             "QToolButton {"
             "background: transparent;"
-            "color: #d6d9e6;"
+            "color: #ff6b7a;"
             "border: 1px solid transparent;"
             "border-radius: 4px;"
             "font-size: 17px;"
@@ -287,12 +287,12 @@ class SettingsDialog(QDialog):
             "padding-bottom: 1px;"
             "}"
             "QToolButton:hover {"
-            "background: #151b33;"
-            "color: #ffe45e;"
-            "border-color: #2e3a63;"
+            "background: #24131a;"
+            "color: #ff8a95;"
+            "border-color: #7a3340;"
             "}"
             "QToolButton:pressed {"
-            "background: #10162a;"
+            "background: #1b0f14;"
             "}"
         )
         self.support_button.clicked.connect(self._open_support)

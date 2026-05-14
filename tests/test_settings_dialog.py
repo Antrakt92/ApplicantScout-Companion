@@ -380,7 +380,8 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert support_button.width() == 26
     assert support_button.height() == 24
     assert "background: transparent" in support_button.styleSheet()
-    assert "#ffe45e" in support_button.styleSheet()
+    assert "#ff6b7a" in support_button.styleSheet()
+    assert "#ff8a95" in support_button.styleSheet()
     assert more_button.text() == "More"
     assert footer.layout().itemAt(0).widget() is support_button
     assert test_button.parent() is footer
