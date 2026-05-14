@@ -1165,6 +1165,74 @@ def test_update_checks_run_hourly_after_initial_startup():
     assert main_mod.UPDATE_CHECK_INTERVAL_MS == 60 * 60 * 1000
 
 
+def test_check_updates_treats_unavailable_update_check_as_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result = SimpleNamespace(
+        status="unavailable",
+        message="GitHub update check failed: offline",
+        asset_name=None,
+    )
+    monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
+    monkeypatch.setattr(
+        "applicant_scout.updater.check_for_update",
+        lambda _version: result,
+    )
+
+    with pytest.raises(RuntimeError, match="offline"):
+        main_mod._check_updates()
+
+
+def test_check_updates_treats_uninstallable_available_release_as_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result = SimpleNamespace(
+        status="available",
+        message="Version v0.2.0 is available, but no installer asset was published.",
+        latest_version="v0.2.0",
+        asset_name=None,
+    )
+    monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
+    monkeypatch.setattr(
+        "applicant_scout.updater.check_for_update",
+        lambda _version: result,
+    )
+
+    with pytest.raises(RuntimeError, match="no installer asset"):
+        main_mod._check_updates()
+
+
+def test_check_updates_downloads_and_launches_installable_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    result = SimpleNamespace(
+        status="available",
+        message="Version v0.2.0 is available.",
+        latest_version="v0.2.0",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+    )
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    calls: list[object] = []
+    monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
+    monkeypatch.setattr(
+        main_mod,
+        "download_update_installer",
+        lambda update_result: calls.append(update_result) or installer,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "launch_update_installer",
+        lambda path: calls.append(path),
+    )
+
+    message, open_url = main_mod._check_updates()
+
+    assert calls == [result, installer]
+    assert open_url is None
+    assert "Installing ApplicantScout Companion v0.2.0" in message
+
+
 def test_settings_dialog_gets_explicit_app_icon_before_exec(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

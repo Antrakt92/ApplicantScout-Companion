@@ -36,7 +36,7 @@ from .overlay import OverlayWindow
 from .screenshot import ScreenshotWatcher, Snapshot
 from .settings_dialog import SettingsDialog, open_folder
 from .state import Applicant, AppState, Listing, WoWPlayer
-from .updater import check_for_update, download_and_launch_update
+from .updater import check_for_update, download_update_installer, launch_update_installer
 from .wcl import (
     CharacterCache,
     WCLAuth,
@@ -552,7 +552,22 @@ def _test_wcl_credentials(cache_dir: Path, client_id: str, client_secret: str, _
 
 
 def _check_updates() -> tuple[str, str | None]:
-    return download_and_launch_update(__version__), None
+    result = check_for_update(__version__)
+    status = getattr(result, "status", None)
+    message = getattr(result, "message", "Update check failed.")
+    if status == "unavailable":
+        raise RuntimeError(str(message))
+    if status != "available":
+        return str(message), None
+    if not _update_result_has_installable_asset(result):
+        raise RuntimeError(str(message))
+    installer = download_update_installer(result)
+    launch_update_installer(installer)
+    return (
+        f"Installing ApplicantScout Companion {getattr(result, 'latest_version', 'update')}. "
+        "The companion may close and reopen during the update.",
+        None,
+    )
 
 
 def _should_show_settings_on_start(
@@ -1041,8 +1056,15 @@ def main(argv: list[str] | None = None) -> int:
         def _handle_credentials_validated(values) -> None:
             _apply_settings_values(values, apply_credentials=True)
 
+        def _handle_dialog_update_completed() -> None:
+            nonlocal pending_update_version
+            pending_update_version = None
+            if tray_controller is not None:
+                tray_controller.set_update_available(None)
+
         dialog.valuesChanged.connect(_handle_values_changed)
         dialog.credentialsValidated.connect(_handle_credentials_validated)
+        dialog.updateCompleted.connect(_handle_dialog_update_completed)
         dialog.hideRequested.connect(lambda: None)
         dialog.quitRequested.connect(_quit_application)
         dialog.destroyed.connect(lambda *_args: _forget_dialog())

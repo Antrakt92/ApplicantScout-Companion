@@ -409,6 +409,41 @@ def test_settings_dialog_shows_blue_update_icon_only_when_update_available(
     assert update_button.isHidden()
 
 
+def test_settings_dialog_keeps_update_icon_visible_after_update_failure(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    qtbot.addWidget(dialog)
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    qtbot.waitUntil(lambda: "offline" in dialog.status_label.text(), timeout=1000)
+    assert not dialog.update_button.isHidden()
+    assert "#ff6666" in dialog.status_label.styleSheet()
+
+
+def test_settings_dialog_emits_update_completed_after_successful_update(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: "Installing update.",
+    )
+    qtbot.addWidget(dialog)
+    seen: list[None] = []
+    dialog.updateCompleted.connect(lambda: seen.append(None))
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    qtbot.waitUntil(lambda: bool(seen), timeout=1000)
+    assert dialog.update_button.isHidden()
+
+
 def test_normal_settings_close_button_hides_to_tray(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)

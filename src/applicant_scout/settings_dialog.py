@@ -97,6 +97,7 @@ class SettingsDialog(QDialog):
     credentialsValidated = pyqtSignal(object)
     hideRequested = pyqtSignal()
     quitRequested = pyqtSignal()
+    updateCompleted = pyqtSignal()
 
     def __init__(
         self,
@@ -507,6 +508,7 @@ class SettingsDialog(QDialog):
         self._set_status(raw.message, error=raw.error)
         if raw.button is self.update_button and not raw.error:
             self.set_update_available(None)
+            self.updateCompleted.emit()
         if not raw.error and raw.open_url:
             QDesktopServices.openUrl(QUrl(raw.open_url))
         if not raw.error and isinstance(raw.success_payload, SettingsValues):
