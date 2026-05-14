@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from applicant_scout.constants import percentile_colour
 from applicant_scout.scoring import (
     CONTEXT_MPLUS,
@@ -8,6 +10,7 @@ from applicant_scout.scoring import (
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
+    fit_colour,
     mplus_dungeon_fit_rows,
     package_fit,
 )
@@ -99,6 +102,22 @@ def test_detect_listing_context_prefers_key_level_for_mplus():
         == CONTEXT_RAID
     )
     assert detect_listing_context(_listing()) == CONTEXT_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [
+        (24.0, "#666666"),
+        (54.0, "#0070ff"),
+        (73.0, "#0070ff"),
+        (84.0, "#a335ee"),
+        (96.0, "#ff8000"),
+        (99.0, "#e268a8"),
+        (100.0, "#e5cc80"),
+    ],
+)
+def test_fit_colour_tracks_wcl_palette_for_numeric_score(score, expected):
+    assert fit_colour(score) == expected
 
 
 def test_effective_rio_score_uses_higher_of_current_and_main():

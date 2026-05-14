@@ -22,11 +22,11 @@ RAID_TARGET_BY_DIFFICULTY_ID = {
 RAID_CATEGORY_ID = 3
 MPLUS_DUNGEON_COUNT = len(MPLUS_ENCOUNTERS)
 
-FIT_BUCKETS: list[tuple[float, str, str]] = [
-    (85.0, "TOP", "#e5cc80"),
-    (70.0, "FIT", "#a335ee"),
-    (55.0, "OK", "#0070dd"),
-    (0.0, "RISK", "#9d9d9d"),
+FIT_LABEL_BUCKETS: list[tuple[float, str]] = [
+    (85.0, "TOP"),
+    (70.0, "FIT"),
+    (55.0, "OK"),
+    (0.0, "RISK"),
 ]
 
 
@@ -250,17 +250,14 @@ def mplus_dungeon_fit_rows(
 
 
 def fit_label(score: float) -> str:
-    for threshold, label, _colour in FIT_BUCKETS:
+    for threshold, label in FIT_LABEL_BUCKETS:
         if score >= threshold:
             return label
     return "RISK"
 
 
 def fit_colour(score: float) -> str:
-    for threshold, _label, colour in FIT_BUCKETS:
-        if score >= threshold:
-            return colour
-    return "#9d9d9d"
+    return percentile_colour(score)
 
 
 def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:

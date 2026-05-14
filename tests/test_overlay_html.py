@@ -32,6 +32,28 @@ from applicant_scout.state import (
 )
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, "#666666"),
+        (24, "#666666"),
+        (25, "#1eff00"),
+        (49, "#1eff00"),
+        (50, "#0070ff"),
+        (74, "#0070ff"),
+        (75, "#a335ee"),
+        (94, "#a335ee"),
+        (95, "#ff8000"),
+        (98, "#ff8000"),
+        (99, "#e268a8"),
+        (100, "#e5cc80"),
+        (None, "#5d5d5d"),
+    ],
+)
+def test_percentile_colour_matches_wcl_ranking_palette(value, expected):
+    assert percentile_colour(value) == expected
+
+
 def _app(**overrides) -> Applicant:
     base = Applicant(
         applicant_id="42",
@@ -100,7 +122,7 @@ def test_column_width_contract_is_compact():
         (percentile_colour(80), "#ffffff"),
         (percentile_colour(60), "#ffffff"),
         (percentile_colour(30), "#000000"),
-        (percentile_colour(10), "#000000"),
+        (percentile_colour(10), "#ffffff"),
         ("#222222", "#ffffff"),
         (None, "#ffffff"),
         ("bad", "#ffffff"),
@@ -130,6 +152,14 @@ def test_mplus_cell_visuals_dps_appends_highest_key():
 
     assert text == "80/62 +14"
     assert bg == percentile_colour(80.0)
+    assert fg == _text_colour_for_bg(bg)
+
+
+def test_mplus_cell_visuals_listing_colours_fit_score_with_wcl_palette():
+    text, fg, bg = _mplus_cell_visuals(_app(role="DAMAGER"), _mplus_listing())
+
+    assert text.startswith("OK ")
+    assert bg == percentile_colour(60.0)
     assert fg == _text_colour_for_bg(bg)
 
 

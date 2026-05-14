@@ -89,13 +89,15 @@ SPEC_SHORT_NAMES: dict[int, str] = {
 }
 
 
-# Percentile bracket → background colour (matching WCL standard parse colours).
+# Percentile bracket → background colour (matching WCL ranking colours).
 PERCENTILE_BUCKETS: list[tuple[int, str]] = [
-    (95, "#e5cc80"),  # gold (top 5%)
-    (75, "#a335ee"),  # purple (top 25%)
-    (50, "#0070dd"),  # blue (top 50%)
-    (25, "#1eff00"),  # green (top 75%)
-    (0, "#9d9d9d"),  # grey (bottom 25%)
+    (100, "#e5cc80"),  # tan / rank 1
+    (99, "#e268a8"),  # pink
+    (95, "#ff8000"),  # orange
+    (75, "#a335ee"),  # purple
+    (50, "#0070ff"),  # blue
+    (25, "#1eff00"),  # green
+    (0, "#666666"),  # grey
 ]
 
 

@@ -181,8 +181,9 @@ HEADER_TOOLTIPS: list[str] = [
     "Format: 'best/median' (e.g. '88/72'). Best = ceiling on a single boss.\n"
     "Median = consistency across encounters at this difficulty.\n"
     "Single value (no slash) = only one encounter logged → no median signal.\n\n"
-    "Background colour = best percentile tier (WCL standard palette:\n"
-    "gold ≥95%, purple ≥75%, blue ≥50%, green ≥25%).",
+    "Background colour = best percentile tier (WCL ranking palette:\n"
+    "tan 100, pink 99, orange 95-98, purple 75-94,\n"
+    "blue 50-74, green 25-49, gray 0-24).",
     # H
     "Raid Heroic — best/median per-encounter parse percentile.\n\n"
     "Same format and colour scheme as the Normal column. Use Heroic as\n"
@@ -199,6 +200,9 @@ HEADER_TOOLTIPS: list[str] = [
     "Fit labels weight key level, relevant bracket performance, coverage,\n"
     "same-dungeon signal, and RIO support. Group rows show a package rating\n"
     "on the leader row because group applicants are accepted together.\n\n"
+    "Background colour follows the numeric fit score with the same WCL\n"
+    "ranking palette, so the label can say RISK while a 50+ score still\n"
+    "gets a blue WCL-tier scan cue.\n\n"
     "Hover the row for the per-dungeon breakdown in the top panel.",
 ]
 
