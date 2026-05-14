@@ -370,10 +370,12 @@ def launch_update_installer(installer_path: Path) -> None:
 
 def download_and_launch_update(current_version: str) -> str:
     result = check_for_update(current_version)
+    if result.status == "unavailable":
+        raise RuntimeError(result.message)
     if result.status != "available":
         return result.message
     if not result.asset_name or not result.asset_url:
-        return result.message
+        raise RuntimeError(result.message)
     installer = download_update_installer(result)
     launch_update_installer(installer)
     return (

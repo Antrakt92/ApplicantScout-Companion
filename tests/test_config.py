@@ -1149,13 +1149,29 @@ def test_settings_saved_status_preserves_screenshots_path_warning(tmp_path: Path
 def test_update_result_has_installable_asset_accepts_case_insensitive_setup_name():
     class Result:
         asset_name = "applicantscoutcompanionsetup-0.2.0.EXE"
+        asset_url = "https://example.test/setup.exe"
+        checksum_name = "applicantscoutcompanionsetup-0.2.0.EXE.sha256"
+        checksum_url = "https://example.test/setup.exe.sha256"
 
     assert main_mod._update_result_has_installable_asset(Result())
+
+
+def test_update_result_has_installable_asset_rejects_missing_checksum():
+    class Result:
+        asset_name = "ApplicantScoutCompanionSetup-0.2.0.exe"
+        asset_url = "https://example.test/setup.exe"
+        checksum_name = None
+        checksum_url = None
+
+    assert not main_mod._update_result_has_installable_asset(Result())
 
 
 def test_update_result_has_installable_asset_rejects_portable_zip():
     class Result:
         asset_name = "ApplicantScoutCompanion-0.2.0-portable.zip"
+        asset_url = "https://example.test/portable.zip"
+        checksum_name = "ApplicantScoutCompanion-0.2.0-portable.zip.sha256"
+        checksum_url = "https://example.test/portable.zip.sha256"
 
     assert not main_mod._update_result_has_installable_asset(Result())
 
@@ -1211,6 +1227,9 @@ def test_check_updates_downloads_and_launches_installable_release(
         message="Version v0.2.0 is available.",
         latest_version="v0.2.0",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        asset_url="https://example.test/setup.exe",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+        checksum_url="https://example.test/setup.exe.sha256",
     )
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     calls: list[object] = []

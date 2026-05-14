@@ -600,7 +600,7 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
     ]
 
 
-def test_download_and_launch_update_returns_uninstallable_release_message(monkeypatch):
+def test_download_and_launch_update_raises_for_uninstallable_release(monkeypatch):
     result = UpdateResult(
         status="available",
         message=(
@@ -620,4 +620,25 @@ def test_download_and_launch_update_returns_uninstallable_release_message(monkey
     monkeypatch.setattr("applicant_scout.updater.download_update_installer", fail_download)
     monkeypatch.setattr("applicant_scout.updater.launch_update_installer", fail_download)
 
-    assert download_and_launch_update("0.1.0") == result.message
+    try:
+        download_and_launch_update("0.1.0")
+    except RuntimeError as exc:
+        assert "checksum" in str(exc).lower()
+    else:
+        raise AssertionError("uninstallable releases must surface as errors")
+
+
+def test_download_and_launch_update_raises_for_unavailable_update_check(monkeypatch):
+    result = UpdateResult(
+        status="unavailable",
+        message="GitHub update check failed: offline",
+        current_version="0.1.0",
+    )
+    monkeypatch.setattr("applicant_scout.updater.check_for_update", lambda _version: result)
+
+    try:
+        download_and_launch_update("0.1.0")
+    except RuntimeError as exc:
+        assert "offline" in str(exc)
+    else:
+        raise AssertionError("unavailable update checks must surface as errors")

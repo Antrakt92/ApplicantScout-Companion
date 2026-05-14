@@ -695,6 +695,15 @@ def _update_result_has_installable_asset(result: object) -> bool:
     asset_name = getattr(result, "asset_name", None)
     if not isinstance(asset_name, str):
         return False
+    asset_url = getattr(result, "asset_url", None)
+    checksum_name = getattr(result, "checksum_name", None)
+    checksum_url = getattr(result, "checksum_url", None)
+    if not (
+        isinstance(asset_url, str)
+        and isinstance(checksum_name, str)
+        and isinstance(checksum_url, str)
+    ):
+        return False
     normalized = asset_name.lower()
     return normalized.startswith("applicantscoutcompanionsetup-") and normalized.endswith(
         ".exe"
