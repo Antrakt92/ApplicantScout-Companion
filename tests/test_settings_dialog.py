@@ -3,7 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import threading
 
-from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox, QLineEdit, QPushButton
+from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QDialogButtonBox,
+    QLineEdit,
+    QPushButton,
+    QToolButton,
+)
 
 from applicant_scout.config import Config
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
@@ -335,26 +342,52 @@ def test_settings_dialog_runs_action_callbacks(qtbot, tmp_path: Path):
     )
     qtbot.addWidget(dialog)
 
-    dialog.test_button.click()
+    dialog.test_action.trigger()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
     assert dialog.status_label.text() == "credentials ok"
-    dialog.logs_button.click()
-    dialog.cache_button.click()
-    dialog.update_button.click()
+    dialog.logs_action.trigger()
+    dialog.cache_action.trigger()
+    dialog.update_action.trigger()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "up to date")
 
-    assert dialog.update_button.text() == "Update"
+    assert dialog.update_action.text() == "Update"
     assert calls == ["test", "logs", "cache", "updates"]
     assert dialog.status_label.text() == "up to date"
 
 
-def test_normal_settings_has_hide_and_quit_buttons_not_save_cancel(qtbot, tmp_path: Path):
+def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
 
-    assert dialog.findChild(QPushButton, "hideToTray") is not None
-    assert dialog.findChild(QPushButton, "quitApplicantScout") is not None
+    actions_button = dialog.findChild(QToolButton, "settingsActions")
+    assert actions_button is not None
+    assert actions_button.text() == "☰"
+    assert actions_button.menu() is not None
+    assert [
+        action.objectName()
+        for action in actions_button.menu().actions()
+        if isinstance(action, QAction)
+    ] == ["testWcl", "checkUpdates", "openLogs", "clearCache"]
+    assert dialog.findChild(QPushButton, "hideToTray") is None
+    assert dialog.findChild(QPushButton, "quitApplicantScout") is None
     assert dialog.findChild(QDialogButtonBox) is None
+
+
+def test_normal_settings_close_button_hides_to_tray(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    hidden: list[bool] = []
+    quit_requested: list[bool] = []
+    dialog.hideRequested.connect(lambda: hidden.append(True))
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.show()
+
+    closed = dialog.close()
+
+    assert not closed
+    assert not dialog.isVisible()
+    assert hidden == [True]
+    assert quit_requested == []
 
 
 def test_settings_dialog_emits_values_changed_after_text_debounce(qtbot, tmp_path: Path):
@@ -408,7 +441,7 @@ def test_settings_dialog_emits_validated_credentials_after_successful_test(
 
     dialog.client_id_edit.setText("new-client")
     dialog.client_secret_edit.setText("new-secret")
-    dialog.test_button.click()
+    dialog.test_action.trigger()
 
     qtbot.waitUntil(lambda: bool(seen), timeout=1500)
     assert seen[-1].wcl_client_id == "new-client"
@@ -433,7 +466,7 @@ def test_settings_dialog_ignores_stale_credentials_test_result(
 
     dialog.client_id_edit.setText("new-client")
     dialog.client_secret_edit.setText("new-secret")
-    dialog.test_button.click()
+    dialog.test_action.trigger()
     assert tester_entered.wait(2)
     dialog.client_secret_edit.setText("changed-during-test")
     release_tester.set()
@@ -463,7 +496,7 @@ def test_settings_dialog_rejects_validated_credentials_when_current_values_inval
     seen = []
     dialog.credentialsValidated.connect(seen.append)
 
-    dialog.test_button.click()
+    dialog.test_action.trigger()
     assert tester_entered.wait(2)
     dialog.screenshots_edit.setText(str(invalid_file))
     release_tester.set()

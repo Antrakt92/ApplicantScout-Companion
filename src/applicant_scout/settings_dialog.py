@@ -8,7 +8,7 @@ from pathlib import Path
 import threading
 
 from PyQt6.QtCore import QObject, QSignalBlocker, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QPixmap
+from PyQt6.QtGui import QAction, QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,8 +20,10 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -63,7 +65,7 @@ class SettingsValues:
 
 @dataclass(frozen=True)
 class _AsyncActionResult:
-    button: QPushButton
+    button: QPushButton | QAction
     message: str
     error: bool = False
     open_url: str | None = None
@@ -160,6 +162,7 @@ class SettingsDialog(QDialog):
         self.wcl_example_button.clicked.connect(self._show_wcl_setup_example)
         wcl_link_layout.addWidget(self.wcl_example_button)
         wcl_link_layout.addStretch(1)
+        wcl_link_layout.addWidget(self._build_actions_button())
         root.addWidget(wcl_link_row)
         credentials_help = QLabel(
             "Create a Warcraft Logs API client with Redirect URL "
@@ -255,35 +258,15 @@ class SettingsDialog(QDialog):
         self.sync_with_wow_check.setChecked(cfg.sync_with_wow)
         form.addRow("", self.sync_with_wow_check)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(6)
-        self.test_button = QPushButton("Test WCL")
-        self.test_button.setObjectName("testWcl")
-        self.test_button.clicked.connect(self._test_credentials)
-        actions.addWidget(self.test_button)
-        self.update_button = QPushButton("Update")
-        self.update_button.setObjectName("checkUpdates")
-        self.update_button.clicked.connect(self._check_for_updates)
-        actions.addWidget(self.update_button)
-        self.logs_button = QPushButton("Open logs")
-        self.logs_button.setObjectName("openLogs")
-        self.logs_button.clicked.connect(self._open_log_folder)
-        actions.addWidget(self.logs_button)
-        self.cache_button = QPushButton("Clear cache")
-        self.cache_button.setObjectName("clearCache")
-        self.cache_button.clicked.connect(self._clear_cache_dir)
-        actions.addWidget(self.cache_button)
-        root.addLayout(actions)
-
         self.status_label = QLabel("")
         self.status_label.setObjectName("settingsStatus")
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-        buttons.addStretch(1)
         if first_run:
+            buttons = QHBoxLayout()
+            buttons.setSpacing(8)
+            buttons.addStretch(1)
             start_button = QPushButton("Start companion")
             start_button.setObjectName("startCompanion")
             start_button.clicked.connect(self.accept)
@@ -292,18 +275,35 @@ class SettingsDialog(QDialog):
             quit_button.setObjectName("quitApplicantScout")
             quit_button.clicked.connect(self.reject)
             buttons.addWidget(quit_button)
-        else:
-            hide_button = QPushButton("Hide to tray")
-            hide_button.setObjectName("hideToTray")
-            hide_button.clicked.connect(self._hide_to_tray)
-            buttons.addWidget(hide_button)
-            quit_button = QPushButton("Quit ApplicantScout")
-            quit_button.setObjectName("quitApplicantScout")
-            quit_button.clicked.connect(self.quitRequested.emit)
-            buttons.addWidget(quit_button)
-        root.addLayout(buttons)
+            root.addLayout(buttons)
         self._connect_value_change_signals()
         self._update_screenshots_warning(self.screenshots_edit.text())
+
+    def _build_actions_button(self) -> QToolButton:
+        self.actions_button = QToolButton(self)
+        self.actions_button.setObjectName("settingsActions")
+        self.actions_button.setText("☰")
+        self.actions_button.setToolTip("More settings actions.")
+        self.actions_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        actions_menu = QMenu(self.actions_button)
+        self.test_action = QAction("Test WCL", self.actions_button)
+        self.test_action.setObjectName("testWcl")
+        self.test_action.triggered.connect(self._test_credentials)
+        actions_menu.addAction(self.test_action)
+        self.update_action = QAction("Update", self.actions_button)
+        self.update_action.setObjectName("checkUpdates")
+        self.update_action.triggered.connect(self._check_for_updates)
+        actions_menu.addAction(self.update_action)
+        self.logs_action = QAction("Open logs", self.actions_button)
+        self.logs_action.setObjectName("openLogs")
+        self.logs_action.triggered.connect(self._open_log_folder)
+        actions_menu.addAction(self.logs_action)
+        self.cache_action = QAction("Clear cache", self.actions_button)
+        self.cache_action.setObjectName("clearCache")
+        self.cache_action.triggered.connect(self._clear_cache_dir)
+        actions_menu.addAction(self.cache_action)
+        self.actions_button.setMenu(actions_menu)
+        return self.actions_button
 
     def values(self) -> SettingsValues:
         return SettingsValues(
@@ -424,7 +424,7 @@ class SettingsDialog(QDialog):
     def _start_async_action(
         self,
         *,
-        button: QPushButton,
+        button: QPushButton | QAction,
         busy_text: str,
         error_prefix: str,
         action: Callable[[], str | tuple[str, str | None]],
@@ -621,7 +621,7 @@ class SettingsDialog(QDialog):
             self._set_status("Enter WCL Client ID and Secret first.", error=True)
             return
         self._start_async_action(
-            button=self.test_button,
+            button=self.test_action,
             busy_text="Testing WCL credentials...",
             error_prefix="WCL test failed",
             action=lambda: credential_tester(
@@ -656,7 +656,7 @@ class SettingsDialog(QDialog):
             return
         check_updates = self._check_updates
         self._start_async_action(
-            button=self.update_button,
+            button=self.update_action,
             busy_text="Checking and preparing update...",
             error_prefix="Update failed",
             action=check_updates,
