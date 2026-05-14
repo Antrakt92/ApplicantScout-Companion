@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import threading
 
+import pytest
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -364,17 +365,23 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     footer = dialog.findChild(QWidget, "settingsFooter")
     test_button = dialog.findChild(QPushButton, "testWcl")
     update_button = dialog.findChild(QToolButton, "installUpdate")
+    support_button = dialog.findChild(QToolButton, "supportApplicantScout")
     more_button = dialog.findChild(QToolButton, "settingsMoreActions")
     assert footer is not None
     assert test_button is not None
     assert update_button is not None
+    assert support_button is not None
     assert more_button is not None
     assert test_button.text() == "Test WCL"
     assert not update_button.icon().isNull()
     assert update_button.isHidden()
+    assert support_button.text() == "♡ Support ↗"
+    assert "ko-fi" in support_button.toolTip().lower()
+    assert "#ffe45e" in support_button.styleSheet()
     assert more_button.text() == "More"
     assert test_button.parent() is footer
     assert update_button.parent() is footer
+    assert support_button.parent() is footer
     assert more_button.parent() is footer
     assert dialog.status_label.parent() is footer
     assert more_button.menu() is not None
@@ -386,6 +393,40 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert dialog.findChild(QPushButton, "hideToTray") is None
     assert dialog.findChild(QPushButton, "quitApplicantScout") is None
     assert dialog.findChild(QDialogButtonBox) is None
+
+
+def test_settings_dialog_support_button_opens_kofi_link(
+    monkeypatch: pytest.MonkeyPatch, qtbot, tmp_path: Path
+):
+    opened: list[str] = []
+    monkeypatch.setattr(
+        settings_mod.QDesktopServices,
+        "openUrl",
+        lambda url: opened.append(url.toString()) or True,
+    )
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    dialog.support_button.click()
+
+    assert opened == ["https://ko-fi.com/antrakt92"]
+
+
+def test_settings_dialog_support_button_surfaces_open_failure(
+    monkeypatch: pytest.MonkeyPatch, qtbot, tmp_path: Path
+):
+    monkeypatch.setattr(
+        settings_mod.QDesktopServices,
+        "openUrl",
+        lambda _url: False,
+    )
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    dialog.support_button.click()
+
+    assert "support link" in dialog.status_label.text()
+    assert "#ff6666" in dialog.status_label.styleSheet()
 
 
 def test_settings_dialog_shows_blue_update_icon_only_when_update_available(

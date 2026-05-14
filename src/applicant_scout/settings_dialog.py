@@ -53,6 +53,7 @@ WCL_CREATE_CLIENT_EXAMPLE_PATH = (
 )
 WCL_CREATE_CLIENT_APP_NAME = "ApplicantScout"
 WCL_CREATE_CLIENT_REDIRECT_URL = "http://localhost"
+SUPPORT_URL = "https://ko-fi.com/antrakt92"
 
 
 @dataclass(frozen=True)
@@ -301,6 +302,30 @@ class SettingsDialog(QDialog):
         self.update_button.hide()
         self.update_button.clicked.connect(self._check_for_updates)
         footer_layout.addWidget(self.update_button)
+        self.support_button = QToolButton(footer)
+        self.support_button.setObjectName("supportApplicantScout")
+        self.support_button.setText("♡ Support ↗")
+        self.support_button.setToolTip("Support ApplicantScout on Ko-fi.")
+        self.support_button.setStyleSheet(
+            "QToolButton {"
+            "background: #151b33;"
+            "color: #f7f0a8;"
+            "border: 1px solid #2e3a63;"
+            "border-radius: 4px;"
+            "font-weight: 600;"
+            "padding: 3px 8px;"
+            "}"
+            "QToolButton:hover {"
+            "background: #1d2748;"
+            "color: #ffe45e;"
+            "border-color: #d7b94d;"
+            "}"
+            "QToolButton:pressed {"
+            "background: #10162a;"
+            "}"
+        )
+        self.support_button.clicked.connect(self._open_support)
+        footer_layout.addWidget(self.support_button)
         footer_layout.addWidget(self._build_more_actions_button(footer))
         root.addWidget(footer)
 
@@ -709,6 +734,10 @@ class SettingsDialog(QDialog):
             error_prefix="Update failed",
             action=check_updates,
         )
+
+    def _open_support(self) -> None:
+        if not QDesktopServices.openUrl(QUrl(SUPPORT_URL)):
+            self._set_status("Could not open support link.", error=True)
 
 
 def open_folder(path: Path) -> bool:
