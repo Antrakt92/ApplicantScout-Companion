@@ -18,6 +18,10 @@ from applicant_scout.overlay import (
     DUNGEON_KEY_WIDTH,
     DUNGEON_METRIC_WIDTH,
     DUNGEON_NAME_WIDTH,
+    MPLUS_INDIVIDUAL_BG_ROLE,
+    MPLUS_INDIVIDUAL_TEXT_ROLE,
+    MPLUS_PACKAGE_BG_ROLE,
+    MPLUS_PACKAGE_TEXT_ROLE,
     ApplicantInfoPanel,
     OverlayWindow,
 )
@@ -341,7 +345,6 @@ def test_overlay_constructor_initializes_geometry_event_state_before_set_geometr
             "_id_by_row",
             "_group_size_by_raw",
             "_package_fit_by_raw",
-            "_package_owner_by_raw",
             "_hover_id",
             "_pinned_id",
             "_role_filter",
@@ -650,7 +653,9 @@ def test_apply_metric_preferences_can_defer_refetch_when_runtime_client_stale(
         client.close()
 
 
-def test_package_cell_uses_first_available_group_member_as_owner(qtbot, tmp_path):
+def test_package_cell_keeps_package_and_individual_mplus_for_every_group_member(
+    qtbot, tmp_path
+):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -665,9 +670,18 @@ def test_package_cell_uses_first_available_group_member_as_owner(qtbot, tmp_path
         window._refresh_table()
         owner_row = window._row_for_id["10:2"]
         follower_row = window._row_for_id["10:3"]
+        owner_item = window._table.item(owner_row, COL_MPLUS)
+        follower_item = window._table.item(follower_row, COL_MPLUS)
 
-        assert window._table.item(owner_row, COL_MPLUS).text().startswith("G2 ")
-        assert not window._table.item(follower_row, COL_MPLUS).text().startswith("G2 ")
+        assert owner_item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
+        assert follower_item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
+        assert owner_item.data(MPLUS_PACKAGE_BG_ROLE) == follower_item.data(
+            MPLUS_PACKAGE_BG_ROLE
+        )
+        assert owner_item.data(MPLUS_INDIVIDUAL_TEXT_ROLE).endswith("+14")
+        assert follower_item.data(MPLUS_INDIVIDUAL_TEXT_ROLE).endswith("+14")
+        assert owner_item.data(MPLUS_INDIVIDUAL_BG_ROLE)
+        assert follower_item.data(MPLUS_INDIVIDUAL_BG_ROLE)
         assert window._delegate._group_marker_by_row[owner_row].first_visible
         assert window._delegate._group_marker_by_row[follower_row].last_visible
     finally:

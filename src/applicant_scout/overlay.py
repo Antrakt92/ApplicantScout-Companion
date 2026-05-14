@@ -113,6 +113,14 @@ DUNGEON_NAME_WIDTH = 188
 DUNGEON_KEY_WIDTH = 34
 DUNGEON_METRIC_WIDTH = 64
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
+MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
+MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
+MPLUS_INDIVIDUAL_TEXT_ROLE = Qt.ItemDataRole.UserRole + 22
+MPLUS_INDIVIDUAL_FG_ROLE = Qt.ItemDataRole.UserRole + 23
+MPLUS_INDIVIDUAL_BG_ROLE = Qt.ItemDataRole.UserRole + 24
+MPLUS_GROUP_LANE_MAX_WIDTH = 96
+MPLUS_GROUP_LANE_MIN_WIDTH = 46
+MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 56
 
 
 # Auto-hide delay (seconds) when applicants drain to zero but listing is still
@@ -550,6 +558,12 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
                 painter.restore()
             else:
                 super().paint(painter, option, index)
+        elif (
+            index.column() == COL_MPLUS
+            and isinstance(index.data(MPLUS_PACKAGE_TEXT_ROLE), str)
+            and painter is not None
+        ):
+            self._paint_group_mplus_cell(painter, option, index, group_marker)
         else:
             super().paint(painter, option, index)
         if painter is None:
@@ -573,6 +587,76 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
                 painter.fillRect(QRect(rail_x, r.top(), cap_width, 3), colour)
             if group_marker.last_visible:
                 painter.fillRect(QRect(rail_x, r.bottom() - 2, cap_width, 3), colour)
+
+    def _paint_group_mplus_cell(self, painter, option, index, group_marker) -> None:
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        rect = opt.rect
+        width = max(1, rect.width())
+        if width <= MPLUS_GROUP_LANE_MIN_WIDTH + 1:
+            package_width = max(1, width // 2)
+        else:
+            package_width = min(
+                MPLUS_GROUP_LANE_MAX_WIDTH,
+                max(MPLUS_GROUP_LANE_MIN_WIDTH, width // 3),
+            )
+            if width - package_width < MPLUS_INDIVIDUAL_LANE_MIN_WIDTH:
+                package_width = max(
+                    MPLUS_GROUP_LANE_MIN_WIDTH,
+                    width - MPLUS_INDIVIDUAL_LANE_MIN_WIDTH,
+                )
+            package_width = min(package_width, width - 1)
+
+        package_rect = QRect(rect.left(), rect.top(), package_width, rect.height())
+        separator_rect = QRect(package_rect.right(), rect.top(), 1, rect.height())
+        individual_rect = QRect(
+            package_rect.right() + 1,
+            rect.top(),
+            max(1, rect.width() - package_width - 1),
+            rect.height(),
+        )
+
+        package_text = str(index.data(MPLUS_PACKAGE_TEXT_ROLE) or "")
+        package_bg = str(index.data(MPLUS_PACKAGE_BG_ROLE) or "#2a2a33")
+        individual_text = str(index.data(MPLUS_INDIVIDUAL_TEXT_ROLE) or "")
+        individual_fg = index.data(MPLUS_INDIVIDUAL_FG_ROLE)
+        individual_bg = index.data(MPLUS_INDIVIDUAL_BG_ROLE)
+
+        painter.save()
+        painter.setFont(opt.font)
+        painter.fillRect(package_rect, QColor(package_bg))
+        painter.fillRect(separator_rect, QColor("#09090d"))
+        if isinstance(individual_bg, str) and individual_bg:
+            painter.fillRect(individual_rect, QColor(individual_bg))
+            individual_text_colour = _text_colour_for_bg(individual_bg)
+        else:
+            painter.fillRect(individual_rect, QColor(28, 28, 38, 240))
+            individual_text_colour = (
+                individual_fg if isinstance(individual_fg, str) else "#e0e0e0"
+            )
+
+        if group_marker is None or group_marker.first_visible:
+            painter.setPen(QColor(_text_colour_for_bg(package_bg)))
+            painter.drawText(
+                package_rect.adjusted(4, 0, -4, 0),
+                Qt.AlignmentFlag.AlignCenter,
+                opt.fontMetrics.elidedText(
+                    package_text,
+                    Qt.TextElideMode.ElideRight,
+                    max(1, package_rect.width() - 8),
+                ),
+            )
+        painter.setPen(QColor(individual_text_colour))
+        painter.drawText(
+            individual_rect.adjusted(4, 0, -4, 0),
+            Qt.AlignmentFlag.AlignCenter,
+            opt.fontMetrics.elidedText(
+                individual_text,
+                Qt.TextElideMode.ElideRight,
+                max(1, individual_rect.width() - 8),
+            ),
+        )
+        painter.restore()
 
 
 class _TooltipTableWidget(QTableWidget):
@@ -1376,7 +1460,6 @@ class OverlayWindow(QMainWindow):
         self._id_by_row: list[str] = []
         self._group_size_by_raw: dict[str, int] = {}
         self._package_fit_by_raw: dict[str, PackageFit] = {}
-        self._package_owner_by_raw: dict[str, str] = {}
         # Hover & pin tracking. Display priority: hover > pin > hidden.
         # Pin survives applicant churn (preserved by id across re-sort);
         # hover is preserved by id when prev row's id still exists, falls
@@ -1856,10 +1939,11 @@ class OverlayWindow(QMainWindow):
             package is not None
             and package.display
             and self._group_size_by_raw.get(raw_aid, 1) >= 2
-            and self._package_owner_by_raw.get(raw_aid) == applicant.applicant_id
         ):
             self._table.setItem(
-                row, COL_MPLUS, _package_fit_cell(package.display, package.colour)
+                row,
+                COL_MPLUS,
+                _mplus_group_cell(package, applicant, self._state.listing),
             )
         else:
             # M+ cell: context-fit display for M+ listings, legacy headline otherwise.
@@ -1909,7 +1993,6 @@ class OverlayWindow(QMainWindow):
             self._group_size_by_raw[raw_aid] = self._group_size_by_raw.get(raw_aid, 0) + 1
             group_members.setdefault(raw_aid, []).append(applicant)
         self._package_fit_by_raw = {}
-        self._package_owner_by_raw = {}
         if detect_listing_context(self._state.listing) in (CONTEXT_MPLUS, CONTEXT_RAID):
             for raw_aid, members in group_members.items():
                 if len(members) < 2:
@@ -1917,7 +2000,6 @@ class OverlayWindow(QMainWindow):
                 fit = package_fit(members, self._state.listing)
                 if fit.display:
                     self._package_fit_by_raw[raw_aid] = fit
-                    self._package_owner_by_raw[raw_aid] = members[0].applicant_id
 
         self._table.setRowCount(len(sorted_applicants))
         self._row_for_id.clear()
@@ -2635,15 +2717,26 @@ def _mplus_dual_cell(
     return item
 
 
-def _package_fit_cell(text: str, bg: str | None) -> QTableWidgetItem:
-    item = QTableWidgetItem(text)
+def _mplus_group_cell(
+    package: PackageFit,
+    applicant: Applicant,
+    listing: Listing | None = None,
+) -> QTableWidgetItem:
+    package_text = package.display
+    package_bg = package.colour or "#2a2a33"
+    individual_text, individual_fg, individual_bg = _mplus_cell_visuals(
+        applicant, listing
+    )
+    item = QTableWidgetItem(f"{package_text} | {individual_text}")
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-    if bg is not None:
-        item.setBackground(QColor(bg))
-        item.setForeground(QColor(_text_colour_for_bg(bg)))
-        f = QFont()
-        f.setBold(True)
-        item.setFont(f)
+    item.setData(MPLUS_PACKAGE_TEXT_ROLE, package_text)
+    item.setData(MPLUS_PACKAGE_BG_ROLE, package_bg)
+    item.setData(MPLUS_INDIVIDUAL_TEXT_ROLE, individual_text)
+    item.setData(MPLUS_INDIVIDUAL_FG_ROLE, individual_fg or "")
+    item.setData(MPLUS_INDIVIDUAL_BG_ROLE, individual_bg or "")
+    f = QFont()
+    f.setBold(True)
+    item.setFont(f)
     return item
 
 
