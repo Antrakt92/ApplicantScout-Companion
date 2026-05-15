@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
 from .config import (
     Config,
     ConfigError,
@@ -53,6 +54,12 @@ WCL_CREATE_CLIENT_EXAMPLE_PATH = (
 WCL_CREATE_CLIENT_APP_NAME = "ApplicantScout"
 WCL_CREATE_CLIENT_REDIRECT_URL = "http://localhost"
 SUPPORT_URL = "https://ko-fi.com/antrakt92"
+
+
+def _settings_window_title(*, first_run: bool) -> str:
+    if first_run:
+        return f"ApplicantScout Companion · First-run setup · v{__version__}"
+    return f"ApplicantScout Companion · v{__version__}"
 
 
 @dataclass(frozen=True)
@@ -123,9 +130,7 @@ class SettingsDialog(QDialog):
         self._autosave_timer.setInterval(700)
         self._autosave_timer.timeout.connect(self._emit_values_changed_if_valid)
 
-        self.setWindowTitle(
-            "ApplicantScout first-run setup" if first_run else "ApplicantScout settings"
-        )
+        self.setWindowTitle(_settings_window_title(first_run=first_run))
         self.setModal(first_run)
         self.setMinimumWidth(520)
 

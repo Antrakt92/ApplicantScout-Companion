@@ -1,5 +1,23 @@
 # ApplicantScout Companion Release Notes
 
+## 0.2.1 - 15-May-2026
+
+Small companion polish release for supportability.
+
+### Improved
+
+- Settings and first-run windows now show the running ApplicantScout Companion
+  version in the title bar, so screenshots and support reports include the
+  exact installed version.
+
+### Compatibility
+
+- Requires the ApplicantScout WoW addon `0.1.3`.
+- Supports ApplicantScout wire payloads through v4.
+- In-app updates require GitHub Release assets named
+  `ApplicantScoutCompanionSetup-0.2.1.exe` and
+  `ApplicantScoutCompanionSetup-0.2.1.exe.sha256`.
+
 ## 0.2.0 - 15-May-2026
 
 Overlay polish, safer updates, and clearer release compatibility for

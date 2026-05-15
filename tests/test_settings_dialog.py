@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from applicant_scout import __version__
 from applicant_scout.config import Config
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 import applicant_scout.settings_dialog as settings_mod
@@ -60,6 +61,20 @@ def test_settings_dialog_exposes_config_values(qtbot, tmp_path: Path):
         raid_mythic=True,
     )
     assert values.sync_with_wow is True
+
+
+def test_settings_dialog_title_shows_companion_version(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    assert dialog.windowTitle() == f"ApplicantScout Companion · v{__version__}"
+
+
+def test_first_run_dialog_title_keeps_setup_context_and_version(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.windowTitle() == f"ApplicantScout Companion · First-run setup · v{__version__}"
 
 
 def test_settings_dialog_first_run_defaults_to_mplus_only(qtbot, tmp_path: Path):
