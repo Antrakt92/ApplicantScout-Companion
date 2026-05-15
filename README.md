@@ -5,7 +5,7 @@
 > The WoW addon captures applicant data; this companion decodes the screenshots
 > and shows the Warcraft Logs / RaiderIO parse overlay. Install the paired addon
 > release too:
-> [ApplicantScout 0.1.0](https://github.com/Antrakt92/ApplicantScout-Addon/releases/tag/v0.1.0).
+> [ApplicantScout 0.1.2](https://github.com/Antrakt92/ApplicantScout-Addon/releases/tag/v0.1.2).
 
 Personal-tool overlay showing Warcraft Logs raid and Mythic+ percentiles for
 players who apply to your WoW Mythic+ listing.
@@ -18,8 +18,8 @@ the overlay.
 
 ## Quick Start
 
-1. Install the WoW addon side: download `ApplicantScout-0.1.0.zip` from
-   [the paired addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/tag/v0.1.0),
+1. Install the WoW addon side: download `ApplicantScout-v0.1.2.zip` from
+   [the paired addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/tag/v0.1.2),
    then extract it so the TOC is at
    `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`. Do not use
    GitHub's automatic source-code ZIP for normal installs; it extracts to the
@@ -110,8 +110,8 @@ character, the overlay falls back to the applying character's score.
 
 ## Version Compatibility
 
-ApplicantScout Companion `0.1.0` is paired with the ApplicantScout WoW addon
-`0.1.0` and supports ApplicantScout wire payloads through v4.
+ApplicantScout Companion `0.2.0` is paired with the ApplicantScout WoW addon
+`0.1.2` and supports ApplicantScout wire payloads through v4.
 
 ## Updates
 

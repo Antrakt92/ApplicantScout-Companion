@@ -1,7 +1,8 @@
 param(
     [switch]$SkipChecks,
     [switch]$SkipInstaller,
-    [switch]$SkipPortable
+    [switch]$SkipPortable,
+    [switch]$AllowDirtyReleaseInputs
 )
 
 $ErrorActionPreference = "Stop"
@@ -182,6 +183,37 @@ if missing or mismatched:
     }
 }
 
+function Assert-CleanReleaseInputs {
+    $ReleaseInputPaths = @(
+        "pyproject.toml",
+        "constraints-release.txt",
+        "LICENSE",
+        "THIRD-PARTY-NOTICES.md",
+        "RELEASE_NOTES.md",
+        "src",
+        "packaging",
+        "scripts\build-windows.ps1"
+    )
+
+    $Git = Get-Command "git" -ErrorAction SilentlyContinue
+    if ($null -eq $Git) {
+        throw "Cannot verify release input cleanliness because git is not available."
+    }
+
+    Invoke-NativeChecked -Label "Inspect release input cleanliness" -Command {
+        & $Git.Source -C $RepoRoot status --porcelain --untracked-files=all -- $ReleaseInputPaths
+    }
+    $Dirty = & $Git.Source -C $RepoRoot status --porcelain --untracked-files=all -- $ReleaseInputPaths
+    if ($Dirty) {
+        $Joined = ($Dirty -join [Environment]::NewLine)
+        throw (
+            "Refusing to build release artifacts from dirty release inputs. " +
+            "Commit or revert these paths first, or rerun with -AllowDirtyReleaseInputs for a local smoke build:" +
+            [Environment]::NewLine + $Joined
+        )
+    }
+}
+
 function New-VersionInfoFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -274,6 +306,9 @@ if (-not (Test-Path -LiteralPath $AppIcon)) {
     throw "Missing app icon: $AppIcon"
 }
 
+if (-not $AllowDirtyReleaseInputs) {
+    Assert-CleanReleaseInputs
+}
 Assert-ReleaseConstraints
 
 $VersionOutput = Invoke-NativeChecked -Label "Read applicant_scout.__version__" -Command {

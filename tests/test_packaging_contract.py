@@ -191,6 +191,42 @@ def test_release_build_uses_pinned_constraints():
     assert "Assert-ReleaseConstraints" in build_script
 
 
+def test_release_build_refuses_dirty_release_inputs_by_default():
+    build_script = _read_repo_text("scripts/build-windows.ps1")
+
+    assert "Assert-CleanReleaseInputs" in build_script
+    assert "AllowDirtyReleaseInputs" in build_script
+    assert "Refusing to build release artifacts from dirty release inputs" in build_script
+    assert "RELEASE_NOTES.md" in build_script
+    assert "pyproject.toml" in build_script
+
+
+def test_release_version_metadata_is_ready_for_020():
+    pyproject = _read_repo_text("pyproject.toml")
+    runtime = _read_repo_text("src/applicant_scout/__init__.py")
+    notes = _read_repo_text("RELEASE_NOTES.md")
+    readme = _read_repo_text("README.md")
+
+    assert 'version = "0.2.0"' in pyproject
+    assert '__version__ = "0.2.0"' in runtime
+    assert notes.startswith("# ApplicantScout Companion Release Notes\n\n## 0.2.0 - ")
+    assert "ApplicantScout Companion `0.2.0`" in readme
+    assert "ApplicantScout WoW addon\n`0.1.2`" in readme
+    assert "ApplicantScout-0.1.0.zip" not in readme
+    assert "releases/tag/v0.1.0" not in readme
+
+
+def test_release_version_check_script_documents_asset_contract():
+    script = _read_repo_text("scripts/check-release-version.ps1")
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+
+    assert "ApplicantScoutCompanionSetup-$TagVersion.exe" in script
+    assert "$InstallerName.sha256" in script
+    assert "ApplicantScoutCompanion-$TagVersion-portable.zip" in script
+    assert "RequireAssets" in script
+    assert ".\\scripts\\check-release-version.ps1 -Tag v0.2.0 -RequireAssets" in checklist
+
+
 def test_start_batch_explains_missing_local_environment():
     script = _read_repo_text("start.bat")
 
@@ -226,7 +262,7 @@ def test_readme_documents_verified_self_update_flow():
 def test_readme_points_to_packaged_addon_zip_not_source_archive():
     readme = _read_repo_text("README.md")
 
-    assert "ApplicantScout-0.1.0.zip" in readme
+    assert "ApplicantScout-v0.1.2.zip" in readme
     assert "_retail_\\Interface\\AddOns\\ApplicantScout\\ApplicantScout.toc" in readme
     assert "automatic source-code ZIP" in readme
     assert "wrong folder name for WoW" in readme

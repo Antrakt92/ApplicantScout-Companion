@@ -1,5 +1,48 @@
 # ApplicantScout Companion Release Notes
 
+## 0.2.0 - 15-May-2026
+
+Overlay polish, safer updates, and clearer release compatibility for
+ApplicantScout addon `0.1.2`.
+
+### Added
+
+- Added a small Ko-fi support heart in Settings.
+- Added a compact blue update install icon that appears only when an installable
+  companion release is available.
+
+### Improved
+
+- First-run Warcraft Logs data scope now defaults to Mythic+ only.
+- Settings actions are cleaner: secondary actions moved into the footer/menu,
+  the window close button hides to tray, and full quit lives in the tray menu.
+- Update and support controls now use compact color-icon styling instead of
+  large footer buttons.
+- Mythic+ percentile colors now match Warcraft Logs buckets.
+- Group applicant rows now separate package score from individual member fit so
+  group and member performance are not visually mixed.
+- Group Mythic+ cells use a compact centered package lane.
+
+### Fixed
+
+- Fixed the updater repository target so checks query the public companion repo.
+- Fixed update availability so Settings shows the install icon only when the
+  GitHub Release includes a complete installer plus checksum pair.
+- Fixed updater error handling so installer/download failures remain visible.
+- Hardened update install boundaries to avoid duplicate or unsafe installer runs.
+- Hardened WCL runtime cache, quota handling, and stale worker lifecycle edges.
+- Hardened group scoring and update edge cases.
+- Fixed Test WCL status so a successful credential check stays visible as
+  `WCL credentials are valid.` instead of being overwritten by `Saved.`
+
+### Compatibility
+
+- Requires the ApplicantScout WoW addon `0.1.2`.
+- Supports ApplicantScout wire payloads through v4.
+- In-app updates require GitHub Release assets named
+  `ApplicantScoutCompanionSetup-0.2.0.exe` and
+  `ApplicantScoutCompanionSetup-0.2.0.exe.sha256`.
+
 ## 0.1.0 - 10-May-2026
 
 Initial Windows companion build for ApplicantScout addon `0.1.0`.
