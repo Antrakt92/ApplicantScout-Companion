@@ -210,10 +210,11 @@ def test_release_version_metadata_is_ready_for_020():
     assert 'version = "0.2.0"' in pyproject
     assert '__version__ = "0.2.0"' in runtime
     assert notes.startswith("# ApplicantScout Companion Release Notes\n\n## 0.2.0 - ")
-    assert "ApplicantScout Companion `0.2.0`" in readme
-    assert "ApplicantScout WoW addon\n`0.1.2`" in readme
+    assert "ApplicantScout Companion `0.2.0`" not in readme
+    assert "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest" in readme
     assert "ApplicantScout-0.1.0.zip" not in readme
     assert "releases/tag/v0.1.0" not in readme
+    assert "releases/tag/v0.1.2" not in readme
 
 
 def test_release_version_check_script_documents_asset_contract():
@@ -262,7 +263,8 @@ def test_readme_documents_verified_self_update_flow():
 def test_readme_points_to_packaged_addon_zip_not_source_archive():
     readme = _read_repo_text("README.md")
 
-    assert "ApplicantScout-v0.1.2.zip" in readme
+    assert "ApplicantScout-*.zip" in readme
+    assert "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest" in readme
     assert "_retail_\\Interface\\AddOns\\ApplicantScout\\ApplicantScout.toc" in readme
     assert "automatic source-code ZIP" in readme
     assert "wrong folder name for WoW" in readme

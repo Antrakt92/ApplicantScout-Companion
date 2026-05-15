@@ -1,6 +1,5 @@
 param(
     [string]$Tag = $env:GITHUB_REF_NAME,
-    [string]$AddonVersion = "0.1.2",
     [switch]$RequireAssets
 )
 
@@ -94,15 +93,15 @@ if ($ReleaseNotesVersion -ne $TagVersion) {
     $Errors += "RELEASE_NOTES.md top entry is $ReleaseNotesVersion, expected $TagVersion from tag $TagName."
 }
 $CompanionMarkdown = "ApplicantScout Companion ``$TagVersion``"
-$AddonMarkdown = "``$AddonVersion`` and supports ApplicantScout wire payloads"
-if (-not $Readme.Contains($CompanionMarkdown)) {
-    $Errors += "README.md does not document ApplicantScout Companion ``$TagVersion``."
+$AddonLatestUrl = "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest"
+if ($Readme.Contains($CompanionMarkdown)) {
+    $Errors += "README.md should not pin the current companion version; RELEASE_NOTES.md owns release-specific version copy."
 }
-if (-not $Readme.Contains($AddonMarkdown)) {
-    $Errors += "README.md does not document paired addon ``$AddonVersion``."
+if (-not $Readme.Contains($AddonLatestUrl)) {
+    $Errors += "README.md does not point addon installs at releases/latest."
 }
-if ($Readme -match "ApplicantScout-0\.1\.0\.zip|releases/tag/v0\.1\.0") {
-    $Errors += "README.md still contains stale addon v0.1.0 install copy."
+if ($Readme -match "ApplicantScout-v?\d+\.\d+\.\d+\.zip|ApplicantScout WoW addon\s*`?\d+\.\d+\.\d+`?|releases/tag/v\d+\.\d+\.\d+") {
+    $Errors += "README.md pins addon install/version copy; use releases/latest for cross-component docs."
 }
 
 $InstallerName = "ApplicantScoutCompanionSetup-$TagVersion.exe"
