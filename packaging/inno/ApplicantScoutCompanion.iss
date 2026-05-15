@@ -49,7 +49,7 @@ Name: "{autodesktop}\ApplicantScout Companion"; Filename: "{app}\ApplicantScout.
 
 [Run]
 Filename: "{app}\ApplicantScout.exe"; Parameters: "--show-settings"; Description: "Launch ApplicantScout Companion"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\ApplicantScout.exe"; Flags: nowait skipifnotsilent; Check: WasCompanionRunningBeforeInstall
+Filename: "{app}\ApplicantScout.exe"; Parameters: "--show-settings"; Flags: nowait skipifnotsilent; Check: WasCompanionRunningBeforeInstall
 
 [Code]
 var

@@ -139,7 +139,7 @@ def test_installer_closes_running_companion_without_restart_manager_prompt():
     assert "Result := ''" in inno_script
 
 
-def test_interactive_postinstall_launch_opens_settings_without_affecting_silent_relaunch():
+def test_interactive_and_silent_update_relaunch_open_settings():
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
     postinstall_launch = re.search(
         r'Filename:\s*"\{app\}\\ApplicantScout\.exe";[^\n]+Description: "Launch ApplicantScout Companion";[^\n]+',
@@ -153,7 +153,7 @@ def test_interactive_postinstall_launch_opens_settings_without_affecting_silent_
     assert postinstall_launch is not None
     assert 'Parameters: "--show-settings"' in postinstall_launch.group(0)
     assert silent_relaunch is not None
-    assert "--show-settings" not in silent_relaunch.group(0)
+    assert 'Parameters: "--show-settings"' in silent_relaunch.group(0)
 
 
 def test_release_license_artifacts_exist_and_are_copied_into_dist():

@@ -61,7 +61,7 @@ CONTROL_SERVER_NAME = "Antrakt.ApplicantScout.Companion.Control"
 CONTROL_SHUTDOWN_ARG = "--shutdown-running-instance"
 SHOW_SETTINGS_ARG = "--show-settings"
 WOW_EXIT_POLL_MS = 5000
-UPDATE_CHECK_INITIAL_MS = 30_000
+UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 _UPDATE_INSTALL_LOCK = threading.Lock()
 _QT_APPLICATION_CLASS = QApplication
@@ -596,6 +596,24 @@ def _should_show_settings_on_start(
     return SHOW_SETTINGS_ARG in args and not startup_settings_shown
 
 
+def _should_show_wow_start_update_prompt(
+    *,
+    wow_watch_mode: bool,
+    startup_update_prompt_pending: bool,
+    pending_update_version: str | None,
+) -> bool:
+    return bool(
+        wow_watch_mode and startup_update_prompt_pending and pending_update_version
+    )
+
+
+def _wow_start_update_prompt_message(latest_version: str) -> str:
+    return (
+        f"Update {latest_version} is available. Click the blue download icon in the "
+        "title bar to install it."
+    )
+
+
 def _prepare_wow_watch_mode(args: list[str]) -> tuple[list[str], bool, int | None]:
     if WATCH_WOW_ARG not in args:
         return args, False, None
@@ -929,6 +947,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings_dialog: SettingsDialog | None = None
     pending_update_version: str | None = None
+    startup_update_prompt_pending = wow_watch_mode
 
     def _flush_settings_before_quit() -> None:
         if settings_dialog is not None:
@@ -1175,6 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def _handle_update_checked(result: object) -> None:
         nonlocal pending_update_version
+        nonlocal startup_update_prompt_pending
         latest_version = getattr(result, "latest_version", None)
         if getattr(result, "status", None) == "available" and _update_result_has_installable_asset(
             result
@@ -1186,6 +1206,19 @@ def main(argv: list[str] | None = None) -> int:
             tray_controller.set_update_available(pending_update_version)
         if settings_dialog is not None:
             settings_dialog.set_update_available(pending_update_version)
+        if _should_show_wow_start_update_prompt(
+            wow_watch_mode=wow_watch_mode,
+            startup_update_prompt_pending=startup_update_prompt_pending,
+            pending_update_version=pending_update_version,
+        ):
+            startup_update_prompt_pending = False
+            _show_settings()
+            if settings_dialog is not None and pending_update_version is not None:
+                settings_dialog.set_status(
+                    _wow_start_update_prompt_message(pending_update_version)
+                )
+            return
+        startup_update_prompt_pending = False
 
     update_signals.checked.connect(_handle_update_checked)
     update_signals.completed.connect(_handle_update_completed)

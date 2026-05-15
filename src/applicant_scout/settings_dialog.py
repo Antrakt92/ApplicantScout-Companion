@@ -7,8 +7,17 @@ from dataclasses import dataclass
 from pathlib import Path
 import threading
 
-from PyQt6.QtCore import QObject, QSignalBlocker, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QDesktopServices, QPixmap
+from PyQt6.QtCore import QEvent, QPoint, QObject, QSignalBlocker, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractButton,
@@ -54,12 +63,33 @@ WCL_CREATE_CLIENT_EXAMPLE_PATH = (
 WCL_CREATE_CLIENT_APP_NAME = "ApplicantScout"
 WCL_CREATE_CLIENT_REDIRECT_URL = "http://localhost"
 SUPPORT_URL = "https://ko-fi.com/antrakt92"
+APP_ICON_PATH = Path(__file__).with_name("assets") / "app_icon.ico"
 
 
 def _settings_window_title(*, first_run: bool) -> str:
     if first_run:
         return f"ApplicantScout Companion · First-run setup · v{__version__}"
     return f"ApplicantScout Companion · v{__version__}"
+
+
+def _download_icon(color: str = "#4da3ff") -> QIcon:
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color))
+    pen.setWidth(2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.drawLine(10, 3, 10, 12)
+    painter.drawLine(6, 8, 10, 12)
+    painter.drawLine(14, 8, 10, 12)
+    painter.drawLine(5, 16, 15, 16)
+    painter.drawLine(5, 13, 5, 16)
+    painter.drawLine(15, 13, 15, 16)
+    painter.end()
+    return QIcon(pixmap)
 
 
 @dataclass(frozen=True)
@@ -125,16 +155,26 @@ class SettingsDialog(QDialog):
         self._check_updates = check_updates
         self._signals = _AsyncSignals(self)
         self._signals.finished.connect(self._finish_async_action)
+        self._title_drag_offset: QPoint | None = None
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(700)
         self._autosave_timer.timeout.connect(self._emit_values_changed_if_valid)
 
-        self.setWindowTitle(_settings_window_title(first_run=first_run))
+        window_title = _settings_window_title(first_run=first_run)
+        self.setWindowTitle(window_title)
         self.setModal(first_run)
         self.setMinimumWidth(520)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(1, 1, 1, 1)
+        outer.setSpacing(0)
+        outer.addWidget(self._build_title_bar(window_title))
+
+        body = QWidget(self)
+        body.setObjectName("settingsBody")
+        root = QVBoxLayout(body)
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
 
@@ -307,20 +347,68 @@ class SettingsDialog(QDialog):
         self.test_button.setToolTip("Validate the current Warcraft Logs credentials.")
         self.test_button.clicked.connect(self._test_credentials)
         footer_layout.addWidget(self.test_button)
-        self.update_button = QToolButton(footer)
+        footer_layout.addWidget(self._build_more_actions_button(footer))
+        root.addWidget(footer)
+
+        if first_run:
+            buttons = QHBoxLayout()
+            buttons.setSpacing(8)
+            buttons.addStretch(1)
+            start_button = QPushButton("Start companion")
+            start_button.setObjectName("startCompanion")
+            start_button.clicked.connect(self.accept)
+            buttons.addWidget(start_button)
+            quit_button = QPushButton("Quit setup")
+            quit_button.setObjectName("quitApplicantScout")
+            quit_button.clicked.connect(self.reject)
+            buttons.addWidget(quit_button)
+            root.addLayout(buttons)
+        outer.addWidget(body)
+        self._connect_value_change_signals()
+        self._update_screenshots_warning(self.screenshots_edit.text())
+
+    def _build_title_bar(self, title: str) -> QWidget:
+        title_bar = QWidget(self)
+        self.title_bar = title_bar
+        title_bar.setObjectName("settingsTitleBar")
+        title_bar.setStyleSheet(
+            "#settingsTitleBar {"
+            "background: #242424;"
+            "border-bottom: 1px solid #343434;"
+            "}"
+            "#settingsTitleBar QLabel#settingsTitle {"
+            "color: #f0f0f0;"
+            "font-weight: 500;"
+            "}"
+        )
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(8, 4, 6, 4)
+        title_layout.setSpacing(8)
+
+        self.title_icon = QLabel(title_bar)
+        self.title_icon.setObjectName("settingsTitleIcon")
+        icon = QIcon(str(APP_ICON_PATH))
+        if not icon.isNull():
+            self.title_icon.setPixmap(icon.pixmap(16, 16))
+        title_layout.addWidget(self.title_icon)
+
+        self.title_label = QLabel(title, title_bar)
+        self.title_label.setObjectName("settingsTitle")
+        title_layout.addWidget(self.title_label, stretch=1)
+
+        self.update_button = QToolButton(title_bar)
         self.update_button.setObjectName("installUpdate")
-        self.update_button.setText("↓")
+        self.update_button.setText("")
+        self.update_button.setIcon(_download_icon())
         self.update_button.setToolTip("Install available ApplicantScout update.")
-        self.update_button.setFixedSize(28, 24)
+        self.update_button.setFixedSize(30, 26)
         self.update_button.setStyleSheet(
             "QToolButton {"
             "background: transparent;"
             "color: #4da3ff;"
             "border: 1px solid transparent;"
             "border-radius: 4px;"
-            "font-size: 17px;"
-            "font-weight: 700;"
-            "padding-bottom: 2px;"
+            "padding: 3px;"
             "}"
             "QToolButton:hover {"
             "background: #10203a;"
@@ -338,25 +426,41 @@ class SettingsDialog(QDialog):
         )
         self.update_button.hide()
         self.update_button.clicked.connect(self._check_for_updates)
-        footer_layout.addWidget(self.update_button)
-        footer_layout.addWidget(self._build_more_actions_button(footer))
-        root.addWidget(footer)
+        title_layout.addWidget(self.update_button)
 
-        if first_run:
-            buttons = QHBoxLayout()
-            buttons.setSpacing(8)
-            buttons.addStretch(1)
-            start_button = QPushButton("Start companion")
-            start_button.setObjectName("startCompanion")
-            start_button.clicked.connect(self.accept)
-            buttons.addWidget(start_button)
-            quit_button = QPushButton("Quit setup")
-            quit_button.setObjectName("quitApplicantScout")
-            quit_button.clicked.connect(self.reject)
-            buttons.addWidget(quit_button)
-            root.addLayout(buttons)
-        self._connect_value_change_signals()
-        self._update_screenshots_warning(self.screenshots_edit.text())
+        self.close_button = QToolButton(title_bar)
+        self.close_button.setObjectName("settingsClose")
+        self.close_button.setText("×")
+        self.close_button.setToolTip(
+            "Close ApplicantScout setup."
+            if self._first_run
+            else "Hide ApplicantScout settings to tray."
+        )
+        self.close_button.setFixedSize(30, 26)
+        self.close_button.setStyleSheet(
+            "QToolButton {"
+            "background: transparent;"
+            "color: #b8b8b8;"
+            "border: 1px solid transparent;"
+            "border-radius: 4px;"
+            "font-size: 18px;"
+            "padding-bottom: 2px;"
+            "}"
+            "QToolButton:hover {"
+            "background: #3a2424;"
+            "color: #ffffff;"
+            "border-color: #704040;"
+            "}"
+            "QToolButton:pressed {"
+            "background: #2b1717;"
+            "}"
+        )
+        self.close_button.clicked.connect(self.close)
+        title_layout.addWidget(self.close_button)
+
+        for widget in (title_bar, self.title_icon, self.title_label):
+            widget.installEventFilter(self)
+        return title_bar
 
     def _build_more_actions_button(self, parent: QWidget) -> QToolButton:
         self.more_actions_button = QToolButton(parent)
@@ -377,6 +481,34 @@ class SettingsDialog(QDialog):
         actions_menu.addAction(self.cache_action)
         self.more_actions_button.setMenu(actions_menu)
         return self.more_actions_button
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
+        title_widgets = (
+            getattr(self, "title_bar", None),
+            getattr(self, "title_icon", None),
+            getattr(self, "title_label", None),
+        )
+        if watched in title_widgets and isinstance(event, QMouseEvent):
+            if (
+                event.type() == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._title_drag_offset = (
+                    event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                )
+                event.accept()
+                return True
+            if (
+                event.type() == QEvent.Type.MouseMove
+                and self._title_drag_offset is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                self.move(event.globalPosition().toPoint() - self._title_drag_offset)
+                event.accept()
+                return True
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                self._title_drag_offset = None
+        return super().eventFilter(watched, event)
 
     def values(self) -> SettingsValues:
         return SettingsValues(

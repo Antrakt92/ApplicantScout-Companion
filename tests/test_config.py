@@ -1236,8 +1236,38 @@ def test_update_result_has_installable_asset_rejects_path_separator():
 
 
 def test_update_checks_run_hourly_after_initial_startup():
-    assert main_mod.UPDATE_CHECK_INITIAL_MS == 30_000
+    assert main_mod.UPDATE_CHECK_INITIAL_MS == 1_000
     assert main_mod.UPDATE_CHECK_INTERVAL_MS == 60 * 60 * 1000
+
+
+def test_wow_start_update_prompt_only_shows_for_initial_wow_launch_update():
+    assert main_mod._should_show_wow_start_update_prompt(
+        wow_watch_mode=True,
+        startup_update_prompt_pending=True,
+        pending_update_version="v0.2.2",
+    )
+    assert not main_mod._should_show_wow_start_update_prompt(
+        wow_watch_mode=False,
+        startup_update_prompt_pending=True,
+        pending_update_version="v0.2.2",
+    )
+    assert not main_mod._should_show_wow_start_update_prompt(
+        wow_watch_mode=True,
+        startup_update_prompt_pending=False,
+        pending_update_version="v0.2.2",
+    )
+    assert not main_mod._should_show_wow_start_update_prompt(
+        wow_watch_mode=True,
+        startup_update_prompt_pending=True,
+        pending_update_version=None,
+    )
+
+
+def test_wow_start_update_prompt_message_points_at_titlebar_icon():
+    assert main_mod._wow_start_update_prompt_message("v0.2.2") == (
+        "Update v0.2.2 is available. Click the blue download icon in the "
+        "title bar to install it."
+    )
 
 
 def test_check_updates_treats_unavailable_update_check_as_error(

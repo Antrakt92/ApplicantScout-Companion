@@ -8,6 +8,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialogButtonBox,
+    QLabel,
     QLineEdit,
     QPushButton,
     QToolButton,
@@ -368,7 +369,7 @@ def test_settings_dialog_runs_action_callbacks(qtbot, tmp_path: Path):
     dialog.update_button.click()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "up to date")
 
-    assert dialog.update_button.text() == "↓"
+    assert dialog.update_button.text() == ""
     assert calls == ["test", "logs", "cache", "updates"]
     assert dialog.status_label.text() == "up to date"
 
@@ -377,21 +378,30 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
 
+    title_bar = dialog.findChild(QWidget, "settingsTitleBar")
+    title_label = dialog.findChild(QLabel, "settingsTitle")
+    close_button = dialog.findChild(QToolButton, "settingsClose")
     footer = dialog.findChild(QWidget, "settingsFooter")
     test_button = dialog.findChild(QPushButton, "testWcl")
     update_button = dialog.findChild(QToolButton, "installUpdate")
     support_button = dialog.findChild(QToolButton, "supportApplicantScout")
     more_button = dialog.findChild(QToolButton, "settingsMoreActions")
+    assert title_bar is not None
+    assert title_label is not None
+    assert close_button is not None
     assert footer is not None
     assert test_button is not None
     assert update_button is not None
     assert support_button is not None
     assert more_button is not None
+    assert title_label.text() == dialog.windowTitle()
+    assert close_button.text() == "×"
     assert test_button.text() == "Test WCL"
-    assert update_button.text() == "↓"
+    assert update_button.text() == ""
+    assert not update_button.icon().isNull()
     assert update_button.isHidden()
-    assert update_button.width() == 28
-    assert update_button.height() == 24
+    assert update_button.width() == 30
+    assert update_button.height() == 26
     assert "background: transparent" in update_button.styleSheet()
     assert "#4da3ff" in update_button.styleSheet()
     assert "#74baff" in update_button.styleSheet()
@@ -403,9 +413,9 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert "#ff6b7a" in support_button.styleSheet()
     assert "#ff8a95" in support_button.styleSheet()
     assert more_button.text() == "More"
+    assert update_button.parent() is title_bar
     assert footer.layout().itemAt(0).widget() is support_button
     assert test_button.parent() is footer
-    assert update_button.parent() is footer
     assert support_button.parent() is footer
     assert more_button.parent() is footer
     assert dialog.status_label.parent() is footer
@@ -525,6 +535,26 @@ def test_normal_settings_close_button_hides_to_tray(qtbot, tmp_path: Path):
     assert not dialog.isVisible()
     assert hidden == [True]
     assert quit_requested == []
+
+
+def test_custom_titlebar_close_button_matches_dialog_close_behavior(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    hidden: list[bool] = []
+    dialog.hideRequested.connect(lambda: hidden.append(True))
+    dialog.show()
+
+    dialog.close_button.click()
+
+    assert not dialog.isVisible()
+    assert hidden == [True]
+
+
+def test_first_run_titlebar_close_button_uses_setup_copy(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.close_button.toolTip() == "Close ApplicantScout setup."
 
 
 def test_settings_dialog_emits_values_changed_after_text_debounce(qtbot, tmp_path: Path):
