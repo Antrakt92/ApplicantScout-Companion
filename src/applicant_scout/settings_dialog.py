@@ -134,6 +134,8 @@ class SettingsDialog(QDialog):
     credentialsValidated = pyqtSignal(object)
     hideRequested = pyqtSignal()
     quitRequested = pyqtSignal()
+    updateStarted = pyqtSignal()
+    updateFinished = pyqtSignal(bool)
     updateCompleted = pyqtSignal()
 
     def __init__(
@@ -535,6 +537,14 @@ class SettingsDialog(QDialog):
         self.update_button.hide()
         self.update_button.setToolTip("Install available ApplicantScout update.")
 
+    def set_update_in_progress(self, in_progress: bool) -> None:
+        self.update_button.setEnabled(not in_progress)
+        if in_progress:
+            self.update_button.show()
+            self.update_button.setToolTip("Installing ApplicantScout update...")
+        elif self.update_button.isHidden():
+            self.update_button.setToolTip("Install available ApplicantScout update.")
+
     def accept(self) -> None:  # type: ignore[override]
         values = self.values()
         error = self._hard_validation_error(values)
@@ -676,9 +686,11 @@ class SettingsDialog(QDialog):
             return
         raw.button.setEnabled(True)
         self._set_status(raw.message, error=raw.error)
-        if raw.button is self.update_button and not raw.error:
-            self.set_update_available(None)
-            self.updateCompleted.emit()
+        if raw.button is self.update_button:
+            self.updateFinished.emit(raw.error)
+            if not raw.error:
+                self.set_update_available(None)
+                self.updateCompleted.emit()
         if not raw.error and raw.open_url:
             QDesktopServices.openUrl(QUrl(raw.open_url))
         if not raw.error and isinstance(raw.success_payload, SettingsValues):
@@ -872,7 +884,10 @@ class SettingsDialog(QDialog):
         if self._check_updates is None:
             self._set_status("Update check is unavailable.", error=True)
             return
+        if not self.update_button.isEnabled():
+            return
         check_updates = self._check_updates
+        self.updateStarted.emit()
         self._start_async_action(
             button=self.update_button,
             busy_text="Installing update...",

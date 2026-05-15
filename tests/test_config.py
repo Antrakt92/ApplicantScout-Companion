@@ -1690,6 +1690,92 @@ def test_tray_controller_exposes_running_status_and_controls(
     assert not app.quit_called
 
 
+def test_tray_controller_disables_update_action_while_installing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+    class FakeAction:
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.enabled = True
+            self.triggered = FakeSignal()
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    class FakeMenu:
+        def addAction(self, text: str) -> FakeAction:
+            return FakeAction(text)
+
+        def addSeparator(self) -> None:
+            pass
+
+    class FakeTray:
+        class ActivationReason:
+            DoubleClick = "double-click"
+
+        MessageIcon = main_mod.QSystemTrayIcon.MessageIcon
+
+        def __init__(self, *_args) -> None:
+            self.activated = FakeSignal()
+            self.tooltip = ""
+
+        @staticmethod
+        def isSystemTrayAvailable() -> bool:
+            return True
+
+        def setToolTip(self, value: str) -> None:
+            self.tooltip = value
+
+        def setContextMenu(self, _menu) -> None:
+            pass
+
+        def show(self) -> None:
+            pass
+
+        def showMessage(self, *_args) -> None:
+            pass
+
+    class FakeApp:
+        def setQuitOnLastWindowClosed(self, _value: bool) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "QMenu", FakeMenu)
+    monkeypatch.setattr(main_mod, "QSystemTrayIcon", FakeTray)
+    controller = main_mod._create_tray_controller(
+        FakeApp(),
+        icon=object(),
+        window=object(),
+        show_settings=lambda: None,
+        open_logs=lambda: "",
+        run_update=lambda: None,
+        quit_app=lambda: None,
+    )
+
+    assert controller is not None
+    controller.set_update_available("v0.2.0")
+    controller.set_update_in_progress(True)
+
+    assert controller.update_action.text == "Installing update..."
+    assert not controller.update_action.enabled
+    assert "update is installing" in controller.tray.tooltip
+
+    controller.set_update_in_progress(False)
+    controller.set_update_available("v0.2.0")
+
+    assert controller.update_action.text == "Update to v0.2.0"
+    assert controller.update_action.enabled
+
+
 def test_tray_controller_skips_unavailable_system_tray(
     monkeypatch: pytest.MonkeyPatch,
 ):

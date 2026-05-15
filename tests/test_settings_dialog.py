@@ -502,6 +502,23 @@ def test_settings_dialog_keeps_update_icon_visible_after_update_failure(
     assert "#ff6666" in dialog.status_label.styleSheet()
 
 
+def test_settings_dialog_emits_update_lifecycle_for_failure(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    qtbot.addWidget(dialog)
+    seen: list[tuple[str, bool | None]] = []
+    dialog.updateStarted.connect(lambda: seen.append(("started", None)))
+    dialog.updateFinished.connect(lambda error: seen.append(("finished", error)))
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    qtbot.waitUntil(lambda: len(seen) == 2, timeout=1000)
+    assert seen == [("started", None), ("finished", True)]
+
+
 def test_settings_dialog_emits_update_completed_after_successful_update(
     qtbot, tmp_path: Path
 ):

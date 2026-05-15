@@ -156,6 +156,12 @@ class TrayController:
         self.update_action.setEnabled(False)
         self.tray.setToolTip("ApplicantScout Companion is running")
 
+    def set_update_in_progress(self, in_progress: bool) -> None:
+        if in_progress:
+            self.update_action.setText("Installing update...")
+            self.update_action.setEnabled(False)
+            self.tray.setToolTip("ApplicantScout Companion update is installing")
+
     def _show_overlay(self, window: OverlayWindow) -> None:
         window.show()
         window.raise_()
@@ -1057,6 +1063,19 @@ def main(argv: list[str] | None = None) -> int:
     watcher_signal_gate = _WatcherSignalGate()
     current_screenshots_dir = screenshots_dir
     wow_exit_timer: QTimer | None = None
+    tray_controller: TrayController | None = None
+    update_in_progress = False
+
+    def _set_update_in_progress(in_progress: bool) -> None:
+        nonlocal update_in_progress
+        update_in_progress = in_progress
+        if tray_controller is not None:
+            if in_progress:
+                tray_controller.set_update_in_progress(True)
+            else:
+                tray_controller.set_update_available(pending_update_version)
+        if settings_dialog is not None:
+            settings_dialog.set_update_in_progress(in_progress)
 
     def _show_settings() -> None:
         nonlocal auth
@@ -1185,10 +1204,13 @@ def main(argv: list[str] | None = None) -> int:
 
         dialog.valuesChanged.connect(_handle_values_changed)
         dialog.credentialsValidated.connect(_handle_credentials_validated)
+        dialog.updateStarted.connect(lambda: _set_update_in_progress(True))
+        dialog.updateFinished.connect(lambda _error: _set_update_in_progress(False))
         dialog.updateCompleted.connect(_handle_dialog_update_completed)
         dialog.hideRequested.connect(lambda: None)
         dialog.quitRequested.connect(_quit_application)
         dialog.destroyed.connect(lambda *_args: _forget_dialog())
+        dialog.set_update_in_progress(update_in_progress)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -1206,6 +1228,10 @@ def main(argv: list[str] | None = None) -> int:
     update_signals = UpdateSignals(app)
 
     def _run_update() -> None:
+        if update_in_progress:
+            return
+        _set_update_in_progress(True)
+
         def _worker() -> None:
             try:
                 message, _url = _check_updates()
@@ -1218,9 +1244,11 @@ def main(argv: list[str] | None = None) -> int:
     def _handle_update_completed(message: str, error: bool) -> None:
         nonlocal pending_update_version
         if error:
+            _set_update_in_progress(False)
             QMessageBox.warning(window, "ApplicantScout update", message)
             return
         pending_update_version = None
+        _set_update_in_progress(False)
         if settings_dialog is not None:
             settings_dialog.set_update_available(None)
         if tray_controller is not None:
