@@ -8,7 +8,7 @@ the matching installer assets can be published in the same GitHub Release.
 1. Update `pyproject.toml`, `src/applicant_scout/__init__.py`,
    `RELEASE_NOTES.md`, and README compatibility copy to the target version.
 2. Confirm the paired addon release is current. Companion `0.2.0` pairs with
-   ApplicantScout addon `0.1.2`.
+   ApplicantScout addon `0.1.3`.
 3. Run:
 
    ```powershell

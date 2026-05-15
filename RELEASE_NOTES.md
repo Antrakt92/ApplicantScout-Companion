@@ -3,7 +3,7 @@
 ## 0.2.0 - 15-May-2026
 
 Overlay polish, safer updates, and clearer release compatibility for
-ApplicantScout addon `0.1.2`.
+ApplicantScout addon `0.1.3`.
 
 ### Added
 
@@ -37,7 +37,7 @@ ApplicantScout addon `0.1.2`.
 
 ### Compatibility
 
-- Requires the ApplicantScout WoW addon `0.1.2`.
+- Requires the ApplicantScout WoW addon `0.1.3`.
 - Supports ApplicantScout wire payloads through v4.
 - In-app updates require GitHub Release assets named
   `ApplicantScoutCompanionSetup-0.2.0.exe` and

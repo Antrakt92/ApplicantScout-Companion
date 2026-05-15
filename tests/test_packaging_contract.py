@@ -210,6 +210,8 @@ def test_release_version_metadata_is_ready_for_020():
     assert 'version = "0.2.0"' in pyproject
     assert '__version__ = "0.2.0"' in runtime
     assert notes.startswith("# ApplicantScout Companion Release Notes\n\n## 0.2.0 - ")
+    assert "ApplicantScout addon `0.1.3`" in notes
+    assert "ApplicantScout addon `0.1.3`" in _read_repo_text("RELEASE_CHECKLIST.md")
     assert "ApplicantScout Companion `0.2.0`" not in readme
     assert "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest" in readme
     assert "ApplicantScout-0.1.0.zip" not in readme
