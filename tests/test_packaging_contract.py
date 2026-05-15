@@ -216,18 +216,18 @@ def test_release_build_refuses_dirty_release_inputs_by_default():
     assert "pyproject.toml" in build_script
 
 
-def test_release_version_metadata_is_ready_for_022():
+def test_release_version_metadata_is_ready_for_023():
     pyproject = _read_repo_text("pyproject.toml")
     runtime = _read_repo_text("src/applicant_scout/__init__.py")
     notes = _read_repo_text("RELEASE_NOTES.md")
     readme = _read_repo_text("README.md")
 
-    assert 'version = "0.2.2"' in pyproject
-    assert '__version__ = "0.2.2"' in runtime
-    assert notes.startswith("# ApplicantScout Companion Release Notes\n\n## 0.2.2 - ")
-    assert "ApplicantScout WoW addon `0.1.4`" in notes
-    assert "ApplicantScout addon `0.1.4`" in _read_repo_text("RELEASE_CHECKLIST.md")
-    assert "ApplicantScout Companion `0.2.2`" not in readme
+    assert 'version = "0.2.3"' in pyproject
+    assert '__version__ = "0.2.3"' in runtime
+    assert notes.startswith("# ApplicantScout Companion Release Notes\n\n## 0.2.3 - ")
+    assert "ApplicantScout WoW addon `0.1.5`" in notes
+    assert "ApplicantScout addon `0.1.5`" in _read_repo_text("RELEASE_CHECKLIST.md")
+    assert "ApplicantScout Companion `0.2.3`" not in readme
     assert "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest" in readme
     assert "ApplicantScout-0.1.0.zip" not in readme
     assert "releases/tag/v0.1.0" not in readme
@@ -242,7 +242,7 @@ def test_release_version_check_script_documents_asset_contract():
     assert "$InstallerName.sha256" in script
     assert "ApplicantScoutCompanion-$TagVersion-portable.zip" in script
     assert "RequireAssets" in script
-    assert ".\\scripts\\check-release-version.ps1 -Tag v0.2.2 -RequireAssets" in checklist
+    assert ".\\scripts\\check-release-version.ps1 -Tag v0.2.3 -RequireAssets" in checklist
 
 
 def test_start_batch_explains_missing_local_environment():

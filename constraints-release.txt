@@ -1,4 +1,4 @@
-# Release build constraints for ApplicantScout Companion 0.2.2.
+# Release build constraints for ApplicantScout Companion 0.2.3.
 # Refresh deliberately before publishing a new release artifact.
 altgraph==0.17.5
 anyio==4.13.0

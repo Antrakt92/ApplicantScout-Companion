@@ -1,5 +1,37 @@
 # ApplicantScout Companion Release Notes
 
+## 0.2.3 - 15-May-2026
+
+Screenshot transport and update-flow hardening for live applicant sessions.
+
+### Improved
+
+- Marker-bearing screenshot decode failures now surface in the overlay footer
+  as `shot failed`, with the screenshot path and parse/CRC reason in the
+  tooltip.
+- Settings and tray update actions now share an update-in-progress state, so
+  repeated clicks cannot start duplicate installer/download workers.
+
+### Fixed
+
+- Fixed corrupt ApplicantScout QR screenshots being deleted after a parse
+  failure without any visible companion feedback.
+- Fixed stale screenshot watcher signals after changing the Screenshots folder;
+  old-path snapshots and clears are ignored once a replacement watcher is
+  active.
+- Fixed no-system-tray sessions so the companion does not disable
+  last-window-close quitting when there is no tray control surface.
+- Fixed pending overlay geometry saves being lost on tray/control quit paths
+  immediately after moving or resizing the window.
+
+### Compatibility
+
+- Requires the ApplicantScout WoW addon `0.1.5`.
+- Supports ApplicantScout wire payloads through v4.
+- In-app updates require GitHub Release assets named
+  `ApplicantScoutCompanionSetup-0.2.3.exe` and
+  `ApplicantScoutCompanionSetup-0.2.3.exe.sha256`.
+
 ## 0.2.2 - 15-May-2026
 
 Mythic+ fit scoring is now more honest about weak logs, sparse evidence, and
