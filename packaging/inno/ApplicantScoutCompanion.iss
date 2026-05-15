@@ -49,11 +49,12 @@ Name: "{autodesktop}\ApplicantScout Companion"; Filename: "{app}\ApplicantScout.
 
 [Run]
 Filename: "{app}\ApplicantScout.exe"; Parameters: "--show-settings"; Description: "Launch ApplicantScout Companion"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\ApplicantScout.exe"; Parameters: "--show-settings"; Flags: nowait skipifnotsilent; Check: WasCompanionRunningBeforeInstall
+Filename: "{app}\ApplicantScout.exe"; Parameters: "--show-settings"; Flags: nowait skipifnotsilent; Check: ShouldRelaunchAfterInstall
 
 [Code]
 var
   CompanionWasRunning: Boolean;
+  SelfUpdateWasRequested: Boolean;
 
 function PowerShellSingleQuoted(Value: String): String;
 begin
@@ -82,6 +83,46 @@ begin
   end;
 end;
 
+function SelfUpdateRequested(): Boolean;
+begin
+  Result := ExpandConstant('{param:APSCOUT_SELFUPDATE|0}') = '1';
+end;
+
+function SelfUpdateSourcePid(): Integer;
+begin
+  Result := StrToIntDef(ExpandConstant('{param:APSCOUT_SOURCE_PID|0}'), 0);
+end;
+
+function SelfUpdateSourcePath(): String;
+begin
+  Result := ExpandConstant('{param:APSCOUT_SOURCE_PATH|}');
+end;
+
+function SelfUpdateProcessScript(Terminate: Boolean): String;
+var
+  SourcePath: String;
+  SourcePid: String;
+begin
+  SourcePath := PowerShellSingleQuoted(SelfUpdateSourcePath());
+  SourcePid := IntToStr(SelfUpdateSourcePid());
+  Result :=
+    '-NoProfile -ExecutionPolicy Bypass -Command "' +
+    '$target = ' + SourcePath + '; ' +
+    '$sourcePid = ' + SourcePid + '; ' +
+    'if ($sourcePid -le 0 -or [string]::IsNullOrWhiteSpace($target)) { exit 1 }; ' +
+    '$fullTarget = [System.IO.Path]::GetFullPath($target); ' +
+    '$procs = Get-CimInstance Win32_Process | Where-Object { ' +
+    '$_.ProcessId -eq $sourcePid -and $_.ExecutablePath -and ' +
+    '([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $fullTarget) ' +
+    '}; ';
+  if Terminate then begin
+    Result := Result +
+      'foreach ($p in $procs) { Invoke-CimMethod -InputObject $p -MethodName Terminate | Out-Null }; exit 0"';
+  end else begin
+    Result := Result + 'if ($procs) { exit 0 } else { exit 1 }"';
+  end;
+end;
+
 function IsCompanionRunning(): Boolean;
 var
   ResultCode: Integer;
@@ -95,6 +136,30 @@ begin
     ResultCode
   );
   Result := ResultCode = 0;
+end;
+
+procedure CloseSelfUpdateSource();
+var
+  ResultCode: Integer;
+begin
+  if not SelfUpdateRequested() then begin
+    Exit;
+  end;
+  if SelfUpdateSourcePid() <= 0 then begin
+    Exit;
+  end;
+  if SelfUpdateSourcePath() = '' then begin
+    Exit;
+  end;
+  Exec(
+    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    SelfUpdateProcessScript(True),
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+  Sleep(500);
 end;
 
 procedure CloseRunningCompanion();
@@ -143,13 +208,17 @@ begin
   RemoveDir(ExpandConstant('{commonprograms}\ApplicantScout Companion'));
 end;
 
-function WasCompanionRunningBeforeInstall(): Boolean;
+function ShouldRelaunchAfterInstall(): Boolean;
 begin
-  Result := CompanionWasRunning;
+  Result := CompanionWasRunning or SelfUpdateWasRequested;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  SelfUpdateWasRequested := SelfUpdateRequested();
+  if SelfUpdateWasRequested then begin
+    CloseSelfUpdateSource();
+  end;
   CompanionWasRunning := IsCompanionRunning();
   if CompanionWasRunning then begin
     CloseRunningCompanion();

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import hashlib
+import os
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +24,7 @@ _SEMVER_RE = re.compile(r"^\s*[vV]?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?\s*$"
 UpdateStatus = Literal["available", "up_to_date", "unavailable"]
 _INSTALLER_PREFIX = "ApplicantScoutCompanionSetup-"
 _INSTALLER_ARGS = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+_SELF_UPDATE_FLAG = "/APSCOUT_SELFUPDATE=1"
 
 
 @dataclass(frozen=True)
@@ -371,10 +374,18 @@ def launch_update_installer(installer_path: Path) -> None:
     if not installer_path.is_file():
         raise RuntimeError(f"Update installer was not downloaded: {installer_path}")
     subprocess.Popen(
-        [str(installer_path), *_INSTALLER_ARGS],
+        [str(installer_path), *_INSTALLER_ARGS, *_installer_self_update_args()],
         close_fds=True,
         cwd=str(installer_path.parent),
     )
+
+
+def _installer_self_update_args() -> list[str]:
+    return [
+        _SELF_UPDATE_FLAG,
+        f"/APSCOUT_SOURCE_PID={os.getpid()}",
+        f"/APSCOUT_SOURCE_PATH={sys.executable}",
+    ]
 
 
 def download_and_launch_update(current_version: str) -> str:

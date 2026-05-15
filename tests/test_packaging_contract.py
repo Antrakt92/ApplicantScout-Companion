@@ -125,7 +125,7 @@ def test_installer_closes_running_companion_without_restart_manager_prompt():
     assert "SetupMutex=Antrakt.ApplicantScout.Companion.Setup" in inno_script
     assert "function PrepareToInstall(var NeedsRestart: Boolean): String;" in inno_script
     assert "function InitializeUninstall(): Boolean;" in inno_script
-    assert "function WasCompanionRunningBeforeInstall(): Boolean;" in inno_script
+    assert "function ShouldRelaunchAfterInstall(): Boolean;" in inno_script
     assert "--shutdown-running-instance" in inno_script
     assert "ewNoWait" in inno_script
     assert "taskkill /IM ApplicantScout.exe" not in inno_script
@@ -135,8 +135,23 @@ def test_installer_closes_running_companion_without_restart_manager_prompt():
     assert "function IsCompanionRunning(): Boolean;" in inno_script
     assert "ewWaitUntilTerminated" in inno_script
     assert "skipifnotsilent" in inno_script
-    assert "Check: WasCompanionRunningBeforeInstall" in inno_script
+    assert "Check: ShouldRelaunchAfterInstall" in inno_script
     assert "Result := ''" in inno_script
+
+
+def test_installer_accepts_self_update_context_for_portable_or_legacy_paths():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "{param:APSCOUT_SELFUPDATE|0}" in inno_script
+    assert "{param:APSCOUT_SOURCE_PID|0}" in inno_script
+    assert "{param:APSCOUT_SOURCE_PATH|}" in inno_script
+    assert "SelfUpdateWasRequested" in inno_script
+    assert "function SelfUpdateRequested(): Boolean;" in inno_script
+    assert "function SelfUpdateSourcePid(): Integer;" in inno_script
+    assert "function SelfUpdateProcessScript(Terminate: Boolean): String;" in inno_script
+    assert "procedure CloseSelfUpdateSource();" in inno_script
+    assert "CloseSelfUpdateSource();" in inno_script
+    assert "CompanionWasRunning or SelfUpdateWasRequested" in inno_script
 
 
 def test_interactive_and_silent_update_relaunch_open_settings():

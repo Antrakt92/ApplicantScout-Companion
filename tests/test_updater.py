@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 from typing import Any
 
 import httpx
@@ -685,6 +687,9 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
+            "/APSCOUT_SELFUPDATE=1",
+            f"/APSCOUT_SOURCE_PID={os.getpid()}",
+            f"/APSCOUT_SOURCE_PATH={sys.executable}",
         ]
     ]
 
