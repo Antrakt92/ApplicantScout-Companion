@@ -539,6 +539,26 @@ def test_decode_screenshot_marks_corrupt_appscout_payload_as_ours(
     assert marker is True
 
 
+def test_decode_result_records_corrupt_appscout_reason(monkeypatch, tmp_path: Path):
+    image_path = tmp_path / "corrupt_raw_only.png"
+    _write_blank_image(image_path)
+    corrupt_raw = bytearray(_wrap_payload(_build_body([])))
+    corrupt_raw[-1] ^= 0xFF
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [SimpleNamespace(data=bytes(corrupt_raw))],
+    )
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.snapshot is None
+    assert result.has_marker is True
+    assert result.error_reason is not None
+    assert "CRC mismatch" in result.error_reason
+
+
 def test_decode_screenshot_ignores_foreign_qr_without_marker(
     monkeypatch, tmp_path: Path
 ):
@@ -625,6 +645,27 @@ def test_watcher_stop_suppresses_direct_file_signals(monkeypatch, tmp_path: Path
     assert snapshots == []
     assert failures == []
     assert image_path.exists()
+
+
+def test_watcher_emits_decode_failed_for_marker_parse_failure(
+    monkeypatch, tmp_path: Path
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"x")
+    watcher = ScreenshotWatcher(tmp_path)
+    failures: list[tuple[str, str]] = []
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, True),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert failures == [(str(image_path), "parse failed")]
+    assert not image_path.exists()
 
 
 def test_watcher_stop_suppresses_backlog_signals(monkeypatch, tmp_path: Path):

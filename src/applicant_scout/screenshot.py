@@ -114,6 +114,13 @@ class Snapshot:
     applicants: list[DecodedApplicant] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class DecodeResult:
+    snapshot: Optional[Snapshot]
+    has_marker: bool
+    error_reason: Optional[str] = None
+
+
 # ─── QR detection + payload extraction ──────────────────────────────────────
 def _decode_qr_symbol_data(image_path: Path) -> list[bytes]:
     """Return raw pyzbar symbol bytes from one screenshot image.
@@ -333,8 +340,8 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
     return Snapshot(listing=listing, version=version, applicants=applicants)
 
 
-def decode_screenshot(image_path: Path) -> tuple[Optional[Snapshot], bool]:
-    """Decode and parse a screenshot image. Returns (snapshot, has_marker).
+def _decode_screenshot_result(image_path: Path) -> DecodeResult:
+    """Decode and parse a screenshot image with diagnostics.
 
     has_marker=True when the image's QR contained the APS1 magic, REGARDLESS of
     whether the rest of the payload parsed cleanly. snapshot=None with
@@ -349,7 +356,7 @@ def decode_screenshot(image_path: Path) -> tuple[Optional[Snapshot], bool]:
     symbol_payloads = _decode_qr_symbol_data(image_path)
     candidates = _collect_appscout_qr_candidates(symbol_payloads)
     if not candidates:
-        return None, False  # no QR / unrelated QR
+        return DecodeResult(None, False)  # no QR / unrelated QR
 
     first_error: Optional[str] = None
     for kind, raw in candidates:
@@ -368,7 +375,7 @@ def decode_screenshot(image_path: Path) -> tuple[Optional[Snapshot], bool]:
                 wire_ver,
                 len(snap.applicants),
             )
-            return snap, True
+            return DecodeResult(snap, True)
         if err is not None:
             if first_error is None:
                 first_error = f"{kind}: {err}"
@@ -376,15 +383,25 @@ def decode_screenshot(image_path: Path) -> tuple[Optional[Snapshot], bool]:
 
     if first_error is not None:
         _log.warning("decode failed in %s: %s", image_path.name, first_error)
-    return None, True
+    return DecodeResult(None, True, first_error or "parse failed")
+
+
+def decode_screenshot(image_path: Path) -> tuple[Optional[Snapshot], bool]:
+    """Decode and parse a screenshot image. Returns (snapshot, has_marker).
+
+    Compatibility wrapper for callers/tests that only need the historical
+    cleanup discriminator. Use _decode_screenshot_result when the caller needs
+    a user-visible failure reason.
+    """
+    result = _decode_screenshot_result(image_path)
+    return result.snapshot, result.has_marker
 
 
 def _has_marker(image_path: Path) -> bool:
     """Cheap "is this our screenshot?" check — used by paths that don't need
     the parsed Snapshot, only the cleanup discriminator. Single pyzbar call.
     """
-    _, marker = decode_screenshot(image_path)
-    return marker
+    return _decode_screenshot_result(image_path).has_marker
 
 
 # ─── File watcher ────────────────────────────────────────────────────────────
@@ -595,20 +612,20 @@ class ScreenshotWatcher(QObject):
             # tuple return collapses what was a two-pyzbar-call sequence into
             # one — meaningful at 500 files × 30-80 ms saved per file.
             try:
-                snap, marker = decode_screenshot(p)
+                result = _decode_screenshot_result(p)
             except Exception as e:
                 _log.warning("backlog decode error %s: %s", p.name, e)
-                snap, marker = None, False
+                result = DecodeResult(None, False)
             if (
-                snap is not None
+                result.snapshot is not None
                 and not applied
                 and mtime >= apply_cutoff
                 and not self._stopped.is_set()
             ):
-                self._emit_snapshot(snap)
+                self._emit_snapshot(result.snapshot)
                 _log.info("backlog: applied snapshot from %s", p.name)
                 applied = True
-            if marker:
+            if result.has_marker:
                 try:
                     p.unlink()
                     deleted += 1
@@ -640,16 +657,18 @@ class ScreenshotWatcher(QObject):
                 except OSError:
                     pass
             return
-        snap: Optional[Snapshot] = None
-        marker = False
         try:
-            snap, marker = decode_screenshot(path)
+            result = _decode_screenshot_result(path)
         except Exception as e:
             self._emit_decode_failed(path, repr(e))
+            result = DecodeResult(None, False)
+        snap = result.snapshot
+        marker = result.has_marker
         if snap is not None:
             self._emit_snapshot(snap)
         if marker:
             if snap is None:
+                self._emit_decode_failed(path, result.error_reason or "parse failed")
                 _log.warning(
                     "decode returned None for %s — APS1 marker FOUND but parse failed",
                     path.name,
@@ -673,14 +692,16 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("usage: python -m applicant_scout.screenshot <path-to-screenshot>")
         sys.exit(1)
-    snap, marker = decode_screenshot(Path(sys.argv[1]))
-    if snap is None:
-        if marker:
-            print("DECODE FAILED — APS1 marker found but parse error / CRC mismatch")
+    result = _decode_screenshot_result(Path(sys.argv[1]))
+    if result.snapshot is None:
+        if result.has_marker:
+            reason = result.error_reason or "parse error / CRC mismatch"
+            print(f"DECODE FAILED — APS1 marker found but {reason}")
         else:
             print("DECODE FAILED — no QR / wrong magic")
         sys.exit(2)
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    snap = result.snapshot
     print("DECODED OK:")
     print(f"  listing: {snap.listing}")
     print(f"  version: {snap.version}")

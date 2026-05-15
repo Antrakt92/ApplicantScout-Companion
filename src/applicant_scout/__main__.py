@@ -284,10 +284,10 @@ def _create_tray_controller(
     run_update: Callable[[], None],
     quit_app: Callable[[], None],
 ) -> TrayController | None:
-    app.setQuitOnLastWindowClosed(False)
     if not QSystemTrayIcon.isSystemTrayAvailable():
         log.warning("System tray is unavailable; settings are only available in overlay.")
         return None
+    app.setQuitOnLastWindowClosed(False)
     controller = TrayController(
         app=app,
         icon=icon,
@@ -696,17 +696,53 @@ def _apply_wow_sync_runtime(
     return None
 
 
+class _WatcherSignalGate:
+    def __init__(self) -> None:
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def activate_next(self) -> int:
+        self._generation += 1
+        return self._generation
+
+    def restore(self, generation: int) -> None:
+        self._generation = generation
+
+    def is_current(self, generation: int) -> bool:
+        return generation == self._generation
+
+
 def _connect_screenshot_watcher(
     watcher: ScreenshotWatcher,
     machine: StateMachine,
     window: OverlayWindow,
     decode_failed_callback: Callable[[str, str], None],
+    *,
+    signal_gate: _WatcherSignalGate,
+    generation: int,
 ) -> None:
-    watcher.snapshotReceived.connect(
-        getattr(machine, "apply_snapshot", lambda *_args: None)
-    )
-    watcher.snapshotReceived.connect(getattr(window, "note_decode", lambda *_args: None))
-    watcher.decodeFailed.connect(decode_failed_callback)
+    def _apply_snapshot_if_current(snap: object) -> None:
+        if not signal_gate.is_current(generation):
+            return
+        getattr(machine, "apply_snapshot", lambda *_args: None)(snap)
+
+    def _note_decode_if_current(snap: object) -> None:
+        if not signal_gate.is_current(generation):
+            return
+        getattr(window, "note_decode", lambda *_args: None)(snap)
+
+    def _decode_failed_if_current(path: str, reason: str) -> None:
+        if not signal_gate.is_current(generation):
+            return
+        decode_failed_callback(path, reason)
+        getattr(window, "note_decode_failed", lambda *_args: None)(path, reason)
+
+    watcher.snapshotReceived.connect(_apply_snapshot_if_current)
+    watcher.snapshotReceived.connect(_note_decode_if_current)
+    watcher.decodeFailed.connect(_decode_failed_if_current)
 
 
 def _replace_screenshot_watcher(
@@ -715,15 +751,25 @@ def _replace_screenshot_watcher(
     machine: StateMachine,
     window: OverlayWindow,
     decode_failed_callback: Callable[[str, str], None],
+    *,
+    signal_gate: _WatcherSignalGate,
 ) -> ScreenshotWatcher:
     new_watcher = ScreenshotWatcher(screenshots_dir)
+    previous_generation = signal_gate.generation
+    generation = signal_gate.activate_next()
     _connect_screenshot_watcher(
         new_watcher,
         machine,
         window,
         decode_failed_callback,
+        signal_gate=signal_gate,
+        generation=generation,
     )
-    new_watcher.start()
+    try:
+        new_watcher.start()
+    except Exception:
+        signal_gate.restore(previous_generation)
+        raise
     if current_watcher is not None:
         current_watcher.stop()
     return new_watcher
@@ -946,20 +992,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     settings_dialog: SettingsDialog | None = None
+    window_ref: dict[str, OverlayWindow] = {}
     pending_update_version: str | None = None
     startup_update_prompt_pending = wow_watch_mode
 
-    def _flush_settings_before_quit() -> None:
+    def _flush_before_quit() -> None:
         if settings_dialog is not None:
             settings_dialog.flush_pending_values()
+        if active_window := window_ref.get("window"):
+            active_window.flush_geometry()
 
     def _quit_application() -> None:
-        _flush_settings_before_quit()
+        _flush_before_quit()
         app.quit()
 
     about_to_quit = getattr(app, "aboutToQuit", None)
     if about_to_quit is not None:
-        about_to_quit.connect(_flush_settings_before_quit)
+        about_to_quit.connect(_flush_before_quit)
 
     loaded = _load_startup_config()
     if loaded is None:
@@ -1005,6 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
     state = AppState()
     machine = StateMachine(state)
     watcher: ScreenshotWatcher | None = None
+    watcher_signal_gate = _WatcherSignalGate()
     current_screenshots_dir = screenshots_dir
     wow_exit_timer: QTimer | None = None
 
@@ -1102,6 +1152,7 @@ def main(argv: list[str] | None = None) -> int:
                         machine,
                         window,
                         _log_decode_failed,
+                        signal_gate=watcher_signal_gate,
                     )
                     current_screenshots_dir = new_screenshots_dir
 
@@ -1150,6 +1201,7 @@ def main(argv: list[str] | None = None) -> int:
         metric_preferences=cfg.metric_preferences,
         show_settings=_show_settings,
     )
+    window_ref["window"] = window
     window.setWindowIcon(_app_icon())
     update_signals = UpdateSignals(app)
 
@@ -1282,6 +1334,7 @@ def main(argv: list[str] | None = None) -> int:
         machine,
         window,
         _log_decode_failed,
+        signal_gate=watcher_signal_gate,
     )
 
     log.info("Ready. Overlay will appear when applicants are present.")

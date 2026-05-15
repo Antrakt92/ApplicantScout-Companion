@@ -403,6 +403,67 @@ def test_overlay_constructor_uses_safe_defaults_for_corrupt_window_json(qtbot, t
         client.close()
 
 
+def test_health_label_surfaces_latest_decode_failure(monkeypatch, qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
+        window.note_decode_failed("WoWScrnShot_0001.jpg", "CRC mismatch")
+
+        assert window._health_label.text() == "shot failed"
+        assert "WoWScrnShot_0001.jpg" in window._health_label.toolTip()
+        assert "CRC mismatch" in window._health_label.toolTip()
+    finally:
+        client.close()
+
+
+def test_successful_decode_clears_previous_health_failure(monkeypatch, qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        times = iter([100.0, 100.0, 105.0, 107.0])
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: next(times))
+        window.note_decode_failed("WoWScrnShot_0001.jpg", "CRC mismatch")
+        window.note_decode(object())
+        window._refresh_health_label()
+
+        assert window._health_label.text() == "shot 2s ago"
+        assert window._health_label.toolTip() == ""
+    finally:
+        client.close()
+
+
+def test_flush_geometry_stops_pending_timer_and_persists_window_json(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.setGeometry(23, 31, 640, 420)
+        window._save_timer.start()
+
+        window.flush_geometry()
+
+        assert not window._save_timer.isActive()
+        saved = json.loads((tmp_path / "window.json").read_text(encoding="utf-8"))
+        assert saved["x"] == window.geometry().x()
+        assert saved["y"] == window.geometry().y()
+        assert saved["w"] == window.geometry().width()
+        assert saved["h"] == window.geometry().height()
+    finally:
+        client.close()
+
+
 def test_title_bar_hide_button_hides_overlay_without_shutdown(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)

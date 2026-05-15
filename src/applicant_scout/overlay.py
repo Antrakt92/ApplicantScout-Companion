@@ -1571,6 +1571,9 @@ class OverlayWindow(QMainWindow):
         # GUI-thread only (signal queues across thread → slot runs on GUI),
         # no lock needed.
         self._last_decode_time: float | None = None
+        self._last_decode_failed_time: float | None = None
+        self._last_decode_failed_path = ""
+        self._last_decode_failed_reason = ""
 
         # Bottom status-row poller — fires both quota and health refreshes on
         # the same 1s cadence. 1Hz keeps "shot Xs ago" smooth (vs 3s jumps);
@@ -1687,6 +1690,18 @@ class OverlayWindow(QMainWindow):
         Observer thread onto the GUI thread automatically). Read by the timer
         slot also runs on GUI thread — no lock needed for the float field."""
         self._last_decode_time = time.time()
+        self._last_decode_failed_time = None
+        self._last_decode_failed_path = ""
+        self._last_decode_failed_reason = ""
+        self._health_label.setToolTip("")
+
+    def note_decode_failed(self, path: str, reason: str) -> None:
+        """Slot for ScreenshotWatcher.decodeFailed. Keeps marker-bearing QR
+        parse failures visible in the status row until the next good decode."""
+        self._last_decode_failed_time = time.time()
+        self._last_decode_failed_path = path
+        self._last_decode_failed_reason = reason
+        self._refresh_health_label()
 
     def _refresh_status_row(self) -> None:
         """One-shot update of both bottom-row labels. Driven by _quota_timer
@@ -1703,12 +1718,26 @@ class OverlayWindow(QMainWindow):
         transition, manual change). No color escalation in v1 — idle listings
         legitimately have no decodes for minutes; coloring would false-alarm.
         Absolute "shot Xm ago" text is enough to spot a dead pipeline."""
+        failed_at = self._last_decode_failed_time
+        if failed_at is not None and (
+            self._last_decode_time is None or failed_at >= self._last_decode_time
+        ):
+            delta = max(0.0, time.time() - failed_at)
+            self._health_label.setText("shot failed")
+            self._health_label.setToolTip(
+                f"{self._last_decode_failed_path}\n"
+                f"{self._last_decode_failed_reason}\n"
+                f"{_format_age(delta)} ago"
+            )
+            return
         last = self._last_decode_time
         if last is None:
             self._health_label.setText("shot —")
+            self._health_label.setToolTip("")
             return
         delta = max(0.0, time.time() - last)
         self._health_label.setText(f"shot {_format_age(delta)}")
+        self._health_label.setToolTip("")
 
     def _refresh_quota_label(self) -> None:
         """Pull latest quota snapshot from wcl_client and format into status
@@ -2418,6 +2447,11 @@ class OverlayWindow(QMainWindow):
             self._config_dir, WindowGeometry(g.x(), g.y(), g.width(), g.height())
         )
 
+    def flush_geometry(self) -> None:
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+        self._persist_geometry()
+
     # ─── overrides ─────
 
     def eventFilter(self, obj, event):  # type: ignore[override]
@@ -2518,7 +2552,7 @@ class OverlayWindow(QMainWindow):
         self._reresolve_hover_from_cursor()
 
     def closeEvent(self, event):
-        self._persist_geometry()
+        self.flush_geometry()
         super().closeEvent(event)
 
 
