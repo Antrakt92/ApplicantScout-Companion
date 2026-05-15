@@ -1,5 +1,55 @@
 # ApplicantScout Companion Release Notes
 
+## 0.2.2 - 15-May-2026
+
+Mythic+ fit scoring is now more honest about weak logs, sparse evidence, and
+low-key farm parses, with a smoother in-app update prompt.
+
+### Changed
+
+- Reworked Mythic+ fit scoring to prioritize relevant Warcraft Logs bracket
+  performance instead of letting key level, broad coverage, or RaiderIO carry
+  weak logs into a good-looking score.
+- Key level, same-dungeon evidence, profile consistency, and RaiderIO still
+  contribute, but RaiderIO is now only a small nudge when WCL evidence is
+  already decent or a capped fallback when WCL data is missing.
+- Sparse WCL coverage is now treated as weaker evidence instead of a score
+  bonus, and poor extra dungeon logs no longer reduce the sparse-evidence
+  penalty.
+- Low-key farm parses are capped so they cannot distort fit for much higher
+  hosted keys; very high-key evidence still helps but low parses at high keys
+  are bounded.
+- Fit labels now line up with the visible WCL-style score bands: `RISK` below
+  50, `OK` from 50, `FIT` from 70, and `TOP` from 85.
+
+### Improved
+
+- The update install action now uses a clearer title-bar download icon.
+- When the companion starts with WoW and finds an installable update, Settings
+  can open with a direct update prompt instead of staying silently hidden.
+- Self-updates now pass update context into the installer so an update launched
+  from the open companion can close the old process and relaunch into the
+  visible Settings flow.
+
+### Fixed
+
+- Fixed all-grey or mostly-grey Mythic+ profiles appearing as blue or overly
+  positive fit scores.
+- Fixed high current or main RaiderIO from rescuing weak WCL evidence into an
+  inflated Mythic+ fit.
+- Fixed mixed-bracket cases where old low-key logs could beat relevant hosted
+  key evidence.
+- Fixed the old visual contradiction where a blue-range numeric score could
+  still be labelled `RISK`.
+
+### Compatibility
+
+- Requires the ApplicantScout WoW addon `0.1.4`.
+- Supports ApplicantScout wire payloads through v4.
+- In-app updates require GitHub Release assets named
+  `ApplicantScoutCompanionSetup-0.2.2.exe` and
+  `ApplicantScoutCompanionSetup-0.2.2.exe.sha256`.
+
 ## 0.2.1 - 15-May-2026
 
 Small companion polish release for supportability.
