@@ -208,12 +208,14 @@ HEADER_TOOLTIPS: list[str] = [
     "Mythic+ fit for the current listing when the companion knows your\n"
     "hosted key level; otherwise falls back to the old best/median headline.\n\n"
     "Metric: DPS for tank / damage applicants, HPS for healers.\n"
-    "Fit labels weight key level, relevant bracket performance, coverage,\n"
-    "same-dungeon signal, and RIO support. Group rows show a package rating\n"
-    "on the leader row because group applicants are accepted together.\n\n"
-    "Background colour follows the numeric fit score with the same WCL\n"
-    "ranking palette, so the label can say RISK while a 50+ score still\n"
-    "gets a blue WCL-tier scan cue.\n\n"
+    "Fit labels are driven primarily by relevant WCL bracket performance,\n"
+    "then adjusted for key-level context, same-dungeon evidence, and profile\n"
+    "consistency. Sparse coverage penalizes the fit and lowers confidence\n"
+    "instead of giving free score; RIO support is only a small nudge or\n"
+    "fallback when WCL data is missing. Group rows show a package rating on\n"
+    "the leader row because group applicants are accepted together.\n\n"
+    "Background colour follows the numeric fit score with the WCL ranking\n"
+    "palette, after those context guards are applied.\n\n"
     "Hover the row for the per-dungeon breakdown in the top panel.",
 ]
 

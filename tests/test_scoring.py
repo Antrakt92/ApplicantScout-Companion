@@ -10,6 +10,7 @@ from applicant_scout.scoring import (
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
+    fit_label,
     fit_colour,
     mplus_dungeon_fit_rows,
     package_fit,
@@ -120,6 +121,20 @@ def test_fit_colour_tracks_wcl_palette_for_numeric_score(score, expected):
     assert fit_colour(score) == expected
 
 
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [
+        (49.9, "RISK"),
+        (50.0, "OK"),
+        (69.9, "OK"),
+        (70.0, "FIT"),
+        (85.0, "TOP"),
+    ],
+)
+def test_fit_label_tracks_visible_score_colour_bands(score, expected):
+    assert fit_label(score) == expected
+
+
 def test_effective_rio_score_uses_higher_of_current_and_main():
     assert effective_rio_score(_app(score=2443, main_score=3468)) == 3468
     assert effective_rio_score(_app(score=3600, main_score=3300)) == 3600
@@ -144,7 +159,53 @@ def test_mplus_rio_fallback_ignores_lower_main_score():
     ).score
 
 
-def test_mplus_overqualified_key_beats_low_key_orange_for_low_listing():
+def test_mplus_all_grey_near_target_profile_stays_low_risk():
+    target = _listing(key_level=16)
+    applicant = _app(
+        score=3328,
+        dps_breakdown=[
+            _dungeon("Algeth'ar Academy", [(16, 15.0, 15.0, 1)]),
+            _dungeon("Skyreach", [(15, 14.0, 14.0, 1)]),
+            _dungeon("Nexus-Point Xenas", [(15, 10.0, 10.0, 1)]),
+            _dungeon("Seat of the Triumvirate", [(15, 10.0, 10.0, 1)]),
+            _dungeon("Magisters' Terrace", [(15, 6.0, 6.0, 1)]),
+            _dungeon("Pit of Saron", [(15, 4.0, 4.0, 1)]),
+            _dungeon("Windrunner Spire", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Maisara Caverns", [(14, 7.0, 7.0, 1)]),
+        ],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.label == "RISK"
+    assert fit.score < 25.0
+    assert fit.colour == percentile_colour(24.0)
+
+
+def test_mplus_mostly_grey_healer_is_not_rescued_by_main_rio():
+    target = _listing(key_level=16, dungeon_name="Windrunner Spire")
+    applicant = _app(
+        role="HEALER",
+        score=3381,
+        main_score=3596,
+        hps_breakdown=[
+            _dungeon("Windrunner Spire", [(16, 47.0, 47.0, 1)]),
+            _dungeon("Nexus-Point Xenas", [(16, 24.0, 24.0, 1)]),
+            _dungeon("Maisara Caverns", [(16, 10.0, 10.0, 1)]),
+            _dungeon("Seat of the Triumvirate", [(16, 8.0, 8.0, 1)]),
+            _dungeon("Algeth'ar Academy", [(15, 28.0, 14.0, 2)]),
+            _dungeon("Pit of Saron", [(16, 6.0, 6.0, 1)]),
+            _dungeon("Skyreach", [(16, 1.0, 1.0, 1)]),
+        ],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.label == "RISK"
+    assert fit.score < 50.0
+
+
+def test_mplus_overqualified_key_and_same_key_orange_are_good_for_low_listing():
     target = _listing(key_level=10)
     overqualified = _app(
         dps_breakdown=[_dungeon("Skyreach", [(20, 31.0, 31.0, 1)])],
@@ -155,9 +216,11 @@ def test_mplus_overqualified_key_beats_low_key_orange_for_low_listing():
         score=2600,
     )
 
-    assert candidate_fit(overqualified, target).score > candidate_fit(
-        farm_parse, target
-    ).score
+    overqualified_fit = candidate_fit(overqualified, target)
+    farm_fit = candidate_fit(farm_parse, target)
+
+    assert overqualified_fit.score >= 70.0
+    assert farm_fit.score >= 70.0
 
 
 def test_mplus_low_key_orange_does_not_beat_relevant_high_key_evidence():
@@ -174,8 +237,37 @@ def test_mplus_low_key_orange_does_not_beat_relevant_high_key_evidence():
     farm_fit = candidate_fit(farm_parse, target)
     relevant_fit = candidate_fit(relevant, target)
 
+    assert farm_fit.score < 25.0
     assert relevant_fit.score > farm_fit.score
-    assert relevant_fit.primary_key == 20
+    assert relevant_fit.primary_key == 16
+
+
+def test_mplus_extra_bad_dungeons_do_not_reduce_sparse_penalty():
+    target = _listing(key_level=16)
+    strong_with_some_bad = _app(
+        dps_breakdown=[
+            _dungeon("Skyreach", [(16, 90.0, 80.0, 3)]),
+            _dungeon("Nexus-Point Xenas", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Seat of the Triumvirate", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Maisara Caverns", [(16, 1.0, 1.0, 1)]),
+        ],
+    )
+    strong_with_more_bad = _app(
+        dps_breakdown=[
+            _dungeon("Skyreach", [(16, 90.0, 80.0, 3)]),
+            _dungeon("Nexus-Point Xenas", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Seat of the Triumvirate", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Maisara Caverns", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Pit of Saron", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Algeth'ar Academy", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Magisters' Terrace", [(16, 1.0, 1.0, 1)]),
+            _dungeon("Windrunner Spire", [(16, 1.0, 1.0, 1)]),
+        ],
+    )
+
+    assert candidate_fit(strong_with_more_bad, target).score <= candidate_fit(
+        strong_with_some_bad, target
+    ).score
 
 
 def test_mplus_fit_rows_use_relevant_lower_bracket_when_top_key_is_grey():

@@ -158,8 +158,8 @@ def test_mplus_cell_visuals_dps_appends_highest_key():
 def test_mplus_cell_visuals_listing_colours_fit_score_with_wcl_palette():
     text, fg, bg = _mplus_cell_visuals(_app(role="DAMAGER"), _mplus_listing())
 
-    assert text.startswith("OK ")
-    assert bg == percentile_colour(60.0)
+    assert text == "FIT 78 +14"
+    assert bg == percentile_colour(78.0)
     assert fg == _text_colour_for_bg(bg)
 
 

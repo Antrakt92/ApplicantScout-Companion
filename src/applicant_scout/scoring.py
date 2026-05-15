@@ -25,9 +25,21 @@ MPLUS_DUNGEON_COUNT = len(MPLUS_ENCOUNTERS)
 FIT_LABEL_BUCKETS: list[tuple[float, str]] = [
     (85.0, "TOP"),
     (70.0, "FIT"),
-    (55.0, "OK"),
+    (50.0, "OK"),
     (0.0, "RISK"),
 ]
+MPLUS_BEST_WEIGHT = 0.55
+MPLUS_TOP3_WEIGHT = 0.22
+MPLUS_AVERAGE_WEIGHT = 0.15
+MPLUS_SAME_DUNGEON_WEIGHT = 0.08
+MPLUS_SPARSE_PENALTY = 20.0
+MPLUS_SAME_DUNGEON_SPARSE_PENALTY = 10.0
+MPLUS_OVERQUALIFIED_SPARSE_PENALTY = 12.0
+MPLUS_RIO_NUDGE_GATE = 55.0
+MPLUS_RIO_NUDGE_WEIGHT = 0.04
+MPLUS_RIO_NUDGE_CAP = 2.0
+MPLUS_RIO_FALLBACK_WEIGHT = 0.62
+MPLUS_RIO_FALLBACK_CAP = 58.0
 
 
 @dataclass(frozen=True)
@@ -293,6 +305,8 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
     best_by_dungeon: dict[str, _BracketFit] = {}
     same_dungeon_score = 0.0
     total_runs = 0
+    max_key_delta = -999
+    raw_best_percent = 0.0
     listing_dungeon = _normalise_name(listing.dungeon_name)
 
     for entry in breakdown:
@@ -312,6 +326,10 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
             )
             bracket_fits.append(row)
             total_runs += row.run_count
+            max_key_delta = max(max_key_delta, row.key_level - target_key)
+            raw_best_percent = max(
+                raw_best_percent, _safe_percent(bracket.get("parse_percent")) or 0.0
+            )
             if dungeon_best is None or row.fit > dungeon_best.fit:
                 dungeon_best = row
         if dungeon_best is not None:
@@ -322,7 +340,9 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
     rio_score = effective_rio_score(applicant)
     rio_fit = _mplus_rio_fit(rio_score, target_key)
     if not bracket_fits:
-        score = _clamp(rio_fit * 0.75, 0.0, 79.0)
+        score = _clamp(
+            rio_fit * MPLUS_RIO_FALLBACK_WEIGHT, 0.0, MPLUS_RIO_FALLBACK_CAP
+        )
         label = fit_label(score)
         return CandidateFit(
             context=CONTEXT_MPLUS,
@@ -338,14 +358,26 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
     primary_row = max(bracket_fits, key=lambda row: row.fit)
     top_dungeon_rows = sorted(best_by_dungeon.values(), key=lambda row: row.fit, reverse=True)
     top3 = _weighted_top(top_dungeon_rows[:3])
+    average = sum(row.fit for row in top_dungeon_rows) / len(top_dungeon_rows)
     coverage = _clamp(len(best_by_dungeon) / max(MPLUS_DUNGEON_COUNT, 1), 0.0, 1.0)
+    quality_coverage = _mplus_quality_coverage(top_dungeon_rows)
     score = (
-        0.60 * primary_row.fit
-        + 0.17 * top3
-        + 0.08 * coverage * 100.0
-        + 0.08 * same_dungeon_score
-        + 0.07 * rio_fit
+        MPLUS_BEST_WEIGHT * primary_row.fit
+        + MPLUS_TOP3_WEIGHT * top3
+        + MPLUS_AVERAGE_WEIGHT * average
+        + MPLUS_SAME_DUNGEON_WEIGHT * same_dungeon_score
     )
+    score -= _mplus_sparse_evidence_penalty(
+        coverage=quality_coverage,
+        max_key_delta=max_key_delta,
+        has_same_dungeon=same_dungeon_score > 0.0,
+    )
+    if score >= MPLUS_RIO_NUDGE_GATE and raw_best_percent >= 50.0:
+        score += min(
+            MPLUS_RIO_NUDGE_CAP,
+            max(0.0, rio_fit - score) * MPLUS_RIO_NUDGE_WEIGHT,
+        )
+    score = _mplus_raw_quality_cap(score, raw_best_percent, max_key_delta)
     score = _clamp(score, 0.0, 105.0)
     label = fit_label(score)
     confidence = _clamp(0.35 + 0.45 * coverage + 0.20 * min(total_runs / 16.0, 1.0), 0.0, 1.0)
@@ -456,57 +488,93 @@ def _mplus_bracket_fit(bracket: dict, target_key: int) -> float | None:
         return None
     median = _safe_percent(bracket.get("median_percent"))
     run_count = _nonnegative_int(bracket.get("run_count"))
-    perf = best if median is None else (best * 0.60 + median * 0.40)
     delta = key_level - target_key
-    return _clamp(
-        _key_capacity(delta) + (perf - 50.0) * _perf_weight(delta) * _run_conf(run_count),
-        0.0,
-        110.0,
-    )
+    score = _mplus_performance_score(best, median, run_count) + _key_delta_bonus(delta)
+    return _clamp(score, 0.0, _lower_key_fit_cap(delta))
 
 
-def _key_capacity(delta: int) -> float:
-    if delta <= -5:
+def _mplus_performance_score(
+    best: float, median: float | None, run_count: int
+) -> float:
+    score = best if median is None else best * 0.60 + median * 0.40
+    if score >= 50.0:
+        if run_count <= 1:
+            score -= min(8.0, (score - 50.0) * 0.12)
+        elif run_count == 2:
+            score -= min(4.0, (score - 50.0) * 0.06)
+    return score
+
+
+def _key_delta_bonus(delta: int) -> float:
+    if delta <= -6:
+        return -70.0
+    if delta == -5:
+        return -55.0
+    bonuses = {
+        -4: -42.0,
+        -3: -30.0,
+        -2: -18.0,
+        -1: -8.0,
+        0: 0.0,
+        1: 7.0,
+        2: 14.0,
+        3: 20.0,
+        4: 26.0,
+        5: 32.0,
+    }
+    if delta in bonuses:
+        return bonuses[delta]
+    return 32.0 + min(28.0, (delta - 5) * 6.0)
+
+
+def _lower_key_fit_cap(delta: int) -> float:
+    if delta <= -6:
+        return 18.0
+    caps = {
+        -5: 25.0,
+        -4: 32.0,
+        -3: 40.0,
+        -2: 50.0,
+        -1: 72.0,
+    }
+    return caps.get(delta, 105.0)
+
+
+def _mplus_sparse_evidence_penalty(
+    *, coverage: float, max_key_delta: int, has_same_dungeon: bool
+) -> float:
+    if has_same_dungeon:
+        penalty = MPLUS_SAME_DUNGEON_SPARSE_PENALTY
+    elif max_key_delta >= 4:
+        penalty = MPLUS_OVERQUALIFIED_SPARSE_PENALTY
+    else:
+        penalty = MPLUS_SPARSE_PENALTY
+    return penalty * (1.0 - coverage)
+
+
+def _mplus_quality_coverage(rows: Iterable[_BracketFit]) -> float:
+    if MPLUS_DUNGEON_COUNT <= 0:
         return 0.0
-    if delta == -4:
-        return 4.0
-    if delta == -3:
-        return 10.0
-    if delta == -2:
-        return 22.0
-    if delta == -1:
-        return 52.0
-    if delta == 0:
-        return 58.0
-    if delta == 1:
-        return 74.0
-    if delta == 2:
-        return 86.0
-    if delta == 3:
-        return 94.0
-    return 100.0
+    covered = sum(_clamp(row.fit / 55.0, 0.0, 1.0) for row in rows)
+    return _clamp(covered / MPLUS_DUNGEON_COUNT, 0.0, 1.0)
 
 
-def _perf_weight(delta: int) -> float:
-    if delta <= -3:
-        return 0.02
-    if delta == -2:
-        return 0.08
-    if delta == -1:
-        return 0.14
-    if delta == 0:
-        return 0.30
-    if delta == 1:
-        return 0.26
-    return 0.18
-
-
-def _run_conf(run_count: int) -> float:
-    if run_count >= 3:
-        return 1.0
-    if run_count == 2:
-        return 0.90
-    return 0.75
+def _mplus_raw_quality_cap(
+    score: float, raw_best_percent: float, max_key_delta: int
+) -> float:
+    if raw_best_percent < 25.0 and max_key_delta <= 1:
+        return min(score, 24.0)
+    if raw_best_percent < 50.0 and max_key_delta <= 1:
+        return min(score, 49.0)
+    if raw_best_percent >= 50.0:
+        return score
+    if max_key_delta >= 8:
+        return min(score, 78.0)
+    if max_key_delta >= 6:
+        return min(score, 70.0)
+    if max_key_delta >= 4:
+        return min(score, 64.0)
+    return score
 
 
 def _package_params(context: str) -> _PackageParams:
