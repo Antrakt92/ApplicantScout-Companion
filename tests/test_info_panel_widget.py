@@ -118,8 +118,8 @@ def test_ready_panel_renders_identity_metrics_and_dungeons(qtbot):
 
     name_label, key_label, value_label = panel._dungeon_rows[0]
     assert name_label.text() == "Pit of Saron"
-    assert key_label.text() == "+14"
-    assert value_label.text() == "100/80"
+    assert key_label.text() == "RIO —"
+    assert value_label.text() == "WCL +14 100/80"
     assert name_label.width() == DUNGEON_NAME_WIDTH
     assert key_label.width() == DUNGEON_KEY_WIDTH
     assert value_label.width() == DUNGEON_METRIC_WIDTH
@@ -153,8 +153,72 @@ def test_context_dungeon_rows_colour_the_printed_percentile(qtbot):
     panel.setApplicantData(app, listing)
 
     _name_label, _key_label, value_label = panel._dungeon_rows[0]
-    assert value_label.text() == "83"
+    assert value_label.text() == "WCL +16 83"
     assert percentile_colour(83.0) in value_label.styleSheet()
+
+
+def test_panel_renders_rio_and_wcl_dungeon_rows_side_by_side(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    app = _app(
+        rio_profile=True,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 15},
+            {"name": "Pit of Saron", "key_level": 16},
+        ],
+        mplus_dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "parse_percent": 42.0,
+                "median_percent": 38.0,
+                "key_level": 12,
+                "run_count": 2,
+            },
+            {
+                "name": "Pit of Saron",
+                "parse_percent": 71.0,
+                "median_percent": 62.0,
+                "key_level": 14,
+                "run_count": 2,
+            },
+        ],
+    )
+
+    panel.setApplicantData(app, _listing())
+
+    name_label, rio_label, wcl_label = panel._dungeon_rows[0]
+    assert name_label.text() == "Skyreach"
+    assert rio_label.text() == "RIO +15"
+    assert wcl_label.text() == "WCL +12 42/38"
+
+    name_label, rio_label, wcl_label = panel._dungeon_rows[1]
+    assert name_label.text() == "Pit of Saron"
+    assert rio_label.text() == "RIO +16"
+    assert wcl_label.text() == "WCL +14 71/62"
+
+
+def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    app = _app(
+        fetch_status="not_found",
+        mplus_dps=None,
+        mplus_dps_median=None,
+        mplus_dps_breakdown=[],
+        rio_profile=True,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 15},
+            {"name": "Pit of Saron", "key_level": 16},
+        ],
+    )
+
+    panel.setApplicantData(app, _listing())
+
+    assert panel._status_label.text() == "Not found on Warcraft Logs"
+    name_label, rio_label, wcl_label = panel._dungeon_rows[0]
+    assert name_label.text() == "Skyreach"
+    assert rio_label.text() == "RIO +15"
+    assert wcl_label.text() == "WCL —"
 
 
 def test_panel_renders_group_package_line(qtbot):
@@ -249,11 +313,11 @@ def test_malformed_mplus_breakdown_renders_safe_fallbacks(qtbot):
     panel.setApplicantData(app)
 
     assert panel._dungeon_rows[0][0].text() == "Valid"
-    assert panel._dungeon_rows[0][1].text() == "+12"
-    assert panel._dungeon_rows[0][2].text() == "72/60"
+    assert panel._dungeon_rows[0][1].text() == "RIO —"
+    assert panel._dungeon_rows[0][2].text() == "WCL +12 72/60"
     assert panel._dungeon_rows[1][0].text() == "Bad Cache"
-    assert panel._dungeon_rows[1][1].text() == "?"
-    assert panel._dungeon_rows[1][2].text() == "—"
+    assert panel._dungeon_rows[1][1].text() == "RIO —"
+    assert panel._dungeon_rows[1][2].text() == "WCL —"
 
 
 def test_status_states_hide_metrics_and_dungeons(qtbot):

@@ -53,9 +53,10 @@ MAGIC = b"APS1"
 # v0x03 = adds listing category_id + difficulty_id.
 # v0x04 = adds per-applicant RaiderIO main_score after current score.
 # v0x05 = adds compact target-relative RaiderIO completion summary.
+# v0x06 = adds per-dungeon RaiderIO key rows after the v5 summary.
 # Set, not a min/max range — future versions may be incompatible with v1 but compatible
 # with v2; explicit allow-list is the cleanest contract.
-WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05}
+WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
 
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
 STABLE_SIZE_POLL = 0.05  # poll interval
@@ -88,6 +89,7 @@ class DecodedApplicant:
     rio_timed_at_or_above_minus2: int = 0
     rio_completed_at_or_above_minus1: int = 0
     rio_dungeon_count: int = 0
+    rio_dungeons: list[dict] = field(default_factory=list)
     # 1-based, matches WoW API's GetApplicantMemberInfo(id, m). For wire v0x01
     # payloads (single-member-only) this defaults to 1 — back-compat keeps the
     # composite-id construction `f"{applicant_id}:{member_idx}"` valid for
@@ -231,6 +233,7 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
       * v0x03: adds listing category_id + difficulty_id.
       * v0x04: adds applicant main_score after current score.
       * v0x05: adds compact RaiderIO completion summary after main_score.
+      * v0x06: adds RaiderIO per-dungeon key rows after v5 summary.
     """
     cursor = 0
     listing: Optional[DecodedListing] = None
@@ -353,6 +356,27 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
             rio_timed_at_or_above_minus2 = 0
             rio_completed_at_or_above_minus1 = 0
             rio_dungeon_count = 0
+        rio_dungeons: list[dict] = []
+        if wire_ver >= 0x06:
+            rio_row_count = buf[cursor]
+            cursor += 1
+            if rio_row_count > 16:
+                raise ValueError(f"rio_dungeon_count {rio_row_count} exceeds sane limit 16")
+            for _row_idx in range(rio_row_count):
+                rio_key_level = buf[cursor]
+                cursor += 1
+                rio_name_len = buf[cursor]
+                cursor += 1
+                rio_name = buf[cursor : cursor + rio_name_len].decode(
+                    "utf-8", errors="replace"
+                )
+                cursor += rio_name_len
+                rio_dungeons.append(
+                    {
+                        "key_level": rio_key_level,
+                        "name": rio_name,
+                    }
+                )
         role = buf[cursor]
         cursor += 1
         n_len = buf[cursor]
@@ -377,6 +401,7 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
                 rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
                 rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
                 rio_dungeon_count=rio_dungeon_count,
+                rio_dungeons=rio_dungeons,
                 member_idx=member_idx,
             )
         )

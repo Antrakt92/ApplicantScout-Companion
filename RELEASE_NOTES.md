@@ -2,15 +2,20 @@
 
 ## 0.3.0 - 16-May-2026
 
-RaiderIO completion-aware Mythic+ scoring plus screenshot startup, settings
-launch, WCL configuration, and release-readiness hardening for live applicant
-scouting.
+RaiderIO completion-aware Mythic+ scoring, per-dungeon RaiderIO evidence next
+to Warcraft Logs rows, plus screenshot startup, settings launch, WCL
+configuration, and release-readiness hardening for live applicant scouting.
 
 ### Improved
 
-- Mythic+ fit scoring now uses ApplicantScout addon wire v5 RaiderIO completion
+- Mythic+ fit scoring now uses ApplicantScout addon RaiderIO completion
   summaries as experience evidence, so players with near-target keys completed
   are no longer punished as heavily when Warcraft Logs has no current data.
+- Applicant hover details now show the highest timed RaiderIO key per dungeon
+  next to the Warcraft Logs key/percentile row, making stale or missing log
+  coverage easier to judge.
+- RaiderIO dungeon rows remain visible when Warcraft Logs has no logs for the
+  applicant, so the card can still show real timed-key experience.
 - The RaiderIO completion signal can lift missing or low-key WCL evidence, but
   bad relevant same-level logs still cap the score to avoid overrating risky
   applicants.
@@ -36,7 +41,7 @@ scouting.
 ### Compatibility
 
 - Requires the ApplicantScout WoW addon `0.2.0`.
-- Supports ApplicantScout wire payloads through v5.
+- Supports ApplicantScout wire payloads through v6.
 - In-app updates require GitHub Release assets named
   `ApplicantScoutCompanionSetup-0.3.0.exe` and
   `ApplicantScoutCompanionSetup-0.3.0.exe.sha256`.

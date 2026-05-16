@@ -41,6 +41,7 @@ def _decoded(
     rio_timed_at_or_above_minus2: int = 0,
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
+    rio_dungeons: list[dict] | None = None,
     role: int = 2,
 ) -> DecodedApplicant:
     return DecodedApplicant(
@@ -60,6 +61,7 @@ def _decoded(
         rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
         rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
         rio_dungeon_count=rio_dungeon_count,
+        rio_dungeons=rio_dungeons or [],
         role=role,
     )
 
@@ -179,6 +181,32 @@ def test_new_applicant_maps_rio_completion_summary():
     assert applicant.rio_timed_at_or_above_minus2 == 8
     assert applicant.rio_completed_at_or_above_minus1 == 8
     assert applicant.rio_dungeon_count == 8
+
+
+def test_new_applicant_maps_rio_dungeon_rows():
+    state = AppState()
+    sm = StateMachine(state)
+    rows = [
+        {"name": "Skyreach", "key_level": 15},
+        {"name": "Pit of Saron", "key_level": 16},
+    ]
+    snap = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(
+                aid=42,
+                member_idx=1,
+                name="Rio-Realm",
+                rio_profile=True,
+                rio_dungeons=rows,
+            )
+        ],
+    )
+
+    sm.apply_snapshot(snap)
+
+    assert state.applicants["42:1"].rio_dungeons == rows
 
 
 # ─── Name-change detection (B-5) ────────────────────────────────────────────

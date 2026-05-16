@@ -110,9 +110,9 @@ _log = logging.getLogger("applicant_scout.overlay")
 COLUMN_HEADERS = ["Spec", "Name", "iLvl", "RIO", "N", "H", "M", "M+"]
 COLUMN_WIDTHS = [74, 112, 44, 84, 50, 50, 50, 88]
 NAME_COLUMN_MAX_WIDTH = 126
-DUNGEON_NAME_WIDTH = 188
-DUNGEON_KEY_WIDTH = 34
-DUNGEON_METRIC_WIDTH = 64
+DUNGEON_NAME_WIDTH = 148
+DUNGEON_KEY_WIDTH = 72
+DUNGEON_METRIC_WIDTH = 112
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
 WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
 MIN_VISIBLE_WINDOW_WIDTH = 420
@@ -1176,13 +1176,16 @@ class ApplicantInfoPanel(QFrame):
         self._status_label.setVisible(False)
         if status in ("loading", "pending"):
             self._show_status("Fetching from Warcraft Logs…")
+            self._set_dungeon_rows(applicant, listing)
             return
         if status == "error":
             msg = applicant.error_message or "unknown"
             self._show_status(f"WCL error: {msg}", error=True)
+            self._set_dungeon_rows(applicant, listing)
             return
         if status == "not_found":
             self._show_status("Not found on Warcraft Logs")
+            self._set_dungeon_rows(applicant, listing)
             return
         if status != "ready":
             self._show_status("")
@@ -1276,53 +1279,35 @@ class ApplicantInfoPanel(QFrame):
         if not self._metric_preferences.mplus:
             self._dungeon_widget.setVisible(False)
             return 0
-        fit_rows = mplus_dungeon_fit_rows(applicant, listing)[:8]
-        if fit_rows:
-            for row_idx, labels in enumerate(self._dungeon_rows):
-                name_label, key_label, value_label = labels
-                if row_idx >= len(fit_rows):
-                    for label in labels:
-                        label.setText("")
-                        label.setVisible(False)
-                    continue
-                row = fit_rows[row_idx]
-                dungeon_name = row.dungeon_name
-                name_label.setText(
-                    name_label.fontMetrics().elidedText(
-                        dungeon_name,
-                        Qt.TextElideMode.ElideRight,
-                        DUNGEON_NAME_WIDTH,
-                    )
-                )
-                name_label.setToolTip(
-                    dungeon_name if name_label.text() != dungeon_name else ""
-                )
-                key_label.setText(f"+{row.key_level}" if row.key_level > 0 else "?")
-                value_label.setText(row.text)
-                fg = _text_colour_for_bg(row.colour)
-                value_label.setStyleSheet(
-                    f"background-color: {row.colour}; color: {fg}; "
-                    "border-radius: 2px; padding: 0 4px; font-weight: bold;"
-                )
-                for label in labels:
-                    label.setVisible(True)
-            self._dungeon_widget.setVisible(True)
-            return len(fit_rows)
-
-        _metric_label, breakdown, _best, _median = _mplus_view(applicant)
-        entries = sorted(
-            [entry for entry in breakdown if isinstance(entry, dict)],
-            key=_mplus_sort_key,
+        rio_rows = _rio_dungeon_rows_by_name(applicant)
+        wcl_rows = _wcl_dungeon_rows_by_name(applicant, listing)
+        listing_key = _normalise_dungeon_name(listing.dungeon_name if listing else "")
+        row_keys = sorted(
+            set(rio_rows) | set(wcl_rows),
+            key=lambda key: (
+                0 if key and key == listing_key else 1,
+                -max(
+                    _positive_int(rio_rows.get(key, {}).get("key_level")),
+                    _positive_int(wcl_rows.get(key, {}).get("key_level")),
+                ),
+                str(
+                    wcl_rows.get(key, {}).get("name")
+                    or rio_rows.get(key, {}).get("name")
+                    or ""
+                ),
+            ),
         )[:8]
         for row_idx, labels in enumerate(self._dungeon_rows):
             name_label, key_label, value_label = labels
-            if row_idx >= len(entries):
+            if row_idx >= len(row_keys):
                 for label in labels:
                     label.setText("")
                     label.setVisible(False)
                 continue
-            entry = entries[row_idx]
-            dungeon_name = str(entry.get("name") or "?")
+            row_key = row_keys[row_idx]
+            rio_row = rio_rows.get(row_key, {})
+            wcl_row = wcl_rows.get(row_key, {})
+            dungeon_name = str(wcl_row.get("name") or rio_row.get("name") or "?")
             name_label.setText(
                 name_label.fontMetrics().elidedText(
                     dungeon_name,
@@ -1331,12 +1316,18 @@ class ApplicantInfoPanel(QFrame):
                 )
             )
             name_label.setToolTip(dungeon_name if name_label.text() != dungeon_name else "")
-            key = _mplus_key_level(entry)
-            key_label.setText(f"+{key}" if key > 0 else "?")
-            value = _mplus_dungeon_metric_text(entry)
-            value_label.setText(value)
-            best = _safe_percent(entry.get("parse_percent"))
-            bg = percentile_colour(best) if best is not None else "#2a2a33"
+            rio_key = _positive_int(rio_row.get("key_level"))
+            key_label.setText(f"RIO +{rio_key}" if rio_key > 0 else "RIO —")
+            key_label.setStyleSheet(
+                "background-color: #24242d; color: #e0e0e0; "
+                "border-radius: 2px; padding: 0 4px; font-weight: bold;"
+            )
+            wcl_key = _positive_int(wcl_row.get("key_level"))
+            wcl_text = str(wcl_row.get("text") or "—")
+            value_label.setText(
+                f"WCL +{wcl_key} {wcl_text}" if wcl_key > 0 else "WCL —"
+            )
+            bg = str(wcl_row.get("colour") or "#2a2a33")
             fg = _text_colour_for_bg(bg)
             value_label.setStyleSheet(
                 f"background-color: {bg}; color: {fg}; border-radius: 2px; "
@@ -1344,7 +1335,7 @@ class ApplicantInfoPanel(QFrame):
             )
             for label in labels:
                 label.setVisible(True)
-        visible = len(entries)
+        visible = len(row_keys)
         self._dungeon_widget.setVisible(visible > 0)
         return visible
 
@@ -2781,6 +2772,64 @@ def _mplus_run_count(entry: object) -> int:
 def _mplus_sort_key(entry: dict) -> tuple[int, str]:
     name = entry.get("name")
     return (-_mplus_key_level(entry), str(name or ""))
+
+
+def _normalise_dungeon_name(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _rio_dungeon_rows_by_name(applicant: Applicant) -> dict[str, dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    for entry in applicant.rio_dungeons:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        key = _positive_int(entry.get("key_level"))
+        row_key = _normalise_dungeon_name(name)
+        if not name or not row_key or key <= 0:
+            continue
+        existing = rows.get(row_key)
+        if existing is None or key > _positive_int(existing.get("key_level")):
+            rows[row_key] = {"name": name, "key_level": key}
+    return rows
+
+
+def _wcl_dungeon_rows_by_name(
+    applicant: Applicant, listing: Listing | None
+) -> dict[str, dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    if applicant.fetch_status != "ready":
+        return rows
+    fit_rows = mplus_dungeon_fit_rows(applicant, listing)
+    if fit_rows:
+        for row in fit_rows:
+            row_key = _normalise_dungeon_name(row.dungeon_name)
+            if row_key:
+                rows[row_key] = {
+                    "name": row.dungeon_name,
+                    "key_level": row.key_level,
+                    "text": row.text,
+                    "colour": row.colour,
+                }
+        return rows
+
+    _metric_label, breakdown, _best, _median = _mplus_view(applicant)
+    for entry in sorted(
+        [entry for entry in breakdown if isinstance(entry, dict)],
+        key=_mplus_sort_key,
+    ):
+        name = str(entry.get("name") or "").strip()
+        row_key = _normalise_dungeon_name(name)
+        if not name or not row_key:
+            continue
+        best = _safe_percent(entry.get("parse_percent"))
+        rows[row_key] = {
+            "name": name,
+            "key_level": _mplus_key_level(entry),
+            "text": _mplus_dungeon_metric_text(entry),
+            "colour": percentile_colour(best) if best is not None else "#2a2a33",
+        }
+    return rows
 
 
 def _highest_mplus_key_level(breakdown: Iterable[object]) -> int:

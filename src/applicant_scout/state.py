@@ -44,6 +44,9 @@ class Applicant:
     rio_timed_at_or_above_minus2: int = 0
     rio_completed_at_or_above_minus1: int = 0
     rio_dungeon_count: int = 0
+    # Highest timed RaiderIO key per dungeon from addon wire v6. This complements
+    # WCL rows when logs are sparse or stale.
+    rio_dungeons: list[dict] = field(default_factory=list)
 
     # Filled by WCL fetcher. None = not yet fetched OR fetched-but-no-data
     # (we never use NaN; `fetch_status` field disambiguates loading vs done).

@@ -60,6 +60,7 @@ def _build_applicant_block(
     rio_timed_at_or_above_minus2: int = 0,
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
+    rio_dungeons: list[tuple[int, str]] | None = None,
     *,
     version: int,
 ) -> bytes:
@@ -70,6 +71,7 @@ def _build_applicant_block(
     class_id).
     version=4: inserts main_score u16 after current score.
     version=5: inserts compact RaiderIO completion summary after main_score.
+    version=6: inserts RaiderIO per-dungeon key rows after summary.
     """
     out = struct.pack(">I", aid)
     if version >= 2:
@@ -93,6 +95,12 @@ def _build_applicant_block(
                 rio_dungeon_count,
             ]
         )
+    if version >= 6:
+        rows = rio_dungeons or []
+        out += bytes([len(rows)])
+        for key_level, dungeon_name in rows:
+            out += bytes([key_level])
+            out += _pack_len_str(dungeon_name.encode("utf-8"))
     out += bytes([role])
     out += _pack_len_str(name.encode("utf-8"))
     return out
@@ -346,6 +354,7 @@ def test_wire_versions_supported_pin():
     assert 0x03 in WIRE_VERSIONS_SUPPORTED
     assert 0x04 in WIRE_VERSIONS_SUPPORTED
     assert 0x05 in WIRE_VERSIONS_SUPPORTED
+    assert 0x06 in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
@@ -443,6 +452,45 @@ def test_v5_applicant_block_parses_rio_completion_summary():
     assert applicant.rio_timed_at_or_above_minus2 == 8
     assert applicant.rio_completed_at_or_above_minus1 == 8
     assert applicant.rio_dungeon_count == 8
+    assert applicant.role == 2
+    assert applicant.name == "Rio-Realm"
+
+
+def test_v6_applicant_block_parses_rio_dungeon_rows():
+    blocks = [
+        _build_applicant_block(
+            aid=7,
+            member_idx=1,
+            class_id=8,
+            spec_id=63,
+            ilvl=488,
+            score=3321,
+            main_score=3550,
+            rio_profile=1,
+            rio_best_key=17,
+            rio_best_dungeon_key=15,
+            rio_timed_at_or_above=1,
+            rio_timed_at_or_above_minus1=8,
+            rio_timed_at_or_above_minus2=8,
+            rio_completed_at_or_above_minus1=8,
+            rio_dungeon_count=8,
+            rio_dungeons=[
+                (15, "Skyreach"),
+                (16, "Pit of Saron"),
+            ],
+            role=2,
+            name="Rio-Realm",
+            version=6,
+        ),
+    ]
+
+    snap = _parse_payload(_build_body(blocks), wire_ver=0x06)
+    applicant = snap.applicants[0]
+
+    assert applicant.rio_dungeons == [
+        {"key_level": 15, "name": "Skyreach"},
+        {"key_level": 16, "name": "Pit of Saron"},
+    ]
     assert applicant.role == 2
     assert applicant.name == "Rio-Realm"
 

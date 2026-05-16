@@ -567,6 +567,7 @@ class StateMachine(QObject):
                         da.rio_completed_at_or_above_minus1
                     ),
                     rio_dungeon_count=da.rio_dungeon_count,
+                    rio_dungeons=[dict(row) for row in da.rio_dungeons],
                 )
                 self._state.add_or_update(applicant)
                 log.info(
@@ -613,6 +614,7 @@ class StateMachine(QObject):
                     da.rio_completed_at_or_above_minus1
                 )
                 existing.rio_dungeon_count = da.rio_dungeon_count
+                existing.rio_dungeons = [dict(row) for row in da.rio_dungeons]
                 if needs_refetch:
                     existing.clear_wcl_data()
                 self.applicantUpdated.emit(existing)
