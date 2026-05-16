@@ -105,6 +105,31 @@ def test_detect_listing_context_prefers_key_level_for_mplus():
     assert detect_listing_context(_listing()) == CONTEXT_UNKNOWN
 
 
+def test_unknown_raid_difficulty_does_not_get_authoritative_fit_label():
+    target = _listing(category_id=3, difficulty_id=0)
+    applicant = _app(raid_heroic=90.0, raid_heroic_median=80.0, score=2500)
+
+    fit = candidate_fit(applicant, target)
+    group = package_fit([applicant], target)
+
+    assert detect_listing_context(target) == CONTEXT_UNKNOWN
+    assert fit.context == CONTEXT_UNKNOWN
+    assert fit.display == ""
+    assert group.context == CONTEXT_UNKNOWN
+    assert group.display == ""
+
+
+def test_unsupported_raid_difficulty_does_not_get_question_mark_fit_label():
+    target = _listing(category_id=3, difficulty_id=99)
+    applicant = _app(raid_mythic=95.0, raid_mythic_median=90.0, score=2500)
+
+    fit = candidate_fit(applicant, target)
+
+    assert detect_listing_context(target) == CONTEXT_UNKNOWN
+    assert fit.context == CONTEXT_UNKNOWN
+    assert fit.display == ""
+
+
 @pytest.mark.parametrize(
     ("score", "expected"),
     [

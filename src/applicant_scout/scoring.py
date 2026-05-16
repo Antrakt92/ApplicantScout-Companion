@@ -19,7 +19,6 @@ RAID_TARGET_BY_DIFFICULTY_ID = {
     15: "H",
     16: "M",
 }
-RAID_CATEGORY_ID = 3
 MPLUS_DUNGEON_COUNT = len(MPLUS_ENCOUNTERS)
 
 FIT_LABEL_BUCKETS: list[tuple[float, str]] = [
@@ -113,8 +112,6 @@ def detect_listing_context(listing: Listing | None) -> str:
     if listing.key_level > 0:
         return CONTEXT_MPLUS
     if listing.difficulty_id in RAID_TARGET_BY_DIFFICULTY_ID:
-        return CONTEXT_RAID
-    if listing.category_id == RAID_CATEGORY_ID:
         return CONTEXT_RAID
     return CONTEXT_UNKNOWN
 
