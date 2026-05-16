@@ -107,16 +107,17 @@ use DPS.
 The RIO column shows the applying character's current score. If the RaiderIO
 addon is installed in WoW and exposes a higher current-season main score for an
 alt, the overlay displays `current [main]` and uses the higher score for
-sorting and fit support. With ApplicantScout addon wire v5, RaiderIO's
-per-dungeon completed-key summary also helps the fit score avoid underrating
-players who have near-target keys completed but no current Warcraft Logs data.
+sorting and fit support. With ApplicantScout addon wire v6, RaiderIO's
+per-dungeon completed-key summary and highest timed keys also help the fit score
+and hover panel avoid underrating players who have near-target keys completed
+but no current Warcraft Logs data.
 If RaiderIO is missing or has no profile for that character, the overlay falls
 back to the applying character's score and available logs.
 
 ## Version Compatibility
 
 ApplicantScout Companion supports the latest ApplicantScout WoW addon release
-and ApplicantScout wire payloads through v5.
+and ApplicantScout wire payloads through v6.
 
 ## Updates
 
