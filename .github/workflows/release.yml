@@ -18,10 +18,26 @@ jobs:
           fetch-depth: 0
           path: ApplicantScout-Companion
 
+      - name: Resolve paired addon tag
+        id: paired-addon
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $TagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $EscapedVersion = [regex]::Escape($TagVersion)
+          $Pattern = "(?ms)^##\s+$EscapedVersion\s+-\s+.*?Requires the ApplicantScout WoW addon ``([0-9]+\.[0-9]+\.[0-9]+)``"
+          $Notes = Get-Content -LiteralPath RELEASE_NOTES.md -Raw -Encoding UTF8
+          $Match = [regex]::Match($Notes, $Pattern)
+          if (-not $Match.Success) {
+            throw "Could not find paired addon version in RELEASE_NOTES.md for $TagVersion."
+          }
+          "ref=v$($Match.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Checkout addon
         uses: actions/checkout@v5
         with:
           repository: Antrakt92/ApplicantScout-Addon
+          ref: ${{ steps.paired-addon.outputs.ref }}
           fetch-depth: 0
           path: ApplicantScout-Addon
 

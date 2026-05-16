@@ -380,6 +380,9 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assert "constraints-release.txt" in workflow
     assert "choco install lua51 innosetup" in workflow
     assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
+    assert "id: paired-addon" in workflow
+    assert "Requires the ApplicantScout WoW addon" in workflow
+    assert "ref: ${{ steps.paired-addon.outputs.ref }}" in workflow
 
     check_idx = workflow.index(".\\scripts\\check.ps1 -AddonRoot")
     version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag")
@@ -389,6 +392,20 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     publish_idx = workflow.index("gh release edit")
 
     assert check_idx < version_idx < build_idx < assets_idx < release_idx < publish_idx
+
+
+def test_release_workflow_checks_out_paired_addon_tag_from_release_notes():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+
+    resolve_idx = workflow.index("Resolve paired addon tag")
+    checkout_idx = workflow.index("Checkout addon")
+
+    assert resolve_idx < checkout_idx
+    assert "RELEASE_NOTES.md" in workflow
+    assert "Requires the ApplicantScout WoW addon" in workflow
+    assert "paired-addon" in workflow
+    assert '"ref=v$($Match.Groups[1].Value)"' in workflow
+    assert "$env:GITHUB_OUTPUT" in workflow
 
 
 def test_release_workflow_uploads_exact_updater_assets_as_draft_first():
