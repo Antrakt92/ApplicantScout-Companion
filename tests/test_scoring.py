@@ -453,6 +453,28 @@ def test_mplus_rio_completion_uses_rio_dungeon_rows_for_same_dungeon_key():
     assert fit.confidence >= 0.55
 
 
+def test_mplus_rio_completion_keeps_higher_summary_same_dungeon_key():
+    target = _listing(activity_id=404, key_level=16, dungeon_name="Небесный Путь")
+    applicant = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.source == "rio_completion"
+    assert fit.primary_key == 16
+    assert "+16" in fit.display
+
+
 def test_mplus_rio_completion_profile_rescues_not_found_wcl_status():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(

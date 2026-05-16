@@ -313,7 +313,7 @@ def _listing_dungeon_keys(listing: Listing) -> set[str]:
 
 def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
     listing_keys = _listing_dungeon_keys(listing)
-    best_key = 0
+    best_key = _positive_int(applicant.rio_best_dungeon_key)
     for entry in applicant.rio_dungeons:
         if not isinstance(entry, dict):
             continue
