@@ -47,10 +47,12 @@ the overlay.
 
 Use the Settings button in the companion title bar to edit WCL credentials,
 region fallback, screenshots path, WCL data scope, WoW lifecycle sync, cache,
-or logs. Settings save automatically as you change them. Closing the settings
-window hides it back to the tray; use the tray menu's **Quit ApplicantScout**
-action to close the companion completely. Settings are stored locally under
-`%LOCALAPPDATA%\applicant-scout\config\config.env`.
+or logs. Settings save automatically as you change them. When the system tray is
+available, closing the settings window hides it back to the tray; use the tray
+menu's **Quit ApplicantScout** action to close the companion completely. If the
+system tray is unavailable, closing Settings quits the companion so it cannot
+keep running without a visible control surface. Settings are stored locally
+under `%LOCALAPPDATA%\applicant-scout\config\config.env`.
 
 Developer/source runs may still use a repo-local `.env` when the local config
 file does not exist. Environment variables override both files.

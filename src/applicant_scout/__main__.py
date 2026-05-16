@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import ctypes
+from dataclasses import dataclass
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -60,6 +61,8 @@ APP_USER_MODEL_ID = "Antrakt.ApplicantScout.Companion"
 CONTROL_SERVER_NAME = "Antrakt.ApplicantScout.Companion.Control"
 CONTROL_SHUTDOWN_ARG = "--shutdown-running-instance"
 SHOW_SETTINGS_ARG = "--show-settings"
+CONTROL_QUIT_COMMAND = b"quit"
+CONTROL_SHOW_SETTINGS_COMMAND = b"show-settings"
 WOW_EXIT_POLL_MS = 5000
 UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -67,6 +70,37 @@ _UPDATE_INSTALL_LOCK = threading.Lock()
 _QT_APPLICATION_CLASS = QApplication
 # SYNC: updater._default_update_download_dir stores installers under this cache child.
 UPDATE_DOWNLOADS_DIR_NAME = "updates"
+
+
+@dataclass(frozen=True)
+class _ControlCommandResult:
+    connected: bool
+    written: bool
+    response: bytes | None = None
+    error: str | None = None
+
+
+class _DuplicateInstanceFound(RuntimeError):
+    pass
+
+
+class _DeferredGuiAction:
+    def __init__(self) -> None:
+        self._callback: Callable[[], None] | None = None
+        self._pending = False
+
+    def request(self) -> None:
+        if self._callback is None:
+            self._pending = True
+            return
+        QTimer.singleShot(0, self._callback)
+
+    def set_callback(self, callback: Callable[[], None]) -> None:
+        self._callback = callback
+        if not self._pending:
+            return
+        self._pending = False
+        QTimer.singleShot(0, callback)
 
 
 class _WCLRegionRuntime:
@@ -223,17 +257,38 @@ def _set_windows_app_user_model_id() -> None:
         log.debug("Could not set Windows AppUserModelID", exc_info=True)
 
 
-def _shutdown_running_instance(timeout_ms: int = 2000) -> int:
+def _send_control_command(
+    command: bytes, *, timeout_ms: int = 2000
+) -> _ControlCommandResult:
     socket = QLocalSocket()
     socket.connectToServer(CONTROL_SERVER_NAME)
     if not socket.waitForConnected(timeout_ms):
+        return _ControlCommandResult(
+            connected=False,
+            written=False,
+            error=socket.errorString(),
+        )
+    payload = command.rstrip() + b"\n"
+    socket.write(payload)
+    if not socket.waitForBytesWritten(timeout_ms):
+        error = socket.errorString()
+        socket.disconnectFromServer()
+        return _ControlCommandResult(connected=True, written=False, error=error)
+    response = None
+    if socket.waitForReadyRead(500):
+        response = socket.readAll().data().strip().lower()
+    socket.disconnectFromServer()
+    return _ControlCommandResult(connected=True, written=True, response=response)
+
+
+def _shutdown_running_instance(timeout_ms: int = 2000) -> int:
+    result = _send_control_command(CONTROL_QUIT_COMMAND, timeout_ms=timeout_ms)
+    if not result.connected:
         log.info("No running ApplicantScout instance accepted the shutdown command.")
         return 0
-    socket.write(b"quit\n")
-    if not socket.waitForBytesWritten(timeout_ms):
-        log.warning("Could not send shutdown command: %s", socket.errorString())
+    if not result.written:
+        log.warning("Could not send shutdown command: %s", result.error or "unknown error")
         return 1
-    socket.waitForReadyRead(500)
     return 0
 
 
@@ -250,42 +305,62 @@ def _create_control_server(
     app: QApplication,
     *,
     quit_app: Callable[[], None],
+    show_settings: Callable[[], None],
 ) -> QLocalServer | None:
     server = QLocalServer(app)
     if not server.listen(CONTROL_SERVER_NAME):
+        active_owner = _send_control_command(CONTROL_SHOW_SETTINGS_COMMAND, timeout_ms=200)
+        if active_owner.connected and active_owner.written:
+            raise _DuplicateInstanceFound
         QLocalServer.removeServer(CONTROL_SERVER_NAME)
         if not server.listen(CONTROL_SERVER_NAME):
             log.warning("Could not start control server: %s", server.errorString())
             return None
 
-    server.newConnection.connect(lambda: _drain_control_connections(server, quit_app))
+    server.newConnection.connect(
+        lambda: _drain_control_connections(server, quit_app, show_settings)
+    )
     return server
 
 
 def _drain_control_connections(
     server: QLocalServer,
     quit_app: Callable[[], None],
+    show_settings: Callable[[], None],
 ) -> None:
     while server.hasPendingConnections():
         socket = server.nextPendingConnection()
         if socket is None:
             continue
         socket.readyRead.connect(
-            lambda _socket=socket: _handle_control_command(_socket, quit_app)
+            lambda _socket=socket: _handle_control_command(
+                _socket, quit_app, show_settings
+            )
         )
         socket.disconnected.connect(socket.deleteLater)
         if socket.bytesAvailable() > 0:
-            _handle_control_command(socket, quit_app)
+            _handle_control_command(socket, quit_app, show_settings)
 
 
-def _handle_control_command(socket: QLocalSocket, quit_app: Callable[[], None]) -> None:
+def _handle_control_command(
+    socket: QLocalSocket,
+    quit_app: Callable[[], None],
+    show_settings: Callable[[], None] | None = None,
+) -> None:
     command = socket.readAll().data().strip().lower()
-    if command == b"quit":
+    if command == CONTROL_QUIT_COMMAND:
         socket.write(b"ok\n")
         socket.flush()
         socket.waitForBytesWritten(100)
         socket.disconnectFromServer()
         QTimer.singleShot(0, quit_app)
+        return
+    if command == CONTROL_SHOW_SETTINGS_COMMAND and show_settings is not None:
+        socket.write(b"ok\n")
+        socket.flush()
+        socket.waitForBytesWritten(100)
+        socket.disconnectFromServer()
+        QTimer.singleShot(0, show_settings)
         return
     socket.write(b"unknown\n")
     socket.flush()
@@ -616,6 +691,14 @@ def _should_show_settings_on_start(
     if startup_settings_shown:
         return False
     return SHOW_SETTINGS_ARG in args or not wow_watch_mode
+
+
+def _duplicate_launch_command(args: list[str], *, wow_watch_mode: bool) -> bytes | None:
+    if wow_watch_mode:
+        return None
+    if SHOW_SETTINGS_ARG in args or not wow_watch_mode:
+        return CONTROL_SHOW_SETTINGS_COMMAND
+    return None
 
 
 def _should_show_wow_start_update_prompt(
@@ -1003,18 +1086,33 @@ def main(argv: list[str] | None = None) -> int:
     args, wow_watch_mode, early_exit = _prepare_wow_watch_mode(args)
     if early_exit is not None:
         return early_exit
+    duplicate_command = _duplicate_launch_command(args, wow_watch_mode=wow_watch_mode)
+    if duplicate_command is not None:
+        result = _send_control_command(duplicate_command, timeout_ms=200)
+        if result.connected and result.written:
+            if result.response == b"unknown":
+                log.info(
+                    "Running ApplicantScout instance did not recognize %r; "
+                    "exiting duplicate launch.",
+                    duplicate_command,
+                )
+            return 0
+        if result.connected and not result.written:
+            log.warning(
+                "Could not send duplicate-launch control command: %s",
+                result.error or "unknown error",
+            )
+            return 1
 
     _set_windows_app_user_model_id()
     app = QApplication([sys.argv[0], *args])
     app.setApplicationName("ApplicantScout")
     if isinstance(app, _QT_APPLICATION_CLASS):
         app.setWindowIcon(_app_icon())
-    if _has_running_instance():
-        log.info("ApplicantScout Companion is already running; exiting duplicate launch.")
-        return 0
 
     settings_dialog: SettingsDialog | None = None
     window_ref: dict[str, OverlayWindow] = {}
+    show_settings_action = _DeferredGuiAction()
     pending_update_version: str | None = None
     startup_update_prompt_pending = wow_watch_mode
 
@@ -1032,12 +1130,21 @@ def main(argv: list[str] | None = None) -> int:
     if about_to_quit is not None:
         about_to_quit.connect(_flush_before_quit)
 
+    try:
+        control_server = _create_control_server(
+            app,
+            quit_app=_quit_application,
+            show_settings=show_settings_action.request,
+        )
+    except _DuplicateInstanceFound:
+        log.info("ApplicantScout Companion is already running; exiting duplicate launch.")
+        return 0
+    if control_server is not None:
+        setattr(app, "_applicant_scout_control_server", control_server)
+
     loaded = _load_startup_config()
     if loaded is None:
         return 1
-    control_server = _create_control_server(app, quit_app=_quit_application)
-    if control_server is not None:
-        setattr(app, "_applicant_scout_control_server", control_server)
 
     cfg, screenshots_dir, startup_settings_shown = loaded
     region = cfg.region or REGION_ID_TO_WCL.get(3, "EU")  # default EU
@@ -1116,6 +1223,7 @@ def main(argv: list[str] | None = None) -> int:
             open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
             clear_cache=lambda: _clear_cache_dir(cfg.cache_dir, cache),
             check_updates=_check_updates,
+            hide_to_tray_on_close=tray_controller is not None,
             parent=window,
         )
         dialog.setWindowIcon(_app_icon())
@@ -1239,6 +1347,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     window_ref["window"] = window
     window.setWindowIcon(_app_icon())
+    show_settings_action.set_callback(_show_settings)
     update_signals = UpdateSignals(app)
 
     def _run_update() -> None:

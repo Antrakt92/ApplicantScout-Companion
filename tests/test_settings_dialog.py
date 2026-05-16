@@ -567,6 +567,58 @@ def test_custom_titlebar_close_button_matches_dialog_close_behavior(qtbot, tmp_p
     assert hidden == [True]
 
 
+def test_normal_settings_close_requests_quit_when_tray_hide_disabled(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
+    qtbot.addWidget(dialog)
+    hidden: list[bool] = []
+    quit_requested: list[bool] = []
+    dialog.hideRequested.connect(lambda: hidden.append(True))
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.show()
+
+    closed = dialog.close()
+
+    assert closed
+    assert not dialog.isVisible()
+    assert hidden == []
+    assert quit_requested == [True]
+
+
+def test_custom_titlebar_close_respects_no_tray_quit_policy(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
+    qtbot.addWidget(dialog)
+    hidden: list[bool] = []
+    quit_requested: list[bool] = []
+    dialog.hideRequested.connect(lambda: hidden.append(True))
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.show()
+
+    dialog.close_button.click()
+
+    assert not dialog.isVisible()
+    assert hidden == []
+    assert quit_requested == [True]
+
+
+def test_settings_close_ignored_while_update_in_progress(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
+    qtbot.addWidget(dialog)
+    hidden: list[bool] = []
+    quit_requested: list[bool] = []
+    dialog.hideRequested.connect(lambda: hidden.append(True))
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.show()
+    dialog.set_update_in_progress(True)
+
+    closed = dialog.close()
+
+    assert not closed
+    assert dialog.isVisible()
+    assert hidden == []
+    assert quit_requested == []
+    assert "update" in dialog.status_label.text().lower()
+
+
 def test_first_run_titlebar_close_button_uses_setup_copy(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
     qtbot.addWidget(dialog)

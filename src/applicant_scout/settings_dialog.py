@@ -147,10 +147,13 @@ class SettingsDialog(QDialog):
         open_logs: SimpleAction | None = None,
         clear_cache: SimpleAction | None = None,
         check_updates: UpdateAction | None = None,
+        hide_to_tray_on_close: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._first_run = first_run
+        self._hide_to_tray_on_close = hide_to_tray_on_close
+        self._update_in_progress = False
         self._credential_tester = credential_tester
         self._open_logs = open_logs
         self._clear_cache = clear_cache
@@ -436,7 +439,11 @@ class SettingsDialog(QDialog):
         self.close_button.setToolTip(
             "Close ApplicantScout setup."
             if self._first_run
-            else "Hide ApplicantScout settings to tray."
+            else (
+                "Hide ApplicantScout settings to tray."
+                if self._hide_to_tray_on_close
+                else "Quit ApplicantScout."
+            )
         )
         self.close_button.setFixedSize(30, 26)
         self.close_button.setStyleSheet(
@@ -538,6 +545,7 @@ class SettingsDialog(QDialog):
         self.update_button.setToolTip("Install available ApplicantScout update.")
 
     def set_update_in_progress(self, in_progress: bool) -> None:
+        self._update_in_progress = in_progress
         self.update_button.setEnabled(not in_progress)
         if in_progress:
             self.update_button.show()
@@ -556,6 +564,14 @@ class SettingsDialog(QDialog):
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self._first_run:
             super().closeEvent(event)
+            return
+        if self._update_in_progress:
+            event.ignore()
+            self._set_status("Update is installing. Wait for it to finish before closing.", error=True)
+            return
+        if not self._hide_to_tray_on_close:
+            super().closeEvent(event)
+            self.quitRequested.emit()
             return
         event.ignore()
         self._hide_to_tray()

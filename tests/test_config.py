@@ -570,7 +570,16 @@ def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
     root = _retail_root(tmp_path)
     cfg = _cfg(tmp_path, chatlog_path=root / "Logs" / "WoWChatLog.txt")
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
-    monkeypatch.setattr(main_mod, "_has_running_instance", lambda *_args: False)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=False,
+            written=False,
+            response=None,
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(main_mod, "_run_settings_dialog", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(main_mod.QMessageBox, "warning", lambda *_args, **_kwargs: None)
 
@@ -604,7 +613,16 @@ def test_main_returns_before_startup_when_cache_ttl_is_invalid(
         raise ConfigError("APSCOUT_CACHE_TTL_SECONDS must be a positive integer")
 
     monkeypatch.setattr(main_mod, "load_config", raise_config_error)
-    monkeypatch.setattr(main_mod, "_has_running_instance", lambda *_args: False)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=False,
+            written=False,
+            response=None,
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: object())
 
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("startup continued after ConfigError")
@@ -679,26 +697,206 @@ def test_control_quit_command_uses_quit_callback(monkeypatch: pytest.MonkeyPatch
     assert calls == ["write:ok", "flush", "wait", "disconnect", "singleShot", "quit"]
 
 
-def test_main_normal_launch_exits_before_startup_when_instance_is_running(
+def test_control_show_settings_command_uses_show_settings_callback(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    class FakeApp:
-        def __init__(self, *_args, **_kwargs):
+    calls: list[str] = []
+
+    class FakeSocket:
+        def readAll(self):
+            return SimpleNamespace(data=lambda: b"show-settings\n")
+
+        def write(self, value: bytes) -> None:
+            calls.append(f"write:{value.decode().strip()}")
+
+        def flush(self) -> None:
+            calls.append("flush")
+
+        def waitForBytesWritten(self, _timeout: int) -> None:
+            calls.append("wait")
+
+        def disconnectFromServer(self) -> None:
+            calls.append("disconnect")
+
+    class FakeTimer:
+        @staticmethod
+        def singleShot(_interval: int, callback) -> None:
+            calls.append("singleShot")
+            callback()
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+
+    main_mod._handle_control_command(
+        FakeSocket(),
+        lambda: calls.append("quit"),
+        lambda: calls.append("show"),
+    )
+
+    assert calls == ["write:ok", "flush", "wait", "disconnect", "singleShot", "show"]
+
+
+def test_control_unknown_command_does_not_call_callbacks():
+    calls: list[str] = []
+
+    class FakeSocket:
+        def readAll(self):
+            return SimpleNamespace(data=lambda: b"bogus\n")
+
+        def write(self, value: bytes) -> None:
+            calls.append(f"write:{value.decode().strip()}")
+
+        def flush(self) -> None:
+            calls.append("flush")
+
+        def disconnectFromServer(self) -> None:
+            calls.append("disconnect")
+
+    main_mod._handle_control_command(
+        FakeSocket(),
+        lambda: calls.append("quit"),
+        lambda: calls.append("show"),
+    )
+
+    assert calls == ["write:unknown", "flush", "disconnect"]
+
+
+def test_send_control_command_reports_ok_response(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+
+    class FakeSocket:
+        def connectToServer(self, server_name: str) -> None:
+            calls.append(f"connect:{server_name}")
+
+        def waitForConnected(self, timeout_ms: int) -> bool:
+            calls.append(f"wait-connected:{timeout_ms}")
+            return True
+
+        def write(self, value: bytes) -> None:
+            calls.append(f"write:{value.decode().strip()}")
+
+        def waitForBytesWritten(self, timeout_ms: int) -> bool:
+            calls.append(f"wait-written:{timeout_ms}")
+            return True
+
+        def waitForReadyRead(self, timeout_ms: int) -> bool:
+            calls.append(f"wait-ready:{timeout_ms}")
+            return True
+
+        def readAll(self):
+            calls.append("read")
+            return SimpleNamespace(data=lambda: b"ok\n")
+
+        def disconnectFromServer(self) -> None:
+            calls.append("disconnect")
+
+        def errorString(self) -> str:
+            return "socket error"
+
+    monkeypatch.setattr(main_mod, "QLocalSocket", FakeSocket)
+
+    result = main_mod._send_control_command(main_mod.CONTROL_SHOW_SETTINGS_COMMAND)
+
+    assert result.connected
+    assert result.written
+    assert result.response == b"ok"
+    assert calls == [
+        f"connect:{main_mod.CONTROL_SERVER_NAME}",
+        "wait-connected:2000",
+        "write:show-settings",
+        "wait-written:2000",
+        "wait-ready:500",
+        "read",
+        "disconnect",
+    ]
+
+
+def test_deferred_gui_action_coalesces_requests_until_callback_ready(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeTimer:
+        @staticmethod
+        def singleShot(_interval: int, callback) -> None:
+            calls.append("singleShot")
+            callback()
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    action = main_mod._DeferredGuiAction()
+
+    action.request()
+    action.request()
+
+    assert calls == []
+
+    action.set_callback(lambda: calls.append("show"))
+
+    assert calls == ["singleShot", "show"]
+
+    action.request()
+
+    assert calls == ["singleShot", "show", "singleShot", "show"]
+
+
+def test_create_control_server_detects_active_owner_before_stale_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeServer:
+        def __init__(self, _app) -> None:
             pass
 
-        def setApplicationName(self, _name: str) -> None:
-            pass
+        def listen(self, server_name: str) -> bool:
+            calls.append(f"listen:{server_name}")
+            return False
 
-        def setWindowIcon(self, _icon) -> None:
-            pass
+        def errorString(self) -> str:
+            return "already listening"
 
+    class FakeLocalServer:
+        def __call__(self, app):
+            return FakeServer(app)
+
+        @staticmethod
+        def removeServer(server_name: str) -> None:
+            calls.append(f"remove:{server_name}")
+
+    monkeypatch.setattr(main_mod, "QLocalServer", FakeLocalServer())
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda command, **_kwargs: calls.append(command.decode())
+        or SimpleNamespace(connected=True, written=True, response=b"ok"),
+    )
+
+    with pytest.raises(main_mod._DuplicateInstanceFound):
+        main_mod._create_control_server(
+            object(),
+            quit_app=lambda: None,
+            show_settings=lambda: None,
+        )
+
+    assert calls == [f"listen:{main_mod.CONTROL_SERVER_NAME}", "show-settings"]
+
+
+def test_main_duplicate_launch_exits_before_startup_when_instance_is_running(
+    monkeypatch: pytest.MonkeyPatch,
+):
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("duplicate launch should exit before startup side effects")
 
     monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
-    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
-    monkeypatch.setattr(main_mod, "QApplication", FakeApp)
-    monkeypatch.setattr(main_mod, "_has_running_instance", lambda: True)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=True,
+            written=True,
+            response=b"unknown",
+        ),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", fail_if_called)
     monkeypatch.setattr(main_mod, "_load_startup_config", fail_if_called)
     monkeypatch.setattr(main_mod, "WCLAuth", fail_if_called)
     monkeypatch.setattr(main_mod, "WCLClient", fail_if_called)
@@ -706,6 +904,127 @@ def test_main_normal_launch_exits_before_startup_when_instance_is_running(
     monkeypatch.setattr(main_mod, "ScreenshotWatcher", fail_if_called)
 
     assert main_mod.main([]) == 0
+
+
+def test_main_duplicate_manual_launch_requests_settings_before_qapplication(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    monkeypatch.setattr(main_mod, "_setup_logging", lambda: calls.append("logging"))
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda command, **_kwargs: calls.append(command.decode())
+        or SimpleNamespace(connected=True, written=True, response=b"ok"),
+    )
+
+    def fail_qapplication(*_args, **_kwargs):
+        raise AssertionError("duplicate launch should not create QApplication")
+
+    monkeypatch.setattr(main_mod, "QApplication", fail_qapplication)
+
+    assert main_mod.main([]) == 0
+    assert calls == ["logging", "show-settings"]
+
+
+def test_main_duplicate_show_settings_arg_requests_settings_before_qapplication(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    monkeypatch.setattr(main_mod, "_setup_logging", lambda: calls.append("logging"))
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda command, **_kwargs: calls.append(command.decode())
+        or SimpleNamespace(connected=True, written=True, response=b"ok"),
+    )
+
+    def fail_qapplication(*_args, **_kwargs):
+        raise AssertionError("duplicate launch should not create QApplication")
+
+    monkeypatch.setattr(main_mod, "QApplication", fail_qapplication)
+
+    assert main_mod.main(["--show-settings"]) == 0
+    assert calls == ["logging", "show-settings"]
+
+
+def test_main_manual_launch_continues_when_no_control_server_exists(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeApp:
+        aboutToQuit = None
+
+        def __init__(self, *_args, **_kwargs):
+            calls.append("app")
+
+        def setApplicationName(self, _name: str) -> None:
+            pass
+
+        def quit(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "_setup_logging", lambda: calls.append("logging"))
+    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: calls.append("control")
+        or SimpleNamespace(connected=False, written=False, response=None),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", FakeApp)
+    monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: calls.append("server") or object())
+    monkeypatch.setattr(main_mod, "_load_startup_config", lambda: calls.append("config") or None)
+
+    assert main_mod.main([]) == 1
+    assert calls == ["logging", "control", "app", "server", "config"]
+
+
+def test_main_claims_control_server_before_loading_startup_config(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeApp:
+        aboutToQuit = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setApplicationName(self, _name: str) -> None:
+            pass
+
+        def quit(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=False,
+            written=False,
+            response=None,
+        ),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", FakeApp)
+    monkeypatch.setattr(
+        main_mod,
+        "_create_control_server",
+        lambda *_args, **_kwargs: calls.append("server") or object(),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_load_startup_config",
+        lambda: calls.append("config") or None,
+    )
+
+    assert main_mod.main([]) == 1
+    assert calls == ["server", "config"]
 
 
 def test_load_startup_config_marks_whether_first_run_setup_was_shown(
