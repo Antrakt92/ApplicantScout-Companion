@@ -468,6 +468,34 @@ def test_release_version_check_rejects_stale_constraints_header(tmp_path):
     )
 
 
+def test_release_version_check_rejects_stale_release_notes_asset_names(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    stale_version = _previous_patch_version(project_version)
+    notes = repo / "RELEASE_NOTES.md"
+    notes.write_text(
+        notes.read_text(encoding="utf-8")
+        .replace(
+            f"ApplicantScoutCompanionSetup-{project_version}.exe",
+            f"ApplicantScoutCompanionSetup-{stale_version}.exe",
+            1,
+        )
+        .replace(
+            f"ApplicantScoutCompanionSetup-{project_version}.exe.sha256",
+            f"ApplicantScoutCompanionSetup-{stale_version}.exe.sha256",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}")
+
+    assert result.returncode != 0
+    assert "RELEASE_NOTES.md top entry does not mention expected installer asset" in (
+        result.stdout + result.stderr
+    )
+
+
 def test_release_build_rejects_non_exact_constraint_lines():
     build_script = _read_repo_text("scripts/build-windows.ps1")
 

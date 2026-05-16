@@ -796,14 +796,25 @@ class WCLClient:
                 break
 
             data = _json_object_response(resp, WCLApiError, "WCL response")
+            messages = _graphql_error_messages(data.get("errors"))
             # Update quota snapshot regardless of errors — rateLimitData is at
             # the root, present even on GraphQL-level errors (HTTP 200).
-            if "data" not in data or not isinstance(data.get("data"), dict):
+            data_root_obj = data.get("data")
+            if not isinstance(data_root_obj, dict):
+                if messages:
+                    msg = messages[0]
+                    low = msg.lower()
+                    if "not found" in low or "could not find" in low:
+                        return CharacterRanks.empty(not_found=True, error=msg)
+                    raise WCLApiError(
+                        f"GraphQL error: {msg}",
+                        error_kind=WCL_ERROR_GRAPHQL,
+                    )
                 raise WCLApiError(
                     "Malformed WCL response: data is not an object",
                     error_kind=WCL_ERROR_MALFORMED,
                 )
-            data_root = data["data"]
+            data_root = data_root_obj
             quota = _rate_limit_info_from_dict(data_root.get("rateLimitData"))
             if quota is not None:
                 self._record_quota_snapshot(
@@ -823,7 +834,6 @@ class WCLClient:
                     "Malformed WCL response: character key is missing",
                     error_kind=WCL_ERROR_MALFORMED,
                 )
-            messages = _graphql_error_messages(data.get("errors"))
             if messages:
                 msg = messages[0]
                 low = msg.lower()

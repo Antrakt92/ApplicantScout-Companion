@@ -20,6 +20,7 @@ from applicant_scout.wcl import (
     RateLimitInfo,
     _RU_REALM_MAP_LOWER,
     WCL_ERROR_AUTH,
+    WCL_ERROR_GRAPHQL,
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_RATE_LIMITED,
@@ -1424,6 +1425,26 @@ def test_fetch_character_ranks_allows_explicit_character_null_as_not_found():
 
     assert result.not_found is True
     assert result.error == ""
+
+
+def test_fetch_character_ranks_handles_graphql_error_without_data_as_not_found():
+    client, _http = _client_for_payload(
+        {"errors": [{"message": "Could not find character"}]}
+    )
+
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.not_found is True
+    assert result.error == "Could not find character"
+
+
+def test_fetch_character_ranks_handles_graphql_error_without_data_as_graphql_error():
+    client, _http = _client_for_payload({"data": None, "errors": [{"message": "boom"}]})
+
+    with pytest.raises(WCLApiError, match="GraphQL error: boom") as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
 
 
 @pytest.mark.parametrize(

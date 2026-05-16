@@ -337,6 +337,9 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
             )
         )
 
+    if cursor != len(buf):
+        raise ValueError(f"trailing or truncated payload bytes: consumed {cursor} of {len(buf)}")
+
     return Snapshot(listing=listing, version=version, applicants=applicants)
 
 

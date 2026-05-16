@@ -27,6 +27,7 @@ from applicant_scout.screenshot import (
     _is_supported_screenshot_path,
     _iter_screenshot_candidates,
     _parse_payload,
+    _try_parse_appscout_payload,
     decode_screenshot,
 )
 
@@ -323,6 +324,36 @@ def test_wire_versions_supported_pin():
     assert 0x03 in WIRE_VERSIONS_SUPPORTED
     assert 0x04 in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
+
+
+def test_crc_valid_payload_with_trailing_body_bytes_is_rejected():
+    raw = _wrap_payload(_build_body([]) + b"extra")
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert snap is None
+    assert error is not None
+    assert "trailing or truncated payload bytes" in error
+
+
+def test_crc_valid_payload_with_overlong_final_name_is_rejected():
+    block = (
+        struct.pack(">I", 42)
+        + bytes([1, 1])
+        + struct.pack(">H", 71)
+        + struct.pack(">H", 480)
+        + struct.pack(">H", 2443)
+        + struct.pack(">H", 3468)
+        + bytes([2, 10])
+        + b"A"
+    )
+    raw = _wrap_payload(_build_body([block]), wire_ver=0x04)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert snap is None
+    assert error is not None
+    assert "trailing or truncated payload bytes" in error
 
 
 def test_v4_applicant_block_parses_current_and_main_score():

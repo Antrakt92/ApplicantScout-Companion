@@ -122,10 +122,20 @@ $RuntimeVersion = Get-SingleRegexMatch `
     -Path "src\applicant_scout\__init__.py" `
     -Pattern '^__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$' `
     -Description "runtime version"
-$ReleaseNotesVersion = Get-FirstRegexMatch `
-    -Path "RELEASE_NOTES.md" `
-    -Pattern '^##\s+([0-9]+\.[0-9]+\.[0-9]+)\s+-\s+' `
-    -Description "top release notes entry"
+$ReleaseNotesPath = Join-Path $RepoRoot "RELEASE_NOTES.md"
+if (-not (Test-Path -LiteralPath $ReleaseNotesPath)) {
+    throw "Missing top release notes entry file: $ReleaseNotesPath"
+}
+$ReleaseNotesText = Get-Content -LiteralPath $ReleaseNotesPath -Raw -Encoding UTF8
+$TopReleaseNotesMatch = [regex]::Match(
+    $ReleaseNotesText,
+    '(?ms)^##\s+([0-9]+\.[0-9]+\.[0-9]+)\s+-\s+.*?(?=^##\s+\d+\.\d+\.\d+\s+-\s+|\z)'
+)
+if (-not $TopReleaseNotesMatch.Success) {
+    throw "Could not find top release notes entry in RELEASE_NOTES.md."
+}
+$ReleaseNotesVersion = $TopReleaseNotesMatch.Groups[1].Value
+$TopReleaseNotesEntry = $TopReleaseNotesMatch.Value
 $ConstraintsVersion = Get-FirstRegexMatch `
     -Path "constraints-release.txt" `
     -Pattern '^# Release build constraints for ApplicantScout Companion ([0-9]+\.[0-9]+\.[0-9]+)\.' `
@@ -133,6 +143,9 @@ $ConstraintsVersion = Get-FirstRegexMatch `
 
 $Readme = Get-Content -LiteralPath (Join-Path $RepoRoot "README.md") -Raw -Encoding UTF8
 $Errors = @()
+$InstallerName = "ApplicantScoutCompanionSetup-$TagVersion.exe"
+$ChecksumName = "$InstallerName.sha256"
+$PortableName = "ApplicantScoutCompanion-$TagVersion-portable.zip"
 if ($PyprojectVersion -ne $TagVersion) {
     $Errors += "pyproject.toml version is $PyprojectVersion, expected $TagVersion from tag $TagName."
 }
@@ -144,6 +157,12 @@ if ($ReleaseNotesVersion -ne $TagVersion) {
 }
 if ($ConstraintsVersion -ne $TagVersion) {
     $Errors += "constraints-release.txt header is $ConstraintsVersion, expected $TagVersion from tag $TagName."
+}
+if (-not $TopReleaseNotesEntry.Contains($InstallerName)) {
+    $Errors += "RELEASE_NOTES.md top entry does not mention expected installer asset $InstallerName."
+}
+if (-not $TopReleaseNotesEntry.Contains($ChecksumName)) {
+    $Errors += "RELEASE_NOTES.md top entry does not mention expected checksum asset $ChecksumName."
 }
 $CompanionMarkdown = "ApplicantScout Companion ``$TagVersion``"
 $AddonLatestUrl = "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest"
@@ -157,9 +176,6 @@ if ($Readme -match "ApplicantScout-v?\d+\.\d+\.\d+\.zip|ApplicantScout WoW addon
     $Errors += "README.md pins addon install/version copy; use releases/latest for cross-component docs."
 }
 
-$InstallerName = "ApplicantScoutCompanionSetup-$TagVersion.exe"
-$ChecksumName = "$InstallerName.sha256"
-$PortableName = "ApplicantScoutCompanion-$TagVersion-portable.zip"
 if ($RequireAssets) {
     foreach ($AssetName in @($InstallerName, $ChecksumName, $PortableName)) {
         $AssetPath = Join-Path $RepoRoot "dist\$AssetName"
