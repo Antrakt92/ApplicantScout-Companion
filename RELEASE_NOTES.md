@@ -40,6 +40,8 @@ configuration, and release-readiness hardening for live applicant scouting.
   environment overrides, or manual WCL fetch tooling.
 - Fixed terminal Warcraft Logs states masking RaiderIO-backed M+ fit scores in
   the table and applicant sort order.
+- Fixed localized Mythic+ listing names losing same-dungeon fit and target-row
+  priority by falling back to the addon-emitted LFG activity ID.
 - Fixed several screenshot, updater, WCL, and cache data-boundary edge cases
   that could otherwise leave stale UI state or unclear runtime errors.
 

@@ -266,6 +266,61 @@ MPLUS_ENCOUNTERS: list[tuple[str, int, str]] = [
     ("ws", 12805, "Windrunner Spire"),
 ]
 
+# WoW LFG activity IDs for the current season's Mythic+ listings. The addon
+# emits the raw activityID from C_LFGList; using it as a companion-side fallback
+# keeps same-dungeon scoring and target-row ordering stable on localized clients
+# where listing.dungeon_name is not the English WCL display name.
+MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME: dict[int, str] = {
+    115: "Pit of Saron",
+    131: "Pit of Saron",
+    1769: "Pit of Saron",
+    1770: "Pit of Saron",
+    24: "Skyreach",
+    32: "Skyreach",
+    182: "Skyreach",
+    404: "Skyreach",
+    484: "Seat of the Triumvirate",
+    485: "Seat of the Triumvirate",
+    486: "Seat of the Triumvirate",
+    1622: "Seat of the Triumvirate",
+    1644: "Seat of the Triumvirate",
+    1157: "Algeth'ar Academy",
+    1158: "Algeth'ar Academy",
+    1159: "Algeth'ar Academy",
+    1160: "Algeth'ar Academy",
+    1539: "Windrunner Spire",
+    1540: "Windrunner Spire",
+    1541: "Windrunner Spire",
+    1542: "Windrunner Spire",
+    1757: "Magisters' Terrace",
+    1758: "Magisters' Terrace",
+    1759: "Magisters' Terrace",
+    1760: "Magisters' Terrace",
+    1761: "Maisara Caverns",
+    1762: "Maisara Caverns",
+    1763: "Maisara Caverns",
+    1764: "Maisara Caverns",
+    1765: "Nexus-Point Xenas",
+    1766: "Nexus-Point Xenas",
+    1767: "Nexus-Point Xenas",
+    1768: "Nexus-Point Xenas",
+}
+
+
+def mplus_dungeon_name_for_activity_id(activity_id: object) -> str:
+    if isinstance(activity_id, bool):
+        return ""
+    if isinstance(activity_id, int):
+        clean = activity_id
+    elif isinstance(activity_id, str):
+        try:
+            clean = int(activity_id)
+        except ValueError:
+            return ""
+    else:
+        return ""
+    return MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME.get(clean, "")
+
 
 # Spec ID → spec NAME (no class qualifier) as returned by WCL in encounterRankings
 # `ranks[].spec` fields. Used to filter per-run results to applicant's

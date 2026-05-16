@@ -197,6 +197,48 @@ def test_panel_renders_rio_and_wcl_dungeon_rows_side_by_side(qtbot):
     assert wcl_label.text() == "WCL +14 71/62"
 
 
+def test_panel_prioritises_target_dungeon_by_activity_id_when_listing_name_is_localized(
+    qtbot,
+):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    listing = replace(
+        _listing(),
+        activity_id=404,
+        dungeon_name="Небесный Путь",
+    )
+    app = _app(
+        rio_profile=True,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 15},
+            {"name": "Pit of Saron", "key_level": 16},
+        ],
+        mplus_dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "parse_percent": 42.0,
+                "median_percent": 38.0,
+                "key_level": 12,
+                "run_count": 2,
+            },
+            {
+                "name": "Pit of Saron",
+                "parse_percent": 71.0,
+                "median_percent": 62.0,
+                "key_level": 14,
+                "run_count": 2,
+            },
+        ],
+    )
+
+    panel.setApplicantData(app, listing)
+
+    name_label, rio_label, wcl_label = panel._dungeon_rows[0]
+    assert name_label.text() == "Skyreach"
+    assert rio_label.text() == "RIO +15"
+    assert wcl_label.text() == "WCL +12 42/38"
+
+
 def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)

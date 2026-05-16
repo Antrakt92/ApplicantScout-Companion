@@ -6,7 +6,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 import math
 
-from .constants import MPLUS_ENCOUNTERS, percentile_colour
+from .constants import (
+    MPLUS_ENCOUNTERS,
+    mplus_dungeon_name_for_activity_id,
+    percentile_colour,
+)
 from .state import Applicant, Listing
 
 
@@ -299,6 +303,14 @@ def _is_terminal_fetch_status(status: str) -> bool:
     return status in {"error", "not_found"}
 
 
+def _listing_dungeon_keys(listing: Listing) -> set[str]:
+    keys = {_normalise_name(listing.dungeon_name)}
+    mapped_name = mplus_dungeon_name_for_activity_id(listing.activity_id)
+    if mapped_name:
+        keys.add(_normalise_name(mapped_name))
+    return {key for key in keys if key}
+
+
 def _mplus_rio_completion_candidate_fit(
     applicant: Applicant, target_key: int
 ) -> CandidateFit | None:
@@ -334,7 +346,7 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
     total_runs = 0
     max_key_delta = -999
     raw_best_percent = 0.0
-    listing_dungeon = _normalise_name(listing.dungeon_name)
+    listing_dungeon_keys = _listing_dungeon_keys(listing)
 
     for entry in breakdown:
         if not isinstance(entry, dict):
@@ -361,7 +373,7 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
                 dungeon_best = row
         if dungeon_best is not None:
             best_by_dungeon[_normalise_name(dungeon_name)] = dungeon_best
-            if listing_dungeon and _normalise_name(dungeon_name) == listing_dungeon:
+            if _normalise_name(dungeon_name) in listing_dungeon_keys:
                 same_dungeon_score = dungeon_best.fit
 
     rio_score = effective_rio_score(applicant)

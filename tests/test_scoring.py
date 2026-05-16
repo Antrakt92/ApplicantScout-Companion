@@ -20,13 +20,14 @@ from applicant_scout.state import Applicant, Listing
 
 def _listing(
     *,
+    activity_id: int = 401,
     key_level: int = 0,
     dungeon_name: str = "Skyreach",
     category_id: int = 0,
     difficulty_id: int = 0,
 ) -> Listing:
     return Listing(
-        activity_id=401,
+        activity_id=activity_id,
         dungeon_name=dungeon_name,
         listing_name=f"+{key_level} {dungeon_name}" if key_level else dungeon_name,
         comment="",
@@ -281,6 +282,22 @@ def test_mplus_low_key_orange_does_not_beat_relevant_high_key_evidence():
     assert farm_fit.score < 25.0
     assert relevant_fit.score > farm_fit.score
     assert relevant_fit.primary_key == 16
+
+
+def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localized():
+    target = _listing(
+        activity_id=404,
+        key_level=16,
+        dungeon_name="Небесный Путь",
+    )
+    applicant = _app(
+        dps_breakdown=[_dungeon("Skyreach", [(16, 88.0, 78.0, 2)])],
+        score=3300,
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.same_dungeon_score > 0.0
 
 
 def test_mplus_extra_bad_dungeons_do_not_reduce_sparse_penalty():

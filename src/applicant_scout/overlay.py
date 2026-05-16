@@ -59,6 +59,7 @@ from .constants import (
     ROLE_LABELS,
     SPEC_SHORT_NAMES,
     group_id_colour,
+    mplus_dungeon_name_for_activity_id,
     percentile_colour,
     rio_score_colour,
 )
@@ -1290,11 +1291,11 @@ class ApplicantInfoPanel(QFrame):
             return 0
         rio_rows = _rio_dungeon_rows_by_name(applicant)
         wcl_rows = _wcl_dungeon_rows_by_name(applicant, listing)
-        listing_key = _normalise_dungeon_name(listing.dungeon_name if listing else "")
+        listing_keys = _listing_dungeon_keys(listing)
         row_keys = sorted(
             set(rio_rows) | set(wcl_rows),
             key=lambda key: (
-                0 if key and key == listing_key else 1,
+                0 if key and key in listing_keys else 1,
                 -max(
                     _positive_int(rio_rows.get(key, {}).get("key_level")),
                     _positive_int(wcl_rows.get(key, {}).get("key_level")),
@@ -2785,6 +2786,16 @@ def _mplus_sort_key(entry: dict) -> tuple[int, str]:
 
 def _normalise_dungeon_name(value: object) -> str:
     return " ".join(str(value or "").strip().casefold().split())
+
+
+def _listing_dungeon_keys(listing: Listing | None) -> set[str]:
+    if listing is None:
+        return set()
+    keys = {_normalise_dungeon_name(listing.dungeon_name)}
+    mapped_name = mplus_dungeon_name_for_activity_id(listing.activity_id)
+    if mapped_name:
+        keys.add(_normalise_dungeon_name(mapped_name))
+    return {key for key in keys if key}
 
 
 def _rio_dungeon_rows_by_name(applicant: Applicant) -> dict[str, dict[str, object]]:

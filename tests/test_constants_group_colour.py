@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import re
 
-from applicant_scout.constants import SPEC_ID_TO_WCL_NAME, SPEC_SHORT_NAMES, group_id_colour
+from applicant_scout.constants import (
+    MPLUS_ENCOUNTERS,
+    SPEC_ID_TO_WCL_NAME,
+    SPEC_SHORT_NAMES,
+    group_id_colour,
+    mplus_dungeon_name_for_activity_id,
+)
 
 
 def test_returns_lowercase_hex_color():
@@ -62,3 +68,27 @@ def test_duplicate_spec_names_stay_class_neutral():
 def test_devourer_spec_mapping_is_known():
     assert SPEC_SHORT_NAMES[1480] == "Devour"
     assert SPEC_ID_TO_WCL_NAME[1480] == "Devourer"
+
+
+def test_mplus_activity_id_mapping_covers_current_season_dungeons():
+    mapped_names = {
+        mplus_dungeon_name_for_activity_id(activity_id)
+        for activity_id in (
+            24,
+            115,
+            484,
+            1157,
+            1539,
+            1757,
+            1761,
+            1765,
+        )
+    }
+    encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
+
+    assert mapped_names == encounter_names
+
+
+def test_mplus_activity_id_mapping_rejects_non_numeric_values():
+    assert mplus_dungeon_name_for_activity_id(True) == ""
+    assert mplus_dungeon_name_for_activity_id("bogus") == ""
