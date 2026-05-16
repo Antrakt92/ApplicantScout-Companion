@@ -1,5 +1,39 @@
 # ApplicantScout Companion Release Notes
 
+## 0.2.5 - 16-May-2026
+
+Screenshot startup, settings launch, WCL configuration, and release-readiness
+hardening for live applicant scouting.
+
+### Improved
+
+- Manual companion launches now bring the Settings window forward instead of
+  silently staying in the tray/background flow.
+- Re-launching the companion while it is already running now asks the existing
+  instance to show Settings, which makes recovery from duplicate clicks clearer.
+- Raid scoring now ignores listings with unknown raid difficulty instead of
+  ranking applicants from an ambiguous context.
+- Release checks now validate paired addon metadata, release-note asset names,
+  release constraints, and malformed release inputs before publishing.
+
+### Fixed
+
+- Fixed startup backlog scanning so a fresh screenshot that is still being
+  written is not decoded or deleted before the watchdog path can wait for the
+  completed file.
+- Fixed invalid Warcraft Logs region settings being accepted from saved config,
+  environment overrides, or manual WCL fetch tooling.
+- Fixed several screenshot, updater, WCL, and cache data-boundary edge cases
+  that could otherwise leave stale UI state or unclear runtime errors.
+
+### Compatibility
+
+- Requires the ApplicantScout WoW addon `0.1.7`.
+- Supports ApplicantScout wire payloads through v4.
+- In-app updates require GitHub Release assets named
+  `ApplicantScoutCompanionSetup-0.2.5.exe` and
+  `ApplicantScoutCompanionSetup-0.2.5.exe.sha256`.
+
 ## 0.2.4 - 16-May-2026
 
 Live Mythic+ context and Warcraft Logs retry hardening for applicant sorting.
