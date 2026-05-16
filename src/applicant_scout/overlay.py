@@ -113,7 +113,8 @@ COLUMN_WIDTHS = [74, 112, 44, 84, 50, 50, 50, 88]
 NAME_COLUMN_MAX_WIDTH = 126
 DUNGEON_NAME_WIDTH = 148
 DUNGEON_KEY_WIDTH = 72
-DUNGEON_METRIC_WIDTH = 112
+DUNGEON_WCL_KEY_WIDTH = 72
+DUNGEON_METRIC_WIDTH = 58
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
 WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
 MIN_VISIBLE_WINDOW_WIDTH = 420
@@ -1066,24 +1067,29 @@ class ApplicantInfoPanel(QFrame):
         self._dungeon_grid.setContentsMargins(0, 2, 0, 0)
         self._dungeon_grid.setHorizontalSpacing(6)
         self._dungeon_grid.setVerticalSpacing(1)
-        self._dungeon_rows: list[tuple[QLabel, QLabel, QLabel]] = []
+        self._dungeon_rows: list[tuple[QLabel, QLabel, QLabel, QLabel]] = []
         for row in range(8):
             name = QLabel("")
             name.setObjectName("infoDungeonName")
-            key = QLabel("")
-            key.setObjectName("infoDungeonKey")
+            rio_key = QLabel("")
+            rio_key.setObjectName("infoDungeonKey")
+            wcl_key = QLabel("")
+            wcl_key.setObjectName("infoDungeonWclKey")
             value = QLabel("")
             value.setObjectName("infoDungeonMetric")
             name.setFixedWidth(DUNGEON_NAME_WIDTH)
-            key.setFixedWidth(DUNGEON_KEY_WIDTH)
+            rio_key.setFixedWidth(DUNGEON_KEY_WIDTH)
+            wcl_key.setFixedWidth(DUNGEON_WCL_KEY_WIDTH)
             value.setFixedWidth(DUNGEON_METRIC_WIDTH)
-            key.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            rio_key.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            wcl_key.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self._dungeon_grid.addWidget(name, row, 0)
-            self._dungeon_grid.addWidget(key, row, 1)
-            self._dungeon_grid.addWidget(value, row, 2)
-            self._dungeon_rows.append((name, key, value))
-        self._dungeon_grid.setColumnStretch(3, 1)
+            self._dungeon_grid.addWidget(rio_key, row, 1)
+            self._dungeon_grid.addWidget(wcl_key, row, 2)
+            self._dungeon_grid.addWidget(value, row, 3)
+            self._dungeon_rows.append((name, rio_key, wcl_key, value))
+        self._dungeon_grid.setColumnStretch(4, 1)
         outer.addWidget(self._dungeon_widget)
         outer.addStretch(1)
 
@@ -1310,7 +1316,7 @@ class ApplicantInfoPanel(QFrame):
             ),
         )[:8]
         for row_idx, labels in enumerate(self._dungeon_rows):
-            name_label, key_label, value_label = labels
+            name_label, rio_label, wcl_key_label, value_label = labels
             if row_idx >= len(row_keys):
                 for label in labels:
                     label.setText("")
@@ -1329,16 +1335,19 @@ class ApplicantInfoPanel(QFrame):
             )
             name_label.setToolTip(dungeon_name if name_label.text() != dungeon_name else "")
             rio_key = _positive_int(rio_row.get("key_level"))
-            key_label.setText(f"RIO +{rio_key}" if rio_key > 0 else "RIO —")
-            key_label.setStyleSheet(
+            rio_label.setText(f"RIO +{rio_key}" if rio_key > 0 else "RIO —")
+            rio_label.setStyleSheet(
                 "background-color: #24242d; color: #e0e0e0; "
                 "border-radius: 2px; padding: 0 4px; font-weight: bold;"
             )
             wcl_key = _positive_int(wcl_row.get("key_level"))
             wcl_text = str(wcl_row.get("text") or "—")
-            value_label.setText(
-                f"WCL +{wcl_key} {wcl_text}" if wcl_key > 0 else "WCL —"
+            wcl_key_label.setText(f"WCL +{wcl_key}" if wcl_key > 0 else "WCL —")
+            wcl_key_label.setStyleSheet(
+                "background-color: #202028; color: #f1f1f4; "
+                "border-radius: 2px; padding: 0 4px; font-weight: bold;"
             )
+            value_label.setText(wcl_text)
             bg = str(wcl_row.get("colour") or "#2a2a33")
             fg = _text_colour_for_bg(bg)
             value_label.setStyleSheet(

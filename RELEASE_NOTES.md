@@ -14,6 +14,9 @@ configuration, and release-readiness hardening for live applicant scouting.
 - Applicant hover details now show the highest timed RaiderIO key per dungeon
   next to the Warcraft Logs key/percentile row, making stale or missing log
   coverage easier to judge.
+- Applicant hover details now separate the Warcraft Logs key and percentile
+  into distinct columns, making side-by-side RaiderIO/WCL evidence easier to
+  scan during live invites.
 - RaiderIO dungeon rows remain visible when Warcraft Logs has no logs for the
   applicant, so the card can still show real timed-key experience.
 - The RaiderIO completion signal can lift missing or low-key WCL evidence, but

@@ -19,6 +19,7 @@ from applicant_scout.overlay import (
     DUNGEON_KEY_WIDTH,
     DUNGEON_METRIC_WIDTH,
     DUNGEON_NAME_WIDTH,
+    DUNGEON_WCL_KEY_WIDTH,
     MPLUS_INDIVIDUAL_BG_ROLE,
     MPLUS_INDIVIDUAL_TEXT_ROLE,
     MPLUS_PACKAGE_BG_ROLE,
@@ -116,12 +117,14 @@ def test_ready_panel_renders_identity_metrics_and_dungeons(qtbot):
     assert percentile_colour(88.0) in panel._metric_labels["N"].styleSheet()
     assert panel._metric_labels["M+"].text() == "M+ DPS 80/62 +14"
 
-    name_label, key_label, value_label = panel._dungeon_rows[0]
+    name_label, key_label, wcl_key_label, value_label = panel._dungeon_rows[0]
     assert name_label.text() == "Pit of Saron"
     assert key_label.text() == "RIO —"
-    assert value_label.text() == "WCL +14 100/80"
+    assert wcl_key_label.text() == "WCL +14"
+    assert value_label.text() == "100/80"
     assert name_label.width() == DUNGEON_NAME_WIDTH
     assert key_label.width() == DUNGEON_KEY_WIDTH
+    assert wcl_key_label.width() == DUNGEON_WCL_KEY_WIDTH
     assert value_label.width() == DUNGEON_METRIC_WIDTH
 
 
@@ -152,8 +155,9 @@ def test_context_dungeon_rows_colour_the_printed_percentile(qtbot):
 
     panel.setApplicantData(app, listing)
 
-    _name_label, _key_label, value_label = panel._dungeon_rows[0]
-    assert value_label.text() == "WCL +16 83"
+    _name_label, _rio_label, wcl_key_label, value_label = panel._dungeon_rows[0]
+    assert wcl_key_label.text() == "WCL +16"
+    assert value_label.text() == "83"
     assert percentile_colour(83.0) in value_label.styleSheet()
 
 
@@ -186,15 +190,17 @@ def test_panel_renders_rio_and_wcl_dungeon_rows_side_by_side(qtbot):
 
     panel.setApplicantData(app, _listing())
 
-    name_label, rio_label, wcl_label = panel._dungeon_rows[0]
+    name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
     assert rio_label.text() == "RIO +15"
-    assert wcl_label.text() == "WCL +12 42/38"
+    assert wcl_key_label.text() == "WCL +12"
+    assert wcl_label.text() == "42/38"
 
-    name_label, rio_label, wcl_label = panel._dungeon_rows[1]
+    name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[1]
     assert name_label.text() == "Pit of Saron"
     assert rio_label.text() == "RIO +16"
-    assert wcl_label.text() == "WCL +14 71/62"
+    assert wcl_key_label.text() == "WCL +14"
+    assert wcl_label.text() == "71/62"
 
 
 def test_panel_prioritises_target_dungeon_by_activity_id_when_listing_name_is_localized(
@@ -233,10 +239,11 @@ def test_panel_prioritises_target_dungeon_by_activity_id_when_listing_name_is_lo
 
     panel.setApplicantData(app, listing)
 
-    name_label, rio_label, wcl_label = panel._dungeon_rows[0]
+    name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
     assert rio_label.text() == "RIO +15"
-    assert wcl_label.text() == "WCL +12 42/38"
+    assert wcl_key_label.text() == "WCL +12"
+    assert wcl_label.text() == "42/38"
 
 
 def test_panel_merges_localized_rio_row_with_wcl_activity_id_mapping(qtbot):
@@ -263,10 +270,11 @@ def test_panel_merges_localized_rio_row_with_wcl_activity_id_mapping(qtbot):
 
     panel.setApplicantData(app, listing)
 
-    name_label, rio_label, wcl_label = panel._dungeon_rows[0]
+    name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
     assert rio_label.text() == "RIO +15"
-    assert wcl_label.text() == "WCL +12 42/38"
+    assert wcl_key_label.text() == "WCL +12"
+    assert wcl_label.text() == "42/38"
     assert panel._dungeon_rows[1][0].isHidden()
 
 
@@ -288,10 +296,11 @@ def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
     panel.setApplicantData(app, _listing())
 
     assert panel._status_label.text() == "Not found on Warcraft Logs"
-    name_label, rio_label, wcl_label = panel._dungeon_rows[0]
+    name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
     assert rio_label.text() == "RIO +15"
-    assert wcl_label.text() == "WCL —"
+    assert wcl_key_label.text() == "WCL —"
+    assert wcl_label.text() == "—"
 
 
 def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
@@ -413,10 +422,12 @@ def test_malformed_mplus_breakdown_renders_safe_fallbacks(qtbot):
 
     assert panel._dungeon_rows[0][0].text() == "Valid"
     assert panel._dungeon_rows[0][1].text() == "RIO —"
-    assert panel._dungeon_rows[0][2].text() == "WCL +12 72/60"
+    assert panel._dungeon_rows[0][2].text() == "WCL +12"
+    assert panel._dungeon_rows[0][3].text() == "72/60"
     assert panel._dungeon_rows[1][0].text() == "Bad Cache"
     assert panel._dungeon_rows[1][1].text() == "RIO —"
     assert panel._dungeon_rows[1][2].text() == "WCL —"
+    assert panel._dungeon_rows[1][3].text() == "—"
 
 
 def test_status_states_hide_metrics_and_dungeons(qtbot):
