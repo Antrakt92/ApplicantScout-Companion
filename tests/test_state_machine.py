@@ -33,6 +33,14 @@ def _decoded(
     ilvl: int = 480,
     score: int = 2000,
     main_score: int = 0,
+    rio_profile: bool = False,
+    rio_best_key: int = 0,
+    rio_best_dungeon_key: int = 0,
+    rio_timed_at_or_above: int = 0,
+    rio_timed_at_or_above_minus1: int = 0,
+    rio_timed_at_or_above_minus2: int = 0,
+    rio_completed_at_or_above_minus1: int = 0,
+    rio_dungeon_count: int = 0,
     role: int = 2,
 ) -> DecodedApplicant:
     return DecodedApplicant(
@@ -44,6 +52,14 @@ def _decoded(
         ilvl=ilvl,
         score=score,
         main_score=main_score,
+        rio_profile=rio_profile,
+        rio_best_key=rio_best_key,
+        rio_best_dungeon_key=rio_best_dungeon_key,
+        rio_timed_at_or_above=rio_timed_at_or_above,
+        rio_timed_at_or_above_minus1=rio_timed_at_or_above_minus1,
+        rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
+        rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
+        rio_dungeon_count=rio_dungeon_count,
         role=role,
     )
 
@@ -125,6 +141,44 @@ def test_new_applicant_maps_main_score():
     applicant = state.applicants["99:1"]
     assert applicant.score == 2443
     assert applicant.main_score == 3468
+
+
+def test_new_applicant_maps_rio_completion_summary():
+    state = AppState()
+    sm = StateMachine(state)
+    snap = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(
+                aid=42,
+                member_idx=1,
+                name="Rio-Realm",
+                score=3321,
+                main_score=3550,
+                rio_profile=True,
+                rio_best_key=17,
+                rio_best_dungeon_key=15,
+                rio_timed_at_or_above=1,
+                rio_timed_at_or_above_minus1=8,
+                rio_timed_at_or_above_minus2=8,
+                rio_completed_at_or_above_minus1=8,
+                rio_dungeon_count=8,
+            )
+        ],
+    )
+
+    sm.apply_snapshot(snap)
+
+    applicant = state.applicants["42:1"]
+    assert applicant.rio_profile is True
+    assert applicant.rio_best_key == 17
+    assert applicant.rio_best_dungeon_key == 15
+    assert applicant.rio_timed_at_or_above == 1
+    assert applicant.rio_timed_at_or_above_minus1 == 8
+    assert applicant.rio_timed_at_or_above_minus2 == 8
+    assert applicant.rio_completed_at_or_above_minus1 == 8
+    assert applicant.rio_dungeon_count == 8
 
 
 # ─── Name-change detection (B-5) ────────────────────────────────────────────

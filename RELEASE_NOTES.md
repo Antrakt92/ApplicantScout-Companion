@@ -1,12 +1,19 @@
 # ApplicantScout Companion Release Notes
 
-## 0.2.5 - 16-May-2026
+## 0.3.0 - 16-May-2026
 
-Screenshot startup, settings launch, WCL configuration, and release-readiness
-hardening for live applicant scouting.
+RaiderIO completion-aware Mythic+ scoring plus screenshot startup, settings
+launch, WCL configuration, and release-readiness hardening for live applicant
+scouting.
 
 ### Improved
 
+- Mythic+ fit scoring now uses ApplicantScout addon wire v5 RaiderIO completion
+  summaries as experience evidence, so players with near-target keys completed
+  are no longer punished as heavily when Warcraft Logs has no current data.
+- The RaiderIO completion signal can lift missing or low-key WCL evidence, but
+  bad relevant same-level logs still cap the score to avoid overrating risky
+  applicants.
 - Manual companion launches now bring the Settings window forward instead of
   silently staying in the tray/background flow.
 - Re-launching the companion while it is already running now asks the existing
@@ -28,11 +35,11 @@ hardening for live applicant scouting.
 
 ### Compatibility
 
-- Requires the ApplicantScout WoW addon `0.1.7`.
-- Supports ApplicantScout wire payloads through v4.
+- Requires the ApplicantScout WoW addon `0.2.0`.
+- Supports ApplicantScout wire payloads through v5.
 - In-app updates require GitHub Release assets named
-  `ApplicantScoutCompanionSetup-0.2.5.exe` and
-  `ApplicantScoutCompanionSetup-0.2.5.exe.sha256`.
+  `ApplicantScoutCompanionSetup-0.3.0.exe` and
+  `ApplicantScoutCompanionSetup-0.3.0.exe.sha256`.
 
 ## 0.2.4 - 16-May-2026
 

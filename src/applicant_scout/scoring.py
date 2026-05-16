@@ -39,6 +39,7 @@ MPLUS_RIO_NUDGE_WEIGHT = 0.04
 MPLUS_RIO_NUDGE_CAP = 2.0
 MPLUS_RIO_FALLBACK_WEIGHT = 0.62
 MPLUS_RIO_FALLBACK_CAP = 58.0
+MPLUS_RIO_COMPLETION_FALLBACK_CAP = 82.0
 
 
 @dataclass(frozen=True)
@@ -336,7 +337,25 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
 
     rio_score = effective_rio_score(applicant)
     rio_fit = _mplus_rio_fit(rio_score, target_key)
+    rio_completion_fit = _mplus_rio_completion_fit(applicant, target_key)
     if not bracket_fits:
+        if rio_completion_fit > 0.0:
+            score = _clamp(
+                rio_completion_fit, 0.0, MPLUS_RIO_COMPLETION_FALLBACK_CAP
+            )
+            label = fit_label(score)
+            return CandidateFit(
+                context=CONTEXT_MPLUS,
+                score=score,
+                label=label,
+                source="rio_completion",
+                display=f"{label} {int(round(score))} RIO",
+                colour=fit_colour(score),
+                target_key=target_key,
+                primary_key=applicant.rio_best_dungeon_key or applicant.rio_best_key,
+                confidence=_mplus_rio_completion_confidence(applicant, target_key),
+                coverage=_mplus_rio_timed_minus1_coverage(applicant),
+            )
         score = _clamp(
             rio_fit * MPLUS_RIO_FALLBACK_WEIGHT, 0.0, MPLUS_RIO_FALLBACK_CAP
         )
@@ -375,6 +394,15 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
             max(0.0, rio_fit - score) * MPLUS_RIO_NUDGE_WEIGHT,
         )
     score = _mplus_raw_quality_cap(score, raw_best_percent, max_key_delta)
+    if rio_completion_fit > score:
+        score = max(
+            score,
+            _mplus_rio_completion_floor_with_wcl(
+                rio_completion_fit,
+                raw_best_percent=raw_best_percent,
+                max_key_delta=max_key_delta,
+            ),
+        )
     score = _clamp(score, 0.0, 105.0)
     label = fit_label(score)
     confidence = _clamp(0.35 + 0.45 * coverage + 0.20 * min(total_runs / 16.0, 1.0), 0.0, 1.0)
@@ -653,6 +681,78 @@ def _weighted_top(rows: list[_BracketFit]) -> float:
 
 def _mplus_rio_fit(score: int, target_key: int) -> float:
     return _clamp(55.0 + (score - (1700.0 + target_key * 100.0)) / 18.0, 0.0, 105.0)
+
+
+def _mplus_key_proximity_score(key_level: int, target_key: int) -> float:
+    if key_level <= 0 or target_key <= 0:
+        return 0.0
+    delta = key_level - target_key
+    if delta >= 1:
+        return 94.0
+    if delta == 0:
+        return 88.0
+    if delta == -1:
+        return 78.0
+    if delta == -2:
+        return 64.0
+    if delta == -3:
+        return 50.0
+    return _clamp(50.0 + delta * 8.0, 0.0, 45.0)
+
+
+def _mplus_rio_timed_minus1_coverage(applicant: Applicant) -> float:
+    dungeon_count = _positive_int(applicant.rio_dungeon_count)
+    if dungeon_count <= 0:
+        return 0.0
+    return _clamp(applicant.rio_timed_at_or_above_minus1 / dungeon_count, 0.0, 1.0)
+
+
+def _mplus_rio_completion_fit(applicant: Applicant, target_key: int) -> float:
+    if not applicant.rio_profile or target_key <= 0:
+        return 0.0
+    dungeon_count = max(1, min(_positive_int(applicant.rio_dungeon_count), MPLUS_DUNGEON_COUNT))
+    timed_minus1 = _clamp(applicant.rio_timed_at_or_above_minus1 / dungeon_count, 0.0, 1.0)
+    timed_minus2 = _clamp(applicant.rio_timed_at_or_above_minus2 / dungeon_count, 0.0, 1.0)
+    completed_minus1 = _clamp(
+        applicant.rio_completed_at_or_above_minus1 / dungeon_count, 0.0, 1.0
+    )
+    same_dungeon = _mplus_key_proximity_score(applicant.rio_best_dungeon_key, target_key)
+    best_overall = _mplus_key_proximity_score(applicant.rio_best_key, target_key)
+    score_fit = _mplus_rio_fit(effective_rio_score(applicant), target_key)
+    score = (
+        0.36 * same_dungeon
+        + 0.30 * (timed_minus1 * 100.0)
+        + 0.14 * (timed_minus2 * 100.0)
+        + 0.10 * (completed_minus1 * 100.0)
+        + 0.07 * best_overall
+        + 0.03 * score_fit
+    )
+    if applicant.rio_timed_at_or_above <= 0 and applicant.rio_best_key < target_key:
+        score -= 4.0
+    return _clamp(score, 0.0, 92.0)
+
+
+def _mplus_rio_completion_confidence(applicant: Applicant, target_key: int) -> float:
+    if not applicant.rio_profile:
+        return 0.0
+    timed_minus1 = _mplus_rio_timed_minus1_coverage(applicant)
+    same_near = 1.0 if applicant.rio_best_dungeon_key >= max(2, target_key - 1) else 0.0
+    best_near = 1.0 if applicant.rio_best_key >= max(2, target_key - 1) else 0.0
+    return _clamp(0.25 + 0.45 * timed_minus1 + 0.15 * same_near + 0.15 * best_near, 0.0, 1.0)
+
+
+def _mplus_rio_completion_floor_with_wcl(
+    rio_completion_fit: float, *, raw_best_percent: float, max_key_delta: int
+) -> float:
+    if rio_completion_fit <= 0.0:
+        return 0.0
+    if max_key_delta >= -1 and raw_best_percent < 25.0:
+        return min(rio_completion_fit, 61.0)
+    if max_key_delta >= -2 and raw_best_percent < 40.0:
+        return min(rio_completion_fit, 68.0)
+    if raw_best_percent < 50.0:
+        return min(rio_completion_fit, 78.0)
+    return min(rio_completion_fit, 85.0)
 
 
 def _raid_perf(best: float | None, median: float | None) -> float | None:

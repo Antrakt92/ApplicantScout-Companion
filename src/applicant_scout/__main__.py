@@ -557,6 +557,16 @@ class StateMachine(QObject):
                     score=da.score,
                     role=role_name,
                     main_score=da.main_score,
+                    rio_profile=da.rio_profile,
+                    rio_best_key=da.rio_best_key,
+                    rio_best_dungeon_key=da.rio_best_dungeon_key,
+                    rio_timed_at_or_above=da.rio_timed_at_or_above,
+                    rio_timed_at_or_above_minus1=da.rio_timed_at_or_above_minus1,
+                    rio_timed_at_or_above_minus2=da.rio_timed_at_or_above_minus2,
+                    rio_completed_at_or_above_minus1=(
+                        da.rio_completed_at_or_above_minus1
+                    ),
+                    rio_dungeon_count=da.rio_dungeon_count,
                 )
                 self._state.add_or_update(applicant)
                 log.info(
@@ -593,6 +603,16 @@ class StateMachine(QObject):
                 existing.score = da.score
                 existing.role = role_name
                 existing.main_score = da.main_score
+                existing.rio_profile = da.rio_profile
+                existing.rio_best_key = da.rio_best_key
+                existing.rio_best_dungeon_key = da.rio_best_dungeon_key
+                existing.rio_timed_at_or_above = da.rio_timed_at_or_above
+                existing.rio_timed_at_or_above_minus1 = da.rio_timed_at_or_above_minus1
+                existing.rio_timed_at_or_above_minus2 = da.rio_timed_at_or_above_minus2
+                existing.rio_completed_at_or_above_minus1 = (
+                    da.rio_completed_at_or_above_minus1
+                )
+                existing.rio_dungeon_count = da.rio_dungeon_count
                 if needs_refetch:
                     existing.clear_wcl_data()
                 self.applicantUpdated.emit(existing)

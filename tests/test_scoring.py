@@ -41,6 +41,14 @@ def _app(
     role: str = "DAMAGER",
     score: int = 3300,
     main_score: int = 0,
+    rio_profile: bool = False,
+    rio_best_key: int = 0,
+    rio_best_dungeon_key: int = 0,
+    rio_timed_at_or_above: int = 0,
+    rio_timed_at_or_above_minus1: int = 0,
+    rio_timed_at_or_above_minus2: int = 0,
+    rio_completed_at_or_above_minus1: int = 0,
+    rio_dungeon_count: int = 0,
     dps_breakdown: list[dict] | None = None,
     hps_breakdown: list[dict] | None = None,
     raid_normal: float | None = None,
@@ -59,6 +67,14 @@ def _app(
         ilvl=280,
         score=score,
         main_score=main_score,
+        rio_profile=rio_profile,
+        rio_best_key=rio_best_key,
+        rio_best_dungeon_key=rio_best_dungeon_key,
+        rio_timed_at_or_above=rio_timed_at_or_above,
+        rio_timed_at_or_above_minus1=rio_timed_at_or_above_minus1,
+        rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
+        rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
+        rio_dungeon_count=rio_dungeon_count,
         role=role,
         raid_normal=raid_normal,
         raid_normal_median=raid_normal_median,
@@ -371,6 +387,75 @@ def test_mplus_healer_uses_hps_breakdown_and_ignores_dps():
 
     assert fit.primary_key == 16
     assert fit.score < 80
+
+
+def test_mplus_rio_completion_profile_rescues_missing_wcl_without_top_rating():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.source == "rio_completion"
+    assert 68.0 <= fit.score < 85.0
+    assert fit.confidence >= 0.55
+
+
+def test_mplus_rio_completion_beats_low_key_parse_spike_for_target_key():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    low_key_parse_spike = _app(
+        score=3098,
+        dps_breakdown=[
+            _dungeon("Skyreach", [(10, 96.0, 92.0, 2)]),
+            _dungeon("Other", [(12, 91.0, 88.0, 2)]),
+        ],
+    )
+    experienced_low_log = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        dps_breakdown=[_dungeon("Skyreach", [(12, 42.0, 38.0, 2)])],
+    )
+
+    assert candidate_fit(experienced_low_log, target).score > candidate_fit(
+        low_key_parse_spike, target
+    ).score
+
+
+def test_mplus_bad_relevant_wcl_caps_strong_rio_completion():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        score=3300,
+        rio_profile=True,
+        rio_best_key=18,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=4,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        dps_breakdown=[_dungeon("Skyreach", [(16, 18.0, 16.0, 3)])],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.score < 62.0
+    assert fit.label in {"OK", "RISK"}
 
 
 def test_package_fit_penalizes_weak_member_in_multi_member_group():

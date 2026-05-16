@@ -52,6 +52,14 @@ def _build_applicant_block(
     name: str,
     member_idx: int = 1,
     main_score: int = 0,
+    rio_profile: int = 0,
+    rio_best_key: int = 0,
+    rio_best_dungeon_key: int = 0,
+    rio_timed_at_or_above: int = 0,
+    rio_timed_at_or_above_minus1: int = 0,
+    rio_timed_at_or_above_minus2: int = 0,
+    rio_completed_at_or_above_minus1: int = 0,
+    rio_dungeon_count: int = 0,
     *,
     version: int,
 ) -> bytes:
@@ -61,6 +69,7 @@ def _build_applicant_block(
     version=2: 14-byte fixed prefix (member_idx u8 between applicant_id +
     class_id).
     version=4: inserts main_score u16 after current score.
+    version=5: inserts compact RaiderIO completion summary after main_score.
     """
     out = struct.pack(">I", aid)
     if version >= 2:
@@ -71,6 +80,19 @@ def _build_applicant_block(
     out += struct.pack(">H", score)
     if version >= 4:
         out += struct.pack(">H", main_score)
+    if version >= 5:
+        out += bytes(
+            [
+                rio_profile,
+                rio_best_key,
+                rio_best_dungeon_key,
+                rio_timed_at_or_above,
+                rio_timed_at_or_above_minus1,
+                rio_timed_at_or_above_minus2,
+                rio_completed_at_or_above_minus1,
+                rio_dungeon_count,
+            ]
+        )
     out += bytes([role])
     out += _pack_len_str(name.encode("utf-8"))
     return out
@@ -323,6 +345,7 @@ def test_wire_versions_supported_pin():
     assert 0x02 in WIRE_VERSIONS_SUPPORTED
     assert 0x03 in WIRE_VERSIONS_SUPPORTED
     assert 0x04 in WIRE_VERSIONS_SUPPORTED
+    assert 0x05 in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
@@ -383,6 +406,47 @@ def test_v4_applicant_block_parses_current_and_main_score():
     assert applicant.name == "Altwar-Twisting Nether"
 
 
+def test_v5_applicant_block_parses_rio_completion_summary():
+    """v5 adds target-relative RaiderIO completion bytes after main_score."""
+    blocks = [
+        _build_applicant_block(
+            aid=7,
+            member_idx=1,
+            class_id=8,
+            spec_id=63,
+            ilvl=488,
+            score=3321,
+            main_score=3550,
+            rio_profile=1,
+            rio_best_key=17,
+            rio_best_dungeon_key=15,
+            rio_timed_at_or_above=1,
+            rio_timed_at_or_above_minus1=8,
+            rio_timed_at_or_above_minus2=8,
+            rio_completed_at_or_above_minus1=8,
+            rio_dungeon_count=8,
+            role=2,
+            name="Rio-Realm",
+            version=5,
+        ),
+    ]
+
+    snap = _parse_payload(_build_body(blocks), wire_ver=0x05)
+    applicant = snap.applicants[0]
+
+    assert applicant.main_score == 3550
+    assert applicant.rio_profile is True
+    assert applicant.rio_best_key == 17
+    assert applicant.rio_best_dungeon_key == 15
+    assert applicant.rio_timed_at_or_above == 1
+    assert applicant.rio_timed_at_or_above_minus1 == 8
+    assert applicant.rio_timed_at_or_above_minus2 == 8
+    assert applicant.rio_completed_at_or_above_minus1 == 8
+    assert applicant.rio_dungeon_count == 8
+    assert applicant.role == 2
+    assert applicant.name == "Rio-Realm"
+
+
 def test_v3_payload_back_compat_main_score_defaults_to_zero():
     blocks = [
         _build_applicant_block(
@@ -403,6 +467,8 @@ def test_v3_payload_back_compat_main_score_defaults_to_zero():
     assert len(snap.applicants) == 1
     assert snap.applicants[0].score == 2200
     assert snap.applicants[0].main_score == 0
+    assert snap.applicants[0].rio_profile is False
+    assert snap.applicants[0].rio_best_key == 0
 
 
 def test_v2_listing_defaults_context_fields_to_zero():

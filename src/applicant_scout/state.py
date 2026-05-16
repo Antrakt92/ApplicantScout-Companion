@@ -32,6 +32,18 @@ class Applicant:
     score: int
     role: str  # TANK / HEALER / DAMAGER
     main_score: int = 0
+    # Compact target-relative RaiderIO completion summary from addon wire v5.
+    # Counts are computed by the addon against the active listing key at
+    # screenshot time, so they are evidence for this listing snapshot rather
+    # than generic season totals.
+    rio_profile: bool = False
+    rio_best_key: int = 0
+    rio_best_dungeon_key: int = 0
+    rio_timed_at_or_above: int = 0
+    rio_timed_at_or_above_minus1: int = 0
+    rio_timed_at_or_above_minus2: int = 0
+    rio_completed_at_or_above_minus1: int = 0
+    rio_dungeon_count: int = 0
 
     # Filled by WCL fetcher. None = not yet fetched OR fetched-but-no-data
     # (we never use NaN; `fetch_status` field disambiguates loading vs done).
