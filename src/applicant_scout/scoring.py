@@ -130,7 +130,7 @@ def candidate_fit(applicant: Applicant, listing: Listing | None) -> CandidateFit
     context = detect_listing_context(listing)
     if context == CONTEXT_MPLUS and listing is not None:
         if _is_terminal_fetch_status(applicant.fetch_status):
-            rio_fit = _mplus_rio_completion_candidate_fit(applicant, listing.key_level)
+            rio_fit = _mplus_rio_completion_candidate_fit(applicant, listing)
             if rio_fit is not None:
                 return rio_fit
             return CandidateFit(
@@ -311,15 +311,34 @@ def _listing_dungeon_keys(listing: Listing) -> set[str]:
     return {key for key in keys if key}
 
 
+def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
+    listing_keys = _listing_dungeon_keys(listing)
+    best_key = 0
+    for entry in applicant.rio_dungeons:
+        if not isinstance(entry, dict):
+            continue
+        row_key = _normalise_name(entry.get("name"))
+        if row_key not in listing_keys:
+            continue
+        best_key = max(best_key, _positive_int(entry.get("key_level")))
+    return best_key
+
+
 def _mplus_rio_completion_candidate_fit(
-    applicant: Applicant, target_key: int
+    applicant: Applicant, listing: Listing
 ) -> CandidateFit | None:
-    rio_completion_fit = _mplus_rio_completion_fit(applicant, target_key)
+    target_key = listing.key_level
+    same_dungeon_key = _rio_same_dungeon_key(applicant, listing)
+    rio_completion_fit = _mplus_rio_completion_fit(
+        applicant, target_key, same_dungeon_key=same_dungeon_key
+    )
     if rio_completion_fit <= 0.0:
         return None
     score = _clamp(rio_completion_fit, 0.0, MPLUS_RIO_COMPLETION_FALLBACK_CAP)
     label = fit_label(score)
-    primary_key = applicant.rio_best_dungeon_key or applicant.rio_best_key
+    primary_key = (
+        same_dungeon_key or applicant.rio_best_dungeon_key or applicant.rio_best_key
+    )
     display = f"{label} {int(round(score))} RIO"
     if primary_key > 0:
         display = f"{label} {int(round(score))} +{primary_key} RIO"
@@ -332,7 +351,9 @@ def _mplus_rio_completion_candidate_fit(
         colour=fit_colour(score),
         target_key=target_key,
         primary_key=primary_key,
-        confidence=_mplus_rio_completion_confidence(applicant, target_key),
+        confidence=_mplus_rio_completion_confidence(
+            applicant, target_key, same_dungeon_key=same_dungeon_key
+        ),
         coverage=_mplus_rio_timed_minus1_coverage(applicant),
     )
 
@@ -378,11 +399,12 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
 
     rio_score = effective_rio_score(applicant)
     rio_fit = _mplus_rio_fit(rio_score, target_key)
-    rio_completion_fit = _mplus_rio_completion_fit(applicant, target_key)
+    same_dungeon_rio_key = _rio_same_dungeon_key(applicant, listing)
+    rio_completion_fit = _mplus_rio_completion_fit(
+        applicant, target_key, same_dungeon_key=same_dungeon_rio_key
+    )
     if not bracket_fits:
-        rio_completion_candidate = _mplus_rio_completion_candidate_fit(
-            applicant, target_key
-        )
+        rio_completion_candidate = _mplus_rio_completion_candidate_fit(applicant, listing)
         if rio_completion_candidate is not None:
             return rio_completion_candidate
         score = _clamp(
@@ -432,7 +454,11 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
         )
         if rio_floor > score:
             score = rio_floor
-            display_key = applicant.rio_best_dungeon_key or applicant.rio_best_key
+            display_key = (
+                same_dungeon_rio_key
+                or applicant.rio_best_dungeon_key
+                or applicant.rio_best_key
+            )
     score = _clamp(score, 0.0, 105.0)
     label = fit_label(score)
     confidence = _clamp(0.35 + 0.45 * coverage + 0.20 * min(total_runs / 16.0, 1.0), 0.0, 1.0)
@@ -737,7 +763,9 @@ def _mplus_rio_timed_minus1_coverage(applicant: Applicant) -> float:
     return _clamp(applicant.rio_timed_at_or_above_minus1 / dungeon_count, 0.0, 1.0)
 
 
-def _mplus_rio_completion_fit(applicant: Applicant, target_key: int) -> float:
+def _mplus_rio_completion_fit(
+    applicant: Applicant, target_key: int, *, same_dungeon_key: int = 0
+) -> float:
     if not applicant.rio_profile or target_key <= 0:
         return 0.0
     dungeon_count = max(1, min(_positive_int(applicant.rio_dungeon_count), MPLUS_DUNGEON_COUNT))
@@ -746,7 +774,9 @@ def _mplus_rio_completion_fit(applicant: Applicant, target_key: int) -> float:
     completed_minus1 = _clamp(
         applicant.rio_completed_at_or_above_minus1 / dungeon_count, 0.0, 1.0
     )
-    same_dungeon = _mplus_key_proximity_score(applicant.rio_best_dungeon_key, target_key)
+    same_dungeon = _mplus_key_proximity_score(
+        same_dungeon_key or applicant.rio_best_dungeon_key, target_key
+    )
     best_overall = _mplus_key_proximity_score(applicant.rio_best_key, target_key)
     score_fit = _mplus_rio_fit(effective_rio_score(applicant), target_key)
     score = (
@@ -762,11 +792,17 @@ def _mplus_rio_completion_fit(applicant: Applicant, target_key: int) -> float:
     return _clamp(score, 0.0, 92.0)
 
 
-def _mplus_rio_completion_confidence(applicant: Applicant, target_key: int) -> float:
+def _mplus_rio_completion_confidence(
+    applicant: Applicant, target_key: int, *, same_dungeon_key: int = 0
+) -> float:
     if not applicant.rio_profile:
         return 0.0
     timed_minus1 = _mplus_rio_timed_minus1_coverage(applicant)
-    same_near = 1.0 if applicant.rio_best_dungeon_key >= max(2, target_key - 1) else 0.0
+    same_near = (
+        1.0
+        if (same_dungeon_key or applicant.rio_best_dungeon_key) >= max(2, target_key - 1)
+        else 0.0
+    )
     best_near = 1.0 if applicant.rio_best_key >= max(2, target_key - 1) else 0.0
     return _clamp(0.25 + 0.45 * timed_minus1 + 0.15 * same_near + 0.15 * best_near, 0.0, 1.0)
 

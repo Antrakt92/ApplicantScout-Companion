@@ -50,6 +50,7 @@ def _app(
     rio_timed_at_or_above_minus2: int = 0,
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
+    rio_dungeons: list[dict] | None = None,
     dps_breakdown: list[dict] | None = None,
     hps_breakdown: list[dict] | None = None,
     raid_normal: float | None = None,
@@ -76,6 +77,7 @@ def _app(
         rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
         rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
         rio_dungeon_count=rio_dungeon_count,
+        rio_dungeons=rio_dungeons or [],
         role=role,
         raid_normal=raid_normal,
         raid_normal_median=raid_normal_median,
@@ -426,6 +428,29 @@ def test_mplus_rio_completion_profile_rescues_missing_wcl_without_top_rating():
     assert 68.0 <= fit.score < 85.0
     assert fit.confidence >= 0.55
     assert "+15" in fit.display
+
+
+def test_mplus_rio_completion_uses_rio_dungeon_rows_for_same_dungeon_key():
+    target = _listing(activity_id=404, key_level=16, dungeon_name="Небесный Путь")
+    applicant = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=0,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.source == "rio_completion"
+    assert fit.primary_key == 15
+    assert "+15" in fit.display
+    assert fit.confidence >= 0.55
 
 
 def test_mplus_rio_completion_profile_rescues_not_found_wcl_status():

@@ -42,6 +42,8 @@ configuration, and release-readiness hardening for live applicant scouting.
   the table and applicant sort order.
 - Fixed localized Mythic+ listing names losing same-dungeon fit and target-row
   priority by falling back to the addon-emitted LFG activity ID.
+- Fixed RaiderIO per-dungeon keys being shown in the hover panel but ignored by
+  the M+ fit formula when the compact same-dungeon summary was missing.
 - Fixed localized RaiderIO dungeon names splitting target-dungeon RIO and WCL
   evidence into separate hover-panel rows.
 - Fixed RIO-backed fit badges being hidden in the hover panel when Warcraft Logs
