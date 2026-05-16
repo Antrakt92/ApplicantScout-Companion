@@ -239,6 +239,37 @@ def test_panel_prioritises_target_dungeon_by_activity_id_when_listing_name_is_lo
     assert wcl_label.text() == "WCL +12 42/38"
 
 
+def test_panel_merges_localized_rio_row_with_wcl_activity_id_mapping(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    listing = replace(
+        _listing(),
+        activity_id=404,
+        dungeon_name="Небесный Путь",
+    )
+    app = _app(
+        rio_profile=True,
+        rio_dungeons=[{"name": "Небесный Путь", "key_level": 15}],
+        mplus_dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "parse_percent": 42.0,
+                "median_percent": 38.0,
+                "key_level": 12,
+                "run_count": 2,
+            }
+        ],
+    )
+
+    panel.setApplicantData(app, listing)
+
+    name_label, rio_label, wcl_label = panel._dungeon_rows[0]
+    assert name_label.text() == "Skyreach"
+    assert rio_label.text() == "RIO +15"
+    assert wcl_label.text() == "WCL +12 42/38"
+    assert panel._dungeon_rows[1][0].isHidden()
+
+
 def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
@@ -261,6 +292,32 @@ def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
     assert name_label.text() == "Skyreach"
     assert rio_label.text() == "RIO +15"
     assert wcl_label.text() == "WCL —"
+
+
+def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    app = _app(
+        fetch_status="not_found",
+        mplus_dps=None,
+        mplus_dps_median=None,
+        mplus_dps_breakdown=[],
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+    )
+
+    panel.setApplicantData(app, _listing())
+
+    assert panel._status_label.text() == "Not found on Warcraft Logs"
+    assert panel._metric_labels["M+"].text().startswith("M+ DPS FIT ")
+    assert panel._metric_labels["M+"].text().endswith("+15 RIO")
 
 
 def test_panel_renders_group_package_line(qtbot):

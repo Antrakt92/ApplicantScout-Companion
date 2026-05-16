@@ -205,6 +205,8 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
     # has_version=0 + 2 applicant_count=0 + 4 CRC trailer).
     if total_len < 13 or total_len > len(raw):
         return None, f"invalid total_len {total_len} for {len(raw)} decoded bytes"
+    if total_len != len(raw):
+        return None, f"trailing decoded bytes: total_len {total_len} for {len(raw)} decoded bytes"
 
     payload = raw[:total_len]
     body = payload[:-4]

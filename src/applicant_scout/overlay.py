@@ -1191,10 +1191,12 @@ class ApplicantInfoPanel(QFrame):
         if status == "error":
             msg = applicant.error_message or "unknown"
             self._show_status(f"WCL error: {msg}", error=True)
+            self._set_metric_badges(applicant, listing)
             self._set_dungeon_rows(applicant, listing)
             return
         if status == "not_found":
             self._show_status("Not found on Warcraft Logs")
+            self._set_metric_badges(applicant, listing)
             self._set_dungeon_rows(applicant, listing)
             return
         if status != "ready":
@@ -1289,7 +1291,7 @@ class ApplicantInfoPanel(QFrame):
         if not self._metric_preferences.mplus:
             self._dungeon_widget.setVisible(False)
             return 0
-        rio_rows = _rio_dungeon_rows_by_name(applicant)
+        rio_rows = _rio_dungeon_rows_by_name(applicant, listing)
         wcl_rows = _wcl_dungeon_rows_by_name(applicant, listing)
         listing_keys = _listing_dungeon_keys(listing)
         row_keys = sorted(
@@ -2798,14 +2800,27 @@ def _listing_dungeon_keys(listing: Listing | None) -> set[str]:
     return {key for key in keys if key}
 
 
-def _rio_dungeon_rows_by_name(applicant: Applicant) -> dict[str, dict[str, object]]:
+def _rio_dungeon_row_key(name: str, listing: Listing | None) -> str:
+    row_key = _normalise_dungeon_name(name)
+    if listing is None:
+        return row_key
+    mapped_name = mplus_dungeon_name_for_activity_id(listing.activity_id)
+    mapped_key = _normalise_dungeon_name(mapped_name)
+    if mapped_key and row_key == _normalise_dungeon_name(listing.dungeon_name):
+        return mapped_key
+    return row_key
+
+
+def _rio_dungeon_rows_by_name(
+    applicant: Applicant, listing: Listing | None
+) -> dict[str, dict[str, object]]:
     rows: dict[str, dict[str, object]] = {}
     for entry in applicant.rio_dungeons:
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("name") or "").strip()
         key = _positive_int(entry.get("key_level"))
-        row_key = _normalise_dungeon_name(name)
+        row_key = _rio_dungeon_row_key(name, listing)
         if not name or not row_key or key <= 0:
             continue
         existing = rows.get(row_key)

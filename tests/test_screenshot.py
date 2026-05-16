@@ -368,6 +368,16 @@ def test_crc_valid_payload_with_trailing_body_bytes_is_rejected():
     assert "trailing or truncated payload bytes" in error
 
 
+def test_crc_valid_payload_with_trailing_decoded_bytes_is_rejected():
+    raw = _wrap_payload(_build_body([])) + b"extra"
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert snap is None
+    assert error is not None
+    assert "trailing decoded bytes" in error
+
+
 def test_crc_valid_payload_with_overlong_final_name_is_rejected():
     block = (
         struct.pack(">I", 42)
