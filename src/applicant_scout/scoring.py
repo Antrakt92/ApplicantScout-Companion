@@ -451,6 +451,10 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
             rio_completion_fit,
             raw_best_percent=raw_best_percent,
             max_key_delta=max_key_delta,
+            target_key=target_key,
+            rio_same_dungeon_key=same_dungeon_rio_key,
+            rio_best_key=applicant.rio_best_key,
+            rio_timed_at_or_above=applicant.rio_timed_at_or_above,
         )
         if rio_floor > score:
             score = rio_floor
@@ -808,17 +812,31 @@ def _mplus_rio_completion_confidence(
 
 
 def _mplus_rio_completion_floor_with_wcl(
-    rio_completion_fit: float, *, raw_best_percent: float, max_key_delta: int
+    rio_completion_fit: float,
+    *,
+    raw_best_percent: float,
+    max_key_delta: int,
+    target_key: int,
+    rio_same_dungeon_key: int,
+    rio_best_key: int,
+    rio_timed_at_or_above: int,
 ) -> float:
     if rio_completion_fit <= 0.0:
         return 0.0
+    rio_key = rio_same_dungeon_key or rio_best_key
+    rio_key_delta = rio_key - target_key if rio_key > 0 and target_key > 0 else -999
+    cap = 85.0
+    if rio_timed_at_or_above <= 0 and rio_key_delta < 0:
+        cap = 78.0
+    if rio_timed_at_or_above <= 0 and rio_key_delta <= -2:
+        cap = 68.0
     if max_key_delta >= -1 and raw_best_percent < 25.0:
-        return min(rio_completion_fit, 61.0)
+        return min(rio_completion_fit, cap, 61.0)
     if max_key_delta >= -2 and raw_best_percent < 40.0:
-        return min(rio_completion_fit, 68.0)
+        return min(rio_completion_fit, cap, 68.0)
     if raw_best_percent < 50.0:
-        return min(rio_completion_fit, 78.0)
-    return min(rio_completion_fit, 85.0)
+        return min(rio_completion_fit, cap, 78.0)
+    return min(rio_completion_fit, cap)
 
 
 def _raid_perf(best: float | None, median: float | None) -> float | None:

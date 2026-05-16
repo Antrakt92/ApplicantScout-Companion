@@ -568,6 +568,47 @@ def test_mplus_bad_relevant_wcl_caps_strong_rio_completion():
     assert fit.label in {"OK", "RISK"}
 
 
+def test_mplus_all_minus_one_rio_with_mixed_lower_wcl_does_not_become_top():
+    target = _listing(key_level=15, dungeon_name="Pit of Saron")
+    applicant = _app(
+        score=3209,
+        rio_profile=True,
+        rio_best_key=14,
+        rio_best_dungeon_key=14,
+        rio_timed_at_or_above=0,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 14},
+            {"name": "Algeth'ar Academy", "key_level": 14},
+            {"name": "Magisters' Terrace", "key_level": 14},
+            {"name": "Maisara Caverns", "key_level": 14},
+            {"name": "Nexus-Point Xenas", "key_level": 14},
+            {"name": "Pit of Saron", "key_level": 14},
+            {"name": "Seat of the Triumvirate", "key_level": 14},
+            {"name": "Windrunner Spire", "key_level": 14},
+        ],
+        dps_breakdown=[
+            _dungeon("Skyreach", [(14, 51.0, None, 1)]),
+            _dungeon("Algeth'ar Academy", [(10, 12.0, None, 1)]),
+            _dungeon("Magisters' Terrace", [(10, 15.0, None, 1)]),
+            _dungeon("Maisara Caverns", [(13, 51.0, None, 1)]),
+            _dungeon("Nexus-Point Xenas", [(14, 18.0, None, 1)]),
+            _dungeon("Pit of Saron", [(11, 22.0, None, 1)]),
+            _dungeon("Seat of the Triumvirate", [(12, 18.0, None, 1)]),
+            _dungeon("Windrunner Spire", [(11, 62.0, None, 1)]),
+        ],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.score < 80.0
+    assert fit.label != "TOP"
+    assert fit.primary_key == 14
+
+
 def test_package_fit_penalizes_weak_member_in_multi_member_group():
     target = _listing(key_level=16)
     strong = _app(

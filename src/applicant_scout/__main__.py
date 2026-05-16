@@ -15,6 +15,7 @@ import threading
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import QObject, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
@@ -34,6 +35,7 @@ from .config import (
 )
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
 from .overlay import OverlayWindow
+from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_path
 from .screenshot import ScreenshotWatcher, Snapshot
 from .settings_dialog import SettingsDialog, open_folder
 from .state import Applicant, AppState, Listing, WoWPlayer
@@ -432,9 +434,37 @@ class StateMachine(QObject):
     # silently get "Server not found" with default config.
     versionUpdated = pyqtSignal(int)
 
-    def __init__(self, state: AppState, parent=None):
+    def __init__(self, state: AppState, parent=None, rio_reader: Any | None = None):
         super().__init__(parent)
         self._state = state
+        self._rio_reader = rio_reader
+
+    def set_rio_reader(self, rio_reader: Any | None) -> None:
+        self._rio_reader = rio_reader
+
+    def _rio_dungeon_rows_for(self, decoded_name: str, decoded_rows: list[dict]) -> list[dict]:
+        rows = [dict(row) for row in decoded_rows]
+        if self._rio_reader is None:
+            return rows
+        name = decoded_name.strip()
+        default_realm = default_realm_from_player(self._state.player.full_name)
+        if "-" in name:
+            name, realm = name.rsplit("-", 1)
+        else:
+            realm = default_realm
+        region = REGION_ID_TO_WCL.get(self._state.player.region_id)
+        try:
+            profile = self._rio_reader.lookup_profile(
+                name,
+                realm,
+                region,
+                allow_load=False,
+            )
+        except TypeError:
+            profile = self._rio_reader.lookup_profile(name, realm, region)
+        if profile is None:
+            return rows
+        return [dict(row) for row in profile.dungeons]
 
     def apply_snapshot(self, snap: Snapshot) -> None:
         region_identity_changed = False
@@ -463,6 +493,10 @@ class StateMachine(QObject):
                 new_realm_slug != old_realm_slug
             )
             self._state.player = new_player
+            if self._rio_reader is not None:
+                preload = getattr(self._rio_reader, "preload_region_async", None)
+                if callable(preload):
+                    preload(new_region_token)
             log.info(
                 "Player: %s (region=%d)",
                 snap.version.player_name,
@@ -567,7 +601,7 @@ class StateMachine(QObject):
                         da.rio_completed_at_or_above_minus1
                     ),
                     rio_dungeon_count=da.rio_dungeon_count,
-                    rio_dungeons=[dict(row) for row in da.rio_dungeons],
+                    rio_dungeons=self._rio_dungeon_rows_for(da.name, da.rio_dungeons),
                 )
                 self._state.add_or_update(applicant)
                 log.info(
@@ -614,7 +648,9 @@ class StateMachine(QObject):
                     da.rio_completed_at_or_above_minus1
                 )
                 existing.rio_dungeon_count = da.rio_dungeon_count
-                existing.rio_dungeons = [dict(row) for row in da.rio_dungeons]
+                existing.rio_dungeons = self._rio_dungeon_rows_for(
+                    da.name, da.rio_dungeons
+                )
                 if needs_refetch:
                     existing.clear_wcl_data()
                 self.applicantUpdated.emit(existing)
@@ -900,6 +936,13 @@ def _replace_screenshot_watcher(
     if current_watcher is not None:
         current_watcher.stop()
     return new_watcher
+
+
+def _raiderio_reader_for_screenshots_path(path: Path) -> RaiderIOLocalReader | None:
+    retail_root = retail_root_from_screenshots_path(path)
+    if retail_root is None:
+        return None
+    return RaiderIOLocalReader(retail_root)
 
 
 def _update_result_has_installable_asset(result: object) -> bool:
@@ -1203,7 +1246,10 @@ def main(argv: list[str] | None = None) -> int:
     _ctrlc_timer.timeout.connect(lambda: None)
 
     state = AppState()
-    machine = StateMachine(state)
+    machine = StateMachine(
+        state,
+        rio_reader=_raiderio_reader_for_screenshots_path(screenshots_dir),
+    )
     watcher: ScreenshotWatcher | None = None
     watcher_signal_gate = _WatcherSignalGate()
     current_screenshots_dir = screenshots_dir
@@ -1318,6 +1364,9 @@ def main(argv: list[str] | None = None) -> int:
                         signal_gate=watcher_signal_gate,
                     )
                     current_screenshots_dir = new_screenshots_dir
+                    machine.set_rio_reader(
+                        _raiderio_reader_for_screenshots_path(new_screenshots_dir)
+                    )
 
                 cfg = new_cfg
                 overrides = _settings_env_override_keys()

@@ -24,6 +24,22 @@ from applicant_scout.screenshot import (
 from applicant_scout.state import AppState, WoWPlayer
 
 
+class _FakeRioReader:
+    def lookup_profile(self, name: str, realm: str, region: str):
+        if (name, realm, region) == ("Chinie", "Ragnaros", "EU"):
+            return type(
+                "Profile",
+                (),
+                {
+                    "dungeons": [
+                        {"name": "Pit of Saron", "key_level": 12},
+                        {"name": "Skyreach", "key_level": 14},
+                    ]
+                },
+            )()
+        return None
+
+
 def _decoded(
     aid: int,
     member_idx: int,
@@ -207,6 +223,30 @@ def test_new_applicant_maps_rio_dungeon_rows():
     sm.apply_snapshot(snap)
 
     assert state.applicants["42:1"].rio_dungeons == rows
+
+
+def test_new_applicant_enriches_rio_dungeon_rows_from_local_reader():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_FakeRioReader())
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    rio_dungeons=[],
+                )
+            ],
+        )
+    )
+
+    assert state.applicants["42:1"].rio_dungeons == [
+        {"name": "Pit of Saron", "key_level": 12},
+        {"name": "Skyreach", "key_level": 14},
+    ]
 
 
 def test_existing_applicant_replaces_stale_rio_dungeon_rows():
