@@ -11,11 +11,13 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from .atomic_io import atomic_write_text
+from .constants import REGION_ID_TO_WCL
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 
 
 MAX_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 CONFIG_ENV_FILENAME = "config.env"
+VALID_WCL_REGIONS = frozenset(REGION_ID_TO_WCL.values())
 
 
 @dataclass
@@ -254,7 +256,7 @@ def save_config_values(
         _env_line("WCL_CLIENT_SECRET", wcl_client_secret),
         _env_line("APSCOUT_DRAFT_WCL_CLIENT_ID", draft_wcl_client_id),
         _env_line("APSCOUT_DRAFT_WCL_CLIENT_SECRET", draft_wcl_client_secret),
-        _env_line("APSCOUT_REGION", region.upper() or "EU"),
+        _env_line("APSCOUT_REGION", normalize_wcl_region(region)),
         _bool_env_line("APSCOUT_FETCH_MPLUS", metric_preferences.mplus),
         _bool_env_line("APSCOUT_FETCH_RAID_NORMAL", metric_preferences.raid_normal),
         _bool_env_line("APSCOUT_FETCH_RAID_HEROIC", metric_preferences.raid_heroic),
@@ -290,6 +292,14 @@ def _parse_cache_ttl_seconds(raw: str | None) -> int | None:
     return value
 
 
+def normalize_wcl_region(raw: str | None) -> str:
+    region = (raw or "EU").strip().upper() or "EU"
+    if region not in VALID_WCL_REGIONS:
+        allowed = ", ".join(sorted(VALID_WCL_REGIONS))
+        raise ConfigError(f"APSCOUT_REGION must be one of: {allowed}")
+    return region
+
+
 def _parse_bool_setting(raw: str | None, *, default: bool = True) -> bool:
     if raw is None:
         return default
@@ -319,7 +329,7 @@ def load_config() -> Config:
     screenshots_override = _value(values, "APSCOUT_SCREENSHOTS_PATH")
     screenshots_path = Path(screenshots_override) if screenshots_override else None
 
-    region = _value(values, "APSCOUT_REGION", "EU").upper()
+    region = normalize_wcl_region(_value(values, "APSCOUT_REGION", "EU"))
     cache_ttl_seconds = _parse_cache_ttl_seconds(_value(values, "APSCOUT_CACHE_TTL_SECONDS", ""))
     metric_preferences = MetricPreferences(
         mplus=_parse_bool_setting(

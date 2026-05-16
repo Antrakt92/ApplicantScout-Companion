@@ -105,6 +105,15 @@ def test_manual_wcl_fetch_defaults_region_from_config(monkeypatch, tmp_path: Pat
     assert seen["region"] == "US"
 
 
+def test_manual_wcl_fetch_rejects_unknown_region():
+    try:
+        manual_wcl_fetch.parse_args(["Bites", "Ravencrest", "--region", "moon"])
+    except SystemExit as exc:
+        assert exc.code != 0
+    else:
+        raise AssertionError("manual WCL fetch must reject unknown regions")
+
+
 def test_manual_wcl_fetch_healer_role_controls_empty_mplus_output(
     monkeypatch,
     capsys,

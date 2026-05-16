@@ -12,8 +12,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from applicant_scout.config import load_config
+from applicant_scout.config import ConfigError, load_config, normalize_wcl_region
 from applicant_scout.wcl import CharacterRanks, WCLAuth, WCLClient, derive_server_slug
+
+
+def _region_arg(value: str) -> str:
+    try:
+        return normalize_wcl_region(value)
+    except ConfigError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _fmt(v: float | None) -> str:
@@ -26,7 +33,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("name", help="Character name")
     parser.add_argument("realm", help="Realm name, for example Ravencrest")
-    parser.add_argument("--region", help="WCL region token; defaults to config")
+    parser.add_argument(
+        "--region",
+        type=_region_arg,
+        help="WCL region token (EU, US, KR, TW, CN); defaults to config",
+    )
     parser.add_argument("--spec-id", type=int, default=0, help="Applicant spec ID")
     parser.add_argument(
         "--role",
@@ -98,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cfg = load_config()
     auth = WCLAuth(cfg.wcl_client_id, cfg.wcl_client_secret, cfg.cache_dir)
-    client = WCLClient(auth, region=(args.region or cfg.region or "EU").upper())
+    client = WCLClient(auth, region=args.region or cfg.region)
     try:
         _print_ranks(client, args.name, args.realm, args.spec_id, args.role)
     finally:

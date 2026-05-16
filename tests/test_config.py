@@ -306,6 +306,26 @@ def test_load_config_reads_user_config_file_without_cwd_dependency(
     assert is_config_ready(cfg)
 
 
+def test_load_config_rejects_unknown_region_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("APSCOUT_REGION", "moon")
+
+    with pytest.raises(ConfigError, match="APSCOUT_REGION"):
+        load_config()
+
+
+def test_save_config_values_rejects_unknown_region(tmp_path: Path):
+    with pytest.raises(ConfigError, match="APSCOUT_REGION"):
+        save_config_values(
+            wcl_client_id="client",
+            wcl_client_secret="secret",
+            region="moon",
+            config_path=tmp_path / "config.env",
+        )
+
+
 def test_save_config_values_quotes_comment_like_path_segments(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
