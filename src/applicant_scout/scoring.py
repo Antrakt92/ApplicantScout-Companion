@@ -344,15 +344,19 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
                 rio_completion_fit, 0.0, MPLUS_RIO_COMPLETION_FALLBACK_CAP
             )
             label = fit_label(score)
+            primary_key = applicant.rio_best_dungeon_key or applicant.rio_best_key
+            display = f"{label} {int(round(score))} RIO"
+            if primary_key > 0:
+                display = f"{label} {int(round(score))} +{primary_key} RIO"
             return CandidateFit(
                 context=CONTEXT_MPLUS,
                 score=score,
                 label=label,
                 source="rio_completion",
-                display=f"{label} {int(round(score))} RIO",
+                display=display,
                 colour=fit_colour(score),
                 target_key=target_key,
-                primary_key=applicant.rio_best_dungeon_key or applicant.rio_best_key,
+                primary_key=primary_key,
                 confidence=_mplus_rio_completion_confidence(applicant, target_key),
                 coverage=_mplus_rio_timed_minus1_coverage(applicant),
             )
@@ -394,15 +398,16 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
             max(0.0, rio_fit - score) * MPLUS_RIO_NUDGE_WEIGHT,
         )
     score = _mplus_raw_quality_cap(score, raw_best_percent, max_key_delta)
+    display_key = primary_row.key_level
     if rio_completion_fit > score:
-        score = max(
-            score,
-            _mplus_rio_completion_floor_with_wcl(
-                rio_completion_fit,
-                raw_best_percent=raw_best_percent,
-                max_key_delta=max_key_delta,
-            ),
+        rio_floor = _mplus_rio_completion_floor_with_wcl(
+            rio_completion_fit,
+            raw_best_percent=raw_best_percent,
+            max_key_delta=max_key_delta,
         )
+        if rio_floor > score:
+            score = rio_floor
+            display_key = applicant.rio_best_dungeon_key or applicant.rio_best_key
     score = _clamp(score, 0.0, 105.0)
     label = fit_label(score)
     confidence = _clamp(0.35 + 0.45 * coverage + 0.20 * min(total_runs / 16.0, 1.0), 0.0, 1.0)
@@ -411,10 +416,10 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
         score=score,
         label=label,
         source="wcl_mplus",
-        display=f"{label} {int(round(score))} +{primary_row.key_level}",
+        display=f"{label} {int(round(score))} +{display_key}",
         colour=fit_colour(score),
         target_key=target_key,
-        primary_key=primary_row.key_level,
+        primary_key=display_key,
         confidence=confidence,
         coverage=coverage,
         same_dungeon_score=same_dungeon_score,

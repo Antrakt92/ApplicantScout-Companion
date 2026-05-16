@@ -408,6 +408,7 @@ def test_mplus_rio_completion_profile_rescues_missing_wcl_without_top_rating():
     assert fit.source == "rio_completion"
     assert 68.0 <= fit.score < 85.0
     assert fit.confidence >= 0.55
+    assert "+15" in fit.display
 
 
 def test_mplus_rio_completion_beats_low_key_parse_spike_for_target_key():
@@ -432,9 +433,9 @@ def test_mplus_rio_completion_beats_low_key_parse_spike_for_target_key():
         dps_breakdown=[_dungeon("Skyreach", [(12, 42.0, 38.0, 2)])],
     )
 
-    assert candidate_fit(experienced_low_log, target).score > candidate_fit(
-        low_key_parse_spike, target
-    ).score
+    experienced_fit = candidate_fit(experienced_low_log, target)
+    assert experienced_fit.score > candidate_fit(low_key_parse_spike, target).score
+    assert "+15" in experienced_fit.display
 
 
 def test_mplus_bad_relevant_wcl_caps_strong_rio_completion():
