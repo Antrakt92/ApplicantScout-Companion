@@ -44,6 +44,8 @@ configuration, and release-readiness hardening for live applicant scouting.
   priority by falling back to the addon-emitted LFG activity ID.
 - Fixed RaiderIO per-dungeon keys being shown in the hover panel but ignored by
   the M+ fit formula when the compact same-dungeon summary was missing.
+- Fixed RaiderIO per-dungeon rows lowering the displayed same-dungeon key when
+  the compact RaiderIO summary already had stronger same-dungeon evidence.
 - Fixed localized RaiderIO dungeon names splitting target-dungeon RIO and WCL
   evidence into separate hover-panel rows.
 - Fixed RIO-backed fit badges being hidden in the hover panel when Warcraft Logs
