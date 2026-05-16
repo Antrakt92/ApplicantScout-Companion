@@ -213,6 +213,22 @@ def test_release_build_uses_pinned_constraints():
     assert "Assert-ReleaseConstraints" in build_script
 
 
+def test_release_constraints_header_matches_project_version():
+    constraints = _read_repo_text("constraints-release.txt")
+    pyproject = _read_repo_text("pyproject.toml")
+
+    project_version = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M)
+    constraints_version = re.search(
+        r"^# Release build constraints for ApplicantScout Companion ([0-9]+\.[0-9]+\.[0-9]+)\.",
+        constraints,
+        re.M,
+    )
+
+    assert project_version is not None
+    assert constraints_version is not None
+    assert constraints_version.group(1) == project_version.group(1)
+
+
 def test_release_build_refuses_dirty_release_inputs_by_default():
     build_script = _read_repo_text("scripts/build-windows.ps1")
 
@@ -249,6 +265,8 @@ def test_release_version_check_script_documents_asset_contract():
     assert "$InstallerName.sha256" in script
     assert "ApplicantScoutCompanion-$TagVersion-portable.zip" in script
     assert "RequireAssets" in script
+    assert "constraints-release.txt" in script
+    assert "Release constraints header" in script
     assert ".\\scripts\\check-release-version.ps1 -Tag v0.2.4 -RequireAssets" in checklist
 
 

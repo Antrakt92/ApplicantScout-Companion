@@ -80,6 +80,10 @@ $ReleaseNotesVersion = Get-FirstRegexMatch `
     -Path "RELEASE_NOTES.md" `
     -Pattern '^##\s+([0-9]+\.[0-9]+\.[0-9]+)\s+-\s+' `
     -Description "top release notes entry"
+$ConstraintsVersion = Get-FirstRegexMatch `
+    -Path "constraints-release.txt" `
+    -Pattern '^# Release build constraints for ApplicantScout Companion ([0-9]+\.[0-9]+\.[0-9]+)\.' `
+    -Description "Release constraints header"
 
 $Readme = Get-Content -LiteralPath (Join-Path $RepoRoot "README.md") -Raw -Encoding UTF8
 $Errors = @()
@@ -91,6 +95,9 @@ if ($RuntimeVersion -ne $TagVersion) {
 }
 if ($ReleaseNotesVersion -ne $TagVersion) {
     $Errors += "RELEASE_NOTES.md top entry is $ReleaseNotesVersion, expected $TagVersion from tag $TagName."
+}
+if ($ConstraintsVersion -ne $TagVersion) {
+    $Errors += "constraints-release.txt header is $ConstraintsVersion, expected $TagVersion from tag $TagName."
 }
 $CompanionMarkdown = "ApplicantScout Companion ``$TagVersion``"
 $AddonLatestUrl = "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest"
