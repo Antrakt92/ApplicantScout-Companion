@@ -28,6 +28,14 @@ def _app(
     role: str = "DAMAGER",
     fetch_status: str = "ready",
     dps_breakdown: list[dict] | None = None,
+    rio_profile: bool = False,
+    rio_best_key: int = 0,
+    rio_best_dungeon_key: int = 0,
+    rio_timed_at_or_above: int = 0,
+    rio_timed_at_or_above_minus1: int = 0,
+    rio_timed_at_or_above_minus2: int = 0,
+    rio_completed_at_or_above_minus1: int = 0,
+    rio_dungeon_count: int = 0,
 ) -> Applicant:
     return Applicant(
         applicant_id=f"{aid}:{m}",
@@ -42,6 +50,14 @@ def _app(
         mplus_dps_breakdown=dps_breakdown or [],
         mplus_dps=80.0 if dps_breakdown else None,
         mplus_dps_median=60.0 if dps_breakdown else None,
+        rio_profile=rio_profile,
+        rio_best_key=rio_best_key,
+        rio_best_dungeon_key=rio_best_dungeon_key,
+        rio_timed_at_or_above=rio_timed_at_or_above,
+        rio_timed_at_or_above_minus1=rio_timed_at_or_above_minus1,
+        rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
+        rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
+        rio_dungeon_count=rio_dungeon_count,
     )
 
 
@@ -506,6 +522,67 @@ def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
     )
 
     sorted_apps = sort_applicants_grouped([sunk_high_fit, ready_lower_fit], listing)
+
+    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
+
+
+def test_mplus_not_found_with_strong_rio_completion_sorts_by_fit_not_status_bucket():
+    listing = Listing(
+        activity_id=401,
+        dungeon_name="Skyreach",
+        listing_name="+16 Skyreach",
+        comment="",
+        key_level=16,
+        category_id=2,
+        difficulty_id=8,
+    )
+    no_wcl_strong_rio = _app(
+        aid=10,
+        score=3200,
+        fetch_status="not_found",
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+    )
+    ready_lower_fit = _app(
+        aid=20,
+        score=2500,
+        fetch_status="ready",
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 16,
+                "parse_percent": 55,
+                "median_percent": 50,
+                "run_count": 2,
+            }
+        ],
+    )
+
+    sorted_apps = sort_applicants_grouped([ready_lower_fit, no_wcl_strong_rio], listing)
+
+    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
+
+
+def test_mplus_zero_fit_all_sunk_still_sinks_below_ready_zero_fit():
+    listing = Listing(
+        activity_id=401,
+        dungeon_name="Skyreach",
+        listing_name="+16 Skyreach",
+        comment="",
+        key_level=16,
+        category_id=2,
+        difficulty_id=8,
+    )
+    all_sunk_no_fit = _app(aid=10, score=3600, fetch_status="error")
+    ready_no_fit = _app(aid=20, score=0, fetch_status="ready")
+
+    sorted_apps = sort_applicants_grouped([all_sunk_no_fit, ready_no_fit], listing)
 
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
 

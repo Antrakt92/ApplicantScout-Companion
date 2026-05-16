@@ -209,6 +209,80 @@ def test_new_applicant_maps_rio_dungeon_rows():
     assert state.applicants["42:1"].rio_dungeons == rows
 
 
+def test_existing_applicant_replaces_stale_rio_dungeon_rows():
+    state = AppState()
+    sm = StateMachine(state)
+    snap1 = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(
+                aid=42,
+                member_idx=1,
+                name="Rio-Realm",
+                rio_profile=True,
+                rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+            )
+        ],
+    )
+    snap2 = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(
+                aid=42,
+                member_idx=1,
+                name="Rio-Realm",
+                rio_profile=True,
+                rio_dungeons=[{"name": "Pit of Saron", "key_level": 16}],
+            )
+        ],
+    )
+
+    sm.apply_snapshot(snap1)
+    sm.apply_snapshot(snap2)
+
+    assert state.applicants["42:1"].rio_dungeons == [
+        {"name": "Pit of Saron", "key_level": 16}
+    ]
+
+
+def test_existing_applicant_clears_rio_dungeon_rows_when_older_wire_has_none():
+    state = AppState()
+    sm = StateMachine(state)
+    snap1 = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(
+                aid=42,
+                member_idx=1,
+                name="Rio-Realm",
+                rio_profile=True,
+                rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+            )
+        ],
+    )
+    snap2 = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(
+                aid=42,
+                member_idx=1,
+                name="Rio-Realm",
+                rio_profile=True,
+                rio_dungeons=[],
+            )
+        ],
+    )
+
+    sm.apply_snapshot(snap1)
+    sm.apply_snapshot(snap2)
+
+    assert state.applicants["42:1"].rio_dungeons == []
+
+
 # ─── Name-change detection (B-5) ────────────────────────────────────────────
 
 

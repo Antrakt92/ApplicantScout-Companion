@@ -469,7 +469,16 @@ def sort_applicants_grouped(
         all_sunk = not group_has_ready.get(raw_aid, False)
         sunk = a.fetch_status in _SUNK_STATES
         if use_fit:
-            return (all_sunk, gfit <= 0.0, -gfit, -gmax, raw_aid, member_idx, sunk)
+            no_fit = gfit <= 0.0
+            return (
+                no_fit,
+                all_sunk if no_fit else False,
+                -gfit,
+                -gmax,
+                raw_aid,
+                member_idx,
+                sunk,
+            )
         if use_mplus_headline:
             return (
                 all_sunk,
@@ -2846,16 +2855,17 @@ def _mplus_cell_visuals(
     status = applicant.fetch_status
     if status in {"loading", "pending"}:
         return "…", "#888", None
-    if status == "error":
-        return "?", "#ff5555", None
-    if status == "not_found":
-        return "—", "#5d5d5d", None
 
     fit = candidate_fit(applicant, listing)
     if fit.context == CONTEXT_MPLUS and fit.display:
         bg = fit.colour
         fg = _text_colour_for_bg(bg) if bg is not None else None
         return fit.display, fg, bg
+
+    if status == "error":
+        return "?", "#ff5555", None
+    if status == "not_found":
+        return "—", "#5d5d5d", None
 
     _metric_label, breakdown, best, median = _mplus_view(applicant)
     if best is None and median is None:

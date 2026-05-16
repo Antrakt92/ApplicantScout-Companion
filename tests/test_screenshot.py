@@ -495,6 +495,52 @@ def test_v6_applicant_block_parses_rio_dungeon_rows():
     assert applicant.name == "Rio-Realm"
 
 
+def test_v6_applicant_block_rejects_over_limit_rio_dungeon_row_count():
+    block = _build_applicant_block(
+        aid=7,
+        member_idx=1,
+        class_id=8,
+        spec_id=63,
+        ilvl=488,
+        score=3321,
+        main_score=3550,
+        rio_profile=1,
+        rio_dungeon_count=8,
+        rio_dungeons=[(10 + idx, f"Dungeon {idx}") for idx in range(17)],
+        role=2,
+        name="Rio-Realm",
+        version=6,
+    )
+    raw = _wrap_payload(_build_body([block]), wire_ver=0x06)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert snap is None
+    assert error is not None
+    assert "rio_dungeon_count 17 exceeds sane limit 16" in error
+
+
+def test_v6_applicant_block_rejects_truncated_rio_dungeon_row():
+    block = (
+        struct.pack(">I", 7)
+        + bytes([1, 8])
+        + struct.pack(">H", 63)
+        + struct.pack(">H", 488)
+        + struct.pack(">H", 3321)
+        + struct.pack(">H", 3550)
+        + bytes([1, 17, 15, 1, 8, 8, 8, 8])
+        + bytes([1, 15, 8])
+        + b"Sky"
+    )
+    raw = _wrap_payload(_build_body([block]), wire_ver=0x06)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert snap is None
+    assert error is not None
+    assert "parse error:" in error
+
+
 def test_v3_payload_back_compat_main_score_defaults_to_zero():
     blocks = [
         _build_applicant_block(

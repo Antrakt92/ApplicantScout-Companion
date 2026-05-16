@@ -73,6 +73,30 @@ def test_mplus_dual_cell_listing_error_status_precedes_stale_fit():
     assert item.text() == "?"
 
 
+def test_mplus_dual_cell_listing_not_found_can_show_rio_completion_fit():
+    item = _mplus_dual_cell(
+        _app(
+            score=3200,
+            fetch_status="not_found",
+            mplus_dps=None,
+            mplus_dps_median=None,
+            mplus_dps_breakdown=[],
+            rio_profile=True,
+            rio_best_key=15,
+            rio_best_dungeon_key=14,
+            rio_timed_at_or_above=1,
+            rio_timed_at_or_above_minus1=8,
+            rio_timed_at_or_above_minus2=8,
+            rio_completed_at_or_above_minus1=8,
+            rio_dungeon_count=8,
+        ),
+        _mplus_listing(),
+    )
+
+    assert "RIO" in item.text()
+    assert "+14" in item.text()
+
+
 def test_rio_display_text_shows_current_and_better_main():
     app = _app()
     app.main_score = 3468

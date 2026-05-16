@@ -126,6 +126,9 @@ def candidate_fit(applicant: Applicant, listing: Listing | None) -> CandidateFit
     context = detect_listing_context(listing)
     if context == CONTEXT_MPLUS and listing is not None:
         if _is_terminal_fetch_status(applicant.fetch_status):
+            rio_fit = _mplus_rio_completion_candidate_fit(applicant, listing.key_level)
+            if rio_fit is not None:
+                return rio_fit
             return CandidateFit(
                 context=CONTEXT_MPLUS,
                 score=0.0,
@@ -296,6 +299,32 @@ def _is_terminal_fetch_status(status: str) -> bool:
     return status in {"error", "not_found"}
 
 
+def _mplus_rio_completion_candidate_fit(
+    applicant: Applicant, target_key: int
+) -> CandidateFit | None:
+    rio_completion_fit = _mplus_rio_completion_fit(applicant, target_key)
+    if rio_completion_fit <= 0.0:
+        return None
+    score = _clamp(rio_completion_fit, 0.0, MPLUS_RIO_COMPLETION_FALLBACK_CAP)
+    label = fit_label(score)
+    primary_key = applicant.rio_best_dungeon_key or applicant.rio_best_key
+    display = f"{label} {int(round(score))} RIO"
+    if primary_key > 0:
+        display = f"{label} {int(round(score))} +{primary_key} RIO"
+    return CandidateFit(
+        context=CONTEXT_MPLUS,
+        score=score,
+        label=label,
+        source="rio_completion",
+        display=display,
+        colour=fit_colour(score),
+        target_key=target_key,
+        primary_key=primary_key,
+        confidence=_mplus_rio_completion_confidence(applicant, target_key),
+        coverage=_mplus_rio_timed_minus1_coverage(applicant),
+    )
+
+
 def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
     target_key = listing.key_level
     metric_label, breakdown, _best, _median = _role_mplus_view(applicant)
@@ -339,27 +368,11 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
     rio_fit = _mplus_rio_fit(rio_score, target_key)
     rio_completion_fit = _mplus_rio_completion_fit(applicant, target_key)
     if not bracket_fits:
-        if rio_completion_fit > 0.0:
-            score = _clamp(
-                rio_completion_fit, 0.0, MPLUS_RIO_COMPLETION_FALLBACK_CAP
-            )
-            label = fit_label(score)
-            primary_key = applicant.rio_best_dungeon_key or applicant.rio_best_key
-            display = f"{label} {int(round(score))} RIO"
-            if primary_key > 0:
-                display = f"{label} {int(round(score))} +{primary_key} RIO"
-            return CandidateFit(
-                context=CONTEXT_MPLUS,
-                score=score,
-                label=label,
-                source="rio_completion",
-                display=display,
-                colour=fit_colour(score),
-                target_key=target_key,
-                primary_key=primary_key,
-                confidence=_mplus_rio_completion_confidence(applicant, target_key),
-                coverage=_mplus_rio_timed_minus1_coverage(applicant),
-            )
+        rio_completion_candidate = _mplus_rio_completion_candidate_fit(
+            applicant, target_key
+        )
+        if rio_completion_candidate is not None:
+            return rio_completion_candidate
         score = _clamp(
             rio_fit * MPLUS_RIO_FALLBACK_WEIGHT, 0.0, MPLUS_RIO_FALLBACK_CAP
         )

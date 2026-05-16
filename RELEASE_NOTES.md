@@ -19,6 +19,9 @@ configuration, and release-readiness hardening for live applicant scouting.
 - The RaiderIO completion signal can lift missing or low-key WCL evidence, but
   bad relevant same-level logs still cap the score to avoid overrating risky
   applicants.
+- M+ rows with no current Warcraft Logs report can now still rank and display
+  from RaiderIO timed-key evidence instead of being forced into the `not found`
+  bucket.
 - Manual companion launches now bring the Settings window forward instead of
   silently staying in the tray/background flow.
 - Re-launching the companion while it is already running now asks the existing
@@ -35,6 +38,8 @@ configuration, and release-readiness hardening for live applicant scouting.
   completed file.
 - Fixed invalid Warcraft Logs region settings being accepted from saved config,
   environment overrides, or manual WCL fetch tooling.
+- Fixed terminal Warcraft Logs states masking RaiderIO-backed M+ fit scores in
+  the table and applicant sort order.
 - Fixed several screenshot, updater, WCL, and cache data-boundary edge cases
   that could otherwise leave stale UI state or unclear runtime errors.
 

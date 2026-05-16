@@ -411,6 +411,51 @@ def test_mplus_rio_completion_profile_rescues_missing_wcl_without_top_rating():
     assert "+15" in fit.display
 
 
+def test_mplus_rio_completion_profile_rescues_not_found_wcl_status():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        fetch_status="not_found",
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.source == "rio_completion"
+    assert 68.0 <= fit.score < 85.0
+    assert "+15" in fit.display
+
+
+def test_mplus_terminal_wcl_status_ignores_stale_wcl_but_uses_rio_completion():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        score=3300,
+        rio_profile=True,
+        rio_best_key=18,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=4,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        dps_breakdown=[_dungeon("Skyreach", [(16, 99.0, 95.0, 3)])],
+        fetch_status="error",
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.source == "rio_completion"
+    assert fit.score < 92.0
+    assert "+16" in fit.display
+
+
 def test_mplus_rio_completion_beats_low_key_parse_spike_for_target_key():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     low_key_parse_spike = _app(
