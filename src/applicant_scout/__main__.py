@@ -597,9 +597,11 @@ def _check_updates() -> tuple[str, str | None]:
 
 
 def _should_show_settings_on_start(
-    args: list[str], *, startup_settings_shown: bool
+    args: list[str], *, startup_settings_shown: bool, wow_watch_mode: bool
 ) -> bool:
-    return SHOW_SETTINGS_ARG in args and not startup_settings_shown
+    if startup_settings_shown:
+        return False
+    return SHOW_SETTINGS_ARG in args or not wow_watch_mode
 
 
 def _should_show_wow_start_update_prompt(
@@ -1326,7 +1328,11 @@ def main(argv: list[str] | None = None) -> int:
     update_timer.start()
     setattr(app, "_applicant_scout_update_timer", update_timer)
     QTimer.singleShot(UPDATE_CHECK_INITIAL_MS, _run_silent_update_check)
-    if _should_show_settings_on_start(args, startup_settings_shown=startup_settings_shown):
+    if _should_show_settings_on_start(
+        args,
+        startup_settings_shown=startup_settings_shown,
+        wow_watch_mode=wow_watch_mode,
+    ):
         QTimer.singleShot(0, _show_settings)
 
     # Wire state-machine signals → overlay slots (unchanged from chatlog pipeline —

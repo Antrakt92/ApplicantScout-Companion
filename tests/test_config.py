@@ -791,15 +791,18 @@ def test_load_startup_config_rejects_suspicious_process_env_override_without_pro
     assert calls == [calls[0]]
 
 
-def test_show_settings_start_arg_only_opens_when_startup_dialog_did_not_show():
+def test_show_settings_on_start_opens_for_manual_launch_or_explicit_arg():
     assert main_mod._should_show_settings_on_start(
-        ["--show-settings"], startup_settings_shown=False
+        ["--show-settings"], startup_settings_shown=False, wow_watch_mode=True
+    )
+    assert main_mod._should_show_settings_on_start(
+        [], startup_settings_shown=False, wow_watch_mode=False
     )
     assert not main_mod._should_show_settings_on_start(
-        ["--show-settings"], startup_settings_shown=True
+        [], startup_settings_shown=False, wow_watch_mode=True
     )
     assert not main_mod._should_show_settings_on_start(
-        [], startup_settings_shown=False
+        ["--show-settings"], startup_settings_shown=True, wow_watch_mode=False
     )
 
 
