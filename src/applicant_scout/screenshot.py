@@ -603,11 +603,11 @@ class ScreenshotWatcher(QObject):
         if len(all_files) > _BACKLOG_CLEANUP_LIMIT:
             all_files = all_files[:_BACKLOG_CLEANUP_LIMIT]
 
-        applied = False
+        apply_closed = False
         deleted = 0
         for p, mtime in all_files:
             # Single decode pass. Within apply window AND not yet applied → emit
-            # the parsed snapshot. Outside window OR already applied → still
+            # the parsed snapshot. Outside window OR apply closed → still
             # delete-if-marker (cleanup leftover ours from prior crashes). The
             # tuple return collapses what was a two-pyzbar-call sequence into
             # one — meaningful at 500 files × 30-80 ms saved per file.
@@ -618,13 +618,21 @@ class ScreenshotWatcher(QObject):
                 result = DecodeResult(None, False)
             if (
                 result.snapshot is not None
-                and not applied
+                and not apply_closed
                 and mtime >= apply_cutoff
                 and not self._stopped.is_set()
             ):
                 self._emit_snapshot(result.snapshot)
                 _log.info("backlog: applied snapshot from %s", p.name)
-                applied = True
+                apply_closed = True
+            elif result.has_marker and not apply_closed and mtime >= apply_cutoff:
+                self._emit_decode_failed(p, result.error_reason or "parse failed")
+                _log.warning(
+                    "backlog: newest recent ApScout screenshot %s has marker but no "
+                    "snapshot; suppressing older startup fallback",
+                    p.name,
+                )
+                apply_closed = True
             if result.has_marker:
                 try:
                     p.unlink()

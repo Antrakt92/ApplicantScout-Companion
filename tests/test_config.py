@@ -1511,6 +1511,31 @@ def test_check_updates_downloads_and_launches_installable_release(
     assert "Installing ApplicantScout Companion v0.2.0" in message
 
 
+def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    updates_dir = cache_dir / "updates"
+    updates_dir.mkdir(parents=True)
+    installer = updates_dir / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_bytes(b"installer")
+    (cache_dir / "token.json").write_text("old-token", encoding="utf-8")
+    stale_dir = cache_dir / "stale"
+    stale_dir.mkdir()
+    (stale_dir / "old.txt").write_text("old", encoding="utf-8")
+    character_cache = main_mod.CharacterCache(cache_dir)
+    (cache_dir / "character-cache.json").write_text("{}", encoding="utf-8")
+    generation = character_cache.generation
+
+    assert main_mod._clear_cache_dir(cache_dir, character_cache) == "Cache cleared."
+
+    assert installer.read_bytes() == b"installer"
+    assert not (cache_dir / "token.json").exists()
+    assert not (cache_dir / "character-cache.json").exists()
+    assert not stale_dir.exists()
+    assert character_cache.generation > generation
+
+
 def test_settings_dialog_gets_explicit_app_icon_before_exec(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -1772,10 +1797,15 @@ def test_tray_controller_disables_update_action_while_installing(
     assert not controller.update_action.enabled
     assert "update is installing" in controller.tray.tooltip
 
-    controller.set_update_in_progress(False)
-    controller.set_update_available("v0.2.0")
+    controller.set_update_available("v0.2.1")
 
-    assert controller.update_action.text == "Update to v0.2.0"
+    assert controller.update_action.text == "Installing update..."
+    assert not controller.update_action.enabled
+    assert "update is installing" in controller.tray.tooltip
+
+    controller.set_update_in_progress(False)
+
+    assert controller.update_action.text == "Update to v0.2.1"
     assert controller.update_action.enabled
 
 

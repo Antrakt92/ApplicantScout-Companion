@@ -47,6 +47,7 @@ WCL_ERROR_SERVER = "server"
 WCL_ERROR_MALFORMED = "malformed"
 WCL_ERROR_GRAPHQL = "graphql"
 WCL_ERROR_NETWORK = "network"
+WCL_ERROR_HTTP = "http"
 WCL_SERVER_RETRY_SECONDS = 30.0
 
 
@@ -790,7 +791,7 @@ class WCLClient:
                 if resp.status_code != 200:
                     raise WCLApiError(
                         f"Unexpected HTTP {resp.status_code}: {resp.text[:200]}",
-                        error_kind=WCL_ERROR_SERVER,
+                        error_kind=WCL_ERROR_HTTP,
                     )
                 break
 

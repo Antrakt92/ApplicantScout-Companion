@@ -65,6 +65,8 @@ UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 _UPDATE_INSTALL_LOCK = threading.Lock()
 _QT_APPLICATION_CLASS = QApplication
+# SYNC: updater._default_update_download_dir stores installers under this cache child.
+UPDATE_DOWNLOADS_DIR_NAME = "updates"
 
 
 class _WCLRegionRuntime:
@@ -120,6 +122,8 @@ class TrayController:
         self.update_action = _add_menu_action(self.menu, "Update")
         self.update_action.setEnabled(False)
         self.update_action.triggered.connect(lambda *_args: run_update())
+        self._latest_update_version: str | None = None
+        self._update_in_progress = False
 
         self.open_logs_action = _add_menu_action(self.menu, "Open logs")
         self.open_logs_action.triggered.connect(
@@ -145,22 +149,30 @@ class TrayController:
         )
 
     def set_update_available(self, latest_version: str | None) -> None:
-        if latest_version:
-            self.update_action.setText(f"Update to {latest_version}")
+        self._latest_update_version = latest_version
+        self._render_update_state()
+
+    def set_update_in_progress(self, in_progress: bool) -> None:
+        self._update_in_progress = in_progress
+        self._render_update_state()
+
+    def _render_update_state(self) -> None:
+        if self._update_in_progress:
+            self.update_action.setText("Installing update...")
+            self.update_action.setEnabled(False)
+            self.tray.setToolTip("ApplicantScout Companion update is installing")
+            return
+        if self._latest_update_version:
+            self.update_action.setText(f"Update to {self._latest_update_version}")
             self.update_action.setEnabled(True)
             self.tray.setToolTip(
-                f"ApplicantScout Companion is running - update {latest_version} is available"
+                "ApplicantScout Companion is running - update "
+                f"{self._latest_update_version} is available"
             )
             return
         self.update_action.setText("Update")
         self.update_action.setEnabled(False)
         self.tray.setToolTip("ApplicantScout Companion is running")
-
-    def set_update_in_progress(self, in_progress: bool) -> None:
-        if in_progress:
-            self.update_action.setText("Installing update...")
-            self.update_action.setEnabled(False)
-            self.tray.setToolTip("ApplicantScout Companion update is installing")
 
     def _show_overlay(self, window: OverlayWindow) -> None:
         window.show()
@@ -552,6 +564,8 @@ def _clear_cache_dir(cache_dir: Path, character_cache: CharacterCache | None = N
         character_cache.clear()
     cache_dir.mkdir(parents=True, exist_ok=True)
     for child in cache_dir.iterdir():
+        if child.name == UPDATE_DOWNLOADS_DIR_NAME:
+            continue
         if child.is_dir():
             shutil.rmtree(child)
         else:
@@ -1072,10 +1086,8 @@ def main(argv: list[str] | None = None) -> int:
         nonlocal update_in_progress
         update_in_progress = in_progress
         if tray_controller is not None:
-            if in_progress:
-                tray_controller.set_update_in_progress(True)
-            else:
-                tray_controller.set_update_available(pending_update_version)
+            tray_controller.set_update_available(pending_update_version)
+            tray_controller.set_update_in_progress(in_progress)
         if settings_dialog is not None:
             settings_dialog.set_update_in_progress(in_progress)
 
@@ -1288,6 +1300,11 @@ def main(argv: list[str] | None = None) -> int:
             tray_controller.set_update_available(pending_update_version)
         if settings_dialog is not None:
             settings_dialog.set_update_available(pending_update_version)
+            if update_in_progress:
+                settings_dialog.set_update_in_progress(True)
+        if update_in_progress:
+            startup_update_prompt_pending = False
+            return
         if _should_show_wow_start_update_prompt(
             wow_watch_mode=wow_watch_mode,
             startup_update_prompt_pending=startup_update_prompt_pending,

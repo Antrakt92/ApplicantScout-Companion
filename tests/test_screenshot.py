@@ -8,6 +8,7 @@ this fixes is "Warlock missing from companion when applied as part of a
 
 from __future__ import annotations
 
+import os
 import struct
 import zlib
 from pathlib import Path
@@ -666,6 +667,74 @@ def test_watcher_emits_decode_failed_for_marker_parse_failure(
 
     assert failures == [(str(image_path), "parse failed")]
     assert not image_path.exists()
+
+
+def test_backlog_does_not_apply_older_snapshot_after_newest_marker_decode_failure(
+    monkeypatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    newest = tmp_path / "WoWScrnShot_0001.jpg"
+    older = tmp_path / "WoWScrnShot_9999.jpg"
+    newest.write_bytes(b"newest")
+    older.write_bytes(b"older")
+    os.utime(newest, (now, now))
+    os.utime(older, (now - 5.0, now - 5.0))
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: screenshot_mod.DecodeResult(None, True, "CRC mismatch")
+        if path == newest
+        else screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == []
+    assert failures == [(str(newest), "CRC mismatch")]
+    assert not newest.exists()
+    assert not older.exists()
+
+
+def test_backlog_can_apply_older_snapshot_when_newest_file_has_no_marker(
+    monkeypatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    manual = tmp_path / "WoWScrnShot_0001.jpg"
+    older = tmp_path / "WoWScrnShot_9999.jpg"
+    manual.write_bytes(b"manual")
+    older.write_bytes(b"older")
+    os.utime(manual, (now, now))
+    os.utime(older, (now - 5.0, now - 5.0))
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: screenshot_mod.DecodeResult(None, False)
+        if path == manual
+        else screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == [snapshot]
+    assert failures == []
+    assert manual.exists()
+    assert not older.exists()
 
 
 def test_watcher_stop_suppresses_backlog_signals(monkeypatch, tmp_path: Path):

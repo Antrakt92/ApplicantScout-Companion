@@ -4,6 +4,7 @@ import time
 
 import httpx
 
+import applicant_scout.wcl as wcl_mod
 from applicant_scout.overlay import (
     _FetchIdentity,
     _fetch_identity_for_applicant,
@@ -524,15 +525,23 @@ def test_retry_failed_wcl_fetches_skips_permanent_failures(qtbot, tmp_path):
         error_message="OAuth failed",
         wcl_error_kind=WCL_ERROR_AUTH,
     )
+    http = _app(
+        applicant_id="http:1",
+        fetch_status="error",
+        error_message="Unexpected HTTP 400",
+        wcl_error_kind=wcl_mod.WCL_ERROR_HTTP,
+    )
     not_found = _app(applicant_id="nf:1", fetch_status="not_found")
     state.add_or_update(missing)
     state.add_or_update(auth)
+    state.add_or_update(http)
     state.add_or_update(not_found)
 
     try:
         assert window._retry_failed_wcl_fetches() == 0
         assert missing.fetch_status == "error"
         assert auth.fetch_status == "error"
+        assert http.fetch_status == "error"
         assert not_found.fetch_status == "not_found"
         assert window._fetches_in_flight == {}
     finally:

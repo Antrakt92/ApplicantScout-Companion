@@ -931,6 +931,21 @@ def test_503_sets_short_retry_block(
     assert len(http.calls) == 1
 
 
+def test_fetch_character_ranks_unexpected_400_is_non_retryable_http_error():
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP({"error": "bad request"}, status_code=400)
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError, match="Unexpected HTTP 400") as excinfo:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert excinfo.value.error_kind == wcl_mod.WCL_ERROR_HTTP
+    assert excinfo.value.error_kind != WCL_ERROR_SERVER
+    assert client.retry_block_remaining_seconds() == 0.0
+    assert len(http.calls) == 1
+
+
 def test_character_ranks_empty_preserves_error_kind():
     result = CharacterRanks.empty(error="paused", error_kind=WCL_ERROR_QUOTA_GUARD)
 
