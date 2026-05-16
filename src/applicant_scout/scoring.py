@@ -825,7 +825,9 @@ def _mplus_rio_completion_floor_with_wcl(
         return 0.0
     rio_key = rio_same_dungeon_key or rio_best_key
     rio_key_delta = rio_key - target_key if rio_key > 0 and target_key > 0 else -999
-    cap = 85.0
+    # WHY: This is only a RaiderIO completion floor under partial WCL evidence.
+    # Let it rescue stale/missing logs into strong FIT, but reserve TOP for WCL-earned scores.
+    cap = 84.0
     if rio_timed_at_or_above <= 0 and rio_key_delta < 0:
         cap = 78.0
     if rio_timed_at_or_above <= 0 and rio_key_delta <= -2:

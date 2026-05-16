@@ -61,6 +61,8 @@ configuration, and release-readiness hardening for live applicant scouting.
   live state and the companion enriches static RIO dungeon rows locally.
 - Fixed one-level-under RaiderIO completion overriding mixed lower-key WCL logs
   into a `TOP` score for the hosted key.
+- Fixed RaiderIO completion floors crossing the `TOP` threshold when the
+  visible fit evidence is still below the hosted key level.
 - Fixed malformed decoded QR payloads with trailing bytes after the CRC being
   accepted as valid snapshots.
 - Fixed several screenshot, updater, WCL, and cache data-boundary edge cases
