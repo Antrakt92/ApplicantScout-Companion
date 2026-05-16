@@ -14,6 +14,54 @@ def _read_repo_text(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def _project_version() -> str:
+    match = re.search(
+        r'^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
+        _read_repo_text("pyproject.toml"),
+        re.M,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _runtime_version() -> str:
+    match = re.search(
+        r'^__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
+        _read_repo_text("src/applicant_scout/__init__.py"),
+        re.M,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _top_release_notes_entry() -> str:
+    notes = _read_repo_text("RELEASE_NOTES.md")
+    match = re.search(
+        r"(?ms)^##\s+\d+\.\d+\.\d+\s+-\s+.*?(?=^##\s+\d+\.\d+\.\d+\s+-\s+|\Z)",
+        notes,
+    )
+    assert match is not None
+    return match.group(0)
+
+
+def _paired_addon_version() -> str:
+    match = re.search(
+        r"Requires the ApplicantScout WoW addon `([0-9]+\.[0-9]+\.[0-9]+)`",
+        _top_release_notes_entry(),
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _previous_patch_version(version: str) -> str:
+    major, minor, patch = (int(part) for part in version.split("."))
+    if patch > 0:
+        patch -= 1
+    else:
+        minor = max(0, minor - 1)
+    return f"{major}.{minor}.{patch}"
+
+
 def _copy_release_check_fixture(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
@@ -279,27 +327,32 @@ def test_release_build_refuses_dirty_release_inputs_by_default():
     assert "pyproject.toml" in build_script
 
 
-def test_release_version_metadata_is_ready_for_024():
-    pyproject = _read_repo_text("pyproject.toml")
-    runtime = _read_repo_text("src/applicant_scout/__init__.py")
-    notes = _read_repo_text("RELEASE_NOTES.md")
+def test_release_version_metadata_is_ready_for_current_version():
     readme = _read_repo_text("README.md")
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+    project_version = _project_version()
+    paired_addon_version = _paired_addon_version()
 
-    assert 'version = "0.2.4"' in pyproject
-    assert '__version__ = "0.2.4"' in runtime
-    assert notes.startswith("# ApplicantScout Companion Release Notes\n\n## 0.2.4 - ")
-    assert "ApplicantScout WoW addon `0.1.6`" in notes
-    assert "ApplicantScout addon `0.1.6`" in _read_repo_text("RELEASE_CHECKLIST.md")
-    assert "ApplicantScout Companion `0.2.4`" not in readme
+    assert _runtime_version() == project_version
+    assert _top_release_notes_entry().startswith(f"## {project_version} - ")
+    assert f"ApplicantScout addon `{paired_addon_version}`" in checklist
+    assert f"ApplicantScout Companion `{project_version}`" not in readme
     assert "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest" in readme
     assert "ApplicantScout-0.1.0.zip" not in readme
     assert "releases/tag/v0.1.0" not in readme
     assert "releases/tag/v0.1.2" not in readme
 
 
+def test_release_readiness_test_name_is_not_tied_to_current_version():
+    source = _read_repo_text("tests/test_packaging_contract.py")
+
+    assert re.search(r"def test_release_version_metadata_is_ready_for_\d+", source) is None
+
+
 def test_release_version_check_script_documents_asset_contract():
     script = _read_repo_text("scripts/check-release-version.ps1")
     checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+    project_version = _project_version()
 
     assert "ApplicantScoutCompanionSetup-$TagVersion.exe" in script
     assert "$InstallerName.sha256" in script
@@ -307,7 +360,10 @@ def test_release_version_check_script_documents_asset_contract():
     assert "RequireAssets" in script
     assert "constraints-release.txt" in script
     assert "Release constraints header" in script
-    assert ".\\scripts\\check-release-version.ps1 -Tag v0.2.4 -RequireAssets" in checklist
+    assert (
+        f".\\scripts\\check-release-version.ps1 -Tag v{project_version} -RequireAssets"
+        in checklist
+    )
 
 
 def test_release_workflow_runs_existing_gates_before_publishing():
@@ -360,40 +416,48 @@ def test_release_workflow_extracts_top_release_notes_entry_only():
 
 def test_release_version_check_rejects_stale_constraints_header(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    stale_version = _previous_patch_version(project_version)
     constraints = repo / "constraints-release.txt"
     constraints.write_text(
-        constraints.read_text(encoding="utf-8").replace("0.2.4", "0.2.3", 1),
+        constraints.read_text(encoding="utf-8").replace(project_version, stale_version, 1),
         encoding="utf-8",
     )
 
-    result = _run_release_check(repo, "-Tag", "v0.2.4")
+    result = _run_release_check(repo, "-Tag", f"v{project_version}")
 
     assert result.returncode != 0
-    assert "constraints-release.txt header is 0.2.3" in (result.stdout + result.stderr)
+    assert f"constraints-release.txt header is {stale_version}" in (
+        result.stdout + result.stderr
+    )
 
 
 def test_release_version_check_require_assets_validates_checksum_digest(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
     dist = repo / "dist"
     dist.mkdir()
-    installer = dist / "ApplicantScoutCompanionSetup-0.2.4.exe"
+    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    installer = dist / installer_name
     installer.write_bytes(b"setup-bytes")
     digest = hashlib.sha256(b"setup-bytes").hexdigest()
-    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe.sha256").write_text(
-        f"{digest}  ApplicantScoutCompanionSetup-0.2.4.exe\n",
+    (dist / checksum_name).write_text(
+        f"{digest}  {installer_name}\n",
         encoding="ascii",
     )
-    (dist / "ApplicantScoutCompanion-0.2.4-portable.zip").write_bytes(b"zip")
+    (dist / portable_name).write_bytes(b"zip")
 
-    result = _run_release_check(repo, "-Tag", "v0.2.4", "-RequireAssets")
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
     assert result.returncode == 0, result.stdout + result.stderr
 
-    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe.sha256").write_text(
-        f"{hashlib.sha256(b'other').hexdigest()}  ApplicantScoutCompanionSetup-0.2.4.exe\n",
+    (dist / checksum_name).write_text(
+        f"{hashlib.sha256(b'other').hexdigest()}  {installer_name}\n",
         encoding="ascii",
     )
-    mismatch = _run_release_check(repo, "-Tag", "v0.2.4", "-RequireAssets")
+    mismatch = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
     assert mismatch.returncode != 0
     assert "checksum mismatch" in (mismatch.stdout + mismatch.stderr).lower()
@@ -401,18 +465,22 @@ def test_release_version_check_require_assets_validates_checksum_digest(tmp_path
 
 def test_release_version_check_require_assets_rejects_checksum_wrong_filename(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
     dist = repo / "dist"
     dist.mkdir()
-    installer = dist / "ApplicantScoutCompanionSetup-0.2.4.exe"
+    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    installer = dist / installer_name
     installer.write_bytes(b"setup-bytes")
     digest = hashlib.sha256(b"setup-bytes").hexdigest()
-    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe.sha256").write_text(
+    (dist / checksum_name).write_text(
         f"{digest}  Other.exe\n",
         encoding="ascii",
     )
-    (dist / "ApplicantScoutCompanion-0.2.4-portable.zip").write_bytes(b"zip")
+    (dist / portable_name).write_bytes(b"zip")
 
-    result = _run_release_check(repo, "-Tag", "v0.2.4", "-RequireAssets")
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
     assert result.returncode != 0
     assert "checksum filename" in (result.stdout + result.stderr).lower()
@@ -420,16 +488,20 @@ def test_release_version_check_require_assets_rejects_checksum_wrong_filename(tm
 
 def test_release_version_check_require_assets_rejects_malformed_checksum(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
     dist = repo / "dist"
     dist.mkdir()
-    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe").write_bytes(b"setup-bytes")
-    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe.sha256").write_text(
-        "not-a-sha  ApplicantScoutCompanionSetup-0.2.4.exe\n",
+    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    (dist / installer_name).write_bytes(b"setup-bytes")
+    (dist / checksum_name).write_text(
+        f"not-a-sha  {installer_name}\n",
         encoding="ascii",
     )
-    (dist / "ApplicantScoutCompanion-0.2.4-portable.zip").write_bytes(b"zip")
+    (dist / portable_name).write_bytes(b"zip")
 
-    result = _run_release_check(repo, "-Tag", "v0.2.4", "-RequireAssets")
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
     assert result.returncode != 0
     assert "malformed checksum" in (result.stdout + result.stderr).lower()
