@@ -48,6 +48,13 @@ def test_check_script_checks_native_command_exit_codes():
     assert 'Invoke-NativeChecked -Label "Lua syntax"' in script
 
 
+def test_check_script_does_not_accept_generic_luac_for_wow_syntax():
+    script = _read_repo_text("scripts/check.ps1")
+
+    assert "Get-Command luac5.1" in script
+    assert "Get-Command luac " not in script
+
+
 def test_artifact_name_contract_stays_aligned():
     build_script = _read_repo_text("scripts/build-windows.ps1")
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")

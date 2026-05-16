@@ -50,7 +50,6 @@ if (-not (Test-Path $Pyright)) {
 
 $LuacCandidates = @(
     (Get-Command luac5.1 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
-    (Get-Command luac -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
     "C:\ProgramData\chocolatey\lib\lua51\tools\luac5.1.exe"
 ) | Where-Object { $_ -and (Test-Path $_) }
 
