@@ -609,6 +609,17 @@ class ScreenshotWatcher(QObject):
         apply_closed = False
         deleted = 0
         for p, mtime in all_files:
+            if (
+                not apply_closed
+                and mtime >= apply_cutoff
+                and not _wait_for_stable_size(p)
+            ):
+                _log.info(
+                    "backlog: skipping unstable recent screenshot %s",
+                    p.name,
+                )
+                apply_closed = True
+                continue
             # Single decode pass. Within apply window AND not yet applied → emit
             # the parsed snapshot. Outside window OR apply closed → still
             # delete-if-marker (cleanup leftover ours from prior crashes). The

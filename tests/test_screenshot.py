@@ -768,6 +768,37 @@ def test_backlog_can_apply_older_snapshot_when_newest_file_has_no_marker(
     assert not older.exists()
 
 
+def test_backlog_skips_unstable_recent_file_without_decoding_or_deleting(
+    monkeypatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"partial")
+    os.utime(image_path, (now, now))
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: False)
+    decoded_paths: list[Path] = []
+
+    def fail_if_decoded(_path: Path) -> screenshot_mod.DecodeResult:
+        decoded_paths.append(_path)
+        raise AssertionError("backlog decoded an unstable startup screenshot")
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", fail_if_decoded)
+
+    watcher._scan_recent_backlog()
+
+    assert decoded_paths == []
+    assert snapshots == []
+    assert failures == []
+    assert image_path.exists()
+
+
 def test_watcher_stop_suppresses_backlog_signals(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     image_path.write_bytes(b"x")
