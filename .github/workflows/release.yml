@@ -1,0 +1,137 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    if: ${{ github.event.created == true && github.event.forced == false && github.event.deleted == false }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout companion
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          path: ApplicantScout-Companion
+
+      - name: Checkout addon
+        uses: actions/checkout@v5
+        with:
+          repository: Antrakt92/ApplicantScout-Addon
+          fetch-depth: 0
+          path: ApplicantScout-Addon
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install release dependencies
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install --upgrade pip
+          .\.venv\Scripts\python -m pip install -e '.[dev]' -c constraints-release.txt
+
+      - name: Install Windows build tools
+        shell: pwsh
+        run: choco install lua51 innosetup -y --no-progress
+
+      - name: Check release metadata and tests
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon
+          .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME
+
+      - name: Build Windows artifacts
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\scripts\build-windows.ps1 -SkipChecks
+
+      - name: Validate release assets
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets
+
+      - name: Extract release notes
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $TagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $EscapedVersion = [regex]::Escape($TagVersion)
+          $Pattern = "(?ms)^##\s+$EscapedVersion\s+-\s+.*?(?=^##\s+\d+\.\d+\.\d+\s+-\s+|\z)"
+          $Notes = Get-Content -LiteralPath RELEASE_NOTES.md -Raw -Encoding UTF8
+          $Match = [regex]::Match($Notes, $Pattern)
+          if (-not $Match.Success) {
+            throw "Could not find top release notes entry for $TagVersion."
+          }
+          $Match.Value.Trim() | Set-Content -LiteralPath dist\release-body.md -Encoding UTF8
+
+      - name: Refuse existing release
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if (gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY 2>$null) {
+            throw "Release $env:GITHUB_REF_NAME already exists; refusing to republish companion assets."
+          }
+
+      - name: Create draft release with assets
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $TagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $Installer = "dist\ApplicantScoutCompanionSetup-$TagVersion.exe"
+          $Checksum = "dist\ApplicantScoutCompanionSetup-$TagVersion.exe.sha256"
+          $Portable = "dist\ApplicantScoutCompanion-$TagVersion-portable.zip"
+          gh release create $env:GITHUB_REF_NAME `
+            $Installer `
+            $Checksum `
+            $Portable `
+            --repo $env:GITHUB_REPOSITORY `
+            --title $env:GITHUB_REF_NAME `
+            --notes-file dist\release-body.md `
+            --draft `
+            --verify-tag
+
+      - name: Verify draft release assets
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $TagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $ExpectedAssets = @(
+            "ApplicantScoutCompanionSetup-$TagVersion.exe",
+            "ApplicantScoutCompanionSetup-$TagVersion.exe.sha256",
+            "ApplicantScoutCompanion-$TagVersion-portable.zip"
+          )
+          $Release = gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease,assets | ConvertFrom-Json
+          if (-not $Release.isDraft) {
+            throw "Release $env:GITHUB_REF_NAME was not created as a draft."
+          }
+          if ($Release.isPrerelease) {
+            throw "Release $env:GITHUB_REF_NAME should not be marked prerelease."
+          }
+          $AssetNames = @($Release.assets | ForEach-Object { $_.name })
+          foreach ($AssetName in $ExpectedAssets) {
+            if ($AssetNames -notcontains $AssetName) {
+              throw "Draft release is missing asset: $AssetName"
+            }
+          }
+
+      - name: Publish release
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false

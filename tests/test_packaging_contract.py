@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -9,6 +12,43 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _read_repo_text(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _copy_release_check_fixture(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "src" / "applicant_scout").mkdir(parents=True)
+    for path in (
+        "scripts/check-release-version.ps1",
+        "pyproject.toml",
+        "src/applicant_scout/__init__.py",
+        "RELEASE_NOTES.md",
+        "README.md",
+        "constraints-release.txt",
+    ):
+        source = REPO_ROOT / path
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    return repo
+
+
+def _run_release_check(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(repo / "scripts" / "check-release-version.ps1"),
+            *args,
+        ],
+        cwd=repo,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
 
 
 def test_inno_script_requires_build_env_version_and_source_dir():
@@ -268,6 +308,131 @@ def test_release_version_check_script_documents_asset_contract():
     assert "constraints-release.txt" in script
     assert "Release constraints header" in script
     assert ".\\scripts\\check-release-version.ps1 -Tag v0.2.4 -RequireAssets" in checklist
+
+
+def test_release_workflow_runs_existing_gates_before_publishing():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+
+    assert "tags:" in workflow
+    assert "'v*'" in workflow
+    assert "github.event.created == true" in workflow
+    assert "github.event.forced == false" in workflow
+    assert "github.event.deleted == false" in workflow
+    assert "windows-latest" in workflow
+    assert "contents: write" in workflow
+    assert "python-version: '3.13'" in workflow
+    assert "constraints-release.txt" in workflow
+    assert "choco install lua51 innosetup" in workflow
+    assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
+
+    check_idx = workflow.index(".\\scripts\\check.ps1 -AddonRoot")
+    version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag")
+    build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
+    assets_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets")
+    release_idx = workflow.index("gh release create")
+    publish_idx = workflow.index("gh release edit")
+
+    assert check_idx < version_idx < build_idx < assets_idx < release_idx < publish_idx
+
+
+def test_release_workflow_uploads_exact_updater_assets_as_draft_first():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+
+    assert "ApplicantScoutCompanionSetup-$TagVersion.exe" in workflow
+    assert "ApplicantScoutCompanionSetup-$TagVersion.exe.sha256" in workflow
+    assert "ApplicantScoutCompanion-$TagVersion-portable.zip" in workflow
+    assert "--draft" in workflow
+    assert "--verify-tag" in workflow
+    assert "isDraft" in workflow
+    assert "isPrerelease" in workflow
+    assert "assets" in workflow
+    assert "draft=false" in workflow
+
+
+def test_release_workflow_extracts_top_release_notes_entry_only():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+
+    assert "release-body.md" in workflow
+    assert "[regex]::Escape($TagVersion)" in workflow
+    assert "RELEASE_NOTES.md" in workflow
+    assert "(?=^##\\s+\\d+\\.\\d+\\.\\d+\\s+-\\s+|\\z)" in workflow
+
+
+def test_release_version_check_rejects_stale_constraints_header(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    constraints = repo / "constraints-release.txt"
+    constraints.write_text(
+        constraints.read_text(encoding="utf-8").replace("0.2.4", "0.2.3", 1),
+        encoding="utf-8",
+    )
+
+    result = _run_release_check(repo, "-Tag", "v0.2.4")
+
+    assert result.returncode != 0
+    assert "constraints-release.txt header is 0.2.3" in (result.stdout + result.stderr)
+
+
+def test_release_version_check_require_assets_validates_checksum_digest(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    dist = repo / "dist"
+    dist.mkdir()
+    installer = dist / "ApplicantScoutCompanionSetup-0.2.4.exe"
+    installer.write_bytes(b"setup-bytes")
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe.sha256").write_text(
+        f"{digest}  ApplicantScoutCompanionSetup-0.2.4.exe\n",
+        encoding="ascii",
+    )
+    (dist / "ApplicantScoutCompanion-0.2.4-portable.zip").write_bytes(b"zip")
+
+    result = _run_release_check(repo, "-Tag", "v0.2.4", "-RequireAssets")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe.sha256").write_text(
+        f"{hashlib.sha256(b'other').hexdigest()}  ApplicantScoutCompanionSetup-0.2.4.exe\n",
+        encoding="ascii",
+    )
+    mismatch = _run_release_check(repo, "-Tag", "v0.2.4", "-RequireAssets")
+
+    assert mismatch.returncode != 0
+    assert "checksum mismatch" in (mismatch.stdout + mismatch.stderr).lower()
+
+
+def test_release_version_check_require_assets_rejects_checksum_wrong_filename(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    dist = repo / "dist"
+    dist.mkdir()
+    installer = dist / "ApplicantScoutCompanionSetup-0.2.4.exe"
+    installer.write_bytes(b"setup-bytes")
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe.sha256").write_text(
+        f"{digest}  Other.exe\n",
+        encoding="ascii",
+    )
+    (dist / "ApplicantScoutCompanion-0.2.4-portable.zip").write_bytes(b"zip")
+
+    result = _run_release_check(repo, "-Tag", "v0.2.4", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "checksum filename" in (result.stdout + result.stderr).lower()
+
+
+def test_release_version_check_require_assets_rejects_malformed_checksum(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    dist = repo / "dist"
+    dist.mkdir()
+    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe").write_bytes(b"setup-bytes")
+    (dist / "ApplicantScoutCompanionSetup-0.2.4.exe.sha256").write_text(
+        "not-a-sha  ApplicantScoutCompanionSetup-0.2.4.exe\n",
+        encoding="ascii",
+    )
+    (dist / "ApplicantScoutCompanion-0.2.4-portable.zip").write_bytes(b"zip")
+
+    result = _run_release_check(repo, "-Tag", "v0.2.4", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "malformed checksum" in (result.stdout + result.stderr).lower()
 
 
 def test_start_batch_explains_missing_local_environment():

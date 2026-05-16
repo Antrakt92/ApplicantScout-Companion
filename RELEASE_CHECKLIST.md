@@ -1,7 +1,8 @@
 # ApplicantScout Companion Release Checklist
 
-Use this checklist for public companion releases. Do not create the tag until
-the matching installer assets can be published in the same GitHub Release.
+Use this checklist for public companion releases. The tag push starts the gated
+GitHub Actions workflow; the workflow builds, validates, uploads, and publishes
+the matching installer assets only after all release checks pass.
 
 ## Prepare
 
@@ -21,7 +22,8 @@ the matching installer assets can be published in the same GitHub Release.
 
 1. Commit release-prep changes first. `scripts\build-windows.ps1` refuses dirty
    release inputs by default so public assets are built from committed source.
-2. Build the installer and portable archive:
+2. Optional local smoke: build the installer and portable archive before the tag
+   if you want to test the exact Windows artifacts locally:
 
    ```powershell
    .\scripts\build-windows.ps1
@@ -35,9 +37,9 @@ the matching installer assets can be published in the same GitHub Release.
 
 ## Publish
 
-1. Create tag `v0.2.4` only after the build assets are ready.
-2. Create the GitHub Release from `RELEASE_NOTES.md`.
-3. Upload all expected assets before marking the release ready.
+1. Push tag `v0.2.4` after release-prep changes are committed.
+2. Confirm the `Build and release` GitHub Actions workflow completed.
+3. Confirm the GitHub Release contains all expected assets before announcing it.
 4. Do not publish an update release without the `.exe` and `.exe.sha256` pair;
    in-app updates intentionally refuse incomplete releases.
 5. Smoke-test from an installed `0.2.3` companion: update check should show the

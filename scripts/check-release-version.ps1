@@ -50,6 +50,52 @@ function Get-FirstRegexMatch {
     return $Match.Groups[1].Value
 }
 
+function Test-InstallerChecksum {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallerPath,
+        [Parameter(Mandatory = $true)]
+        [string]$ChecksumPath,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedName
+    )
+
+    $ChecksumText = (Get-Content -LiteralPath $ChecksumPath -Raw -Encoding ASCII).Trim()
+    if (-not $ChecksumText) {
+        return "Malformed checksum: dist\$ExpectedName.sha256 is empty."
+    }
+
+    $Parts = $ChecksumText -split "\s+", 3
+    if ($Parts.Count -ne 2) {
+        return "Malformed checksum: expected '<sha256>  $ExpectedName'."
+    }
+
+    $ExpectedDigest = $Parts[0].ToLowerInvariant()
+    if ($ExpectedDigest -notmatch "^[0-9a-f]{64}$") {
+        return "Malformed checksum: expected a 64-character SHA256 digest."
+    }
+
+    $ChecksumName = $Parts[1].TrimStart("*")
+    if ($ChecksumName.ToLowerInvariant() -ne $ExpectedName.ToLowerInvariant()) {
+        return "Checksum filename is $ChecksumName, expected $ExpectedName."
+    }
+
+    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $Stream = [System.IO.File]::OpenRead($InstallerPath)
+    try {
+        $ActualDigest = ([System.BitConverter]::ToString($Sha256.ComputeHash($Stream)) -replace "-", "").ToLowerInvariant()
+    }
+    finally {
+        $Stream.Dispose()
+        $Sha256.Dispose()
+    }
+    if ($ActualDigest -ne $ExpectedDigest) {
+        return "Installer checksum mismatch for dist\$ExpectedName."
+    }
+
+    return $null
+}
+
 if (-not $Tag) {
     throw "Missing release tag. Pass -Tag vX.Y.Z or set GITHUB_REF_NAME."
 }
@@ -119,6 +165,20 @@ if ($RequireAssets) {
         $AssetPath = Join-Path $RepoRoot "dist\$AssetName"
         if (-not (Test-Path -LiteralPath $AssetPath)) {
             $Errors += "Missing release asset: dist\$AssetName"
+        }
+    }
+    $InstallerPath = Join-Path $RepoRoot "dist\$InstallerName"
+    $ChecksumPath = Join-Path $RepoRoot "dist\$ChecksumName"
+    if (
+        (Test-Path -LiteralPath $InstallerPath) -and
+        (Test-Path -LiteralPath $ChecksumPath)
+    ) {
+        $ChecksumError = Test-InstallerChecksum `
+            -InstallerPath $InstallerPath `
+            -ChecksumPath $ChecksumPath `
+            -ExpectedName $InstallerName
+        if ($ChecksumError) {
+            $Errors += $ChecksumError
         }
     }
 }
