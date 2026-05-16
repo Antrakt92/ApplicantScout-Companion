@@ -508,3 +508,109 @@ def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
     sorted_apps = sort_applicants_grouped([sunk_high_fit, ready_lower_fit], listing)
 
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
+
+
+def test_mplus_unknown_key_sorts_by_visible_mplus_headline_before_rio():
+    listing = Listing(
+        activity_id=401,
+        dungeon_name="Mythic+",
+        listing_name="Mythic+",
+        comment="",
+        key_level=0,
+        category_id=2,
+        difficulty_id=8,
+    )
+    better_wcl_lower_rio = _app(
+        aid=20,
+        score=3291,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 14,
+                "parse_percent": 47,
+                "median_percent": 22,
+                "run_count": 2,
+            }
+        ],
+    )
+    better_wcl_lower_rio.mplus_dps = 47.0
+    better_wcl_lower_rio.mplus_dps_median = 22.0
+    weaker_wcl_higher_rio = _app(
+        aid=10,
+        score=3413,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 14,
+                "parse_percent": 40,
+                "median_percent": 39,
+                "run_count": 2,
+            }
+        ],
+    )
+    weaker_wcl_higher_rio.mplus_dps = 40.0
+    weaker_wcl_higher_rio.mplus_dps_median = 39.0
+    wcl_error_higher_rio = _app(aid=30, score=3399, fetch_status="error")
+
+    sorted_apps = sort_applicants_grouped(
+        [weaker_wcl_higher_rio, wcl_error_higher_rio, better_wcl_lower_rio],
+        listing,
+    )
+
+    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1", "30:1"]
+
+
+def test_mplus_unknown_key_prioritises_highest_key_before_percentile():
+    listing = Listing(
+        activity_id=401,
+        dungeon_name="Mythic+",
+        listing_name="Mythic+",
+        comment="",
+        key_level=0,
+        category_id=2,
+        difficulty_id=8,
+    )
+    low_key_high_percent = _app(
+        aid=10,
+        score=3098,
+        dps_breakdown=[
+            {
+                "name": "Magisters' Terrace",
+                "key_level": 12,
+                "parse_percent": 91,
+                "median_percent": 91,
+                "run_count": 1,
+            },
+            {
+                "name": "Windrunner Spire",
+                "key_level": 10,
+                "parse_percent": 81,
+                "median_percent": 81,
+                "run_count": 1,
+            },
+        ],
+    )
+    low_key_high_percent.mplus_dps = 84.0
+    low_key_high_percent.mplus_dps_median = None
+    higher_key_lower_percent = _app(
+        aid=20,
+        score=3231,
+        dps_breakdown=[
+            {
+                "name": "Maisara Caverns",
+                "key_level": 14,
+                "parse_percent": 78,
+                "median_percent": 78,
+                "run_count": 1,
+            }
+        ],
+    )
+    higher_key_lower_percent.mplus_dps = 78.0
+    higher_key_lower_percent.mplus_dps_median = None
+
+    sorted_apps = sort_applicants_grouped(
+        [low_key_high_percent, higher_key_lower_percent],
+        listing,
+    )
+
+    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]

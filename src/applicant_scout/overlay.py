@@ -92,6 +92,7 @@ from .wcl import (
     WCL_ERROR_NETWORK,
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_RATE_LIMITED,
+    WCL_ERROR_SERVER,
     CharacterCache,
     CharacterRanks,
     derive_server_slug,
@@ -138,7 +139,7 @@ WCL_RETRY_CUSHION_MS = 250
 WCL_RETRY_BATCH_DELAY_MS = 1500
 LEGACY_COMPACT_WINDOW_WIDTH = 526
 _RETRYABLE_WCL_ERROR_KINDS = frozenset(
-    {WCL_ERROR_QUOTA_GUARD, WCL_ERROR_RATE_LIMITED}
+    {WCL_ERROR_QUOTA_GUARD, WCL_ERROR_RATE_LIMITED, WCL_ERROR_SERVER, WCL_ERROR_NETWORK}
 )
 ROLE_ICON_SIZE = QSize(16, 16)
 ROLE_ICON_FILES = {
@@ -392,6 +393,7 @@ def _render_tooltip(parent_widget, tip: str, global_pos) -> bool:
 # unfetchable applicants sink within their RIO bucket). Module-level frozenset
 # so the pure sort fn can see it without rebuilding per state change.
 _SUNK_STATES: frozenset[str] = frozenset({"error", "not_found"})
+_MPLUS_CATEGORY_ID = 2
 
 
 def _split_composite(composite_id: str) -> tuple[str, int]:
@@ -432,8 +434,14 @@ def sort_applicants_grouped(
     apps = list(applicants)
     group_max: dict[str, int] = {}
     group_fit: dict[str, float] = {}
+    group_mplus_headline: dict[str, tuple[int, float]] = {}
     group_has_ready: dict[str, bool] = {}
     use_fit = detect_listing_context(listing) in (CONTEXT_MPLUS, CONTEXT_RAID)
+    use_mplus_headline = (
+        not use_fit
+        and listing is not None
+        and listing.category_id == _MPLUS_CATEGORY_ID
+    )
     group_members: dict[str, list[Applicant]] = {}
     for a in apps:
         raw_aid, _ = _split_composite(a.applicant_id)
@@ -446,18 +454,43 @@ def sort_applicants_grouped(
     if use_fit:
         for raw_aid, members in group_members.items():
             group_fit[raw_aid] = package_fit(members, listing).score
+    elif use_mplus_headline:
+        for raw_aid, members in group_members.items():
+            group_mplus_headline[raw_aid] = max(
+                (_mplus_headline_sort_score(member) for member in members),
+                default=(0, 0.0),
+            )
 
     def _key(a: Applicant):
         raw_aid, member_idx = _split_composite(a.applicant_id)
         gmax = group_max.get(raw_aid, 0)
         gfit = group_fit.get(raw_aid, 0.0)
+        gheadline_key, gheadline_percent = group_mplus_headline.get(raw_aid, (0, 0.0))
         all_sunk = not group_has_ready.get(raw_aid, False)
         sunk = a.fetch_status in _SUNK_STATES
         if use_fit:
             return (all_sunk, gfit <= 0.0, -gfit, -gmax, raw_aid, member_idx, sunk)
+        if use_mplus_headline:
+            return (
+                all_sunk,
+                gheadline_key <= 0,
+                -gheadline_key,
+                -gheadline_percent,
+                -gmax,
+                raw_aid,
+                member_idx,
+                sunk,
+            )
         return (gmax == 0, -gmax, all_sunk, raw_aid, member_idx, sunk)
 
     return sorted(apps, key=_key)
+
+
+def _mplus_headline_sort_score(applicant: Applicant) -> tuple[int, float]:
+    if applicant.fetch_status in _SUNK_STATES:
+        return (0, 0.0)
+    _metric_label, breakdown, best, _median = _mplus_view(applicant)
+    return (_highest_mplus_key_level(breakdown), float(best or 0.0))
 
 
 def _build_group_markers(

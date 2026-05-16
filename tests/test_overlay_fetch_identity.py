@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+import httpx
+
 from applicant_scout.overlay import (
     _FetchIdentity,
     _fetch_identity_for_applicant,
@@ -16,8 +18,10 @@ from applicant_scout.wcl import (
     WCLClient,
     WCLApiError,
     WCL_ERROR_AUTH,
+    WCL_ERROR_NETWORK,
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_RATE_LIMITED,
+    WCL_ERROR_SERVER,
 )
 
 ALL_METRIC_PREFERENCES = MetricPreferences()
@@ -228,6 +232,30 @@ def test_fetch_task_preserves_wcl_api_error_kind(qtbot, tmp_path):
         client.close()
 
 
+def test_fetch_task_marks_timeout_as_network_error(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state)
+    window._pool = _SyncPool()
+
+    def fake_fetch(*_args, **_kwargs):
+        raise httpx.ReadTimeout("The read operation timed out")
+
+    client.fetch_character_ranks = fake_fetch  # type: ignore[method-assign]
+
+    try:
+        window._launch_fetch(app)
+
+        assert app.fetch_status == "error"
+        assert app.error_message == "The read operation timed out"
+        assert app.wcl_error_kind == WCL_ERROR_NETWORK
+        assert app.applicant_id not in window._fetches_in_flight
+    finally:
+        client.close()
+
+
 def test_successful_fetch_clears_error_kind(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")
@@ -391,6 +419,70 @@ def test_retry_failed_wcl_fetches_skips_before_cooldown(qtbot, tmp_path):
         assert window._retry_failed_wcl_fetches() == 0
         assert app.fetch_status == "error"
         assert app.applicant_id not in window._fetches_in_flight
+    finally:
+        client.close()
+
+
+def test_retry_failed_wcl_fetches_skips_server_error_before_cooldown(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    window, client = _window(qtbot, tmp_path, state)
+    app = _app(
+        fetch_status="error",
+        error_message="WCL server error; retrying in 30s",
+        wcl_error_kind=WCL_ERROR_SERVER,
+    )
+    state.add_or_update(app)
+    client._server_retry_until = time.time() + 30.0
+
+    try:
+        assert window._retry_failed_wcl_fetches() == 0
+        assert app.fetch_status == "error"
+        assert app.applicant_id not in window._fetches_in_flight
+    finally:
+        client.close()
+
+
+def test_retry_failed_wcl_fetches_relaunches_server_error_after_deadline(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    window, client = _window(qtbot, tmp_path, state)
+    app = _app(
+        fetch_status="error",
+        error_message="WCL server error; retrying in 30s",
+        wcl_error_kind=WCL_ERROR_SERVER,
+    )
+    state.add_or_update(app)
+
+    try:
+        assert window._retry_failed_wcl_fetches() == 1
+        assert app.fetch_status == "loading"
+        assert app.applicant_id in window._fetches_in_flight
+    finally:
+        client.close()
+
+
+def test_retry_failed_wcl_fetches_relaunches_network_error(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    window, client = _window(qtbot, tmp_path, state)
+    app = _app(
+        fetch_status="error",
+        error_message="The read operation timed out",
+        wcl_error_kind=WCL_ERROR_NETWORK,
+    )
+    state.add_or_update(app)
+
+    try:
+        assert window._retry_failed_wcl_fetches() == 1
+        assert app.fetch_status == "loading"
+        assert app.applicant_id in window._fetches_in_flight
     finally:
         client.close()
 

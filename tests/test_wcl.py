@@ -23,6 +23,7 @@ from applicant_scout.wcl import (
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_RATE_LIMITED,
+    WCL_ERROR_SERVER,
     WCLAuth,
     WCLAuthError,
     WCL_API_URL,
@@ -904,6 +905,29 @@ def test_429_sets_cooldown_and_short_circuits_until_deadline(
 
     assert "rate-limited" in result.error
     assert result.error_kind == WCL_ERROR_RATE_LIMITED
+    assert len(http.calls) == 1
+
+
+def test_503_sets_short_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP({"error": "unavailable"}, status_code=503)
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError, match="Server error"):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert len(http.calls) == 1
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+    current[0] += 1.0
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.error == "WCL server error; retrying in 29s"
+    assert result.error_kind == WCL_ERROR_SERVER
     assert len(http.calls) == 1
 
 

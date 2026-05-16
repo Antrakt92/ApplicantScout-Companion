@@ -1,5 +1,36 @@
 # ApplicantScout Companion Release Notes
 
+## 0.2.4 - 16-May-2026
+
+Live Mythic+ context and Warcraft Logs retry hardening for applicant sorting.
+
+### Improved
+
+- Mythic+ applicant sorting now keeps using visible M+ log evidence when the
+  game exposes the hosted listing as generic `Mythic+` instead of a concrete
+  dungeon/key context.
+- Generic Mythic+ fallback sorting now prioritizes the highest completed key
+  level before parse percentile, so a small low-key spike no longer beats
+  stronger high-key evidence.
+- Temporary Warcraft Logs server errors now pause API calls briefly instead of
+  hammering WCL and leaving applicants stuck.
+- Warcraft Logs network timeouts are retryable from the overlay retry loop.
+
+### Fixed
+
+- Fixed hosted Mythic+ listings sometimes arriving at the companion as `+0`,
+  which could make scoring and sorting fall back to the wrong signal.
+- Fixed WCL HTTP 5xx responses and read timeouts sometimes leaving applicants
+  with permanent `?` rows until the listing refreshed.
+
+### Compatibility
+
+- Requires the ApplicantScout WoW addon `0.1.6`.
+- Supports ApplicantScout wire payloads through v4.
+- In-app updates require GitHub Release assets named
+  `ApplicantScoutCompanionSetup-0.2.4.exe` and
+  `ApplicantScoutCompanionSetup-0.2.4.exe.sha256`.
+
 ## 0.2.3 - 15-May-2026
 
 Screenshot transport and update-flow hardening for live applicant sessions.
