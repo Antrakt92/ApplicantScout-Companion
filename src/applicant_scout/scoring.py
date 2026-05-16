@@ -337,7 +337,9 @@ def _mplus_rio_completion_candidate_fit(
     score = _clamp(rio_completion_fit, 0.0, MPLUS_RIO_COMPLETION_FALLBACK_CAP)
     label = fit_label(score)
     primary_key = (
-        same_dungeon_key or applicant.rio_best_dungeon_key or applicant.rio_best_key
+        same_dungeon_key
+        or _positive_int(applicant.rio_best_dungeon_key)
+        or _positive_int(applicant.rio_best_key)
     )
     display = f"{label} {int(round(score))} RIO"
     if primary_key > 0:
@@ -764,7 +766,11 @@ def _mplus_rio_timed_minus1_coverage(applicant: Applicant) -> float:
     dungeon_count = _positive_int(applicant.rio_dungeon_count)
     if dungeon_count <= 0:
         return 0.0
-    return _clamp(applicant.rio_timed_at_or_above_minus1 / dungeon_count, 0.0, 1.0)
+    return _clamp(
+        _nonnegative_int(applicant.rio_timed_at_or_above_minus1) / dungeon_count,
+        0.0,
+        1.0,
+    )
 
 
 def _mplus_rio_completion_fit(
@@ -773,15 +779,28 @@ def _mplus_rio_completion_fit(
     if not applicant.rio_profile or target_key <= 0:
         return 0.0
     dungeon_count = max(1, min(_positive_int(applicant.rio_dungeon_count), MPLUS_DUNGEON_COUNT))
-    timed_minus1 = _clamp(applicant.rio_timed_at_or_above_minus1 / dungeon_count, 0.0, 1.0)
-    timed_minus2 = _clamp(applicant.rio_timed_at_or_above_minus2 / dungeon_count, 0.0, 1.0)
+    timed_at_or_above = _nonnegative_int(applicant.rio_timed_at_or_above)
+    timed_minus1 = _clamp(
+        _nonnegative_int(applicant.rio_timed_at_or_above_minus1) / dungeon_count,
+        0.0,
+        1.0,
+    )
+    timed_minus2 = _clamp(
+        _nonnegative_int(applicant.rio_timed_at_or_above_minus2) / dungeon_count,
+        0.0,
+        1.0,
+    )
     completed_minus1 = _clamp(
-        applicant.rio_completed_at_or_above_minus1 / dungeon_count, 0.0, 1.0
+        _nonnegative_int(applicant.rio_completed_at_or_above_minus1) / dungeon_count,
+        0.0,
+        1.0,
     )
-    same_dungeon = _mplus_key_proximity_score(
-        same_dungeon_key or applicant.rio_best_dungeon_key, target_key
+    rio_best_key = _positive_int(applicant.rio_best_key)
+    same_dungeon_key = _positive_int(
+        same_dungeon_key or applicant.rio_best_dungeon_key
     )
-    best_overall = _mplus_key_proximity_score(applicant.rio_best_key, target_key)
+    same_dungeon = _mplus_key_proximity_score(same_dungeon_key, target_key)
+    best_overall = _mplus_key_proximity_score(rio_best_key, target_key)
     score_fit = _mplus_rio_fit(effective_rio_score(applicant), target_key)
     score = (
         0.36 * same_dungeon
@@ -791,7 +810,7 @@ def _mplus_rio_completion_fit(
         + 0.07 * best_overall
         + 0.03 * score_fit
     )
-    if applicant.rio_timed_at_or_above <= 0 and applicant.rio_best_key < target_key:
+    if timed_at_or_above <= 0 and rio_best_key < target_key:
         score -= 4.0
     return _clamp(score, 0.0, 92.0)
 
@@ -804,10 +823,15 @@ def _mplus_rio_completion_confidence(
     timed_minus1 = _mplus_rio_timed_minus1_coverage(applicant)
     same_near = (
         1.0
-        if (same_dungeon_key or applicant.rio_best_dungeon_key) >= max(2, target_key - 1)
+        if _positive_int(same_dungeon_key or applicant.rio_best_dungeon_key)
+        >= max(2, target_key - 1)
         else 0.0
     )
-    best_near = 1.0 if applicant.rio_best_key >= max(2, target_key - 1) else 0.0
+    best_near = (
+        1.0
+        if _positive_int(applicant.rio_best_key) >= max(2, target_key - 1)
+        else 0.0
+    )
     return _clamp(0.25 + 0.45 * timed_minus1 + 0.15 * same_near + 0.15 * best_near, 0.0, 1.0)
 
 
@@ -823,15 +847,27 @@ def _mplus_rio_completion_floor_with_wcl(
 ) -> float:
     if rio_completion_fit <= 0.0:
         return 0.0
+    rio_same_dungeon_key = _positive_int(rio_same_dungeon_key)
+    rio_best_key = _positive_int(rio_best_key)
+    rio_timed_at_or_above = _nonnegative_int(rio_timed_at_or_above)
     rio_key = rio_same_dungeon_key or rio_best_key
     rio_key_delta = rio_key - target_key if rio_key > 0 and target_key > 0 else -999
     # WHY: This is only a RaiderIO completion floor under partial WCL evidence.
     # Let it rescue stale/missing logs into strong FIT, but reserve TOP for WCL-earned scores.
     cap = 84.0
+    same_dungeon_delta = (
+        rio_same_dungeon_key - target_key
+        if rio_same_dungeon_key > 0 and target_key > 0
+        else 0
+    )
+    if same_dungeon_delta < 0:
+        cap = min(cap, 78.0)
+    if same_dungeon_delta <= -2:
+        cap = min(cap, 68.0)
     if rio_timed_at_or_above <= 0 and rio_key_delta < 0:
-        cap = 78.0
+        cap = min(cap, 78.0)
     if rio_timed_at_or_above <= 0 and rio_key_delta <= -2:
-        cap = 68.0
+        cap = min(cap, 68.0)
     if max_key_delta >= -1 and raw_best_percent < 25.0:
         return min(rio_completion_fit, cap, 61.0)
     if max_key_delta >= -2 and raw_best_percent < 40.0:

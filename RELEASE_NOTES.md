@@ -63,6 +63,9 @@ configuration, and release-readiness hardening for live applicant scouting.
   into a `TOP` score for the hosted key.
 - Fixed RaiderIO completion floors crossing the `TOP` threshold when the
   visible fit evidence is still below the hosted key level.
+- Fixed hosted-dungeon `target-1` RaiderIO evidence tying target-level evidence
+  in M+ ranking, which could put a broader but less relevant applicant above a
+  cleaner fit for the listed key.
 - Fixed malformed decoded QR payloads with trailing bytes after the CRC being
   accepted as valid snapshots.
 - Fixed several screenshot, updater, WCL, and cache data-boundary edge cases

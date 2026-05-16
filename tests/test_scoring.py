@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from applicant_scout.constants import percentile_colour
@@ -645,6 +647,118 @@ def test_mplus_rio_floor_does_not_mark_below_target_same_dungeon_as_top():
     assert fit.primary_key == 14
     assert fit.score < 85.0
     assert fit.label != "TOP"
+
+
+def test_mplus_same_dungeon_target_key_outranks_broader_below_target_profile():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    exact_target = _app(
+        score=3270,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=3,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+        dps_breakdown=[
+            _dungeon("Skyreach", [(15, 70.0, 60.0, 2)]),
+            _dungeon("Pit of Saron", [(15, 65.0, 55.0, 2)]),
+        ],
+    )
+    broad_but_below_target = _app(
+        score=3277,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=14,
+        rio_timed_at_or_above=4,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 14},
+            {"name": "Algeth'ar Academy", "key_level": 15},
+            {"name": "Maisara Caverns", "key_level": 15},
+            {"name": "Pit of Saron", "key_level": 15},
+            {"name": "Windrunner Spire", "key_level": 15},
+        ],
+        dps_breakdown=[
+            _dungeon("Algeth'ar Academy", [(12, 61.0, None, 1)]),
+            _dungeon("Maisara Caverns", [(15, 65.0, None, 1)]),
+            _dungeon("Nexus-Point Xenas", [(14, 62.0, None, 1)]),
+            _dungeon("Seat of the Triumvirate", [(13, 61.0, None, 1)]),
+        ],
+    )
+
+    exact_fit = candidate_fit(exact_target, target)
+    broad_fit = candidate_fit(broad_but_below_target, target)
+
+    assert exact_fit.primary_key == 15
+    assert broad_fit.primary_key == 14
+    assert exact_fit.score > broad_fit.score
+
+
+def test_mplus_target_key_without_logs_outranks_below_target_parse_spike():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    completed_target = _app(
+        score=3270,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=8,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+    )
+    below_target_parse_spike = _app(
+        score=3230,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=14,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=7,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=7,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 14}],
+        dps_breakdown=[
+            _dungeon("Skyreach", [(14, 92.0, None, 1)]),
+            _dungeon("Pit of Saron", [(14, 71.0, None, 1)]),
+            _dungeon("Maisara Caverns", [(10, 81.0, 79.0, 1)]),
+        ],
+    )
+
+    target_fit = candidate_fit(completed_target, target)
+    spike_fit = candidate_fit(below_target_parse_spike, target)
+
+    assert target_fit.primary_key == 15
+    assert spike_fit.primary_key == 14
+    assert target_fit.score > spike_fit.score
+
+
+def test_mplus_malformed_rio_completion_counts_do_not_crash():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    applicant = _app(
+        score=3270,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=cast(Any, None),
+        rio_timed_at_or_above_minus1=cast(Any, None),
+        rio_timed_at_or_above_minus2=cast(Any, "bad"),
+        rio_completed_at_or_above_minus1=cast(Any, object()),
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.context == CONTEXT_MPLUS
+    assert fit.score >= 0.0
 
 
 def test_package_fit_penalizes_weak_member_in_multi_member_group():
