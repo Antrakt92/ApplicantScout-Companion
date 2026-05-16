@@ -56,10 +56,12 @@ def _paired_addon_version() -> str:
 def _previous_patch_version(version: str) -> str:
     major, minor, patch = (int(part) for part in version.split("."))
     if patch > 0:
-        patch -= 1
-    else:
-        minor = max(0, minor - 1)
-    return f"{major}.{minor}.{patch}"
+        return f"{major}.{minor}.{patch - 1}"
+    if minor > 0:
+        return f"{major}.{minor - 1}.0"
+    if major > 0:
+        return f"{major - 1}.0.0"
+    raise AssertionError("Cannot derive a prior stale version before 0.0.0")
 
 
 def _copy_release_check_fixture(tmp_path: Path) -> Path:
@@ -299,6 +301,23 @@ def test_release_build_uses_pinned_constraints():
     build_script = _read_repo_text("scripts/build-windows.ps1")
     assert "constraints-release.txt" in build_script
     assert "Assert-ReleaseConstraints" in build_script
+    assert "Malformed release constraint" in build_script
+
+
+def test_release_constraints_are_all_exact_pins():
+    constraints = _read_repo_text("constraints-release.txt")
+
+    for raw in constraints.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        assert re.fullmatch(r"[A-Za-z0-9_.-]+==.+", line), line
+
+
+def test_previous_patch_version_handles_major_boundary():
+    assert _previous_patch_version("0.2.4") == "0.2.3"
+    assert _previous_patch_version("0.3.0") == "0.2.0"
+    assert _previous_patch_version("1.0.0") == "0.0.0"
 
 
 def test_release_constraints_header_matches_project_version():
@@ -447,6 +466,19 @@ def test_release_version_check_rejects_stale_constraints_header(tmp_path):
     assert f"constraints-release.txt header is {stale_version}" in (
         result.stdout + result.stderr
     )
+
+
+def test_release_build_rejects_non_exact_constraint_lines():
+    build_script = _read_repo_text("scripts/build-windows.ps1")
+
+    assert "Malformed release constraint" in build_script
+    malformed_branch = re.search(
+        r"if match is None:(?P<body>.*?)(?=    name, expected = match\.groups\(\))",
+        build_script,
+        re.S,
+    )
+    assert malformed_branch is not None
+    assert "malformed.append(line)" in malformed_branch.group("body")
 
 
 def test_release_version_check_require_assets_validates_checksum_digest(tmp_path):

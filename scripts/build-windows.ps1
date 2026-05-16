@@ -151,12 +151,14 @@ from pathlib import Path
 constraints = Path(os.environ["APSCOUT_CONSTRAINTS_FILE"])
 missing = []
 mismatched = []
+malformed = []
 for raw in constraints.read_text(encoding="utf-8").splitlines():
     line = raw.strip()
     if not line or line.startswith("#"):
         continue
     match = re.fullmatch(r"([A-Za-z0-9_.-]+)==(.+)", line)
     if match is None:
+        malformed.append(line)
         continue
     name, expected = match.groups()
     try:
@@ -167,7 +169,9 @@ for raw in constraints.read_text(encoding="utf-8").splitlines():
     if actual != expected:
         mismatched.append(f"{name}: installed {actual}, expected {expected}")
 
-if missing or mismatched:
+if malformed or missing or mismatched:
+    for item in malformed:
+        print(f"Malformed release constraint: {item}", file=sys.stderr)
     for item in missing:
         print(f"missing package: {item}", file=sys.stderr)
     for item in mismatched:
