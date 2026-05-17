@@ -1861,6 +1861,12 @@ class OverlayWindow(QMainWindow):
         self._update_title()
         self._sync_delegate_and_panel()
 
+    def _clear_manual_target_key(self) -> None:
+        if self._manual_target_key is None:
+            return
+        self._manual_target_key = None
+        self._sync_target_key_control()
+
     def on_applicant_added(self, applicant: Applicant) -> None:
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
@@ -1913,7 +1919,10 @@ class OverlayWindow(QMainWindow):
                 self._empty_hide_timer.start()
 
     def on_listing_changed(self) -> None:
-        self._update_title()
+        self._schedule_overlay_refresh(
+            update_title=True,
+            maybe_show=self._state.count() > 0 or len(self._state.party_members) > 0,
+        )
         # Pop the window when listing is created — but only if there's actual
         # work to look at (applicants present). After group fills (apps=[]),
         # listing comment edits would re-show the window otherwise.
@@ -1950,6 +1959,7 @@ class OverlayWindow(QMainWindow):
         # arrives transiently when applicants come and go between listing-active
         # periods; hiding on every EMPTY would flicker the window.
         if self._state.listing is None:
+            self._clear_manual_target_key()
             self.hide()
 
     def on_roster_changed(self) -> None:
@@ -1961,6 +1971,7 @@ class OverlayWindow(QMainWindow):
             and self._state.count() == 0
             and self._state.listing is None
         ):
+            self._clear_manual_target_key()
             self._schedule_overlay_refresh(update_title=True, maybe_show=False)
             self.hide()
             return

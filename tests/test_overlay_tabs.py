@@ -229,3 +229,33 @@ def test_manual_target_key_recomputes_party_mplus_cells(qtbot, tmp_path):
     assert legacy_text == "90/80 +10"
     assert win._table.item(0, 7).text() == expected
     assert win._table.item(0, 7).text() != legacy_text
+
+
+def test_listing_change_recomputes_party_mplus_cells(qtbot, tmp_path):
+    state = AppState()
+    member = _ready_mplus_member()
+    state.party_members["dps-realm"] = member
+    win = _window(tmp_path, qtbot, state)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+
+    legacy_text = win._table.item(0, 7).text()
+    state.listing = _listing(key_level=10)
+    win.on_listing_changed()
+    win._flush_overlay_refresh()
+
+    expected, _fg, _bg = _mplus_cell_visuals(member, win._effective_listing())
+    assert legacy_text == "90/80 +10"
+    assert win._table.item(0, 7).text() == expected
+    assert win._table.item(0, 7).text() != legacy_text
+
+
+def test_empty_roster_clears_manual_target_key(qtbot, tmp_path):
+    state = AppState()
+    win = _window(tmp_path, qtbot, state)
+    win._tab_bar._key_spin.setValue(10)
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._manual_target_key is None
+    assert win._tab_bar._key_spin.value() == 0
