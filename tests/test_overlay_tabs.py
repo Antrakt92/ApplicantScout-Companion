@@ -75,6 +75,7 @@ def _listing(key_level: int = 12) -> Listing:
 def _window(tmp_path, qtbot, state: AppState) -> OverlayWindow:
     win = OverlayWindow(state, _FakeWCLClient(), _FakeCache(), tmp_path)
     qtbot.addWidget(win)
+    qtbot.addWidget(win._launcher)
     return win
 
 
@@ -136,7 +137,9 @@ def test_tabs_preserve_pins_independently(qtbot, tmp_path):
     assert win._pinned_id == "7:1"
 
 
-def test_roster_only_update_shows_party_tab(qtbot, tmp_path):
+def test_roster_only_update_prepares_party_tab_without_forcing_overlay_open(
+    qtbot, tmp_path
+):
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
     state.party_members["host-realm"].fetch_status = "ready"
@@ -145,7 +148,9 @@ def test_roster_only_update_shows_party_tab(qtbot, tmp_path):
     win.on_roster_changed()
     win._flush_overlay_refresh()
 
-    assert win.isVisible()
+    assert not win.isVisible()
+    assert win._launcher.isVisible()
+    assert win._collapsed_to_launcher
     assert win._active_tab == "party"
     assert win._table.rowCount() == 1
 

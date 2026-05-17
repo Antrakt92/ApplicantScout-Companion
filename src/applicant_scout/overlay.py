@@ -1846,6 +1846,7 @@ class OverlayWindow(QMainWindow):
                 y,
             )
         self.setGeometry(x, y, w, h)
+        self.show_launcher_only()
 
         # Auto-hide timer for "listing active but applicants empty" case.
         # M+ keystone listings don't auto-delist when group fills — the host
@@ -1925,6 +1926,9 @@ class OverlayWindow(QMainWindow):
 
     def collapse_to_launcher(self) -> None:
         self.flush_geometry()
+        self.show_launcher_only()
+
+    def show_launcher_only(self) -> None:
         self._collapsed_to_launcher = True
         self.hide()
         self._launcher.show_at(self._default_launcher_position())
@@ -1935,11 +1939,6 @@ class OverlayWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
-
-    def hide_completely(self) -> None:
-        self._collapsed_to_launcher = False
-        self._launcher.hide()
-        self.hide()
 
     def _on_source_tab_changed(self, key: str) -> None:
         if key == self._active_tab:
@@ -2015,7 +2014,7 @@ class OverlayWindow(QMainWindow):
             # ghost panel content from a stale id.
             self._hover_id = None
             self._pinned_id = None
-            self.hide_completely()
+            self.show_launcher_only()
             if self._state.listing is not None:
                 self._empty_hide_timer.start()
 
@@ -2061,7 +2060,7 @@ class OverlayWindow(QMainWindow):
         # periods; hiding on every EMPTY would flicker the window.
         if self._state.listing is None:
             self._clear_manual_target_key()
-            self.hide_completely()
+            self.show_launcher_only()
 
     def on_roster_changed(self) -> None:
         for member in self._state.party_members.values():
@@ -2074,7 +2073,7 @@ class OverlayWindow(QMainWindow):
         ):
             self._clear_manual_target_key()
             self._schedule_overlay_refresh(update_title=True, maybe_show=False)
-            self.hide_completely()
+            self.show_launcher_only()
             return
         should_show_party = self._state.count() == 0 and len(self._state.party_members) > 0
         if should_show_party:
@@ -2240,7 +2239,7 @@ class OverlayWindow(QMainWindow):
         still active. Auto-hide as a safety net for cases where M+ keystone
         listing isn't auto-delisted by Blizzard after group fills."""
         if self._state.count() == 0:
-            self.hide_completely()
+            self.show_launcher_only()
 
     # ─── hover/pin panel orchestration ─────
 
@@ -3052,7 +3051,9 @@ class OverlayWindow(QMainWindow):
             return False
         return super().eventFilter(obj, event)
 
-    def showEvent(self, event):
+    def showEvent(self, event):  # type: ignore[override]
+        self._collapsed_to_launcher = False
+        self._launcher.hide()
         super().showEvent(event)
         # Mouse may have moved while window was hidden — drop stale hover.
         # Pin survives intentionally (it's persistent user state).
