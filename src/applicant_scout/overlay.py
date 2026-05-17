@@ -7,7 +7,7 @@ import html
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QSizeGrip,
+    QSpinBox,
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
@@ -929,6 +930,7 @@ class TitleBar(QWidget):
 
 class SourceTabBar(QWidget):
     tabChanged = pyqtSignal(str)
+    keyChanged = pyqtSignal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -946,6 +948,22 @@ class SourceTabBar(QWidget):
             button.clicked.connect(lambda _checked=False, k=key: self.set_active(k))
             self._buttons[key] = button
             layout.addWidget(button)
+        self._key_label = QLabel("Key")
+        self._key_label.setObjectName("targetKeyLabel")
+        self._key_label.setToolTip("Manual Mythic+ key level for fit scoring.")
+        layout.addWidget(self._key_label)
+        self._key_spin = QSpinBox()
+        self._key_spin.setObjectName("targetKeySpin")
+        self._key_spin.setRange(0, 30)
+        self._key_spin.setSpecialValueText("—")
+        self._key_spin.setPrefix("+")
+        self._key_spin.setFixedWidth(54)
+        self._key_spin.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self._key_spin.setToolTip(
+            "Set the current Mythic+ key when the addon cannot read it from your own listing."
+        )
+        self._key_spin.valueChanged.connect(self.keyChanged.emit)
+        layout.addWidget(self._key_spin)
         layout.addStretch(1)
         self.set_counts(applicants=0, party=0)
         self.set_active("applicants", emit=False)
@@ -963,6 +981,12 @@ class SourceTabBar(QWidget):
             button.blockSignals(was_blocked)
         if emit:
             self.tabChanged.emit(key)
+
+    def set_target_key(self, key_level: int) -> None:
+        key_level = max(0, min(30, int(key_level)))
+        was_blocked = self._key_spin.blockSignals(True)
+        self._key_spin.setValue(key_level)
+        self._key_spin.blockSignals(was_blocked)
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -1556,8 +1580,10 @@ class OverlayWindow(QMainWindow):
             "applicants": None,
             "party": None,
         }
+        self._manual_target_key: int | None = None
         self._tab_bar = SourceTabBar(container)
         self._tab_bar.tabChanged.connect(self._on_source_tab_changed)
+        self._tab_bar.keyChanged.connect(self._on_target_key_changed)
         layout.addWidget(self._tab_bar)
 
         # Role filter bar — toggle TANK / HEAL / DPS to hide other-role rows.
@@ -1824,6 +1850,16 @@ class OverlayWindow(QMainWindow):
         self._pinned_id = self._pinned_by_tab.get(key)
         self._refresh_table()
         self._update_title()
+
+    def _on_target_key_changed(self, key_level: int) -> None:
+        new_key = key_level if key_level > 0 else None
+        if self._manual_target_key == new_key:
+            self._sync_target_key_control()
+            return
+        self._manual_target_key = new_key
+        self._refresh_table()
+        self._update_title()
+        self._sync_delegate_and_panel()
 
     def on_applicant_added(self, applicant: Applicant) -> None:
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
@@ -2101,11 +2137,32 @@ class OverlayWindow(QMainWindow):
             return self._state.party_members
         return self._state.applicants
 
+    def _effective_listing(self) -> Listing | None:
+        if self._manual_target_key is None:
+            return self._state.listing
+        if self._state.listing is not None:
+            return replace(self._state.listing, key_level=self._manual_target_key)
+        return Listing(
+            activity_id=0,
+            dungeon_name="Mythic+",
+            listing_name="",
+            comment="",
+            key_level=self._manual_target_key,
+            category_id=2,
+        )
+
+    def _sync_target_key_control(self) -> None:
+        if self._manual_target_key is not None:
+            self._tab_bar.set_target_key(self._manual_target_key)
+            return
+        listing = self._state.listing
+        self._tab_bar.set_target_key(listing.key_level if listing is not None else 0)
+
     def _active_sorted_rows(self) -> list[Applicant]:
         if self._active_tab == "party":
             return sort_roster_members(self._state.party_members.values())
         return sort_applicants_grouped(
-            self._state.applicants.values(), self._state.listing
+            self._state.applicants.values(), self._effective_listing()
         )
 
     def _resolve_visible_id(self) -> str | None:
@@ -2150,7 +2207,7 @@ class OverlayWindow(QMainWindow):
         raw_aid, _ = _split_composite(applicant.applicant_id)
         self._panel.setApplicantData(
             applicant,
-            self._state.listing,
+            self._effective_listing(),
             self._package_fit_by_raw.get(raw_aid) if self._active_tab == "applicants" else None,
         )
 
@@ -2299,6 +2356,7 @@ class OverlayWindow(QMainWindow):
                 row, col, _raid_dual_cell(best, median, applicant.fetch_status)
             )
         raw_aid, _ = _split_composite(applicant.applicant_id)
+        listing = self._effective_listing()
         package = self._package_fit_by_raw.get(raw_aid)
         if (
             package is not None
@@ -2308,12 +2366,12 @@ class OverlayWindow(QMainWindow):
             self._table.setItem(
                 row,
                 COL_MPLUS,
-                _mplus_group_cell(package, applicant, self._state.listing),
+                _mplus_group_cell(package, applicant, listing),
             )
         else:
             # M+ cell: context-fit display for M+ listings, legacy headline otherwise.
             self._table.setItem(
-                row, COL_MPLUS, _mplus_dual_cell(applicant, self._state.listing)
+                row, COL_MPLUS, _mplus_dual_cell(applicant, listing)
             )
 
     def _refresh_table(self) -> None:
@@ -2354,6 +2412,7 @@ class OverlayWindow(QMainWindow):
         self._delegate.set_group_markers({})
 
         sorted_applicants = self._active_sorted_rows()
+        listing = self._effective_listing()
         self._group_size_by_raw = {}
         self._package_fit_by_raw = {}
         if self._active_tab == "applicants":
@@ -2364,14 +2423,14 @@ class OverlayWindow(QMainWindow):
                     self._group_size_by_raw.get(raw_aid, 0) + 1
                 )
                 group_members.setdefault(raw_aid, []).append(applicant)
-            if detect_listing_context(self._state.listing) in (
+            if detect_listing_context(listing) in (
                 CONTEXT_MPLUS,
                 CONTEXT_RAID,
             ):
                 for raw_aid, members in group_members.items():
                     if len(members) < 2:
                         continue
-                    fit = package_fit(members, self._state.listing)
+                    fit = package_fit(members, listing)
                     if fit.display:
                         self._package_fit_by_raw[raw_aid] = fit
 
@@ -2743,9 +2802,10 @@ class OverlayWindow(QMainWindow):
             applicants=len(self._state.applicants),
             party=len(self._state.party_members),
         )
+        self._sync_target_key_control()
         if self._active_tab == "party":
             n = len(self._state.party_members)
-            listing = self._state.listing
+            listing = self._effective_listing()
             if listing is not None:
                 level = f" +{listing.key_level}" if listing.key_level > 0 else ""
                 dn = listing.dungeon_name
@@ -2761,7 +2821,7 @@ class OverlayWindow(QMainWindow):
                 self._title_bar.setTitleText(f"Party ({n})")
             self._title_bar.title_label.setToolTip(_format_listing_tooltip(listing))
             return
-        listing = self._state.listing
+        listing = self._effective_listing()
         n = self._state.count()
         # Filter-aware count: show (visible / total) when filter actually
         # hides rows; plain (total) otherwise. Single helper avoids the

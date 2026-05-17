@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 
-from applicant_scout.overlay import OverlayWindow
+from applicant_scout.overlay import _mplus_cell_visuals, OverlayWindow
 from applicant_scout.state import AppState, Applicant, Listing, RosterMember
 
 
@@ -42,6 +42,23 @@ def _member(member_id: str, name: str, role: str = "DAMAGER") -> RosterMember:
         score=3100,
         role=role,
     )
+
+
+def _ready_mplus_member(member_id: str = "dps-realm") -> RosterMember:
+    member = _member(member_id, "Dps-Realm", "DAMAGER")
+    member.fetch_status = "ready"
+    member.mplus_dps = 90.0
+    member.mplus_dps_median = 80.0
+    member.mplus_dps_breakdown = [
+        {
+            "name": "Pit of Saron",
+            "parse_percent": 90.0,
+            "median_percent": 80.0,
+            "key_level": 10,
+            "run_count": 3,
+        }
+    ]
+    return member
 
 
 def _listing(key_level: int = 12) -> Listing:
@@ -169,3 +186,45 @@ def test_party_title_keeps_listing_key_context(qtbot, tmp_path):
     qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
 
     assert win._title_bar.title_label.text() == "Party — Nexus-Point Xenas +12 (1)"
+
+
+def test_target_key_control_defaults_to_listing_key(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing(key_level=12)
+    win = _window(tmp_path, qtbot, state)
+
+    win._update_title()
+
+    assert win._tab_bar._key_spin.value() == 12
+
+
+def test_manual_target_key_creates_effective_party_listing(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["dps-realm"] = _ready_mplus_member()
+    win = _window(tmp_path, qtbot, state)
+
+    assert win._effective_listing() is None
+
+    win._tab_bar._key_spin.setValue(10)
+
+    listing = win._effective_listing()
+    assert listing is not None
+    assert listing.key_level == 10
+    assert listing.dungeon_name == "Mythic+"
+
+
+def test_manual_target_key_recomputes_party_mplus_cells(qtbot, tmp_path):
+    state = AppState()
+    member = _ready_mplus_member()
+    state.party_members["dps-realm"] = member
+    win = _window(tmp_path, qtbot, state)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+
+    legacy_text = win._table.item(0, 7).text()
+    win._tab_bar._key_spin.setValue(10)
+    win._refresh_table()
+    expected, _fg, _bg = _mplus_cell_visuals(member, win._effective_listing())
+
+    assert legacy_text == "90/80 +10"
+    assert win._table.item(0, 7).text() == expected
+    assert win._table.item(0, 7).text() != legacy_text
