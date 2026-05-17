@@ -59,6 +59,12 @@ configuration, and release-readiness hardening for live applicant scouting.
   the M+ fit formula when the compact same-dungeon summary was missing.
 - Fixed RaiderIO per-dungeon rows lowering the displayed same-dungeon key when
   the compact RaiderIO summary already had stronger same-dungeon evidence.
+- Fixed lower-key Warcraft Logs evidence making an overqualified applicant's
+  M+ fit cell display the lower WCL key instead of the stronger RaiderIO
+  timed-key evidence.
+- Fixed explicit hyphenated realm names such as `Король-лич` being split at
+  the wrong dash for local RaiderIO database enrichment, which could leave RIO
+  dungeon rows blank for those realms.
 - Fixed localized RaiderIO dungeon names splitting target-dungeon RIO and WCL
   evidence into separate hover-panel rows.
 - Fixed RIO-backed fit badges being hidden in the hover panel when Warcraft Logs

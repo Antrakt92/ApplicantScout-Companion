@@ -714,6 +714,37 @@ def test_mplus_scorecard_beats_low_key_parse_spike_for_target_key():
     assert "+17" in experienced_fit.display
 
 
+def test_mplus_scorecard_display_keeps_higher_rio_key_when_wcl_is_lower():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        score=3300,
+        rio_profile=True,
+        rio_best_key=18,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=4,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 16},
+            {"name": "Pit of Saron", "key_level": 18},
+            {"name": "Maisara Caverns", "key_level": 17},
+            {"name": "Algeth'ar Academy", "key_level": 17},
+            {"name": "Magisters' Terrace", "key_level": 16},
+            {"name": "Nexus-Point Xenas", "key_level": 16},
+            {"name": "Seat of the Triumvirate", "key_level": 16},
+            {"name": "Windrunner Spire", "key_level": 16},
+        ],
+        dps_breakdown=[_dungeon("Skyreach", [(14, 90.0, 86.0, 3)])],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.primary_key == 18
+    assert "+18" in fit.display
+
+
 def test_mplus_bad_relevant_wcl_caps_strong_scorecard_evidence():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(

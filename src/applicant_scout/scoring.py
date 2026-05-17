@@ -360,6 +360,7 @@ def _mplus_scorecard_candidate_fit(
     if target_key <= 0:
         return None
     same_dungeon_key = _rio_same_dungeon_key(applicant, listing)
+    rio_row_key_levels = _mplus_rio_row_key_levels(applicant)
     rio_key_levels = _mplus_rio_key_levels(applicant, target_key, same_dungeon_key)
     wcl_signals = [] if ignore_wcl else _mplus_wcl_signals(applicant, listing)
 
@@ -371,10 +372,9 @@ def _mplus_scorecard_candidate_fit(
     wcl_key_levels = [
         signal.key_level for signal in wcl_signals if signal.percentile >= 25.0
     ]
-    key_levels = list(rio_key_levels)
-    key_levels.extend(wcl_key_levels)
     primary_key = _mplus_primary_key(
         rio_key_levels=rio_key_levels,
+        rio_row_key_levels=rio_row_key_levels,
         wcl_signals=wcl_signals,
         target_key=target_key,
         same_dungeon_key=same_dungeon_key,
@@ -483,32 +483,44 @@ def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCL
 def _mplus_primary_key(
     *,
     rio_key_levels: list[int],
+    rio_row_key_levels: list[int],
     wcl_signals: list[_MPlusWCLSignal],
     target_key: int,
     same_dungeon_key: int,
 ) -> int:
-    positive_signals = [
-        (
-            _mplus_wcl_single_positive_score(signal, target_key),
-            signal.key_level,
-        )
+    positive_wcl_keys = [
+        signal.key_level
         for signal in wcl_signals
+        if _mplus_wcl_single_positive_score(signal, target_key) > 0.0
     ]
-    best_positive_signal = max(positive_signals, default=(0.0, 0))
-    if best_positive_signal[0] > 0.0:
-        return best_positive_signal[1]
-    return max(max(rio_key_levels, default=0), same_dungeon_key, 0)
+    if positive_wcl_keys:
+        concrete_rio_key = max(max(rio_row_key_levels, default=0), same_dungeon_key, 0)
+        if concrete_rio_key > 0:
+            return max(concrete_rio_key, max(positive_wcl_keys))
+        return max(positive_wcl_keys)
+    return max(
+        max(rio_key_levels, default=0),
+        same_dungeon_key,
+        0,
+    )
+
+
+def _mplus_rio_row_key_levels(applicant: Applicant) -> list[int]:
+    return [
+        level
+        for level in (
+            _positive_int(entry.get("key_level"))
+            for entry in applicant.rio_dungeons
+            if isinstance(entry, dict)
+        )
+        if level > 0
+    ]
 
 
 def _mplus_rio_key_levels(
     applicant: Applicant, target_key: int, same_dungeon_key: int
 ) -> list[int]:
-    row_levels = [
-        _positive_int(entry.get("key_level"))
-        for entry in applicant.rio_dungeons
-        if isinstance(entry, dict)
-    ]
-    row_levels = [level for level in row_levels if level > 0]
+    row_levels = _mplus_rio_row_key_levels(applicant)
     dungeon_count = _positive_int(applicant.rio_dungeon_count)
     expected_rows = min(MPLUS_DUNGEON_COUNT, dungeon_count or MPLUS_DUNGEON_COUNT)
     if len(row_levels) >= expected_rows:

@@ -37,6 +37,12 @@ class _FakeRioReader:
                     ]
                 },
             )()
+        if (name, realm, region) == ("Arthas", "Король-лич", "EU"):
+            return type(
+                "Profile",
+                (),
+                {"dungeons": [{"name": "Skyreach", "key_level": 15}]},
+            )()
         return None
 
 
@@ -246,6 +252,29 @@ def test_new_applicant_enriches_rio_dungeon_rows_from_local_reader():
     assert state.applicants["42:1"].rio_dungeons == [
         {"name": "Pit of Saron", "key_level": 12},
         {"name": "Skyreach", "key_level": 14},
+    ]
+
+
+def test_new_applicant_enriches_explicit_hyphenated_realm_from_local_reader():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_FakeRioReader())
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Arthas-Король-лич",
+                    rio_dungeons=[],
+                )
+            ],
+        )
+    )
+
+    assert state.applicants["42:1"].rio_dungeons == [
+        {"name": "Skyreach", "key_level": 15}
     ]
 
 

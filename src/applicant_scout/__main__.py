@@ -47,6 +47,7 @@ from .wcl import (
     applicant_has_explicit_realm,
     default_realm_from_player,
     derive_server_slug,
+    split_name_realm,
     wcl_metric_role,
 )
 from .wow_lifecycle import (
@@ -446,12 +447,8 @@ class StateMachine(QObject):
         rows = [dict(row) for row in decoded_rows]
         if self._rio_reader is None:
             return rows
-        name = decoded_name.strip()
         default_realm = default_realm_from_player(self._state.player.full_name)
-        if "-" in name:
-            name, realm = name.rsplit("-", 1)
-        else:
-            realm = default_realm
+        name, realm = split_name_realm(decoded_name, default_realm)
         region = REGION_ID_TO_WCL.get(self._state.player.region_id)
         try:
             profile = self._rio_reader.lookup_profile(
