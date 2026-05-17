@@ -6,7 +6,7 @@ from __future__ import annotations
 import html
 import logging
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2074,7 +2074,7 @@ class OverlayWindow(QMainWindow):
 
     # ─── hover/pin panel orchestration ─────
 
-    def _active_row_map(self) -> dict[str, Applicant]:
+    def _active_row_map(self) -> Mapping[str, Applicant]:
         if self._active_tab == "party":
             return self._state.party_members
         return self._state.applicants
