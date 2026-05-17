@@ -1236,7 +1236,7 @@ class ApplicantInfoPanel(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setAutoFillBackground(True)
         self.setMinimumHeight(INFO_PANEL_MIN_HEIGHT)
-        self.setMaximumHeight(INFO_PANEL_PREFERRED_HEIGHT)
+        self.setMaximumHeight(INFO_PANEL_MIN_HEIGHT)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 6, 10, 6)
@@ -1352,6 +1352,13 @@ class ApplicantInfoPanel(QFrame):
     def minimumSizeHint(self) -> QSize:  # type: ignore[override]
         hint = super().minimumSizeHint()
         return QSize(hint.width(), INFO_PANEL_MIN_HEIGHT)
+
+    def target_height(self) -> int:
+        return (
+            INFO_PANEL_PREFERRED_HEIGHT
+            if self._dungeon_widget.isVisible()
+            else INFO_PANEL_MIN_HEIGHT
+        )
 
     def setPlaceholder(self) -> None:
         """Show the compact hint when nothing is hovered/pinned."""
@@ -1837,6 +1844,8 @@ class OverlayWindow(QMainWindow):
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(500)
         self._save_timer.timeout.connect(self._persist_geometry)
+        self._suppress_geometry_persist = False
+        self._panel_anchor_extra_height = 0
 
         # Map of applicant_id -> table row (kept in sync with _id_by_row).
         self._row_for_id: dict[str, int] = {}
@@ -2393,6 +2402,42 @@ class OverlayWindow(QMainWindow):
             self._package_fit_by_raw.get(raw_aid) if self._active_tab == "applicants" else None,
         )
 
+    def _apply_panel_height_above_table(self) -> None:
+        if not self.isVisible():
+            self._panel_anchor_extra_height = 0
+            return
+
+        target_height = self._panel.target_height()
+        current_height = self._panel.height() or INFO_PANEL_MIN_HEIGHT
+        if (
+            current_height == target_height
+            and self._panel.minimumHeight() == target_height
+            and self._panel.maximumHeight() == target_height
+        ):
+            return
+
+        delta = target_height - current_height
+        self._panel.setMinimumHeight(target_height)
+        self._panel.setMaximumHeight(target_height)
+        self._panel_anchor_extra_height = max(0, target_height - INFO_PANEL_MIN_HEIGHT)
+        if delta == 0:
+            return
+
+        geom = self.geometry()
+        self._set_geometry_without_persist(
+            geom.x(),
+            geom.y() - delta,
+            geom.width(),
+            max(self.minimumHeight(), geom.height() + delta),
+        )
+
+    def _set_geometry_without_persist(self, x: int, y: int, w: int, h: int) -> None:
+        self._suppress_geometry_persist = True
+        try:
+            self.setGeometry(x, y, w, h)
+        finally:
+            self._suppress_geometry_persist = False
+
     def _sync_delegate_and_panel(self) -> None:
         """Single bookkeeping point for (delegate hover/pin row caches →
         viewport repaint → panel content). Called from EVERY mutation site
@@ -2408,6 +2453,7 @@ class OverlayWindow(QMainWindow):
         if vp is not None:
             vp.update()
         self._refresh_panel()
+        self._apply_panel_height_above_table()
 
     def _on_cell_entered(self, row: int, _col: int) -> None:
         # Bounds check guards against (a) ever-zero state during init,
@@ -3058,8 +3104,15 @@ class OverlayWindow(QMainWindow):
 
     def _persist_geometry(self) -> None:
         g = self.geometry()
+        extra = self._panel_anchor_extra_height
         save_geometry(
-            self._config_dir, WindowGeometry(g.x(), g.y(), g.width(), g.height())
+            self._config_dir,
+            WindowGeometry(
+                g.x(),
+                g.y() + extra,
+                g.width(),
+                max(self.minimumHeight(), g.height() - extra),
+            ),
         )
 
     def flush_geometry(self) -> None:
@@ -3159,10 +3212,13 @@ class OverlayWindow(QMainWindow):
 
     def moveEvent(self, event):
         super().moveEvent(event)
-        self._save_timer.start()
+        if not self._suppress_geometry_persist:
+            self._save_timer.start()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self._suppress_geometry_persist:
+            return
         self._save_timer.start()
         # Geometry change can shift cells under a stationary cursor without
         # firing cellEntered — re-resolve hover from cursor position.

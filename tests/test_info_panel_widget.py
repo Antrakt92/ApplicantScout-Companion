@@ -579,6 +579,66 @@ def test_overlay_table_position_stays_fixed_when_panel_dungeon_rows_change(
         client.close()
 
 
+def test_compact_overlay_table_screen_position_stays_fixed_when_panel_expands_up(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    compact = _app(
+        applicant_id="compact",
+        fetch_status="ready",
+        mplus_dps=None,
+        mplus_dps_median=None,
+        mplus_dps_breakdown=[],
+        rio_dungeons=[],
+    )
+    detailed = _app(
+        applicant_id="detailed",
+        fetch_status="ready",
+        mplus_dps=90.0,
+        mplus_dps_median=80.0,
+        mplus_dps_breakdown=[
+            {
+                "name": f"Dungeon {idx}",
+                "parse_percent": 80.0 + idx,
+                "median_percent": 70.0 + idx,
+                "key_level": 10 + idx,
+                "run_count": 2,
+            }
+            for idx in range(8)
+        ],
+    )
+    state.add_or_update(compact)
+    state.add_or_update(detailed)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.setGeometry(160, 180, 360, 240)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        window._hover_id = "compact"
+        window._sync_delegate_and_panel()
+        QApplication.processEvents()
+        compact_table_top = window._table.mapToGlobal(QPoint(0, 0)).y()
+
+        window._hover_id = "detailed"
+        window._sync_delegate_and_panel()
+        QApplication.processEvents()
+
+        assert window._table.mapToGlobal(QPoint(0, 0)).y() == compact_table_top
+        assert window._panel.height() > 80
+        assert window.y() < 180
+    finally:
+        client.close()
+
+
 def test_overlay_constructor_initializes_geometry_event_state_before_set_geometry(
     monkeypatch, qtbot, tmp_path
 ):
