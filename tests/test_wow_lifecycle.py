@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,31 @@ def test_is_wow_running_returns_false_when_tasklist_has_no_wow(
     )
 
     assert not wow_lifecycle.is_wow_running()
+
+
+def test_is_wow_foreground_accepts_wow_process(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda: 123)
+    monkeypatch.setattr(
+        wow_lifecycle,
+        "process_name_for_pid",
+        lambda pid: "Wow.exe" if pid == 123 else None,
+    )
+
+    assert wow_lifecycle.is_wow_foreground()
+
+
+def test_is_wow_foreground_accepts_current_process(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", os.getpid)
+    monkeypatch.setattr(wow_lifecycle, "process_name_for_pid", lambda _pid: "python.exe")
+
+    assert wow_lifecycle.is_wow_foreground()
+
+
+def test_is_wow_foreground_rejects_other_process(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda: 456)
+    monkeypatch.setattr(wow_lifecycle, "process_name_for_pid", lambda _pid: "chrome.exe")
+
+    assert not wow_lifecycle.is_wow_foreground()
 
 
 def test_configure_wow_sync_startup_creates_watch_shortcut(

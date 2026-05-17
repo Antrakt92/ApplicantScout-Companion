@@ -668,6 +668,73 @@ def test_overlay_starts_collapsed_with_launcher_visible(qtbot, tmp_path):
         client.close()
 
 
+def test_overlay_launcher_waits_for_game_foreground(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": False}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        assert window._collapsed_to_launcher
+        assert not window._launcher.isVisible()
+        assert not window.isVisible()
+
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+    finally:
+        client.close()
+
+
+def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+
+        assert window.isVisible()
+        assert not window._launcher.isVisible()
+    finally:
+        client.close()
+
+
 def test_title_bar_hide_button_collapses_to_launcher_without_shutdown(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)

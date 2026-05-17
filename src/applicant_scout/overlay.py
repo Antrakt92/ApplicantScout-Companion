@@ -130,6 +130,7 @@ MIN_VISIBLE_WINDOW_WIDTH = 420
 USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
 LAUNCHER_SIZE = 42
+GAME_FOREGROUND_POLL_MS = 500
 MPLUS_GROUP_COLUMN_WIDTH = 188
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
 MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
@@ -1620,6 +1621,7 @@ class OverlayWindow(QMainWindow):
         config_dir,
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
         show_settings: Callable[[], None] | None = None,
+        game_foreground_probe: Callable[[], bool] | None = None,
     ):
         super().__init__()
 
@@ -1629,6 +1631,8 @@ class OverlayWindow(QMainWindow):
         self._config_dir = config_dir
         self._metric_preferences = metric_preferences
         self._show_settings = show_settings
+        self._game_foreground_probe = game_foreground_probe or (lambda: True)
+        self._game_foreground = self._is_game_foreground()
         self._collapsed_to_launcher = False
         self._launcher = OverlayLauncher()
         self._launcher.clicked.connect(self.restore_from_launcher)
@@ -1893,6 +1897,10 @@ class OverlayWindow(QMainWindow):
         self._quota_timer.setInterval(1000)
         self._quota_timer.timeout.connect(self._refresh_status_row)
         self._quota_timer.start()
+        self._foreground_timer = QTimer(self)
+        self._foreground_timer.setInterval(GAME_FOREGROUND_POLL_MS)
+        self._foreground_timer.timeout.connect(self._sync_game_foreground_visibility)
+        self._foreground_timer.start()
         self._refresh_status_row()  # initial paint of "WCL: —/—" + "shot —"
         for applicant in self._state.applicants.values():
             applicant.project_wcl_data_to_preferences(self._metric_preferences)
@@ -1940,14 +1948,41 @@ class OverlayWindow(QMainWindow):
     def show_launcher_only(self) -> None:
         self._collapsed_to_launcher = True
         self.hide()
-        self._launcher.show_at(self._default_launcher_position())
+        if self._game_foreground:
+            self._launcher.show_at(self._default_launcher_position())
+        else:
+            self._launcher.hide()
 
     def restore_from_launcher(self) -> None:
         self._collapsed_to_launcher = False
         self._launcher.hide()
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        if self._game_foreground:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def _is_game_foreground(self) -> bool:
+        try:
+            return bool(self._game_foreground_probe())
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Game foreground probe failed: %s", exc)
+            return True
+
+    def _sync_game_foreground_visibility(self) -> None:
+        foreground = self._is_game_foreground()
+        if foreground == self._game_foreground:
+            return
+        self._game_foreground = foreground
+        if not foreground:
+            self._launcher.hide()
+            if self.isVisible():
+                self.hide()
+            return
+        if self._collapsed_to_launcher:
+            self._launcher.show_at(self._default_launcher_position())
+        else:
+            self.show()
+            self.raise_()
 
     def _on_source_tab_changed(self, key: str) -> None:
         if key == self._active_tab:

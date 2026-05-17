@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +14,7 @@ STARTUP_SHORTCUT_NAME = "ApplicantScout Companion.lnk"
 WATCH_WOW_ARG = "--watch-wow"
 WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe", "WowClassic.exe", "WowClassicT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
 def _startup_folder() -> Path:
@@ -53,6 +56,65 @@ def is_wow_running(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
         return False
     output = completed.stdout.casefold()
     return any(name.casefold() in output for name in process_names)
+
+
+def foreground_process_id() -> int | None:
+    """Return the process id for the foreground window on Windows."""
+    if sys.platform != "win32":
+        return None
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        pid = wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value) if pid.value else None
+    except (AttributeError, OSError):
+        return None
+
+
+def process_name_for_pid(pid: int) -> str | None:
+    """Return the executable basename for a Windows process id."""
+    if sys.platform != "win32" or pid <= 0:
+        return None
+    handle = None
+    try:
+        handle = ctypes.windll.kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION,
+            False,
+            pid,
+        )
+        if not handle:
+            return None
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        ok = ctypes.windll.kernel32.QueryFullProcessImageNameW(
+            handle,
+            0,
+            buffer,
+            ctypes.byref(size),
+        )
+        if not ok:
+            return None
+        return Path(buffer.value).name
+    except (AttributeError, OSError, ValueError):
+        return None
+    finally:
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def is_wow_foreground(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
+    """Return True when the active window is WoW or this companion process."""
+    pid = foreground_process_id()
+    if pid is None:
+        return sys.platform != "win32"
+    if pid == os.getpid():
+        return True
+    name = process_name_for_pid(pid)
+    if not name:
+        return False
+    return any(name.casefold() == process_name.casefold() for process_name in process_names)
 
 
 def is_wow_sync_watcher_running(*, executable_path: Path | None = None) -> bool:
