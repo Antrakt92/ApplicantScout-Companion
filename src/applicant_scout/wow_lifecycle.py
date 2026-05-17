@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 
 STARTUP_SHORTCUT_NAME = "ApplicantScout Companion.lnk"
@@ -170,12 +168,3 @@ def start_wow_sync_watcher(
         close_fds=True,
         creationflags=_CREATE_NO_WINDOW,
     )
-
-
-def wait_for_wow_start(
-    *,
-    interval_seconds: float = 5.0,
-    is_running: Callable[[], bool] = is_wow_running,
-) -> None:
-    while not is_running():
-        time.sleep(interval_seconds)

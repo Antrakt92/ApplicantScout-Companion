@@ -386,19 +386,3 @@ def _installer_self_update_args() -> list[str]:
         f"/APSCOUT_SOURCE_PID={os.getpid()}",
         f"/APSCOUT_SOURCE_PATH={sys.executable}",
     ]
-
-
-def download_and_launch_update(current_version: str) -> str:
-    result = check_for_update(current_version)
-    if result.status == "unavailable":
-        raise RuntimeError(result.message)
-    if result.status != "available":
-        return result.message
-    if not result.asset_name or not result.asset_url:
-        raise RuntimeError(result.message)
-    installer = download_update_installer(result)
-    launch_update_installer(installer)
-    return (
-        f"Installing ApplicantScout Companion {result.latest_version}. "
-        "The companion may close and reopen during the update."
-    )

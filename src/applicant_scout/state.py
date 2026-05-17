@@ -45,8 +45,7 @@ class Applicant:
     rio_completed_at_or_above_minus1: int = 0
     rio_dungeon_count: int = 0
     # Highest timed RaiderIO key per dungeon, enriched from the local RaiderIO
-    # addon DB when available. Older test/dev QR wire v6 snapshots may also
-    # carry this directly, but release QR payloads keep string rows out of
+    # addon DB when available. Release QR payloads keep string rows out of
     # screenshot transport so the code stays small enough to paint reliably.
     rio_dungeons: list[dict] = field(default_factory=list)
 

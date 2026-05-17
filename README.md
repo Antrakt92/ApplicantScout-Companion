@@ -107,7 +107,7 @@ supporting evidence. Healer M+ rows use HPS; tank and damage rows use DPS.
 The RIO column shows the applying character's current score. If the RaiderIO
 addon is installed in WoW and exposes a higher current-season main score for an
 alt, the overlay displays `current [main]` and uses the higher score for
-sorting fallback support. With ApplicantScout addon wire v6, RaiderIO's
+sorting fallback support. With ApplicantScout addon wire v5, RaiderIO's
 per-dungeon completed-key summary and highest timed keys feed the M+ scorecard
 and hover panel so missing logs stay unknown, weak relevant logs count against
 the applicant, and strong near-target logs can beat dry key completion.
@@ -117,7 +117,7 @@ back to the applying character's score and available logs.
 ## Version Compatibility
 
 ApplicantScout Companion supports the latest ApplicantScout WoW addon release
-and ApplicantScout wire payloads through v6.
+and ApplicantScout wire payloads through v5.
 
 ## Updates
 

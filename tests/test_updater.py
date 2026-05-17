@@ -11,7 +11,6 @@ from applicant_scout.updater import (
     DEFAULT_RELEASE_REPO,
     UpdateResult,
     check_for_update,
-    download_and_launch_update,
     download_update_installer,
     launch_update_installer,
 )
@@ -692,47 +691,3 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
             f"/APSCOUT_SOURCE_PATH={sys.executable}",
         ]
     ]
-
-
-def test_download_and_launch_update_raises_for_uninstallable_release(monkeypatch):
-    result = UpdateResult(
-        status="available",
-        message=(
-            "Version v0.2.0 is available, but the installer checksum asset "
-            "was not published."
-        ),
-        current_version="0.1.0",
-        latest_version="v0.2.0",
-        release_url="https://github.com/Antrakt92/ApplicantScout-Companion/releases/tag/v0.2.0",
-    )
-
-    monkeypatch.setattr("applicant_scout.updater.check_for_update", lambda _version: result)
-
-    def fail_download(*_args, **_kwargs):
-        raise AssertionError("uninstallable releases should not be downloaded")
-
-    monkeypatch.setattr("applicant_scout.updater.download_update_installer", fail_download)
-    monkeypatch.setattr("applicant_scout.updater.launch_update_installer", fail_download)
-
-    try:
-        download_and_launch_update("0.1.0")
-    except RuntimeError as exc:
-        assert "checksum" in str(exc).lower()
-    else:
-        raise AssertionError("uninstallable releases must surface as errors")
-
-
-def test_download_and_launch_update_raises_for_unavailable_update_check(monkeypatch):
-    result = UpdateResult(
-        status="unavailable",
-        message="GitHub update check failed: offline",
-        current_version="0.1.0",
-    )
-    monkeypatch.setattr("applicant_scout.updater.check_for_update", lambda _version: result)
-
-    try:
-        download_and_launch_update("0.1.0")
-    except RuntimeError as exc:
-        assert "offline" in str(exc)
-    else:
-        raise AssertionError("unavailable update checks must surface as errors")

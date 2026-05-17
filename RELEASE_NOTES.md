@@ -81,8 +81,8 @@ configuration, and release-readiness hardening for live applicant scouting.
 ### Compatibility
 
 - Requires the ApplicantScout WoW addon `0.2.0`.
-- Supports ApplicantScout wire payloads through v6, while the paired release
-  addon emits the compact v5 payload to keep QR capture reliable.
+- Supports ApplicantScout wire payloads through v5, keeping RaiderIO dungeon
+  rows as companion-side local enrichment instead of QR transport data.
 - In-app updates require GitHub Release assets named
   `ApplicantScoutCompanionSetup-0.3.0.exe` and
   `ApplicantScoutCompanionSetup-0.3.0.exe.sha256`.

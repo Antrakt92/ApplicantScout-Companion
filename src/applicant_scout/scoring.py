@@ -39,6 +39,8 @@ FIT_LABEL_BUCKETS: list[tuple[float, str]] = [
     (50.0, "OK"),
     (0.0, "RISK"),
 ]
+
+
 @dataclass(frozen=True)
 class CandidateFit:
     context: str = CONTEXT_UNKNOWN
@@ -88,14 +90,6 @@ class _PackageParams:
 
 
 @dataclass(frozen=True)
-class _BracketFit:
-    dungeon_name: str
-    key_level: int
-    fit: float
-    run_count: int
-
-
-@dataclass(frozen=True)
 class _MPlusWCLSignal:
     dungeon_name: str
     key_level: int
@@ -132,7 +126,7 @@ def candidate_fit(applicant: Applicant, listing: Listing | None) -> CandidateFit
     context = detect_listing_context(listing)
     if context == CONTEXT_MPLUS and listing is not None:
         if _is_terminal_fetch_status(applicant.fetch_status):
-            rio_fit = _mplus_rio_completion_candidate_fit(applicant, listing)
+            rio_fit = _mplus_terminal_scorecard_candidate_fit(applicant, listing)
             if rio_fit is not None:
                 return rio_fit
             return CandidateFit(
@@ -329,7 +323,7 @@ def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
     return best_key
 
 
-def _mplus_rio_completion_candidate_fit(
+def _mplus_terminal_scorecard_candidate_fit(
     applicant: Applicant, listing: Listing
 ) -> CandidateFit | None:
     return _mplus_scorecard_candidate_fit(

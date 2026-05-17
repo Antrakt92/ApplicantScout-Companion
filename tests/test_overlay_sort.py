@@ -526,7 +526,7 @@ def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
 
 
-def test_mplus_not_found_with_strong_rio_completion_sorts_by_fit_not_status_bucket():
+def test_mplus_not_found_with_strong_scorecard_evidence_sorts_by_fit():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",

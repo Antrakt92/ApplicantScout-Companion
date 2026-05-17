@@ -562,7 +562,7 @@ def test_mplus_healer_uses_hps_breakdown_and_ignores_dps():
     assert fit.score < 80
 
 
-def test_mplus_rio_completion_profile_rescues_missing_wcl_without_top_rating():
+def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3200,
@@ -584,7 +584,7 @@ def test_mplus_rio_completion_profile_rescues_missing_wcl_without_top_rating():
     assert "+17" in fit.display
 
 
-def test_mplus_rio_completion_uses_rio_dungeon_rows_for_same_dungeon_key():
+def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
     target = _listing(activity_id=404, key_level=16, dungeon_name="Небесный Путь")
     applicant = _app(
         score=3200,
@@ -607,7 +607,7 @@ def test_mplus_rio_completion_uses_rio_dungeon_rows_for_same_dungeon_key():
     assert fit.confidence >= 0.55
 
 
-def test_mplus_rio_completion_keeps_higher_summary_same_dungeon_key():
+def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
     target = _listing(activity_id=404, key_level=16, dungeon_name="Небесный Путь")
     applicant = _app(
         score=3200,
@@ -642,7 +642,7 @@ def test_mplus_rio_completion_keeps_higher_summary_same_dungeon_key():
     assert fit.score > candidate_fit(weaker_same_dungeon, target).score
 
 
-def test_mplus_rio_completion_profile_rescues_not_found_wcl_status():
+def test_mplus_scorecard_rio_summary_rescues_not_found_wcl_status():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3200,
@@ -664,7 +664,7 @@ def test_mplus_rio_completion_profile_rescues_not_found_wcl_status():
     assert "+17" in fit.display
 
 
-def test_mplus_terminal_wcl_status_ignores_stale_wcl_but_uses_rio_completion():
+def test_mplus_terminal_wcl_status_ignores_stale_wcl_but_uses_scorecard():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3300,
@@ -687,7 +687,7 @@ def test_mplus_terminal_wcl_status_ignores_stale_wcl_but_uses_rio_completion():
     assert "+18" in fit.display
 
 
-def test_mplus_rio_completion_beats_low_key_parse_spike_for_target_key():
+def test_mplus_scorecard_beats_low_key_parse_spike_for_target_key():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     low_key_parse_spike = _app(
         score=3098,
@@ -714,7 +714,7 @@ def test_mplus_rio_completion_beats_low_key_parse_spike_for_target_key():
     assert "+17" in experienced_fit.display
 
 
-def test_mplus_bad_relevant_wcl_caps_strong_rio_completion():
+def test_mplus_bad_relevant_wcl_caps_strong_scorecard_evidence():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3300,

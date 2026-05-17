@@ -60,7 +60,6 @@ def _build_applicant_block(
     rio_timed_at_or_above_minus2: int = 0,
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
-    rio_dungeons: list[tuple[int, str]] | None = None,
     *,
     version: int,
 ) -> bytes:
@@ -71,7 +70,6 @@ def _build_applicant_block(
     class_id).
     version=4: inserts main_score u16 after current score.
     version=5: inserts compact RaiderIO completion summary after main_score.
-    version=6: inserts RaiderIO per-dungeon key rows after summary.
     """
     out = struct.pack(">I", aid)
     if version >= 2:
@@ -95,12 +93,6 @@ def _build_applicant_block(
                 rio_dungeon_count,
             ]
         )
-    if version >= 6:
-        rows = rio_dungeons or []
-        out += bytes([len(rows)])
-        for key_level, dungeon_name in rows:
-            out += bytes([key_level])
-            out += _pack_len_str(dungeon_name.encode("utf-8"))
     out += bytes([role])
     out += _pack_len_str(name.encode("utf-8"))
     return out
@@ -354,8 +346,17 @@ def test_wire_versions_supported_pin():
     assert 0x03 in WIRE_VERSIONS_SUPPORTED
     assert 0x04 in WIRE_VERSIONS_SUPPORTED
     assert 0x05 in WIRE_VERSIONS_SUPPORTED
-    assert 0x06 in WIRE_VERSIONS_SUPPORTED
+    assert 0x06 not in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
+
+
+def test_v6_payload_is_rejected_instead_of_parsed_as_qr_dungeon_rows():
+    raw = _wrap_payload(_build_body([]), wire_ver=0x06)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert snap is None
+    assert error == "unsupported wire version 0x06"
 
 
 def test_crc_valid_payload_with_trailing_body_bytes_is_rejected():
@@ -464,91 +465,6 @@ def test_v5_applicant_block_parses_rio_completion_summary():
     assert applicant.rio_dungeon_count == 8
     assert applicant.role == 2
     assert applicant.name == "Rio-Realm"
-
-
-def test_v6_applicant_block_parses_rio_dungeon_rows():
-    blocks = [
-        _build_applicant_block(
-            aid=7,
-            member_idx=1,
-            class_id=8,
-            spec_id=63,
-            ilvl=488,
-            score=3321,
-            main_score=3550,
-            rio_profile=1,
-            rio_best_key=17,
-            rio_best_dungeon_key=15,
-            rio_timed_at_or_above=1,
-            rio_timed_at_or_above_minus1=8,
-            rio_timed_at_or_above_minus2=8,
-            rio_completed_at_or_above_minus1=8,
-            rio_dungeon_count=8,
-            rio_dungeons=[
-                (15, "Skyreach"),
-                (16, "Pit of Saron"),
-            ],
-            role=2,
-            name="Rio-Realm",
-            version=6,
-        ),
-    ]
-
-    snap = _parse_payload(_build_body(blocks), wire_ver=0x06)
-    applicant = snap.applicants[0]
-
-    assert applicant.rio_dungeons == [
-        {"key_level": 15, "name": "Skyreach"},
-        {"key_level": 16, "name": "Pit of Saron"},
-    ]
-    assert applicant.role == 2
-    assert applicant.name == "Rio-Realm"
-
-
-def test_v6_applicant_block_rejects_over_limit_rio_dungeon_row_count():
-    block = _build_applicant_block(
-        aid=7,
-        member_idx=1,
-        class_id=8,
-        spec_id=63,
-        ilvl=488,
-        score=3321,
-        main_score=3550,
-        rio_profile=1,
-        rio_dungeon_count=8,
-        rio_dungeons=[(10 + idx, f"Dungeon {idx}") for idx in range(17)],
-        role=2,
-        name="Rio-Realm",
-        version=6,
-    )
-    raw = _wrap_payload(_build_body([block]), wire_ver=0x06)
-
-    snap, error = _try_parse_appscout_payload(raw)
-
-    assert snap is None
-    assert error is not None
-    assert "rio_dungeon_count 17 exceeds sane limit 16" in error
-
-
-def test_v6_applicant_block_rejects_truncated_rio_dungeon_row():
-    block = (
-        struct.pack(">I", 7)
-        + bytes([1, 8])
-        + struct.pack(">H", 63)
-        + struct.pack(">H", 488)
-        + struct.pack(">H", 3321)
-        + struct.pack(">H", 3550)
-        + bytes([1, 17, 15, 1, 8, 8, 8, 8])
-        + bytes([1, 15, 8])
-        + b"Sky"
-    )
-    raw = _wrap_payload(_build_body([block]), wire_ver=0x06)
-
-    snap, error = _try_parse_appscout_payload(raw)
-
-    assert snap is None
-    assert error is not None
-    assert "parse error:" in error
 
 
 def test_v3_payload_back_compat_main_score_defaults_to_zero():

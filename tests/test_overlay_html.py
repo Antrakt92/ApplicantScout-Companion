@@ -230,7 +230,7 @@ def test_mplus_cell_visuals_listing_status_precedes_stale_fit(status, expected):
     assert text == expected
 
 
-def test_mplus_cell_visuals_listing_loading_precedes_rio_fallback():
+def test_mplus_cell_visuals_listing_loading_precedes_scorecard_fallback():
     text, _fg, _bg = _mplus_cell_visuals(
         _app(
             fetch_status="loading",

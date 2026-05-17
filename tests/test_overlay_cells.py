@@ -74,7 +74,7 @@ def test_mplus_dual_cell_listing_error_status_precedes_stale_fit():
     assert item.text() == "?"
 
 
-def test_mplus_dual_cell_listing_not_found_can_show_rio_completion_fit():
+def test_mplus_dual_cell_listing_not_found_can_show_scorecard_fit():
     item = _mplus_dual_cell(
         _app(
             score=3200,
