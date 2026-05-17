@@ -147,7 +147,7 @@ class _RegionDB:
         return _decode_profile(record, self._meta.encoding_order, self._dungeons)
 
     def _realm_data(self, realm: str) -> tuple[int, list[str]] | None:
-        cache_key = realm.casefold()
+        cache_key = _realm_lookup_key(realm)
         if cache_key not in self._realm_cache:
             text = self._characters_path.read_text(encoding="utf-8", errors="replace")
             self._realm_cache[cache_key] = _parse_realm_data(text, realm)
@@ -160,6 +160,10 @@ def retail_root_from_screenshots_path(path: Path) -> Path | None:
         if parent.name.lower() == "_retail_":
             return parent
     return None
+
+
+def _realm_lookup_key(realm: str) -> str:
+    return "".join(char for char in realm.casefold() if char.isalnum())
 
 
 def _parse_provider_meta(text: str) -> _ProviderMeta:
@@ -225,9 +229,10 @@ def _parse_dungeon_names(text: str) -> list[str]:
 
 
 def _parse_realm_data(text: str, realm: str) -> tuple[int, list[str]] | None:
+    lookup_key = _realm_lookup_key(realm)
     pattern = re.compile(r'provider\.db\["([^"]+)"\]\s*=\s*\{')
     for match in pattern.finditer(text):
-        if match.group(1).casefold() != realm.casefold():
+        if _realm_lookup_key(match.group(1)) != lookup_key:
             continue
         start = match.end()
         end = text.find("}", start)

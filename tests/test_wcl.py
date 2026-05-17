@@ -111,6 +111,12 @@ def test_derive_server_slug_ru_map_hit():
     assert derive_server_slug("ГОРДУННИ") == "gordunni"
 
 
+def test_derive_server_slug_ru_map_accepts_wow_normalized_realm_names():
+    assert derive_server_slug("Ревущийфьорд") == "howling-fjord"
+    assert derive_server_slug("Корольлич") == "lich-king"
+    assert derive_server_slug("СвежевательДуш") == "soulflayer"
+
+
 # ─── _zone_avg ────────────────────────────────────────────────────────────────
 
 

@@ -1231,23 +1231,31 @@ RU_REALM_MAP: dict[str, str] = {
 }
 
 
-_RU_REALM_MAP_LOWER = {k.lower(): v for k, v in RU_REALM_MAP.items()}
+def _realm_map_keys(realm: str) -> tuple[str, str]:
+    lower = realm.lower()
+    compact = "".join(char for char in lower if char.isalnum())
+    return lower, compact
+
+
+_RU_REALM_MAP_LOWER: dict[str, str] = {}
+for _realm_name, _realm_slug in RU_REALM_MAP.items():
+    for _realm_key in _realm_map_keys(_realm_name):
+        _RU_REALM_MAP_LOWER[_realm_key] = _realm_slug
 
 
 def derive_server_slug(realm_raw: str) -> str:
     """Convert WoW-side realm name to WCL server slug.
 
-    RU map lookup is case-insensitive (key normalized via .lower()) — Blizzard
-    sometimes returns "Свежеватель Душ" (capital Д) and sometimes "Свежеватель
-    душ" depending on locale settings. Without normalization the second word's
-    case mismatch silently misses the hardcoded slug and falls through to
-    Cyrillic generic fallback ("свежеватель-душ"), which doesn't exist on WCL."""
+    RU map lookup is case-insensitive and also accepts WoW-normalized realm
+    names without spaces/dashes. Without that, "Ревущийфьорд" falls through to a
+    Cyrillic generic fallback, which is not a valid WCL server slug."""
     realm = realm_raw.strip()
     if not realm:
         return ""
-    mapped = _RU_REALM_MAP_LOWER.get(realm.lower())
-    if mapped:
-        return mapped
+    for key in _realm_map_keys(realm):
+        mapped = _RU_REALM_MAP_LOWER.get(key)
+        if mapped:
+            return mapped
     # Generic fallback: lowercase + replace whitespace/apostrophes with hyphens
     s = realm.lower()
     s = s.replace("'", "").replace("’", "")  # straight + curly apostrophes

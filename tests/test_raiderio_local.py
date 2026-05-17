@@ -65,6 +65,35 @@ def test_reader_decodes_timed_dungeon_rows_from_local_raiderio_db(tmp_path: Path
     assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
 
 
+def test_reader_matches_display_realm_against_raiderio_normalized_realm_key(
+    tmp_path: Path,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    characters_path = (
+        tmp_path
+        / "Interface"
+        / "AddOns"
+        / "RaiderIO"
+        / "db"
+        / "db_mythicplus_eu_characters.lua"
+    )
+    characters_path.write_text(
+        'local provider={name=...,data=1,region="eu",db={}}\n'
+        'provider.db["Корольлич"]={5,"Arthas"}\n',
+        encoding="utf-8",
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+
+    profile = reader.lookup_profile("Arthas", "Король-лич", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3074
+    assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+
+
 def test_reader_returns_none_when_raiderio_db_is_missing(tmp_path: Path):
     reader = RaiderIOLocalReader(tmp_path)
 

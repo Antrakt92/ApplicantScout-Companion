@@ -65,6 +65,9 @@ configuration, and release-readiness hardening for live applicant scouting.
 - Fixed explicit hyphenated realm names such as `Король-лич` being split at
   the wrong dash for local RaiderIO database enrichment, which could leave RIO
   dungeon rows blank for those realms.
+- Fixed WoW-normalized Russian realm names such as `Ревущийфьорд` and
+  `Корольлич` falling through to invalid Warcraft Logs Cyrillic slugs or
+  missing the local RaiderIO realm row.
 - Fixed localized RaiderIO dungeon names splitting target-dungeon RIO and WCL
   evidence into separate hover-panel rows.
 - Fixed RIO-backed fit badges being hidden in the hover panel when Warcraft Logs
