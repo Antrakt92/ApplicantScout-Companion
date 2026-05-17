@@ -10,6 +10,7 @@ from applicant_scout.state import AppState, Applicant, RosterMember
 
 class _FakeWCLClient:
     last_quota = None
+    region = "EU"
 
     def quota_reset_remaining_seconds(self):
         return None
@@ -105,3 +106,32 @@ def test_tabs_preserve_pins_independently(qtbot, tmp_path):
     assert win._pinned_by_tab["applicants"] == "7:1"
     assert win._pinned_by_tab["party"] == "host-realm"
     assert win._pinned_id == "7:1"
+
+
+def test_roster_only_update_shows_party_tab(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    state.party_members["host-realm"].fetch_status = "ready"
+    win = _window(tmp_path, qtbot, state)
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win.isVisible()
+    assert win._active_tab == "party"
+    assert win._table.rowCount() == 1
+
+
+def test_cleared_snapshot_preserves_visible_party_roster(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._active_tab = "party"
+    win.show()
+
+    win.on_cleared()
+    win._flush_overlay_refresh()
+
+    assert win.isVisible()
+    assert win._active_tab == "party"
+    assert win._table.rowCount() == 1

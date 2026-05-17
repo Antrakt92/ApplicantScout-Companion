@@ -1809,7 +1809,9 @@ class OverlayWindow(QMainWindow):
         self._refresh_table()
         if update_title:
             self._update_title()
-        if maybe_show and self._state.listing is not None and self._state.count() > 0:
+        if maybe_show and (
+            self._state.count() > 0 or len(self._state.party_members) > 0
+        ):
             self._maybe_show()
 
     def _on_source_tab_changed(self, key: str) -> None:
@@ -1903,9 +1905,14 @@ class OverlayWindow(QMainWindow):
         self._pinned_id = None
         self._sync_delegate_and_panel()
         self._update_title()
-        # Only hide if there's also no active listing. EMPTY arrives transiently
-        # when applicants come and go between listing-active periods; hiding on
-        # every EMPTY would flicker the window. Real "all done" = NOLISTING.
+        if self._state.party_members:
+            self._active_tab = "party"
+            self._tab_bar.set_active("party", emit=False)
+            self._schedule_overlay_refresh(update_title=True, maybe_show=True)
+            return
+        # Only hide if there's also no active listing or Party roster. EMPTY
+        # arrives transiently when applicants come and go between listing-active
+        # periods; hiding on every EMPTY would flicker the window.
         if self._state.listing is None:
             self.hide()
 
@@ -1913,7 +1920,14 @@ class OverlayWindow(QMainWindow):
         for member in self._state.party_members.values():
             if member.fetch_status == "pending":
                 self._launch_fetch(member)
-        self._schedule_overlay_refresh(update_title=True, maybe_show=False)
+        should_show_party = self._state.count() == 0 and len(self._state.party_members) > 0
+        if should_show_party:
+            self._active_tab = "party"
+            self._tab_bar.set_active("party", emit=False)
+        self._schedule_overlay_refresh(
+            update_title=True,
+            maybe_show=should_show_party,
+        )
 
     def note_decode(self, _snap: object) -> None:
         """Slot for ScreenshotWatcher.snapshotReceived. Bumps the local last-
