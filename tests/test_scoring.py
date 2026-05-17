@@ -562,6 +562,31 @@ def test_mplus_healer_uses_hps_breakdown_and_ignores_dps():
     assert fit.score < 80
 
 
+def test_mplus_partial_rio_rows_do_not_discard_wcl_key_readiness():
+    target = _listing(key_level=12, dungeon_name="Mythic+", activity_id=0)
+    healer = _app(
+        role="HEALER",
+        score=3271,
+        rio_dungeons=[
+            {"name": "Magisters' Terrace", "key_level": 11},
+            {"name": "Maisara Caverns", "key_level": 10},
+        ],
+        hps_breakdown=[
+            _dungeon("Algeth'ar Academy", [(12, 37.0, 37.0, 1)]),
+            _dungeon("Pit of Saron", [(12, 84.0, 84.0, 1)]),
+            _dungeon("Magisters' Terrace", [(10, 84.0, 84.0, 1)]),
+            _dungeon("Maisara Caverns", [(10, 37.0, 37.0, 1)]),
+            _dungeon("Skyreach", [(10, 100.0, 100.0, 1)]),
+            _dungeon("Windrunner Spire", [(10, 55.0, 55.0, 1)]),
+        ],
+    )
+
+    fit = candidate_fit(healer, target)
+
+    assert fit.primary_key == 12
+    assert fit.score >= 30.0
+
+
 def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(

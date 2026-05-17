@@ -383,7 +383,9 @@ def _mplus_scorecard_candidate_fit(
         same_dungeon_key=same_dungeon_key,
     )
 
-    completion_key_levels = rio_key_levels if rio_key_levels else wcl_key_levels
+    completion_key_levels = _mplus_completion_key_levels(
+        rio_key_levels, wcl_key_levels
+    )
     key_score = _mplus_key_readiness_score(completion_key_levels, target_key)
     same_bonus = (
         MPLUS_SCORE_SAME_MAX
@@ -546,6 +548,22 @@ def _mplus_rio_key_levels(
         weakest_index = min(range(len(merged)), key=lambda idx: merged[idx])
         if row_level > merged[weakest_index]:
             merged[weakest_index] = row_level
+    return sorted(merged, reverse=True)[:MPLUS_DUNGEON_COUNT]
+
+
+def _mplus_completion_key_levels(
+    rio_key_levels: list[int], wcl_key_levels: list[int]
+) -> list[int]:
+    merged = sorted((level for level in rio_key_levels if level > 0), reverse=True)[
+        :MPLUS_DUNGEON_COUNT
+    ]
+    for level in sorted((level for level in wcl_key_levels if level > 0), reverse=True):
+        if len(merged) < MPLUS_DUNGEON_COUNT:
+            merged.append(level)
+            continue
+        weakest_index = min(range(len(merged)), key=lambda idx: merged[idx])
+        if level > merged[weakest_index]:
+            merged[weakest_index] = level
     return sorted(merged, reverse=True)[:MPLUS_DUNGEON_COUNT]
 
 
