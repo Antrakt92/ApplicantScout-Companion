@@ -403,9 +403,6 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assert "id: paired-addon" in workflow
     assert "Requires the ApplicantScout WoW addon" in workflow
     assert "ref: ${{ steps.paired-addon.outputs.ref }}" in workflow
-    assert "gh release view $env:GITHUB_REF_NAME" in workflow
-    assert "$LASTEXITCODE -eq 0" in workflow
-
     check_idx = workflow.index(".\\scripts\\check.ps1 -AddonRoot")
     version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag")
     build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")

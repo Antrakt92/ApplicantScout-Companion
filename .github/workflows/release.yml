@@ -90,17 +90,6 @@ jobs:
           }
           $Match.Value.Trim() | Set-Content -LiteralPath dist\release-body.md -Encoding UTF8
 
-      - name: Refuse existing release
-        shell: pwsh
-        working-directory: ApplicantScout-Companion
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY 1>$null 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            throw "Release $env:GITHUB_REF_NAME already exists; refusing to republish companion assets."
-          }
-
       - name: Create draft release with assets
         shell: pwsh
         working-directory: ApplicantScout-Companion
