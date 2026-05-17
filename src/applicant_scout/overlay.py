@@ -123,6 +123,8 @@ DUNGEON_METRIC_WIDTH = 58
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
 WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
 MIN_VISIBLE_WINDOW_WIDTH = 420
+USER_MIN_WINDOW_WIDTH = 300
+USER_MIN_WINDOW_HEIGHT = 220
 MPLUS_GROUP_COLUMN_WIDTH = 188
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
 MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
@@ -1134,7 +1136,8 @@ class ApplicantInfoPanel(QFrame):
         # (Third layer is QSS background-color in _STYLESHEET.)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setAutoFillBackground(True)
-        self.setFixedHeight(220)
+        self.setMinimumHeight(80)
+        self.setMaximumHeight(220)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 6, 10, 6)
@@ -1558,9 +1561,7 @@ class OverlayWindow(QMainWindow):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setMinimumSize(
-            QSize(_minimum_window_width_for_metrics(metric_preferences), 370)
-        )
+        self.setMinimumSize(QSize(USER_MIN_WINDOW_WIDTH, USER_MIN_WINDOW_HEIGHT))
 
         # Central container with QSS-stylable background
         container = QWidget()
@@ -1757,7 +1758,7 @@ class OverlayWindow(QMainWindow):
         x, y, w, h = _clamp_geometry_to_screen(geo.x, geo.y, geo.w, geo.h)
         min_width = self.minimumWidth()
         if not has_saved_geometry and geo.w == DEFAULT_WINDOW_WIDTH:
-            w = min_width
+            w = _minimum_window_width_for_metrics(metric_preferences)
         else:
             w = max(w, min_width)
         if (x, y) != (geo.x, geo.y):
@@ -2578,16 +2579,8 @@ class OverlayWindow(QMainWindow):
         self._table.setColumnHidden(COL_MPLUS, not prefs.mplus)
         self._apply_metric_minimum_width()
 
-    def _apply_metric_minimum_width(self, *, old_min_width: int | None = None) -> None:
-        new_min_width = _minimum_window_width_for_metrics(
-            self._metric_preferences,
-            name_width=self._max_name_width_px,
-        )
-        self.setMinimumWidth(new_min_width)
-        if self.width() < new_min_width or (
-            old_min_width is not None and self.width() <= old_min_width + 1
-        ):
-            self.resize(new_min_width, self.height())
+    def _apply_metric_minimum_width(self) -> None:
+        self.setMinimumWidth(USER_MIN_WINDOW_WIDTH)
 
     def apply_metric_preferences(
         self,
@@ -2595,12 +2588,11 @@ class OverlayWindow(QMainWindow):
         *,
         refetch_missing: bool = True,
     ) -> None:
-        old_min_width = self.minimumWidth()
         self._metric_preferences = metric_preferences
         self._wcl_client.metric_preferences = metric_preferences
         self._panel.set_metric_preferences(metric_preferences)
         self._apply_metric_column_visibility()
-        self._apply_metric_minimum_width(old_min_width=old_min_width)
+        self._apply_metric_minimum_width()
         for applicant in self._fetch_rows():
             if not metric_preferences.any_enabled:
                 applicant.clear_wcl_data(fetch_status="ready")

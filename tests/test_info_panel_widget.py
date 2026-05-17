@@ -501,7 +501,7 @@ def test_panel_external_text_labels_use_plain_text(qtbot):
     assert panel._dungeon_rows[0][0].text() == "<script>Dungeon"
 
 
-def test_overlay_window_minimum_size_matches_compact_contract(qtbot, tmp_path):
+def test_overlay_window_minimum_size_allows_user_compact_resize(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -515,8 +515,14 @@ def test_overlay_window_minimum_size_matches_compact_contract(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     try:
-        assert window.minimumSize().width() == DEFAULT_WINDOW_WIDTH
-        assert window.minimumSize().height() == 370
+        assert window.minimumSize().width() <= 320
+        assert window.minimumSize().height() <= 240
+
+        window.resize(320, 240)
+        QApplication.processEvents()
+
+        assert window.width() == 320
+        assert window.height() == 240
     finally:
         client.close()
 
@@ -724,7 +730,7 @@ def test_overlay_panel_uses_group_package_fit_for_any_member(qtbot, tmp_path):
         client.close()
 
 
-def test_overlay_window_mplus_only_uses_narrower_minimum_width(qtbot, tmp_path):
+def test_metric_layout_refresh_does_not_expand_user_resized_window(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth, metric_preferences=DEFAULT_METRIC_PREFERENCES)
     cache = CharacterCache(tmp_path)
@@ -738,9 +744,14 @@ def test_overlay_window_mplus_only_uses_narrower_minimum_width(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     try:
-        assert window.minimumSize().width() < DEFAULT_WINDOW_WIDTH
-        assert window.geometry().width() == window.minimumSize().width()
-        assert window.minimumSize().height() == 370
+        window.resize(320, 240)
+        QApplication.processEvents()
+
+        window.apply_metric_preferences(MetricPreferences(mplus=True))
+        QApplication.processEvents()
+
+        assert window.width() == 320
+        assert window.height() == 240
     finally:
         client.close()
 
