@@ -140,6 +140,16 @@ class Applicant:
 
 
 @dataclass
+class RosterMember(Applicant):
+    """One current party/raid row rendered with applicant-style evidence."""
+
+    unit_index: int = 0
+    subgroup: int = 0
+    is_self: bool = False
+    is_raid_member: bool = False
+
+
+@dataclass
 class Listing:
     activity_id: int
     dungeon_name: str
@@ -167,6 +177,7 @@ class AppState:
 
     def __init__(self) -> None:
         self.applicants: dict[str, Applicant] = {}
+        self.party_members: dict[str, RosterMember] = {}
         self.listing: Optional[Listing] = None
         self.player: WoWPlayer = WoWPlayer()
 
@@ -178,6 +189,15 @@ class AppState:
 
     def clear_all(self) -> None:
         self.applicants.clear()
+
+    def add_or_update_party_member(self, member: RosterMember) -> None:
+        self.party_members[member.applicant_id] = member
+
+    def remove_party_member(self, member_id: str) -> None:
+        self.party_members.pop(member_id, None)
+
+    def clear_party(self) -> None:
+        self.party_members.clear()
 
     def count(self) -> int:
         return len(self.applicants)

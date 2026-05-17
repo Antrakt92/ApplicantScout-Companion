@@ -36,9 +36,9 @@ from .config import (
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
 from .overlay import OverlayWindow
 from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_path
-from .screenshot import ScreenshotWatcher, Snapshot
+from .screenshot import DecodedRosterMember, ScreenshotWatcher, Snapshot
 from .settings_dialog import SettingsDialog, open_folder
-from .state import Applicant, AppState, Listing, WoWPlayer
+from .state import Applicant, AppState, Listing, RosterMember, WoWPlayer
 from .updater import check_for_update, download_update_installer, launch_update_installer
 from .wcl import (
     CharacterCache,
@@ -431,6 +431,7 @@ class StateMachine(QObject):
     applicantRemoved = pyqtSignal(str)
     listingChanged = pyqtSignal()
     cleared = pyqtSignal()
+    rosterChanged = pyqtSignal()
     # Region change → main wires to wcl_client.region so non-EU users don't
     # silently get "Server not found" with default config.
     versionUpdated = pyqtSignal(int)
@@ -462,6 +463,103 @@ class StateMachine(QObject):
         if profile is None:
             return rows
         return [dict(row) for row in profile.dungeons]
+
+    @staticmethod
+    def _roster_key(name: str) -> str:
+        return name.strip().lower()
+
+    @staticmethod
+    def _copy_wcl_data(source: Applicant, target: Applicant) -> None:
+        target.fetch_status = source.fetch_status
+        target.error_message = source.error_message
+        target.wcl_error_kind = source.wcl_error_kind
+        target.raid_normal = source.raid_normal
+        target.raid_heroic = source.raid_heroic
+        target.raid_mythic = source.raid_mythic
+        target.raid_normal_median = source.raid_normal_median
+        target.raid_heroic_median = source.raid_heroic_median
+        target.raid_mythic_median = source.raid_mythic_median
+        target.mplus_dps = source.mplus_dps
+        target.mplus_hps = source.mplus_hps
+        target.mplus_dps_median = source.mplus_dps_median
+        target.mplus_hps_median = source.mplus_hps_median
+        target.mplus_dps_breakdown = list(source.mplus_dps_breakdown)
+        target.mplus_hps_breakdown = list(source.mplus_hps_breakdown)
+        target.wcl_metric_preferences = source.wcl_metric_preferences
+
+    def _roster_member_from_decoded(
+        self, decoded: DecodedRosterMember
+    ) -> RosterMember:
+        cls_name = CLASS_ID_TO_NAME.get(decoded.class_id, "?")
+        role_name = ROLE_BYTE_TO_NAME.get(decoded.role, "DAMAGER")
+        return RosterMember(
+            applicant_id=self._roster_key(decoded.name),
+            name=decoded.name,
+            cls=cls_name,
+            spec_id=decoded.spec_id,
+            ilvl=decoded.ilvl,
+            score=decoded.score,
+            role=role_name,
+            main_score=decoded.main_score,
+            rio_profile=decoded.rio_profile,
+            rio_best_key=decoded.rio_best_key,
+            rio_best_dungeon_key=decoded.rio_best_dungeon_key,
+            rio_timed_at_or_above=decoded.rio_timed_at_or_above,
+            rio_timed_at_or_above_minus1=decoded.rio_timed_at_or_above_minus1,
+            rio_timed_at_or_above_minus2=decoded.rio_timed_at_or_above_minus2,
+            rio_completed_at_or_above_minus1=decoded.rio_completed_at_or_above_minus1,
+            rio_dungeon_count=decoded.rio_dungeon_count,
+            rio_dungeons=self._rio_dungeon_rows_for(
+                decoded.name, decoded.rio_dungeons
+            ),
+            unit_index=decoded.unit_index,
+            subgroup=decoded.subgroup,
+            is_self=decoded.is_self,
+            is_raid_member=decoded.is_raid_member,
+        )
+
+    def _apply_roster_snapshot(
+        self,
+        roster: list[DecodedRosterMember],
+        *,
+        region_identity_changed: bool = False,
+        default_realm_changed: bool = False,
+    ) -> None:
+        new_by_id = {
+            self._roster_key(decoded.name): decoded
+            for decoded in roster
+            if decoded.name.strip()
+        }
+        old_ids = set(self._state.party_members)
+        new_ids = set(new_by_id)
+        changed = bool(old_ids ^ new_ids)
+
+        for member_id in old_ids - new_ids:
+            self._state.remove_party_member(member_id)
+
+        for member_id, decoded in new_by_id.items():
+            existing = self._state.party_members.get(member_id)
+            member = self._roster_member_from_decoded(decoded)
+            if existing is not None:
+                needs_refetch = (
+                    existing.spec_id != member.spec_id
+                    or existing.name != member.name
+                    or wcl_metric_role(existing.role) != wcl_metric_role(member.role)
+                    or region_identity_changed
+                    or (
+                        default_realm_changed
+                        and not applicant_has_explicit_realm(member.name)
+                    )
+                )
+                if not needs_refetch:
+                    self._copy_wcl_data(existing, member)
+                changed = changed or member != existing
+            else:
+                changed = True
+            self._state.add_or_update_party_member(member)
+
+        if changed:
+            self.rosterChanged.emit()
 
     def apply_snapshot(self, snap: Snapshot) -> None:
         region_identity_changed = False
@@ -522,12 +620,22 @@ class StateMachine(QObject):
         if new_listing is None and old_listing is not None:
             self._state.listing = None
             self._state.clear_all()
+            self._apply_roster_snapshot(
+                snap.roster,
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+            )
             self.listingChanged.emit()
             self.cleared.emit()
             return
 
-        # No listing in snap AND no prior listing → nothing to update
+        # No listing in snap AND no prior listing → roster/version can still update.
         if new_listing is None:
+            self._apply_roster_snapshot(
+                snap.roster,
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+            )
             return
 
         # Listing changed (dungeon/key/comment) — fire signal so overlay re-titles
@@ -651,6 +759,12 @@ class StateMachine(QObject):
                 if needs_refetch:
                     existing.clear_wcl_data()
                 self.applicantUpdated.emit(existing)
+
+        self._apply_roster_snapshot(
+            snap.roster,
+            region_identity_changed=region_identity_changed,
+            default_realm_changed=default_realm_changed,
+        )
 
 
 class UpdateSignals(QObject):

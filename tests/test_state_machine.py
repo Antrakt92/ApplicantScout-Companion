@@ -18,6 +18,7 @@ from applicant_scout.__main__ import StateMachine
 from applicant_scout.screenshot import (
     DecodedApplicant,
     DecodedListing,
+    DecodedRosterMember,
     DecodedVersion,
     Snapshot,
 )
@@ -104,6 +105,33 @@ def _version(player_name: str, region_id: int = 3) -> DecodedVersion:
         game_version="12.0.5",
         region_id=region_id,
         player_name=player_name,
+    )
+
+
+def _roster_decoded(
+    name: str,
+    *,
+    unit_index: int = 1,
+    flags: int = 0,
+    subgroup: int = 1,
+    cls: int = 1,
+    spec_id: int = 71,
+    ilvl: int = 700,
+    score: int = 3000,
+    main_score: int = 0,
+    role: int = 2,
+) -> DecodedRosterMember:
+    return DecodedRosterMember(
+        unit_index=unit_index,
+        flags=flags,
+        subgroup=subgroup,
+        class_id=cls,
+        spec_id=spec_id,
+        ilvl=ilvl,
+        score=score,
+        main_score=main_score,
+        role=role,
+        name=name,
     )
 
 
@@ -787,3 +815,86 @@ def test_member_idx_swap_with_different_specs_treated_as_two_changes():
     assert a.spec_id == 63
     assert a.fetch_status == "pending"
     assert a.mplus_dps is None
+
+
+# ─── Party / raid roster diff ───────────────────────────────────────────────
+
+
+def test_roster_snapshot_adds_party_members_separately_from_applicants():
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[
+                _roster_decoded("Host-Realm", unit_index=0, flags=1, role=0),
+                _roster_decoded("Friend-Realm", unit_index=1, role=1),
+            ],
+        )
+    )
+
+    assert set(state.applicants) == {"7:1"}
+    assert set(state.party_members) == {"host-realm", "friend-realm"}
+    assert state.party_members["host-realm"].is_self
+    assert state.party_members["friend-realm"].role == "HEALER"
+
+
+def test_roster_snapshot_updates_and_removes_members_by_identity():
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            roster=[
+                _roster_decoded("Host-Realm", unit_index=0, flags=1, score=3000),
+                _roster_decoded("Friend-Realm", unit_index=1, score=2500),
+            ],
+        )
+    )
+    state.party_members["friend-realm"].fetch_status = "ready"
+    state.party_members["friend-realm"].mplus_dps = 80.0
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            roster=[
+                _roster_decoded("Host-Realm", unit_index=0, flags=1, score=3100),
+                _roster_decoded("Newfriend-Realm", unit_index=2, score=2600),
+            ],
+        )
+    )
+
+    assert set(state.party_members) == {"host-realm", "newfriend-realm"}
+    assert state.party_members["host-realm"].score == 3100
+    assert state.party_members["newfriend-realm"].score == 2600
+
+
+def test_empty_roster_snapshot_clears_party_without_clearing_applicants():
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[_roster_decoded("Host-Realm", flags=1)],
+        )
+    )
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[],
+        )
+    )
+
+    assert set(state.applicants) == {"7:1"}
+    assert state.party_members == {}
