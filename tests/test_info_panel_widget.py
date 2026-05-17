@@ -527,6 +527,58 @@ def test_overlay_window_minimum_size_allows_user_compact_resize(qtbot, tmp_path)
         client.close()
 
 
+def test_overlay_table_position_stays_fixed_when_panel_dungeon_rows_change(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.setGeometry(40, 40, 572, 440)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        QApplication.processEvents()
+
+        compact = _app(
+            applicant_id="compact",
+            fetch_status="ready",
+            mplus_dps=None,
+            mplus_dps_median=None,
+            mplus_dps_breakdown=[],
+            rio_dungeons=[],
+        )
+        detailed = _app(
+            applicant_id="detailed",
+            fetch_status="ready",
+            mplus_dps=90.0,
+            mplus_dps_median=80.0,
+            mplus_dps_breakdown=[
+                {
+                    "name": f"Dungeon {idx}",
+                    "parse_percent": 80.0 + idx,
+                    "median_percent": 70.0 + idx,
+                    "key_level": 10 + idx,
+                    "run_count": 2,
+                }
+                for idx in range(8)
+            ],
+        )
+
+        window._panel.setApplicantData(compact, _listing())
+        QApplication.processEvents()
+        compact_table_y = window._table.geometry().y()
+
+        window._panel.setApplicantData(detailed, _listing())
+        QApplication.processEvents()
+
+        assert window._table.geometry().y() == compact_table_y
+    finally:
+        client.close()
+
+
 def test_overlay_constructor_initializes_geometry_event_state_before_set_geometry(
     monkeypatch, qtbot, tmp_path
 ):

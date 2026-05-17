@@ -129,6 +129,8 @@ WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
 MIN_VISIBLE_WINDOW_WIDTH = 420
 USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
+INFO_PANEL_MIN_HEIGHT = 80
+INFO_PANEL_PREFERRED_HEIGHT = 220
 LAUNCHER_SIZE = 42
 GAME_FOREGROUND_POLL_MS = 500
 MPLUS_GROUP_COLUMN_WIDTH = 188
@@ -1216,8 +1218,8 @@ class ApplicantInfoPanel(QFrame):
         # (Third layer is QSS background-color in _STYLESHEET.)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setAutoFillBackground(True)
-        self.setMinimumHeight(80)
-        self.setMaximumHeight(220)
+        self.setMinimumHeight(INFO_PANEL_MIN_HEIGHT)
+        self.setMaximumHeight(INFO_PANEL_PREFERRED_HEIGHT)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 6, 10, 6)
@@ -1325,6 +1327,14 @@ class ApplicantInfoPanel(QFrame):
 
     def set_metric_preferences(self, metric_preferences: MetricPreferences) -> None:
         self._metric_preferences = metric_preferences
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        hint = super().sizeHint()
+        return QSize(hint.width(), INFO_PANEL_PREFERRED_HEIGHT)
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        hint = super().minimumSizeHint()
+        return QSize(hint.width(), INFO_PANEL_MIN_HEIGHT)
 
     def setPlaceholder(self) -> None:
         """Show the compact hint when nothing is hovered/pinned."""
