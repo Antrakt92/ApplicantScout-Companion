@@ -951,6 +951,9 @@ class SourceTabBar(QWidget):
         self._key_label = QLabel("Key")
         self._key_label.setObjectName("targetKeyLabel")
         self._key_label.setToolTip("Manual Mythic+ key level for fit scoring.")
+        key_label_font = self._key_label.font()
+        key_label_font.setBold(True)
+        self._key_label.setFont(key_label_font)
         layout.addWidget(self._key_label)
         self._key_spin = QSpinBox()
         self._key_spin.setObjectName("targetKeySpin")
@@ -962,6 +965,9 @@ class SourceTabBar(QWidget):
         self._key_spin.setToolTip(
             "Set the current Mythic+ key when the addon cannot read it from your own listing."
         )
+        key_spin_font = self._key_spin.font()
+        key_spin_font.setBold(True)
+        self._key_spin.setFont(key_spin_font)
         self._key_spin.valueChanged.connect(self.keyChanged.emit)
         layout.addWidget(self._key_spin)
         layout.addStretch(1)
@@ -3395,6 +3401,19 @@ _STYLESHEET = """
 #healthLabel {
     color: #888;
     font-size: 10px;
+}
+#targetKeyLabel {
+    color: #f0d27a;
+    font-size: 11px;
+    font-weight: bold;
+}
+#targetKeySpin {
+    color: #ffffff;
+    background-color: rgba(42, 42, 54, 225);
+    border: 1px solid rgba(240, 120, 90, 210);
+    border-radius: 3px;
+    font-weight: bold;
+    padding-left: 6px;
 }
 /* Hover/pin info panel — opaque QWidget scout card. */
 #infoPanel {
