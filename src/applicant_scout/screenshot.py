@@ -55,7 +55,7 @@ MAGIC = b"APS1"
 # v0x05 = adds compact target-relative RaiderIO completion summary.
 # Set, not a min/max range — future versions may be incompatible with v1 but compatible
 # with v2; explicit allow-list is the cleanest contract.
-WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05}
+WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
 
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
 STABLE_SIZE_POLL = 0.05  # poll interval
@@ -99,6 +99,37 @@ class DecodedApplicant:
 
 
 @dataclass
+class DecodedRosterMember:
+    unit_index: int
+    flags: int
+    subgroup: int
+    class_id: int
+    spec_id: int
+    ilvl: int
+    score: int
+    main_score: int
+    rio_profile: bool = False
+    rio_best_key: int = 0
+    rio_best_dungeon_key: int = 0
+    rio_timed_at_or_above: int = 0
+    rio_timed_at_or_above_minus1: int = 0
+    rio_timed_at_or_above_minus2: int = 0
+    rio_completed_at_or_above_minus1: int = 0
+    rio_dungeon_count: int = 0
+    role: int = 3
+    name: str = ""
+    rio_dungeons: list[dict] = field(default_factory=list)
+
+    @property
+    def is_self(self) -> bool:
+        return bool(self.flags & 0x01)
+
+    @property
+    def is_raid_member(self) -> bool:
+        return bool(self.flags & 0x02)
+
+
+@dataclass
 class DecodedListing:
     activity_id: int
     key_level: int
@@ -124,6 +155,7 @@ class Snapshot:
     listing: Optional[DecodedListing]
     version: Optional[DecodedVersion]
     applicants: list[DecodedApplicant] = field(default_factory=list)
+    roster: list[DecodedRosterMember] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -261,6 +293,7 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
       * v0x03: adds listing category_id + difficulty_id.
       * v0x04: adds applicant main_score after current score.
       * v0x05: adds compact RaiderIO completion summary after main_score.
+      * v0x06: adds current party/raid roster after applicants.
     """
     cursor = 0
     listing: Optional[DecodedListing] = None
@@ -412,12 +445,86 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
             )
         )
 
+    roster: list[DecodedRosterMember] = []
+    if wire_ver >= 0x06:
+        roster_count = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+        cursor += 2
+        if roster_count > 40:
+            raise ValueError(f"roster_count {roster_count} exceeds sane limit 40")
+        for _ in range(roster_count):
+            unit_index = buf[cursor]
+            cursor += 1
+            flags = buf[cursor]
+            cursor += 1
+            subgroup = buf[cursor]
+            cursor += 1
+            class_id = buf[cursor]
+            cursor += 1
+            spec_id = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+            cursor += 2
+            ilvl = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+            cursor += 2
+            score = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+            cursor += 2
+            main_score = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+            cursor += 2
+            rio_profile = buf[cursor] > 0
+            cursor += 1
+            rio_best_key = buf[cursor]
+            cursor += 1
+            rio_best_dungeon_key = buf[cursor]
+            cursor += 1
+            rio_timed_at_or_above = buf[cursor]
+            cursor += 1
+            rio_timed_at_or_above_minus1 = buf[cursor]
+            cursor += 1
+            rio_timed_at_or_above_minus2 = buf[cursor]
+            cursor += 1
+            rio_completed_at_or_above_minus1 = buf[cursor]
+            cursor += 1
+            rio_dungeon_count = buf[cursor]
+            cursor += 1
+            role = buf[cursor]
+            cursor += 1
+            n_len = buf[cursor]
+            cursor += 1
+            name = buf[cursor : cursor + n_len].decode("utf-8", errors="replace")
+            cursor += n_len
+            roster.append(
+                DecodedRosterMember(
+                    unit_index=unit_index,
+                    flags=flags,
+                    subgroup=subgroup,
+                    class_id=class_id,
+                    spec_id=spec_id,
+                    ilvl=ilvl,
+                    score=score,
+                    main_score=main_score,
+                    rio_profile=rio_profile,
+                    rio_best_key=rio_best_key,
+                    rio_best_dungeon_key=rio_best_dungeon_key,
+                    rio_timed_at_or_above=rio_timed_at_or_above,
+                    rio_timed_at_or_above_minus1=rio_timed_at_or_above_minus1,
+                    rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
+                    rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
+                    rio_dungeon_count=rio_dungeon_count,
+                    role=role,
+                    name=name,
+                    rio_dungeons=[],
+                )
+            )
+
     if cursor != len(buf):
         raise ValueError(
             f"trailing or truncated payload bytes: consumed {cursor} of {len(buf)}"
         )
 
-    return Snapshot(listing=listing, version=version, applicants=applicants)
+    return Snapshot(
+        listing=listing,
+        version=version,
+        applicants=applicants,
+        roster=roster,
+    )
 
 
 def _decode_screenshot_result(image_path: Path) -> DecodeResult:

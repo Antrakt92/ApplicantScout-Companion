@@ -108,6 +108,58 @@ def _build_body(applicants: list[bytes]) -> bytes:
     return body
 
 
+def _build_roster_block(
+    *,
+    unit_index: int,
+    flags: int,
+    subgroup: int,
+    class_id: int,
+    spec_id: int,
+    ilvl: int,
+    score: int,
+    main_score: int,
+    role: int,
+    name: str,
+    rio_profile: int = 0,
+    rio_best_key: int = 0,
+    rio_best_dungeon_key: int = 0,
+    rio_timed_at_or_above: int = 0,
+    rio_timed_at_or_above_minus1: int = 0,
+    rio_timed_at_or_above_minus2: int = 0,
+    rio_completed_at_or_above_minus1: int = 0,
+    rio_dungeon_count: int = 0,
+) -> bytes:
+    return (
+        bytes([unit_index, flags, subgroup, class_id])
+        + struct.pack(">H", spec_id)
+        + struct.pack(">H", ilvl)
+        + struct.pack(">H", score)
+        + struct.pack(">H", main_score)
+        + bytes(
+            [
+                rio_profile,
+                rio_best_key,
+                rio_best_dungeon_key,
+                rio_timed_at_or_above,
+                rio_timed_at_or_above_minus1,
+                rio_timed_at_or_above_minus2,
+                rio_completed_at_or_above_minus1,
+                rio_dungeon_count,
+                role,
+            ]
+        )
+        + _pack_len_str(name.encode("utf-8"))
+    )
+
+
+def _build_body_v6(applicants: list[bytes], roster: list[bytes]) -> bytes:
+    body = _build_body(applicants)
+    body += struct.pack(">H", len(roster))
+    for block in roster:
+        body += block
+    return body
+
+
 def _build_listing_body(*, version: int) -> bytes:
     body = bytes([1])
     body += struct.pack(">I", 401)
@@ -346,17 +398,141 @@ def test_wire_versions_supported_pin():
     assert 0x03 in WIRE_VERSIONS_SUPPORTED
     assert 0x04 in WIRE_VERSIONS_SUPPORTED
     assert 0x05 in WIRE_VERSIONS_SUPPORTED
-    assert 0x06 not in WIRE_VERSIONS_SUPPORTED
+    assert 0x06 in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
-def test_v6_payload_is_rejected_instead_of_parsed_as_qr_dungeon_rows():
-    raw = _wrap_payload(_build_body([]), wire_ver=0x06)
+def test_v7_payload_is_rejected_instead_of_parsed_as_known_version():
+    raw = _wrap_payload(_build_body([]), wire_ver=0x07)
 
     snap, error = _try_parse_appscout_payload(raw)
 
     assert snap is None
-    assert error == "unsupported wire version 0x06"
+    assert error == "unsupported wire version 0x07"
+
+
+def test_v6_roster_block_parses_current_party_members():
+    body = _build_body_v6(
+        [],
+        [
+            _build_roster_block(
+                unit_index=0,
+                flags=1,
+                subgroup=1,
+                class_id=10,
+                spec_id=270,
+                ilvl=712,
+                score=3301,
+                main_score=3400,
+                role=1,
+                name="Healmonk-TwistingNether",
+                rio_profile=1,
+                rio_best_key=16,
+                rio_best_dungeon_key=15,
+                rio_timed_at_or_above=2,
+                rio_timed_at_or_above_minus1=5,
+                rio_timed_at_or_above_minus2=8,
+                rio_completed_at_or_above_minus1=6,
+                rio_dungeon_count=8,
+            )
+        ],
+    )
+
+    snap = _parse_payload(body, wire_ver=0x06)
+
+    assert snap.applicants == []
+    assert len(snap.roster) == 1
+    member = snap.roster[0]
+    assert member.name == "Healmonk-TwistingNether"
+    assert member.is_self
+    assert member.unit_index == 0
+    assert member.subgroup == 1
+    assert member.class_id == 10
+    assert member.spec_id == 270
+    assert member.ilvl == 712
+    assert member.score == 3301
+    assert member.main_score == 3400
+    assert member.rio_best_key == 16
+    assert member.role == 1
+
+
+def test_v6_roster_block_accepts_full_raid_size():
+    roster = [
+        _build_roster_block(
+            unit_index=i,
+            flags=2,
+            subgroup=((i - 1) // 5) + 1,
+            class_id=(i % 13) + 1,
+            spec_id=250 + i,
+            ilvl=700 + i,
+            score=2500 + i,
+            main_score=2600 + i,
+            role=2,
+            name=f"Raider{i}-Realm",
+        )
+        for i in range(1, 41)
+    ]
+
+    snap = _parse_payload(_build_body_v6([], roster), wire_ver=0x06)
+
+    assert len(snap.roster) == 40
+    assert snap.roster[0].name == "Raider1-Realm"
+    assert snap.roster[-1].name == "Raider40-Realm"
+    assert snap.roster[-1].subgroup == 8
+
+
+def test_v5_snapshots_default_to_empty_roster():
+    body = _build_body(
+        [
+            _build_applicant_block(
+                42,
+                1,
+                71,
+                480,
+                2000,
+                2,
+                "Applicant-Realm",
+                version=5,
+            )
+        ]
+    )
+
+    snap = _parse_payload(body, wire_ver=0x05)
+
+    assert len(snap.applicants) == 1
+    assert snap.roster == []
+
+
+def test_v6_payload_crc_accepts_roster_block():
+    body = _build_body_v6(
+        [],
+        [
+            _build_roster_block(
+                unit_index=1,
+                flags=2,
+                subgroup=1,
+                class_id=1,
+                spec_id=71,
+                ilvl=701,
+                score=3000,
+                main_score=0,
+                role=2,
+                name="Warrior-Realm",
+            )
+        ],
+    )
+    header = MAGIC + bytes([0x06]) + b"\0\0\0\0"
+    total_len = len(header) + len(body) + 4
+    payload_without_crc = header[:5] + struct.pack(">H", total_len) + header[7:] + body
+    payload = payload_without_crc + struct.pack(
+        ">I", zlib.crc32(payload_without_crc) & 0xFFFFFFFF
+    )
+
+    snap, err = _try_parse_appscout_payload(payload)
+
+    assert err is None
+    assert snap is not None
+    assert [m.name for m in snap.roster] == ["Warrior-Realm"]
 
 
 def test_crc_valid_payload_with_trailing_body_bytes_is_rejected():
