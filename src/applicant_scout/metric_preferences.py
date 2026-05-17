@@ -55,7 +55,9 @@ class MetricPreferences:
             ("h0", "h1"),
             ("m0", "m1"),
         )
-        if any(part not in allowed for part, allowed in zip(parts, expected)):
+        if any(
+            part not in allowed for part, allowed in zip(parts, expected, strict=True)
+        ):
             return None
         return cls(
             mplus=parts[0] == "mp1",

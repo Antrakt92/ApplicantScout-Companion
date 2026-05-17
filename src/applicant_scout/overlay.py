@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import html
 import logging
-import math
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -71,8 +70,13 @@ from .scoring import (
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
+    listing_dungeon_keys,
     mplus_dungeon_fit_rows,
     package_fit,
+    nonnegative_int,
+    positive_int,
+    role_mplus_view,
+    safe_percent,
 )
 from .state import (
     Applicant,
@@ -316,6 +320,16 @@ class _FetchTask(QRunnable):
 
     def run(self) -> None:
         identity = self._identity
+        started_at = time.perf_counter()
+        _log.info(
+            "WCL fetch started: %s-%s region=%s spec=%s role=%s prefs=%s",
+            self._name,
+            identity.server_slug,
+            identity.region,
+            identity.spec_id,
+            identity.metric_role,
+            identity.metric_preferences.cache_key(),
+        )
         cached = self._cache.get(
             self._name,
             identity.server_slug,
@@ -325,6 +339,12 @@ class _FetchTask(QRunnable):
             identity.metric_preferences,
         )
         if cached is not None:
+            _log.info(
+                "WCL fetch cache hit: %s-%s in %.2fs",
+                self._name,
+                identity.server_slug,
+                time.perf_counter() - started_at,
+            )
             self.signals.done.emit(identity, cached)
             return
         try:
@@ -347,6 +367,29 @@ class _FetchTask(QRunnable):
             # silently TypeErrors (8 required positional args), kills QRunnable,
             # applicant row stays on 'loading' forever.
             ranks = CharacterRanks.empty(error=str(e))
+        elapsed = time.perf_counter() - started_at
+        if ranks.error:
+            _log.info(
+                "WCL fetch finished with error: %s-%s kind=%s in %.2fs",
+                self._name,
+                identity.server_slug,
+                ranks.error_kind or "unknown",
+                elapsed,
+            )
+        elif ranks.not_found:
+            _log.info(
+                "WCL fetch finished not_found: %s-%s in %.2fs",
+                self._name,
+                identity.server_slug,
+                elapsed,
+            )
+        else:
+            _log.info(
+                "WCL fetch finished: %s-%s in %.2fs",
+                self._name,
+                identity.server_slug,
+                elapsed,
+            )
         if not ranks.error and not ranks.not_found:
             self._cache.put(
                 self._name,
@@ -500,7 +543,7 @@ def sort_applicants_grouped(
 def _mplus_headline_sort_score(applicant: Applicant) -> tuple[int, float]:
     if applicant.fetch_status in _SUNK_STATES:
         return (0, 0.0)
-    _metric_label, breakdown, best, _median = _mplus_view(applicant)
+    _metric_label, breakdown, best, _median = role_mplus_view(applicant)
     return (_highest_mplus_key_level(breakdown), float(best or 0.0))
 
 
@@ -839,8 +882,7 @@ class TitleBar(QWidget):
             if window is None:
                 return
             self._drag_offset = (
-                event.globalPosition().toPoint()
-                - window.frameGeometry().topLeft()
+                event.globalPosition().toPoint() - window.frameGeometry().topLeft()
             )
             event.accept()
 
@@ -855,7 +897,7 @@ class TitleBar(QWidget):
             window.move(event.globalPosition().toPoint() - self._drag_offset)
             event.accept()
 
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+    def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
         self._drag_offset = None
 
 
@@ -1081,9 +1123,15 @@ class ApplicantInfoPanel(QFrame):
             rio_key.setFixedWidth(DUNGEON_KEY_WIDTH)
             wcl_key.setFixedWidth(DUNGEON_WCL_KEY_WIDTH)
             value.setFixedWidth(DUNGEON_METRIC_WIDTH)
-            rio_key.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            wcl_key.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            rio_key.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            wcl_key.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            value.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             self._dungeon_grid.addWidget(name, row, 0)
             self._dungeon_grid.addWidget(rio_key, row, 1)
             self._dungeon_grid.addWidget(wcl_key, row, 2)
@@ -1150,7 +1198,9 @@ class ApplicantInfoPanel(QFrame):
         self._realm_label.setVisible(bool(raw_realm))
 
         spec = SPEC_SHORT_NAMES.get(applicant.spec_id, f"#{applicant.spec_id}")
-        self._set_badge(self._spec_label, spec, class_hex, _text_colour_for_bg(class_hex))
+        self._set_badge(
+            self._spec_label, spec, class_hex, _text_colour_for_bg(class_hex)
+        )
 
         role_bg = ROLE_COLOURS.get(applicant.role, "#555555")
         role_text = ROLE_LABELS.get(applicant.role, applicant.role[:4] or "?")
@@ -1275,7 +1325,7 @@ class ApplicantInfoPanel(QFrame):
             shown += 1
 
         if self._metric_preferences.mplus:
-            metric_label, _breakdown, _best, _median = _mplus_view(applicant)
+            metric_label, _breakdown, _best, _median = role_mplus_view(applicant)
             text, _fg, bg = _mplus_cell_visuals(applicant, listing)
             if bg is not None:
                 self._set_badge(
@@ -1299,14 +1349,14 @@ class ApplicantInfoPanel(QFrame):
             return 0
         rio_rows = _rio_dungeon_rows_by_name(applicant, listing)
         wcl_rows = _wcl_dungeon_rows_by_name(applicant, listing)
-        listing_keys = _listing_dungeon_keys(listing)
+        listing_keys = listing_dungeon_keys(listing)
         row_keys = sorted(
             set(rio_rows) | set(wcl_rows),
             key=lambda key: (
                 0 if key and key in listing_keys else 1,
                 -max(
-                    _positive_int(rio_rows.get(key, {}).get("key_level")),
-                    _positive_int(wcl_rows.get(key, {}).get("key_level")),
+                    positive_int(rio_rows.get(key, {}).get("key_level")),
+                    positive_int(wcl_rows.get(key, {}).get("key_level")),
                 ),
                 str(
                     wcl_rows.get(key, {}).get("name")
@@ -1333,27 +1383,39 @@ class ApplicantInfoPanel(QFrame):
                     DUNGEON_NAME_WIDTH,
                 )
             )
-            name_label.setToolTip(dungeon_name if name_label.text() != dungeon_name else "")
-            rio_key = _positive_int(rio_row.get("key_level"))
-            rio_label.setText(f"RIO +{rio_key}" if rio_key > 0 else "RIO —")
-            rio_label.setStyleSheet(
-                "background-color: #24242d; color: #e0e0e0; "
-                "border-radius: 2px; padding: 0 4px; font-weight: bold;"
+            name_label.setToolTip(
+                dungeon_name if name_label.text() != dungeon_name else ""
             )
-            wcl_key = _positive_int(wcl_row.get("key_level"))
-            wcl_text = str(wcl_row.get("text") or "—")
-            wcl_key_label.setText(f"WCL +{wcl_key}" if wcl_key > 0 else "WCL —")
-            wcl_key_label.setStyleSheet(
-                "background-color: #202028; color: #f1f1f4; "
-                "border-radius: 2px; padding: 0 4px; font-weight: bold;"
-            )
-            value_label.setText(wcl_text)
-            bg = str(wcl_row.get("colour") or "#2a2a33")
-            fg = _text_colour_for_bg(bg)
-            value_label.setStyleSheet(
-                f"background-color: {bg}; color: {fg}; border-radius: 2px; "
-                "padding: 0 4px; font-weight: bold;"
-            )
+            rio_key = positive_int(rio_row.get("key_level"))
+            if rio_key > 0:
+                rio_label.setText(f"RIO +{rio_key}")
+                rio_label.setStyleSheet(
+                    "background-color: #24242d; color: #e0e0e0; "
+                    "border-radius: 2px; padding: 0 4px; font-weight: bold;"
+                )
+            else:
+                rio_label.setText("")
+                rio_label.setStyleSheet("")
+            wcl_key = positive_int(wcl_row.get("key_level"))
+            if wcl_key > 0:
+                wcl_text = str(wcl_row.get("text") or "")
+                wcl_key_label.setText(f"WCL +{wcl_key}")
+                wcl_key_label.setStyleSheet(
+                    "background-color: #202028; color: #f1f1f4; "
+                    "border-radius: 2px; padding: 0 4px; font-weight: bold;"
+                )
+                value_label.setText(wcl_text)
+                bg = str(wcl_row.get("colour") or "#2a2a33")
+                fg = _text_colour_for_bg(bg)
+                value_label.setStyleSheet(
+                    f"background-color: {bg}; color: {fg}; border-radius: 2px; "
+                    "padding: 0 4px; font-weight: bold;"
+                )
+            else:
+                wcl_key_label.setText("")
+                wcl_key_label.setStyleSheet("")
+                value_label.setText("")
+                value_label.setStyleSheet("")
             for label in labels:
                 label.setVisible(True)
         visible = len(row_keys)
@@ -1573,6 +1635,9 @@ class OverlayWindow(QMainWindow):
         self._fetches_in_flight: dict[str, _FetchIdentity] = {}
         self._wcl_runtime_generation = 0
         self._listing_session_generation = 0
+        self._refresh_flush_pending = False
+        self._refresh_needs_title = False
+        self._refresh_needs_show = False
 
         # Restore geometry, clamped to a visible screen so off-monitor positions
         # from a previous multi-monitor session don't render the window invisibly
@@ -1639,6 +1704,37 @@ class OverlayWindow(QMainWindow):
 
     # ─── public slots called from main app ─────
 
+    def _schedule_overlay_refresh(
+        self,
+        *,
+        update_title: bool = True,
+        maybe_show: bool = False,
+    ) -> None:
+        self._refresh_needs_title = self._refresh_needs_title or update_title
+        self._refresh_needs_show = self._refresh_needs_show or maybe_show
+        if self._refresh_flush_pending:
+            return
+        self._refresh_flush_pending = True
+        QTimer.singleShot(0, self._flush_overlay_refresh)
+
+    def _flush_overlay_refresh(self) -> None:
+        if (
+            not self._refresh_flush_pending
+            and not self._refresh_needs_title
+            and not self._refresh_needs_show
+        ):
+            return
+        update_title = self._refresh_needs_title
+        maybe_show = self._refresh_needs_show
+        self._refresh_flush_pending = False
+        self._refresh_needs_title = False
+        self._refresh_needs_show = False
+        self._refresh_table()
+        if update_title:
+            self._update_title()
+        if maybe_show and self._state.listing is not None and self._state.count() > 0:
+            self._maybe_show()
+
     def on_applicant_added(self, applicant: Applicant) -> None:
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
@@ -1646,9 +1742,7 @@ class OverlayWindow(QMainWindow):
         # renders the default "pending" state (which displays as "no data") for
         # the fetch duration (50-500ms), then flips to "loading" then "ready".
         self._launch_fetch(applicant)
-        self._refresh_table()
-        self._update_title()
-        self._maybe_show()
+        self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_updated(self, applicant: Applicant) -> None:
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
@@ -1661,13 +1755,11 @@ class OverlayWindow(QMainWindow):
         # from addon side restarts the pipeline if user wants a retry cycle.
         if applicant.fetch_status == "pending":
             self._launch_fetch(applicant)
-        self._refresh_table()
-        self._update_title()
         # Edge case: if the very first event for an applicant arrives as APP=
         # (e.g., addon emits "=" because it cached state across /reload), the
         # state-machine emits applicantUpdated rather than applicantAdded.
         # Window must still pop up — check visibility here too.
-        self._maybe_show()
+        self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_removed(self, applicant_id: str) -> None:
         # Clear hover/pin if THIS removed applicant was the one we were
@@ -1678,8 +1770,7 @@ class OverlayWindow(QMainWindow):
             self._hover_id = None
         if applicant_id == self._pinned_id:
             self._pinned_id = None
-        self._refresh_table()
-        self._update_title()
+        self._schedule_overlay_refresh()
         if self._state.count() == 0:
             # No applicants left. Two reasons: (a) addon delisted (handled by
             # on_cleared), (b) host invited everyone, listing still active.
@@ -1700,9 +1791,11 @@ class OverlayWindow(QMainWindow):
         # Pop the window when listing is created — but only if there's actual
         # work to look at (applicants present). After group fills (apps=[]),
         # listing comment edits would re-show the window otherwise.
-        if self._state.listing is not None and self._state.count() > 0:
+        if self._state.listing is None:
+            return
+        if self._state.count() > 0:
             self._maybe_show()
-        elif self._state.listing is not None and self._state.count() == 0:
+        else:
             # Listing active but empty — start guard timer to auto-hide if no
             # new applicants arrive in EMPTY_HIDE_DELAY_S.
             if not self._empty_hide_timer.isActive():
@@ -1711,6 +1804,9 @@ class OverlayWindow(QMainWindow):
     def on_cleared(self) -> None:
         self._listing_session_generation += 1
         self._fetches_in_flight.clear()
+        self._refresh_flush_pending = False
+        self._refresh_needs_title = False
+        self._refresh_needs_show = False
         self._empty_hide_timer.stop()  # listing gone, no need for guard timer
         self._table.setRowCount(0)
         self._row_for_id.clear()
@@ -1787,12 +1883,20 @@ class OverlayWindow(QMainWindow):
     def _refresh_quota_label(self) -> None:
         """Pull latest quota snapshot from wcl_client and format into status
         label. Format: "WCL: spent/limit (Xm to reset)" — e.g. "WCL: 245/3600
-        (52m to reset)". Shows "—" before first fetch.
+        (52m to reset)". Before the first quota-bearing WCL response, shows
+        queued/running fetches when any are active.
 
         Visual urgency: turns yellow at 70% spent, red at 90%."""
         q = getattr(self._wcl_client, "last_quota", None)
         if q is None:
-            self._status_label.setText("WCL: — / — (no fetch yet)")
+            in_flight = len(self._fetches_in_flight)
+            if in_flight > 0:
+                suffix = "fetch" if in_flight == 1 else "fetches"
+                self._status_label.setText(
+                    f"WCL: fetching {in_flight} {suffix} (quota pending)"
+                )
+            else:
+                self._status_label.setText("WCL: — / — (idle, no quota yet)")
             self._status_label.setStyleSheet("")
             return
         spent = int(round(q.points_spent))
@@ -1840,9 +1944,7 @@ class OverlayWindow(QMainWindow):
             return 0
         remaining = self._wcl_client.retry_block_remaining_seconds()
         if remaining > 0:
-            self._schedule_wcl_retry(
-                int(remaining * 1000) + WCL_RETRY_CUSHION_MS
-            )
+            self._schedule_wcl_retry(int(remaining * 1000) + WCL_RETRY_CUSHION_MS)
             return 0
         launched = 0
         for applicant in self._retryable_wcl_error_applicants():
@@ -2122,7 +2224,9 @@ class OverlayWindow(QMainWindow):
         group_members: dict[str, list[Applicant]] = {}
         for applicant in sorted_applicants:
             raw_aid, _ = _split_composite(applicant.applicant_id)
-            self._group_size_by_raw[raw_aid] = self._group_size_by_raw.get(raw_aid, 0) + 1
+            self._group_size_by_raw[raw_aid] = (
+                self._group_size_by_raw.get(raw_aid, 0) + 1
+            )
             group_members.setdefault(raw_aid, []).append(applicant)
         self._package_fit_by_raw = {}
         if detect_listing_context(self._state.listing) in (CONTEXT_MPLUS, CONTEXT_RAID):
@@ -2143,8 +2247,7 @@ class OverlayWindow(QMainWindow):
 
         self._delegate.set_group_markers(
             _build_group_markers(
-                (row_idx, a.applicant_id)
-                for row_idx, a in enumerate(sorted_applicants)
+                (row_idx, a.applicant_id) for row_idx, a in enumerate(sorted_applicants)
             )
         )
 
@@ -2251,9 +2354,9 @@ class OverlayWindow(QMainWindow):
             name_width=self._max_name_width_px,
         )
         self.setMinimumWidth(new_min_width)
-        if self.width() < new_min_width:
-            self.resize(new_min_width, self.height())
-        elif old_min_width is not None and self.width() <= old_min_width + 1:
+        if self.width() < new_min_width or (
+            old_min_width is not None and self.width() <= old_min_width + 1
+        ):
             self.resize(new_min_width, self.height())
 
     def apply_metric_preferences(
@@ -2348,6 +2451,22 @@ class OverlayWindow(QMainWindow):
         identity, charname = resolved
         if self._is_fetch_in_flight_for(identity):
             return  # avoid duplicate concurrent fetches for the same WCL scope
+        cached = self._cache.get(
+            charname,
+            identity.server_slug,
+            identity.region,
+            identity.spec_id,
+            identity.metric_role,
+            identity.metric_preferences,
+        )
+        if cached is not None:
+            _log.info(
+                "WCL fetch cache hit before queue: %s-%s",
+                charname,
+                identity.server_slug,
+            )
+            self._on_fetch_done(identity, cached)
+            return
         applicant.fetch_status = "loading"
         applicant.error_message = ""
         applicant.wcl_error_kind = ""
@@ -2355,7 +2474,19 @@ class OverlayWindow(QMainWindow):
         task = _FetchTask(identity, charname, self._wcl_client, self._cache)
         task.signals.done.connect(self._on_fetch_done)
         if self._pool is not None:
+            _log.info(
+                "WCL fetch queued: %s-%s region=%s spec=%s role=%s prefs=%s "
+                "in_flight=%d",
+                charname,
+                identity.server_slug,
+                identity.region,
+                identity.spec_id,
+                identity.metric_role,
+                identity.metric_preferences.cache_key(),
+                len(self._fetches_in_flight),
+            )
             self._pool.start(task)
+            self._refresh_quota_label()
 
     def _on_fetch_done(
         self,
@@ -2363,6 +2494,7 @@ class OverlayWindow(QMainWindow):
         ranks: CharacterRanks,
     ) -> None:
         self._discard_fetch_if_current(fetched_identity)
+        self._refresh_quota_label()
         applicant = self._state.applicants.get(fetched_identity.applicant_id)
         if applicant is None:
             return
@@ -2417,6 +2549,7 @@ class OverlayWindow(QMainWindow):
             applicant.mplus_hps = ranks.mplus_hps
             applicant.mplus_dps_median = ranks.mplus_dps_median
             applicant.mplus_hps_median = ranks.mplus_hps_median
+
             # Convert DungeonPerf → list[dict] for cross-module storage
             # (Applicant lives in state.py without WCL dependency).
             def _dungeon_perf_dict(d) -> dict:
@@ -2438,19 +2571,17 @@ class OverlayWindow(QMainWindow):
                 }
 
             applicant.mplus_dps_breakdown = [
-                _dungeon_perf_dict(d)
-                for d in ranks.mplus_dps_breakdown
+                _dungeon_perf_dict(d) for d in ranks.mplus_dps_breakdown
             ]
             applicant.mplus_hps_breakdown = [
-                _dungeon_perf_dict(d)
-                for d in ranks.mplus_hps_breakdown
+                _dungeon_perf_dict(d) for d in ranks.mplus_hps_breakdown
             ]
             applicant.project_wcl_data_to_preferences(self._metric_preferences)
         # Re-sort: this fetch may have produced a new M+ value that changes the
         # applicant's row position. _refresh_table ends with sync — so a pinned
         # panel showing this applicant rebuilds its HTML automatically here.
         # Don't add another _refresh_panel call — single bookkeeping point.
-        self._refresh_table()
+        self._schedule_overlay_refresh(update_title=False)
 
     def _update_title(self) -> None:
         listing = self._state.listing
@@ -2618,9 +2749,7 @@ def _normalize_loaded_geometry(geo: WindowGeometry) -> WindowGeometry:
             height,
             WINDOW_GEOMETRY_LAYOUT_VERSION,
         )
-    return WindowGeometry(
-        geo.x, geo.y, geo.w, geo.h, WINDOW_GEOMETRY_LAYOUT_VERSION
-    )
+    return WindowGeometry(geo.x, geo.y, geo.w, geo.h, WINDOW_GEOMETRY_LAYOUT_VERSION)
 
 
 def _clamp_geometry_to_screen(
@@ -2731,63 +2860,16 @@ def _raid_cell_visuals(
     return text, fg, bg
 
 
-def _safe_percent(value: object) -> float | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if not isinstance(value, int | float | str):
-        return None
-    try:
-        pct = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(pct) or pct < 0.0 or pct > 100.0:
-        return None
-    return pct
-
-
-def _nonnegative_int(value: object) -> int:
-    if isinstance(value, bool) or value is None:
-        return 0
-    if isinstance(value, int):
-        return value if value >= 0 else 0
-    if isinstance(value, str) and value.isdecimal():
-        return int(value)
-    return 0
-
-
-def _positive_int(value: object) -> int:
-    parsed = _nonnegative_int(value)
-    return parsed if parsed > 0 else 0
-
-
-def _mplus_view(
-    applicant: Applicant,
-) -> tuple[str, list[dict], float | None, float | None]:
-    if applicant.role == "HEALER":
-        return (
-            "HPS",
-            applicant.mplus_hps_breakdown,
-            _safe_percent(applicant.mplus_hps),
-            _safe_percent(applicant.mplus_hps_median),
-        )
-    return (
-        "DPS",
-        applicant.mplus_dps_breakdown,
-        _safe_percent(applicant.mplus_dps),
-        _safe_percent(applicant.mplus_dps_median),
-    )
-
-
 def _mplus_key_level(entry: object) -> int:
     if not isinstance(entry, dict):
         return 0
-    return _positive_int(entry.get("key_level"))
+    return positive_int(entry.get("key_level"))
 
 
 def _mplus_run_count(entry: object) -> int:
     if not isinstance(entry, dict):
         return 0
-    return _nonnegative_int(entry.get("run_count"))
+    return nonnegative_int(entry.get("run_count"))
 
 
 def _mplus_sort_key(entry: dict) -> tuple[int, str]:
@@ -2797,16 +2879,6 @@ def _mplus_sort_key(entry: dict) -> tuple[int, str]:
 
 def _normalise_dungeon_name(value: object) -> str:
     return " ".join(str(value or "").strip().casefold().split())
-
-
-def _listing_dungeon_keys(listing: Listing | None) -> set[str]:
-    if listing is None:
-        return set()
-    keys = {_normalise_dungeon_name(listing.dungeon_name)}
-    mapped_name = mplus_dungeon_name_for_activity_id(listing.activity_id)
-    if mapped_name:
-        keys.add(_normalise_dungeon_name(mapped_name))
-    return {key for key in keys if key}
 
 
 def _rio_dungeon_row_key(name: str, listing: Listing | None) -> str:
@@ -2828,12 +2900,12 @@ def _rio_dungeon_rows_by_name(
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("name") or "").strip()
-        key = _positive_int(entry.get("key_level"))
+        key = positive_int(entry.get("key_level"))
         row_key = _rio_dungeon_row_key(name, listing)
         if not name or not row_key or key <= 0:
             continue
         existing = rows.get(row_key)
-        if existing is None or key > _positive_int(existing.get("key_level")):
+        if existing is None or key > positive_int(existing.get("key_level")):
             rows[row_key] = {"name": name, "key_level": key}
     return rows
 
@@ -2857,7 +2929,7 @@ def _wcl_dungeon_rows_by_name(
                 }
         return rows
 
-    _metric_label, breakdown, _best, _median = _mplus_view(applicant)
+    _metric_label, breakdown, _best, _median = role_mplus_view(applicant)
     for entry in sorted(
         [entry for entry in breakdown if isinstance(entry, dict)],
         key=_mplus_sort_key,
@@ -2866,7 +2938,7 @@ def _wcl_dungeon_rows_by_name(
         row_key = _normalise_dungeon_name(name)
         if not name or not row_key:
             continue
-        best = _safe_percent(entry.get("parse_percent"))
+        best = safe_percent(entry.get("parse_percent"))
         rows[row_key] = {
             "name": name,
             "key_level": _mplus_key_level(entry),
@@ -2902,7 +2974,7 @@ def _mplus_cell_visuals(
     if status == "not_found":
         return "—", "#5d5d5d", None
 
-    _metric_label, breakdown, best, median = _mplus_view(applicant)
+    _metric_label, breakdown, best, median = role_mplus_view(applicant)
     if best is None and median is None:
         return "—", "#5d5d5d", None
 
@@ -2924,8 +2996,8 @@ def _mplus_cell_visuals(
 def _mplus_dungeon_metric_text(entry: object) -> str:
     if not isinstance(entry, dict):
         return "—"
-    best = _safe_percent(entry.get("parse_percent"))
-    median = _safe_percent(entry.get("median_percent"))
+    best = safe_percent(entry.get("parse_percent"))
+    median = safe_percent(entry.get("median_percent"))
     run_count = _mplus_run_count(entry)
     if best is None:
         return "—"
@@ -3019,13 +3091,13 @@ def _format_listing_tooltip(listing: Listing | None) -> str:
 
 
 def _percent_text(value: object) -> str:
-    pct = _safe_percent(value)
+    pct = safe_percent(value)
     return "—" if pct is None else str(int(round(pct)))
 
 
 def _metric_text(best: object, median: object) -> str:
-    best_pct = _safe_percent(best)
-    median_pct = _safe_percent(median)
+    best_pct = safe_percent(best)
+    median_pct = safe_percent(median)
     if best_pct is None and median_pct is None:
         return "—"
     best_text = _percent_text(best_pct)

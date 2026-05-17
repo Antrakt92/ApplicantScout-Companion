@@ -29,7 +29,10 @@ from applicant_scout.overlay import (
     _HoverHighlightDelegate,
     _mplus_group_cell,
 )
-from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from applicant_scout.metric_preferences import (
+    DEFAULT_METRIC_PREFERENCES,
+    MetricPreferences,
+)
 from applicant_scout.scoring import PackageFit
 from applicant_scout.state import DEFAULT_WINDOW_WIDTH, AppState, Applicant, Listing
 from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
@@ -119,7 +122,7 @@ def test_ready_panel_renders_identity_metrics_and_dungeons(qtbot):
 
     name_label, key_label, wcl_key_label, value_label = panel._dungeon_rows[0]
     assert name_label.text() == "Pit of Saron"
-    assert key_label.text() == "RIO —"
+    assert key_label.text() == ""
     assert wcl_key_label.text() == "WCL +14"
     assert value_label.text() == "100/80"
     assert name_label.width() == DUNGEON_NAME_WIDTH
@@ -299,8 +302,8 @@ def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
     assert rio_label.text() == "RIO +15"
-    assert wcl_key_label.text() == "WCL —"
-    assert wcl_label.text() == "—"
+    assert wcl_key_label.text() == ""
+    assert wcl_label.text() == ""
 
 
 def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
@@ -423,13 +426,13 @@ def test_malformed_mplus_breakdown_renders_safe_fallbacks(qtbot):
     panel.setApplicantData(app)
 
     assert panel._dungeon_rows[0][0].text() == "Valid"
-    assert panel._dungeon_rows[0][1].text() == "RIO —"
+    assert panel._dungeon_rows[0][1].text() == ""
     assert panel._dungeon_rows[0][2].text() == "WCL +12"
     assert panel._dungeon_rows[0][3].text() == "72/60"
     assert panel._dungeon_rows[1][0].text() == "Bad Cache"
-    assert panel._dungeon_rows[1][1].text() == "RIO —"
-    assert panel._dungeon_rows[1][2].text() == "WCL —"
-    assert panel._dungeon_rows[1][3].text() == "—"
+    assert panel._dungeon_rows[1][1].text() == ""
+    assert panel._dungeon_rows[1][2].text() == ""
+    assert panel._dungeon_rows[1][3].text() == ""
 
 
 def test_status_states_hide_metrics_and_dungeons(qtbot):
@@ -553,7 +556,9 @@ def test_overlay_constructor_initializes_geometry_event_state_before_set_geometr
         client.close()
 
 
-def test_overlay_constructor_uses_safe_defaults_for_corrupt_window_json(qtbot, tmp_path):
+def test_overlay_constructor_uses_safe_defaults_for_corrupt_window_json(
+    qtbot, tmp_path
+):
     (tmp_path / "window.json").write_text(
         json.dumps(
             {
@@ -679,8 +684,7 @@ def test_overlay_table_mplus_column_consumes_right_edge(qtbot, tmp_path):
         QApplication.processEvents()
 
         widths = [
-            window._table.columnWidth(col)
-            for col in range(window._table.columnCount())
+            window._table.columnWidth(col) for col in range(window._table.columnCount())
         ]
         assert sum(widths) == window._table.viewport().width()
         assert window._table.columnWidth(COL_MPLUS) > 88
@@ -690,8 +694,7 @@ def test_overlay_table_mplus_column_consumes_right_edge(qtbot, tmp_path):
         QApplication.processEvents()
 
         resized_widths = [
-            window._table.columnWidth(col)
-            for col in range(window._table.columnCount())
+            window._table.columnWidth(col) for col in range(window._table.columnCount())
         ]
         assert sum(resized_widths) == window._table.viewport().width()
         assert window._table.columnWidth(COL_MPLUS) > initial_mplus_width
@@ -1006,9 +1009,9 @@ def test_group_mplus_delegate_paints_full_cell_width(qtbot):
     finally:
         painter.end()
 
-    assert image.pixelColor(option.rect.width() - 1, option.rect.height() // 2) != QColor(
-        "#000000"
-    )
+    assert image.pixelColor(
+        option.rect.width() - 1, option.rect.height() // 2
+    ) != QColor("#000000")
 
 
 def test_overlay_table_mplus_listing_status_precedes_stale_fit_for_solo_row(
@@ -1039,9 +1042,7 @@ def test_role_filter_shows_whole_group_when_one_member_matches(qtbot, tmp_path):
     cache = CharacterCache(tmp_path)
     state = AppState()
     state.add_or_update(_app(applicant_id="10:1", name="Tank-Realm", role="TANK"))
-    state.add_or_update(
-        _app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER")
-    )
+    state.add_or_update(_app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER"))
     state.add_or_update(_app(applicant_id="20:1", name="Healer-Realm", role="HEALER"))
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
@@ -1073,9 +1074,7 @@ def test_role_filter_preserves_pin_when_pinned_group_stays_visible(qtbot, tmp_pa
     cache = CharacterCache(tmp_path)
     state = AppState()
     state.add_or_update(_app(applicant_id="10:1", name="Tank-Realm", role="TANK"))
-    state.add_or_update(
-        _app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER")
-    )
+    state.add_or_update(_app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER"))
     state.add_or_update(_app(applicant_id="20:1", name="Healer-Realm", role="HEALER"))
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
@@ -1113,7 +1112,9 @@ def test_role_filter_clears_pin_when_pinned_group_is_hidden(qtbot, tmp_path):
         )
 
         assert window._pinned_id is None
-        assert window._panel._status_label.text() == "Hover a row for applicant details."
+        assert (
+            window._panel._status_label.text() == "Hover a row for applicant details."
+        )
     finally:
         client.close()
 
@@ -1125,9 +1126,7 @@ def test_role_filter_title_count_uses_visible_group_members(qtbot, tmp_path):
     state = AppState()
     state.listing = _listing()
     state.add_or_update(_app(applicant_id="10:1", name="Tank-Realm", role="TANK"))
-    state.add_or_update(
-        _app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER")
-    )
+    state.add_or_update(_app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER"))
     state.add_or_update(_app(applicant_id="20:1", name="Healer-Realm", role="HEALER"))
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)

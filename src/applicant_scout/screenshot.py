@@ -169,7 +169,9 @@ def _decode_legacy_hex_qr(data: bytes) -> Optional[bytes]:
     return decoded if decoded.startswith(MAGIC) else None
 
 
-def _collect_appscout_qr_candidates(symbol_payloads: list[bytes]) -> list[tuple[str, bytes]]:
+def _collect_appscout_qr_candidates(
+    symbol_payloads: list[bytes],
+) -> list[tuple[str, bytes]]:
     """Return ordered ApplicantScout payload candidates from one QR scan.
 
     WHY preserve this order: legacy companions only understand hex, so the
@@ -205,7 +207,10 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
     if total_len < 13 or total_len > len(raw):
         return None, f"invalid total_len {total_len} for {len(raw)} decoded bytes"
     if total_len != len(raw):
-        return None, f"trailing decoded bytes: total_len {total_len} for {len(raw)} decoded bytes"
+        return (
+            None,
+            f"trailing decoded bytes: total_len {total_len} for {len(raw)} decoded bytes",
+        )
 
     payload = raw[:total_len]
     body = payload[:-4]
@@ -386,7 +391,9 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
         )
 
     if cursor != len(buf):
-        raise ValueError(f"trailing or truncated payload bytes: consumed {cursor} of {len(buf)}")
+        raise ValueError(
+            f"trailing or truncated payload bytes: consumed {cursor} of {len(buf)}"
+        )
 
     return Snapshot(listing=listing, version=version, applicants=applicants)
 
@@ -536,28 +543,23 @@ class _Handler(FileSystemEventHandler):
     def _path_from_event(value: str | bytes) -> Path:
         return Path(os.fsdecode(value))
 
-    def on_created(self, event):
+    def _handle_path_event(self, event, path_value: str | bytes) -> None:
         if event.is_directory:
             return
-        path = self._path_from_event(event.src_path)
+        path = self._path_from_event(path_value)
         if self._should_process(path):
             self._callback(path)
+
+    def on_created(self, event):
+        self._handle_path_event(event, event.src_path)
 
     def on_modified(self, event):
-        if event.is_directory:
-            return
-        path = self._path_from_event(event.src_path)
-        if self._should_process(path):
-            self._callback(path)
+        self._handle_path_event(event, event.src_path)
 
     def on_moved(self, event):
-        if event.is_directory:
-            return
         # For move/rename, the destination is the final filename we care about.
         dest = getattr(event, "dest_path", None) or event.src_path
-        path = self._path_from_event(dest)
-        if self._should_process(path):
-            self._callback(path)
+        self._handle_path_event(event, dest)
 
 
 class ScreenshotWatcher(QObject):

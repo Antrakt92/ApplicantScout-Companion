@@ -250,7 +250,7 @@ def mplus_dungeon_fit_rows(
 ) -> list[MPlusDungeonFit]:
     if detect_listing_context(listing) != CONTEXT_MPLUS or listing is None:
         return []
-    _metric_label, breakdown, _best, _median = _role_mplus_view(applicant)
+    _metric_label, breakdown, _best, _median = role_mplus_view(applicant)
     rows: list[MPlusDungeonFit] = []
     for entry in breakdown:
         if not isinstance(entry, dict):
@@ -262,9 +262,9 @@ def mplus_dungeon_fit_rows(
             fit = _mplus_bracket_fit(bracket, listing.key_level)
             if fit is None:
                 continue
-            key_level = _positive_int(bracket.get("key_level"))
+            key_level = positive_int(bracket.get("key_level"))
             text = _bracket_metric_text(bracket)
-            best_percent = _safe_percent(bracket.get("parse_percent"))
+            best_percent = safe_percent(bracket.get("parse_percent"))
             row = MPlusDungeonFit(
                 dungeon_name=dungeon_name,
                 key_level=key_level,
@@ -276,9 +276,10 @@ def mplus_dungeon_fit_rows(
             )
             if best_row is None or row.score > best_row.score:
                 best_row = row
-            if abs(key_level - listing.key_level) <= 2:
-                if window_row is None or row.score > window_row.score:
-                    window_row = row
+            if abs(key_level - listing.key_level) <= 2 and (
+                window_row is None or row.score > window_row.score
+            ):
+                window_row = row
         if window_row is not None:
             rows.append(window_row)
         elif best_row is not None:
@@ -302,7 +303,9 @@ def _is_terminal_fetch_status(status: str) -> bool:
     return status in {"error", "not_found"}
 
 
-def _listing_dungeon_keys(listing: Listing) -> set[str]:
+def listing_dungeon_keys(listing: Listing | None) -> set[str]:
+    if listing is None:
+        return set()
     keys = {_normalise_name(listing.dungeon_name)}
     mapped_name = mplus_dungeon_name_for_activity_id(listing.activity_id)
     if mapped_name:
@@ -311,15 +314,15 @@ def _listing_dungeon_keys(listing: Listing) -> set[str]:
 
 
 def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
-    listing_keys = _listing_dungeon_keys(listing)
-    best_key = _positive_int(applicant.rio_best_dungeon_key)
+    listing_keys = listing_dungeon_keys(listing)
+    best_key = positive_int(applicant.rio_best_dungeon_key)
     for entry in applicant.rio_dungeons:
         if not isinstance(entry, dict):
             continue
         row_key = _normalise_name(entry.get("name"))
         if row_key not in listing_keys:
             continue
-        best_key = max(best_key, _positive_int(entry.get("key_level")))
+        best_key = max(best_key, positive_int(entry.get("key_level")))
     return best_key
 
 
@@ -398,9 +401,13 @@ def _mplus_scorecard_candidate_fit(
     carry = _mplus_carry_bonus(completion_key_levels, target_key)
     wcl_positive = _mplus_wcl_positive_score(wcl_signals, target_key)
     wcl_bad_penalty = _mplus_wcl_bad_penalty(wcl_signals, target_key)
-    raw_score = key_score + carry + same_bonus + consistency + wcl_positive - wcl_bad_penalty
+    raw_score = (
+        key_score + carry + same_bonus + consistency + wcl_positive - wcl_bad_penalty
+    )
 
-    has_relevant_wcl = any(signal.key_level - target_key >= -1 for signal in wcl_signals)
+    has_relevant_wcl = any(
+        signal.key_level - target_key >= -1 for signal in wcl_signals
+    )
     if not has_relevant_wcl:
         raw_score = min(
             raw_score,
@@ -455,8 +462,8 @@ def _mplus_scorecard_candidate_fit(
 
 
 def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCLSignal]:
-    _metric_label, breakdown, _best, _median = _role_mplus_view(applicant)
-    listing_dungeon_keys = _listing_dungeon_keys(listing)
+    _metric_label, breakdown, _best, _median = role_mplus_view(applicant)
+    target_dungeon_keys = listing_dungeon_keys(listing)
     signals: list[_MPlusWCLSignal] = []
     for entry in breakdown:
         if not isinstance(entry, dict):
@@ -464,8 +471,8 @@ def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCL
         dungeon_name = str(entry.get("name") or "?")
         normalised_name = _normalise_name(dungeon_name)
         for bracket in _iter_mplus_brackets(entry):
-            key_level = _positive_int(bracket.get("key_level"))
-            percentile = _safe_percent(bracket.get("parse_percent"))
+            key_level = positive_int(bracket.get("key_level"))
+            percentile = safe_percent(bracket.get("parse_percent"))
             if key_level <= 0 or percentile is None:
                 continue
             signals.append(
@@ -473,8 +480,8 @@ def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCL
                     dungeon_name=dungeon_name,
                     key_level=key_level,
                     percentile=percentile,
-                    run_count=_nonnegative_int(bracket.get("run_count")),
-                    same_dungeon=normalised_name in listing_dungeon_keys,
+                    run_count=nonnegative_int(bracket.get("run_count")),
+                    same_dungeon=normalised_name in target_dungeon_keys,
                 )
             )
     return signals
@@ -509,7 +516,7 @@ def _mplus_rio_row_key_levels(applicant: Applicant) -> list[int]:
     return [
         level
         for level in (
-            _positive_int(entry.get("key_level"))
+            positive_int(entry.get("key_level"))
             for entry in applicant.rio_dungeons
             if isinstance(entry, dict)
         )
@@ -521,7 +528,7 @@ def _mplus_rio_key_levels(
     applicant: Applicant, target_key: int, same_dungeon_key: int
 ) -> list[int]:
     row_levels = _mplus_rio_row_key_levels(applicant)
-    dungeon_count = _positive_int(applicant.rio_dungeon_count)
+    dungeon_count = positive_int(applicant.rio_dungeon_count)
     expected_rows = min(MPLUS_DUNGEON_COUNT, dungeon_count or MPLUS_DUNGEON_COUNT)
     if len(row_levels) >= expected_rows:
         return sorted(row_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
@@ -550,17 +557,17 @@ def _mplus_synthetic_rio_key_levels(
     dungeon_count = max(
         1,
         min(
-            _positive_int(applicant.rio_dungeon_count) or MPLUS_DUNGEON_COUNT,
+            positive_int(applicant.rio_dungeon_count) or MPLUS_DUNGEON_COUNT,
             MPLUS_DUNGEON_COUNT,
         ),
     )
-    timed_at = min(_nonnegative_int(applicant.rio_timed_at_or_above), dungeon_count)
+    timed_at = min(nonnegative_int(applicant.rio_timed_at_or_above), dungeon_count)
     timed_minus1 = min(
-        max(_nonnegative_int(applicant.rio_timed_at_or_above_minus1), timed_at),
+        max(nonnegative_int(applicant.rio_timed_at_or_above_minus1), timed_at),
         dungeon_count,
     )
     timed_minus2 = min(
-        max(_nonnegative_int(applicant.rio_timed_at_or_above_minus2), timed_minus1),
+        max(nonnegative_int(applicant.rio_timed_at_or_above_minus2), timed_minus1),
         dungeon_count,
     )
     levels: list[int] = []
@@ -571,8 +578,8 @@ def _mplus_synthetic_rio_key_levels(
         levels.append(0)
 
     for key in (
-        _positive_int(applicant.rio_best_key),
-        _positive_int(same_dungeon_key or applicant.rio_best_dungeon_key),
+        positive_int(applicant.rio_best_key),
+        positive_int(same_dungeon_key or applicant.rio_best_dungeon_key),
     ):
         if key <= 0:
             continue
@@ -634,26 +641,29 @@ def _mplus_carry_bonus(key_levels: list[int], target_key: int) -> float:
 
 def _mplus_wcl_positive_score(signals: list[_MPlusWCLSignal], target_key: int) -> float:
     values = sorted(
-        (
-            _mplus_wcl_single_positive_score(signal, target_key)
-            for signal in signals
-        ),
+        (_mplus_wcl_single_positive_score(signal, target_key) for signal in signals),
         reverse=True,
     )
     if not values:
         return 0.0
-    return min(MPLUS_SCORE_WCL_POSITIVE_MAX, _weighted_sum_top(values, [0.34, 0.25, 0.18, 0.13, 0.10]))
+    return min(
+        MPLUS_SCORE_WCL_POSITIVE_MAX,
+        _weighted_sum_top(values, [0.34, 0.25, 0.18, 0.13, 0.10]),
+    )
 
 
-def _mplus_wcl_single_positive_score(
-    signal: _MPlusWCLSignal, target_key: int
-) -> float:
+def _mplus_wcl_single_positive_score(signal: _MPlusWCLSignal, target_key: int) -> float:
     if signal.percentile < 50.0 or target_key <= 0:
         return 0.0
     delta = signal.key_level - target_key
     key_weight = _mplus_wcl_key_weight(delta)
     run_weight = 0.70 + 0.30 * min(max(signal.run_count, 1), 3) / 3.0
-    return ((signal.percentile - 50.0) / 50.0) * MPLUS_SCORE_WCL_POSITIVE_MAX * key_weight * run_weight
+    return (
+        ((signal.percentile - 50.0) / 50.0)
+        * MPLUS_SCORE_WCL_POSITIVE_MAX
+        * key_weight
+        * run_weight
+    )
 
 
 def _mplus_wcl_key_weight(delta: int) -> float:
@@ -681,7 +691,9 @@ def _mplus_wcl_bad_penalty(signals: list[_MPlusWCLSignal], target_key: int) -> f
         return 0.0
     return min(
         MPLUS_SCORE_WCL_BAD_MAX,
-        _weighted_sum_top(sorted(penalties, reverse=True), [1.0, 0.82, 0.62, 0.42, 0.25]),
+        _weighted_sum_top(
+            sorted(penalties, reverse=True), [1.0, 0.82, 0.62, 0.42, 0.25]
+        ),
     )
 
 
@@ -722,8 +734,7 @@ def _weighted_sum_top(values: list[float], weights: list[float]) -> float:
     used_values = values[: len(weights)]
     used_weights = weights[: len(used_values)]
     return sum(
-        value * weight
-        for value, weight in zip(used_values, used_weights, strict=True)
+        value * weight for value, weight in zip(used_values, used_weights, strict=True)
     )
 
 
@@ -778,23 +789,27 @@ def _raid_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
         display=f"{target_label} {label} {int(round(score))}",
         colour=fit_colour(score),
         target_raid=target_label,
-        confidence=1.0 if source == "raid_exact" else (0.65 if target_score > 0 else 0.2),
+        confidence=1.0
+        if source == "raid_exact"
+        else (0.65 if target_score > 0 else 0.2),
     )
 
 
-def _role_mplus_view(applicant: Applicant) -> tuple[str, list[dict], float | None, float | None]:
+def role_mplus_view(
+    applicant: Applicant,
+) -> tuple[str, list[dict], float | None, float | None]:
     if applicant.role == "HEALER":
         return (
             "HPS",
             applicant.mplus_hps_breakdown,
-            _safe_percent(applicant.mplus_hps),
-            _safe_percent(applicant.mplus_hps_median),
+            safe_percent(applicant.mplus_hps),
+            safe_percent(applicant.mplus_hps_median),
         )
     return (
         "DPS",
         applicant.mplus_dps_breakdown,
-        _safe_percent(applicant.mplus_dps),
-        _safe_percent(applicant.mplus_dps_median),
+        safe_percent(applicant.mplus_dps),
+        safe_percent(applicant.mplus_dps_median),
     )
 
 
@@ -813,12 +828,12 @@ def _iter_mplus_brackets(entry: dict) -> Iterable[dict]:
 
 
 def _mplus_bracket_fit(bracket: dict, target_key: int) -> float | None:
-    key_level = _positive_int(bracket.get("key_level"))
-    best = _safe_percent(bracket.get("parse_percent"))
+    key_level = positive_int(bracket.get("key_level"))
+    best = safe_percent(bracket.get("parse_percent"))
     if key_level <= 0 or target_key <= 0 or best is None:
         return None
-    median = _safe_percent(bracket.get("median_percent"))
-    run_count = _nonnegative_int(bracket.get("run_count"))
+    median = safe_percent(bracket.get("median_percent"))
+    run_count = nonnegative_int(bracket.get("run_count"))
     delta = key_level - target_key
     score = _mplus_performance_score(best, median, run_count) + _key_delta_bonus(delta)
     return _clamp(score, 0.0, _lower_key_fit_cap(delta))
@@ -905,7 +920,9 @@ def _package_status_penalty(members: Iterable[Applicant]) -> float:
     return min(12.0, sum(penalties.get(member.fetch_status, 0.0) for member in members))
 
 
-def _package_confidence(members: Iterable[Applicant], fits: Iterable[CandidateFit]) -> float:
+def _package_confidence(
+    members: Iterable[Applicant], fits: Iterable[CandidateFit]
+) -> float:
     factors = {
         "ready": 1.0,
         "loading": 0.65,
@@ -944,8 +961,8 @@ def _mplus_rio_fit(score: int, target_key: int) -> float:
 
 
 def _raid_perf(best: float | None, median: float | None) -> float | None:
-    clean_best = _safe_percent(best)
-    clean_median = _safe_percent(median)
+    clean_best = safe_percent(best)
+    clean_median = safe_percent(median)
     if clean_best is None and clean_median is None:
         return None
     if clean_best is None:
@@ -956,7 +973,7 @@ def _raid_perf(best: float | None, median: float | None) -> float | None:
 
 
 def _mplus_support_percent(applicant: Applicant) -> float:
-    _metric_label, _breakdown, best, median = _role_mplus_view(applicant)
+    _metric_label, _breakdown, best, median = role_mplus_view(applicant)
     if best is None and median is None:
         return 0.0
     if best is None:
@@ -967,17 +984,17 @@ def _mplus_support_percent(applicant: Applicant) -> float:
 
 
 def _bracket_metric_text(bracket: dict) -> str:
-    best = _safe_percent(bracket.get("parse_percent"))
+    best = safe_percent(bracket.get("parse_percent"))
     if best is None:
         return "—"
-    median = _safe_percent(bracket.get("median_percent"))
-    run_count = _nonnegative_int(bracket.get("run_count"))
+    median = safe_percent(bracket.get("median_percent"))
+    run_count = nonnegative_int(bracket.get("run_count"))
     if run_count >= 2 and median is not None:
         return f"{int(round(best))}/{int(round(median))}"
     return f"{int(round(best))}"
 
 
-def _safe_percent(value: object) -> float | None:
+def safe_percent(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if not isinstance(value, int | float | str):
@@ -991,7 +1008,7 @@ def _safe_percent(value: object) -> float | None:
     return pct
 
 
-def _nonnegative_int(value: object) -> int:
+def nonnegative_int(value: object) -> int:
     if isinstance(value, bool) or value is None:
         return 0
     if isinstance(value, int):
@@ -1001,8 +1018,8 @@ def _nonnegative_int(value: object) -> int:
     return 0
 
 
-def _positive_int(value: object) -> int:
-    parsed = _nonnegative_int(value)
+def positive_int(value: object) -> int:
+    parsed = nonnegative_int(value)
     return parsed if parsed > 0 else 0
 
 

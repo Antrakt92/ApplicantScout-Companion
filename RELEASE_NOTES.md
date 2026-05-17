@@ -1,10 +1,11 @@
 # ApplicantScout Companion Release Notes
 
-## 0.3.0 - 16-May-2026
+## 0.3.0 - 17-May-2026
 
 RaiderIO completion-aware Mythic+ scoring, local RaiderIO per-dungeon evidence
 next to Warcraft Logs rows, plus screenshot startup, settings launch, WCL
-configuration, and release-readiness hardening for live applicant scouting.
+configuration, faster cached WCL display, and release-readiness hardening for
+live applicant scouting.
 
 ### Improved
 
@@ -25,6 +26,13 @@ configuration, and release-readiness hardening for live applicant scouting.
 - Applicant hover details now separate the Warcraft Logs key and percentile
   into distinct columns, making side-by-side RaiderIO/WCL evidence easier to
   scan during live invites.
+- Cached Warcraft Logs results now apply before new API work is queued, so
+  already-known applicants can become ready immediately instead of waiting
+  behind slower network fetches.
+- Applicant add/update bursts and Warcraft Logs completion bursts now coalesce
+  overlay table refreshes, reducing UI churn during fast applicant waves.
+- The WCL footer now shows active queued/running fetches while quota data is
+  still pending instead of implying no fetch has happened yet.
 - RaiderIO dungeon rows remain visible when Warcraft Logs has no logs for the
   applicant, so the card can still show real timed-key experience.
 - RaiderIO local database loading runs in the background; the overlay stays
@@ -72,6 +80,8 @@ configuration, and release-readiness hardening for live applicant scouting.
   evidence into separate hover-panel rows.
 - Fixed RIO-backed fit badges being hidden in the hover panel when Warcraft Logs
   has no logs for the applicant.
+- Fixed hover-panel dungeon rows showing empty placeholder RIO/WCL badges when
+  only one evidence source exists for that dungeon.
 - Fixed the prepared QR payload growing huge when per-dungeon RaiderIO strings
   were packed into every screenshot. The paired addon now sends only compact
   live state and the companion enriches static RIO dungeon rows locally.
