@@ -1,5 +1,26 @@
 # ApplicantScout Companion Release Notes
 
+## 0.3.2 - 17-May-2026
+
+Screenshot decode startup/performance release for faster first overlay display
+during live applicant waves.
+
+### Improved
+
+- QR decoding now scans the normal top-left transport region first and only
+  falls back to a full-screen scan when needed, reducing decode work on large
+  1440p/4K screenshots.
+- Screenshot processing now logs slow stable-file wait and decode stages, making
+  it clear whether future startup delays come from WoW writing the JPG or from
+  the QR decoder itself.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.2.2`.
+- Installer: `ApplicantScoutCompanionSetup-0.3.2.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.3.2.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.3.2-portable.zip`
+
 ## 0.3.1 - 17-May-2026
 
 Warcraft Logs resilience hotfix for busy applicant waves when the WCL API is
