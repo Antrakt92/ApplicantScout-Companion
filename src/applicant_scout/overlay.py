@@ -1012,6 +1012,23 @@ class OverlayLauncher(QFrame):
 # Source tab bar (Applicants / Party)
 
 
+class TargetKeySpinBox(QSpinBox):
+    _BUTTON_HIT_WIDTH = 24
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position().toPoint()
+            if pos.x() >= self.width() - self._BUTTON_HIT_WIDTH:
+                self.setFocus()
+                if pos.y() < self.height() / 2:
+                    self.stepUp()
+                else:
+                    self.stepDown()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+
 class SourceTabBar(QWidget):
     tabChanged = pyqtSignal(str)
     keyChanged = pyqtSignal(int)
@@ -1039,7 +1056,7 @@ class SourceTabBar(QWidget):
         key_label_font.setBold(True)
         self._key_label.setFont(key_label_font)
         layout.addWidget(self._key_label)
-        self._key_spin = QSpinBox()
+        self._key_spin = TargetKeySpinBox()
         self._key_spin.setObjectName("targetKeySpin")
         self._key_spin.setRange(0, 30)
         self._key_spin.setSpecialValueText("—")
@@ -3597,6 +3614,17 @@ _STYLESHEET = """
     border-radius: 3px;
     font-weight: bold;
     padding-left: 6px;
+}
+#targetKeySpin::up-button, #targetKeySpin::down-button {
+    width: 24px;
+    border-left: 1px solid rgba(160, 160, 180, 125);
+    background-color: rgba(34, 34, 44, 210);
+}
+#targetKeySpin::up-button:hover, #targetKeySpin::down-button:hover {
+    background-color: rgba(240, 120, 90, 105);
+}
+#targetKeySpin::up-button:pressed, #targetKeySpin::down-button:pressed {
+    background-color: rgba(240, 120, 90, 155);
 }
 /* Hover/pin info panel — opaque QWidget scout card. */
 #infoPanel {

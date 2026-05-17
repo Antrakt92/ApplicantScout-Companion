@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPoint, Qt
 
 from applicant_scout.overlay import _mplus_cell_visuals, OverlayWindow
 from applicant_scout.state import AppState, Applicant, Listing, RosterMember
@@ -204,6 +204,22 @@ def test_target_key_control_defaults_to_listing_key(qtbot, tmp_path):
     assert win._tab_bar._key_spin.width() >= 88
     assert win._tab_bar._key_label.font().bold()
     assert win._tab_bar._key_spin.font().bold()
+
+
+def test_target_key_control_upper_button_steps_up(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing(key_level=12)
+    win = _window(tmp_path, qtbot, state)
+    win._update_title()
+    spin = win._tab_bar._key_spin
+
+    qtbot.mouseClick(
+        spin,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(spin.width() - 6, 6),
+    )
+
+    assert spin.value() == 13
 
 
 def test_manual_target_key_creates_effective_party_listing(qtbot, tmp_path):
