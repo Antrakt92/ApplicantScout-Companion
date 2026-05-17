@@ -280,13 +280,32 @@ def load_geometry(config_dir: Path) -> WindowGeometry:
 
 
 def _launcher_position_from_dict(data: dict) -> LauncherPosition | None:
-    x = _coerce_geometry_int(data.get("x"), default=0)
-    y = _coerce_geometry_int(data.get("y"), default=0)
-    if isinstance(data.get("x"), bool) or isinstance(data.get("y"), bool):
-        return None
     if "x" not in data or "y" not in data:
         return None
+    x = _coerce_launcher_position_int(data.get("x"))
+    y = _coerce_launcher_position_int(data.get("y"))
+    if x is None or y is None:
+        return None
     return LauncherPosition(x, y)
+
+
+def _coerce_launcher_position_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        signless = text[1:] if text[0] in ("+", "-") else text
+        if not signless.isdecimal():
+            return None
+        try:
+            return int(text, 10)
+        except ValueError:
+            return None
+    return None
 
 
 def load_launcher_position(config_dir: Path) -> LauncherPosition | None:

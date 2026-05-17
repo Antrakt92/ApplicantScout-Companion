@@ -2465,6 +2465,10 @@ class OverlayWindow(QMainWindow):
         save_launcher_position(self._config_dir, launcher_position)
 
     def _maybe_show(self) -> None:
+        if not self._game_foreground:
+            self.hide()
+            self._launcher.hide()
+            return
         if self._collapsed_to_launcher:
             self._launcher.show_at(self._default_launcher_position())
             return

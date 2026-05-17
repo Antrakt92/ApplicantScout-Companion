@@ -787,6 +787,40 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
         client.close()
 
 
+def test_background_updates_do_not_show_overlay_outside_game(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    foreground = {"active": False}
+    window = OverlayWindow(
+        state,
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        state.add_or_update(_app(applicant_id="1"))
+        window.on_applicant_added(state.applicants["1"])
+        window._flush_overlay_refresh()
+
+        assert window._collapsed_to_launcher
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+    finally:
+        client.close()
+
+
 def test_title_bar_hide_button_collapses_to_launcher_without_shutdown(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)

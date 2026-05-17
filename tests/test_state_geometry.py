@@ -7,10 +7,13 @@ from applicant_scout import atomic_io
 from applicant_scout.state import (
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
+    LauncherPosition,
     WINDOW_GEOMETRY_LAYOUT_VERSION,
     WindowGeometry,
     load_geometry,
+    load_launcher_position,
     save_geometry,
+    save_launcher_position,
 )
 
 
@@ -159,3 +162,18 @@ def test_save_geometry_failed_replace_preserves_previous_geometry(
     assert load_geometry(tmp_path) == old_geo
     assert "Failed to save window geometry" in caplog.text
     assert list(tmp_path.glob(".window.json.*.tmp")) == []
+
+
+def test_launcher_position_round_trips(tmp_path):
+    save_launcher_position(tmp_path, LauncherPosition(321, 234))
+
+    assert load_launcher_position(tmp_path) == LauncherPosition(321, 234)
+
+
+def test_load_launcher_position_rejects_malformed_coordinates(tmp_path):
+    (tmp_path / "launcher.json").write_text(
+        '{"x": "left", "y": "top"}',
+        encoding="utf-8",
+    )
+
+    assert load_launcher_position(tmp_path) is None
