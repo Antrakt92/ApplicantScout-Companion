@@ -1997,6 +1997,14 @@ def test_tray_controller_exposes_running_status_and_controls(
         def hide(self) -> None:
             self.hide_called = True
 
+        def collapse_to_launcher(self) -> None:
+            self.hide_called = True
+
+        def restore_from_launcher(self) -> None:
+            self.show_called = True
+            self.raise_called = True
+            self.activate_called = True
+
         def raise_(self) -> None:
             self.raise_called = True
 

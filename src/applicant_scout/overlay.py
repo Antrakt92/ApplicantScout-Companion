@@ -19,6 +19,7 @@ from PyQt6.QtCore import (
     QRunnable,
     QThreadPool,
     QObject,
+    QPoint,
     QRect,
 )
 from PyQt6.QtGui import (
@@ -125,6 +126,7 @@ WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
 MIN_VISIBLE_WINDOW_WIDTH = 420
 USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
+LAUNCHER_SIZE = 42
 MPLUS_GROUP_COLUMN_WIDTH = 188
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
 MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
@@ -926,6 +928,76 @@ class TitleBar(QWidget):
         self._drag_offset = None
 
 
+class OverlayLauncher(QFrame):
+    clicked = pyqtSignal()
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setObjectName("overlayLauncher")
+        self.setFixedSize(LAUNCHER_SIZE, LAUNCHER_SIZE)
+        self.setToolTip("Show ApplicantScout overlay")
+        self._press_global_pos: QPoint | None = None
+        self._press_window_pos: QPoint | None = None
+        self._dragged = False
+        self._position_initialized = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        label = QLabel("AS")
+        label.setObjectName("overlayLauncherLabel")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+
+    def show_at(self, pos: QPoint) -> None:
+        if not self._position_initialized:
+            self.move(pos)
+            self._position_initialized = True
+        self.show()
+        self.raise_()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_global_pos = event.globalPosition().toPoint()
+            self._press_window_pos = self.pos()
+            self._dragged = False
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.buttons() & Qt.MouseButton.LeftButton
+            and self._press_global_pos is not None
+            and self._press_window_pos is not None
+        ):
+            delta = event.globalPosition().toPoint() - self._press_global_pos
+            if delta.manhattanLength() > 3:
+                self._dragged = True
+            self.move(self._press_window_pos + delta)
+            self._position_initialized = True
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            if not self._dragged:
+                self.clicked.emit()
+            self._press_global_pos = None
+            self._press_window_pos = None
+            self._dragged = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 # ───────────────────────────────────────────────────────────────────
 # Source tab bar (Applicants / Party)
 
@@ -1550,6 +1622,9 @@ class OverlayWindow(QMainWindow):
         self._config_dir = config_dir
         self._metric_preferences = metric_preferences
         self._show_settings = show_settings
+        self._collapsed_to_launcher = False
+        self._launcher = OverlayLauncher()
+        self._launcher.clicked.connect(self.restore_from_launcher)
         self._pool = QThreadPool.globalInstance()
         if self._pool is not None:
             self._pool.setMaxThreadCount(3)
@@ -1573,7 +1648,7 @@ class OverlayWindow(QMainWindow):
         layout.setSpacing(0)
 
         self._title_bar = TitleBar(container)
-        self._title_bar.hideClicked.connect(self.hide)
+        self._title_bar.hideClicked.connect(self.collapse_to_launcher)
         if self._show_settings is not None:
             self._title_bar.settingsClicked.connect(self._show_settings)
         layout.addWidget(self._title_bar)
@@ -1713,6 +1788,7 @@ class OverlayWindow(QMainWindow):
         layout.addWidget(bottom)
 
         self.setStyleSheet(_STYLESHEET)
+        self._launcher.setStyleSheet(_STYLESHEET)
 
         # Constructor-time Qt geometry events can fire synchronously during
         # setGeometry(), so every field read by moveEvent/resizeEvent/hover
@@ -1847,6 +1923,24 @@ class OverlayWindow(QMainWindow):
         ):
             self._maybe_show()
 
+    def collapse_to_launcher(self) -> None:
+        self.flush_geometry()
+        self._collapsed_to_launcher = True
+        self.hide()
+        self._launcher.show_at(self._default_launcher_position())
+
+    def restore_from_launcher(self) -> None:
+        self._collapsed_to_launcher = False
+        self._launcher.hide()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def hide_completely(self) -> None:
+        self._collapsed_to_launcher = False
+        self._launcher.hide()
+        self.hide()
+
     def _on_source_tab_changed(self, key: str) -> None:
         if key == self._active_tab:
             return
@@ -1921,7 +2015,7 @@ class OverlayWindow(QMainWindow):
             # ghost panel content from a stale id.
             self._hover_id = None
             self._pinned_id = None
-            self.hide()
+            self.hide_completely()
             if self._state.listing is not None:
                 self._empty_hide_timer.start()
 
@@ -1967,7 +2061,7 @@ class OverlayWindow(QMainWindow):
         # periods; hiding on every EMPTY would flicker the window.
         if self._state.listing is None:
             self._clear_manual_target_key()
-            self.hide()
+            self.hide_completely()
 
     def on_roster_changed(self) -> None:
         for member in self._state.party_members.values():
@@ -1980,7 +2074,7 @@ class OverlayWindow(QMainWindow):
         ):
             self._clear_manual_target_key()
             self._schedule_overlay_refresh(update_title=True, maybe_show=False)
-            self.hide()
+            self.hide_completely()
             return
         should_show_party = self._state.count() == 0 and len(self._state.party_members) > 0
         if should_show_party:
@@ -2146,7 +2240,7 @@ class OverlayWindow(QMainWindow):
         still active. Auto-hide as a safety net for cases where M+ keystone
         listing isn't auto-delisted by Blizzard after group fills."""
         if self._state.count() == 0:
-            self.hide()
+            self.hide_completely()
 
     # ─── hover/pin panel orchestration ─────
 
@@ -2295,7 +2389,17 @@ class OverlayWindow(QMainWindow):
 
     # ─── internals ─────
 
+    def _default_launcher_position(self) -> QPoint:
+        g = self.geometry()
+        x = g.x() + max(0, g.width() - LAUNCHER_SIZE)
+        y = g.y()
+        x, y, _w, _h = _clamp_geometry_to_screen(x, y, LAUNCHER_SIZE, LAUNCHER_SIZE)
+        return QPoint(x, y)
+
     def _maybe_show(self) -> None:
+        if self._collapsed_to_launcher:
+            self._launcher.show_at(self._default_launcher_position())
+            return
         if not self.isVisible():
             g = self.geometry()
             _log.info(
@@ -3393,6 +3497,19 @@ _STYLESHEET = """
 #healthLabel {
     color: #888;
     font-size: 10px;
+}
+#overlayLauncher {
+    background-color: rgba(12, 12, 18, 235);
+    border: 1px solid rgba(240, 120, 90, 210);
+    border-radius: 6px;
+}
+#overlayLauncher:hover {
+    background-color: rgba(34, 34, 44, 240);
+}
+#overlayLauncherLabel {
+    color: #ff8a65;
+    font-size: 14px;
+    font-weight: bold;
 }
 #targetKeyLabel {
     color: #f0d27a;

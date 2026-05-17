@@ -154,7 +154,9 @@ class TrayController:
         )
 
         self.hide_overlay_action = _add_menu_action(self.menu, "Hide overlay")
-        self.hide_overlay_action.triggered.connect(lambda *_args: window.hide())
+        self.hide_overlay_action.triggered.connect(
+            lambda *_args: window.collapse_to_launcher()
+        )
 
         self.update_action = _add_menu_action(self.menu, "Update")
         self.update_action.setEnabled(False)
@@ -212,9 +214,7 @@ class TrayController:
         self.tray.setToolTip("ApplicantScout Companion is running")
 
     def _show_overlay(self, window: OverlayWindow) -> None:
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        window.restore_from_launcher()
 
     def _open_logs(self, open_logs: Callable[[], str]) -> None:
         try:

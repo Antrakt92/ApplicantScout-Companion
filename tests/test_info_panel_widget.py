@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtCore import QPoint, QRect, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QApplication, QLabel, QStyleOptionViewItem, QTableWidget
 
@@ -651,13 +651,14 @@ def test_flush_geometry_stops_pending_timer_and_persists_window_json(qtbot, tmp_
         client.close()
 
 
-def test_title_bar_hide_button_hides_overlay_without_shutdown(qtbot, tmp_path):
+def test_title_bar_hide_button_collapses_to_launcher_without_shutdown(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
     state = AppState()
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
 
     try:
         window.show()
@@ -669,10 +670,66 @@ def test_title_bar_hide_button_hides_overlay_without_shutdown(qtbot, tmp_path):
 
         qtbot.mouseClick(hide_button, Qt.MouseButton.LeftButton)
         qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        qtbot.mouseClick(window._launcher, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert not window._launcher.isVisible()
 
         assert window._state is state
         assert window._wcl_client is client
         assert not client._http.is_closed
+    finally:
+        client.close()
+
+
+def test_automatic_overlay_hide_does_not_show_launcher(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.add_or_update(_app(applicant_id="1"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        state.remove("1")
+        window.on_applicant_removed("1")
+        qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+
+        assert not window._launcher.isVisible()
+    finally:
+        client.close()
+
+
+def test_launcher_drag_moves_without_restoring_overlay(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window.collapse_to_launcher()
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        original_pos = window._launcher.pos()
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(22, 18))
+        qtbot.mouseRelease(
+            window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(22, 18)
+        )
+
+        assert window._launcher.pos() != original_pos
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
     finally:
         client.close()
 
