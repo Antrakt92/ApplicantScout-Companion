@@ -60,6 +60,8 @@ WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05}
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
 STABLE_SIZE_POLL = 0.05  # poll interval
 SUPPORTED_SCREENSHOT_SUFFIXES = frozenset({".jpg", ".tga"})
+QR_SCAN_CROP_PX = 720
+SLOW_SCREENSHOT_STAGE_LOG_S = 0.75
 
 # Cap startup-cleanup scan at most-recent N WoWScrnShot image files. Backlog scan
 # runs on a daemon thread — no startup-latency impact on overlay paint —
@@ -132,6 +134,19 @@ class DecodeResult:
 
 
 # ─── QR detection + payload extraction ──────────────────────────────────────
+def _decode_qr_symbols(img: Image.Image) -> list[bytes]:
+    try:
+        results = pyzbar_decode(img, symbols=[ZBarSymbol.QRCODE])
+    except Exception as e:
+        _log.debug("pyzbar error: %s", e)
+        return []
+    return [bytes(r.data) for r in results]
+
+
+def _has_appscout_symbol(payloads: list[bytes]) -> bool:
+    return bool(_collect_appscout_qr_candidates(payloads))
+
+
 def _decode_qr_symbol_data(image_path: Path) -> list[bytes]:
     """Return raw pyzbar symbol bytes from one screenshot image.
 
@@ -148,17 +163,24 @@ def _decode_qr_symbol_data(image_path: Path) -> list[bytes]:
     # Windows (file in use). With-block guarantees release on every exit path.
     try:
         with Image.open(image_path) as img:
-            try:
-                results = pyzbar_decode(img, symbols=[ZBarSymbol.QRCODE])
-            except Exception as e:
-                _log.debug("pyzbar error in %s: %s", image_path.name, e)
-                return []
+            width, height = img.size
+            crop_width = min(QR_SCAN_CROP_PX, width)
+            crop_height = min(QR_SCAN_CROP_PX, height)
+            if crop_width < width or crop_height < height:
+                # WHY: ApplicantScout keeps the transport QR at TOPLEFT during
+                # normal sessions. Scanning a 720px crop avoids a full-screen
+                # zbar pass on 1440p/4K screenshots; fallback preserves manual
+                # /apscout qrmove positions and future non-default layouts.
+                with img.crop((0, 0, crop_width, crop_height)) as cropped:
+                    payloads = _decode_qr_symbols(cropped)
+                if _has_appscout_symbol(payloads):
+                    return payloads
+                full_payloads = _decode_qr_symbols(img)
+                return full_payloads
+            return _decode_qr_symbols(img)
     except (OSError, IOError) as e:
         _log.debug("Image.open failed %s: %s", image_path.name, e)
         return []
-    if not results:
-        return []
-    return [bytes(r.data) for r in results]
 
 
 def _decode_legacy_hex_qr(data: bytes) -> Optional[bytes]:
@@ -720,7 +742,15 @@ class ScreenshotWatcher(QObject):
         if self._stopped.is_set():
             return
         _log.info("new file: %s", path.name)
+        wait_started = time.perf_counter()
         if not _wait_for_stable_size(path):
+            wait_elapsed = time.perf_counter() - wait_started
+            if wait_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S:
+                _log.info(
+                    "screenshot stable wait timed out for %s in %.2fs",
+                    path.name,
+                    wait_elapsed,
+                )
             self._emit_decode_failed(path, "size never stabilized")
             # Even with unstable size the QR may still decode; if ours, drop it.
             if _has_marker(path):
@@ -729,11 +759,25 @@ class ScreenshotWatcher(QObject):
                 except OSError:
                     pass
             return
+        wait_elapsed = time.perf_counter() - wait_started
+        decode_started = time.perf_counter()
         try:
             result = _decode_screenshot_result(path)
         except Exception as e:
             self._emit_decode_failed(path, repr(e))
             result = DecodeResult(None, False)
+        decode_elapsed = time.perf_counter() - decode_started
+        if (
+            wait_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S
+            or decode_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S
+        ):
+            _log.info(
+                "screenshot processed %s: stable_wait=%.2fs decode=%.2fs marker=%s",
+                path.name,
+                wait_elapsed,
+                decode_elapsed,
+                result.has_marker,
+            )
         snap = result.snapshot
         marker = result.has_marker
         if snap is not None:

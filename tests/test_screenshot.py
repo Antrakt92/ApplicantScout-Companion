@@ -553,6 +553,52 @@ def test_decode_screenshot_accepts_legacy_hex_qr(monkeypatch, tmp_path: Path):
     assert snap.applicants == []
 
 
+def test_decode_screenshot_uses_top_left_crop_before_full_image(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "large_qr.jpg"
+    Image.new("RGB", (1280, 720), "white").save(image_path)
+    raw_payload = _wrap_payload(_build_body([]))
+    calls: list[tuple[int, int]] = []
+
+    def fake_decode(img, symbols=None):
+        calls.append(img.size)
+        return [SimpleNamespace(data=raw_payload)]
+
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", fake_decode)
+
+    snap, marker = decode_screenshot(image_path)
+
+    assert marker is True
+    assert snap is not None
+    assert calls == [(screenshot_mod.QR_SCAN_CROP_PX, 720)]
+
+
+def test_decode_screenshot_falls_back_to_full_image_when_crop_has_no_appscout_qr(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "moved_qr.jpg"
+    Image.new("RGB", (1280, 720), "white").save(image_path)
+    raw_payload = _wrap_payload(_build_body([]))
+    calls: list[tuple[int, int]] = []
+
+    def fake_decode(img, symbols=None):
+        calls.append(img.size)
+        if len(calls) == 1:
+            return [SimpleNamespace(data=b"https://example.invalid")]
+        return [SimpleNamespace(data=raw_payload)]
+
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", fake_decode)
+
+    snap, marker = decode_screenshot(image_path)
+
+    assert marker is True
+    assert snap is not None
+    assert calls == [(screenshot_mod.QR_SCAN_CROP_PX, 720), (1280, 720)]
+
+
 def test_decode_screenshot_prefers_valid_raw_candidate_over_legacy_hex(
     monkeypatch, tmp_path: Path
 ):
