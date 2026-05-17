@@ -196,6 +196,7 @@ def test_target_key_control_defaults_to_listing_key(qtbot, tmp_path):
     win._update_title()
 
     assert win._tab_bar._key_spin.value() == 12
+    assert win._tab_bar._key_spin.width() >= 88
 
 
 def test_manual_target_key_creates_effective_party_listing(qtbot, tmp_path):

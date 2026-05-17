@@ -957,7 +957,7 @@ class SourceTabBar(QWidget):
         self._key_spin.setRange(0, 30)
         self._key_spin.setSpecialValueText("—")
         self._key_spin.setPrefix("+")
-        self._key_spin.setFixedWidth(54)
+        self._key_spin.setFixedWidth(88)
         self._key_spin.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._key_spin.setToolTip(
             "Set the current Mythic+ key when the addon cannot read it from your own listing."
