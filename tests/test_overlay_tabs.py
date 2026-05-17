@@ -5,7 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 
 from applicant_scout.overlay import OverlayWindow
-from applicant_scout.state import AppState, Applicant, RosterMember
+from applicant_scout.state import AppState, Applicant, Listing, RosterMember
 
 
 class _FakeWCLClient:
@@ -41,6 +41,17 @@ def _member(member_id: str, name: str, role: str = "DAMAGER") -> RosterMember:
         ilvl=701,
         score=3100,
         role=role,
+    )
+
+
+def _listing(key_level: int = 12) -> Listing:
+    return Listing(
+        activity_id=459,
+        dungeon_name="Nexus-Point Xenas",
+        listing_name="+12 Competitive",
+        comment="",
+        key_level=key_level,
+        category_id=2,
     )
 
 
@@ -135,3 +146,14 @@ def test_cleared_snapshot_preserves_visible_party_roster(qtbot, tmp_path):
     assert win.isVisible()
     assert win._active_tab == "party"
     assert win._table.rowCount() == 1
+
+
+def test_party_title_keeps_listing_key_context(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+
+    assert win._title_bar.title_label.text() == "Party — Nexus-Point Xenas +12 (1)"

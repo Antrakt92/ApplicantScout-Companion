@@ -2733,8 +2733,21 @@ class OverlayWindow(QMainWindow):
         )
         if self._active_tab == "party":
             n = len(self._state.party_members)
-            self._title_bar.setTitleText(f"Party ({n})")
-            self._title_bar.title_label.setToolTip("")
+            listing = self._state.listing
+            if listing is not None:
+                level = f" +{listing.key_level}" if listing.key_level > 0 else ""
+                dn = listing.dungeon_name
+                generic = (not dn) or dn == "?" or dn.lower() in (
+                    "mythic+",
+                    "mythic plus",
+                )
+                if generic:
+                    self._title_bar.setTitleText(f"Party{level} ({n})")
+                else:
+                    self._title_bar.setTitleText(f"Party — {dn}{level} ({n})")
+            else:
+                self._title_bar.setTitleText(f"Party ({n})")
+            self._title_bar.title_label.setToolTip(_format_listing_tooltip(listing))
             return
         listing = self._state.listing
         n = self._state.count()
