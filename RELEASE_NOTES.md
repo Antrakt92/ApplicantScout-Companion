@@ -1,5 +1,27 @@
 # ApplicantScout Companion Release Notes
 
+## 0.3.1 - 17-May-2026
+
+Warcraft Logs resilience hotfix for busy applicant waves when the WCL API is
+slow, timing out, or returning transient server errors.
+
+### Fixed
+
+- Fixed repeated Warcraft Logs network timeouts causing the overlay to spend
+  minutes draining the applicant queue one 15-second timeout at a time.
+- Fixed retry behavior so the first WCL network failure starts a short global
+  retry pause and queued applicants fail fast into the normal retry path instead
+  of hammering the API.
+- Moved cached WCL lookups back onto the worker path so opening/updating the
+  overlay stays responsive even with a large local character cache.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.2.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.3.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.3.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.3.1-portable.zip`
+
 ## 0.3.0 - 17-May-2026
 
 RaiderIO completion-aware Mythic+ scoring, local RaiderIO per-dungeon evidence

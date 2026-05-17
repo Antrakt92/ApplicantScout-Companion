@@ -2451,22 +2451,6 @@ class OverlayWindow(QMainWindow):
         identity, charname = resolved
         if self._is_fetch_in_flight_for(identity):
             return  # avoid duplicate concurrent fetches for the same WCL scope
-        cached = self._cache.get(
-            charname,
-            identity.server_slug,
-            identity.region,
-            identity.spec_id,
-            identity.metric_role,
-            identity.metric_preferences,
-        )
-        if cached is not None:
-            _log.info(
-                "WCL fetch cache hit before queue: %s-%s",
-                charname,
-                identity.server_slug,
-            )
-            self._on_fetch_done(identity, cached)
-            return
         applicant.fetch_status = "loading"
         applicant.error_message = ""
         applicant.wcl_error_kind = ""

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "applicant-scout-companion"
-version = "0.3.0"
+version = "0.3.1"
 description = "Personal-tool overlay showing WCL N/H/M/M+ percentiles for M+ applicants in WoW"
 authors = [{ name = "Antrakt" }]
 requires-python = ">=3.13"

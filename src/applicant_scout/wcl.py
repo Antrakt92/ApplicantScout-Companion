@@ -49,6 +49,7 @@ WCL_ERROR_GRAPHQL = "graphql"
 WCL_ERROR_NETWORK = "network"
 WCL_ERROR_HTTP = "http"
 WCL_SERVER_RETRY_SECONDS = 30.0
+WCL_NETWORK_RETRY_SECONDS = 30.0
 
 
 # Query builder — encounterRankings encounterID args MUST be literal ints
@@ -524,6 +525,7 @@ class WCLClient:
         self._quota_lock = threading.Lock()
         self._rate_limited_until: float = 0.0
         self._server_retry_until: float = 0.0
+        self._network_retry_until: float = 0.0
         # Latest API quota snapshot, parsed from rateLimitData on every fetch.
         # Overlay polls this via QTimer to display "spent / limit" in status bar.
         # None until first successful fetch.
@@ -541,6 +543,7 @@ class WCLClient:
             self._auth_generation += 1
             self._rate_limited_until = 0.0
             self._server_retry_until = 0.0
+            self._network_retry_until = 0.0
             self.last_quota = None
             self._quota_snapshot = None
             self._reserved_quota_points = 0.0
@@ -581,6 +584,12 @@ class WCLClient:
         with self._quota_lock:
             server_retry_until = self._server_retry_until
         return max(0.0, server_retry_until - current_time)
+
+    def network_retry_remaining_seconds(self, now: float | None = None) -> float:
+        current_time = time.time() if now is None else now
+        with self._quota_lock:
+            network_retry_until = self._network_retry_until
+        return max(0.0, network_retry_until - current_time)
 
     def quota_guard_retry_remaining_seconds(self, now: float | None = None) -> float:
         with self._quota_lock:
@@ -657,6 +666,7 @@ class WCLClient:
         return max(
             self.rate_limit_retry_remaining_seconds(now=now),
             self.server_retry_remaining_seconds(now=now),
+            self.network_retry_remaining_seconds(now=now),
             self.quota_guard_retry_remaining_seconds(now=now),
         )
 
@@ -698,6 +708,7 @@ class WCLClient:
             auth_generation = self._auth_generation
             rate_limited_until = self._rate_limited_until
             server_retry_until = self._server_retry_until
+            network_retry_until = self._network_retry_until
         if now < rate_limited_until:
             return CharacterRanks.empty(
                 error=f"WCL rate-limited; retrying in {int(rate_limited_until - now)}s",
@@ -707,6 +718,11 @@ class WCLClient:
             return CharacterRanks.empty(
                 error=f"WCL server error; retrying in {int(server_retry_until - now)}s",
                 error_kind=WCL_ERROR_SERVER,
+            )
+        if now < network_retry_until:
+            return CharacterRanks.empty(
+                error=f"WCL network error; retrying in {int(network_retry_until - now)}s",
+                error_kind=WCL_ERROR_NETWORK,
             )
 
         # Quota-aware gate: when we've used >=QUOTA_GUARD_RATIO of the rolling-
@@ -759,11 +775,19 @@ class WCLClient:
 
             for attempt in range(2):
                 token = auth.get_token()
-                resp = self._http.post(
-                    WCL_API_URL,
-                    json=body,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
+                try:
+                    resp = self._http.post(
+                        WCL_API_URL,
+                        json=body,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                except (httpx.TimeoutException, httpx.RequestError):
+                    with self._quota_lock:
+                        if auth_generation == self._auth_generation:
+                            self._network_retry_until = (
+                                time.time() + WCL_NETWORK_RETRY_SECONDS
+                            )
+                    raise
                 if resp.status_code == 401 and attempt == 0:
                     auth.invalidate()
                     continue

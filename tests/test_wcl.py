@@ -23,6 +23,7 @@ from applicant_scout.wcl import (
     WCL_ERROR_GRAPHQL,
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_MALFORMED,
+    WCL_ERROR_NETWORK,
     WCL_ERROR_RATE_LIMITED,
     WCL_ERROR_SERVER,
     WCLAuth,
@@ -214,6 +215,18 @@ class _FakeHTTP:
             self._status_code,
             json_error=self._json_error,
         )
+
+    def close(self) -> None:
+        pass
+
+
+class _TimeoutHTTP:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def post(self, url: str, *, json: dict, headers: dict) -> _FakeResponse:
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        raise httpx.ReadTimeout("read timed out")
 
     def close(self) -> None:
         pass
@@ -783,6 +796,12 @@ def test_quota_reservation_releases_after_network_exception(
 
     http = _FakeHTTP(_wcl_payload(_character()))
     client._http = http  # type: ignore[assignment]
+
+    blocked = client.fetch_character_ranks("Second", "ravencrest", spec_id=71)
+    assert blocked.error_kind == WCL_ERROR_NETWORK
+    assert len(http.calls) == 0
+
+    now += 31.0
     result = client.fetch_character_ranks("Second", "ravencrest", spec_id=71)
 
     assert result.error == ""
@@ -938,6 +957,29 @@ def test_503_sets_short_retry_block(
     assert len(http.calls) == 1
 
 
+def test_network_timeout_sets_short_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _TimeoutHTTP()
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(httpx.TimeoutException):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert len(http.calls) == 1
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+    current[0] += 1.0
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.error == "WCL network error; retrying in 29s"
+    assert result.error_kind == WCL_ERROR_NETWORK
+    assert len(http.calls) == 1
+
+
 def test_fetch_character_ranks_unexpected_400_is_non_retryable_http_error():
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._http.close()
@@ -992,8 +1034,10 @@ def test_retry_block_remaining_seconds_uses_max_remaining_block(
         now=current[0],
     )
     client._rate_limited_until = current[0] + 120.0
+    client._network_retry_until = current[0] + 90.0
 
     assert client.rate_limit_retry_remaining_seconds() == pytest.approx(120.0)
+    assert client.network_retry_remaining_seconds() == pytest.approx(90.0)
     assert client.quota_guard_retry_remaining_seconds() == pytest.approx(60.0)
     assert client.retry_block_remaining_seconds() == pytest.approx(120.0)
 
