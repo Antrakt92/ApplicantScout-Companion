@@ -397,6 +397,7 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assert "contents: write" in workflow
     assert "python-version: '3.13'" in workflow
     assert "constraints-release.txt" in workflow
+    assert ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in workflow
     assert "choco install lua51 innosetup" in workflow
     assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
     assert "id: paired-addon" in workflow
