@@ -714,6 +714,29 @@ def test_retry_failed_wcl_fetches_relaunches_network_error(
         client.close()
 
 
+def test_retry_failed_wcl_fetches_relaunches_party_member_error(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    window, client = _window(qtbot, tmp_path, state)
+    member = _member(
+        fetch_status="error",
+        error_message="The read operation timed out",
+        wcl_error_kind=WCL_ERROR_NETWORK,
+    )
+    state.add_or_update_party_member(member)
+
+    try:
+        assert window._retry_failed_wcl_fetches() == 1
+        identity = window._current_fetch_identity_for(member)
+
+        assert identity is not None
+        assert member.fetch_status == "loading"
+        assert identity.row_source == "party"
+        assert identity.storage_key in window._fetches_in_flight
+    finally:
+        client.close()
+
+
 def test_retry_failed_wcl_fetches_relaunches_quota_error_after_deadline(
     qtbot,
     tmp_path,
@@ -1201,6 +1224,40 @@ def test_metric_broadening_allows_broader_fetch_when_narrow_fetch_in_flight(
         client.close()
 
 
+def test_metric_broadening_refetches_party_member_with_missing_scope(
+    qtbot,
+    tmp_path,
+):
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    member = _member(
+        fetch_status="ready",
+        raid_heroic=44.0,
+        wcl_metric_preferences=narrow,
+    )
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=narrow)
+
+    try:
+        window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
+        identity = window._current_fetch_identity_for(member)
+
+        assert identity is not None
+        assert member.fetch_status == "loading"
+        assert member.raid_heroic is None
+        assert member.mplus_dps is None
+        assert identity.row_source == "party"
+        assert identity.storage_key in window._fetches_in_flight
+    finally:
+        client.close()
+
+
 def test_old_narrow_completion_does_not_clear_ready_broad_data(qtbot, tmp_path):
     narrow = MetricPreferences(
         mplus=False,
@@ -1238,6 +1295,28 @@ def test_old_narrow_completion_does_not_clear_ready_broad_data(qtbot, tmp_path):
         assert app.raid_heroic == 55.0
         assert app.mplus_dps == 66.0
         assert window._in_flight_identity(app.applicant_id) is None
+    finally:
+        client.close()
+
+
+def test_wcl_runtime_generation_bump_refetches_party_members(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    member = _member(fetch_status="ready", raid_heroic=44.0, mplus_dps=88.0)
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window.bump_wcl_runtime_generation()
+        identity = window._current_fetch_identity_for(member)
+
+        assert identity is not None
+        assert member.fetch_status == "loading"
+        assert member.raid_heroic is None
+        assert member.mplus_dps is None
+        assert identity.row_source == "party"
+        assert identity.runtime_generation == 1
+        assert identity.storage_key in window._fetches_in_flight
     finally:
         client.close()
 

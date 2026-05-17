@@ -148,6 +148,18 @@ def test_cleared_snapshot_preserves_visible_party_roster(qtbot, tmp_path):
     assert win._table.rowCount() == 1
 
 
+def test_empty_roster_update_hides_party_only_overlay(qtbot, tmp_path):
+    state = AppState()
+    win = _window(tmp_path, qtbot, state)
+    win._active_tab = "party"
+    win.show()
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert not win.isVisible()
+
+
 def test_party_title_keeps_listing_key_context(qtbot, tmp_path):
     state = AppState()
     state.listing = _listing()

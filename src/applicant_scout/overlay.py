@@ -1920,6 +1920,14 @@ class OverlayWindow(QMainWindow):
         for member in self._state.party_members.values():
             if member.fetch_status == "pending":
                 self._launch_fetch(member)
+        if (
+            len(self._state.party_members) == 0
+            and self._state.count() == 0
+            and self._state.listing is None
+        ):
+            self._schedule_overlay_refresh(update_title=True, maybe_show=False)
+            self.hide()
+            return
         should_show_party = self._state.count() == 0 and len(self._state.party_members) > 0
         if should_show_party:
             self._active_tab = "party"
@@ -2024,10 +2032,10 @@ class OverlayWindow(QMainWindow):
         else:
             self._status_label.setStyleSheet("")
 
-    def _retryable_wcl_error_applicants(self) -> list[Applicant]:
+    def _retryable_wcl_error_rows(self) -> list[Applicant]:
         return [
             applicant
-            for applicant in self._state.applicants.values()
+            for applicant in self._fetch_rows()
             if applicant.fetch_status == "error"
             and applicant.wcl_error_kind in _RETRYABLE_WCL_ERROR_KINDS
         ]
@@ -2037,7 +2045,7 @@ class OverlayWindow(QMainWindow):
             return
         if self._wcl_retry_timer.isActive():
             return
-        if not self._retryable_wcl_error_applicants():
+        if not self._retryable_wcl_error_rows():
             return
         if delay_ms is None:
             remaining = self._wcl_client.retry_block_remaining_seconds()
@@ -2055,7 +2063,7 @@ class OverlayWindow(QMainWindow):
             self._schedule_wcl_retry(int(remaining * 1000) + WCL_RETRY_CUSHION_MS)
             return 0
         launched = 0
-        for applicant in self._retryable_wcl_error_applicants():
+        for applicant in self._retryable_wcl_error_rows():
             if launched >= MAX_WCL_RETRY_BATCH:
                 break
             current_identity = self._current_fetch_identity_for(applicant)
@@ -2074,7 +2082,7 @@ class OverlayWindow(QMainWindow):
                 (identity := self._current_fetch_identity_for(applicant)) is not None
                 and self._is_fetch_in_flight_for(identity)
             )
-            for applicant in self._retryable_wcl_error_applicants()
+            for applicant in self._retryable_wcl_error_rows()
         ):
             self._schedule_wcl_retry(WCL_RETRY_BATCH_DELAY_MS)
         return launched
@@ -2517,7 +2525,7 @@ class OverlayWindow(QMainWindow):
         self._panel.set_metric_preferences(metric_preferences)
         self._apply_metric_column_visibility()
         self._apply_metric_minimum_width(old_min_width=old_min_width)
-        for applicant in self._state.applicants.values():
+        for applicant in self._fetch_rows():
             if not metric_preferences.any_enabled:
                 applicant.clear_wcl_data(fetch_status="ready")
                 continue
@@ -2536,12 +2544,16 @@ class OverlayWindow(QMainWindow):
 
     def bump_wcl_runtime_generation(self) -> None:
         self._wcl_runtime_generation += 1
-        for applicant in self._state.applicants.values():
+        for applicant in self._fetch_rows():
             applicant.clear_wcl_data()
         self._refresh_table()
         self._update_title()
-        for applicant in self._state.applicants.values():
+        for applicant in self._fetch_rows():
             self._launch_fetch(applicant)
+
+    def _fetch_rows(self) -> Iterable[Applicant]:
+        yield from self._state.applicants.values()
+        yield from self._state.party_members.values()
 
     def _in_flight_identity(self, applicant_id: str) -> _FetchIdentity | None:
         return self._fetches_in_flight.get(applicant_id)
