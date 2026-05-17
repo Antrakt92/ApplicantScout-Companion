@@ -243,9 +243,16 @@ class _FetchIdentity:
     region: str
     spec_id: int
     metric_role: str
+    row_source: str = "applicants"
     runtime_generation: int = 0
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES
     listing_session_generation: int = 0
+
+    @property
+    def storage_key(self) -> str:
+        if self.row_source == "applicants":
+            return self.applicant_id
+        return f"{self.row_source}:{self.applicant_id}"
 
 
 @dataclass(frozen=True)
@@ -264,6 +271,7 @@ def _fetch_identity_for_applicant(
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
     runtime_generation: int = 0,
     listing_session_generation: int = 0,
+    row_source: str = "applicants",
 ) -> tuple[_FetchIdentity, str] | None:
     charname, realm = split_name_realm(
         applicant.name, default_realm_from_player(player_full_name)
@@ -279,6 +287,7 @@ def _fetch_identity_for_applicant(
             region=region,
             spec_id=applicant.spec_id,
             metric_role=wcl_metric_role(applicant.role),
+            row_source=row_source,
             runtime_generation=runtime_generation,
             metric_preferences=metric_preferences,
             listing_session_generation=listing_session_generation,
@@ -292,6 +301,7 @@ def _same_fetch_target_except_preferences(
 ) -> bool:
     return (
         left.applicant_id == right.applicant_id
+        and left.row_source == right.row_source
         and left.charname_key == right.charname_key
         and left.server_slug == right.server_slug
         and left.region == right.region
@@ -538,6 +548,18 @@ def sort_applicants_grouped(
         return (gmax == 0, -gmax, all_sunk, raw_aid, member_idx, sunk)
 
     return sorted(apps, key=_key)
+
+
+def sort_roster_members(members: Iterable[Applicant]) -> list[Applicant]:
+    role_order = {"TANK": 0, "HEALER": 1, "DAMAGER": 2}
+    return sorted(
+        members,
+        key=lambda member: (
+            role_order.get(member.role, 3),
+            -effective_rio_score(member),
+            member.name.lower(),
+        ),
+    )
 
 
 def _mplus_headline_sort_score(applicant: Applicant) -> tuple[int, float]:
@@ -899,6 +921,48 @@ class TitleBar(QWidget):
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
         self._drag_offset = None
+
+
+# ───────────────────────────────────────────────────────────────────
+# Source tab bar (Applicants / Party)
+
+
+class SourceTabBar(QWidget):
+    tabChanged = pyqtSignal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("sourceTabBar")
+        self.setFixedHeight(30)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setSpacing(5)
+
+        self._buttons: dict[str, QPushButton] = {}
+        for key, label in (("applicants", "Applicants"), ("party", "Party")):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda _checked=False, k=key: self.set_active(k))
+            self._buttons[key] = button
+            layout.addWidget(button)
+        layout.addStretch(1)
+        self.set_counts(applicants=0, party=0)
+        self.set_active("applicants", emit=False)
+
+    def set_counts(self, *, applicants: int, party: int) -> None:
+        self._buttons["applicants"].setText(f"Applicants ({applicants})")
+        self._buttons["party"].setText(f"Party ({party})")
+
+    def set_active(self, key: str, *, emit: bool = True) -> None:
+        if key not in self._buttons:
+            return
+        for button_key, button in self._buttons.items():
+            was_blocked = button.blockSignals(True)
+            button.setChecked(button_key == key)
+            button.blockSignals(was_blocked)
+        if emit:
+            self.tabChanged.emit(key)
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -1483,6 +1547,19 @@ class OverlayWindow(QMainWindow):
             self._title_bar.settingsClicked.connect(self._show_settings)
         layout.addWidget(self._title_bar)
 
+        self._active_tab = "applicants"
+        self._hover_by_tab: dict[str, str | None] = {
+            "applicants": None,
+            "party": None,
+        }
+        self._pinned_by_tab: dict[str, str | None] = {
+            "applicants": None,
+            "party": None,
+        }
+        self._tab_bar = SourceTabBar(container)
+        self._tab_bar.tabChanged.connect(self._on_source_tab_changed)
+        layout.addWidget(self._tab_bar)
+
         # Role filter bar — toggle TANK / HEAL / DPS to hide other-role rows.
         # Inserted between title bar and info panel. Filter state is session-
         # only (transient lens, not persisted setting). See RoleFilterBar
@@ -1735,6 +1812,17 @@ class OverlayWindow(QMainWindow):
         if maybe_show and self._state.listing is not None and self._state.count() > 0:
             self._maybe_show()
 
+    def _on_source_tab_changed(self, key: str) -> None:
+        if key == self._active_tab:
+            return
+        self._hover_by_tab[self._active_tab] = self._hover_id
+        self._pinned_by_tab[self._active_tab] = self._pinned_id
+        self._active_tab = key
+        self._hover_id = self._hover_by_tab.get(key)
+        self._pinned_id = self._pinned_by_tab.get(key)
+        self._refresh_table()
+        self._update_title()
+
     def on_applicant_added(self, applicant: Applicant) -> None:
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
@@ -1820,6 +1908,12 @@ class OverlayWindow(QMainWindow):
         # every EMPTY would flicker the window. Real "all done" = NOLISTING.
         if self._state.listing is None:
             self.hide()
+
+    def on_roster_changed(self) -> None:
+        for member in self._state.party_members.values():
+            if member.fetch_status == "pending":
+                self._launch_fetch(member)
+        self._schedule_overlay_refresh(update_title=True, maybe_show=False)
 
     def note_decode(self, _snap: object) -> None:
         """Slot for ScreenshotWatcher.snapshotReceived. Bumps the local last-
@@ -1980,18 +2074,31 @@ class OverlayWindow(QMainWindow):
 
     # ─── hover/pin panel orchestration ─────
 
+    def _active_row_map(self) -> dict[str, Applicant]:
+        if self._active_tab == "party":
+            return self._state.party_members
+        return self._state.applicants
+
+    def _active_sorted_rows(self) -> list[Applicant]:
+        if self._active_tab == "party":
+            return sort_roster_members(self._state.party_members.values())
+        return sort_applicants_grouped(
+            self._state.applicants.values(), self._state.listing
+        )
+
     def _resolve_visible_id(self) -> str | None:
         """Hover wins over pin; both must reference an applicant currently in
         state. Returns None when nothing should display."""
+        rows = self._active_row_map()
         if (
             self._hover_id
-            and self._hover_id in self._state.applicants
+            and self._hover_id in rows
             and self._is_row_visible_for_applicant(self._hover_id)
         ):
             return self._hover_id
         if (
             self._pinned_id
-            and self._pinned_id in self._state.applicants
+            and self._pinned_id in rows
             and self._is_row_visible_for_applicant(self._pinned_id)
         ):
             return self._pinned_id
@@ -2014,7 +2121,7 @@ class OverlayWindow(QMainWindow):
         if visible_id is None:
             self._panel.setPlaceholder()
             return
-        applicant = self._state.applicants.get(visible_id)
+        applicant = self._active_row_map().get(visible_id)
         if applicant is None:
             self._panel.setPlaceholder()
             return
@@ -2022,7 +2129,7 @@ class OverlayWindow(QMainWindow):
         self._panel.setApplicantData(
             applicant,
             self._state.listing,
-            self._package_fit_by_raw.get(raw_aid),
+            self._package_fit_by_raw.get(raw_aid) if self._active_tab == "applicants" else None,
         )
 
     def _sync_delegate_and_panel(self) -> None:
@@ -2050,6 +2157,7 @@ class OverlayWindow(QMainWindow):
         if new_id == self._hover_id:
             return  # de-dup same-row entries
         self._hover_id = new_id
+        self._hover_by_tab[self._active_tab] = new_id
         self._sync_delegate_and_panel()
 
     def _on_cell_clicked(self, row: int, _col: int) -> None:
@@ -2060,6 +2168,7 @@ class OverlayWindow(QMainWindow):
         if not (0 <= row < len(self._id_by_row)):
             return
         self._pinned_id = self._id_by_row[row]
+        self._pinned_by_tab[self._active_tab] = self._pinned_id
         self._sync_delegate_and_panel()
 
     def _resolve_hover_from_cursor(self) -> str | None:
@@ -2209,6 +2318,11 @@ class OverlayWindow(QMainWindow):
         actual grouping signal."""
         prev_hover = self._hover_id
         prev_pinned = self._pinned_id
+        active_rows = self._active_row_map()
+        self._tab_bar.set_counts(
+            applicants=len(self._state.applicants),
+            party=len(self._state.party_members),
+        )
 
         # Reset delegate to "no highlight anywhere" BEFORE we tear down items.
         # Avoids a stripe / band paint at a row index that no longer maps if Qt
@@ -2217,25 +2331,27 @@ class OverlayWindow(QMainWindow):
         self._delegate.set_rows(-1, -1)
         self._delegate.set_group_markers({})
 
-        sorted_applicants = sort_applicants_grouped(
-            self._state.applicants.values(), self._state.listing
-        )
+        sorted_applicants = self._active_sorted_rows()
         self._group_size_by_raw = {}
-        group_members: dict[str, list[Applicant]] = {}
-        for applicant in sorted_applicants:
-            raw_aid, _ = _split_composite(applicant.applicant_id)
-            self._group_size_by_raw[raw_aid] = (
-                self._group_size_by_raw.get(raw_aid, 0) + 1
-            )
-            group_members.setdefault(raw_aid, []).append(applicant)
         self._package_fit_by_raw = {}
-        if detect_listing_context(self._state.listing) in (CONTEXT_MPLUS, CONTEXT_RAID):
-            for raw_aid, members in group_members.items():
-                if len(members) < 2:
-                    continue
-                fit = package_fit(members, self._state.listing)
-                if fit.display:
-                    self._package_fit_by_raw[raw_aid] = fit
+        if self._active_tab == "applicants":
+            group_members: dict[str, list[Applicant]] = {}
+            for applicant in sorted_applicants:
+                raw_aid, _ = _split_composite(applicant.applicant_id)
+                self._group_size_by_raw[raw_aid] = (
+                    self._group_size_by_raw.get(raw_aid, 0) + 1
+                )
+                group_members.setdefault(raw_aid, []).append(applicant)
+            if detect_listing_context(self._state.listing) in (
+                CONTEXT_MPLUS,
+                CONTEXT_RAID,
+            ):
+                for raw_aid, members in group_members.items():
+                    if len(members) < 2:
+                        continue
+                    fit = package_fit(members, self._state.listing)
+                    if fit.display:
+                        self._package_fit_by_raw[raw_aid] = fit
 
         self._table.setRowCount(len(sorted_applicants))
         self._row_for_id.clear()
@@ -2245,17 +2361,20 @@ class OverlayWindow(QMainWindow):
             self._render_row(row, applicant)
         self._maybe_grow_name_column(sorted_applicants)
 
-        self._delegate.set_group_markers(
-            _build_group_markers(
-                (row_idx, a.applicant_id) for row_idx, a in enumerate(sorted_applicants)
+        if self._active_tab == "applicants":
+            self._delegate.set_group_markers(
+                _build_group_markers(
+                    (row_idx, a.applicant_id)
+                    for row_idx, a in enumerate(sorted_applicants)
+                )
             )
-        )
 
         # Preserve hover/pin BY ID; cursor fallback only when prev id is gone.
-        if prev_hover not in self._state.applicants:
+        if prev_hover not in active_rows:
             self._hover_id = self._resolve_hover_from_cursor()
-        if prev_pinned not in self._state.applicants:
+        if prev_pinned not in active_rows:
             self._pinned_id = None
+            self._pinned_by_tab[self._active_tab] = None
 
         # Apply current role filter to the freshly-rebuilt rows so newly-
         # arrived applicants in a filtered-out role come in pre-hidden.
@@ -2277,9 +2396,15 @@ class OverlayWindow(QMainWindow):
         applies filter + re-resolves hover + refreshes panel + updates title."""
         self._role_filter = active
         if self._pinned_id is not None and self._is_filter_active():
-            raw_aid, _ = _split_composite(self._pinned_id)
-            if raw_aid not in self._role_filter_visible_raw_ids():
+            pinned = self._active_row_map().get(self._pinned_id)
+            if self._active_tab == "party":
+                keep_pin = pinned is not None and pinned.role in self._role_filter
+            else:
+                raw_aid, _ = _split_composite(self._pinned_id)
+                keep_pin = raw_aid in self._role_filter_visible_raw_ids()
+            if not keep_pin:
                 self._pinned_id = None
+                self._pinned_by_tab[self._active_tab] = None
         self._apply_role_filter()
         # Hovered row may now be hidden — re-resolve from cursor position.
         self._reresolve_hover_from_cursor()
@@ -2309,14 +2434,18 @@ class OverlayWindow(QMainWindow):
         """Apply role lens while preserving accepted-together group packages."""
         is_active = self._is_filter_active()
         visible_raw_ids = self._role_filter_visible_raw_ids()
+        active_rows = self._active_row_map()
         visible_count = 0
         visible_id_by_row: list[tuple[int, str]] = []
         for row, applicant_id in enumerate(self._id_by_row):
-            applicant = self._state.applicants.get(applicant_id)
+            applicant = active_rows.get(applicant_id)
             if applicant is None:
                 continue
-            raw_aid, _ = _split_composite(applicant_id)
-            is_visible = (not is_active) or raw_aid in visible_raw_ids
+            if self._active_tab == "party":
+                is_visible = (not is_active) or applicant.role in self._role_filter
+            else:
+                raw_aid, _ = _split_composite(applicant_id)
+                is_visible = (not is_active) or raw_aid in visible_raw_ids
             self._table.setRowHidden(row, not is_visible)
             if is_visible:
                 visible_count += 1
@@ -2324,9 +2453,12 @@ class OverlayWindow(QMainWindow):
 
         self._role_filter_bar.set_status(visible_count, len(self._id_by_row))
 
-        # Rebuild group markers from visible-only rows so filtered views keep
-        # the bracket shape aligned to what is actually on screen.
-        self._delegate.set_group_markers(_build_group_markers(visible_id_by_row))
+        # Rebuild applicant group markers from visible-only rows so filtered
+        # views keep the bracket shape aligned to what is actually on screen.
+        if self._active_tab == "applicants":
+            self._delegate.set_group_markers(_build_group_markers(visible_id_by_row))
+        else:
+            self._delegate.set_group_markers({})
 
     def _maybe_grow_name_column(self, applicants: list[Applicant]) -> None:
         """Grow Name column a little, capped to preserve compact overlay width."""
@@ -2401,19 +2533,29 @@ class OverlayWindow(QMainWindow):
         return self._fetches_in_flight.get(applicant_id)
 
     def _mark_fetch_in_flight(self, identity: _FetchIdentity) -> None:
-        self._fetches_in_flight[identity.applicant_id] = identity
+        self._fetches_in_flight[identity.storage_key] = identity
 
     def _discard_fetch_if_current(self, identity: _FetchIdentity) -> None:
-        if self._fetches_in_flight.get(identity.applicant_id) == identity:
-            self._fetches_in_flight.pop(identity.applicant_id, None)
+        if self._fetches_in_flight.get(identity.storage_key) == identity:
+            self._fetches_in_flight.pop(identity.storage_key, None)
 
     def _is_fetch_in_flight_for(self, identity: _FetchIdentity) -> bool:
-        current = self._fetches_in_flight.get(identity.applicant_id)
+        current = self._fetches_in_flight.get(identity.storage_key)
         return (
             current is not None
             and _same_fetch_target_except_preferences(current, identity)
             and current.metric_preferences.covers(identity.metric_preferences)
         )
+
+    def _row_source_for(self, applicant: Applicant) -> str:
+        if self._state.party_members.get(applicant.applicant_id) is applicant:
+            return "party"
+        return "applicants"
+
+    def _row_for_fetch_identity(self, identity: _FetchIdentity) -> Applicant | None:
+        if identity.row_source == "party":
+            return self._state.party_members.get(identity.applicant_id)
+        return self._state.applicants.get(identity.applicant_id)
 
     def _current_fetch_identity_for(
         self, applicant: Applicant
@@ -2425,6 +2567,7 @@ class OverlayWindow(QMainWindow):
             self._metric_preferences,
             self._wcl_runtime_generation,
             self._listing_session_generation,
+            row_source=self._row_source_for(applicant),
         )
         if resolved is None:
             return None
@@ -2442,6 +2585,7 @@ class OverlayWindow(QMainWindow):
             self._metric_preferences,
             self._wcl_runtime_generation,
             self._listing_session_generation,
+            row_source=self._row_source_for(applicant),
         )
         if resolved is None:
             applicant.fetch_status = "error"
@@ -2479,7 +2623,7 @@ class OverlayWindow(QMainWindow):
     ) -> None:
         self._discard_fetch_if_current(fetched_identity)
         self._refresh_quota_label()
-        applicant = self._state.applicants.get(fetched_identity.applicant_id)
+        applicant = self._row_for_fetch_identity(fetched_identity)
         if applicant is None:
             return
         current = _fetch_identity_for_applicant(
@@ -2489,6 +2633,7 @@ class OverlayWindow(QMainWindow):
             self._metric_preferences,
             self._wcl_runtime_generation,
             self._listing_session_generation,
+            row_source=fetched_identity.row_source,
         )
         if current is None:
             applicant.clear_wcl_data(fetch_status="error")
@@ -2568,6 +2713,15 @@ class OverlayWindow(QMainWindow):
         self._schedule_overlay_refresh(update_title=False)
 
     def _update_title(self) -> None:
+        self._tab_bar.set_counts(
+            applicants=len(self._state.applicants),
+            party=len(self._state.party_members),
+        )
+        if self._active_tab == "party":
+            n = len(self._state.party_members)
+            self._title_bar.setTitleText(f"Party ({n})")
+            self._title_bar.title_label.setToolTip("")
+            return
         listing = self._state.listing
         n = self._state.count()
         # Filter-aware count: show (visible / total) when filter actually

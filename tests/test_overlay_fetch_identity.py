@@ -11,7 +11,7 @@ from applicant_scout.overlay import (
     OverlayWindow,
 )
 from applicant_scout.metric_preferences import MetricPreferences
-from applicant_scout.state import AppState, Applicant, Listing, WoWPlayer
+from applicant_scout.state import AppState, Applicant, Listing, RosterMember, WoWPlayer
 from applicant_scout.wcl import (
     CharacterCache,
     CharacterRanks,
@@ -55,6 +55,22 @@ class _UiThreadCacheProbe:
 def _app(**overrides) -> Applicant:
     base = Applicant(
         applicant_id="42:1",
+        name="Scout-RealmA",
+        cls="WARRIOR",
+        spec_id=71,
+        ilvl=480,
+        score=2400,
+        role="DAMAGER",
+        fetch_status="loading",
+    )
+    for key, value in overrides.items():
+        setattr(base, key, value)
+    return base
+
+
+def _member(**overrides) -> RosterMember:
+    base = RosterMember(
+        applicant_id="scout-realma",
         name="Scout-RealmA",
         cls="WARRIOR",
         spec_id=71,
@@ -591,6 +607,45 @@ def test_retry_failed_wcl_fetches_skips_server_error_before_cooldown(
         assert window._retry_failed_wcl_fetches() == 0
         assert app.fetch_status == "error"
         assert app.applicant_id not in window._fetches_in_flight
+    finally:
+        client.close()
+
+
+def test_matching_party_fetch_identity_applies_ranks_to_party_member_only(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    member = _member()
+    colliding_applicant = _app(
+        applicant_id=member.applicant_id,
+        name="Other-RealmA",
+        fetch_status="loading",
+    )
+    state.add_or_update(colliding_applicant)
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        resolved = _fetch_identity_for_applicant(
+            member,
+            state.player.full_name,
+            "EU",
+            ALL_METRIC_PREFERENCES,
+            row_source="party",
+        )
+        assert resolved is not None
+        identity, _charname = resolved
+
+        window._mark_fetch_in_flight(identity)
+        window._on_fetch_done(identity, _ranks())
+
+        assert member.fetch_status == "ready"
+        assert member.raid_heroic == 22.0
+        assert member.mplus_dps == 77.0
+        assert colliding_applicant.fetch_status == "loading"
+        assert colliding_applicant.mplus_dps is None
+        assert identity.storage_key not in window._fetches_in_flight
     finally:
         client.close()
 

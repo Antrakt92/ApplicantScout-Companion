@@ -1,0 +1,107 @@
+"""Widget-level checks for the Applicants / Party source tabs."""
+
+from __future__ import annotations
+
+from PyQt6.QtCore import Qt
+
+from applicant_scout.overlay import OverlayWindow
+from applicant_scout.state import AppState, Applicant, RosterMember
+
+
+class _FakeWCLClient:
+    last_quota = None
+
+    def quota_reset_remaining_seconds(self):
+        return None
+
+
+class _FakeCache:
+    pass
+
+
+def _app(applicant_id: str, name: str, role: str = "DAMAGER") -> Applicant:
+    return Applicant(
+        applicant_id=applicant_id,
+        name=name,
+        cls="WARRIOR",
+        spec_id=71,
+        ilvl=700,
+        score=3000,
+        role=role,
+    )
+
+
+def _member(member_id: str, name: str, role: str = "DAMAGER") -> RosterMember:
+    return RosterMember(
+        applicant_id=member_id,
+        name=name,
+        cls="PRIEST" if role == "HEALER" else "WARRIOR",
+        spec_id=257 if role == "HEALER" else 71,
+        ilvl=701,
+        score=3100,
+        role=role,
+    )
+
+
+def _window(tmp_path, qtbot, state: AppState) -> OverlayWindow:
+    win = OverlayWindow(state, _FakeWCLClient(), _FakeCache(), tmp_path)
+    qtbot.addWidget(win)
+    return win
+
+
+def test_tabs_switch_between_applicants_and_party_rows(qtbot, tmp_path):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win = _window(tmp_path, qtbot, state)
+
+    win._refresh_table()
+
+    assert win._active_tab == "applicants"
+    assert win._table.rowCount() == 1
+    assert win._tab_bar._buttons["applicants"].text() == "Applicants (1)"
+    assert win._tab_bar._buttons["party"].text() == "Party (2)"
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+
+    assert win._active_tab == "party"
+    assert win._table.rowCount() == 2
+
+
+def test_party_tab_role_filter_hides_individual_rows(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    state.party_members["dps-realm"] = _member("dps-realm", "Dps-Realm", "DAMAGER")
+    win = _window(tmp_path, qtbot, state)
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(win._role_filter_bar._buttons["HEALER"], Qt.MouseButton.LeftButton)
+
+    visible_rows = [
+        row for row in range(win._table.rowCount()) if not win._table.isRowHidden(row)
+    ]
+    assert len(visible_rows) == 1
+    assert win._id_by_row[visible_rows[0]] == "friend-realm"
+
+
+def test_tabs_preserve_pins_independently(qtbot, tmp_path):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+
+    win._refresh_table()
+    win._on_cell_clicked(0, 0)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    win._on_cell_clicked(0, 0)
+    qtbot.mouseClick(win._tab_bar._buttons["applicants"], Qt.MouseButton.LeftButton)
+
+    assert win._pinned_by_tab["applicants"] == "7:1"
+    assert win._pinned_by_tab["party"] == "host-realm"
+    assert win._pinned_id == "7:1"

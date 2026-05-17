@@ -1650,6 +1650,7 @@ def main(argv: list[str] | None = None) -> int:
     machine.applicantRemoved.connect(window.on_applicant_removed)
     machine.listingChanged.connect(window.on_listing_changed)
     machine.cleared.connect(window.on_cleared)
+    machine.rosterChanged.connect(window.on_roster_changed)
 
     def _sync_region_to_wcl(region_id: int) -> None:
         old_region = wcl_client.region
