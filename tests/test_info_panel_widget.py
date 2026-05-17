@@ -748,6 +748,37 @@ def test_launcher_drag_moves_without_restoring_overlay(qtbot, tmp_path):
         assert window._launcher.pos() != original_pos
         assert window._launcher.isVisible()
         assert not window.isVisible()
+        saved = json.loads((tmp_path / "launcher.json").read_text(encoding="utf-8"))
+        assert saved == {
+            "x": window._launcher.pos().x(),
+            "y": window._launcher.pos().y(),
+        }
+    finally:
+        client.close()
+
+
+def test_launcher_position_persists_across_overlay_restarts(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    first = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(first)
+    qtbot.addWidget(first._launcher)
+
+    try:
+        qtbot.waitUntil(first._launcher.isVisible, timeout=1000)
+        first._launcher.move(321, 234)
+        first._persist_launcher_position()
+
+        saved = json.loads((tmp_path / "launcher.json").read_text(encoding="utf-8"))
+        assert saved == {"x": 321, "y": 234}
+
+        second = OverlayWindow(AppState(), client, cache, tmp_path)
+        qtbot.addWidget(second)
+        qtbot.addWidget(second._launcher)
+        qtbot.waitUntil(second._launcher.isVisible, timeout=1000)
+
+        assert second._launcher.pos() == QPoint(321, 234)
     finally:
         client.close()
 

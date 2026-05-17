@@ -214,6 +214,12 @@ class WindowGeometry:
     layout_version: int = WINDOW_GEOMETRY_LAYOUT_VERSION
 
 
+@dataclass
+class LauncherPosition:
+    x: int
+    y: int
+
+
 def _coerce_geometry_int(
     value,
     *,
@@ -271,6 +277,37 @@ def load_geometry(config_dir: Path) -> WindowGeometry:
         return _geometry_from_dict(data)
     except (json.JSONDecodeError, OSError):
         return WindowGeometry()
+
+
+def _launcher_position_from_dict(data: dict) -> LauncherPosition | None:
+    x = _coerce_geometry_int(data.get("x"), default=0)
+    y = _coerce_geometry_int(data.get("y"), default=0)
+    if isinstance(data.get("x"), bool) or isinstance(data.get("y"), bool):
+        return None
+    if "x" not in data or "y" not in data:
+        return None
+    return LauncherPosition(x, y)
+
+
+def load_launcher_position(config_dir: Path) -> LauncherPosition | None:
+    path = config_dir / "launcher.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        return _launcher_position_from_dict(data)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_launcher_position(config_dir: Path, pos: LauncherPosition) -> None:
+    path = config_dir / "launcher.json"
+    try:
+        atomic_write_text(path, json.dumps(asdict(pos)))
+    except OSError as e:
+        _log.warning("Failed to save launcher position to %s: %s", path, e)
 
 
 def save_geometry(config_dir: Path, geo: WindowGeometry) -> None:

@@ -84,12 +84,15 @@ from .state import (
     Applicant,
     AppState,
     Listing,
+    LauncherPosition,
     WindowGeometry,
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
     WINDOW_GEOMETRY_LAYOUT_VERSION,
     save_geometry,
     load_geometry,
+    load_launcher_position,
+    save_launcher_position,
 )
 from .wcl import (
     WCLClient,
@@ -930,6 +933,7 @@ class TitleBar(QWidget):
 
 class OverlayLauncher(QFrame):
     clicked = pyqtSignal()
+    positionChanged = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -988,8 +992,11 @@ class OverlayLauncher(QFrame):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            if not self._dragged:
+            was_dragged = self._dragged
+            if not was_dragged:
                 self.clicked.emit()
+            else:
+                self.positionChanged.emit()
             self._press_global_pos = None
             self._press_window_pos = None
             self._dragged = False
@@ -1625,6 +1632,8 @@ class OverlayWindow(QMainWindow):
         self._collapsed_to_launcher = False
         self._launcher = OverlayLauncher()
         self._launcher.clicked.connect(self.restore_from_launcher)
+        self._launcher.positionChanged.connect(self._persist_launcher_position)
+        self._saved_launcher_position = load_launcher_position(self._config_dir)
         self._pool = QThreadPool.globalInstance()
         if self._pool is not None:
             self._pool.setMaxThreadCount(3)
@@ -2389,11 +2398,26 @@ class OverlayWindow(QMainWindow):
     # ─── internals ─────
 
     def _default_launcher_position(self) -> QPoint:
+        if self._saved_launcher_position is not None:
+            x, y, _w, _h = _clamp_geometry_to_screen(
+                self._saved_launcher_position.x,
+                self._saved_launcher_position.y,
+                LAUNCHER_SIZE,
+                LAUNCHER_SIZE,
+                min_visible_px=20,
+            )
+            return QPoint(x, y)
         g = self.geometry()
         x = g.x() + max(0, g.width() - LAUNCHER_SIZE)
         y = g.y()
         x, y, _w, _h = _clamp_geometry_to_screen(x, y, LAUNCHER_SIZE, LAUNCHER_SIZE)
         return QPoint(x, y)
+
+    def _persist_launcher_position(self) -> None:
+        pos = self._launcher.pos()
+        launcher_position = LauncherPosition(pos.x(), pos.y())
+        self._saved_launcher_position = launcher_position
+        save_launcher_position(self._config_dir, launcher_position)
 
     def _maybe_show(self) -> None:
         if self._collapsed_to_launcher:
@@ -3104,7 +3128,7 @@ def _normalize_loaded_geometry(geo: WindowGeometry) -> WindowGeometry:
 
 
 def _clamp_geometry_to_screen(
-    x: int, y: int, w: int, h: int
+    x: int, y: int, w: int, h: int, *, min_visible_px: int = 80
 ) -> tuple[int, int, int, int]:
     """Clamp window rect to a visible screen. Picks first screen whose
     geometry intersects the saved rect by ≥80px on each axis (ensures the
@@ -3123,7 +3147,7 @@ def _clamp_geometry_to_screen(
         # Visible overlap on each axis
         ox = max(0, min(x + w, sg.x() + sg.width()) - max(x, sg.x()))
         oy = max(0, min(y + h, sg.y() + sg.height()) - max(y, sg.y()))
-        if ox >= 80 and oy >= 80:
+        if ox >= min_visible_px and oy >= min_visible_px:
             return (x, y, w, h)
     # No good intersection — center on primary
     primary = QGuiApplication.primaryScreen()
