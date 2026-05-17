@@ -99,18 +99,18 @@ requests.
 
 ## Overlay Data
 
-The overlay shows context-aware fit labels for the hosted M+ key, package
-ratings for grouped applicants who are accepted together, and raw WCL raid/M+
-percentiles as supporting evidence. Healer M+ rows use HPS; tank and damage rows
-use DPS.
+The overlay shows a context-aware numeric M+ fit score for the hosted key,
+coloured with the Warcraft Logs percentile palette, package ratings for grouped
+applicants who are accepted together, and raw WCL raid/M+ percentiles as
+supporting evidence. Healer M+ rows use HPS; tank and damage rows use DPS.
 
 The RIO column shows the applying character's current score. If the RaiderIO
 addon is installed in WoW and exposes a higher current-season main score for an
 alt, the overlay displays `current [main]` and uses the higher score for
-sorting and fit support. With ApplicantScout addon wire v6, RaiderIO's
-per-dungeon completed-key summary and highest timed keys also help the fit score
-and hover panel avoid underrating players who have near-target keys completed
-but no current Warcraft Logs data.
+sorting fallback support. With ApplicantScout addon wire v6, RaiderIO's
+per-dungeon completed-key summary and highest timed keys feed the M+ scorecard
+and hover panel so missing logs stay unknown, weak relevant logs count against
+the applicant, and strong near-target logs can beat dry key completion.
 If RaiderIO is missing or has no profile for that character, the overlay falls
 back to the applying character's score and available logs.
 

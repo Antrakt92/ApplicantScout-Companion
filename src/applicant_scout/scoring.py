@@ -25,27 +25,20 @@ RAID_TARGET_BY_DIFFICULTY_ID = {
 }
 MPLUS_DUNGEON_COUNT = len(MPLUS_ENCOUNTERS)
 
+MPLUS_SCORE_KEY_MAX = 48.0
+MPLUS_SCORE_CARRY_MAX = 34.0
+MPLUS_SCORE_SAME_MAX = 3.0
+MPLUS_SCORE_CONSISTENCY_MAX = 4.0
+MPLUS_SCORE_WCL_POSITIVE_MAX = 36.0
+MPLUS_SCORE_WCL_BAD_MAX = 42.0
+MPLUS_SCORE_LOW_KEY_SIGNAL_WEIGHT = 0.12
+
 FIT_LABEL_BUCKETS: list[tuple[float, str]] = [
     (85.0, "TOP"),
     (70.0, "FIT"),
     (50.0, "OK"),
     (0.0, "RISK"),
 ]
-MPLUS_BEST_WEIGHT = 0.55
-MPLUS_TOP3_WEIGHT = 0.22
-MPLUS_AVERAGE_WEIGHT = 0.15
-MPLUS_SAME_DUNGEON_WEIGHT = 0.08
-MPLUS_SPARSE_PENALTY = 20.0
-MPLUS_SAME_DUNGEON_SPARSE_PENALTY = 10.0
-MPLUS_OVERQUALIFIED_SPARSE_PENALTY = 12.0
-MPLUS_RIO_NUDGE_GATE = 55.0
-MPLUS_RIO_NUDGE_WEIGHT = 0.04
-MPLUS_RIO_NUDGE_CAP = 2.0
-MPLUS_RIO_FALLBACK_WEIGHT = 0.62
-MPLUS_RIO_FALLBACK_CAP = 58.0
-MPLUS_RIO_COMPLETION_FALLBACK_CAP = 82.0
-
-
 @dataclass(frozen=True)
 class CandidateFit:
     context: str = CONTEXT_UNKNOWN
@@ -100,6 +93,15 @@ class _BracketFit:
     key_level: int
     fit: float
     run_count: int
+
+
+@dataclass(frozen=True)
+class _MPlusWCLSignal:
+    dungeon_name: str
+    key_level: int
+    percentile: float
+    run_count: int
+    same_dungeon: bool = False
 
 
 @dataclass(frozen=True)
@@ -223,10 +225,13 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
         )
         score = base + carry_credit - spread_penalty - status_penalty
         display = ""
-    score = _clamp(score, 0.0, 105.0)
-    label = fit_label(score)
+    score = _clamp(score, 0.0, 100.0 if context == CONTEXT_MPLUS else 105.0)
+    label = "" if context == CONTEXT_MPLUS else fit_label(score)
     if size > 1:
-        display = f"G{size} {label} {int(round(score))}"
+        if context == CONTEXT_MPLUS:
+            display = f"G{size} {int(round(score))}"
+        else:
+            display = f"G{size} {label} {int(round(score))}"
     return PackageFit(
         context=context,
         score=score,
@@ -327,159 +332,392 @@ def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
 def _mplus_rio_completion_candidate_fit(
     applicant: Applicant, listing: Listing
 ) -> CandidateFit | None:
-    target_key = listing.key_level
-    same_dungeon_key = _rio_same_dungeon_key(applicant, listing)
-    rio_completion_fit = _mplus_rio_completion_fit(
-        applicant, target_key, same_dungeon_key=same_dungeon_key
-    )
-    if rio_completion_fit <= 0.0:
-        return None
-    score = _clamp(rio_completion_fit, 0.0, MPLUS_RIO_COMPLETION_FALLBACK_CAP)
-    label = fit_label(score)
-    primary_key = (
-        same_dungeon_key
-        or _positive_int(applicant.rio_best_dungeon_key)
-        or _positive_int(applicant.rio_best_key)
-    )
-    display = f"{label} {int(round(score))} RIO"
-    if primary_key > 0:
-        display = f"{label} {int(round(score))} +{primary_key} RIO"
-    return CandidateFit(
-        context=CONTEXT_MPLUS,
-        score=score,
-        label=label,
-        source="rio_completion",
-        display=display,
-        colour=fit_colour(score),
-        target_key=target_key,
-        primary_key=primary_key,
-        confidence=_mplus_rio_completion_confidence(
-            applicant, target_key, same_dungeon_key=same_dungeon_key
-        ),
-        coverage=_mplus_rio_timed_minus1_coverage(applicant),
+    return _mplus_scorecard_candidate_fit(
+        applicant, listing, ignore_wcl=True, allow_score_fallback=False
     )
 
 
 def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
-    target_key = listing.key_level
-    metric_label, breakdown, _best, _median = _role_mplus_view(applicant)
-    bracket_fits: list[_BracketFit] = []
-    best_by_dungeon: dict[str, _BracketFit] = {}
-    same_dungeon_score = 0.0
-    total_runs = 0
-    max_key_delta = -999
-    raw_best_percent = 0.0
-    listing_dungeon_keys = _listing_dungeon_keys(listing)
+    fit = _mplus_scorecard_candidate_fit(
+        applicant, listing, ignore_wcl=False, allow_score_fallback=True
+    )
+    if fit is not None:
+        return fit
+    return CandidateFit(
+        context=CONTEXT_MPLUS,
+        score=0.0,
+        label="",
+        source="mplus_scorecard",
+        display="",
+        colour=fit_colour(0.0),
+        target_key=listing.key_level,
+        confidence=0.0,
+    )
 
+
+def _mplus_scorecard_candidate_fit(
+    applicant: Applicant,
+    listing: Listing,
+    *,
+    ignore_wcl: bool,
+    allow_score_fallback: bool,
+) -> CandidateFit | None:
+    target_key = listing.key_level
+    if target_key <= 0:
+        return None
+    same_dungeon_key = _rio_same_dungeon_key(applicant, listing)
+    rio_key_levels = _mplus_rio_key_levels(applicant, target_key, same_dungeon_key)
+    wcl_signals = [] if ignore_wcl else _mplus_wcl_signals(applicant, listing)
+
+    if not rio_key_levels and not wcl_signals and not allow_score_fallback:
+        return None
+    if not rio_key_levels and not wcl_signals and effective_rio_score(applicant) <= 0:
+        return None
+
+    wcl_key_levels = [
+        signal.key_level for signal in wcl_signals if signal.percentile >= 25.0
+    ]
+    key_levels = list(rio_key_levels)
+    key_levels.extend(wcl_key_levels)
+    primary_key = _mplus_primary_key(
+        rio_key_levels=rio_key_levels,
+        wcl_signals=wcl_signals,
+        target_key=target_key,
+        same_dungeon_key=same_dungeon_key,
+    )
+
+    completion_key_levels = rio_key_levels if rio_key_levels else wcl_key_levels
+    key_score = _mplus_key_readiness_score(completion_key_levels, target_key)
+    same_bonus = (
+        MPLUS_SCORE_SAME_MAX
+        if max(
+            same_dungeon_key,
+            max(
+                (signal.key_level for signal in wcl_signals if signal.same_dungeon),
+                default=0,
+            ),
+        )
+        >= target_key
+        else 0.0
+    )
+    consistency = _mplus_key_consistency_score(completion_key_levels, target_key)
+    carry = _mplus_carry_bonus(completion_key_levels, target_key)
+    wcl_positive = _mplus_wcl_positive_score(wcl_signals, target_key)
+    wcl_bad_penalty = _mplus_wcl_bad_penalty(wcl_signals, target_key)
+    raw_score = key_score + carry + same_bonus + consistency + wcl_positive - wcl_bad_penalty
+
+    has_relevant_wcl = any(signal.key_level - target_key >= -1 for signal in wcl_signals)
+    if not has_relevant_wcl:
+        raw_score = min(
+            raw_score,
+            _mplus_no_relevant_wcl_cap(completion_key_levels, target_key),
+        )
+    if not completion_key_levels and not wcl_signals and allow_score_fallback:
+        raw_score = min(
+            _mplus_rio_fit(effective_rio_score(applicant), target_key) * 0.40,
+            42.0,
+        )
+    score = _mplus_display_score(raw_score)
+
+    coverage = _clamp(
+        max(
+            len([level for level in rio_key_levels if level > 0]),
+            len({_normalise_name(signal.dungeon_name) for signal in wcl_signals}),
+        )
+        / max(MPLUS_DUNGEON_COUNT, 1),
+        0.0,
+        1.0,
+    )
+    total_runs = sum(max(signal.run_count, 1) for signal in wcl_signals)
+    confidence = _clamp(
+        0.30 + 0.45 * coverage + 0.25 * min(total_runs / 16.0, 1.0),
+        0.0,
+        1.0,
+    )
+    same_dungeon_score = max(
+        (
+            _mplus_wcl_single_positive_score(signal, target_key)
+            for signal in wcl_signals
+            if signal.same_dungeon
+        ),
+        default=0.0,
+    )
+    display = str(int(round(score)))
+    if primary_key > 0:
+        display = f"{display} +{primary_key}"
+    return CandidateFit(
+        context=CONTEXT_MPLUS,
+        score=score,
+        label="",
+        source="mplus_scorecard",
+        display=display,
+        colour=fit_colour(score),
+        target_key=target_key,
+        primary_key=primary_key,
+        confidence=confidence,
+        coverage=coverage,
+        same_dungeon_score=same_dungeon_score,
+    )
+
+
+def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCLSignal]:
+    _metric_label, breakdown, _best, _median = _role_mplus_view(applicant)
+    listing_dungeon_keys = _listing_dungeon_keys(listing)
+    signals: list[_MPlusWCLSignal] = []
     for entry in breakdown:
         if not isinstance(entry, dict):
             continue
         dungeon_name = str(entry.get("name") or "?")
-        dungeon_best: _BracketFit | None = None
+        normalised_name = _normalise_name(dungeon_name)
         for bracket in _iter_mplus_brackets(entry):
-            fit = _mplus_bracket_fit(bracket, target_key)
-            if fit is None:
+            key_level = _positive_int(bracket.get("key_level"))
+            percentile = _safe_percent(bracket.get("parse_percent"))
+            if key_level <= 0 or percentile is None:
                 continue
-            row = _BracketFit(
-                dungeon_name=dungeon_name,
-                key_level=_positive_int(bracket.get("key_level")),
-                fit=fit,
-                run_count=_nonnegative_int(bracket.get("run_count")),
+            signals.append(
+                _MPlusWCLSignal(
+                    dungeon_name=dungeon_name,
+                    key_level=key_level,
+                    percentile=percentile,
+                    run_count=_nonnegative_int(bracket.get("run_count")),
+                    same_dungeon=normalised_name in listing_dungeon_keys,
+                )
             )
-            bracket_fits.append(row)
-            total_runs += row.run_count
-            max_key_delta = max(max_key_delta, row.key_level - target_key)
-            raw_best_percent = max(
-                raw_best_percent, _safe_percent(bracket.get("parse_percent")) or 0.0
-            )
-            if dungeon_best is None or row.fit > dungeon_best.fit:
-                dungeon_best = row
-        if dungeon_best is not None:
-            best_by_dungeon[_normalise_name(dungeon_name)] = dungeon_best
-            if _normalise_name(dungeon_name) in listing_dungeon_keys:
-                same_dungeon_score = dungeon_best.fit
+    return signals
 
-    rio_score = effective_rio_score(applicant)
-    rio_fit = _mplus_rio_fit(rio_score, target_key)
-    same_dungeon_rio_key = _rio_same_dungeon_key(applicant, listing)
-    rio_completion_fit = _mplus_rio_completion_fit(
-        applicant, target_key, same_dungeon_key=same_dungeon_rio_key
-    )
-    if not bracket_fits:
-        rio_completion_candidate = _mplus_rio_completion_candidate_fit(applicant, listing)
-        if rio_completion_candidate is not None:
-            return rio_completion_candidate
-        score = _clamp(
-            rio_fit * MPLUS_RIO_FALLBACK_WEIGHT, 0.0, MPLUS_RIO_FALLBACK_CAP
-        )
-        label = fit_label(score)
-        return CandidateFit(
-            context=CONTEXT_MPLUS,
-            score=score,
-            label=label,
-            source="rio_fallback",
-            display=f"RIO {int(round(score))}",
-            colour=fit_colour(score),
-            target_key=target_key,
-            confidence=0.25 if rio_score > 0 else 0.0,
-        )
 
-    primary_row = max(bracket_fits, key=lambda row: row.fit)
-    top_dungeon_rows = sorted(best_by_dungeon.values(), key=lambda row: row.fit, reverse=True)
-    top3 = _weighted_top(top_dungeon_rows[:3])
-    average = sum(row.fit for row in top_dungeon_rows) / len(top_dungeon_rows)
-    coverage = _clamp(len(best_by_dungeon) / max(MPLUS_DUNGEON_COUNT, 1), 0.0, 1.0)
-    quality_coverage = _mplus_quality_coverage(top_dungeon_rows)
-    score = (
-        MPLUS_BEST_WEIGHT * primary_row.fit
-        + MPLUS_TOP3_WEIGHT * top3
-        + MPLUS_AVERAGE_WEIGHT * average
-        + MPLUS_SAME_DUNGEON_WEIGHT * same_dungeon_score
-    )
-    score -= _mplus_sparse_evidence_penalty(
-        coverage=quality_coverage,
-        max_key_delta=max_key_delta,
-        has_same_dungeon=same_dungeon_score > 0.0,
-    )
-    if score >= MPLUS_RIO_NUDGE_GATE and raw_best_percent >= 50.0:
-        score += min(
-            MPLUS_RIO_NUDGE_CAP,
-            max(0.0, rio_fit - score) * MPLUS_RIO_NUDGE_WEIGHT,
+def _mplus_primary_key(
+    *,
+    rio_key_levels: list[int],
+    wcl_signals: list[_MPlusWCLSignal],
+    target_key: int,
+    same_dungeon_key: int,
+) -> int:
+    positive_signals = [
+        (
+            _mplus_wcl_single_positive_score(signal, target_key),
+            signal.key_level,
         )
-    score = _mplus_raw_quality_cap(score, raw_best_percent, max_key_delta)
-    display_key = primary_row.key_level
-    if rio_completion_fit > score:
-        rio_floor = _mplus_rio_completion_floor_with_wcl(
-            rio_completion_fit,
-            raw_best_percent=raw_best_percent,
-            max_key_delta=max_key_delta,
-            target_key=target_key,
-            rio_same_dungeon_key=same_dungeon_rio_key,
-            rio_best_key=applicant.rio_best_key,
-            rio_timed_at_or_above=applicant.rio_timed_at_or_above,
-        )
-        if rio_floor > score:
-            score = rio_floor
-            display_key = (
-                same_dungeon_rio_key
-                or applicant.rio_best_dungeon_key
-                or applicant.rio_best_key
-            )
-    score = _clamp(score, 0.0, 105.0)
-    label = fit_label(score)
-    confidence = _clamp(0.35 + 0.45 * coverage + 0.20 * min(total_runs / 16.0, 1.0), 0.0, 1.0)
-    return CandidateFit(
-        context=CONTEXT_MPLUS,
-        score=score,
-        label=label,
-        source="wcl_mplus",
-        display=f"{label} {int(round(score))} +{display_key}",
-        colour=fit_colour(score),
-        target_key=target_key,
-        primary_key=display_key,
-        confidence=confidence,
-        coverage=coverage,
-        same_dungeon_score=same_dungeon_score,
+        for signal in wcl_signals
+    ]
+    best_positive_signal = max(positive_signals, default=(0.0, 0))
+    if best_positive_signal[0] > 0.0:
+        return best_positive_signal[1]
+    return max(max(rio_key_levels, default=0), same_dungeon_key, 0)
+
+
+def _mplus_rio_key_levels(
+    applicant: Applicant, target_key: int, same_dungeon_key: int
+) -> list[int]:
+    row_levels = [
+        _positive_int(entry.get("key_level"))
+        for entry in applicant.rio_dungeons
+        if isinstance(entry, dict)
+    ]
+    row_levels = [level for level in row_levels if level > 0]
+    dungeon_count = _positive_int(applicant.rio_dungeon_count)
+    expected_rows = min(MPLUS_DUNGEON_COUNT, dungeon_count or MPLUS_DUNGEON_COUNT)
+    if len(row_levels) >= expected_rows:
+        return sorted(row_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
+
+    synthetic = _mplus_synthetic_rio_key_levels(
+        applicant, target_key, same_dungeon_key=same_dungeon_key
+    )
+    if not synthetic:
+        return sorted(row_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
+    if not row_levels:
+        return synthetic
+
+    merged = list(synthetic)
+    for row_level in sorted(row_levels, reverse=True):
+        weakest_index = min(range(len(merged)), key=lambda idx: merged[idx])
+        if row_level > merged[weakest_index]:
+            merged[weakest_index] = row_level
+    return sorted(merged, reverse=True)[:MPLUS_DUNGEON_COUNT]
+
+
+def _mplus_synthetic_rio_key_levels(
+    applicant: Applicant, target_key: int, *, same_dungeon_key: int
+) -> list[int]:
+    if not applicant.rio_profile or target_key <= 0:
+        return []
+    dungeon_count = max(
+        1,
+        min(
+            _positive_int(applicant.rio_dungeon_count) or MPLUS_DUNGEON_COUNT,
+            MPLUS_DUNGEON_COUNT,
+        ),
+    )
+    timed_at = min(_nonnegative_int(applicant.rio_timed_at_or_above), dungeon_count)
+    timed_minus1 = min(
+        max(_nonnegative_int(applicant.rio_timed_at_or_above_minus1), timed_at),
+        dungeon_count,
+    )
+    timed_minus2 = min(
+        max(_nonnegative_int(applicant.rio_timed_at_or_above_minus2), timed_minus1),
+        dungeon_count,
+    )
+    levels: list[int] = []
+    levels.extend([target_key] * timed_at)
+    levels.extend([max(1, target_key - 1)] * (timed_minus1 - timed_at))
+    levels.extend([max(1, target_key - 2)] * (timed_minus2 - timed_minus1))
+    while len(levels) < dungeon_count:
+        levels.append(0)
+
+    for key in (
+        _positive_int(applicant.rio_best_key),
+        _positive_int(same_dungeon_key or applicant.rio_best_dungeon_key),
+    ):
+        if key <= 0:
+            continue
+        weakest_index = min(range(len(levels)), key=lambda idx: levels[idx])
+        if key > levels[weakest_index]:
+            levels[weakest_index] = key
+    return sorted(levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
+
+
+def _mplus_key_readiness_score(key_levels: list[int], target_key: int) -> float:
+    if target_key <= 0:
+        return 0.0
+    values = [
+        _mplus_key_delta_value(level - target_key)
+        for level in sorted(key_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
+        if level > 0
+    ]
+    if len(values) < MPLUS_DUNGEON_COUNT:
+        values.extend([0.0] * (MPLUS_DUNGEON_COUNT - len(values)))
+    return MPLUS_SCORE_KEY_MAX * (sum(values) / max(MPLUS_DUNGEON_COUNT, 1))
+
+
+def _mplus_key_delta_value(delta: int) -> float:
+    if delta >= 0:
+        return 1.0
+    if delta == -1:
+        return 0.80
+    if delta == -2:
+        return 0.45
+    if delta == -3:
+        return 0.22
+    if delta == -4:
+        return 0.10
+    return 0.0
+
+
+def _mplus_key_consistency_score(key_levels: list[int], target_key: int) -> float:
+    if target_key <= 0 or not key_levels:
+        return 0.0
+    count = sum(1 for level in key_levels[:MPLUS_DUNGEON_COUNT] if level >= target_key)
+    return MPLUS_SCORE_CONSISTENCY_MAX * _clamp(
+        count / max(MPLUS_DUNGEON_COUNT, 1), 0.0, 1.0
+    )
+
+
+def _mplus_carry_bonus(key_levels: list[int], target_key: int) -> float:
+    if target_key <= 0 or not key_levels:
+        return 0.0
+    deltas = sorted((level - target_key for level in key_levels), reverse=True)
+    top3 = deltas[:3]
+    if not top3:
+        return 0.0
+    top3_strength = sum(_clamp(delta / 4.0, 0.0, 1.0) for delta in top3) / 3.0
+    near_coverage = sum(1 for level in key_levels if level >= target_key - 1) / max(
+        MPLUS_DUNGEON_COUNT, 1
+    )
+    return MPLUS_SCORE_CARRY_MAX * top3_strength * _clamp(near_coverage, 0.0, 1.0)
+
+
+def _mplus_wcl_positive_score(signals: list[_MPlusWCLSignal], target_key: int) -> float:
+    values = sorted(
+        (
+            _mplus_wcl_single_positive_score(signal, target_key)
+            for signal in signals
+        ),
+        reverse=True,
+    )
+    if not values:
+        return 0.0
+    return min(MPLUS_SCORE_WCL_POSITIVE_MAX, _weighted_sum_top(values, [0.34, 0.25, 0.18, 0.13, 0.10]))
+
+
+def _mplus_wcl_single_positive_score(
+    signal: _MPlusWCLSignal, target_key: int
+) -> float:
+    if signal.percentile < 50.0 or target_key <= 0:
+        return 0.0
+    delta = signal.key_level - target_key
+    key_weight = _mplus_wcl_key_weight(delta)
+    run_weight = 0.70 + 0.30 * min(max(signal.run_count, 1), 3) / 3.0
+    return ((signal.percentile - 50.0) / 50.0) * MPLUS_SCORE_WCL_POSITIVE_MAX * key_weight * run_weight
+
+
+def _mplus_wcl_key_weight(delta: int) -> float:
+    if delta >= 0:
+        return 1.0
+    if delta == -1:
+        return 0.82
+    if delta == -2:
+        return MPLUS_SCORE_LOW_KEY_SIGNAL_WEIGHT
+    if delta == -3:
+        return 0.04
+    return 0.0
+
+
+def _mplus_wcl_bad_penalty(signals: list[_MPlusWCLSignal], target_key: int) -> float:
+    penalties: list[float] = []
+    for signal in signals:
+        delta = signal.key_level - target_key
+        if signal.percentile >= 25.0 or delta < -1:
+            continue
+        severity = 28.0 if delta >= 0 else 18.0
+        run_weight = 0.90 + 0.35 * min(max(signal.run_count, 1), 3) / 3.0
+        penalties.append(((25.0 - signal.percentile) / 25.0) * severity * run_weight)
+    if not penalties:
+        return 0.0
+    return min(
+        MPLUS_SCORE_WCL_BAD_MAX,
+        _weighted_sum_top(sorted(penalties, reverse=True), [1.0, 0.82, 0.62, 0.42, 0.25]),
+    )
+
+
+def _mplus_no_relevant_wcl_cap(key_levels: list[int], target_key: int) -> float:
+    if target_key <= 0:
+        return 42.0
+    deltas = sorted((level - target_key for level in key_levels), reverse=True)
+    top3 = deltas[:3]
+    top3_avg = sum(top3) / len(top3) if top3 else -999.0
+    at_target = sum(1 for delta in deltas if delta >= 0)
+    if top3_avg >= 5.0:
+        return 90.0
+    if top3_avg >= 4.0:
+        return 86.0
+    if top3_avg >= 3.0:
+        return 80.0
+    if top3_avg >= 2.0:
+        return 72.0
+    if top3_avg >= 1.0:
+        return 62.0
+    if at_target >= 6:
+        return 56.0
+    if at_target >= 3:
+        return 48.0
+    return 42.0
+
+
+def _mplus_display_score(raw_score: float) -> float:
+    clean = _clamp(raw_score, 0.0, 160.0)
+    if clean <= 92.0:
+        return clean
+    return _clamp(100.0 - 8.0 * math.exp(-(clean - 92.0) / 20.0), 0.0, 100.0)
+
+
+def _weighted_sum_top(values: list[float], weights: list[float]) -> float:
+    if not values:
+        return 0.0
+    used_values = values[: len(weights)]
+    used_weights = weights[: len(used_values)]
+    return sum(
+        value * weight
+        for value, weight in zip(used_values, used_weights, strict=True)
     )
 
 
@@ -627,43 +865,6 @@ def _lower_key_fit_cap(delta: int) -> float:
     return caps.get(delta, 105.0)
 
 
-def _mplus_sparse_evidence_penalty(
-    *, coverage: float, max_key_delta: int, has_same_dungeon: bool
-) -> float:
-    if has_same_dungeon:
-        penalty = MPLUS_SAME_DUNGEON_SPARSE_PENALTY
-    elif max_key_delta >= 4:
-        penalty = MPLUS_OVERQUALIFIED_SPARSE_PENALTY
-    else:
-        penalty = MPLUS_SPARSE_PENALTY
-    return penalty * (1.0 - coverage)
-
-
-def _mplus_quality_coverage(rows: Iterable[_BracketFit]) -> float:
-    if MPLUS_DUNGEON_COUNT <= 0:
-        return 0.0
-    covered = sum(_clamp(row.fit / 55.0, 0.0, 1.0) for row in rows)
-    return _clamp(covered / MPLUS_DUNGEON_COUNT, 0.0, 1.0)
-
-
-def _mplus_raw_quality_cap(
-    score: float, raw_best_percent: float, max_key_delta: int
-) -> float:
-    if raw_best_percent < 25.0 and max_key_delta <= 1:
-        return min(score, 24.0)
-    if raw_best_percent < 50.0 and max_key_delta <= 1:
-        return min(score, 49.0)
-    if raw_best_percent >= 50.0:
-        return score
-    if max_key_delta >= 8:
-        return min(score, 78.0)
-    if max_key_delta >= 6:
-        return min(score, 70.0)
-    if max_key_delta >= 4:
-        return min(score, 64.0)
-    return score
-
-
 def _package_params(context: str) -> _PackageParams:
     if context == CONTEXT_RAID:
         return _PackageParams(
@@ -732,149 +933,8 @@ def _geometric_mean_probability(probabilities: Iterable[float]) -> float:
     return math.exp(sum(math.log(value) for value in values) / len(values))
 
 
-def _weighted_top(rows: list[_BracketFit]) -> float:
-    if not rows:
-        return 0.0
-    weights = [0.50, 0.30, 0.20]
-    used_weights = weights[: len(rows)]
-    total_weight = sum(used_weights)
-    return sum(row.fit * weight for row, weight in zip(rows, used_weights, strict=True)) / total_weight
-
-
 def _mplus_rio_fit(score: int, target_key: int) -> float:
     return _clamp(55.0 + (score - (1700.0 + target_key * 100.0)) / 18.0, 0.0, 105.0)
-
-
-def _mplus_key_proximity_score(key_level: int, target_key: int) -> float:
-    if key_level <= 0 or target_key <= 0:
-        return 0.0
-    delta = key_level - target_key
-    if delta >= 1:
-        return 94.0
-    if delta == 0:
-        return 88.0
-    if delta == -1:
-        return 78.0
-    if delta == -2:
-        return 64.0
-    if delta == -3:
-        return 50.0
-    return _clamp(50.0 + delta * 8.0, 0.0, 45.0)
-
-
-def _mplus_rio_timed_minus1_coverage(applicant: Applicant) -> float:
-    dungeon_count = _positive_int(applicant.rio_dungeon_count)
-    if dungeon_count <= 0:
-        return 0.0
-    return _clamp(
-        _nonnegative_int(applicant.rio_timed_at_or_above_minus1) / dungeon_count,
-        0.0,
-        1.0,
-    )
-
-
-def _mplus_rio_completion_fit(
-    applicant: Applicant, target_key: int, *, same_dungeon_key: int = 0
-) -> float:
-    if not applicant.rio_profile or target_key <= 0:
-        return 0.0
-    dungeon_count = max(1, min(_positive_int(applicant.rio_dungeon_count), MPLUS_DUNGEON_COUNT))
-    timed_at_or_above = _nonnegative_int(applicant.rio_timed_at_or_above)
-    timed_minus1 = _clamp(
-        _nonnegative_int(applicant.rio_timed_at_or_above_minus1) / dungeon_count,
-        0.0,
-        1.0,
-    )
-    timed_minus2 = _clamp(
-        _nonnegative_int(applicant.rio_timed_at_or_above_minus2) / dungeon_count,
-        0.0,
-        1.0,
-    )
-    completed_minus1 = _clamp(
-        _nonnegative_int(applicant.rio_completed_at_or_above_minus1) / dungeon_count,
-        0.0,
-        1.0,
-    )
-    rio_best_key = _positive_int(applicant.rio_best_key)
-    same_dungeon_key = _positive_int(
-        same_dungeon_key or applicant.rio_best_dungeon_key
-    )
-    same_dungeon = _mplus_key_proximity_score(same_dungeon_key, target_key)
-    best_overall = _mplus_key_proximity_score(rio_best_key, target_key)
-    score_fit = _mplus_rio_fit(effective_rio_score(applicant), target_key)
-    score = (
-        0.36 * same_dungeon
-        + 0.30 * (timed_minus1 * 100.0)
-        + 0.14 * (timed_minus2 * 100.0)
-        + 0.10 * (completed_minus1 * 100.0)
-        + 0.07 * best_overall
-        + 0.03 * score_fit
-    )
-    if timed_at_or_above <= 0 and rio_best_key < target_key:
-        score -= 4.0
-    return _clamp(score, 0.0, 92.0)
-
-
-def _mplus_rio_completion_confidence(
-    applicant: Applicant, target_key: int, *, same_dungeon_key: int = 0
-) -> float:
-    if not applicant.rio_profile:
-        return 0.0
-    timed_minus1 = _mplus_rio_timed_minus1_coverage(applicant)
-    same_near = (
-        1.0
-        if _positive_int(same_dungeon_key or applicant.rio_best_dungeon_key)
-        >= max(2, target_key - 1)
-        else 0.0
-    )
-    best_near = (
-        1.0
-        if _positive_int(applicant.rio_best_key) >= max(2, target_key - 1)
-        else 0.0
-    )
-    return _clamp(0.25 + 0.45 * timed_minus1 + 0.15 * same_near + 0.15 * best_near, 0.0, 1.0)
-
-
-def _mplus_rio_completion_floor_with_wcl(
-    rio_completion_fit: float,
-    *,
-    raw_best_percent: float,
-    max_key_delta: int,
-    target_key: int,
-    rio_same_dungeon_key: int,
-    rio_best_key: int,
-    rio_timed_at_or_above: int,
-) -> float:
-    if rio_completion_fit <= 0.0:
-        return 0.0
-    rio_same_dungeon_key = _positive_int(rio_same_dungeon_key)
-    rio_best_key = _positive_int(rio_best_key)
-    rio_timed_at_or_above = _nonnegative_int(rio_timed_at_or_above)
-    rio_key = rio_same_dungeon_key or rio_best_key
-    rio_key_delta = rio_key - target_key if rio_key > 0 and target_key > 0 else -999
-    # WHY: This is only a RaiderIO completion floor under partial WCL evidence.
-    # Let it rescue stale/missing logs into strong FIT, but reserve TOP for WCL-earned scores.
-    cap = 84.0
-    same_dungeon_delta = (
-        rio_same_dungeon_key - target_key
-        if rio_same_dungeon_key > 0 and target_key > 0
-        else 0
-    )
-    if same_dungeon_delta < 0:
-        cap = min(cap, 78.0)
-    if same_dungeon_delta <= -2:
-        cap = min(cap, 68.0)
-    if rio_timed_at_or_above <= 0 and rio_key_delta < 0:
-        cap = min(cap, 78.0)
-    if rio_timed_at_or_above <= 0 and rio_key_delta <= -2:
-        cap = min(cap, 68.0)
-    if max_key_delta >= -1 and raw_best_percent < 25.0:
-        return min(rio_completion_fit, cap, 61.0)
-    if max_key_delta >= -2 and raw_best_percent < 40.0:
-        return min(rio_completion_fit, cap, 68.0)
-    if raw_best_percent < 50.0:
-        return min(rio_completion_fit, cap, 78.0)
-    return min(rio_completion_fit, cap)
 
 
 def _raid_perf(best: float | None, median: float | None) -> float | None:

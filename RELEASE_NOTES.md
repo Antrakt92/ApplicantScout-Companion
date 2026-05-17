@@ -11,6 +11,13 @@ configuration, and release-readiness hardening for live applicant scouting.
 - Mythic+ fit scoring now uses ApplicantScout addon RaiderIO completion
   summaries as experience evidence, so players with near-target keys completed
   are no longer punished as heavily when Warcraft Logs has no current data.
+- Mythic+ applicant ranking now uses a combined scorecard: RaiderIO per-dungeon
+  keys define completion readiness, Warcraft Logs defines performance quality,
+  missing logs stay unknown instead of bad, and bad relevant logs are worse than
+  no logs.
+- Mythic+ fit cells now show the numeric score and key only, coloured with the
+  Warcraft Logs palette, instead of adding extra `TOP` / `FIT` / `OK` / `RISK`
+  wording on top of the colour.
 - Applicant hover details now show the highest timed RaiderIO key per dungeon
   next to the Warcraft Logs key/percentile row by reading the installed
   RaiderIO addon database locally, making stale or missing log coverage easier

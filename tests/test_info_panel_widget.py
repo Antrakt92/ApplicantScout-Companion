@@ -325,8 +325,10 @@ def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
     panel.setApplicantData(app, _listing())
 
     assert panel._status_label.text() == "Not found on Warcraft Logs"
-    assert panel._metric_labels["M+"].text().startswith("M+ DPS FIT ")
-    assert panel._metric_labels["M+"].text().endswith("+15 RIO")
+    assert panel._metric_labels["M+"].text().startswith("M+ DPS ")
+    assert panel._metric_labels["M+"].text().endswith("+17")
+    assert "FIT" not in panel._metric_labels["M+"].text()
+    assert "RIO" not in panel._metric_labels["M+"].text()
 
 
 def test_panel_renders_group_package_line(qtbot):
@@ -974,7 +976,7 @@ def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
         item = window._table.item(error_row, COL_MPLUS)
 
         assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == "?"
-        assert item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 RISK ")
+        assert item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
     finally:
         client.close()
 
