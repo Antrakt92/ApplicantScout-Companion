@@ -1,5 +1,52 @@
 # ApplicantScout Companion Release Notes
 
+## 0.4.0 - 18-May-2026
+
+Party roster overlay release for reviewing the current group or raid alongside
+normal Mythic+ applicants.
+
+### Added
+
+- Added `Applicants` / `Party` tabs in the overlay so the same window can switch
+  between incoming applicants and the current party or raid roster.
+- Added full party/raid roster display from addon snapshots, including
+  companion-side Warcraft Logs and RaiderIO context for current group members.
+- Added a manual Mythic+ key control beside the source tabs for cases where the
+  addon cannot read the hosted key from the current listing or group context.
+- Added a draggable launcher: hiding the overlay now collapses it to a small
+  always-available in-game icon, and the launcher keeps its position across
+  companion restarts.
+
+### Improved
+
+- Party fit scoring now refreshes immediately when the manual key changes and
+  can combine partial RaiderIO and Warcraft Logs key evidence more accurately.
+- The overlay can be resized much smaller while keeping the table usable.
+- Hover details now expand upward above the roster instead of pushing the player
+  list downward, so the roster scroll position stays stable while scouting.
+- The target-key control now uses visible, separate up/down buttons instead of
+  relying on hard-to-see native spinbox arrows.
+- The overlay now limits its visible window/launcher behavior to the WoW
+  foreground context instead of sitting above unrelated desktop apps.
+
+### Fixed
+
+- Fixed party-only snapshots not showing the overlay when the player was in a
+  group but had no active applicant listing.
+- Fixed stale party roster state and row mapping issues when switching between
+  Applicants and Party views.
+- Fixed the Party title and scoring context losing the active listing key.
+- Fixed target-key increase clicks being swallowed by the spinbox hitbox.
+- Fixed background visibility edge cases around the collapsed launcher and WoW
+  foreground detection.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.3.0`.
+- Installer: `ApplicantScoutCompanionSetup-0.4.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.4.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.4.0-portable.zip`
+
 ## 0.3.2 - 17-May-2026
 
 Screenshot decode startup/performance release for faster first overlay display
