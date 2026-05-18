@@ -6,13 +6,19 @@ public Windows release pipeline.
 
 ## Session Start
 
-1. Read `README.md` for current user behavior, install/update flow, and local
+1. Read `C:\Users\Dima\Documents\GitHub\WOW\AGENTS.md`; it is the canonical
+   workspace memory for ApplicantScout release cadence, QR/screenshot transport,
+   paired addon rules, and WoW-specific traps.
+2. Read `C:\Users\Dima\Documents\GitHub\WOW\applicant-scout-companion\AUDIT.md`
+   before backlog-driven work, release prep, public-copy changes, or deeper
+   review.
+3. Read `README.md` for current user behavior, install/update flow, and local
    data locations.
-2. Read `RELEASE_CHECKLIST.md` before version bumps, build artifacts, tags, or
+4. Read `RELEASE_CHECKLIST.md` before version bumps, build artifacts, tags, or
    GitHub Release work.
-3. Check `git status --short --branch` before edits; this repo may be left on a
+5. Check `git status --short --branch` before edits; this repo may be left on a
    feature branch from previous agent work.
-4. If a change touches the wire payload with the WoW addon, inspect the paired
+6. If a change touches the wire payload with the WoW addon, inspect the paired
    `ApplicantScout-Addon` checkout and keep compatibility explicit.
 
 ## Project Profile
@@ -55,8 +61,11 @@ Default checks:
 ```
 
 `scripts\check.ps1` also requires the paired addon checkout and Lua 5.1 syntax
-checker. If those are unavailable, run the Python subset and report the skipped
-part clearly.
+checker. In the standard sibling layout it auto-detects the addon; in worktrees
+or nonstandard layouts pass `-AddonRoot <path-to-ApplicantScout-Addon>`. The
+wrapper runs companion pytest, ruff, pyright, addon Lua syntax, and addon Python
+contract tests. If any dependency is unavailable, run the closest safe subset
+and report the skipped part clearly.
 
 For release-prep changes:
 
