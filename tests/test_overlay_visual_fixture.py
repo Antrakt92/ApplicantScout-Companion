@@ -57,6 +57,11 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
         assert window._pinned_id == VISUAL_FIXTURE_PINNED_ID
         assert window._hover_id is None
         assert window._panel._name_label.text() == "Bloomwell"
+        assert window._panel.height() == window._panel.target_height()
+        assert window._panel.minimumHeight() == window._panel.target_height()
+        screen = window.screen()
+        if screen is not None:
+            assert window.geometry().top() >= screen.availableGeometry().top()
         assert window._role_filter_bar._active == set(ALL_ROLES)
         assert not window._role_filter_bar._reset_btn.isHidden()
         assert all(

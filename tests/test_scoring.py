@@ -9,6 +9,7 @@ from applicant_scout.scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
     CONTEXT_UNKNOWN,
+    _package_score_for_member_scores,
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
@@ -535,7 +536,7 @@ def test_mplus_broad_target_minus_one_profile_is_ok_not_risk():
     fit = candidate_fit(applicant, target)
 
     assert fit.label == ""
-    assert fit.score >= 40.0
+    assert fit.score >= 35.0
 
 
 def test_mplus_single_target_minus_one_parse_does_not_overpromote():
@@ -587,7 +588,7 @@ def test_mplus_partial_rio_rows_do_not_discard_wcl_key_readiness():
     fit = candidate_fit(healer, target)
 
     assert fit.primary_key == 12
-    assert fit.score >= 30.0
+    assert fit.score >= 25.0
 
 
 def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
@@ -823,6 +824,360 @@ def test_mplus_bad_relevant_wcl_caps_strong_scorecard_evidence():
 
     assert fit.score < 62.0
     assert fit.label == ""
+
+
+def test_mplus_wcl_quality_prefers_stable_median_over_best_parse_spike():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    spike = _app(
+        score=3300,
+        **_rio_profile([16] * 8, target_key=16),
+        dps_breakdown=[_dungeon("Skyreach", [(16, 99.0, 35.0, 5)])],
+    )
+    steady = _app(
+        score=3300,
+        **_rio_profile([16] * 8, target_key=16),
+        dps_breakdown=[_dungeon("Skyreach", [(16, 85.0, 80.0, 3)])],
+    )
+
+    spike_fit = candidate_fit(spike, target)
+    steady_fit = candidate_fit(steady, target)
+
+    assert steady_fit.score > spike_fit.score
+
+
+def test_mplus_gray_relevant_wcl_is_weaker_than_no_log_equivalent():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    no_log = _app(score=3300, **_rio_profile([16] * 8, target_key=16))
+    gray_log = _app(
+        score=3300,
+        **_rio_profile([16] * 8, target_key=16),
+        dps_breakdown=[_dungeon("Skyreach", [(16, 35.0, 35.0, 3)])],
+    )
+
+    no_log_fit = candidate_fit(no_log, target)
+    gray_fit = candidate_fit(gray_log, target)
+
+    assert gray_fit.score < no_log_fit.score
+
+
+def test_mplus_high_gray_overqualified_breadth_loses_to_clean_target_breadth():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    high_gray = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(20, 35.0, 35.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+    clean_target = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(16, 55.0, 55.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+
+    high_gray_fit = candidate_fit(high_gray, target)
+    clean_target_fit = candidate_fit(clean_target, target)
+
+    assert high_gray_fit.score < clean_target_fit.score
+
+
+def test_mplus_high_gray_wcl_does_not_display_raw_overqualified_key():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    high_gray = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(20, 49.0, 49.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+
+    fit = candidate_fit(high_gray, target)
+
+    assert fit.primary_key == 16
+    assert fit.display.endswith(" +16")
+
+
+def test_mplus_broad_near_median_gray_wcl_counts_as_weak_completion_evidence():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    broad_gray_target = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(16, 49.0, 49.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+    sparse_clean_target = _app(
+        score=0,
+        dps_breakdown=[_dungeon("Skyreach", [(16, 99.0, 95.0, 3)])],
+    )
+    clean_target = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(16, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+
+    broad_gray_fit = candidate_fit(broad_gray_target, target)
+    sparse_clean_fit = candidate_fit(sparse_clean_target, target)
+    clean_target_fit = candidate_fit(clean_target, target)
+
+    assert sparse_clean_fit.score < broad_gray_fit.score < clean_target_fit.score
+    assert broad_gray_fit.confidence < clean_target_fit.confidence
+
+
+def test_mplus_gray_wcl_thresholds_are_weak_low_confidence_evidence():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+
+    def broad_fit(percentile: float):
+        applicant = _app(
+            score=0,
+            dps_breakdown=[
+                _dungeon(name, [(16, percentile, percentile, 3)])
+                for name in MPLUS_DUNGEONS
+            ],
+        )
+        return candidate_fit(applicant, target)
+
+    bad = broad_fit(24.0)
+    gray_floor = broad_fit(25.0)
+    near_median = broad_fit(49.0)
+    clean_floor = broad_fit(50.0)
+
+    assert bad.score == 0.0
+    assert 0.0 < gray_floor.score < near_median.score < clean_floor.score
+    assert near_median.confidence < clean_floor.confidence
+    assert near_median.coverage == 0.0
+    assert clean_floor.coverage == 1.0
+
+
+def test_mplus_wcl_quality_is_monotonic_when_rio_already_covers_target():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+
+    def broad_fit(percentile: float):
+        applicant = _app(
+            score=3300,
+            **_rio_profile([16] * 8, target_key=16),
+            dps_breakdown=[
+                _dungeon(name, [(16, percentile, percentile, 3)])
+                for name in MPLUS_DUNGEONS
+            ],
+        )
+        return candidate_fit(applicant, target)
+
+    scores = [broad_fit(percentile).score for percentile in (24.0, 25.0, 49.0, 50.0)]
+
+    assert scores == sorted(scores)
+
+
+def test_mplus_high_gray_breadth_is_experience_but_loses_to_clean_target_breadth():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    high_gray = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(19, 49.0, 49.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+    clean_minus_one = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(15, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+    clean_target = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(16, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+
+    high_gray_fit = candidate_fit(high_gray, target)
+    clean_minus_one_fit = candidate_fit(clean_minus_one, target)
+    clean_target_fit = candidate_fit(clean_target, target)
+
+    assert clean_minus_one_fit.score < high_gray_fit.score < clean_target_fit.score
+    assert high_gray_fit.confidence < clean_minus_one_fit.confidence
+
+
+def test_mplus_same_dungeon_gray_higher_bracket_does_not_raise_clean_target_fit():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    clean_target = _app(
+        score=0,
+        dps_breakdown=[_dungeon("Skyreach", [(16, 80.0, 75.0, 3)])],
+    )
+    clean_with_gray_higher = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon("Skyreach", [(16, 80.0, 75.0, 3), (20, 49.0, 49.0, 3)])
+        ],
+    )
+
+    clean_fit = candidate_fit(clean_target, target)
+    gray_higher_fit = candidate_fit(clean_with_gray_higher, target)
+
+    assert gray_higher_fit.score <= clean_fit.score
+
+
+def test_mplus_distinct_dungeon_breadth_beats_repeated_same_dungeon_brackets():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    repeated_same_dungeon = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(
+                "Skyreach",
+                [
+                    (16, 90.0, 85.0, 3),
+                    (17, 88.0, 82.0, 3),
+                    (18, 86.0, 80.0, 3),
+                ],
+            )
+        ],
+    )
+    broad_profile = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(16, 80.0, 76.0, 3)])
+            for name in MPLUS_DUNGEONS[:3]
+        ],
+    )
+
+    repeated_fit = candidate_fit(repeated_same_dungeon, target)
+    broad_fit = candidate_fit(broad_profile, target)
+
+    assert broad_fit.score > repeated_fit.score
+
+
+def test_mplus_completed_minus_one_supports_less_than_timed_minus_one():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    no_completion = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=0,
+        rio_timed_at_or_above=0,
+        rio_timed_at_or_above_minus1=0,
+        rio_timed_at_or_above_minus2=0,
+        rio_completed_at_or_above_minus1=0,
+        rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
+    )
+    completed_minus_one = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=0,
+        rio_timed_at_or_above=0,
+        rio_timed_at_or_above_minus1=0,
+        rio_timed_at_or_above_minus2=0,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
+    )
+    timed_minus_one = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=0,
+        rio_timed_at_or_above=0,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
+    )
+
+    no_completion_fit = candidate_fit(no_completion, target)
+    completed_fit = candidate_fit(completed_minus_one, target)
+    timed_fit = candidate_fit(timed_minus_one, target)
+
+    assert no_completion_fit.score < completed_fit.score < timed_fit.score
+
+
+def test_mplus_partial_rio_rows_do_not_double_count_summary_best_key():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+
+    def applicant_with_rows(levels: list[int]):
+        return _app(
+            score=3300,
+            rio_profile=True,
+            rio_best_key=max(levels),
+            rio_best_dungeon_key=0,
+            rio_timed_at_or_above=1,
+            rio_timed_at_or_above_minus1=8,
+            rio_timed_at_or_above_minus2=8,
+            rio_completed_at_or_above_minus1=8,
+            rio_dungeon_count=8,
+            rio_summary_target_key=target.key_level,
+            rio_dungeons=[
+                {"name": name, "key_level": level}
+                for name, level in zip(MPLUS_DUNGEONS, levels, strict=False)
+            ],
+        )
+
+    partial = candidate_fit(applicant_with_rows([18]), target)
+    explicit = candidate_fit(applicant_with_rows([18, 15, 15, 15, 15, 15, 15, 15]), target)
+
+    assert partial.score == explicit.score
+
+
+def test_mplus_score_only_fallback_is_capped_low_confidence_prior():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    max_score_only = _app(score=5000)
+    clean_minus_one = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(15, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+    clean_target = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon(name, [(16, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
+        ],
+    )
+
+    score_only_fit = candidate_fit(max_score_only, target)
+
+    assert score_only_fit.score == 42.0
+    assert score_only_fit.confidence == 0.3
+    assert candidate_fit(clean_minus_one, target).score < score_only_fit.score
+    assert score_only_fit.score < candidate_fit(clean_target, target).score
+
+
+@pytest.mark.parametrize("target_key", [10, 16, 20])
+def test_mplus_scorecard_calibrates_core_evidence_order_across_key_levels(
+    target_key: int,
+):
+    target = _listing(key_level=target_key, dungeon_name="Skyreach")
+
+    def rio_app(key_level: int) -> Applicant:
+        return _app(score=3300, **_rio_profile([key_level] * 8, target_key=target_key))
+
+    def wcl_app(
+        key_level: int,
+        parse: float,
+        median: float,
+        dungeon_count: int = 8,
+    ) -> Applicant:
+        return _app(
+            score=0,
+            dps_breakdown=[
+                _dungeon(name, [(key_level, parse, median, 3)])
+                for name in MPLUS_DUNGEONS[:dungeon_count]
+            ],
+        )
+
+    ordered_applicants = [
+        wcl_app(target_key, 80.0, 75.0),
+        rio_app(target_key + 2),
+        wcl_app(target_key, 55.0, 55.0),
+        rio_app(target_key),
+        wcl_app(target_key + 4, 35.0, 35.0),
+        rio_app(target_key - 1),
+        wcl_app(target_key, 99.0, 95.0, dungeon_count=1),
+        wcl_app(target_key, 10.0, 10.0),
+    ]
+
+    scores = [candidate_fit(applicant, target).score for applicant in ordered_applicants]
+
+    assert scores == sorted(scores, reverse=True)
 
 
 def test_mplus_all_minus_one_rio_with_mixed_lower_wcl_does_not_become_top():
@@ -1094,7 +1449,7 @@ def test_mplus_duplicate_good_wcl_dungeon_rows_do_not_inflate_score_or_confidenc
     assert duplicate_fit.confidence == canonical_fit.confidence
 
 
-def test_mplus_same_dungeon_distinct_wcl_key_brackets_both_contribute():
+def test_mplus_same_dungeon_distinct_wcl_key_brackets_do_not_inflate_breadth():
     target = _listing(key_level=15, dungeon_name="Skyreach")
     single_bracket = _app(
         score=0,
@@ -1110,8 +1465,8 @@ def test_mplus_same_dungeon_distinct_wcl_key_brackets_both_contribute():
     single_fit = candidate_fit(single_bracket, target)
     distinct_fit = candidate_fit(distinct_brackets, target)
 
-    assert distinct_fit.score > single_fit.score
-    assert distinct_fit.confidence > single_fit.confidence
+    assert distinct_fit.score == single_fit.score
+    assert distinct_fit.confidence == single_fit.confidence
 
 
 def test_mplus_duplicate_bad_wcl_dungeon_rows_apply_one_worst_penalty():
@@ -1302,6 +1657,31 @@ def test_package_fit_mplus_weak_link_is_harsher_than_raid():
     raid_avg = (raid_group.high_score + raid_group.low_score) / 2.0
 
     assert mplus_avg - mplus_group.score > raid_avg - raid_group.score
+
+
+def test_package_fit_mplus_member_score_improvement_is_monotonic_above_carry_threshold():
+    baseline = _package_score_for_member_scores((60.0, 95.0, 95.0), CONTEXT_MPLUS, 0.0)
+    improved = _package_score_for_member_scores((60.0, 95.0, 100.0), CONTEXT_MPLUS, 0.0)
+
+    assert improved >= baseline
+
+
+def test_package_fit_mplus_member_score_improvement_is_monotonic_below_carry_threshold():
+    baseline = _package_score_for_member_scores((12.9, 76.8), CONTEXT_MPLUS, 0.0)
+    improved = _package_score_for_member_scores((12.9, 84.8), CONTEXT_MPLUS, 0.0)
+
+    assert improved >= baseline
+
+
+def test_package_fit_low_carry_floor_uses_ramp_not_hard_cliff():
+    just_below = _package_score_for_member_scores(
+        (47.9, 100.0, 100.0, 100.0, 100.0), CONTEXT_MPLUS, 0.0
+    )
+    at_floor = _package_score_for_member_scores(
+        (48.0, 100.0, 100.0, 100.0, 100.0), CONTEXT_MPLUS, 0.0
+    )
+
+    assert at_floor - just_below < 0.5
 
 
 def test_package_fit_status_confidence_and_penalty():

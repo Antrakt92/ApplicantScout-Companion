@@ -484,6 +484,212 @@ def test_mplus_group_sort_uses_package_fit_not_best_member_only():
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1", "10:2"]
 
 
+def test_mplus_same_displayed_fit_sorts_by_confidence_before_hidden_decimal():
+    listing = Listing(
+        activity_id=401,
+        dungeon_name="Skyreach",
+        listing_name="+16 Skyreach",
+        comment="",
+        key_level=16,
+        category_id=2,
+        difficulty_id=8,
+    )
+    broad_rio_same_display = _app(
+        aid=10,
+        score=3300,
+        rio_profile=True,
+        rio_best_key=16,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=4,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
+    )
+    sparse_wcl_same_display = _app(
+        aid=20,
+        score=0,
+        dps_breakdown=[
+            {
+                "name": name,
+                "key_level": 16,
+                "parse_percent": 85,
+                "median_percent": 85,
+                "run_count": 3,
+            }
+            for name in (
+                "Skyreach",
+                "Algeth'ar Academy",
+                "Magisters' Terrace",
+                "Maisara Caverns",
+            )
+        ],
+    )
+
+    sorted_apps = sort_applicants_grouped(
+        [sparse_wcl_same_display, broad_rio_same_display], listing
+    )
+
+    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
+
+
+def test_mplus_mixed_wave_orders_by_package_fit_status_and_group_adjacency():
+    listing = Listing(
+        activity_id=401,
+        dungeon_name="Skyreach",
+        listing_name="+16 Skyreach",
+        comment="",
+        key_level=16,
+        category_id=2,
+        difficulty_id=8,
+    )
+    target_ace = _app(
+        aid=10,
+        score=3300,
+        rio_profile=True,
+        rio_best_key=16,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=4,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 16,
+                "parse_percent": 88,
+                "median_percent": 78,
+                "run_count": 2,
+            },
+        ],
+    )
+    no_wcl_main = _app(
+        aid=20,
+        score=3200,
+        main_score=3600,
+        fetch_status="not_found",
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
+    )
+    carry_leader = _app(
+        aid=30,
+        m=1,
+        score=3900,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 22,
+                "parse_percent": 99,
+                "median_percent": 95,
+                "run_count": 3,
+            }
+        ],
+    )
+    weak_friend = _app(
+        aid=30,
+        m=2,
+        score=2500,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 12,
+                "parse_percent": 45,
+                "median_percent": 40,
+                "run_count": 3,
+            }
+        ],
+    )
+    broader_below = _app(
+        aid=40,
+        score=3270,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=0,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
+        dps_breakdown=[
+            {
+                "name": "Pit of Saron",
+                "key_level": 15,
+                "parse_percent": 80,
+                "median_percent": 74,
+                "run_count": 2,
+            },
+            {
+                "name": "Skyreach",
+                "key_level": 15,
+                "parse_percent": 70,
+                "median_percent": 65,
+                "run_count": 2,
+            },
+        ],
+    )
+    farm_parse = _app(
+        aid=50,
+        score=3400,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 10,
+                "parse_percent": 99,
+                "median_percent": 95,
+                "run_count": 3,
+            }
+        ],
+    )
+    sunk_high = _app(
+        aid=60,
+        score=3900,
+        fetch_status="error",
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 22,
+                "parse_percent": 99,
+                "median_percent": 95,
+                "run_count": 3,
+            }
+        ],
+    )
+
+    sorted_apps = sort_applicants_grouped(
+        [
+            weak_friend,
+            farm_parse,
+            no_wcl_main,
+            sunk_high,
+            target_ace,
+            carry_leader,
+            broader_below,
+        ],
+        listing,
+    )
+
+    assert [a.applicant_id for a in sorted_apps] == [
+        "10:1",
+        "40:1",
+        "20:1",
+        "30:1",
+        "30:2",
+        "50:1",
+        "60:1",
+    ]
+
+
 def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
     listing = Listing(
         activity_id=401,
@@ -570,6 +776,50 @@ def test_mplus_not_found_with_strong_scorecard_evidence_sorts_by_fit():
     sorted_apps = sort_applicants_grouped([ready_lower_fit, no_wcl_strong_rio], listing)
 
     assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
+
+
+def test_mplus_loading_scorecard_fit_stays_below_visible_ready_fit():
+    listing = Listing(
+        activity_id=401,
+        dungeon_name="Skyreach",
+        listing_name="+16 Skyreach",
+        comment="",
+        key_level=16,
+        category_id=2,
+        difficulty_id=8,
+    )
+    loading_strong_rio = _app(
+        aid=10,
+        score=3300,
+        fetch_status="loading",
+        rio_profile=True,
+        rio_best_key=18,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=8,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
+    )
+    ready_visible_fit = _app(
+        aid=20,
+        score=0,
+        fetch_status="ready",
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 16,
+                "parse_percent": 50,
+                "median_percent": 50,
+                "run_count": 3,
+            }
+        ],
+    )
+
+    sorted_apps = sort_applicants_grouped([loading_strong_rio, ready_visible_fit], listing)
+
+    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
 
 
 def test_mplus_zero_fit_all_sunk_still_sinks_below_ready_zero_fit():
@@ -694,3 +944,60 @@ def test_mplus_unknown_key_prioritises_highest_key_before_percentile():
     )
 
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
+
+
+def test_mplus_unknown_key_group_uses_weakest_member_headline():
+    listing = Listing(
+        activity_id=401,
+        dungeon_name="Mythic+",
+        listing_name="Mythic+",
+        comment="",
+        key_level=0,
+        category_id=2,
+        difficulty_id=8,
+    )
+    superstar = _app(
+        aid=10,
+        m=1,
+        score=3000,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 20,
+                "parse_percent": 99,
+                "median_percent": 95,
+                "run_count": 3,
+            }
+        ],
+    )
+    weak_friend = _app(
+        aid=10,
+        m=2,
+        score=1000,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 2,
+                "parse_percent": 10,
+                "median_percent": 10,
+                "run_count": 3,
+            }
+        ],
+    )
+    solid_solo = _app(
+        aid=20,
+        score=2800,
+        dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 15,
+                "parse_percent": 70,
+                "median_percent": 65,
+                "run_count": 3,
+            }
+        ],
+    )
+
+    sorted_apps = sort_applicants_grouped([weak_friend, solid_solo, superstar], listing)
+
+    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1", "10:2"]

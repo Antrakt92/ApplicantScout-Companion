@@ -63,7 +63,8 @@ def test_mplus_dual_cell_uses_visual_boundary():
 def test_mplus_dual_cell_uses_context_fit_for_mplus_listing():
     item = _mplus_dual_cell(_app(), _mplus_listing())
 
-    assert item.text().split()[0].isdigit()
+    assert item.text().startswith("Fit ")
+    assert item.text().split()[1].isdigit()
     assert not item.text().startswith(("TOP ", "FIT ", "OK ", "RISK "))
     assert "+14" in item.text()
 
@@ -96,6 +97,7 @@ def test_mplus_dual_cell_listing_not_found_can_show_scorecard_fit():
         listing,
     )
 
+    assert item.text().startswith("Fit ")
     assert "RIO" not in item.text()
     assert "+15" in item.text()
 

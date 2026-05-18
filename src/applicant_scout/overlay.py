@@ -60,6 +60,7 @@ from .constants import (
     ROLE_GLYPHS,
     ROLE_LABELS,
     SPEC_SHORT_NAMES,
+    MPLUS_ENCOUNTERS,
     group_id_colour,
     mplus_dungeon_name_for_activity_id,
     percentile_colour,
@@ -460,6 +461,7 @@ def _render_tooltip(parent_widget, tip: str, global_pos) -> bool:
 # unfetchable applicants sink within their RIO bucket). Module-level frozenset
 # so the pure sort fn can see it without rebuilding per state change.
 _SUNK_STATES: frozenset[str] = frozenset({"error", "not_found"})
+_PROVISIONAL_STATES: frozenset[str] = frozenset({"loading", "pending"})
 _MPLUS_CATEGORY_ID = 2
 
 
@@ -489,6 +491,33 @@ def _rio_display_text(applicant: Applicant) -> str:
     return str(applicant.score) if applicant.score else "—"
 
 
+def _rio_panel_text(applicant: Applicant) -> str:
+    if applicant.main_score > applicant.score and applicant.score:
+        return f"RIO {applicant.score} · main {applicant.main_score}"
+    if applicant.main_score > applicant.score:
+        return f"RIO main {applicant.main_score}"
+    return f"RIO {applicant.score}" if applicant.score else ""
+
+
+def _mplus_fit_source_text(applicant: Applicant) -> str:
+    _metric_label, breakdown, _best, _median = role_mplus_view(applicant)
+    has_wcl = bool(breakdown)
+    has_rio = bool(
+        applicant.rio_profile
+        or applicant.rio_dungeons
+        or applicant.rio_best_key
+        or applicant.rio_timed_at_or_above
+        or effective_rio_score(applicant)
+    )
+    if has_wcl and has_rio:
+        return "WCL + RaiderIO"
+    if has_wcl:
+        return "WCL only"
+    if has_rio:
+        return "RaiderIO only"
+    return "score only"
+
+
 def sort_applicants_grouped(
     applicants: Iterable[Applicant], listing: Listing | None = None
 ) -> list[Applicant]:
@@ -501,8 +530,10 @@ def sort_applicants_grouped(
     apps = list(applicants)
     group_max: dict[str, int] = {}
     group_fit: dict[str, float] = {}
+    group_confidence: dict[str, float] = {}
     group_mplus_headline: dict[str, tuple[int, float]] = {}
     group_has_ready: dict[str, bool] = {}
+    group_has_provisional: dict[str, bool] = {}
     use_fit = detect_listing_context(listing) in (CONTEXT_MPLUS, CONTEXT_RAID)
     use_mplus_headline = (
         not use_fit
@@ -518,12 +549,16 @@ def sort_applicants_grouped(
             group_max[raw_aid] = rio_score
         if a.fetch_status not in _SUNK_STATES:
             group_has_ready[raw_aid] = True
+        if a.fetch_status in _PROVISIONAL_STATES:
+            group_has_provisional[raw_aid] = True
     if use_fit:
         for raw_aid, members in group_members.items():
-            group_fit[raw_aid] = package_fit(members, listing).score
+            fit = package_fit(members, listing)
+            group_fit[raw_aid] = fit.score
+            group_confidence[raw_aid] = fit.confidence
     elif use_mplus_headline:
         for raw_aid, members in group_members.items():
-            group_mplus_headline[raw_aid] = max(
+            group_mplus_headline[raw_aid] = min(
                 (_mplus_headline_sort_score(member) for member in members),
                 default=(0, 0.0),
             )
@@ -532,14 +567,19 @@ def sort_applicants_grouped(
         raw_aid, member_idx = _split_composite(a.applicant_id)
         gmax = group_max.get(raw_aid, 0)
         gfit = group_fit.get(raw_aid, 0.0)
+        gconfidence = group_confidence.get(raw_aid, 0.0)
         gheadline_key, gheadline_percent = group_mplus_headline.get(raw_aid, (0, 0.0))
         all_sunk = not group_has_ready.get(raw_aid, False)
+        provisional = group_has_provisional.get(raw_aid, False)
         sunk = a.fetch_status in _SUNK_STATES
         if use_fit:
             no_fit = gfit <= 0.0
             return (
                 no_fit,
+                provisional if not no_fit else False,
                 all_sunk if no_fit else False,
+                -int(round(gfit)),
+                -gconfidence,
                 -gfit,
                 -gmax,
                 raw_aid,
@@ -1380,7 +1420,7 @@ class ApplicantInfoPanel(QFrame):
     ) -> None:
         """Show full applicant scout data in the fixed widget layout."""
         self._set_identity(applicant)
-        self._set_package(package)
+        self._set_package(package, applicant, listing)
         self._set_status_or_data(applicant, listing)
 
     def _hide_data_widgets(self) -> None:
@@ -1427,7 +1467,7 @@ class ApplicantInfoPanel(QFrame):
         self._ilvl_label.setVisible(bool(applicant.ilvl))
         rio_score = effective_rio_score(applicant)
         if rio_score:
-            self._rio_label.setText(f"RIO {_rio_display_text(applicant)}")
+            self._rio_label.setText(_rio_panel_text(applicant))
             self._rio_label.setStyleSheet(
                 f"color: {rio_score_colour(rio_score)}; font-weight: bold;"
             )
@@ -1436,18 +1476,49 @@ class ApplicantInfoPanel(QFrame):
             self._rio_label.setText("")
             self._rio_label.setVisible(False)
 
-    def _set_package(self, package: PackageFit | None) -> None:
+    def _set_package(
+        self,
+        package: PackageFit | None,
+        applicant: Applicant | None = None,
+        listing: Listing | None = None,
+    ) -> None:
         if package is None or package.size < 2 or not package.display:
             self._package_label.setText("")
             self._package_label.setVisible(False)
             return
-        text = (
-            f"Group {package.label} {int(round(package.score))} · "
-            f"high {int(round(package.high_score))} · "
-            f"avg {int(round(package.average_score))} · "
-            f"low {int(round(package.low_score))} · "
-            f"conf {int(round(package.confidence * 100))}%"
+        member_score = (
+            candidate_fit(applicant, listing).score
+            if applicant is not None and listing is not None
+            else None
         )
+        member_note = ""
+        if (
+            member_score is not None
+            and package.spread >= 1.0
+            and abs(member_score - package.low_score) < 0.5
+        ):
+            member_note = " · this low"
+        package_label = package.label or (
+            "fit" if package.context == CONTEXT_MPLUS else "package"
+        )
+        if package.context == CONTEXT_MPLUS:
+            text = (
+                f"Group {package_label} {int(round(package.score))} · "
+                f"hi/avg/low {int(round(package.high_score))}/"
+                f"{int(round(package.average_score))}/"
+                f"{int(round(package.low_score))} · "
+                f"conf {int(round(package.confidence * 100))}%"
+                f"{member_note}"
+            )
+        else:
+            text = (
+                f"Group {package_label} {int(round(package.score))} · "
+                f"high {int(round(package.high_score))} · "
+                f"avg {int(round(package.average_score))} · "
+                f"low {int(round(package.low_score))} · "
+                f"conf {int(round(package.confidence * 100))}%"
+                f"{member_note}"
+            )
         bg = package.colour or "#2a2a33"
         self._set_badge(self._package_label, text, bg, _text_colour_for_bg(bg))
 
@@ -1463,12 +1534,24 @@ class ApplicantInfoPanel(QFrame):
             return
         if status == "error":
             msg = applicant.error_message or "unknown"
-            self._show_status(f"WCL error: {msg}", error=True)
+            fit = candidate_fit(applicant, listing)
+            source_note = (
+                " · RaiderIO only"
+                if fit.context == CONTEXT_MPLUS and fit.score > 0.0
+                else ""
+            )
+            self._show_status(f"WCL error: {msg}{source_note}", error=True)
             self._set_metric_badges(applicant, listing)
             self._set_dungeon_rows(applicant, listing)
             return
         if status == "not_found":
-            self._show_status("Not found on Warcraft Logs")
+            fit = candidate_fit(applicant, listing)
+            source_note = (
+                " · RaiderIO only"
+                if fit.context == CONTEXT_MPLUS and fit.score > 0.0
+                else ""
+            )
+            self._show_status(f"Not found on Warcraft Logs{source_note}")
             self._set_metric_badges(applicant, listing)
             self._set_dungeon_rows(applicant, listing)
             return
@@ -1478,7 +1561,10 @@ class ApplicantInfoPanel(QFrame):
 
         visible_metrics = self._set_metric_badges(applicant, listing)
         visible_rows = self._set_dungeon_rows(applicant, listing)
-        if not visible_metrics and not visible_rows:
+        fit_status = self._mplus_fit_status_text(applicant, listing)
+        if fit_status:
+            self._show_status(fit_status)
+        elif not visible_metrics and not visible_rows:
             self._show_status("No Warcraft Logs data")
 
     def _show_status(self, text: str, *, error: bool = False) -> None:
@@ -1545,9 +1631,10 @@ class ApplicantInfoPanel(QFrame):
             metric_label, _breakdown, _best, _median = role_mplus_view(applicant)
             text, _fg, bg = _mplus_cell_visuals(applicant, listing)
             if bg is not None:
+                prefix = "M+ " if text.startswith("Fit ") else f"M+ {metric_label} "
                 self._set_badge(
                     self._metric_labels["M+"],
-                    f"M+ {metric_label} {text}",
+                    f"{prefix}{text}",
                     bg,
                     _text_colour_for_bg(bg),
                 )
@@ -1557,6 +1644,19 @@ class ApplicantInfoPanel(QFrame):
         else:
             self._metric_labels["M+"].setVisible(False)
         return shown
+
+    def _mplus_fit_status_text(
+        self, applicant: Applicant, listing: Listing | None = None
+    ) -> str:
+        fit = candidate_fit(applicant, listing)
+        if fit.context != CONTEXT_MPLUS or not fit.display or fit.score <= 0.0:
+            return ""
+        source = _mplus_fit_source_text(applicant)
+        coverage = int(round(fit.coverage * max(len(MPLUS_ENCOUNTERS), 1)))
+        return (
+            f"M+ fit conf {int(round(fit.confidence * 100))}% · "
+            f"cov {coverage}/{max(len(MPLUS_ENCOUNTERS), 1)} · {source}"
+        )
 
     def _set_dungeon_rows(
         self, applicant: Applicant, listing: Listing | None = None
@@ -2451,9 +2551,13 @@ class OverlayWindow(QMainWindow):
             return
 
         geom = self.geometry()
+        new_y = geom.y() - delta
+        screen = self.screen()
+        if screen is not None:
+            new_y = max(screen.availableGeometry().top(), new_y)
         self._set_geometry_without_persist(
             geom.x(),
-            geom.y() - delta,
+            new_y,
             geom.width(),
             max(self.minimumHeight(), geom.height() + delta),
         )
@@ -3230,6 +3334,7 @@ class OverlayWindow(QMainWindow):
         if self._hover_id is not None:
             self._hover_id = None
             self._sync_delegate_and_panel()
+        QTimer.singleShot(0, self._apply_panel_height_above_table)
         # Defer cursor-resolve to next event-loop tick: showEvent fires BEFORE
         # the show actually completes (Qt hasn't laid out the table viewport
         # yet, so viewport().rect() is zero-sized). singleShot(0, ...) runs
@@ -3491,7 +3596,7 @@ def _mplus_cell_visuals(
     if fit.context == CONTEXT_MPLUS and fit.display:
         bg = fit.colour
         fg = _text_colour_for_bg(bg) if bg is not None else None
-        return fit.display, fg, bg
+        return f"Fit {fit.display}", fg, bg
 
     if status == "error":
         return "?", "#ff5555", None

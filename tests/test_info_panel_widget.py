@@ -33,7 +33,7 @@ from applicant_scout.metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
 )
-from applicant_scout.scoring import PackageFit
+from applicant_scout.scoring import PackageFit, package_fit
 from applicant_scout.state import DEFAULT_WINDOW_WIDTH, AppState, Applicant, Listing
 from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
 
@@ -137,7 +137,7 @@ def test_panel_renders_current_and_better_main_score(qtbot):
 
     panel.setApplicantData(_app(main_score=3468))
 
-    assert panel._rio_label.text() == "RIO 2443 [3468]"
+    assert panel._rio_label.text() == "RIO 2443 · main 3468"
 
 
 def test_context_dungeon_rows_colour_the_printed_percentile(qtbot):
@@ -298,7 +298,7 @@ def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
 
     panel.setApplicantData(app, _listing())
 
-    assert panel._status_label.text() == "Not found on Warcraft Logs"
+    assert panel._status_label.text() == "Not found on Warcraft Logs · RaiderIO only"
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
     assert rio_label.text() == "RIO +15"
@@ -329,11 +329,39 @@ def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
 
     panel.setApplicantData(app, listing)
 
-    assert panel._status_label.text() == "Not found on Warcraft Logs"
-    assert panel._metric_labels["M+"].text().startswith("M+ DPS ")
+    assert "Not found on Warcraft Logs" in panel._status_label.text()
+    assert "RaiderIO only" in panel._status_label.text()
+    assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
     assert panel._metric_labels["M+"].text().endswith("+17")
-    assert "FIT" not in panel._metric_labels["M+"].text()
+    assert "DPS" not in panel._metric_labels["M+"].text()
     assert "RIO" not in panel._metric_labels["M+"].text()
+
+
+def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    listing = _listing()
+    app = _app(
+        mplus_dps=None,
+        mplus_dps_median=None,
+        mplus_dps_breakdown=[],
+        rio_profile=True,
+        rio_best_key=16,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=8,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
+    )
+
+    panel.setApplicantData(app, listing)
+
+    assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
+    assert "conf 75%" in panel._status_label.text()
+    assert "cov 8/8" in panel._status_label.text()
+    assert "RaiderIO only" in panel._status_label.text()
 
 
 def test_panel_renders_group_package_line(qtbot):
@@ -356,6 +384,44 @@ def test_panel_renders_group_package_line(qtbot):
     assert panel._package_label.text() == (
         "Group FIT 73 · high 91 · avg 74 · low 52 · conf 68%"
     )
+    assert not panel._package_label.isHidden()
+
+
+def test_panel_renders_real_mplus_package_without_blank_label(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    listing = _listing()
+    skyreach_log = {
+        "name": "Skyreach",
+        "key_level": 16,
+        "parse_percent": 82.0,
+        "median_percent": 74.0,
+        "run_count": 3,
+    }
+    follower_log = {
+        "name": "Skyreach",
+        "key_level": 15,
+        "parse_percent": 72.0,
+        "median_percent": 68.0,
+        "run_count": 3,
+    }
+    leader = _app(
+        applicant_id="10:1",
+        mplus_dps_breakdown=[skyreach_log],
+    )
+    follower = _app(
+        applicant_id="10:2",
+        mplus_dps_breakdown=[follower_log],
+    )
+    package = package_fit([leader, follower], listing)
+
+    panel.setApplicantData(follower, listing, package=package)
+
+    assert panel._package_label.text().startswith("Group fit ")
+    assert " · hi/avg/low " in panel._package_label.text()
+    assert " · conf " in panel._package_label.text()
+    assert " · this low" in panel._package_label.text()
+    assert "Group  " not in panel._package_label.text()
     assert not panel._package_label.isHidden()
 
 
@@ -453,6 +519,33 @@ def test_status_states_hide_metrics_and_dungeons(qtbot):
 
     panel.setApplicantData(_app(fetch_status="not_found"))
     assert panel._status_label.text() == "Not found on Warcraft Logs"
+
+
+def test_panel_explains_error_mplus_fit_uses_raiderio_only(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    listing = _listing()
+    app = _app(
+        fetch_status="error",
+        error_message="bad token",
+        mplus_dps=None,
+        mplus_dps_median=None,
+        mplus_dps_breakdown=[],
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=16,
+        rio_timed_at_or_above=1,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
+    )
+
+    panel.setApplicantData(app, listing)
+
+    assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
+    assert panel._status_label.text() == "WCL error: bad token · RaiderIO only"
 
 
 def test_ready_no_data_shows_compact_status(qtbot):

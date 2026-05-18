@@ -29,7 +29,10 @@ MPLUS_SCORE_KEY_MAX = 48.0
 MPLUS_SCORE_CARRY_MAX = 34.0
 MPLUS_SCORE_SAME_MAX = 3.0
 MPLUS_SCORE_CONSISTENCY_MAX = 4.0
+MPLUS_SCORE_COMPLETION_MAX = 4.0
 MPLUS_SCORE_WCL_POSITIVE_MAX = 36.0
+MPLUS_SCORE_WCL_GRAY_COMPLETION_MAX = 18.0
+MPLUS_SCORE_WCL_GRAY_MAX = 4.0
 MPLUS_SCORE_WCL_BAD_MAX = 42.0
 MPLUS_SCORE_LOW_KEY_SIGNAL_WEIGHT = 0.12
 
@@ -83,9 +86,6 @@ class _PackageParams:
     carry_threshold: float
     carry_coeff: float
     carry_cap: float
-    spread_threshold: float
-    spread_coeff: float
-    spread_cap: float
     low_carry_floor: float
 
 
@@ -94,6 +94,7 @@ class _MPlusWCLSignal:
     dungeon_name: str
     key_level: int
     percentile: float
+    median_percent: float | None
     run_count: int
     same_dungeon: bool = False
 
@@ -197,27 +198,7 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
         score = high
         display = ""
     else:
-        params = _package_params(context)
-        # Group applications are accepted as one package. Geometric mean in
-        # probability space behaves like a soft weak-link: it rewards several
-        # solid players without letting one superstar hide a risky friend.
-        probabilities = [
-            _sigmoid((score - params.center) / params.scale) for score in scores
-        ]
-        group_probability = _geometric_mean_probability(probabilities)
-        base = params.center + params.scale * _logit(group_probability)
-        carry_credit = min(
-            params.carry_cap,
-            sum(max(0.0, score - params.carry_threshold) for score in scores)
-            * params.carry_coeff,
-        )
-        if low < params.low_carry_floor:
-            carry_credit *= 0.35
-        spread_penalty = min(
-            params.spread_cap,
-            max(0.0, spread - params.spread_threshold) * params.spread_coeff,
-        )
-        score = base + carry_credit - spread_penalty - status_penalty
+        score = _package_score_for_member_scores(scores, context, status_penalty)
         display = ""
     score = _clamp(score, 0.0, 100.0 if context == CONTEXT_MPLUS else 105.0)
     label = "" if context == CONTEXT_MPLUS else fit_label(score)
@@ -376,37 +357,52 @@ def _mplus_scorecard_candidate_fit(
     if not rio_key_levels and not wcl_signals and effective_rio_score(applicant) <= 0:
         return None
 
-    wcl_key_levels = _mplus_wcl_key_levels(wcl_signals)
+    wcl_key_levels = _mplus_wcl_key_levels(wcl_signals, target_key)
     primary_key = _mplus_primary_key(
         rio_key_levels=rio_key_levels,
         rio_row_key_levels=rio_row_key_levels,
         wcl_signals=wcl_signals,
         target_key=target_key,
         same_dungeon_key=same_dungeon_key,
+        summary_best_key=positive_int(applicant.rio_best_key)
+        if _mplus_rio_summary_matches_target(applicant, target_key)
+        else 0,
     )
 
     completion_key_levels = _mplus_completion_key_levels(
         rio_key_levels, wcl_key_levels
     )
     key_score = _mplus_key_readiness_score(completion_key_levels, target_key)
+    has_clean_same_dungeon_wcl = any(
+        signal.same_dungeon
+        and signal.key_level >= target_key
+        and _mplus_wcl_quality_percent(signal) >= 50.0
+        for signal in wcl_signals
+    )
     same_bonus = (
         MPLUS_SCORE_SAME_MAX
-        if max(
-            same_dungeon_key,
-            max(
-                (signal.key_level for signal in wcl_signals if signal.same_dungeon),
-                default=0,
-            ),
-        )
-        >= target_key
+        if same_dungeon_key >= target_key or has_clean_same_dungeon_wcl
         else 0.0
     )
     consistency = _mplus_key_consistency_score(completion_key_levels, target_key)
+    completion_experience = _mplus_completion_experience_score(applicant, target_key)
     carry = _mplus_carry_bonus(completion_key_levels, target_key)
     wcl_positive = _mplus_wcl_positive_score(wcl_signals, target_key)
+    wcl_gray_completion = _mplus_wcl_gray_completion_score(
+        wcl_signals, target_key, rio_key_levels
+    )
+    wcl_gray_penalty = _mplus_wcl_gray_penalty(wcl_signals, target_key)
     wcl_bad_penalty = _mplus_wcl_bad_penalty(wcl_signals, target_key)
     raw_score = (
-        key_score + carry + same_bonus + consistency + wcl_positive - wcl_bad_penalty
+        key_score
+        + carry
+        + same_bonus
+        + consistency
+        + completion_experience
+        + wcl_positive
+        + wcl_gray_completion
+        - wcl_gray_penalty
+        - wcl_bad_penalty
     )
 
     has_relevant_wcl = any(
@@ -424,10 +420,11 @@ def _mplus_scorecard_candidate_fit(
         )
     score = _mplus_display_score(raw_score)
 
+    clean_wcl_dungeon_count = len(_mplus_clean_wcl_dungeon_keys(wcl_signals))
     coverage = _clamp(
         max(
             len([level for level in rio_key_levels if level > 0]),
-            len({_normalise_name(signal.dungeon_name) for signal in wcl_signals}),
+            clean_wcl_dungeon_count,
         )
         / max(MPLUS_DUNGEON_COUNT, 1),
         0.0,
@@ -484,6 +481,7 @@ def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCL
                     dungeon_name=dungeon_name,
                     key_level=key_level,
                     percentile=percentile,
+                    median_percent=safe_percent(bracket.get("median_percent")),
                     run_count=nonnegative_int(bracket.get("run_count")),
                     same_dungeon=normalised_name in target_dungeon_keys,
                 )
@@ -498,6 +496,7 @@ def _mplus_primary_key(
     wcl_signals: list[_MPlusWCLSignal],
     target_key: int,
     same_dungeon_key: int,
+    summary_best_key: int,
 ) -> int:
     positive_wcl_keys = [
         signal.key_level
@@ -509,9 +508,16 @@ def _mplus_primary_key(
         if concrete_rio_key > 0:
             return max(concrete_rio_key, max(positive_wcl_keys))
         return max(positive_wcl_keys)
+    completion_wcl_keys = [
+        _mplus_wcl_effective_key_level(signal, target_key)
+        for signal in wcl_signals
+        if _mplus_wcl_counts_as_completion_evidence(signal, target_key)
+    ]
     return max(
         max(rio_key_levels, default=0),
+        summary_best_key,
         same_dungeon_key,
+        max(completion_wcl_keys, default=0),
         0,
     )
 
@@ -542,7 +548,10 @@ def _mplus_rio_key_levels(
 
     synthetic = (
         _mplus_synthetic_rio_key_levels(
-            applicant, target_key, same_dungeon_key=same_dungeon_key
+            applicant,
+            target_key,
+            same_dungeon_key=same_dungeon_key,
+            include_named_keys=not row_levels,
         )
         if _mplus_rio_summary_matches_target(applicant, target_key)
         else []
@@ -554,9 +563,13 @@ def _mplus_rio_key_levels(
 
     merged = list(synthetic)
     for row_level in sorted(row_levels, reverse=True):
-        weakest_index = min(range(len(merged)), key=lambda idx: merged[idx])
-        if row_level > merged[weakest_index]:
-            merged[weakest_index] = row_level
+        replaceable = [
+            idx for idx, synthetic_level in enumerate(merged) if row_level > synthetic_level
+        ]
+        if not replaceable:
+            continue
+        best_index = max(replaceable, key=lambda idx: merged[idx])
+        merged[best_index] = row_level
     return sorted(merged, reverse=True)[:MPLUS_DUNGEON_COUNT]
 
 
@@ -581,7 +594,11 @@ def _mplus_completion_key_levels(
 
 
 def _mplus_synthetic_rio_key_levels(
-    applicant: Applicant, target_key: int, *, same_dungeon_key: int
+    applicant: Applicant,
+    target_key: int,
+    *,
+    same_dungeon_key: int,
+    include_named_keys: bool = True,
 ) -> list[int]:
     if not applicant.rio_profile or target_key <= 0:
         return []
@@ -608,15 +625,16 @@ def _mplus_synthetic_rio_key_levels(
     while len(levels) < dungeon_count:
         levels.append(0)
 
-    for key in (
-        positive_int(applicant.rio_best_key),
-        positive_int(same_dungeon_key or applicant.rio_best_dungeon_key),
-    ):
-        if key <= 0:
-            continue
-        weakest_index = min(range(len(levels)), key=lambda idx: levels[idx])
-        if key > levels[weakest_index]:
-            levels[weakest_index] = key
+    if include_named_keys:
+        for key in (
+            positive_int(applicant.rio_best_key),
+            positive_int(same_dungeon_key or applicant.rio_best_dungeon_key),
+        ):
+            if key <= 0:
+                continue
+            weakest_index = min(range(len(levels)), key=lambda idx: levels[idx])
+            if key > levels[weakest_index]:
+                levels[weakest_index] = key
     return sorted(levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
 
 
@@ -656,6 +674,32 @@ def _mplus_key_consistency_score(key_levels: list[int], target_key: int) -> floa
     )
 
 
+def _mplus_completion_experience_score(applicant: Applicant, target_key: int) -> float:
+    if not _mplus_rio_summary_matches_target(applicant, target_key):
+        return 0.0
+    dungeon_count = max(
+        1,
+        min(
+            positive_int(applicant.rio_dungeon_count) or MPLUS_DUNGEON_COUNT,
+            MPLUS_DUNGEON_COUNT,
+        ),
+    )
+    timed_minus1 = min(
+        nonnegative_int(applicant.rio_timed_at_or_above_minus1),
+        dungeon_count,
+    )
+    completed_minus1 = min(
+        max(nonnegative_int(applicant.rio_completed_at_or_above_minus1), timed_minus1),
+        dungeon_count,
+    )
+    completed_only = max(0, completed_minus1 - timed_minus1)
+    if completed_only <= 0:
+        return 0.0
+    return MPLUS_SCORE_COMPLETION_MAX * _clamp(
+        completed_only / max(dungeon_count, 1), 0.0, 1.0
+    )
+
+
 def _mplus_carry_bonus(key_levels: list[int], target_key: int) -> float:
     if target_key <= 0 or not key_levels:
         return 0.0
@@ -671,14 +715,14 @@ def _mplus_carry_bonus(key_levels: list[int], target_key: int) -> float:
 
 
 def _mplus_wcl_positive_score(signals: list[_MPlusWCLSignal], target_key: int) -> float:
-    by_run_bucket: dict[tuple[str, int], float] = {}
+    by_dungeon: dict[str, float] = {}
     for signal in signals:
-        signal_key = _mplus_wcl_signal_key(signal)
-        if signal_key is None:
+        dungeon_key = _mplus_wcl_dungeon_key(signal)
+        if dungeon_key is None:
             continue
         score = _mplus_wcl_single_positive_score(signal, target_key)
-        by_run_bucket[signal_key] = max(by_run_bucket.get(signal_key, 0.0), score)
-    values = sorted(by_run_bucket.values(), reverse=True)
+        by_dungeon[dungeon_key] = max(by_dungeon.get(dungeon_key, 0.0), score)
+    values = sorted(by_dungeon.values(), reverse=True)
     if not values:
         return 0.0
     return min(
@@ -688,13 +732,14 @@ def _mplus_wcl_positive_score(signals: list[_MPlusWCLSignal], target_key: int) -
 
 
 def _mplus_wcl_single_positive_score(signal: _MPlusWCLSignal, target_key: int) -> float:
-    if signal.percentile < 50.0 or target_key <= 0:
+    quality = _mplus_wcl_quality_percent(signal)
+    if quality < 50.0 or target_key <= 0:
         return 0.0
     delta = signal.key_level - target_key
     key_weight = _mplus_wcl_key_weight(delta)
     run_weight = 0.70 + 0.30 * min(max(signal.run_count, 1), 3) / 3.0
     return (
-        ((signal.percentile - 50.0) / 50.0)
+        ((quality - 50.0) / 50.0)
         * MPLUS_SCORE_WCL_POSITIVE_MAX
         * key_weight
         * run_weight
@@ -713,22 +758,91 @@ def _mplus_wcl_key_weight(delta: int) -> float:
     return 0.0
 
 
-def _mplus_wcl_bad_penalty(signals: list[_MPlusWCLSignal], target_key: int) -> float:
-    by_run_bucket: dict[tuple[str, int], float] = {}
+def _mplus_wcl_quality_percent(signal: _MPlusWCLSignal) -> float:
+    return _mplus_performance_score(
+        signal.percentile, signal.median_percent, signal.run_count
+    )
+
+
+def _mplus_wcl_gray_penalty(
+    signals: list[_MPlusWCLSignal], target_key: int
+) -> float:
+    by_dungeon: dict[str, float] = {}
     for signal in signals:
-        signal_key = _mplus_wcl_signal_key(signal)
-        if signal_key is None:
+        dungeon_key = _mplus_wcl_dungeon_key(signal)
+        if dungeon_key is None:
             continue
         delta = signal.key_level - target_key
-        if signal.percentile >= 25.0 or delta < -1:
+        quality = _mplus_wcl_quality_percent(signal)
+        if quality < 25.0 or quality >= 50.0 or delta < -1:
+            continue
+        if delta >= 0:
+            severity = 8.0 / (1.0 + 0.25 * delta)
+        else:
+            severity = 5.0
+        run_weight = 0.75 + 0.25 * min(max(signal.run_count, 1), 3) / 3.0
+        penalty = ((50.0 - quality) / 25.0) * severity * run_weight
+        by_dungeon[dungeon_key] = max(by_dungeon.get(dungeon_key, 0.0), penalty)
+    penalties = sorted(by_dungeon.values(), reverse=True)
+    if not penalties:
+        return 0.0
+    return min(
+        MPLUS_SCORE_WCL_GRAY_MAX,
+        _weighted_sum_top(penalties, [1.0, 0.70, 0.45, 0.25]),
+    )
+
+
+def _mplus_wcl_gray_completion_score(
+    signals: list[_MPlusWCLSignal], target_key: int, rio_key_levels: list[int]
+) -> float:
+    by_dungeon: dict[str, float] = {}
+    for signal in signals:
+        dungeon_key = _mplus_wcl_dungeon_key(signal)
+        if dungeon_key is None:
+            continue
+        delta = signal.key_level - target_key
+        quality = _mplus_wcl_quality_percent(signal)
+        if quality < 25.0 or quality >= 50.0 or delta < -1 or delta >= 3:
+            continue
+        key_weight = 0.70 if delta == -1 else 1.0 + max(0, delta) * 0.10
+        value = ((quality - 25.0) / 25.0) * key_weight
+        by_dungeon[dungeon_key] = max(by_dungeon.get(dungeon_key, 0.0), value)
+    if not by_dungeon:
+        return 0.0
+    missing_rio_coverage = _clamp(
+        (MPLUS_DUNGEON_COUNT - len([level for level in rio_key_levels if level > 0]))
+        / max(MPLUS_DUNGEON_COUNT, 1),
+        0.0,
+        1.0,
+    )
+    if missing_rio_coverage <= 0.0:
+        return 0.0
+    values = list(by_dungeon.values())
+    coverage = _clamp(len(values) / max(MPLUS_DUNGEON_COUNT, 1), 0.0, 1.0)
+    average = sum(values) / len(values)
+    return (
+        MPLUS_SCORE_WCL_GRAY_COMPLETION_MAX
+        * missing_rio_coverage
+        * coverage
+        * average
+    )
+
+
+def _mplus_wcl_bad_penalty(signals: list[_MPlusWCLSignal], target_key: int) -> float:
+    by_dungeon: dict[str, float] = {}
+    for signal in signals:
+        dungeon_key = _mplus_wcl_dungeon_key(signal)
+        if dungeon_key is None:
+            continue
+        delta = signal.key_level - target_key
+        quality = _mplus_wcl_quality_percent(signal)
+        if quality >= 25.0 or delta < -1:
             continue
         severity = 28.0 if delta >= 0 else 18.0
         run_weight = 0.90 + 0.35 * min(max(signal.run_count, 1), 3) / 3.0
-        penalty = ((25.0 - signal.percentile) / 25.0) * severity * run_weight
-        by_run_bucket[signal_key] = max(
-            by_run_bucket.get(signal_key, 0.0), penalty
-        )
-    penalties = sorted(by_run_bucket.values(), reverse=True)
+        penalty = ((25.0 - quality) / 25.0) * severity * run_weight
+        by_dungeon[dungeon_key] = max(by_dungeon.get(dungeon_key, 0.0), penalty)
+    penalties = sorted(by_dungeon.values(), reverse=True)
     if not penalties:
         return 0.0
     return min(
@@ -739,35 +853,77 @@ def _mplus_wcl_bad_penalty(signals: list[_MPlusWCLSignal], target_key: int) -> f
     )
 
 
-def _mplus_wcl_key_levels(signals: list[_MPlusWCLSignal]) -> list[int]:
-    by_run_bucket: dict[tuple[str, int], int] = {}
+def _mplus_wcl_key_levels(
+    signals: list[_MPlusWCLSignal], target_key: int
+) -> list[int]:
+    by_dungeon: dict[str, int] = {}
     for signal in signals:
-        if signal.percentile < 25.0:
+        if not _mplus_wcl_counts_as_completion_evidence(signal, target_key):
             continue
-        signal_key = _mplus_wcl_signal_key(signal)
-        if signal_key is None:
+        dungeon_key = _mplus_wcl_dungeon_key(signal)
+        if dungeon_key is None:
             continue
-        by_run_bucket[signal_key] = signal.key_level
-    return list(by_run_bucket.values())
+        by_dungeon[dungeon_key] = max(
+            by_dungeon.get(dungeon_key, 0),
+            _mplus_wcl_effective_key_level(signal, target_key),
+        )
+    return list(by_dungeon.values())
+
+
+def _mplus_wcl_counts_as_completion_evidence(
+    signal: _MPlusWCLSignal, target_key: int
+) -> bool:
+    quality = _mplus_wcl_quality_percent(signal)
+    if quality >= 50.0:
+        return True
+    # Grey logs are weak completion evidence, not clean readiness. Near-target
+    # grey proves the player has seen the key range; very high grey also proves
+    # experience above the listing, but neither should count like a clean timed
+    # target key.
+    return quality >= 25.0 and signal.key_level - target_key >= -1
+
+
+def _mplus_wcl_effective_key_level(
+    signal: _MPlusWCLSignal, target_key: int
+) -> int:
+    quality = _mplus_wcl_quality_percent(signal)
+    if quality >= 50.0:
+        return signal.key_level
+    if signal.key_level - target_key >= 3:
+        return min(signal.key_level, target_key)
+    return min(signal.key_level, max(1, target_key - 2))
+
+
+def _mplus_clean_wcl_dungeon_keys(signals: Iterable[_MPlusWCLSignal]) -> set[str]:
+    keys: set[str] = set()
+    for signal in signals:
+        if _mplus_wcl_quality_percent(signal) < 50.0:
+            continue
+        dungeon_key = _mplus_wcl_dungeon_key(signal)
+        if dungeon_key is not None:
+            keys.add(dungeon_key)
+    return keys
 
 
 def _mplus_wcl_total_runs(signals: list[_MPlusWCLSignal]) -> int:
-    by_run_bucket: dict[tuple[str, int], int] = {}
+    by_dungeon: dict[str, int] = {}
     for signal in signals:
-        signal_key = _mplus_wcl_signal_key(signal)
-        if signal_key is None:
+        if _mplus_wcl_quality_percent(signal) < 50.0:
             continue
-        by_run_bucket[signal_key] = max(
-            by_run_bucket.get(signal_key, 0), max(signal.run_count, 1)
+        dungeon_key = _mplus_wcl_dungeon_key(signal)
+        if dungeon_key is None:
+            continue
+        by_dungeon[dungeon_key] = max(
+            by_dungeon.get(dungeon_key, 0), max(signal.run_count, 1)
         )
-    return sum(by_run_bucket.values())
+    return sum(by_dungeon.values())
 
 
-def _mplus_wcl_signal_key(signal: _MPlusWCLSignal) -> tuple[str, int] | None:
+def _mplus_wcl_dungeon_key(signal: _MPlusWCLSignal) -> str | None:
     dungeon_key = _normalise_name(signal.dungeon_name)
     if not dungeon_key or signal.key_level <= 0:
         return None
-    return (dungeon_key, signal.key_level)
+    return dungeon_key
 
 
 def _mplus_no_relevant_wcl_cap(key_levels: list[int], target_key: int) -> float:
@@ -967,9 +1123,6 @@ def _package_params(context: str) -> _PackageParams:
             carry_threshold=82.0,
             carry_coeff=0.035,
             carry_cap=4.0,
-            spread_threshold=38.0,
-            spread_coeff=0.06,
-            spread_cap=6.0,
             low_carry_floor=42.0,
         )
     return _PackageParams(
@@ -978,11 +1131,42 @@ def _package_params(context: str) -> _PackageParams:
         carry_threshold=86.0,
         carry_coeff=0.06,
         carry_cap=7.0,
-        spread_threshold=30.0,
-        spread_coeff=0.12,
-        spread_cap=10.0,
         low_carry_floor=48.0,
     )
+
+
+def _package_score_for_member_scores(
+    scores: tuple[float, ...], context: str, status_penalty: float
+) -> float:
+    if not scores:
+        return 0.0
+    if len(scores) == 1:
+        return scores[0]
+    params = _package_params(context)
+    # Group applications are accepted as one package. Geometric mean in
+    # probability space behaves like a soft weak-link: it rewards several
+    # solid players without letting one superstar hide a risky friend.
+    probabilities = [
+        _sigmoid((score - params.center) / params.scale) for score in scores
+    ]
+    group_probability = _geometric_mean_probability(probabilities)
+    base = params.center + params.scale * _logit(group_probability)
+    carry_credit = min(
+        params.carry_cap,
+        sum(max(0.0, score - params.carry_threshold) for score in scores)
+        * params.carry_coeff,
+    )
+    carry_credit *= _package_low_carry_multiplier(
+        min(scores), params.low_carry_floor
+    )
+    return base + carry_credit - status_penalty
+
+
+def _package_low_carry_multiplier(low_score: float, floor: float) -> float:
+    if low_score >= floor:
+        return 1.0
+    ramp_width = 12.0
+    return 0.35 + 0.65 * _clamp((low_score - (floor - ramp_width)) / ramp_width, 0.0, 1.0)
 
 
 def _package_status_penalty(members: Iterable[Applicant]) -> float:
