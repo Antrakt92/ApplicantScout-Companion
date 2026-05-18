@@ -309,6 +309,7 @@ def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
 def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
+    listing = _listing()
     app = _app(
         fetch_status="not_found",
         mplus_dps=None,
@@ -322,10 +323,11 @@ def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
         rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
     )
 
-    panel.setApplicantData(app, _listing())
+    panel.setApplicantData(app, listing)
 
     assert panel._status_label.text() == "Not found on Warcraft Logs"
     assert panel._metric_labels["M+"].text().startswith("M+ DPS ")

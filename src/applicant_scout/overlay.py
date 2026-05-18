@@ -2039,6 +2039,10 @@ class OverlayWindow(QMainWindow):
 
     def _on_target_key_changed(self, key_level: int) -> None:
         new_key = key_level if key_level > 0 else None
+        if new_key is not None and not self._can_apply_manual_target_key():
+            self._manual_target_key = None
+            self._sync_target_key_control()
+            return
         if self._manual_target_key == new_key:
             self._sync_target_key_control()
             return
@@ -2052,6 +2056,16 @@ class OverlayWindow(QMainWindow):
             return
         self._manual_target_key = None
         self._sync_target_key_control()
+
+    def _can_apply_manual_target_key(self) -> bool:
+        listing = self._state.listing
+        if listing is None:
+            return True
+        if listing.key_level > 0:
+            return False
+        if detect_listing_context(listing) == CONTEXT_RAID:
+            return False
+        return listing.category_id in (0, _MPLUS_CATEGORY_ID)
 
     def on_applicant_added(self, applicant: Applicant) -> None:
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
@@ -2105,6 +2119,8 @@ class OverlayWindow(QMainWindow):
                 self._empty_hide_timer.start()
 
     def on_listing_changed(self) -> None:
+        if self._manual_target_key is not None and not self._can_apply_manual_target_key():
+            self._clear_manual_target_key()
         self._schedule_overlay_refresh(
             update_title=True,
             maybe_show=self._state.count() > 0 or len(self._state.party_members) > 0,
@@ -2335,7 +2351,7 @@ class OverlayWindow(QMainWindow):
         return self._state.applicants
 
     def _effective_listing(self) -> Listing | None:
-        if self._manual_target_key is None:
+        if self._manual_target_key is None or not self._can_apply_manual_target_key():
             return self._state.listing
         if self._state.listing is not None:
             return replace(self._state.listing, key_level=self._manual_target_key)

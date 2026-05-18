@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 import re
@@ -41,6 +42,7 @@ class RaiderIOLocalReader:
         self._retail_root = Path(retail_root)
         self._cache: dict[str, _RegionDB | None] = {}
         self._loading: set[str] = set()
+        self._load_callbacks: dict[str, list[Callable[[], None]]] = {}
         self._lock = threading.Lock()
 
     def lookup_profile(
@@ -49,19 +51,39 @@ class RaiderIOLocalReader:
         token = _REGION_FILE_TOKENS.get((region or "").upper())
         if not token:
             return None
-        db = self._region_db(token) if allow_load else self._cache.get(token)
+        if allow_load:
+            db = self._region_db(token)
+        else:
+            with self._lock:
+                db = self._cache.get(token)
         if db is None:
             return None
         return db.lookup_profile(name, realm)
 
-    def preload_region_async(self, region: str | None) -> None:
+    def preload_region_async(
+        self, region: str | None, *, on_loaded: Callable[[], None] | None = None
+    ) -> None:
         token = _REGION_FILE_TOKENS.get((region or "").upper())
         if not token:
             return
+        call_now = False
         with self._lock:
-            if token in self._cache or token in self._loading:
+            if token in self._cache:
+                call_now = on_loaded is not None
+            elif token in self._loading:
+                if on_loaded is not None:
+                    self._load_callbacks.setdefault(token, []).append(on_loaded)
                 return
-            self._loading.add(token)
+            else:
+                if on_loaded is not None:
+                    self._load_callbacks.setdefault(token, []).append(on_loaded)
+                self._loading.add(token)
+        if call_now and on_loaded is not None:
+            try:
+                on_loaded()
+            except Exception:  # noqa: BLE001
+                _log.exception("RaiderIO local preload callback failed for %s", token)
+            return
 
         def _worker() -> None:
             try:
@@ -69,6 +91,14 @@ class RaiderIOLocalReader:
             finally:
                 with self._lock:
                     self._loading.discard(token)
+                    callbacks = self._load_callbacks.pop(token, [])
+                for callback in callbacks:
+                    try:
+                        callback()
+                    except Exception:  # noqa: BLE001
+                        _log.exception(
+                            "RaiderIO local preload callback failed for %s", token
+                        )
 
         threading.Thread(
             target=_worker,

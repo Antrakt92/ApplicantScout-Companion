@@ -315,7 +315,11 @@ def listing_dungeon_keys(listing: Listing | None) -> set[str]:
 
 def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
     listing_keys = listing_dungeon_keys(listing)
-    best_key = positive_int(applicant.rio_best_dungeon_key)
+    best_key = (
+        positive_int(applicant.rio_best_dungeon_key)
+        if _mplus_rio_summary_matches_target(applicant, listing.key_level)
+        else 0
+    )
     for entry in applicant.rio_dungeons:
         if not isinstance(entry, dict):
             continue
@@ -536,8 +540,12 @@ def _mplus_rio_key_levels(
     if len(row_levels) >= expected_rows:
         return sorted(row_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
 
-    synthetic = _mplus_synthetic_rio_key_levels(
-        applicant, target_key, same_dungeon_key=same_dungeon_key
+    synthetic = (
+        _mplus_synthetic_rio_key_levels(
+            applicant, target_key, same_dungeon_key=same_dungeon_key
+        )
+        if _mplus_rio_summary_matches_target(applicant, target_key)
+        else []
     )
     if not synthetic:
         return sorted(row_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
@@ -550,6 +558,10 @@ def _mplus_rio_key_levels(
         if row_level > merged[weakest_index]:
             merged[weakest_index] = row_level
     return sorted(merged, reverse=True)[:MPLUS_DUNGEON_COUNT]
+
+
+def _mplus_rio_summary_matches_target(applicant: Applicant, target_key: int) -> bool:
+    return target_key > 0 and positive_int(applicant.rio_summary_target_key) == target_key
 
 
 def _mplus_completion_key_levels(

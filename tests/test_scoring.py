@@ -52,6 +52,7 @@ def _app(
     rio_timed_at_or_above_minus2: int = 0,
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
+    rio_summary_target_key: int = 0,
     rio_dungeons: list[dict] | None = None,
     dps_breakdown: list[dict] | None = None,
     hps_breakdown: list[dict] | None = None,
@@ -79,6 +80,7 @@ def _app(
         rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
         rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
         rio_dungeon_count=rio_dungeon_count,
+        rio_summary_target_key=rio_summary_target_key,
         rio_dungeons=rio_dungeons or [],
         role=role,
         raid_normal=raid_normal,
@@ -152,6 +154,7 @@ def _rio_profile(levels: list[int], *, target_key: int) -> dict[str, object]:
             1 for level in levels if level >= target_key - 1
         ),
         "rio_dungeon_count": len(levels),
+        "rio_summary_target_key": target_key,
         "rio_dungeons": _rio_dungeons(levels),
     }
 
@@ -599,6 +602,7 @@ def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
     )
 
     fit = candidate_fit(applicant, target)
@@ -607,6 +611,30 @@ def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
     assert 40.0 <= fit.score < 58.0
     assert fit.confidence >= 0.55
     assert "+17" in fit.display
+
+
+def test_mplus_scorecard_ignores_compact_rio_summary_for_different_target_key():
+    original_target = _listing(key_level=10, dungeon_name="Skyreach")
+    current_target = _listing(key_level=16, dungeon_name="Skyreach")
+    stale_summary = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=17,
+        rio_best_dungeon_key=15,
+        rio_timed_at_or_above=8,
+        rio_timed_at_or_above_minus1=8,
+        rio_timed_at_or_above_minus2=8,
+        rio_completed_at_or_above_minus1=8,
+        rio_dungeon_count=8,
+        rio_summary_target_key=original_target.key_level,
+    )
+    no_summary = _app(score=3200)
+
+    stale_fit = candidate_fit(stale_summary, current_target)
+    baseline_fit = candidate_fit(no_summary, current_target)
+
+    assert stale_fit.score == baseline_fit.score
+    assert stale_fit.primary_key == baseline_fit.primary_key
 
 
 def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
@@ -621,6 +649,7 @@ def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
     )
 
@@ -644,6 +673,7 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
     )
 
@@ -660,6 +690,7 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
     )
     assert fit.primary_key == 17
@@ -679,6 +710,7 @@ def test_mplus_scorecard_rio_summary_rescues_not_found_wcl_status():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         fetch_status="not_found",
     )
 
@@ -701,6 +733,7 @@ def test_mplus_terminal_wcl_status_ignores_stale_wcl_but_uses_scorecard():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         dps_breakdown=[_dungeon("Skyreach", [(16, 99.0, 95.0, 3)])],
         fetch_status="error",
     )
@@ -731,6 +764,7 @@ def test_mplus_scorecard_beats_low_key_parse_spike_for_target_key():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         dps_breakdown=[_dungeon("Skyreach", [(12, 42.0, 38.0, 2)])],
     )
 
@@ -882,6 +916,7 @@ def test_mplus_same_dungeon_target_key_outranks_broader_below_target_profile():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
         dps_breakdown=[
             _dungeon("Skyreach", [(15, 70.0, 60.0, 2)]),
@@ -898,6 +933,7 @@ def test_mplus_same_dungeon_target_key_outranks_broader_below_target_profile():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         rio_dungeons=[
             {"name": "Skyreach", "key_level": 14},
             {"name": "Algeth'ar Academy", "key_level": 15},
@@ -933,6 +969,7 @@ def test_mplus_target_key_without_logs_outranks_below_target_parse_spike():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
     )
     below_target_parse_spike = _app(
@@ -945,6 +982,7 @@ def test_mplus_target_key_without_logs_outranks_below_target_parse_spike():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=7,
         rio_dungeon_count=8,
+        rio_summary_target_key=target.key_level,
         rio_dungeons=[{"name": "Skyreach", "key_level": 14}],
         dps_breakdown=[
             _dungeon("Skyreach", [(14, 92.0, None, 1)]),

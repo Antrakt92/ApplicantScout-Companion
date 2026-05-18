@@ -75,6 +75,7 @@ def test_mplus_dual_cell_listing_error_status_precedes_stale_fit():
 
 
 def test_mplus_dual_cell_listing_not_found_can_show_scorecard_fit():
+    listing = _mplus_listing()
     item = _mplus_dual_cell(
         _app(
             score=3200,
@@ -90,8 +91,9 @@ def test_mplus_dual_cell_listing_not_found_can_show_scorecard_fit():
             rio_timed_at_or_above_minus2=8,
             rio_completed_at_or_above_minus1=8,
             rio_dungeon_count=8,
+            rio_summary_target_key=listing.key_level,
         ),
-        _mplus_listing(),
+        listing,
     )
 
     assert "RIO" not in item.text()

@@ -488,14 +488,61 @@ class StateMachine(QObject):
     # Region change → main wires to wcl_client.region so non-EU users don't
     # silently get "Server not found" with default config.
     versionUpdated = pyqtSignal(int)
+    _rioPreloadCompleted = pyqtSignal(str, int)
 
     def __init__(self, state: AppState, parent=None, rio_reader: Any | None = None):
         super().__init__(parent)
         self._state = state
         self._rio_reader = rio_reader
+        self._rio_reader_generation = 0
+        self._rioPreloadCompleted.connect(self._on_rio_preload_completed)
 
     def set_rio_reader(self, rio_reader: Any | None) -> None:
         self._rio_reader = rio_reader
+        self._rio_reader_generation += 1
+
+    def _preload_local_rio_region(self, region_token: str | None) -> None:
+        if self._rio_reader is None or region_token is None:
+            return
+        preload = getattr(self._rio_reader, "preload_region_async", None)
+        if not callable(preload):
+            return
+        generation = self._rio_reader_generation
+
+        def _on_loaded() -> None:
+            self._rioPreloadCompleted.emit(region_token, generation)
+
+        try:
+            preload(region_token, on_loaded=_on_loaded)
+        except TypeError:
+            preload(region_token)
+
+    def _on_rio_preload_completed(self, region_token: str, generation: int) -> None:
+        if generation != self._rio_reader_generation:
+            return
+        current_region = REGION_ID_TO_WCL.get(self._state.player.region_id)
+        if region_token != current_region:
+            return
+        self._reenrich_local_rio_rows()
+
+    def _reenrich_local_rio_rows(self) -> None:
+        if self._rio_reader is None:
+            return
+        for applicant in list(self._state.applicants.values()):
+            rows = self._rio_dungeon_rows_for(applicant.name, applicant.rio_dungeons)
+            if rows == applicant.rio_dungeons:
+                continue
+            applicant.rio_dungeons = rows
+            self.applicantUpdated.emit(applicant)
+        roster_changed = False
+        for member in list(self._state.party_members.values()):
+            rows = self._rio_dungeon_rows_for(member.name, member.rio_dungeons)
+            if rows == member.rio_dungeons:
+                continue
+            member.rio_dungeons = rows
+            roster_changed = True
+        if roster_changed:
+            self.rosterChanged.emit()
 
     def _rio_dungeon_rows_for(self, decoded_name: str, decoded_rows: list[dict]) -> list[dict]:
         rows = [dict(row) for row in decoded_rows]
@@ -544,7 +591,7 @@ class StateMachine(QObject):
         target.wcl_metric_preferences = source.wcl_metric_preferences
 
     def _roster_member_from_decoded(
-        self, decoded: DecodedRosterMember
+        self, decoded: DecodedRosterMember, *, rio_summary_target_key: int = 0
     ) -> RosterMember:
         cls_name = CLASS_ID_TO_NAME.get(decoded.class_id, "?")
         role_name = ROLE_BYTE_TO_NAME.get(decoded.role, "DAMAGER")
@@ -565,6 +612,7 @@ class StateMachine(QObject):
             rio_timed_at_or_above_minus2=decoded.rio_timed_at_or_above_minus2,
             rio_completed_at_or_above_minus1=decoded.rio_completed_at_or_above_minus1,
             rio_dungeon_count=decoded.rio_dungeon_count,
+            rio_summary_target_key=rio_summary_target_key,
             rio_dungeons=self._rio_dungeon_rows_for(
                 decoded.name, decoded.rio_dungeons
             ),
@@ -580,6 +628,7 @@ class StateMachine(QObject):
         *,
         region_identity_changed: bool = False,
         default_realm_changed: bool = False,
+        rio_summary_target_key: int = 0,
     ) -> None:
         new_by_id = {
             self._roster_key(decoded.name): decoded
@@ -595,7 +644,10 @@ class StateMachine(QObject):
 
         for member_id, decoded in new_by_id.items():
             existing = self._state.party_members.get(member_id)
-            member = self._roster_member_from_decoded(decoded)
+            member = self._roster_member_from_decoded(
+                decoded,
+                rio_summary_target_key=rio_summary_target_key,
+            )
             if existing is not None:
                 needs_refetch = (
                     existing.spec_id != member.spec_id
@@ -644,10 +696,7 @@ class StateMachine(QObject):
                 new_realm_slug != old_realm_slug
             )
             self._state.player = new_player
-            if self._rio_reader is not None:
-                preload = getattr(self._rio_reader, "preload_region_async", None)
-                if callable(preload):
-                    preload(new_region_token)
+            self._preload_local_rio_region(new_region_token)
             log.info(
                 "Player: %s (region=%d)",
                 snap.version.player_name,
@@ -680,6 +729,7 @@ class StateMachine(QObject):
                 snap.roster,
                 region_identity_changed=region_identity_changed,
                 default_realm_changed=default_realm_changed,
+                rio_summary_target_key=0,
             )
             self.listingChanged.emit()
             self.cleared.emit()
@@ -691,8 +741,11 @@ class StateMachine(QObject):
                 snap.roster,
                 region_identity_changed=region_identity_changed,
                 default_realm_changed=default_realm_changed,
+                rio_summary_target_key=0,
             )
             return
+
+        rio_summary_target_key = new_listing.key_level if new_listing.key_level > 0 else 0
 
         # Listing changed (dungeon/key/comment) — fire signal so overlay re-titles
         if new_listing != old_listing:
@@ -762,6 +815,7 @@ class StateMachine(QObject):
                         da.rio_completed_at_or_above_minus1
                     ),
                     rio_dungeon_count=da.rio_dungeon_count,
+                    rio_summary_target_key=rio_summary_target_key,
                     rio_dungeons=self._rio_dungeon_rows_for(da.name, da.rio_dungeons),
                 )
                 self._state.add_or_update(applicant)
@@ -809,6 +863,7 @@ class StateMachine(QObject):
                     da.rio_completed_at_or_above_minus1
                 )
                 existing.rio_dungeon_count = da.rio_dungeon_count
+                existing.rio_summary_target_key = rio_summary_target_key
                 existing.rio_dungeons = self._rio_dungeon_rows_for(
                     da.name, da.rio_dungeons
                 )
@@ -820,6 +875,7 @@ class StateMachine(QObject):
             snap.roster,
             region_identity_changed=region_identity_changed,
             default_realm_changed=default_realm_changed,
+            rio_summary_target_key=rio_summary_target_key,
         )
 
 

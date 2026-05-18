@@ -5,6 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 
 from applicant_scout.overlay import _mplus_cell_visuals, OverlayWindow
+from applicant_scout.scoring import CONTEXT_RAID, detect_listing_context
 from applicant_scout.state import AppState, Applicant, Listing, RosterMember
 
 
@@ -61,14 +62,21 @@ def _ready_mplus_member(member_id: str = "dps-realm") -> RosterMember:
     return member
 
 
-def _listing(key_level: int = 12) -> Listing:
+def _listing(
+    key_level: int = 12,
+    *,
+    category_id: int = 2,
+    difficulty_id: int = 0,
+    dungeon_name: str = "Nexus-Point Xenas",
+) -> Listing:
     return Listing(
         activity_id=459,
-        dungeon_name="Nexus-Point Xenas",
+        dungeon_name=dungeon_name,
         listing_name="+12 Competitive",
         comment="",
         key_level=key_level,
-        category_id=2,
+        category_id=category_id,
+        difficulty_id=difficulty_id,
     )
 
 
@@ -210,14 +218,14 @@ def test_target_key_control_defaults_to_listing_key(qtbot, tmp_path):
     assert win._tab_bar._key_down_button.text() == "▼"
 
 
-def test_target_key_control_upper_button_steps_up(qtbot, tmp_path):
+def test_target_key_control_upper_button_snaps_back_to_known_listing_key(qtbot, tmp_path):
     state = AppState()
     state.listing = _listing(key_level=12)
     win = _window(tmp_path, qtbot, state)
     win._update_title()
     qtbot.mouseClick(win._tab_bar._key_up_button, Qt.MouseButton.LeftButton)
 
-    assert win._tab_bar._key_spin.value() == 13
+    assert win._tab_bar._key_spin.value() == 12
 
 
 def test_manual_target_key_creates_effective_party_listing(qtbot, tmp_path):
@@ -268,6 +276,49 @@ def test_listing_change_recomputes_party_mplus_cells(qtbot, tmp_path):
     assert legacy_text == "90/80 +10"
     assert win._table.item(0, 7).text() == expected
     assert win._table.item(0, 7).text() != legacy_text
+
+
+def test_real_listing_key_clears_manual_party_target_key(qtbot, tmp_path):
+    state = AppState()
+    member = _ready_mplus_member()
+    state.party_members["dps-realm"] = member
+    win = _window(tmp_path, qtbot, state)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    win._tab_bar._key_spin.setValue(10)
+
+    state.listing = _listing(key_level=12)
+    win.on_listing_changed()
+    win._flush_overlay_refresh()
+
+    listing = win._effective_listing()
+    assert win._manual_target_key is None
+    assert win._tab_bar._key_spin.value() == 12
+    assert listing is not None
+    assert listing.key_level == 12
+    expected, _fg, _bg = _mplus_cell_visuals(member, listing)
+    assert win._table.item(0, 7).text() == expected
+
+
+def test_manual_target_key_does_not_override_raid_listing(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["dps-realm"] = _ready_mplus_member()
+    win = _window(tmp_path, qtbot, state)
+    win._tab_bar._key_spin.setValue(10)
+
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    win.on_listing_changed()
+    win._flush_overlay_refresh()
+
+    listing = win._effective_listing()
+    assert win._manual_target_key is None
+    assert listing is not None
+    assert listing.key_level == 0
+    assert detect_listing_context(listing) == CONTEXT_RAID
 
 
 def test_empty_roster_clears_manual_target_key(qtbot, tmp_path):

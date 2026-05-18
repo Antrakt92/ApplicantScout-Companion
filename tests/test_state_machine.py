@@ -60,6 +60,36 @@ class _RaisingRioReader:
         raise ValueError("decode drift")
 
 
+class _ColdRioReader:
+    def __init__(self, rows: list[dict] | None = None) -> None:
+        self.loaded = False
+        self.callbacks = []
+        self.rows = rows or [{"name": "Pit of Saron", "key_level": 12}]
+
+    def lookup_profile(
+        self,
+        name: str,
+        realm: str,
+        region: str,
+        *,
+        allow_load: bool = True,
+    ):
+        assert allow_load is False
+        if not self.loaded or (name, realm, region) != ("Chinie", "Ragnaros", "EU"):
+            return None
+        return type("Profile", (), {"dungeons": [dict(row) for row in self.rows]})()
+
+    def preload_region_async(self, region: str | None, on_loaded=None) -> None:
+        assert region == "EU"
+        if on_loaded is not None:
+            self.callbacks.append(on_loaded)
+
+    def finish(self) -> None:
+        self.loaded = True
+        for callback in list(self.callbacks):
+            callback()
+
+
 def _decoded(
     aid: int,
     member_idx: int,
@@ -132,6 +162,14 @@ def _roster_decoded(
     ilvl: int = 700,
     score: int = 3000,
     main_score: int = 0,
+    rio_profile: bool = False,
+    rio_best_key: int = 0,
+    rio_best_dungeon_key: int = 0,
+    rio_timed_at_or_above: int = 0,
+    rio_timed_at_or_above_minus1: int = 0,
+    rio_timed_at_or_above_minus2: int = 0,
+    rio_completed_at_or_above_minus1: int = 0,
+    rio_dungeon_count: int = 0,
     role: int = 2,
 ) -> DecodedRosterMember:
     return DecodedRosterMember(
@@ -143,6 +181,14 @@ def _roster_decoded(
         ilvl=ilvl,
         score=score,
         main_score=main_score,
+        rio_profile=rio_profile,
+        rio_best_key=rio_best_key,
+        rio_best_dungeon_key=rio_best_dungeon_key,
+        rio_timed_at_or_above=rio_timed_at_or_above,
+        rio_timed_at_or_above_minus1=rio_timed_at_or_above_minus1,
+        rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
+        rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
+        rio_dungeon_count=rio_dungeon_count,
         role=role,
         name=name,
     )
@@ -244,6 +290,7 @@ def test_new_applicant_maps_rio_completion_summary():
     assert applicant.rio_timed_at_or_above_minus2 == 8
     assert applicant.rio_completed_at_or_above_minus1 == 8
     assert applicant.rio_dungeon_count == 8
+    assert applicant.rio_summary_target_key == 14
 
 
 def test_new_applicant_maps_rio_dungeon_rows():
@@ -340,6 +387,108 @@ def test_local_rio_decode_error_falls_back_to_decoded_rows_without_crashing():
     )
 
     assert state.applicants["42:1"].rio_dungeons == decoded_rows
+
+
+def test_first_snapshot_reenriches_applicant_after_async_rio_preload_completes():
+    state = AppState()
+    reader = _ColdRioReader()
+    sm = StateMachine(state, rio_reader=reader)
+    updated: list[str] = []
+    sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Chinie")],
+        )
+    )
+    state.applicants["42:1"].fetch_status = "ready"
+    state.applicants["42:1"].mplus_dps = 91.0
+
+    assert state.applicants["42:1"].rio_dungeons == []
+
+    reader.finish()
+
+    assert state.applicants["42:1"].rio_dungeons == [
+        {"name": "Pit of Saron", "key_level": 12}
+    ]
+    assert state.applicants["42:1"].fetch_status == "ready"
+    assert state.applicants["42:1"].mplus_dps == 91.0
+    assert updated == ["42:1"]
+
+
+def test_first_snapshot_reenriches_party_member_after_async_rio_preload_completes():
+    state = AppState()
+    reader = _ColdRioReader()
+    sm = StateMachine(state, rio_reader=reader)
+    roster_updates = 0
+
+    def note_roster_update() -> None:
+        nonlocal roster_updates
+        roster_updates += 1
+
+    sm.rosterChanged.connect(note_roster_update)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            roster=[_roster_decoded("Chinie")],
+        )
+    )
+
+    assert state.party_members["chinie"].rio_dungeons == []
+    assert roster_updates == 1
+
+    reader.finish()
+
+    assert state.party_members["chinie"].rio_dungeons == [
+        {"name": "Pit of Saron", "key_level": 12}
+    ]
+    assert roster_updates == 2
+
+
+def test_stale_rio_preload_completion_is_ignored_after_reader_swap():
+    state = AppState()
+    old_reader = _ColdRioReader([{"name": "Old", "key_level": 20}])
+    new_reader = _ColdRioReader([{"name": "New", "key_level": 21}])
+    sm = StateMachine(state, rio_reader=old_reader)
+    updated: list[str] = []
+    sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Chinie")],
+        )
+    )
+    sm.set_rio_reader(new_reader)
+    old_reader.finish()
+
+    assert state.applicants["42:1"].rio_dungeons == []
+    assert updated == []
+
+
+def test_rio_preload_completion_after_clear_does_not_resurrect_removed_rows():
+    state = AppState()
+    reader = _ColdRioReader()
+    sm = StateMachine(state, rio_reader=reader)
+    updated: list[str] = []
+    sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Chinie")],
+        )
+    )
+    sm.apply_snapshot(Snapshot(listing=None, version=None, applicants=[]))
+    reader.finish()
+
+    assert state.applicants == {}
+    assert updated == []
 
 
 def test_existing_applicant_replaces_stale_rio_dungeon_rows():

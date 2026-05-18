@@ -36,6 +36,7 @@ def _app(
     rio_timed_at_or_above_minus2: int = 0,
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
+    rio_summary_target_key: int = 0,
 ) -> Applicant:
     return Applicant(
         applicant_id=f"{aid}:{m}",
@@ -58,6 +59,7 @@ def _app(
         rio_timed_at_or_above_minus2=rio_timed_at_or_above_minus2,
         rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
         rio_dungeon_count=rio_dungeon_count,
+        rio_summary_target_key=rio_summary_target_key,
     )
 
 
@@ -548,6 +550,7 @@ def test_mplus_not_found_with_strong_scorecard_evidence_sorts_by_fit():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=listing.key_level,
     )
     ready_lower_fit = _app(
         aid=20,
