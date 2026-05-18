@@ -32,6 +32,7 @@ from PyQt6.QtGui import (
     QPalette,
 )
 from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QFrame,
     QGridLayout,
@@ -1012,23 +1013,6 @@ class OverlayLauncher(QFrame):
 # Source tab bar (Applicants / Party)
 
 
-class TargetKeySpinBox(QSpinBox):
-    _BUTTON_HIT_WIDTH = 24
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            pos = event.position().toPoint()
-            if pos.x() >= self.width() - self._BUTTON_HIT_WIDTH:
-                self.setFocus()
-                if pos.y() < self.height() / 2:
-                    self.stepUp()
-                else:
-                    self.stepDown()
-                event.accept()
-                return
-        super().mousePressEvent(event)
-
-
 class SourceTabBar(QWidget):
     tabChanged = pyqtSignal(str)
     keyChanged = pyqtSignal(int)
@@ -1056,12 +1040,19 @@ class SourceTabBar(QWidget):
         key_label_font.setBold(True)
         self._key_label.setFont(key_label_font)
         layout.addWidget(self._key_label)
-        self._key_spin = TargetKeySpinBox()
+        self._key_control = QWidget(self)
+        self._key_control.setObjectName("targetKeyControl")
+        self._key_control.setFixedWidth(112)
+        key_layout = QHBoxLayout(self._key_control)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.setSpacing(0)
+        self._key_spin = QSpinBox()
         self._key_spin.setObjectName("targetKeySpin")
         self._key_spin.setRange(0, 30)
         self._key_spin.setSpecialValueText("—")
         self._key_spin.setPrefix("+")
-        self._key_spin.setFixedWidth(88)
+        self._key_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self._key_spin.setFixedWidth(64)
         self._key_spin.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._key_spin.setToolTip(
             "Set the current Mythic+ key when the addon cannot read it from your own listing."
@@ -1070,7 +1061,22 @@ class SourceTabBar(QWidget):
         key_spin_font.setBold(True)
         self._key_spin.setFont(key_spin_font)
         self._key_spin.valueChanged.connect(self.keyChanged.emit)
-        layout.addWidget(self._key_spin)
+        key_layout.addWidget(self._key_spin)
+        self._key_up_button = QPushButton("▲")
+        self._key_up_button.setObjectName("targetKeyStepUp")
+        self._key_up_button.setFixedSize(24, 22)
+        self._key_up_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._key_up_button.setToolTip("Increase key level")
+        self._key_up_button.clicked.connect(self._key_spin.stepUp)
+        key_layout.addWidget(self._key_up_button)
+        self._key_down_button = QPushButton("▼")
+        self._key_down_button.setObjectName("targetKeyStepDown")
+        self._key_down_button.setFixedSize(24, 22)
+        self._key_down_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._key_down_button.setToolTip("Decrease key level")
+        self._key_down_button.clicked.connect(self._key_spin.stepDown)
+        key_layout.addWidget(self._key_down_button)
+        layout.addWidget(self._key_control)
         layout.addStretch(1)
         self.set_counts(applicants=0, party=0)
         self.set_active("applicants", emit=False)
@@ -3663,24 +3669,41 @@ _STYLESHEET = """
     font-size: 11px;
     font-weight: bold;
 }
+#targetKeyControl {
+    background-color: rgba(42, 42, 54, 225);
+    border: 1px solid rgba(240, 120, 90, 230);
+    border-radius: 3px;
+}
 #targetKeySpin {
     color: #ffffff;
-    background-color: rgba(42, 42, 54, 225);
-    border: 1px solid rgba(240, 120, 90, 210);
-    border-radius: 3px;
+    background-color: transparent;
+    border: none;
     font-weight: bold;
     padding-left: 6px;
 }
-#targetKeySpin::up-button, #targetKeySpin::down-button {
-    width: 24px;
+#targetKeyStepUp, #targetKeyStepDown {
+    color: #f5f5fb;
+    background-color: rgba(62, 62, 78, 235);
+    border: none;
     border-left: 1px solid rgba(160, 160, 180, 125);
-    background-color: rgba(34, 34, 44, 210);
+    font-size: 12px;
+    font-weight: bold;
+    padding: 0;
 }
-#targetKeySpin::up-button:hover, #targetKeySpin::down-button:hover {
-    background-color: rgba(240, 120, 90, 105);
+#targetKeyStepUp {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
 }
-#targetKeySpin::up-button:pressed, #targetKeySpin::down-button:pressed {
-    background-color: rgba(240, 120, 90, 155);
+#targetKeyStepDown {
+    border-left-color: rgba(100, 100, 120, 170);
+    border-top-right-radius: 2px;
+    border-bottom-right-radius: 2px;
+}
+#targetKeyStepUp:hover, #targetKeyStepDown:hover {
+    background-color: rgba(240, 120, 90, 150);
+}
+#targetKeyStepUp:pressed, #targetKeyStepDown:pressed {
+    background-color: rgba(240, 120, 90, 210);
 }
 /* Hover/pin info panel — opaque QWidget scout card. */
 #infoPanel {
