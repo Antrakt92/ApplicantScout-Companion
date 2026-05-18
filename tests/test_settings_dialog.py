@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QTextBrowser,
     QToolButton,
     QWidget,
 )
@@ -19,7 +20,7 @@ from applicant_scout import __version__
 from applicant_scout.config import Config
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 import applicant_scout.settings_dialog as settings_mod
-from applicant_scout.settings_dialog import SettingsDialog
+from applicant_scout.settings_dialog import ReleaseNotesDialog, SettingsDialog
 
 
 def _cfg(tmp_path: Path, *, client_id: str = "client", secret: str = "secret") -> Config:
@@ -424,10 +425,34 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
         action.objectName()
         for action in more_button.menu().actions()
         if isinstance(action, QAction)
-    ] == ["openLogs", "clearCache"]
+    ] == ["openLogs", "viewChangelog", "clearCache"]
     assert dialog.findChild(QPushButton, "hideToTray") is None
     assert dialog.findChild(QPushButton, "quitApplicantScout") is None
     assert dialog.findChild(QDialogButtonBox) is None
+
+
+def test_settings_dialog_changelog_action_emits_request(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    received: list[bool] = []
+    dialog.changelogRequested.connect(lambda: received.append(True))
+
+    dialog.changelog_action.trigger()
+
+    assert received == [True]
+
+
+def test_release_notes_dialog_renders_markdown_changelog(qtbot):
+    dialog = ReleaseNotesDialog(
+        "# ApplicantScout Companion 0.5.0\n\n- Fixed updater shutdown guard."
+    )
+    qtbot.addWidget(dialog)
+
+    browser = dialog.findChild(QTextBrowser, "releaseNotesText")
+
+    assert dialog.windowTitle() == "ApplicantScout Changelog"
+    assert browser is not None
+    assert "Fixed updater shutdown guard." in browser.toPlainText()
 
 
 def test_settings_dialog_support_button_opens_kofi_link(

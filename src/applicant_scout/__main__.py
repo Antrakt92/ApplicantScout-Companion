@@ -37,7 +37,7 @@ from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
 from .overlay import OverlayWindow
 from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_path
 from .screenshot import DecodedRosterMember, ScreenshotWatcher, Snapshot
-from .settings_dialog import SettingsDialog, open_folder
+from .settings_dialog import ReleaseNotesDialog, SettingsDialog, open_folder
 from .state import Applicant, AppState, Listing, RosterMember, WoWPlayer
 from .updater import check_for_update, download_update_installer, launch_update_installer
 from .wcl import (
@@ -935,6 +935,66 @@ def _open_log_dir(log_dir: Path) -> str:
     return f"Opened log folder: {log_dir}"
 
 
+def _release_notes_candidate_paths() -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        executable = getattr(sys, "executable", "")
+        if executable:
+            candidates.append(Path(executable).resolve().parent / "RELEASE_NOTES.md")
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        candidates.append(Path(bundle_root).resolve() / "RELEASE_NOTES.md")
+    candidates.append(Path(__file__).resolve().parents[2] / "RELEASE_NOTES.md")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path).casefold() if sys.platform == "win32" else str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return tuple(unique)
+
+
+def _load_release_notes_text() -> str:
+    last_error: OSError | None = None
+    candidates = _release_notes_candidate_paths()
+    for path in candidates:
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            last_error = exc
+    searched = ", ".join(str(path) for path in candidates)
+    if last_error is not None:
+        raise RuntimeError(f"Could not read RELEASE_NOTES.md from {searched}: {last_error}") from last_error
+    raise FileNotFoundError(f"Could not find RELEASE_NOTES.md in {searched}")
+
+
+def _show_release_notes_dialog(parent: Any | None = None) -> None:
+    try:
+        release_notes = _load_release_notes_text()
+    except (OSError, RuntimeError) as exc:
+        log.warning("Could not open ApplicantScout changelog: %s", exc)
+        QMessageBox.warning(
+            parent,
+            "ApplicantScout changelog",
+            f"Could not open changelog: {exc}",
+        )
+        return
+    dialog = ReleaseNotesDialog(release_notes, parent=parent)
+    dialog.exec()
+
+
+def _connect_release_notes_dialog_action(dialog: Any) -> None:
+    changelog_requested = getattr(dialog, "changelogRequested", None)
+    if changelog_requested is None:
+        return
+    changelog_requested.connect(lambda: _show_release_notes_dialog(dialog))
+
+
 def _test_wcl_credentials(cache_dir: Path, client_id: str, client_secret: str, _region: str) -> str:
     with tempfile.TemporaryDirectory(dir=cache_dir.parent) as temp_dir:
         auth = WCLAuth(client_id, client_secret, Path(temp_dir))
@@ -1309,6 +1369,7 @@ def _run_first_run_settings(
         check_updates=_check_updates,
     )
     dialog.setWindowIcon(_app_icon())
+    _connect_release_notes_dialog_action(dialog)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return False
     values = dialog.values()
@@ -1551,6 +1612,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         dialog.setWindowIcon(_app_icon())
         dialog.set_update_available(pending_update_version)
+        _connect_release_notes_dialog_action(dialog)
         settings_dialog = dialog
 
         def _forget_dialog() -> None:

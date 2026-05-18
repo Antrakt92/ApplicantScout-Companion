@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QTextBrowser,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -115,6 +116,39 @@ class _AsyncSignals(QObject):
     finished = pyqtSignal(object)
 
 
+class ReleaseNotesDialog(QDialog):
+    def __init__(self, release_notes: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("ApplicantScout Changelog")
+        self.setModal(True)
+        self.setMinimumSize(720, 560)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("ApplicantScout Changelog")
+        title.setObjectName("releaseNotesTitle")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Latest companion release notes and earlier changes.")
+        subtitle.setObjectName("releaseNotesSubtitle")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        self.notes_browser = QTextBrowser(self)
+        self.notes_browser.setObjectName("releaseNotesText")
+        self.notes_browser.setReadOnly(True)
+        self.notes_browser.setOpenExternalLinks(True)
+        self.notes_browser.setMarkdown(release_notes)
+        layout.addWidget(self.notes_browser, stretch=1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 def _initial_screenshots_path(cfg: Config) -> str:
     if cfg.screenshots_path is not None:
         return str(cfg.screenshots_path)
@@ -137,6 +171,7 @@ class SettingsDialog(QDialog):
     updateStarted = pyqtSignal()
     updateFinished = pyqtSignal(bool)
     updateCompleted = pyqtSignal()
+    changelogRequested = pyqtSignal()
 
     def __init__(
         self,
@@ -475,7 +510,9 @@ class SettingsDialog(QDialog):
         self.more_actions_button = QToolButton(parent)
         self.more_actions_button.setObjectName("settingsMoreActions")
         self.more_actions_button.setText("More")
-        self.more_actions_button.setToolTip("Open logs or clear cached Warcraft Logs data.")
+        self.more_actions_button.setToolTip(
+            "Open logs, view the changelog, or clear cached Warcraft Logs data."
+        )
         self.more_actions_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup
         )
@@ -484,6 +521,12 @@ class SettingsDialog(QDialog):
         self.logs_action.setObjectName("openLogs")
         self.logs_action.triggered.connect(self._open_log_folder)
         actions_menu.addAction(self.logs_action)
+        self.changelog_action = QAction("View changelog", self.more_actions_button)
+        self.changelog_action.setObjectName("viewChangelog")
+        self.changelog_action.triggered.connect(
+            lambda *_args: self.changelogRequested.emit()
+        )
+        actions_menu.addAction(self.changelog_action)
         self.cache_action = QAction("Clear cache", self.more_actions_button)
         self.cache_action.setObjectName("clearCache")
         self.cache_action.triggered.connect(self._clear_cache_dir)

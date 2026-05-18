@@ -84,6 +84,58 @@ def test_wcl_region_runtime_unknown_live_region_does_not_override():
     assert runtime.effective_region == "TW"
 
 
+def test_release_notes_loader_prefers_frozen_app_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    app_dir = tmp_path / "ApplicantScout"
+    app_dir.mkdir()
+    notes = app_dir / "RELEASE_NOTES.md"
+    notes.write_text("# Packaged notes\n", encoding="utf-8")
+    monkeypatch.setattr(main_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(main_mod.sys, "executable", str(app_dir / "ApplicantScout.exe"))
+    monkeypatch.delattr(main_mod.sys, "_MEIPASS", raising=False)
+
+    assert main_mod._load_release_notes_text() == "# Packaged notes\n"
+
+
+def test_release_notes_loader_falls_back_to_source_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    root = tmp_path / "repo"
+    module_dir = root / "src" / "applicant_scout"
+    module_dir.mkdir(parents=True)
+    notes = root / "RELEASE_NOTES.md"
+    notes.write_text("# Source notes\n", encoding="utf-8")
+    monkeypatch.setattr(main_mod, "__file__", str(module_dir / "__main__.py"))
+    monkeypatch.delattr(main_mod.sys, "frozen", raising=False)
+    monkeypatch.delattr(main_mod.sys, "_MEIPASS", raising=False)
+
+    assert main_mod._load_release_notes_text() == "# Source notes\n"
+
+
+def test_show_release_notes_dialog_uses_loaded_notes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    created: list[tuple[str, object]] = []
+    exec_calls: list[bool] = []
+
+    class FakeDialog:
+        def __init__(self, text: str, parent=None) -> None:
+            created.append((text, parent))
+
+        def exec(self) -> None:
+            exec_calls.append(True)
+
+    parent = object()
+    monkeypatch.setattr(main_mod, "_load_release_notes_text", lambda: "# Notes")
+    monkeypatch.setattr(main_mod, "ReleaseNotesDialog", FakeDialog)
+
+    main_mod._show_release_notes_dialog(parent)
+
+    assert created == [("# Notes", parent)]
+    assert exec_calls == [True]
+
+
 def test_explicit_nonexistent_screenshots_override_returns_path(tmp_path: Path):
     root = _retail_root(tmp_path)
     (root / "Interface" / "AddOns").mkdir(parents=True)
