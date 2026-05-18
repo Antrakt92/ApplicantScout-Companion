@@ -498,6 +498,19 @@ def _graphql_error_messages(errors) -> list[str]:
     return messages
 
 
+def _ranks_for_graphql_error_messages(messages: list[str]) -> CharacterRanks | None:
+    if not messages:
+        return None
+    msg = messages[0]
+    low = msg.lower()
+    if "not found" in low or "could not find" in low:
+        return CharacterRanks.empty(not_found=True, error=msg)
+    raise WCLApiError(
+        f"GraphQL error: {msg}",
+        error_kind=WCL_ERROR_GRAPHQL,
+    )
+
+
 # ───────────────────────────────────────────────────────────────────
 # GraphQL
 
@@ -825,15 +838,9 @@ class WCLClient:
             # the root, present even on GraphQL-level errors (HTTP 200).
             data_root_obj = data.get("data")
             if not isinstance(data_root_obj, dict):
-                if messages:
-                    msg = messages[0]
-                    low = msg.lower()
-                    if "not found" in low or "could not find" in low:
-                        return CharacterRanks.empty(not_found=True, error=msg)
-                    raise WCLApiError(
-                        f"GraphQL error: {msg}",
-                        error_kind=WCL_ERROR_GRAPHQL,
-                    )
+                graphql_result = _ranks_for_graphql_error_messages(messages)
+                if graphql_result is not None:
+                    return graphql_result
                 raise WCLApiError(
                     "Malformed WCL response: data is not an object",
                     error_kind=WCL_ERROR_MALFORMED,
@@ -845,6 +852,9 @@ class WCLClient:
                     quota,
                     auth_generation=auth_generation,
                 )
+            graphql_result = _ranks_for_graphql_error_messages(messages)
+            if graphql_result is not None:
+                return graphql_result
             if "characterData" not in data_root or not isinstance(
                 data_root.get("characterData"), dict
             ):
@@ -857,15 +867,6 @@ class WCLClient:
                 raise WCLApiError(
                     "Malformed WCL response: character key is missing",
                     error_kind=WCL_ERROR_MALFORMED,
-                )
-            if messages:
-                msg = messages[0]
-                low = msg.lower()
-                if "not found" in low or "could not find" in low:
-                    return CharacterRanks.empty(not_found=True, error=msg)
-                raise WCLApiError(
-                    f"GraphQL error: {msg}",
-                    error_kind=WCL_ERROR_GRAPHQL,
                 )
             char = character_data.get("character")
             if char is None:

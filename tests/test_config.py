@@ -408,6 +408,50 @@ def test_load_config_defaults_to_mplus_only_for_first_run(
     )
 
 
+def test_load_config_rejects_invalid_metric_bool_from_process_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("APSCOUT_FETCH_MPLUS", "definitely")
+
+    with pytest.raises(ConfigError, match="APSCOUT_FETCH_MPLUS"):
+        load_config()
+
+
+def test_load_config_rejects_invalid_metric_bool_from_user_config_before_legacy_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        metric_preferences=MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=False,
+        ),
+    )
+    config_path = user_config_path()
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'APSCOUT_FETCH_RAID_NORMAL="0"',
+            'APSCOUT_FETCH_RAID_NORMAL="maybe"',
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text(
+        'APSCOUT_FETCH_RAID_NORMAL="1"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="APSCOUT_FETCH_RAID_NORMAL"):
+        load_config()
+
+
 def test_save_config_defaults_write_mplus_only_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -717,6 +761,52 @@ def test_control_quit_command_uses_quit_callback(monkeypatch: pytest.MonkeyPatch
     assert calls == ["write:ok", "flush", "wait", "disconnect", "singleShot", "quit"]
 
 
+def test_control_quit_command_reports_blocked_without_quitting(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeSocket:
+        def readAll(self):
+            return SimpleNamespace(data=lambda: b"quit\n")
+
+        def write(self, value: bytes) -> None:
+            calls.append(f"write:{value.decode().strip()}")
+
+        def flush(self) -> None:
+            calls.append("flush")
+
+        def waitForBytesWritten(self, _timeout: int) -> None:
+            calls.append("wait")
+
+        def disconnectFromServer(self) -> None:
+            calls.append("disconnect")
+
+    class FakeTimer:
+        @staticmethod
+        def singleShot(_interval: int, callback) -> None:
+            calls.append("singleShot")
+            callback()
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+
+    main_mod._handle_control_command(
+        FakeSocket(),
+        lambda: calls.append("quit"),
+        can_quit=lambda: False,
+        quit_blocked=lambda: calls.append("blocked"),
+    )
+
+    assert calls == [
+        "write:blocked",
+        "flush",
+        "wait",
+        "disconnect",
+        "singleShot",
+        "blocked",
+    ]
+
+
 def test_control_show_settings_command_uses_show_settings_callback(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -828,6 +918,22 @@ def test_send_control_command_reports_ok_response(monkeypatch: pytest.MonkeyPatc
         "read",
         "disconnect",
     ]
+
+
+def test_shutdown_running_instance_reports_blocked_quit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: main_mod._ControlCommandResult(
+            connected=True,
+            written=True,
+            response=b"blocked",
+        ),
+    )
+
+    assert main_mod._shutdown_running_instance() == 1
 
 
 def test_deferred_gui_action_coalesces_requests_until_callback_ready(
@@ -1045,6 +1151,49 @@ def test_main_claims_control_server_before_loading_startup_config(
 
     assert main_mod.main([]) == 1
     assert calls == ["server", "config"]
+
+
+def test_main_control_server_uses_guarded_quit_callback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, object] = {}
+
+    class FakeApp:
+        aboutToQuit = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setApplicationName(self, _name: str) -> None:
+            pass
+
+        def quit(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=False,
+            written=False,
+            response=None,
+        ),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", FakeApp)
+
+    def fake_create_control_server(*_args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(main_mod, "_create_control_server", fake_create_control_server)
+    monkeypatch.setattr(main_mod, "_load_startup_config", lambda: None)
+
+    assert main_mod.main([]) == 1
+    assert captured["quit_app"].__name__ == "_request_quit_application"
+    assert captured["can_quit"].__name__ == "_can_quit_application"
+    assert captured["quit_blocked"].__name__ == "_show_update_quit_blocked"
 
 
 def test_load_startup_config_marks_whether_first_run_setup_was_shown(
@@ -1372,6 +1521,49 @@ def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
 
     callbacks[0]()
 
+    assert calls == ["watcher", "quit"]
+
+
+def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks = []
+    calls: list[str] = []
+    can_quit_values = iter([False, True])
+
+    class FakeTimer:
+        def __init__(self, _parent) -> None:
+            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
+
+        def setInterval(self, _interval: int) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    class FakeApp:
+        def quit(self) -> None:
+            calls.append("app-quit")
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(
+        main_mod,
+        "start_wow_sync_watcher",
+        lambda: calls.append("watcher"),
+    )
+
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        quit_app=lambda: calls.append("quit"),
+        can_quit=lambda: next(can_quit_values),
+    )
+
+    callbacks[0]()
+    assert calls == []
+
+    callbacks[0]()
     assert calls == ["watcher", "quit"]
 
 
@@ -2075,11 +2267,18 @@ def test_tray_controller_disables_update_action_while_installing(
         def connect(self, callback) -> None:
             self._callbacks.append(callback)
 
+        def emit(self) -> None:
+            for callback in self._callbacks:
+                callback()
+
     class FakeAction:
         def __init__(self, text: str) -> None:
             self.text = text
             self.enabled = True
             self.triggered = FakeSignal()
+
+        def trigger(self) -> None:
+            self.triggered.emit()
 
         def setEnabled(self, value: bool) -> None:
             self.enabled = value
@@ -2103,6 +2302,7 @@ def test_tray_controller_disables_update_action_while_installing(
         def __init__(self, *_args) -> None:
             self.activated = FakeSignal()
             self.tooltip = ""
+            self.messages: list[tuple[object, ...]] = []
 
         @staticmethod
         def isSystemTrayAvailable() -> bool:
@@ -2117,8 +2317,8 @@ def test_tray_controller_disables_update_action_while_installing(
         def show(self) -> None:
             pass
 
-        def showMessage(self, *_args) -> None:
-            pass
+        def showMessage(self, *args) -> None:
+            self.messages.append(args)
 
     class FakeApp:
         def setQuitOnLastWindowClosed(self, _value: bool) -> None:
@@ -2126,6 +2326,7 @@ def test_tray_controller_disables_update_action_while_installing(
 
     monkeypatch.setattr(main_mod, "QMenu", FakeMenu)
     monkeypatch.setattr(main_mod, "QSystemTrayIcon", FakeTray)
+    quit_calls: list[str] = []
     controller = main_mod._create_tray_controller(
         FakeApp(),
         icon=object(),
@@ -2133,7 +2334,7 @@ def test_tray_controller_disables_update_action_while_installing(
         show_settings=lambda: None,
         open_logs=lambda: "",
         run_update=lambda: None,
-        quit_app=lambda: None,
+        quit_app=lambda: quit_calls.append("quit"),
     )
 
     assert controller is not None
@@ -2142,18 +2343,27 @@ def test_tray_controller_disables_update_action_while_installing(
 
     assert controller.update_action.text == "Installing update..."
     assert not controller.update_action.enabled
+    assert not controller.quit_action.enabled
     assert "update is installing" in controller.tray.tooltip
+    controller._request_quit(lambda: quit_calls.append("quit"))
+    assert quit_calls == []
+    assert controller.tray.messages
+    assert main_mod.UPDATE_QUIT_BLOCKED_MESSAGE in controller.tray.messages[-1]
 
     controller.set_update_available("v0.2.1")
 
     assert controller.update_action.text == "Installing update..."
     assert not controller.update_action.enabled
+    assert not controller.quit_action.enabled
     assert "update is installing" in controller.tray.tooltip
 
     controller.set_update_in_progress(False)
 
     assert controller.update_action.text == "Update to v0.2.1"
     assert controller.update_action.enabled
+    assert controller.quit_action.enabled
+    controller.quit_action.trigger()
+    assert quit_calls == ["quit"]
 
 
 def test_tray_controller_skips_unavailable_system_tray(

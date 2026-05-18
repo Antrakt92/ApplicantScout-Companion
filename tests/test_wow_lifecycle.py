@@ -9,8 +9,9 @@ from applicant_scout import wow_lifecycle
 
 
 class _Completed:
-    def __init__(self, stdout: str = "") -> None:
+    def __init__(self, stdout: str = "", returncode: int = 0) -> None:
         self.stdout = stdout
+        self.returncode = returncode
 
 
 def test_is_wow_running_detects_retail_process(monkeypatch: pytest.MonkeyPatch):
@@ -18,13 +19,41 @@ def test_is_wow_running_detects_retail_process(monkeypatch: pytest.MonkeyPatch):
 
     def fake_run(args, **_kwargs):
         calls.append(args)
-        return _Completed(stdout='Image Name                     PID\nWow.exe                        10\n')
+        return _Completed(stdout='"Wow.exe","10","Console","1","120,000 K"\n')
 
     monkeypatch.setattr(wow_lifecycle.subprocess, "run", fake_run)
 
     assert wow_lifecycle.is_wow_running()
     assert calls
-    assert "tasklist" in calls[0][0].lower()
+    assert calls[0] == ["tasklist", "/FO", "CSV", "/NH"]
+
+
+def test_is_wow_running_rejects_near_match_process_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        wow_lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Completed(
+            stdout='"NotWow.exe","10","Console","1","120,000 K"\n'
+        ),
+    )
+
+    assert not wow_lifecycle.is_wow_running()
+
+
+def test_is_wow_running_ignores_wow_token_outside_image_column(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        wow_lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Completed(
+            stdout='"python.exe","10","Console","1","Wow.exe helper"\n'
+        ),
+    )
+
+    assert not wow_lifecycle.is_wow_running()
 
 
 def test_is_wow_running_returns_false_when_tasklist_has_no_wow(
@@ -62,6 +91,28 @@ def test_is_wow_foreground_rejects_other_process(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(wow_lifecycle, "process_name_for_pid", lambda _pid: "chrome.exe")
 
     assert not wow_lifecycle.is_wow_foreground()
+
+
+def test_is_wow_sync_watcher_running_excludes_current_pid_from_query(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    exe = tmp_path / "ApplicantScout.exe"
+    exe.write_text("", encoding="utf-8")
+    captured: list[list[str]] = []
+
+    monkeypatch.setattr(wow_lifecycle.os, "getpid", lambda: 4321)
+
+    def fake_run(args, **_kwargs):
+        captured.append(args)
+        return _Completed(returncode=1)
+
+    monkeypatch.setattr(wow_lifecycle.subprocess, "run", fake_run)
+
+    assert not wow_lifecycle.is_wow_sync_watcher_running(executable_path=exe)
+    assert captured
+    command = captured[0][captured[0].index("-Command") + 1]
+    assert "ProcessId" in command
+    assert "4321" in captured[0]
 
 
 def test_configure_wow_sync_startup_creates_watch_shortcut(

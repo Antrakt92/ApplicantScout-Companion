@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 import ctypes
 from ctypes import wintypes
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -15,6 +17,16 @@ WATCH_WOW_ARG = "--watch-wow"
 WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe", "WowClassic.exe", "WowClassicT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _tasklist_image_names(stdout: str) -> list[str]:
+    names: list[str] = []
+    for row in csv.reader(io.StringIO(stdout)):
+        if row:
+            image_name = row[0].strip()
+            if image_name:
+                names.append(image_name)
+    return names
 
 
 def _startup_folder() -> Path:
@@ -54,8 +66,8 @@ def is_wow_running(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    output = completed.stdout.casefold()
-    return any(name.casefold() in output for name in process_names)
+    expected = {name.casefold() for name in process_names}
+    return any(name.casefold() in expected for name in _tasklist_image_names(completed.stdout))
 
 
 def foreground_process_id() -> int | None:
@@ -117,9 +129,12 @@ def is_wow_foreground(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> boo
     return any(name.casefold() == process_name.casefold() for process_name in process_names)
 
 
-def is_wow_sync_watcher_running(*, executable_path: Path | None = None) -> bool:
+def is_wow_sync_watcher_running(
+    *, executable_path: Path | None = None, current_pid: int | None = None
+) -> bool:
     """Return True when this executable already has a --watch-wow helper."""
     executable = executable_path or companion_executable_path()
+    pid = os.getpid() if current_pid is None else current_pid
     target = str(executable).casefold()
     try:
         completed = subprocess.run(
@@ -131,8 +146,10 @@ def is_wow_sync_watcher_running(*, executable_path: Path | None = None) -> bool:
                 "-Command",
                 (
                     "$target = $args[0]; "
+                    "$currentPid = [int]$args[1]; "
                     "$found = Get-CimInstance Win32_Process | Where-Object { "
                     "$_.Name -ieq 'ApplicantScout.exe' -and $_.ExecutablePath -and "
+                    "$_.ProcessId -ne $currentPid -and "
                     "([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq "
                     "[System.IO.Path]::GetFullPath($target)) -and "
                     "$_.CommandLine -match '--watch-wow' "
@@ -140,6 +157,7 @@ def is_wow_sync_watcher_running(*, executable_path: Path | None = None) -> bool:
                     "if ($found) { exit 0 } else { exit 1 }"
                 ),
                 str(executable),
+                str(pid),
             ],
             check=False,
             capture_output=True,

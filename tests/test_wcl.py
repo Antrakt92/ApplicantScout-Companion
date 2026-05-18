@@ -1468,6 +1468,34 @@ def test_fetch_character_ranks_rejects_malformed_nested_graphql_data(payload):
     assert exc.value.error_kind == WCL_ERROR_MALFORMED
 
 
+def test_fetch_character_ranks_prioritizes_not_found_error_over_malformed_nested_data():
+    payload = _wcl_payload(_character())
+    payload["data"]["characterData"] = "oops"
+    payload["errors"] = [{"message": "Could not find character"}]
+    client, _http = _client_for_payload(payload)
+
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.not_found is True
+    assert result.error == "Could not find character"
+    assert client.last_quota is not None
+    assert client.last_quota.points_spent == pytest.approx(10)
+
+
+def test_fetch_character_ranks_prioritizes_graphql_error_over_malformed_nested_data():
+    payload = _wcl_payload(_character())
+    payload["data"]["characterData"] = "oops"
+    payload["errors"] = [{"message": "proxy exploded"}]
+    client, _http = _client_for_payload(payload)
+
+    with pytest.raises(WCLApiError, match="GraphQL error: proxy exploded") as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
+    assert client.last_quota is not None
+    assert client.last_quota.points_spent == pytest.approx(10)
+
+
 def test_fetch_character_ranks_allows_explicit_character_null_as_not_found():
     client, _http = _client_for_payload(_wcl_payload(None))
 

@@ -982,6 +982,146 @@ def test_mplus_malformed_rio_completion_counts_do_not_crash():
     assert fit.score >= 0.0
 
 
+def test_mplus_duplicate_rio_dungeon_rows_score_like_single_canonical_row():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    canonical = _app(
+        score=0,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+    )
+    duplicate = _app(
+        score=0,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15} for _ in range(8)],
+    )
+
+    assert candidate_fit(duplicate, target).score == candidate_fit(canonical, target).score
+    assert candidate_fit(duplicate, target).confidence == candidate_fit(
+        canonical, target
+    ).confidence
+
+
+def test_mplus_duplicate_rio_dungeon_rows_keep_highest_normalized_key_level():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    canonical = _app(
+        score=0,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_dungeon_count=8,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+    )
+    duplicate = _app(
+        score=0,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_dungeon_count=8,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 14},
+            {"name": " skyreach ", "key_level": 15},
+        ],
+    )
+
+    assert candidate_fit(duplicate, target).score == candidate_fit(canonical, target).score
+    assert candidate_fit(duplicate, target).confidence == candidate_fit(
+        canonical, target
+    ).confidence
+
+
+def test_mplus_duplicate_good_wcl_dungeon_rows_do_not_inflate_score_or_confidence():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    canonical = _app(
+        score=0,
+        dps_breakdown=[_dungeon("Skyreach", [(15, 88.0, 82.0, 2)])],
+    )
+    duplicate = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon("Skyreach", [(15, 88.0, 82.0, 2)]),
+            _dungeon(" skyreach ", [(15, 88.0, 82.0, 2)]),
+        ],
+    )
+
+    canonical_fit = candidate_fit(canonical, target)
+    duplicate_fit = candidate_fit(duplicate, target)
+
+    assert duplicate_fit.score == canonical_fit.score
+    assert duplicate_fit.confidence == canonical_fit.confidence
+
+
+def test_mplus_same_dungeon_distinct_wcl_key_brackets_both_contribute():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    single_bracket = _app(
+        score=0,
+        dps_breakdown=[_dungeon("Skyreach", [(16, 88.0, 82.0, 1)])],
+    )
+    distinct_brackets = _app(
+        score=0,
+        dps_breakdown=[
+            _dungeon("Skyreach", [(15, 88.0, 82.0, 1), (16, 88.0, 82.0, 1)])
+        ],
+    )
+
+    single_fit = candidate_fit(single_bracket, target)
+    distinct_fit = candidate_fit(distinct_brackets, target)
+
+    assert distinct_fit.score > single_fit.score
+    assert distinct_fit.confidence > single_fit.confidence
+
+
+def test_mplus_duplicate_bad_wcl_dungeon_rows_apply_one_worst_penalty():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    canonical = _app(
+        score=3270,
+        **_rio_profile([15] * 8, target_key=15),
+        dps_breakdown=[_dungeon("Skyreach", [(15, 12.0, 12.0, 1)])],
+    )
+    duplicate = _app(
+        score=3270,
+        **_rio_profile([15] * 8, target_key=15),
+        dps_breakdown=[
+            _dungeon("Skyreach", [(15, 12.0, 12.0, 1)]),
+            _dungeon("Skyreach", [(15, 20.0, 20.0, 1)]),
+        ],
+    )
+
+    assert candidate_fit(duplicate, target).score == candidate_fit(canonical, target).score
+
+
+def test_mplus_mixed_duplicate_wcl_rows_keep_best_positive_and_worst_bad():
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    mixed = _app(
+        score=3270,
+        **_rio_profile([15] * 8, target_key=15),
+        dps_breakdown=[
+            _dungeon("Skyreach", [(15, 91.0, 88.0, 3)]),
+            _dungeon("Skyreach", [(15, 10.0, 10.0, 1)]),
+        ],
+    )
+    best_positive = _app(
+        score=3270,
+        **_rio_profile([15] * 8, target_key=15),
+        dps_breakdown=[_dungeon("Skyreach", [(15, 91.0, 88.0, 3)])],
+    )
+    worst_bad = _app(
+        score=3270,
+        **_rio_profile([15] * 8, target_key=15),
+        dps_breakdown=[_dungeon("Skyreach", [(15, 10.0, 10.0, 1)])],
+    )
+
+    mixed_fit = candidate_fit(mixed, target)
+
+    assert mixed_fit.score < candidate_fit(best_positive, target).score
+    assert mixed_fit.score > candidate_fit(worst_bad, target).score
+
+
 def test_package_fit_penalizes_weak_member_in_multi_member_group():
     target = _listing(key_level=16)
     strong = _app(

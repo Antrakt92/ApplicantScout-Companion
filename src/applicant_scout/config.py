@@ -313,6 +313,21 @@ def _parse_bool_setting(raw: str | None, *, default: bool = True) -> bool:
     return default
 
 
+def _parse_metric_bool_setting(key: str, raw: str | None, *, default: bool) -> bool:
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if not value:
+        return default
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(
+        f"{key} must be one of: 1, 0, true, false, yes, no, on, off"
+    )
+
+
 def load_config() -> Config:
     """Load config values without prompting or depending on process CWD."""
     values = _config_values()
@@ -332,19 +347,23 @@ def load_config() -> Config:
     region = normalize_wcl_region(_value(values, "APSCOUT_REGION", "EU"))
     cache_ttl_seconds = _parse_cache_ttl_seconds(_value(values, "APSCOUT_CACHE_TTL_SECONDS", ""))
     metric_preferences = MetricPreferences(
-        mplus=_parse_bool_setting(
+        mplus=_parse_metric_bool_setting(
+            "APSCOUT_FETCH_MPLUS",
             _value(values, "APSCOUT_FETCH_MPLUS", ""),
             default=DEFAULT_METRIC_PREFERENCES.mplus,
         ),
-        raid_normal=_parse_bool_setting(
+        raid_normal=_parse_metric_bool_setting(
+            "APSCOUT_FETCH_RAID_NORMAL",
             _value(values, "APSCOUT_FETCH_RAID_NORMAL", ""),
             default=DEFAULT_METRIC_PREFERENCES.raid_normal,
         ),
-        raid_heroic=_parse_bool_setting(
+        raid_heroic=_parse_metric_bool_setting(
+            "APSCOUT_FETCH_RAID_HEROIC",
             _value(values, "APSCOUT_FETCH_RAID_HEROIC", ""),
             default=DEFAULT_METRIC_PREFERENCES.raid_heroic,
         ),
-        raid_mythic=_parse_bool_setting(
+        raid_mythic=_parse_metric_bool_setting(
+            "APSCOUT_FETCH_RAID_MYTHIC",
             _value(values, "APSCOUT_FETCH_RAID_MYTHIC", ""),
             default=DEFAULT_METRIC_PREFERENCES.raid_mythic,
         ),

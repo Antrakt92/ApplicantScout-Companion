@@ -535,6 +535,125 @@ def test_v6_payload_crc_accepts_roster_block():
     assert [m.name for m in snap.roster] == ["Warrior-Realm"]
 
 
+def test_crc_valid_payload_with_duplicate_applicant_composite_key_is_rejected():
+    body = _build_body(
+        [
+            _build_applicant_block(
+                42, 1, 71, 480, 2000, 2, "Tank-Realm", member_idx=1, version=2
+            ),
+            _build_applicant_block(
+                42, 8, 267, 481, 2100, 2, "Warlock-Realm", member_idx=1, version=2
+            ),
+        ]
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x02))
+
+    assert snap is None
+    assert error is not None
+    assert "duplicate applicant identity 42:1" in error
+
+
+def test_crc_valid_v1_payload_with_duplicate_applicant_id_is_rejected():
+    body = _build_body(
+        [
+            _build_applicant_block(42, 1, 71, 480, 2000, 2, "Tank-Realm", version=1),
+            _build_applicant_block(
+                42, 8, 267, 481, 2100, 2, "Warlock-Realm", version=1
+            ),
+        ]
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x01))
+
+    assert snap is None
+    assert error is not None
+    assert "duplicate applicant identity 42:1" in error
+
+
+def test_duplicate_validation_allows_same_applicant_id_with_distinct_member_idx():
+    body = _build_body(
+        [
+            _build_applicant_block(
+                42, 1, 71, 480, 2000, 2, "Tank-Realm", member_idx=1, version=2
+            ),
+            _build_applicant_block(
+                42, 8, 267, 481, 2100, 2, "Warlock-Realm", member_idx=2, version=2
+            ),
+        ]
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x02))
+
+    assert error is None
+    assert snap is not None
+    assert [(a.applicant_id, a.member_idx) for a in snap.applicants] == [(42, 1), (42, 2)]
+
+
+def test_crc_valid_payload_with_duplicate_roster_identity_is_rejected():
+    body = _build_body_v6(
+        [],
+        [
+            _build_roster_block(
+                unit_index=1,
+                flags=2,
+                subgroup=1,
+                class_id=1,
+                spec_id=71,
+                ilvl=701,
+                score=3000,
+                main_score=0,
+                role=2,
+                name="Warrior-Realm",
+            ),
+            _build_roster_block(
+                unit_index=2,
+                flags=2,
+                subgroup=1,
+                class_id=2,
+                spec_id=72,
+                ilvl=702,
+                score=3100,
+                main_score=0,
+                role=2,
+                name=" warrior-realm ",
+            ),
+        ],
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x06))
+
+    assert snap is None
+    assert error is not None
+    assert "duplicate roster identity warrior-realm" in error
+
+
+def test_crc_valid_payload_with_blank_roster_name_is_rejected():
+    body = _build_body_v6(
+        [],
+        [
+            _build_roster_block(
+                unit_index=1,
+                flags=2,
+                subgroup=1,
+                class_id=1,
+                spec_id=71,
+                ilvl=701,
+                score=3000,
+                main_score=0,
+                role=2,
+                name="  ",
+            )
+        ],
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x06))
+
+    assert snap is None
+    assert error is not None
+    assert "blank roster identity" in error
+
+
 def test_crc_valid_payload_with_trailing_body_bytes_is_rejected():
     raw = _wrap_payload(_build_body([]) + b"extra")
 
@@ -897,6 +1016,39 @@ def test_decode_result_records_corrupt_appscout_reason(monkeypatch, tmp_path: Pa
     assert result.has_marker is True
     assert result.error_reason is not None
     assert "CRC mismatch" in result.error_reason
+
+
+def test_decode_result_reports_duplicate_identity_as_marker_parse_failure(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "duplicate_identity.png"
+    _write_blank_image(image_path)
+    body = _build_body(
+        [
+            _build_applicant_block(
+                42, 1, 71, 480, 2000, 2, "Tank-Realm", member_idx=1, version=2
+            ),
+            _build_applicant_block(
+                42, 8, 267, 481, 2100, 2, "Warlock-Realm", member_idx=1, version=2
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [
+            SimpleNamespace(data=_wrap_payload(body, wire_ver=0x02))
+        ],
+    )
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.snapshot is None
+    assert result.has_marker is True
+    assert result.error_reason is not None
+    assert "duplicate applicant identity 42:1" in result.error_reason
 
 
 def test_decode_screenshot_ignores_foreign_qr_without_marker(

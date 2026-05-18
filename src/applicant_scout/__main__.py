@@ -67,6 +67,7 @@ CONTROL_SHUTDOWN_ARG = "--shutdown-running-instance"
 SHOW_SETTINGS_ARG = "--show-settings"
 CONTROL_QUIT_COMMAND = b"quit"
 CONTROL_SHOW_SETTINGS_COMMAND = b"show-settings"
+UPDATE_QUIT_BLOCKED_MESSAGE = "Update is installing. Wait for it to finish before quitting."
 WOW_EXIT_POLL_MS = 5000
 UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -172,7 +173,7 @@ class TrayController:
 
         self.menu.addSeparator()
         self.quit_action = _add_menu_action(self.menu, "Quit ApplicantScout")
-        self.quit_action.triggered.connect(lambda *_args: quit_app())
+        self.quit_action.triggered.connect(lambda *_args: self._request_quit(quit_app))
 
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(
@@ -200,8 +201,10 @@ class TrayController:
         if self._update_in_progress:
             self.update_action.setText("Installing update...")
             self.update_action.setEnabled(False)
+            self.quit_action.setEnabled(False)
             self.tray.setToolTip("ApplicantScout Companion update is installing")
             return
+        self.quit_action.setEnabled(True)
         if self._latest_update_version:
             self.update_action.setText(f"Update to {self._latest_update_version}")
             self.update_action.setEnabled(True)
@@ -213,6 +216,20 @@ class TrayController:
         self.update_action.setText("Update")
         self.update_action.setEnabled(False)
         self.tray.setToolTip("ApplicantScout Companion is running")
+
+    def _request_quit(self, quit_app: Callable[[], None]) -> None:
+        if self._update_in_progress:
+            self.show_update_quit_blocked()
+            return
+        quit_app()
+
+    def show_update_quit_blocked(self) -> None:
+        self.tray.showMessage(
+            "ApplicantScout update",
+            UPDATE_QUIT_BLOCKED_MESSAGE,
+            QSystemTrayIcon.MessageIcon.Warning,
+            7000,
+        )
 
     def _show_overlay(self, window: OverlayWindow) -> None:
         window.restore_from_launcher()
@@ -293,6 +310,9 @@ def _shutdown_running_instance(timeout_ms: int = 2000) -> int:
     if not result.written:
         log.warning("Could not send shutdown command: %s", result.error or "unknown error")
         return 1
+    if result.response == b"blocked":
+        log.warning("Running ApplicantScout instance refused the shutdown command.")
+        return 1
     return 0
 
 
@@ -310,6 +330,8 @@ def _create_control_server(
     *,
     quit_app: Callable[[], None],
     show_settings: Callable[[], None],
+    can_quit: Callable[[], bool] | None = None,
+    quit_blocked: Callable[[], None] | None = None,
 ) -> QLocalServer | None:
     server = QLocalServer(app)
     if not server.listen(CONTROL_SERVER_NAME):
@@ -322,7 +344,13 @@ def _create_control_server(
             return None
 
     server.newConnection.connect(
-        lambda: _drain_control_connections(server, quit_app, show_settings)
+        lambda: _drain_control_connections(
+            server,
+            quit_app,
+            show_settings,
+            can_quit=can_quit,
+            quit_blocked=quit_blocked,
+        )
     )
     return server
 
@@ -331,6 +359,9 @@ def _drain_control_connections(
     server: QLocalServer,
     quit_app: Callable[[], None],
     show_settings: Callable[[], None],
+    *,
+    can_quit: Callable[[], bool] | None = None,
+    quit_blocked: Callable[[], None] | None = None,
 ) -> None:
     while server.hasPendingConnections():
         socket = server.nextPendingConnection()
@@ -338,21 +369,42 @@ def _drain_control_connections(
             continue
         socket.readyRead.connect(
             lambda _socket=socket: _handle_control_command(
-                _socket, quit_app, show_settings
+                _socket,
+                quit_app,
+                show_settings,
+                can_quit=can_quit,
+                quit_blocked=quit_blocked,
             )
         )
         socket.disconnected.connect(socket.deleteLater)
         if socket.bytesAvailable() > 0:
-            _handle_control_command(socket, quit_app, show_settings)
+            _handle_control_command(
+                socket,
+                quit_app,
+                show_settings,
+                can_quit=can_quit,
+                quit_blocked=quit_blocked,
+            )
 
 
 def _handle_control_command(
     socket: QLocalSocket,
     quit_app: Callable[[], None],
     show_settings: Callable[[], None] | None = None,
+    *,
+    can_quit: Callable[[], bool] | None = None,
+    quit_blocked: Callable[[], None] | None = None,
 ) -> None:
     command = socket.readAll().data().strip().lower()
     if command == CONTROL_QUIT_COMMAND:
+        if can_quit is not None and not can_quit():
+            socket.write(b"blocked\n")
+            socket.flush()
+            socket.waitForBytesWritten(100)
+            socket.disconnectFromServer()
+            if quit_blocked is not None:
+                QTimer.singleShot(0, quit_blocked)
+            return
         socket.write(b"ok\n")
         socket.flush()
         socket.waitForBytesWritten(100)
@@ -461,6 +513,9 @@ class StateMachine(QObject):
             )
         except TypeError:
             profile = self._rio_reader.lookup_profile(name, realm, region)
+        except ValueError as exc:
+            log.warning("Local RaiderIO lookup failed for %s-%s: %s", name, realm, exc)
+            profile = None
         if profile is None:
             return rows
         return [dict(row) for row in profile.dungeons]
@@ -924,11 +979,13 @@ def _start_wow_lifecycle_timer(
     *,
     has_seen_wow: bool,
     quit_app: Callable[[], None] | None = None,
+    can_quit: Callable[[], bool] | None = None,
 ) -> QTimer:
     timer = QTimer(app)
     timer.setInterval(WOW_EXIT_POLL_MS)
     observed_wow = has_seen_wow
     quit_callback = quit_app or app.quit
+    can_quit_callback = can_quit or (lambda: True)
 
     def _quit_after_wow_cycle() -> None:
         nonlocal observed_wow
@@ -936,6 +993,8 @@ def _start_wow_lifecycle_timer(
             observed_wow = True
             return
         if observed_wow:
+            if not can_quit_callback():
+                return
             log.info("WoW is no longer running; quitting companion.")
             try:
                 start_wow_sync_watcher()
@@ -954,11 +1013,19 @@ def _apply_wow_sync_runtime(
     current_timer: QTimer | None,
     *,
     quit_app: Callable[[], None] | None = None,
+    can_quit: Callable[[], bool] | None = None,
 ) -> QTimer | None:
     configure_wow_sync_startup(enabled)
     if enabled:
         start_wow_sync_watcher()
         if current_timer is None:
+            if can_quit is not None:
+                return _start_wow_lifecycle_timer(
+                    app,
+                    has_seen_wow=is_wow_running(),
+                    quit_app=quit_app,
+                    can_quit=can_quit,
+                )
             return _start_wow_lifecycle_timer(
                 app,
                 has_seen_wow=is_wow_running(),
@@ -1292,6 +1359,8 @@ def main(argv: list[str] | None = None) -> int:
     show_settings_action = _DeferredGuiAction()
     pending_update_version: str | None = None
     startup_update_prompt_pending = wow_watch_mode
+    tray_controller: TrayController | None = None
+    update_in_progress = False
 
     def _flush_before_quit() -> None:
         if settings_dialog is not None:
@@ -1303,6 +1372,24 @@ def main(argv: list[str] | None = None) -> int:
         _flush_before_quit()
         app.quit()
 
+    def _can_quit_application() -> bool:
+        return not update_in_progress
+
+    def _show_update_quit_blocked() -> None:
+        if tray_controller is not None:
+            tray_controller.show_update_quit_blocked()
+            return
+        if settings_dialog is not None:
+            settings_dialog.set_status(UPDATE_QUIT_BLOCKED_MESSAGE, error=True)
+            return
+        log.info(UPDATE_QUIT_BLOCKED_MESSAGE)
+
+    def _request_quit_application() -> None:
+        if not _can_quit_application():
+            _show_update_quit_blocked()
+            return
+        _quit_application()
+
     about_to_quit = getattr(app, "aboutToQuit", None)
     if about_to_quit is not None:
         about_to_quit.connect(_flush_before_quit)
@@ -1310,8 +1397,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         control_server = _create_control_server(
             app,
-            quit_app=_quit_application,
+            quit_app=_request_quit_application,
             show_settings=show_settings_action.request,
+            can_quit=_can_quit_application,
+            quit_blocked=_show_update_quit_blocked,
         )
     except _DuplicateInstanceFound:
         log.info("ApplicantScout Companion is already running; exiting duplicate launch.")
@@ -1352,7 +1441,7 @@ def main(argv: list[str] | None = None) -> int:
     # the no-op timer wakes Python every 500 ms so signal handlers actually run)
     import signal as _signal
 
-    _signal.signal(_signal.SIGINT, lambda *_: _quit_application())
+    _signal.signal(_signal.SIGINT, lambda *_: _request_quit_application())
     _ctrlc_timer = QTimer()
     _ctrlc_timer.start(500)
     _ctrlc_timer.timeout.connect(lambda: None)
@@ -1366,8 +1455,6 @@ def main(argv: list[str] | None = None) -> int:
     watcher_signal_gate = _WatcherSignalGate()
     current_screenshots_dir = screenshots_dir
     wow_exit_timer: QTimer | None = None
-    tray_controller: TrayController | None = None
-    update_in_progress = False
 
     def _set_update_in_progress(in_progress: bool) -> None:
         nonlocal update_in_progress
@@ -1434,7 +1521,8 @@ def main(argv: list[str] | None = None) -> int:
                         app,
                         new_cfg.sync_with_wow,
                         wow_exit_timer,
-                        quit_app=_quit_application,
+                        quit_app=_request_quit_application,
+                        can_quit=_can_quit_application,
                     )
                 credentials_promoted = apply_credentials and (
                     old_cfg.wcl_client_id != new_cfg.wcl_client_id
@@ -1513,7 +1601,7 @@ def main(argv: list[str] | None = None) -> int:
         dialog.updateFinished.connect(lambda _error: _set_update_in_progress(False))
         dialog.updateCompleted.connect(_handle_dialog_update_completed)
         dialog.hideRequested.connect(lambda: None)
-        dialog.quitRequested.connect(_quit_application)
+        dialog.quitRequested.connect(_request_quit_application)
         dialog.destroyed.connect(lambda *_args: _forget_dialog())
         dialog.set_update_in_progress(update_in_progress)
         dialog.show()
@@ -1621,7 +1709,7 @@ def main(argv: list[str] | None = None) -> int:
         show_settings=_show_settings,
         open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
         run_update=_run_update,
-        quit_app=_quit_application,
+        quit_app=_request_quit_application,
     )
     if tray_controller is None:
         log.info("System tray indicator disabled.")
@@ -1629,7 +1717,8 @@ def main(argv: list[str] | None = None) -> int:
         wow_exit_timer = _start_wow_lifecycle_timer(
             app,
             has_seen_wow=wow_watch_mode or is_wow_running(),
-            quit_app=_quit_application,
+            quit_app=_request_quit_application,
+            can_quit=_can_quit_application,
         )
         setattr(app, "_applicant_scout_wow_exit_timer", wow_exit_timer)
     update_timer = QTimer(app)

@@ -278,9 +278,31 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
 
     try:
         snap = _parse_payload(body[9:], wire_ver)  # skip 9-byte header
+        _validate_snapshot_identities(snap)
     except (IndexError, UnicodeDecodeError, struct.error, ValueError) as e:
         return None, f"parse error: {e}"
     return snap, None
+
+
+def _validate_snapshot_identities(snap: Snapshot) -> None:
+    seen_applicants: set[tuple[int, int]] = set()
+    for applicant in snap.applicants:
+        identity = (applicant.applicant_id, applicant.member_idx)
+        if identity in seen_applicants:
+            raise ValueError(
+                f"duplicate applicant identity {applicant.applicant_id}:"
+                f"{applicant.member_idx}"
+            )
+        seen_applicants.add(identity)
+
+    seen_roster: set[str] = set()
+    for member in snap.roster:
+        identity = member.name.strip().lower()
+        if not identity:
+            raise ValueError("blank roster identity")
+        if identity in seen_roster:
+            raise ValueError(f"duplicate roster identity {identity}")
+        seen_roster.add(identity)
 
 
 def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:

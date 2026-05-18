@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from applicant_scout.config import Config
-from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES
+from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from applicant_scout.wcl import CharacterRanks
 from scripts import manual_wcl_fetch
 
@@ -38,8 +38,15 @@ def test_manual_wcl_fetch_cli_passes_character_realm_region_spec_and_role(
     class FakeClient:
         last_quota = None
 
-        def __init__(self, auth: FakeAuth, *, region: str) -> None:
+        def __init__(
+            self,
+            auth: FakeAuth,
+            *,
+            region: str,
+            metric_preferences: MetricPreferences,
+        ) -> None:
             seen["region"] = region
+            seen["metric_preferences"] = metric_preferences
 
         def fetch_character_ranks(
             self,
@@ -73,6 +80,7 @@ def test_manual_wcl_fetch_cli_passes_character_realm_region_spec_and_role(
 
     assert rc == 0
     assert seen["region"] == "EU"
+    assert seen["metric_preferences"] == DEFAULT_METRIC_PREFERENCES
     assert seen["fetch"] == ("Bites", "twisting-nether", 1480, "DAMAGER")
     assert seen["closed"] is True
     assert "Bites" in capsys.readouterr().out
@@ -88,8 +96,15 @@ def test_manual_wcl_fetch_defaults_region_from_config(monkeypatch, tmp_path: Pat
     class FakeClient:
         last_quota = None
 
-        def __init__(self, _auth: FakeAuth, *, region: str) -> None:
+        def __init__(
+            self,
+            _auth: FakeAuth,
+            *,
+            region: str,
+            metric_preferences: MetricPreferences,
+        ) -> None:
             seen["region"] = region
+            seen["metric_preferences"] = metric_preferences
 
         def fetch_character_ranks(self, *_args: object) -> CharacterRanks:
             return _empty_ranks()
@@ -103,6 +118,50 @@ def test_manual_wcl_fetch_defaults_region_from_config(monkeypatch, tmp_path: Pat
 
     assert manual_wcl_fetch.main(["Bites", "Ravencrest"]) == 0
     assert seen["region"] == "US"
+    assert seen["metric_preferences"] == DEFAULT_METRIC_PREFERENCES
+
+
+def test_manual_wcl_fetch_uses_saved_metric_preferences(monkeypatch, tmp_path: Path):
+    seen: dict[str, object] = {}
+    prefs = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    cfg = _cfg(tmp_path)
+    cfg.metric_preferences = prefs
+
+    class FakeAuth:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+    class FakeClient:
+        last_quota = None
+
+        def __init__(
+            self,
+            _auth: FakeAuth,
+            *,
+            region: str,
+            metric_preferences: MetricPreferences,
+        ) -> None:
+            seen["region"] = region
+            seen["metric_preferences"] = metric_preferences
+
+        def fetch_character_ranks(self, *_args: object) -> CharacterRanks:
+            return _empty_ranks()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(manual_wcl_fetch, "load_config", lambda: cfg)
+    monkeypatch.setattr(manual_wcl_fetch, "WCLAuth", FakeAuth)
+    monkeypatch.setattr(manual_wcl_fetch, "WCLClient", FakeClient)
+
+    assert manual_wcl_fetch.main(["Bites", "Ravencrest"]) == 0
+    assert seen["region"] == "US"
+    assert seen["metric_preferences"] == prefs
 
 
 def test_manual_wcl_fetch_rejects_unknown_region():

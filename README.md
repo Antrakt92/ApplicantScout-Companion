@@ -77,7 +77,9 @@ available. `APSCOUT_CACHE_TTL_SECONDS` overrides the 12-hour WCL character cache
 for debugging or support sessions; leave it unset for normal use. The
 `APSCOUT_FETCH_*` flags are the same WCL data checkboxes from Settings. First
 run defaults to M+ only; disabled metrics are not included in Warcraft Logs API
-requests.
+requests. Accepted boolean tokens are `1/0`, `true/false`, `yes/no`, and
+`on/off`; invalid `APSCOUT_FETCH_*` values stop startup instead of silently
+changing WCL quota scope.
 
 ## In-Game Commands
 

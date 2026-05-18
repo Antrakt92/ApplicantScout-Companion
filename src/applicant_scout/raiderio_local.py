@@ -118,11 +118,14 @@ class _RegionDB:
         ):
             return None
         lookup_text = lookup_path.read_text(encoding="utf-8", errors="replace")
+        meta = _parse_provider_meta(lookup_text)
+        dungeons = _parse_dungeon_names(dungeons_path.read_text(encoding="utf-8"))
+        _validate_encoding_plan(meta, len(dungeons))
         return cls(
             characters_path=characters_path,
             lookup_payload=_parse_lookup_payload(lookup_text),
-            meta=_parse_provider_meta(lookup_text),
-            dungeons=_parse_dungeon_names(dungeons_path.read_text(encoding="utf-8")),
+            meta=meta,
+            dungeons=dungeons,
         )
 
     def lookup_profile(self, name: str, realm: str) -> RaiderIOLocalProfile | None:
@@ -136,7 +139,9 @@ class _RegionDB:
         base_offset, names = realm_data
         try:
             name_index = next(
-                idx for idx, candidate in enumerate(names) if candidate.casefold() == name.casefold()
+                idx
+                for idx, candidate in enumerate(names)
+                if candidate.casefold() == name.casefold()
             )
         except StopIteration:
             return None
@@ -144,7 +149,16 @@ class _RegionDB:
         record = self._lookup_payload[record_offset : record_offset + self._meta.record_size]
         if len(record) != self._meta.record_size:
             return None
-        return _decode_profile(record, self._meta.encoding_order, self._dungeons)
+        try:
+            return _decode_profile(record, self._meta.encoding_order, self._dungeons)
+        except ValueError as exc:
+            _log.warning(
+                "could not decode RaiderIO local profile for %s-%s: %s",
+                name,
+                realm,
+                exc,
+            )
+            return None
 
     def _realm_data(self, realm: str) -> tuple[int, list[str]] | None:
         cache_key = _realm_lookup_key(realm)
@@ -173,6 +187,38 @@ def _parse_provider_meta(text: str) -> _ProviderMeta:
         raise ValueError("RaiderIO lookup metadata missing record size or encoding order")
     order = tuple(int(value) for value in re.findall(r"\d+", order_match.group(1)))
     return _ProviderMeta(record_size=int(record_match.group(1)), encoding_order=order)
+
+
+def _encoding_field_width(field: int, dungeon_count: int) -> int:
+    if field == 1:
+        return 13
+    if field in {2, 6, 15}:
+        return 7
+    if field == 3:
+        return 14
+    if field in {5, 12}:
+        return 13
+    if field in {7, 13}:
+        return 12
+    if field == 9:
+        return 8 * 6
+    if field in {_DUNGEON_LEVELS_FIELD, 14}:
+        return dungeon_count * 8
+    if field == 11:
+        return 4
+    raise ValueError(f"unsupported RaiderIO encoding field {field}")
+
+
+def _validate_encoding_plan(meta: _ProviderMeta, dungeon_count: int) -> None:
+    bit_budget = sum(
+        _encoding_field_width(field, dungeon_count) for field in meta.encoding_order
+    )
+    max_bits = meta.record_size * 8
+    if bit_budget > max_bits:
+        raise ValueError(
+            f"RaiderIO encoding plan uses {bit_budget} bits and exceeds record size "
+            f"{meta.record_size} bytes ({max_bits} bits)"
+        )
 
 
 def _parse_lookup_payload(text: str) -> bytes:
@@ -291,12 +337,15 @@ def _read_dungeon_rows(
 
 
 def _read_bits(record: bytes, bit_offset: int, width: int) -> tuple[int, int]:
+    if bit_offset + width > len(record) * 8:
+        raise ValueError(
+            f"bit read past record: offset={bit_offset} width={width} "
+            f"record_bits={len(record) * 8}"
+        )
     value = 0
     for idx in range(width):
         absolute = bit_offset + idx
         byte_index = absolute // 8
-        if byte_index >= len(record):
-            return value, bit_offset + width
         if record[byte_index] & (1 << (absolute % 8)):
             value |= 1 << idx
     return value, bit_offset + width

@@ -372,9 +372,7 @@ def _mplus_scorecard_candidate_fit(
     if not rio_key_levels and not wcl_signals and effective_rio_score(applicant) <= 0:
         return None
 
-    wcl_key_levels = [
-        signal.key_level for signal in wcl_signals if signal.percentile >= 25.0
-    ]
+    wcl_key_levels = _mplus_wcl_key_levels(wcl_signals)
     primary_key = _mplus_primary_key(
         rio_key_levels=rio_key_levels,
         rio_row_key_levels=rio_row_key_levels,
@@ -431,7 +429,7 @@ def _mplus_scorecard_candidate_fit(
         0.0,
         1.0,
     )
-    total_runs = sum(max(signal.run_count, 1) for signal in wcl_signals)
+    total_runs = _mplus_wcl_total_runs(wcl_signals)
     confidence = _clamp(
         0.30 + 0.45 * coverage + 0.25 * min(total_runs / 16.0, 1.0),
         0.0,
@@ -515,15 +513,18 @@ def _mplus_primary_key(
 
 
 def _mplus_rio_row_key_levels(applicant: Applicant) -> list[int]:
-    return [
-        level
-        for level in (
-            positive_int(entry.get("key_level"))
-            for entry in applicant.rio_dungeons
-            if isinstance(entry, dict)
-        )
-        if level > 0
-    ]
+    by_dungeon: dict[str, int] = {}
+    for entry in applicant.rio_dungeons:
+        if not isinstance(entry, dict):
+            continue
+        dungeon_key = _normalise_name(str(entry.get("name") or ""))
+        if not dungeon_key:
+            continue
+        level = positive_int(entry.get("key_level"))
+        if level <= 0:
+            continue
+        by_dungeon[dungeon_key] = max(by_dungeon.get(dungeon_key, 0), level)
+    return list(by_dungeon.values())
 
 
 def _mplus_rio_key_levels(
@@ -658,10 +659,14 @@ def _mplus_carry_bonus(key_levels: list[int], target_key: int) -> float:
 
 
 def _mplus_wcl_positive_score(signals: list[_MPlusWCLSignal], target_key: int) -> float:
-    values = sorted(
-        (_mplus_wcl_single_positive_score(signal, target_key) for signal in signals),
-        reverse=True,
-    )
+    by_run_bucket: dict[tuple[str, int], float] = {}
+    for signal in signals:
+        signal_key = _mplus_wcl_signal_key(signal)
+        if signal_key is None:
+            continue
+        score = _mplus_wcl_single_positive_score(signal, target_key)
+        by_run_bucket[signal_key] = max(by_run_bucket.get(signal_key, 0.0), score)
+    values = sorted(by_run_bucket.values(), reverse=True)
     if not values:
         return 0.0
     return min(
@@ -697,22 +702,60 @@ def _mplus_wcl_key_weight(delta: int) -> float:
 
 
 def _mplus_wcl_bad_penalty(signals: list[_MPlusWCLSignal], target_key: int) -> float:
-    penalties: list[float] = []
+    by_run_bucket: dict[tuple[str, int], float] = {}
     for signal in signals:
+        signal_key = _mplus_wcl_signal_key(signal)
+        if signal_key is None:
+            continue
         delta = signal.key_level - target_key
         if signal.percentile >= 25.0 or delta < -1:
             continue
         severity = 28.0 if delta >= 0 else 18.0
         run_weight = 0.90 + 0.35 * min(max(signal.run_count, 1), 3) / 3.0
-        penalties.append(((25.0 - signal.percentile) / 25.0) * severity * run_weight)
+        penalty = ((25.0 - signal.percentile) / 25.0) * severity * run_weight
+        by_run_bucket[signal_key] = max(
+            by_run_bucket.get(signal_key, 0.0), penalty
+        )
+    penalties = sorted(by_run_bucket.values(), reverse=True)
     if not penalties:
         return 0.0
     return min(
         MPLUS_SCORE_WCL_BAD_MAX,
         _weighted_sum_top(
-            sorted(penalties, reverse=True), [1.0, 0.82, 0.62, 0.42, 0.25]
+            penalties, [1.0, 0.82, 0.62, 0.42, 0.25]
         ),
     )
+
+
+def _mplus_wcl_key_levels(signals: list[_MPlusWCLSignal]) -> list[int]:
+    by_run_bucket: dict[tuple[str, int], int] = {}
+    for signal in signals:
+        if signal.percentile < 25.0:
+            continue
+        signal_key = _mplus_wcl_signal_key(signal)
+        if signal_key is None:
+            continue
+        by_run_bucket[signal_key] = signal.key_level
+    return list(by_run_bucket.values())
+
+
+def _mplus_wcl_total_runs(signals: list[_MPlusWCLSignal]) -> int:
+    by_run_bucket: dict[tuple[str, int], int] = {}
+    for signal in signals:
+        signal_key = _mplus_wcl_signal_key(signal)
+        if signal_key is None:
+            continue
+        by_run_bucket[signal_key] = max(
+            by_run_bucket.get(signal_key, 0), max(signal.run_count, 1)
+        )
+    return sum(by_run_bucket.values())
+
+
+def _mplus_wcl_signal_key(signal: _MPlusWCLSignal) -> tuple[str, int] | None:
+    dungeon_key = _normalise_name(signal.dungeon_name)
+    if not dungeon_key or signal.key_level <= 0:
+        return None
+    return (dungeon_key, signal.key_level)
 
 
 def _mplus_no_relevant_wcl_cap(key_levels: list[int], target_key: int) -> float:

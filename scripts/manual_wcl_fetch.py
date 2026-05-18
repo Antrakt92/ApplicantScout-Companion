@@ -109,7 +109,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cfg = load_config()
     auth = WCLAuth(cfg.wcl_client_id, cfg.wcl_client_secret, cfg.cache_dir)
-    client = WCLClient(auth, region=args.region or cfg.region)
+    client = WCLClient(
+        auth,
+        region=args.region or cfg.region,
+        metric_preferences=cfg.metric_preferences,
+    )
     try:
         _print_ranks(client, args.name, args.realm, args.spec_id, args.role)
     finally:
