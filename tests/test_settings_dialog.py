@@ -424,8 +424,9 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert [
         action.objectName()
         for action in more_button.menu().actions()
-        if isinstance(action, QAction)
-    ] == ["openLogs", "viewChangelog", "clearCache"]
+        if isinstance(action, QAction) and not action.isSeparator()
+    ] == ["openLogs", "viewChangelog", "clearCache", "quitApplicantScout"]
+    assert any(action.isSeparator() for action in more_button.menu().actions())
     assert dialog.findChild(QPushButton, "hideToTray") is None
     assert dialog.findChild(QPushButton, "quitApplicantScout") is None
     assert dialog.findChild(QDialogButtonBox) is None
@@ -440,6 +441,31 @@ def test_settings_dialog_changelog_action_emits_request(qtbot, tmp_path: Path):
     dialog.changelog_action.trigger()
 
     assert received == [True]
+
+
+def test_settings_dialog_more_quit_action_requests_full_quit(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    quit_requested: list[bool] = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+
+    dialog.quit_action.trigger()
+
+    assert quit_requested == [True]
+
+
+def test_settings_dialog_more_quit_action_blocks_during_update(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    quit_requested: list[bool] = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.set_update_in_progress(True)
+
+    dialog.quit_action.trigger()
+
+    assert quit_requested == []
+    assert "update is installing" in dialog.status_label.text().lower()
+    assert "#ff6666" in dialog.status_label.styleSheet()
 
 
 def test_release_notes_dialog_renders_markdown_changelog(qtbot):

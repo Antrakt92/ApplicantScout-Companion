@@ -511,7 +511,7 @@ class SettingsDialog(QDialog):
         self.more_actions_button.setObjectName("settingsMoreActions")
         self.more_actions_button.setText("More")
         self.more_actions_button.setToolTip(
-            "Open logs, view the changelog, or clear cached Warcraft Logs data."
+            "Open logs, view the changelog, clear cache, or quit ApplicantScout."
         )
         self.more_actions_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup
@@ -531,6 +531,11 @@ class SettingsDialog(QDialog):
         self.cache_action.setObjectName("clearCache")
         self.cache_action.triggered.connect(self._clear_cache_dir)
         actions_menu.addAction(self.cache_action)
+        actions_menu.addSeparator()
+        self.quit_action = QAction("Quit ApplicantScout", self.more_actions_button)
+        self.quit_action.setObjectName("quitApplicantScout")
+        self.quit_action.triggered.connect(self._request_full_quit)
+        actions_menu.addAction(self.quit_action)
         self.more_actions_button.setMenu(actions_menu)
         return self.more_actions_button
 
@@ -618,6 +623,18 @@ class SettingsDialog(QDialog):
             return
         event.ignore()
         self._hide_to_tray()
+
+    def _request_full_quit(self) -> None:
+        if self._update_in_progress:
+            self._set_status(
+                "Update is installing. Wait for it to finish before closing.",
+                error=True,
+            )
+            return
+        if self._first_run:
+            self.reject()
+            return
+        self.quitRequested.emit()
 
     def set_status(self, text: str, *, error: bool = False) -> None:
         self._set_status(text, error=error)
