@@ -1,6 +1,35 @@
 # ApplicantScout Companion Release Notes
 
-## Unreleased
+## 0.5.0 - 18-May-2026
+
+Mythic+ ranking calibration release for making applicant order, group packages,
+and hover explanations match the evidence more closely.
+
+### Improved
+
+- Reworked Mythic+ fit scoring around a clearer evidence ladder: RaiderIO
+  completion readiness carries key experience, Warcraft Logs quality carries
+  performance, and missing logs stay a low-confidence unknown rather than a
+  hidden failure.
+- Warcraft Logs Mythic+ quality now blends best and median percentile, so one
+  isolated parse spike no longer outranks steadier nearby-key performance.
+- Gray Warcraft Logs evidence now counts only as weak completion experience;
+  clean logs, RaiderIO timed keys, and broad near-target evidence keep their
+  intended order across `+10`, `+16`, and `+20` style listings.
+- Group applications now rank with a softer weak-link package score and
+  smoother carry credit, avoiding cases where improving a strong group member
+  could lower the package score.
+- Unknown-key group sorting now uses the weakest visible member as the headline
+  M+ signal, so one very strong player no longer hides a risky grouped friend.
+- The overlay table now labels known Mythic+ cells as `Fit <score> +<key>`, and
+  hover details show compact confidence, coverage, Warcraft Logs/RaiderIO
+  source, and group high/average/low context.
+- Hover details now clamp against the top of the screen when they expand above
+  the table, keeping the frameless title controls reachable near the display
+  edge.
+- Release checks now run the paired addon contract tests from the companion
+  wrapper, making companion releases catch addon transport regressions before
+  packaging.
 
 ### Fixed
 
@@ -8,6 +37,24 @@
   or raid context while keeping M+ key-step overrides clickable.
 - Fixed first-snapshot local RaiderIO dungeon rows sometimes staying empty until
   a later QR snapshot after the companion preloaded the RaiderIO addon DB.
+- Fixed partial RaiderIO dungeon rows double-counting summary best-key evidence
+  and inflating applicant fit above equivalent explicit dungeon evidence.
+- Fixed repeated Warcraft Logs brackets for the same dungeon inflating breadth
+  as if they were separate dungeon coverage.
+- Fixed high gray Warcraft Logs keys showing their raw overqualified key in the
+  visible `+key` headline even though scoring had already downgraded that
+  evidence.
+- Fixed loading or pending scorecard rows sorting above ready rows while still
+  displaying as `...`.
+- Fixed RaiderIO-only and Warcraft Logs-error hover states so the panel explains
+  when fit is based on RaiderIO fallback evidence.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.3.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.5.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.5.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.5.0-portable.zip`
 
 ## 0.4.0 - 18-May-2026
 
