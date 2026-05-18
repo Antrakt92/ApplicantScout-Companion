@@ -413,6 +413,20 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assert check_idx < version_idx < build_idx < assets_idx < release_idx < publish_idx
 
 
+def test_check_wrapper_runs_addon_contract_tests_after_lua_syntax():
+    script = _read_repo_text("scripts/check.ps1")
+
+    lua_idx = script.index('Write-Host "== Lua syntax =="')
+    addon_pytest_idx = script.index('Write-Host "== Addon Python contract tests =="')
+    addon_pytest_block = script[addon_pytest_idx:]
+
+    assert lua_idx < addon_pytest_idx
+    assert "Push-Location $AddonRoot" in addon_pytest_block
+    assert "& $Python -m pytest -q tests" in addon_pytest_block
+    assert "finally" in addon_pytest_block
+    assert "Pop-Location" in addon_pytest_block
+
+
 def test_release_workflow_checks_out_paired_addon_tag_from_release_notes():
     workflow = _read_repo_text(".github/workflows/release.yml")
 
@@ -448,6 +462,21 @@ def test_release_workflow_extracts_top_release_notes_entry_only():
     assert "[regex]::Escape($TagVersion)" in workflow
     assert "RELEASE_NOTES.md" in workflow
     assert "(?=^##\\s+\\d+\\.\\d+\\.\\d+\\s+-\\s+|\\z)" in workflow
+
+
+def test_public_docs_do_not_reference_private_audit_backlog():
+    docs_index = _read_repo_text("docs/README.md")
+    screenshot_tests = _read_repo_text("tests/test_screenshot.py")
+
+    assert "../AUDIT.md" not in docs_index
+    assert "AUDIT.md T2-" not in screenshot_tests
+
+
+def test_readme_documents_current_wire_support():
+    readme = _read_repo_text("README.md")
+
+    assert "wire payloads through v6" in readme
+    assert "wire payloads through v5" not in readme
 
 
 def test_release_version_check_rejects_stale_constraints_header(tmp_path):

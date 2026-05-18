@@ -84,4 +84,15 @@ finally {
     Pop-Location
 }
 
+Write-Host "== Addon Python contract tests =="
+Push-Location $AddonRoot
+try {
+    Invoke-NativeChecked -Label "Addon Python contract tests" -Command {
+        & $Python -m pytest -q tests
+    }
+}
+finally {
+    Pop-Location
+}
+
 Write-Host "All checks passed."

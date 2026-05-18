@@ -1,9 +1,8 @@
 """Unit tests for screenshot.py wire-format parsers.
 
 Covers v1 backward-compat + v2 multi-member group app support. The v2
-addition is a 1-byte member_idx between applicant_id and class_id; bug
-this fixes is "Warlock missing from companion when applied as part of a
-2-person group" (live user report — see AUDIT.md T2-22).
+addition is a 1-byte member_idx between applicant_id and class_id, preserving
+every member from a grouped application snapshot.
 """
 
 from __future__ import annotations
