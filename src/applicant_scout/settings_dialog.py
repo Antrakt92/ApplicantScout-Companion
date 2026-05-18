@@ -511,7 +511,7 @@ class SettingsDialog(QDialog):
         self.more_actions_button.setObjectName("settingsMoreActions")
         self.more_actions_button.setText("More")
         self.more_actions_button.setToolTip(
-            "Open logs, view the changelog, clear cache, or quit ApplicantScout."
+            "Open logs, view the changelog, reset cached data, or quit ApplicantScout."
         )
         self.more_actions_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup
@@ -527,7 +527,7 @@ class SettingsDialog(QDialog):
             lambda *_args: self.changelogRequested.emit()
         )
         actions_menu.addAction(self.changelog_action)
-        self.cache_action = QAction("Clear cache", self.more_actions_button)
+        self.cache_action = QAction("Reset cached data", self.more_actions_button)
         self.cache_action.setObjectName("clearCache")
         self.cache_action.triggered.connect(self._clear_cache_dir)
         actions_menu.addAction(self.cache_action)

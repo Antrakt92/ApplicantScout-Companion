@@ -426,6 +426,11 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
         for action in more_button.menu().actions()
         if isinstance(action, QAction) and not action.isSeparator()
     ] == ["openLogs", "viewChangelog", "clearCache", "quitApplicantScout"]
+    assert [
+        action.text()
+        for action in more_button.menu().actions()
+        if isinstance(action, QAction) and not action.isSeparator()
+    ] == ["Open logs", "View changelog", "Reset cached data", "Quit ApplicantScout"]
     assert any(action.isSeparator() for action in more_button.menu().actions())
     assert dialog.findChild(QPushButton, "hideToTray") is None
     assert dialog.findChild(QPushButton, "quitApplicantScout") is None
