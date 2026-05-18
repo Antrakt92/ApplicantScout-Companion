@@ -30,6 +30,9 @@ and hover explanations match the evidence more closely.
 - Release checks now run the paired addon contract tests from the companion
   wrapper, making companion releases catch addon transport regressions before
   packaging.
+- Quit requests from the tray, Settings, WoW lifecycle watcher, or control
+  socket now respect an in-progress update and surface a clear blocked-quit
+  message instead of interrupting installer handoff.
 
 ### Fixed
 
@@ -48,6 +51,12 @@ and hover explanations match the evidence more closely.
   displaying as `...`.
 - Fixed RaiderIO-only and Warcraft Logs-error hover states so the panel explains
   when fit is based on RaiderIO fallback evidence.
+- Fixed malformed ApplicantScout snapshots with duplicate applicant or roster
+  identities being accepted as valid overlay state.
+- Fixed Warcraft Logs GraphQL "not found" responses showing as generic API
+  errors instead of normal missing-character state.
+- Fixed malformed local RaiderIO profile records so one bad record no longer
+  breaks local dungeon-row enrichment for the rest of the overlay.
 
 ### Release Assets
 
