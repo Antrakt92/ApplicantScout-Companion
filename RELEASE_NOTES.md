@@ -37,8 +37,8 @@ normal Mythic+ applicants.
   Applicants and Party views.
 - Fixed the Party title and scoring context losing the active listing key.
 - Fixed target-key increase clicks being swallowed by the spinbox hitbox.
-- Fixed Party manual target keys continuing to override a real listing or raid
-  context after the addon detects one.
+- Fixed Party manual target keys carrying across newly detected real listings
+  or raid context while keeping M+ key-step overrides clickable.
 - Fixed first-snapshot local RaiderIO dungeon rows sometimes staying empty until
   a later QR snapshot after the companion preloaded the RaiderIO addon DB.
 - Fixed background visibility edge cases around the collapsed launcher and WoW

@@ -218,14 +218,24 @@ def test_target_key_control_defaults_to_listing_key(qtbot, tmp_path):
     assert win._tab_bar._key_down_button.text() == "▼"
 
 
-def test_target_key_control_upper_button_snaps_back_to_known_listing_key(qtbot, tmp_path):
+def test_target_key_down_button_overrides_known_mplus_listing_without_collapsing(
+    qtbot, tmp_path
+):
     state = AppState()
     state.listing = _listing(key_level=12)
+    state.party_members["dps-realm"] = _ready_mplus_member()
     win = _window(tmp_path, qtbot, state)
+    win.restore_from_launcher()
     win._update_title()
-    qtbot.mouseClick(win._tab_bar._key_up_button, Qt.MouseButton.LeftButton)
 
-    assert win._tab_bar._key_spin.value() == 12
+    qtbot.mouseClick(win._tab_bar._key_down_button, Qt.MouseButton.LeftButton)
+
+    assert win._manual_target_key == 11
+    assert win._tab_bar._key_spin.value() == 11
+    assert not win._collapsed_to_launcher
+    listing = win._effective_listing()
+    assert listing is not None
+    assert listing.key_level == 11
 
 
 def test_manual_target_key_creates_effective_party_listing(qtbot, tmp_path):

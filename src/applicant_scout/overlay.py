@@ -2061,8 +2061,6 @@ class OverlayWindow(QMainWindow):
         listing = self._state.listing
         if listing is None:
             return True
-        if listing.key_level > 0:
-            return False
         if detect_listing_context(listing) == CONTEXT_RAID:
             return False
         return listing.category_id in (0, _MPLUS_CATEGORY_ID)
@@ -2119,7 +2117,14 @@ class OverlayWindow(QMainWindow):
                 self._empty_hide_timer.start()
 
     def on_listing_changed(self) -> None:
-        if self._manual_target_key is not None and not self._can_apply_manual_target_key():
+        listing = self._state.listing
+        if (
+            self._manual_target_key is not None
+            and listing is not None
+            and listing.key_level > 0
+        ):
+            self._clear_manual_target_key()
+        elif self._manual_target_key is not None and not self._can_apply_manual_target_key():
             self._clear_manual_target_key()
         self._schedule_overlay_refresh(
             update_title=True,
