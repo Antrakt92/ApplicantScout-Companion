@@ -1,5 +1,14 @@
 # ApplicantScout Companion Release Notes
 
+## Unreleased
+
+### Fixed
+
+- Fixed Party manual target keys carrying across newly detected real listings
+  or raid context while keeping M+ key-step overrides clickable.
+- Fixed first-snapshot local RaiderIO dungeon rows sometimes staying empty until
+  a later QR snapshot after the companion preloaded the RaiderIO addon DB.
+
 ## 0.4.0 - 18-May-2026
 
 Party roster overlay release for reviewing the current group or raid alongside
@@ -37,10 +46,6 @@ normal Mythic+ applicants.
   Applicants and Party views.
 - Fixed the Party title and scoring context losing the active listing key.
 - Fixed target-key increase clicks being swallowed by the spinbox hitbox.
-- Fixed Party manual target keys carrying across newly detected real listings
-  or raid context while keeping M+ key-step overrides clickable.
-- Fixed first-snapshot local RaiderIO dungeon rows sometimes staying empty until
-  a later QR snapshot after the companion preloaded the RaiderIO addon DB.
 - Fixed background visibility edge cases around the collapsed launcher and WoW
   foreground detection.
 
