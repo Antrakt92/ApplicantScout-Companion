@@ -7,7 +7,13 @@ from dataclasses import replace
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter
-from PyQt6.QtWidgets import QApplication, QLabel, QStyleOptionViewItem, QTableWidget
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QStyleOptionViewItem,
+    QTableWidget,
+    QWidget,
+)
 
 import applicant_scout.overlay as overlay_mod
 from applicant_scout.constants import percentile_colour
@@ -1261,6 +1267,152 @@ def test_launcher_drag_moves_without_restoring_overlay(qtbot, tmp_path):
             "x": window._launcher.pos().x(),
             "y": window._launcher.pos().y(),
         }
+    finally:
+        client.close()
+
+
+def test_launcher_drag_keeps_mouse_grab_until_release(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+
+        assert QWidget.mouseGrabber() is window._launcher
+
+        qtbot.mouseRelease(
+            window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(22, 18)
+        )
+        assert QWidget.mouseGrabber() is None
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_survives_foreground_probe_drop(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+
+        assert window._collapsed_to_launcher
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_hides_after_release_when_game_stays_background(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert window._launcher.isVisible()
+
+        qtbot.mouseMove(window._launcher, pos=QPoint(22, 18))
+        qtbot.mouseRelease(
+            window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(22, 18)
+        )
+        window._sync_game_foreground_visibility()
+
+        assert QWidget.mouseGrabber() is None
+        assert window._collapsed_to_launcher
+        assert not window._launcher.isVisible()
+        assert not window.isVisible()
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_position_is_clamped_to_visible_screen(qtbot, tmp_path):
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        window._launcher._move_to_drag_position(
+            QPoint(available.right() + 5000, available.bottom() + 5000)
+        )
+        pos = window._launcher.pos()
+
+        assert available.x() <= pos.x() <= available.right() - LAUNCHER_SIZE + 1
+        assert available.y() <= pos.y() <= available.bottom() - LAUNCHER_SIZE + 1
+    finally:
+        client.close()
+
+
+def test_launcher_drag_near_screen_edge_clamps_without_recentering(qtbot, tmp_path):
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        window._launcher._move_to_drag_position(
+            QPoint(available.right() - 5, available.y() + 10)
+        )
+
+        assert window._launcher.pos() == QPoint(
+            available.x() + available.width() - LAUNCHER_SIZE,
+            available.y() + 10,
+        )
     finally:
         client.close()
 

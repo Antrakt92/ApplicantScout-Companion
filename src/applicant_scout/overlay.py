@@ -992,6 +992,7 @@ class OverlayLauncher(QFrame):
         self.setToolTip("Show ApplicantScout overlay")
         self._press_global_pos: QPoint | None = None
         self._press_window_pos: QPoint | None = None
+        self._drag_active = False
         self._dragged = False
 
         layout = QVBoxLayout(self)
@@ -1007,11 +1008,26 @@ class OverlayLauncher(QFrame):
         self.show()
         self.raise_()
 
+    def is_dragging(self) -> bool:
+        return self._drag_active
+
+    def _move_to_drag_position(self, pos: QPoint) -> None:
+        x, y, _w, _h = _clamp_geometry_to_screen(
+            pos.x(),
+            pos.y(),
+            LAUNCHER_SIZE,
+            LAUNCHER_SIZE,
+            min_visible_px=1,
+        )
+        self.move(QPoint(x, y))
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_global_pos = event.globalPosition().toPoint()
             self._press_window_pos = self.pos()
+            self._drag_active = True
             self._dragged = False
+            self.grabMouse()
             event.accept()
             return
         super().mousePressEvent(event)
@@ -1025,7 +1041,7 @@ class OverlayLauncher(QFrame):
             delta = event.globalPosition().toPoint() - self._press_global_pos
             if delta.manhattanLength() > 3:
                 self._dragged = True
-            self.move(self._press_window_pos + delta)
+            self._move_to_drag_position(self._press_window_pos + delta)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -1039,7 +1055,10 @@ class OverlayLauncher(QFrame):
                 self.positionChanged.emit()
             self._press_global_pos = None
             self._press_window_pos = None
+            self._drag_active = False
             self._dragged = False
+            if QWidget.mouseGrabber() is self:
+                self.releaseMouse()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -2110,7 +2129,17 @@ class OverlayWindow(QMainWindow):
 
     def _sync_game_foreground_visibility(self) -> None:
         foreground = self._is_game_foreground()
+        launcher_interaction_active = (
+            self._collapsed_to_launcher
+            and self._launcher.isVisible()
+            and self._launcher.is_dragging()
+        )
         if foreground == self._game_foreground:
+            if not foreground and launcher_interaction_active:
+                return
+            if not foreground and self._collapsed_to_launcher and self._launcher.isVisible():
+                self._launcher.hide()
+                return
             if (
                 not foreground
                 and self.isVisible()
@@ -2120,6 +2149,8 @@ class OverlayWindow(QMainWindow):
             return
         self._game_foreground = foreground
         if not foreground:
+            if launcher_interaction_active:
+                return
             self._launcher.hide()
             if self.isVisible() and not self.isActiveWindow():
                 self.hide()
