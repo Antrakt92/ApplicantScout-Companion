@@ -2114,11 +2114,17 @@ class OverlayWindow(QMainWindow):
     def _sync_game_foreground_visibility(self) -> None:
         foreground = self._is_game_foreground()
         if foreground == self._game_foreground:
+            if (
+                not foreground
+                and self.isVisible()
+                and not self.isActiveWindow()
+            ):
+                self.hide()
             return
         self._game_foreground = foreground
         if not foreground:
             self._launcher.hide()
-            if self.isVisible():
+            if self.isVisible() and not self.isActiveWindow():
                 self.hide()
             return
         if self._collapsed_to_launcher:
@@ -2689,8 +2695,9 @@ class OverlayWindow(QMainWindow):
 
     def _maybe_show(self) -> None:
         if not self._game_foreground:
-            self.hide()
             self._launcher.hide()
+            if not self.isActiveWindow():
+                self.hide()
             return
         if self._collapsed_to_launcher:
             self._launcher.show_at(self._default_launcher_position())

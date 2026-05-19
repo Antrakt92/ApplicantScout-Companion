@@ -980,6 +980,51 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
         client.close()
 
 
+def test_open_overlay_stays_visible_while_companion_window_is_active(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        foreground["active"] = False
+        monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+        window._sync_game_foreground_visibility()
+
+        assert window.isVisible()
+        assert not window._launcher.isVisible()
+
+        window._state.add_or_update(_app(applicant_id="active-window-update"))
+        window.on_applicant_added(window._state.applicants["active-window-update"])
+        window._flush_overlay_refresh()
+
+        assert window.isVisible()
+        assert not window._launcher.isVisible()
+
+        monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+    finally:
+        client.close()
+
+
 def test_background_updates_do_not_show_overlay_outside_game(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)

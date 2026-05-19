@@ -79,11 +79,13 @@ def test_is_wow_foreground_accepts_wow_process(monkeypatch: pytest.MonkeyPatch):
     assert wow_lifecycle.is_wow_foreground()
 
 
-def test_is_wow_foreground_accepts_current_process(monkeypatch: pytest.MonkeyPatch):
+def test_is_wow_foreground_rejects_current_companion_process(
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setattr(wow_lifecycle, "foreground_process_id", os.getpid)
     monkeypatch.setattr(wow_lifecycle, "process_name_for_pid", lambda _pid: "python.exe")
 
-    assert wow_lifecycle.is_wow_foreground()
+    assert not wow_lifecycle.is_wow_foreground()
 
 
 def test_is_wow_foreground_rejects_other_process(monkeypatch: pytest.MonkeyPatch):

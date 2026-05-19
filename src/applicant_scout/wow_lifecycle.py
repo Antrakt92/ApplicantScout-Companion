@@ -117,12 +117,10 @@ def process_name_for_pid(pid: int) -> str | None:
 
 
 def is_wow_foreground(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
-    """Return True when the active window is WoW or this companion process."""
+    """Return True when the active window belongs to WoW."""
     pid = foreground_process_id()
     if pid is None:
         return sys.platform != "win32"
-    if pid == os.getpid():
-        return True
     name = process_name_for_pid(pid)
     if not name:
         return False
