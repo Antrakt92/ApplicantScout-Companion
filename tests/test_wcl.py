@@ -1525,6 +1525,71 @@ def test_fetch_character_ranks_handles_graphql_error_without_data_as_graphql_err
     assert exc.value.error_kind == WCL_ERROR_GRAPHQL
 
 
+def test_fetch_character_ranks_graphql_path_character_not_found_returns_not_found():
+    client, _http = _client_for_payload(
+        {
+            "errors": [
+                {
+                    "message": "Not found",
+                    "path": ["characterData", "character"],
+                }
+            ]
+        }
+    )
+
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.not_found is True
+    assert result.error == "Not found"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Encounter not found",
+        "Zone not found",
+        "Server not found",
+        "Could not find zone",
+    ],
+)
+def test_fetch_character_ranks_graphql_non_character_not_found_raises_graphql(message):
+    payload = _wcl_payload(_character())
+    payload["errors"] = [{"message": message}]
+    client, _http = _client_for_payload(payload)
+
+    with pytest.raises(WCLApiError, match=f"GraphQL error: {message}") as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
+    assert client.last_quota is not None
+    assert client.last_quota.points_spent == pytest.approx(10)
+
+
+def test_fetch_character_ranks_graphql_non_character_not_found_without_data_raises_graphql():
+    client, _http = _client_for_payload(
+        {"data": None, "errors": [{"message": "Server not found"}]}
+    )
+
+    with pytest.raises(WCLApiError, match="GraphQL error: Server not found") as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
+
+
+def test_fetch_character_ranks_mixed_graphql_errors_do_not_mask_config_error():
+    payload = _wcl_payload(_character())
+    payload["errors"] = [
+        {"message": "Could not find character"},
+        {"message": "Encounter not found"},
+    ]
+    client, _http = _client_for_payload(payload)
+
+    with pytest.raises(WCLApiError, match="GraphQL error: Encounter not found") as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
+
+
 @pytest.mark.parametrize(
     ("errors", "expected_error", "not_found"),
     [

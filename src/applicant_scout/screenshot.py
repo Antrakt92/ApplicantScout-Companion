@@ -305,6 +305,29 @@ def _validate_snapshot_identities(snap: Snapshot) -> None:
         seen_roster.add(identity)
 
 
+def _read_len_str(
+    buf: bytes,
+    cursor: int,
+    *,
+    encoding: str,
+    field: str,
+) -> tuple[str, int]:
+    if cursor >= len(buf):
+        raise ValueError(f"{field} length byte missing")
+    length = buf[cursor]
+    cursor += 1
+    end = cursor + length
+    if end > len(buf):
+        raise ValueError(
+            f"{field} length {length} exceeds remaining payload bytes"
+        )
+    raw = buf[cursor:end]
+    try:
+        return raw.decode(encoding), end
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{field} contains invalid {encoding}") from exc
+
+
 def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
     """Cursor-based parse of body (already past 9-byte header). Returns Snapshot.
     Raises IndexError if buf truncated (caught by caller as decode failure).
@@ -337,18 +360,15 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
             cursor += 2
         key_level = buf[cursor]
         cursor += 1
-        dn_len = buf[cursor]
-        cursor += 1
-        dungeon_name = buf[cursor : cursor + dn_len].decode("utf-8", errors="replace")
-        cursor += dn_len
-        ln_len = buf[cursor]
-        cursor += 1
-        listing_name = buf[cursor : cursor + ln_len].decode("utf-8", errors="replace")
-        cursor += ln_len
-        cm_len = buf[cursor]
-        cursor += 1
-        comment = buf[cursor : cursor + cm_len].decode("utf-8", errors="replace")
-        cursor += cm_len
+        dungeon_name, cursor = _read_len_str(
+            buf, cursor, encoding="utf-8", field="listing.dungeon_name"
+        )
+        listing_name, cursor = _read_len_str(
+            buf, cursor, encoding="utf-8", field="listing.listing_name"
+        )
+        comment, cursor = _read_len_str(
+            buf, cursor, encoding="utf-8", field="listing.comment"
+        )
         listing = DecodedListing(
             activity_id=activity_id,
             key_level=key_level,
@@ -363,20 +383,17 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
     has_version = buf[cursor]
     cursor += 1
     if has_version:
-        av_len = buf[cursor]
-        cursor += 1
-        addon_version = buf[cursor : cursor + av_len].decode("ascii", errors="replace")
-        cursor += av_len
-        gv_len = buf[cursor]
-        cursor += 1
-        game_version = buf[cursor : cursor + gv_len].decode("ascii", errors="replace")
-        cursor += gv_len
+        addon_version, cursor = _read_len_str(
+            buf, cursor, encoding="ascii", field="version.addon_version"
+        )
+        game_version, cursor = _read_len_str(
+            buf, cursor, encoding="ascii", field="version.game_version"
+        )
         region_id = buf[cursor]
         cursor += 1
-        pn_len = buf[cursor]
-        cursor += 1
-        player_name = buf[cursor : cursor + pn_len].decode("utf-8", errors="replace")
-        cursor += pn_len
+        player_name, cursor = _read_len_str(
+            buf, cursor, encoding="utf-8", field="version.player_name"
+        )
         version = DecodedVersion(
             addon_version=addon_version,
             game_version=game_version,
@@ -440,10 +457,9 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
             rio_dungeon_count = 0
         role = buf[cursor]
         cursor += 1
-        n_len = buf[cursor]
-        cursor += 1
-        name = buf[cursor : cursor + n_len].decode("utf-8", errors="replace")
-        cursor += n_len
+        name, cursor = _read_len_str(
+            buf, cursor, encoding="utf-8", field="applicant.name"
+        )
         applicants.append(
             DecodedApplicant(
                 applicant_id=aid,
@@ -508,10 +524,9 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
             cursor += 1
             role = buf[cursor]
             cursor += 1
-            n_len = buf[cursor]
-            cursor += 1
-            name = buf[cursor : cursor + n_len].decode("utf-8", errors="replace")
-            cursor += n_len
+            name, cursor = _read_len_str(
+                buf, cursor, encoding="utf-8", field="roster.name"
+            )
             roster.append(
                 DecodedRosterMember(
                     unit_index=unit_index,

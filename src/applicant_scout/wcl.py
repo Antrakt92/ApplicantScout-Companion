@@ -479,34 +479,59 @@ def _rate_limit_info_from_dict(d) -> Optional[RateLimitInfo]:
     )
 
 
-def _graphql_error_messages(errors) -> list[str]:
+@dataclass(frozen=True)
+class _GraphQLErrorInfo:
+    message: str
+    path: tuple[str, ...] = ()
+
+
+def _graphql_errors(errors) -> list[_GraphQLErrorInfo]:
     if not errors:
         return []
     raw_errors = errors if isinstance(errors, list) else [errors]
-    messages: list[str] = []
+    parsed: list[_GraphQLErrorInfo] = []
     for entry in raw_errors:
+        path: tuple[str, ...] = ()
         if isinstance(entry, dict):
             raw_message = entry.get("message")
             if isinstance(raw_message, str) and raw_message.strip():
-                messages.append(raw_message.strip())
+                message = raw_message.strip()
             else:
-                messages.append("unknown error")
+                message = "unknown error"
+            raw_path = entry.get("path")
+            if isinstance(raw_path, list):
+                path = tuple(str(part) for part in raw_path)
         elif isinstance(entry, str) and entry.strip():
-            messages.append(entry.strip())
+            message = entry.strip()
         else:
-            messages.append("unknown error")
-    return messages
+            message = "unknown error"
+        parsed.append(_GraphQLErrorInfo(message=message, path=path))
+    return parsed
 
 
-def _ranks_for_graphql_error_messages(messages: list[str]) -> CharacterRanks | None:
-    if not messages:
+def _is_character_not_found_graphql_error(error: _GraphQLErrorInfo) -> bool:
+    low = error.message.lower()
+    if "could not find character" in low or "character not found" in low:
+        return True
+    if low not in {"not found", "could not find"}:
+        return False
+    path = tuple(part.lower() for part in error.path)
+    return bool(path) and path[-1:] == ("character",) and "characterdata" in path
+
+
+def _ranks_for_graphql_errors(
+    errors: list[_GraphQLErrorInfo],
+) -> CharacterRanks | None:
+    if not errors:
         return None
-    msg = messages[0]
-    low = msg.lower()
-    if "not found" in low or "could not find" in low:
-        return CharacterRanks.empty(not_found=True, error=msg)
+    non_character_error = next(
+        (error for error in errors if not _is_character_not_found_graphql_error(error)),
+        None,
+    )
+    if non_character_error is None:
+        return CharacterRanks.empty(not_found=True, error=errors[0].message)
     raise WCLApiError(
-        f"GraphQL error: {msg}",
+        f"GraphQL error: {non_character_error.message}",
         error_kind=WCL_ERROR_GRAPHQL,
     )
 
@@ -833,12 +858,12 @@ class WCLClient:
                 break
 
             data = _json_object_response(resp, WCLApiError, "WCL response")
-            messages = _graphql_error_messages(data.get("errors"))
+            graphql_errors = _graphql_errors(data.get("errors"))
             # Update quota snapshot regardless of errors — rateLimitData is at
             # the root, present even on GraphQL-level errors (HTTP 200).
             data_root_obj = data.get("data")
             if not isinstance(data_root_obj, dict):
-                graphql_result = _ranks_for_graphql_error_messages(messages)
+                graphql_result = _ranks_for_graphql_errors(graphql_errors)
                 if graphql_result is not None:
                     return graphql_result
                 raise WCLApiError(
@@ -852,7 +877,7 @@ class WCLClient:
                     quota,
                     auth_generation=auth_generation,
                 )
-            graphql_result = _ranks_for_graphql_error_messages(messages)
+            graphql_result = _ranks_for_graphql_errors(graphql_errors)
             if graphql_result is not None:
                 return graphql_result
             if "characterData" not in data_root or not isinstance(

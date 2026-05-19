@@ -673,7 +673,7 @@ def test_crc_valid_payload_with_trailing_decoded_bytes_is_rejected():
     assert "trailing decoded bytes" in error
 
 
-def test_crc_valid_payload_with_overlong_final_name_is_rejected():
+def test_crc_valid_payload_with_overlong_final_name_is_rejected_with_field_reason():
     block = (
         struct.pack(">I", 42)
         + bytes([1, 1])
@@ -690,7 +690,121 @@ def test_crc_valid_payload_with_overlong_final_name_is_rejected():
 
     assert snap is None
     assert error is not None
-    assert "trailing or truncated payload bytes" in error
+    assert "applicant.name" in error
+    assert "exceeds remaining payload bytes" in error
+
+
+def test_crc_valid_payload_rejects_invalid_utf8_applicant_name():
+    block = (
+        struct.pack(">I", 42)
+        + bytes([1, 1])
+        + struct.pack(">H", 71)
+        + struct.pack(">H", 480)
+        + struct.pack(">H", 2443)
+        + struct.pack(">H", 3468)
+        + bytes([2])
+        + _pack_len_str(b"\xff")
+    )
+
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(_build_body([block]), wire_ver=0x04)
+    )
+
+    assert snap is None
+    assert error is not None
+    assert "applicant.name" in error
+    assert "invalid utf-8" in error
+
+
+def test_crc_valid_payload_rejects_invalid_utf8_listing_text():
+    body = bytes([1])
+    body += struct.pack(">I", 401)
+    body += struct.pack(">H", 2)
+    body += struct.pack(">H", 8)
+    body += bytes([16])
+    body += _pack_len_str(b"\xff")
+    body += _pack_len_str(b"+16 Skyreach")
+    body += _pack_len_str(b"push")
+    body += bytes([0])
+    body += struct.pack(">H", 0)
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x03))
+
+    assert snap is None
+    assert error is not None
+    assert "listing.dungeon_name" in error
+    assert "invalid utf-8" in error
+
+
+def test_crc_valid_payload_rejects_invalid_ascii_version_text():
+    body = bytes([0, 1])
+    body += _pack_len_str(b"\xff")
+    body += _pack_len_str(b"12.0.5")
+    body += bytes([3])
+    body += _pack_len_str(b"Player-Realm")
+    body += struct.pack(">H", 0)
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x02))
+
+    assert snap is None
+    assert error is not None
+    assert "version.addon_version" in error
+    assert "invalid ascii" in error
+
+
+def test_crc_valid_payload_accepts_non_ascii_text_fields():
+    applicant = _build_applicant_block(
+        42,
+        1,
+        71,
+        480,
+        2443,
+        2,
+        "Игрок-Ревущийфьорд",
+        member_idx=1,
+        main_score=3468,
+        version=6,
+    )
+    roster = _build_roster_block(
+        unit_index=1,
+        flags=2,
+        subgroup=1,
+        class_id=1,
+        spec_id=71,
+        ilvl=701,
+        score=3000,
+        main_score=0,
+        role=2,
+        name="Élite-Ravencrest",
+    )
+    body = bytes([1])
+    body += struct.pack(">I", 401)
+    body += struct.pack(">H", 2)
+    body += struct.pack(">H", 8)
+    body += bytes([16])
+    body += _pack_len_str("Ключ".encode("utf-8"))
+    body += _pack_len_str("+16 Академия".encode("utf-8"))
+    body += _pack_len_str("пуш".encode("utf-8"))
+    body += bytes([1])
+    body += _pack_len_str(b"1.2.3")
+    body += _pack_len_str(b"12.0.5")
+    body += bytes([3])
+    body += _pack_len_str("Хост-Гордунни".encode("utf-8"))
+    body += struct.pack(">H", 1)
+    body += applicant
+    body += struct.pack(">H", 1)
+    body += roster
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x06))
+
+    assert error is None
+    assert snap is not None
+    assert snap.listing is not None
+    assert snap.listing.dungeon_name == "Ключ"
+    assert snap.version is not None
+    assert snap.version.player_name == "Хост-Гордунни"
+    assert snap.applicants[0].name == "Игрок-Ревущийфьорд"
+    assert snap.roster[0].name == "Élite-Ravencrest"
 
 
 def test_v4_applicant_block_parses_current_and_main_score():

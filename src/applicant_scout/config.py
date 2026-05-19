@@ -18,6 +18,9 @@ from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 MAX_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 CONFIG_ENV_FILENAME = "config.env"
 VALID_WCL_REGIONS = frozenset(REGION_ID_TO_WCL.values())
+_BOOL_TRUE_TOKENS = frozenset({"1", "true", "yes", "on"})
+_BOOL_FALSE_TOKENS = frozenset({"0", "false", "no", "off"})
+_BOOL_TOKEN_HELP = "1, 0, true, false, yes, no, on, off"
 
 
 @dataclass
@@ -300,32 +303,21 @@ def normalize_wcl_region(raw: str | None) -> str:
     return region
 
 
-def _parse_bool_setting(raw: str | None, *, default: bool = True) -> bool:
+def _parse_bool_setting(key: str, raw: str | None, *, default: bool) -> bool:
     if raw is None:
         return default
     value = raw.strip().lower()
     if not value:
         return default
-    if value in {"1", "true", "yes", "on"}:
+    if value in _BOOL_TRUE_TOKENS:
         return True
-    if value in {"0", "false", "no", "off"}:
+    if value in _BOOL_FALSE_TOKENS:
         return False
-    return default
+    raise ConfigError(f"{key} must be one of: {_BOOL_TOKEN_HELP}")
 
 
 def _parse_metric_bool_setting(key: str, raw: str | None, *, default: bool) -> bool:
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if not value:
-        return default
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    raise ConfigError(
-        f"{key} must be one of: 1, 0, true, false, yes, no, on, off"
-    )
+    return _parse_bool_setting(key, raw, default=default)
 
 
 def load_config() -> Config:
@@ -369,6 +361,7 @@ def load_config() -> Config:
         ),
     )
     sync_with_wow = _parse_bool_setting(
+        "APSCOUT_SYNC_WITH_WOW",
         _value(values, "APSCOUT_SYNC_WITH_WOW", "0"),
         default=False,
     )

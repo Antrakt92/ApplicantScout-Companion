@@ -539,6 +539,101 @@ def test_load_config_round_trips_sync_with_wow(
     assert cfg.sync_with_wow is True
 
 
+def test_load_config_rejects_invalid_sync_with_wow_from_process_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("APSCOUT_SYNC_WITH_WOW", "definitely")
+
+    with pytest.raises(ConfigError, match="APSCOUT_SYNC_WITH_WOW"):
+        load_config()
+
+
+def test_load_config_rejects_invalid_sync_with_wow_from_user_config_before_legacy_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        sync_with_wow=True,
+    )
+    config_path = user_config_path()
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'APSCOUT_SYNC_WITH_WOW="1"',
+            'APSCOUT_SYNC_WITH_WOW="maybe"',
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text(
+        'APSCOUT_SYNC_WITH_WOW="0"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="APSCOUT_SYNC_WITH_WOW"):
+        load_config()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("", False),
+    ],
+)
+def test_load_config_accepts_sync_with_wow_bool_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raw: str,
+    expected: bool,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("APSCOUT_SYNC_WITH_WOW", raw)
+
+    cfg = load_config()
+
+    assert cfg.sync_with_wow is expected
+
+
+@pytest.mark.parametrize(
+    ("saved", "override", "expected"),
+    [
+        (True, "0", False),
+        (False, "1", True),
+    ],
+)
+def test_load_config_process_env_sync_with_wow_overrides_saved_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    saved: bool,
+    override: str,
+    expected: bool,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        sync_with_wow=saved,
+    )
+    monkeypatch.setenv("APSCOUT_SYNC_WITH_WOW", override)
+
+    cfg = load_config()
+
+    assert cfg.sync_with_wow is expected
+
+
 def test_load_config_round_trips_draft_wcl_credentials(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

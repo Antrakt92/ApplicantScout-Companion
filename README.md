@@ -67,6 +67,7 @@ APSCOUT_FETCH_MPLUS=1
 APSCOUT_FETCH_RAID_NORMAL=0
 APSCOUT_FETCH_RAID_HEROIC=0
 APSCOUT_FETCH_RAID_MYTHIC=0
+APSCOUT_SYNC_WITH_WOW=0
 ```
 
 `APSCOUT_SCREENSHOTS_PATH` must point at the active WoW retail
@@ -75,11 +76,14 @@ can only transport snapshots through WoW screenshots. `APSCOUT_REGION` is a
 startup fallback; the addon sends the live region in its version snapshot when
 available. `APSCOUT_CACHE_TTL_SECONDS` overrides the 12-hour WCL character cache
 for debugging or support sessions; leave it unset for normal use. The
-`APSCOUT_FETCH_*` flags are the same WCL data checkboxes from Settings. First
-run defaults to M+ only; disabled metrics are not included in Warcraft Logs API
-requests. Accepted boolean tokens are `1/0`, `true/false`, `yes/no`, and
-`on/off`; invalid `APSCOUT_FETCH_*` values stop startup instead of silently
-changing WCL quota scope.
+`APSCOUT_FETCH_*` flags are the same WCL data checkboxes from Settings.
+`APSCOUT_SYNC_WITH_WOW` matches the WoW lifecycle sync checkbox. First run
+defaults to M+ only and lifecycle sync off; disabled metrics are not included in
+Warcraft Logs API requests. Accepted boolean tokens are `1/0`, `true/false`,
+`yes/no`, and `on/off`; invalid boolean values stop startup instead of silently
+changing WCL quota scope or lifecycle behavior. If startup reports an invalid
+saved value, edit `%LOCALAPPDATA%\applicant-scout\config\config.env` or unset
+the overriding environment variable.
 
 ## In-Game Commands
 
