@@ -949,6 +949,69 @@ def test_flush_geometry_stops_pending_timer_and_persists_window_json(qtbot, tmp_
         client.close()
 
 
+def test_flush_geometry_near_screen_top_preserves_unexpanded_window_origin(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(
+            applicant_id="detailed",
+            fetch_status="ready",
+            mplus_dps=90.0,
+            mplus_dps_median=80.0,
+            mplus_dps_breakdown=[
+                {
+                    "name": f"Dungeon {idx}",
+                    "parse_percent": 80.0 + idx,
+                    "median_percent": 70.0 + idx,
+                    "key_level": 10 + idx,
+                    "run_count": 2,
+                }
+                for idx in range(8)
+            ],
+        )
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        screen = window.screen() or QApplication.primaryScreen()
+        assert screen is not None
+        top = screen.availableGeometry().top()
+        original_y = top + 8
+        window.setGeometry(160, original_y, 360, 240)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        window._on_cell_entered(0, 0)
+        QApplication.processEvents()
+        assert window.geometry().y() == top
+
+        window._hover_id = None
+        window._sync_delegate_and_panel()
+        QApplication.processEvents()
+
+        assert window.geometry().y() == original_y
+        assert window.geometry().height() == 240
+
+        window._on_cell_entered(0, 0)
+        QApplication.processEvents()
+
+        window.flush_geometry()
+
+        saved = json.loads((tmp_path / "window.json").read_text(encoding="utf-8"))
+        assert saved["y"] == original_y
+        assert saved["h"] == 240
+    finally:
+        client.close()
+
+
 def test_overlay_starts_collapsed_with_launcher_visible(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
@@ -1198,6 +1261,62 @@ def test_launcher_drag_moves_without_restoring_overlay(qtbot, tmp_path):
             "x": window._launcher.pos().x(),
             "y": window._launcher.pos().y(),
         }
+    finally:
+        client.close()
+
+
+def test_default_launcher_tracks_overlay_until_user_drags_launcher(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        first_pos = window._launcher.pos()
+
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window.setGeometry(240, 220, 360, 260)
+        expected_after_move = window._default_launcher_position()
+        assert expected_after_move != first_pos
+
+        window.collapse_to_launcher()
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        assert window._launcher.pos() == expected_after_move
+    finally:
+        client.close()
+
+
+def test_dragged_launcher_position_wins_over_overlay_default(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        qtbot.mouseRelease(
+            window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(28, 20)
+        )
+        dragged_pos = window._launcher.pos()
+
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window.setGeometry(260, 260, 360, 260)
+        assert window._default_launcher_position() == dragged_pos
+
+        window.collapse_to_launcher()
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        assert window._launcher.pos() == dragged_pos
     finally:
         client.close()
 
@@ -1726,6 +1845,43 @@ def test_role_filter_clears_pin_when_pinned_group_is_hidden(qtbot, tmp_path):
         assert (
             window._panel._status_label.text() == "Hover a row for applicant details."
         )
+    finally:
+        client.close()
+
+
+def test_applicant_tab_pin_cache_clears_when_listing_clears_to_party(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="42", name="Old-Realm"))
+    state.add_or_update_party_member(_app(applicant_id="party", name="Party-Realm"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window._refresh_table()
+        window._on_cell_clicked(window._row_for_id["42"], 0)
+        assert window._pinned_by_tab["applicants"] == "42"
+
+        state.clear_all()
+        state.listing = None
+        window.on_cleared()
+        window._flush_overlay_refresh()
+
+        assert window._active_tab == "party"
+        assert window._pinned_by_tab["applicants"] is None
+        assert window._hover_by_tab["applicants"] is None
+
+        state.listing = _listing()
+        state.add_or_update(_app(applicant_id="42", name="New-Realm"))
+        window._on_source_tab_changed("applicants")
+
+        assert window._pinned_id is None
+        assert window._panel._name_label.text() != "New"
     finally:
         client.close()
 

@@ -993,7 +993,6 @@ class OverlayLauncher(QFrame):
         self._press_global_pos: QPoint | None = None
         self._press_window_pos: QPoint | None = None
         self._dragged = False
-        self._position_initialized = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1004,9 +1003,7 @@ class OverlayLauncher(QFrame):
         layout.addWidget(label)
 
     def show_at(self, pos: QPoint) -> None:
-        if not self._position_initialized:
-            self.move(pos)
-            self._position_initialized = True
+        self.move(pos)
         self.show()
         self.raise_()
 
@@ -1029,7 +1026,6 @@ class OverlayLauncher(QFrame):
             if delta.manhattanLength() > 3:
                 self._dragged = True
             self.move(self._press_window_pos + delta)
-            self._position_initialized = True
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -1952,6 +1948,7 @@ class OverlayWindow(QMainWindow):
         self._save_timer.timeout.connect(self._persist_geometry)
         self._suppress_geometry_persist = False
         self._panel_anchor_extra_height = 0
+        self._panel_anchor_y_offset = 0
 
         # Map of applicant_id -> table row (kept in sync with _id_by_row).
         self._row_for_id: dict[str, int] = {}
@@ -2219,6 +2216,8 @@ class OverlayWindow(QMainWindow):
             # ghost panel content from a stale id.
             self._hover_id = None
             self._pinned_id = None
+            self._hover_by_tab["applicants"] = None
+            self._pinned_by_tab["applicants"] = None
             if has_party:
                 self._restore_party_on_next_roster = False
                 self._empty_hide_timer.stop()
@@ -2277,6 +2276,8 @@ class OverlayWindow(QMainWindow):
         self._id_by_row = []
         self._hover_id = None
         self._pinned_id = None
+        self._hover_by_tab["applicants"] = None
+        self._pinned_by_tab["applicants"] = None
         self._sync_delegate_and_panel()
         self._update_title()
         if self._state.party_members:
@@ -2557,6 +2558,7 @@ class OverlayWindow(QMainWindow):
     def _apply_panel_height_above_table(self) -> None:
         if not self.isVisible():
             self._panel_anchor_extra_height = 0
+            self._panel_anchor_y_offset = 0
             return
 
         target_height = self._panel.target_height()
@@ -2568,23 +2570,30 @@ class OverlayWindow(QMainWindow):
         ):
             return
 
-        delta = target_height - current_height
+        previous_extra = self._panel_anchor_extra_height
+        previous_y_offset = self._panel_anchor_y_offset
+        new_extra = max(0, target_height - INFO_PANEL_MIN_HEIGHT)
+        geom = self.geometry()
+        base_y = geom.y() + previous_y_offset
+        base_height = max(self.minimumHeight(), geom.height() - previous_extra)
+
         self._panel.setMinimumHeight(target_height)
         self._panel.setMaximumHeight(target_height)
-        self._panel_anchor_extra_height = max(0, target_height - INFO_PANEL_MIN_HEIGHT)
-        if delta == 0:
-            return
 
-        geom = self.geometry()
-        new_y = geom.y() - delta
+        new_y = base_y - new_extra
         screen = self.screen()
         if screen is not None:
             new_y = max(screen.availableGeometry().top(), new_y)
+        self._panel_anchor_extra_height = new_extra
+        self._panel_anchor_y_offset = max(0, base_y - new_y)
+        new_height = max(self.minimumHeight(), base_height + new_extra)
+        if (new_y, new_height) == (geom.y(), geom.height()):
+            return
         self._set_geometry_without_persist(
             geom.x(),
             new_y,
             geom.width(),
-            max(self.minimumHeight(), geom.height() + delta),
+            new_height,
         )
 
     def _set_geometry_without_persist(self, x: int, y: int, w: int, h: int) -> None:
@@ -3272,11 +3281,12 @@ class OverlayWindow(QMainWindow):
     def _persist_geometry(self) -> None:
         g = self.geometry()
         extra = self._panel_anchor_extra_height
+        y_offset = self._panel_anchor_y_offset
         save_geometry(
             self._config_dir,
             WindowGeometry(
                 g.x(),
-                g.y() + extra,
+                g.y() + y_offset,
                 g.width(),
                 max(self.minimumHeight(), g.height() - extra),
             ),
