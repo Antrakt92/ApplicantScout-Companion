@@ -2223,6 +2223,7 @@ class OverlayWindow(QMainWindow):
                 self._empty_hide_timer.stop()
                 self._active_tab = "party"
                 self._tab_bar.set_active("party", emit=False)
+                self._clear_role_filter()
                 self._schedule_overlay_refresh(update_title=True, maybe_show=True)
                 return
             self._restore_party_on_next_roster = (
@@ -2305,6 +2306,10 @@ class OverlayWindow(QMainWindow):
             self._schedule_overlay_refresh(update_title=True, maybe_show=False)
             self.show_launcher_only()
             return
+        if self._active_tab == "party" and len(self._state.party_members) == 0:
+            self._active_tab = "applicants"
+            self._tab_bar.set_active("applicants", emit=False)
+            self._clear_role_filter()
         should_show_party = self._state.count() == 0 and len(self._state.party_members) > 0
         if should_show_party:
             self._active_tab = "party"
@@ -2903,6 +2908,11 @@ class OverlayWindow(QMainWindow):
         all-3-selected (== ALL_ROLES) both mean 'show all' — count display
         and row visibility math both branch on this single helper."""
         return bool(self._role_filter) and self._role_filter != ALL_ROLES
+
+    def _clear_role_filter(self) -> None:
+        if not self._role_filter:
+            return
+        self._role_filter_bar._reset()
 
     def _on_role_filter_changed(self, active: set) -> None:
         """RoleFilterBar.filterChanged slot. Mutates _role_filter, possibly

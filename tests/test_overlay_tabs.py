@@ -280,6 +280,31 @@ def test_last_applicant_removed_preserves_visible_party_roster(qtbot, tmp_path):
     assert win._id_by_row == ["host-realm"]
 
 
+def test_last_applicant_removed_does_not_carry_applicant_filter_into_party_auto_switch(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm", "DAMAGER")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    win = _window(tmp_path, qtbot, state)
+    win.show()
+    win._refresh_table()
+
+    qtbot.mouseClick(win._role_filter_bar._buttons["DAMAGER"], Qt.MouseButton.LeftButton)
+    state.remove("7:1")
+    win.on_applicant_removed("7:1")
+    win._flush_overlay_refresh()
+
+    visible_rows = [
+        row for row in range(win._table.rowCount()) if not win._table.isRowHidden(row)
+    ]
+    assert win.isVisible()
+    assert win._active_tab == "party"
+    assert win._id_by_row == ["host-realm"]
+    assert visible_rows == [0]
+    assert win._role_filter == set()
+
+
 def test_snapshot_removal_then_roster_preserves_visible_party_roster(qtbot, tmp_path):
     state = AppState()
     sm = StateMachine(state)
@@ -325,6 +350,27 @@ def test_empty_roster_update_hides_party_only_overlay(qtbot, tmp_path):
     win._flush_overlay_refresh()
 
     assert not win.isVisible()
+
+
+def test_empty_roster_switches_back_to_applicants_when_applicants_remain(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm", "DAMAGER")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    win = _window(tmp_path, qtbot, state)
+    win._active_tab = "party"
+    win._tab_bar.set_active("party", emit=False)
+    win.show()
+    win._refresh_table()
+
+    state.party_members.clear()
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win.isVisible()
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == ["7:1"]
 
 
 def test_party_title_keeps_listing_key_context(qtbot, tmp_path):

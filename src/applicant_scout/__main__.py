@@ -15,7 +15,7 @@ import threading
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from PyQt6.QtCore import QObject, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
@@ -1158,25 +1158,44 @@ def _apply_wow_sync_runtime(
 class _WatcherSignalGate:
     def __init__(self) -> None:
         self._generation = 0
+        self._pending_generation: int | None = None
 
     @property
     def generation(self) -> int:
         return self._generation
 
+    def prepare_next(self) -> int:
+        self._pending_generation = self._generation + 1
+        return self._pending_generation
+
+    def commit(self, generation: int) -> None:
+        self._generation = generation
+        self._pending_generation = None
+
+    def cancel(self, generation: int) -> None:
+        if self._pending_generation == generation:
+            self._pending_generation = None
+
     def activate_next(self) -> int:
-        self._generation += 1
-        return self._generation
+        generation = self.prepare_next()
+        self.commit(generation)
+        return generation
 
     def restore(self, generation: int) -> None:
         self._generation = generation
+        self._pending_generation = None
 
     def is_current(self, generation: int) -> bool:
-        return generation == self._generation
+        return generation == self._generation or generation == self._pending_generation
+
+
+class _SnapshotApplier(Protocol):
+    def apply_snapshot(self, snap: Snapshot) -> None: ...
 
 
 def _connect_screenshot_watcher(
     watcher: ScreenshotWatcher,
-    machine: StateMachine,
+    machine: _SnapshotApplier,
     window: OverlayWindow,
     decode_failed_callback: Callable[[str, str], None],
     *,
@@ -1207,15 +1226,14 @@ def _connect_screenshot_watcher(
 def _replace_screenshot_watcher(
     current_watcher: ScreenshotWatcher | None,
     screenshots_dir: Path,
-    machine: StateMachine,
+    machine: _SnapshotApplier,
     window: OverlayWindow,
     decode_failed_callback: Callable[[str, str], None],
     *,
     signal_gate: _WatcherSignalGate,
 ) -> ScreenshotWatcher:
     new_watcher = ScreenshotWatcher(screenshots_dir)
-    previous_generation = signal_gate.generation
-    generation = signal_gate.activate_next()
+    generation = signal_gate.prepare_next()
     _connect_screenshot_watcher(
         new_watcher,
         machine,
@@ -1227,8 +1245,9 @@ def _replace_screenshot_watcher(
     try:
         new_watcher.start()
     except Exception:
-        signal_gate.restore(previous_generation)
+        signal_gate.cancel(generation)
         raise
+    signal_gate.commit(generation)
     if current_watcher is not None:
         current_watcher.stop()
     return new_watcher
@@ -1245,12 +1264,11 @@ def _replace_screenshots_runtime(
 ) -> ScreenshotWatcher:
     previous_reader = getattr(machine, "_rio_reader", None)
     next_reader = _raiderio_reader_for_screenshots_path(screenshots_dir)
-    machine.set_rio_reader(next_reader)
     try:
-        return _replace_screenshot_watcher(
+        watcher = _replace_screenshot_watcher(
             current_watcher,
             screenshots_dir,
-            machine,
+            _ReaderBoundMachine(machine, next_reader),
             window,
             decode_failed_callback,
             signal_gate=signal_gate,
@@ -1258,6 +1276,9 @@ def _replace_screenshots_runtime(
     except Exception:
         machine.set_rio_reader(previous_reader)
         raise
+    machine.set_rio_reader(next_reader)
+    _preload_machine_rio_region(machine)
+    return watcher
 
 
 def _raiderio_reader_for_screenshots_path(path: Path) -> RaiderIOLocalReader | None:
@@ -1265,6 +1286,31 @@ def _raiderio_reader_for_screenshots_path(path: Path) -> RaiderIOLocalReader | N
     if retail_root is None:
         return None
     return RaiderIOLocalReader(retail_root)
+
+
+class _ReaderBoundMachine:
+    def __init__(self, machine: StateMachine, rio_reader: Any | None):
+        self._machine = machine
+        self._rio_reader = rio_reader
+
+    def apply_snapshot(self, snap: Snapshot) -> None:
+        current_reader = getattr(self._machine, "_rio_reader", None)
+        switched = current_reader is not self._rio_reader
+        if switched:
+            self._machine.set_rio_reader(self._rio_reader)
+        try:
+            self._machine.apply_snapshot(snap)
+        finally:
+            if switched:
+                self._machine.set_rio_reader(current_reader)
+
+
+def _preload_machine_rio_region(machine: StateMachine) -> None:
+    player = getattr(getattr(machine, "_state", None), "player", None)
+    region_token = REGION_ID_TO_WCL.get(getattr(player, "region_id", 0))
+    preload = getattr(machine, "_preload_local_rio_region", None)
+    if callable(preload):
+        preload(region_token)
 
 
 def _update_result_has_installable_asset(result: object) -> bool:
