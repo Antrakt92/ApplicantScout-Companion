@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import hashlib
 import re
 import shutil
@@ -8,10 +9,49 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_ACTION_USES_RE = re.compile(r"(?m)^\s*uses:\s*([^\s#]+)\s*(?:#.*)?$")
+_SHA_REF_RE = re.compile(r"^[0-9a-f]{40}$", re.I)
+_CHOCO_INSTALL_LINE_RE = re.compile(
+    r"(?im)^\s*(?:run:\s*)?choco\s+install\s+([A-Za-z0-9_.-]+)\b([^\r\n]*)"
+)
+_RELEASE_TOOL_PACKAGES = {
+    "lua51": "5.1.5",
+    "innosetup": "6.7.1",
+}
 
 
 def _read_repo_text(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _workflow_action_refs(workflow: str) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    for uses_target in _ACTION_USES_RE.findall(workflow):
+        if uses_target.startswith("./"):
+            continue
+        action, separator, ref = uses_target.rpartition("@")
+        assert separator, f"External action is missing an explicit ref: {uses_target}"
+        refs.append((action, ref))
+    return refs
+
+
+def _release_tool_install_args(workflow: str) -> dict[str, list[str]]:
+    install_args: dict[str, list[str]] = {}
+    for package, args in _CHOCO_INSTALL_LINE_RE.findall(workflow):
+        package_name = package.lower()
+        extra_release_tools = [
+            tool
+            for tool in _RELEASE_TOOL_PACKAGES
+            if tool != package_name
+            and re.search(rf"(?<![-\w]){re.escape(tool)}(?![-\w])", args, re.I)
+        ]
+        assert not extra_release_tools, (
+            "Install release-critical Chocolatey packages in separate commands "
+            f"so each package has its own version pin: {package} {args}"
+        )
+        if package_name in _RELEASE_TOOL_PACKAGES:
+            install_args.setdefault(package_name, []).append(args)
+    return install_args
 
 
 def _project_version() -> str:
@@ -398,7 +438,8 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assert "python-version: '3.13'" in workflow
     assert "constraints-release.txt" in workflow
     assert ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in workflow
-    assert "choco install lua51 innosetup" in workflow
+    assert "choco install lua51 --version=5.1.5" in workflow
+    assert "choco install innosetup --version=6.7.1" in workflow
     assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
     assert "id: paired-addon" in workflow
     assert "Requires the ApplicantScout WoW addon" in workflow
@@ -411,6 +452,33 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     publish_idx = workflow.index("gh release edit")
 
     assert check_idx < version_idx < build_idx < assets_idx < release_idx < publish_idx
+
+
+def test_release_workflow_pins_external_actions_to_commit_shas():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    action_refs = _workflow_action_refs(workflow)
+
+    assert Counter(action for action, _ in action_refs) == Counter(
+        {
+            "actions/checkout": 2,
+            "actions/setup-python": 1,
+        }
+    )
+    for action, ref in action_refs:
+        assert _SHA_REF_RE.fullmatch(ref), f"{action} must be pinned to a full commit SHA"
+
+
+def test_release_workflow_pins_windows_tool_versions():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    install_args = _release_tool_install_args(workflow)
+
+    assert set(install_args) == set(_RELEASE_TOOL_PACKAGES)
+    for package, version in _RELEASE_TOOL_PACKAGES.items():
+        assert len(install_args[package]) == 1
+        assert re.search(
+            rf"(?i)(?:^|\s)--version(?:=|\s+){re.escape(version)}(?:\s|$)",
+            install_args[package][0],
+        ), f"{package} must be installed with --version={version}"
 
 
 def test_check_wrapper_runs_addon_contract_tests_after_lua_syntax():

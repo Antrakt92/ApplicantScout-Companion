@@ -13,7 +13,8 @@ jobs:
       contents: write
     steps:
       - name: Checkout companion
-        uses: actions/checkout@v5
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
           path: ApplicantScout-Companion
@@ -34,7 +35,8 @@ jobs:
           "ref=v$($Match.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Checkout addon
-        uses: actions/checkout@v5
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: Antrakt92/ApplicantScout-Addon
           ref: ${{ steps.paired-addon.outputs.ref }}
@@ -42,7 +44,8 @@ jobs:
           path: ApplicantScout-Addon
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        # actions/setup-python v6 pinned to the upstream tag commit.
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.13'
 
@@ -57,7 +60,9 @@ jobs:
 
       - name: Install Windows build tools
         shell: pwsh
-        run: choco install lua51 innosetup -y --no-progress
+        run: |
+          choco install lua51 --version=5.1.5 -y --no-progress
+          choco install innosetup --version=6.7.1 -y --no-progress
 
       - name: Check release metadata and tests
         shell: pwsh
