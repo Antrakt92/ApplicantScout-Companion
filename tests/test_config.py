@@ -1994,6 +1994,116 @@ def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails
     assert machine.snapshots == ["old-after-failed-replace"]
 
 
+def test_screenshot_runtime_sets_rio_reader_before_watcher_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self, _path: Path) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            self.snapshotReceived.emit("backlog-snapshot")
+
+        def stop(self) -> None:
+            pass
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.reader = "old-reader"
+            self.reader_seen_by_snapshots: list[object] = []
+
+        def set_rio_reader(self, reader: object) -> None:
+            self.reader = reader
+
+        def apply_snapshot(self, _snap: object) -> None:
+            self.reader_seen_by_snapshots.append(self.reader)
+
+    class FakeWindow:
+        def note_decode(self, _snap: object) -> None:
+            pass
+
+        def note_decode_failed(self, _path: str, _reason: str) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(
+        main_mod,
+        "_raiderio_reader_for_screenshots_path",
+        lambda _path: "new-reader",
+    )
+    machine = FakeMachine()
+
+    main_mod._replace_screenshots_runtime(
+        None,
+        tmp_path / "new" / "Screenshots",
+        machine,
+        FakeWindow(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+    )
+
+    assert machine.reader_seen_by_snapshots == ["new-reader"]
+
+
+def test_screenshot_runtime_restores_rio_reader_when_watcher_start_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            pass
+
+    class FakeWatcher:
+        def __init__(self, _path: Path) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            raise RuntimeError("cannot watch")
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self._rio_reader = "old-reader"
+            self.reader = "old-reader"
+
+        def set_rio_reader(self, reader: object) -> None:
+            self._rio_reader = reader
+            self.reader = reader
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(
+        main_mod,
+        "_raiderio_reader_for_screenshots_path",
+        lambda _path: "new-reader",
+    )
+    machine = FakeMachine()
+
+    with pytest.raises(RuntimeError, match="cannot watch"):
+        main_mod._replace_screenshots_runtime(
+            None,
+            tmp_path / "new" / "Screenshots",
+            machine,
+            object(),
+            lambda *_args: None,
+            signal_gate=main_mod._WatcherSignalGate(),
+        )
+
+    assert machine.reader == "old-reader"
+
+
 def test_settings_saved_status_preserves_screenshots_path_warning(tmp_path: Path):
     values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
 

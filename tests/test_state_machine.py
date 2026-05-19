@@ -60,6 +60,11 @@ class _RaisingRioReader:
         raise ValueError("decode drift")
 
 
+class _OSErrorRioReader:
+    def lookup_profile(self, *_args: object, **_kwargs: object) -> object:
+        raise OSError("RaiderIO DB locked")
+
+
 class _ColdRioReader:
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.loaded = False
@@ -369,6 +374,29 @@ def test_new_applicant_enriches_explicit_hyphenated_realm_from_local_reader():
 def test_local_rio_decode_error_falls_back_to_decoded_rows_without_crashing():
     state = AppState()
     sm = StateMachine(state, rio_reader=_RaisingRioReader())
+    decoded_rows = [{"name": "Skyreach", "key_level": 15}]
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    rio_dungeons=decoded_rows,
+                )
+            ],
+        )
+    )
+
+    assert state.applicants["42:1"].rio_dungeons == decoded_rows
+
+
+def test_local_rio_lookup_oserror_does_not_abort_snapshot():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_OSErrorRioReader())
     decoded_rows = [{"name": "Skyreach", "key_level": 15}]
 
     sm.apply_snapshot(

@@ -288,6 +288,16 @@ def _validate_snapshot_identities(snap: Snapshot) -> None:
     seen_applicants: set[tuple[int, int]] = set()
     for applicant in snap.applicants:
         identity = (applicant.applicant_id, applicant.member_idx)
+        if not 1 <= applicant.member_idx <= 5:
+            raise ValueError(
+                f"invalid applicant member_idx {applicant.applicant_id}:"
+                f"{applicant.member_idx}"
+            )
+        if not applicant.name.strip():
+            raise ValueError(
+                f"blank applicant identity {applicant.applicant_id}:"
+                f"{applicant.member_idx}"
+            )
         if identity in seen_applicants:
             raise ValueError(
                 f"duplicate applicant identity {applicant.applicant_id}:"

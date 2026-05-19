@@ -552,15 +552,16 @@ class StateMachine(QObject):
         name, realm = split_name_realm(decoded_name, default_realm)
         region = REGION_ID_TO_WCL.get(self._state.player.region_id)
         try:
-            profile = self._rio_reader.lookup_profile(
-                name,
-                realm,
-                region,
-                allow_load=False,
-            )
-        except TypeError:
-            profile = self._rio_reader.lookup_profile(name, realm, region)
-        except ValueError as exc:
+            try:
+                profile = self._rio_reader.lookup_profile(
+                    name,
+                    realm,
+                    region,
+                    allow_load=False,
+                )
+            except TypeError:
+                profile = self._rio_reader.lookup_profile(name, realm, region)
+        except (OSError, ValueError) as exc:
             log.warning("Local RaiderIO lookup failed for %s-%s: %s", name, realm, exc)
             profile = None
         if profile is None:
@@ -1233,6 +1234,32 @@ def _replace_screenshot_watcher(
     return new_watcher
 
 
+def _replace_screenshots_runtime(
+    current_watcher: ScreenshotWatcher | None,
+    screenshots_dir: Path,
+    machine: StateMachine,
+    window: OverlayWindow,
+    decode_failed_callback: Callable[[str, str], None],
+    *,
+    signal_gate: _WatcherSignalGate,
+) -> ScreenshotWatcher:
+    previous_reader = getattr(machine, "_rio_reader", None)
+    next_reader = _raiderio_reader_for_screenshots_path(screenshots_dir)
+    machine.set_rio_reader(next_reader)
+    try:
+        return _replace_screenshot_watcher(
+            current_watcher,
+            screenshots_dir,
+            machine,
+            window,
+            decode_failed_callback,
+            signal_gate=signal_gate,
+        )
+    except Exception:
+        machine.set_rio_reader(previous_reader)
+        raise
+
+
 def _raiderio_reader_for_screenshots_path(path: Path) -> RaiderIOLocalReader | None:
     retail_root = retail_root_from_screenshots_path(path)
     if retail_root is None:
@@ -1692,7 +1719,7 @@ def main(argv: list[str] | None = None) -> int:
                     else resolve_screenshots_path(new_cfg)
                 )
                 if new_screenshots_dir != current_screenshots_dir:
-                    watcher = _replace_screenshot_watcher(
+                    watcher = _replace_screenshots_runtime(
                         watcher,
                         new_screenshots_dir,
                         machine,
@@ -1701,9 +1728,6 @@ def main(argv: list[str] | None = None) -> int:
                         signal_gate=watcher_signal_gate,
                     )
                     current_screenshots_dir = new_screenshots_dir
-                    machine.set_rio_reader(
-                        _raiderio_reader_for_screenshots_path(new_screenshots_dir)
-                    )
 
                 cfg = new_cfg
                 overrides = _settings_env_override_keys()
