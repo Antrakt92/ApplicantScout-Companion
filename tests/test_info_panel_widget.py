@@ -943,7 +943,7 @@ def test_overlay_launcher_waits_for_game_foreground(qtbot, tmp_path):
 
 
 def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
-    qtbot, tmp_path
+    qtbot, tmp_path, monkeypatch
 ):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
@@ -965,6 +965,7 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
         qtbot.waitUntil(window.isVisible, timeout=1000)
 
         foreground["active"] = False
+        monkeypatch.setattr(window, "isActiveWindow", lambda: False)
         window._sync_game_foreground_visibility()
 
         assert not window.isVisible()
