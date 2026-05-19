@@ -2649,7 +2649,13 @@ class OverlayWindow(QMainWindow):
         g = self.geometry()
         x = g.x() + max(0, g.width() - LAUNCHER_SIZE)
         y = g.y()
-        x, y, _w, _h = _clamp_geometry_to_screen(x, y, LAUNCHER_SIZE, LAUNCHER_SIZE)
+        x, y, _w, _h = _clamp_geometry_to_screen(
+            x,
+            y,
+            LAUNCHER_SIZE,
+            LAUNCHER_SIZE,
+            min_visible_px=20,
+        )
         return QPoint(x, y)
 
     def _persist_launcher_position(self) -> None:

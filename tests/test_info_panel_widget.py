@@ -20,6 +20,7 @@ from applicant_scout.overlay import (
     DUNGEON_METRIC_WIDTH,
     DUNGEON_NAME_WIDTH,
     DUNGEON_WCL_KEY_WIDTH,
+    LAUNCHER_SIZE,
     MPLUS_INDIVIDUAL_BG_ROLE,
     MPLUS_INDIVIDUAL_TEXT_ROLE,
     MPLUS_PACKAGE_BG_ROLE,
@@ -1124,6 +1125,27 @@ def test_launcher_position_persists_across_overlay_restarts(qtbot, tmp_path):
         qtbot.waitUntil(second._launcher.isVisible, timeout=1000)
 
         assert second._launcher.pos() == QPoint(321, 234)
+    finally:
+        client.close()
+
+
+def test_default_launcher_position_uses_window_top_right_when_in_bounds(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        screen = QApplication.primaryScreen()
+        assert screen is not None
+        available = screen.availableGeometry()
+        window.setGeometry(available.x() + 20, available.y() + 30, 320, 240)
+        QApplication.processEvents()
+
+        pos = window._default_launcher_position()
+
+        assert pos == QPoint(window.geometry().x() + 320 - LAUNCHER_SIZE, window.geometry().y())
     finally:
         client.close()
 
