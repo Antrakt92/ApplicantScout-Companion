@@ -752,6 +752,27 @@ def test_crc_valid_payload_rejects_invalid_ascii_version_text():
     assert "invalid ascii" in error
 
 
+def test_crc_valid_payload_rejects_invalid_utf8_roster_name():
+    roster = (
+        bytes([1, 2, 1, 1])
+        + struct.pack(">H", 71)
+        + struct.pack(">H", 701)
+        + struct.pack(">H", 3000)
+        + struct.pack(">H", 0)
+        + bytes([0, 0, 0, 0, 0, 0, 0, 0, 2])
+        + _pack_len_str(b"\xff")
+    )
+
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(_build_body_v6([], [roster]), wire_ver=0x06)
+    )
+
+    assert snap is None
+    assert error is not None
+    assert "roster.name" in error
+    assert "invalid utf-8" in error
+
+
 def test_crc_valid_payload_accepts_non_ascii_text_fields():
     applicant = _build_applicant_block(
         42,
