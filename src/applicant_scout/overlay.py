@@ -2662,7 +2662,11 @@ class OverlayWindow(QMainWindow):
                 self._saved_launcher_position.y,
                 LAUNCHER_SIZE,
                 LAUNCHER_SIZE,
-                min_visible_px=20,
+                # WHY: a taskbar/available-geometry change can leave a saved
+                # launcher position barely visible at the screen edge. Clamp
+                # that back onto the same screen instead of treating it like a
+                # disconnected monitor and recentering the launcher.
+                min_visible_px=1,
             )
             return QPoint(x, y)
         g = self.geometry()

@@ -1129,6 +1129,34 @@ def test_launcher_position_persists_across_overlay_restarts(qtbot, tmp_path):
         client.close()
 
 
+def test_saved_launcher_position_near_taskbar_clamps_to_screen_edge(qtbot, tmp_path):
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    saved_x = available.x() + max(0, (available.width() - LAUNCHER_SIZE) // 2)
+    saved_y = available.y() + available.height() - 8
+    (tmp_path / "launcher.json").write_text(
+        json.dumps({"x": saved_x, "y": saved_y}),
+        encoding="utf-8",
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        assert window._launcher.pos() == QPoint(
+            saved_x,
+            available.y() + available.height() - LAUNCHER_SIZE,
+        )
+    finally:
+        client.close()
+
+
 def test_default_launcher_position_uses_window_top_right_when_in_bounds(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
