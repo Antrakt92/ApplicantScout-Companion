@@ -1,6 +1,7 @@
 param(
     [string]$Tag = $env:GITHUB_REF_NAME,
-    [switch]$RequireAssets
+    [switch]$RequireAssets,
+    [string]$PairedAddonRefOutputPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,6 +137,11 @@ if (-not $TopReleaseNotesMatch.Success) {
 }
 $ReleaseNotesVersion = $TopReleaseNotesMatch.Groups[1].Value
 $TopReleaseNotesEntry = $TopReleaseNotesMatch.Value
+$PairedAddonLineMatch = [regex]::Match(
+    $TopReleaseNotesEntry,
+    '(?m)^-\s+Requires the ApplicantScout WoW addon\s+`([^`]+)`\.\s*$'
+)
+$PairedAddonVersion = $null
 $ConstraintsVersion = Get-FirstRegexMatch `
     -Path "constraints-release.txt" `
     -Pattern '^# Release build constraints for ApplicantScout Companion ([0-9]+\.[0-9]+\.[0-9]+)\.' `
@@ -163,6 +169,15 @@ if (-not $TopReleaseNotesEntry.Contains($InstallerName)) {
 }
 if (-not $TopReleaseNotesEntry.Contains($ChecksumName)) {
     $Errors += "RELEASE_NOTES.md top entry does not mention expected checksum asset $ChecksumName."
+}
+if (-not $PairedAddonLineMatch.Success) {
+    $Errors += "RELEASE_NOTES.md top entry does not mention the paired ApplicantScout addon version."
+}
+elseif ($PairedAddonLineMatch.Groups[1].Value -notmatch "^\d+\.\d+\.\d+$") {
+    $Errors += "RELEASE_NOTES.md paired ApplicantScout addon version is malformed: $($PairedAddonLineMatch.Groups[1].Value)."
+}
+else {
+    $PairedAddonVersion = $PairedAddonLineMatch.Groups[1].Value
 }
 $CompanionMarkdown = "ApplicantScout Companion ``$TagVersion``"
 $AddonLatestUrl = "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest"
@@ -206,7 +221,21 @@ if ($Errors.Count -gt 0) {
     throw "Release version check failed."
 }
 
+if ($PairedAddonRefOutputPath) {
+    $OutputDirectory = Split-Path -Parent $PairedAddonRefOutputPath
+    if ($OutputDirectory -and -not (Test-Path -LiteralPath $OutputDirectory)) {
+        New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    }
+    $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::AppendAllText(
+        $PairedAddonRefOutputPath,
+        "ref=v$PairedAddonVersion`n",
+        $Utf8NoBom
+    )
+}
+
 Write-Host "Release version check passed: $TagName -> $TagVersion"
+Write-Host "Expected paired addon ref: v$PairedAddonVersion"
 Write-Host "Expected installer asset: $InstallerName"
 Write-Host "Expected checksum asset: $ChecksumName"
 Write-Host "Expected portable asset: $PortableName"

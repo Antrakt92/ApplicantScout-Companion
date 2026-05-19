@@ -1,0 +1,53 @@
+name: Check
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout companion
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          path: ApplicantScout-Companion
+
+      - name: Checkout addon
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: Antrakt92/ApplicantScout-Addon
+          fetch-depth: 0
+          path: ApplicantScout-Addon
+
+      - name: Set up Python
+        # actions/setup-python v6 pinned to the upstream tag commit.
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install --upgrade pip
+          .\.venv\Scripts\python -m pip install -r constraints-release.txt
+          .\.venv\Scripts\python -m pip install -e '.[dev]' -c constraints-release.txt
+
+      - name: Install Lua 5.1
+        shell: pwsh
+        run: choco install lua51 --version=5.1.5 -y --no-progress
+
+      - name: Check companion and addon contracts
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon

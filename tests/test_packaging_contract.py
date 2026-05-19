@@ -442,10 +442,10 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assert "choco install innosetup --version=6.7.1" in workflow
     assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
     assert "id: paired-addon" in workflow
-    assert "Requires the ApplicantScout WoW addon" in workflow
+    assert "-PairedAddonRefOutputPath $env:GITHUB_OUTPUT" in workflow
     assert "ref: ${{ steps.paired-addon.outputs.ref }}" in workflow
     check_idx = workflow.index(".\\scripts\\check.ps1 -AddonRoot")
-    version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag")
+    version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag", check_idx)
     build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
     assets_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets")
     release_idx = workflow.index("gh release create")
@@ -503,10 +503,42 @@ def test_release_workflow_checks_out_paired_addon_tag_from_release_notes():
 
     assert resolve_idx < checkout_idx
     assert "RELEASE_NOTES.md" in workflow
-    assert "Requires the ApplicantScout WoW addon" in workflow
     assert "paired-addon" in workflow
-    assert '"ref=v$($Match.Groups[1].Value)"' in workflow
+    assert ".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME" in workflow
+    assert "-PairedAddonRefOutputPath $env:GITHUB_OUTPUT" in workflow
+    assert '"ref=v$($Match.Groups[1].Value)"' not in workflow
     assert "$env:GITHUB_OUTPUT" in workflow
+
+
+def test_check_workflow_runs_non_release_companion_and_addon_gates():
+    workflow = _read_repo_text(".github/workflows/check.yml")
+
+    assert "push:" in workflow
+    assert "pull_request:" in workflow
+    assert "tags:" not in workflow
+    assert "windows-latest" in workflow
+    assert "contents: read" in workflow
+    assert "contents: write" not in workflow
+    assert "path: ApplicantScout-Companion" in workflow
+    assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
+    assert "path: ApplicantScout-Addon" in workflow
+    assert ".\\scripts\\check.ps1 -AddonRoot ..\\ApplicantScout-Addon" in workflow
+    assert "gh release" not in workflow
+    assert "build-windows.ps1" not in workflow
+
+
+def test_check_workflow_pins_external_actions_to_commit_shas():
+    workflow = _read_repo_text(".github/workflows/check.yml")
+    action_refs = _workflow_action_refs(workflow)
+
+    assert Counter(action for action, _ in action_refs) == Counter(
+        {
+            "actions/checkout": 2,
+            "actions/setup-python": 1,
+        }
+    )
+    for action, ref in action_refs:
+        assert _SHA_REF_RE.fullmatch(ref), f"{action} must be pinned to a full commit SHA"
 
 
 def test_release_workflow_uploads_exact_updater_assets_as_draft_first():
@@ -545,6 +577,14 @@ def test_readme_documents_current_wire_support():
 
     assert "wire payloads through v6" in readme
     assert "wire payloads through v5" not in readme
+
+
+def test_readme_documents_shotnow_requires_enabled_addon():
+    readme = _read_repo_text("README.md")
+
+    assert "/apscout shotnow        force a snapshot now while enabled" in readme
+    assert "keep ApplicantScout enabled and run `/apscout shotnow`" in readme
+    assert "/apscout shotnow        force a snapshot now\n" not in readme
 
 
 def test_release_version_check_rejects_stale_constraints_header(tmp_path):
@@ -589,6 +629,64 @@ def test_release_version_check_rejects_stale_release_notes_asset_names(tmp_path)
 
     assert result.returncode != 0
     assert "RELEASE_NOTES.md top entry does not mention expected installer asset" in (
+        result.stdout + result.stderr
+    )
+
+
+def test_release_version_check_writes_paired_addon_ref_output(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    output_path = repo / "paired-addon-output.txt"
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRefOutputPath",
+        str(output_path),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output_path.read_text(encoding="utf-8").strip() == (
+        f"ref=v{_paired_addon_version()}"
+    )
+
+
+def test_release_version_check_rejects_missing_top_paired_addon_copy(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    paired_line = f"- Requires the ApplicantScout WoW addon `{_paired_addon_version()}`."
+    notes = repo / "RELEASE_NOTES.md"
+    notes.write_text(
+        notes.read_text(encoding="utf-8").replace(paired_line, "", 1),
+        encoding="utf-8",
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}")
+
+    assert result.returncode != 0
+    assert "top entry does not mention the paired ApplicantScout addon version" in (
+        result.stdout + result.stderr
+    )
+
+
+def test_release_version_check_rejects_malformed_top_paired_addon_version(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    notes = repo / "RELEASE_NOTES.md"
+    notes.write_text(
+        notes.read_text(encoding="utf-8").replace(
+            f"ApplicantScout WoW addon `{_paired_addon_version()}`",
+            "ApplicantScout WoW addon `0.3`",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}")
+
+    assert result.returncode != 0
+    assert "paired ApplicantScout addon version is malformed" in (
         result.stdout + result.stderr
     )
 

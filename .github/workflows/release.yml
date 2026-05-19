@@ -23,16 +23,7 @@ jobs:
         id: paired-addon
         shell: pwsh
         working-directory: ApplicantScout-Companion
-        run: |
-          $TagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
-          $EscapedVersion = [regex]::Escape($TagVersion)
-          $Pattern = "(?ms)^##\s+$EscapedVersion\s+-\s+.*?Requires the ApplicantScout WoW addon ``([0-9]+\.[0-9]+\.[0-9]+)``"
-          $Notes = Get-Content -LiteralPath RELEASE_NOTES.md -Raw -Encoding UTF8
-          $Match = [regex]::Match($Notes, $Pattern)
-          if (-not $Match.Success) {
-            throw "Could not find paired addon version in RELEASE_NOTES.md for $TagVersion."
-          }
-          "ref=v$($Match.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -PairedAddonRefOutputPath $env:GITHUB_OUTPUT
 
       - name: Checkout addon
         # actions/checkout v6 pinned to the upstream tag commit.

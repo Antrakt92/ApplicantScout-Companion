@@ -94,7 +94,7 @@ the overriding environment variable.
 /apscout status         show current state and QR diagnostics
 /apscout playstyle [off|learning|relaxed|competitive|carry] set M+ default playstyle
 /apscout reset          clear dedup cache and force a fresh snapshot
-/apscout shotnow        force a snapshot now
+/apscout shotnow        force a snapshot now while enabled
 /apscout qrvisible      keep the QR frame visible for debugging
 /apscout qrmove         toggle QR move mode; Alt+drag the QR frame
 /apscout qrreset        reset QR frame position to top-left
@@ -179,8 +179,8 @@ details you consider private.
   Settings cannot override the process environment.
 - WoW side looks idle: run `/apscout status` and check that ApplicantScout is
   enabled while you are hosting a listing.
-- Need a manual sync: run `/apscout shotnow`; if applicant state looks stale,
-  run `/apscout reset`.
+- Need a manual sync: keep ApplicantScout enabled and run `/apscout shotnow`;
+  if applicant state looks stale, run `/apscout reset`.
 - WCL cells stay empty: open Settings and use Test WCL.
 - Screenshot cleanup is marker-safe: the watcher deletes only screenshots that
   decode to an ApplicantScout `APS1` payload. Manual screenshots and unrelated
