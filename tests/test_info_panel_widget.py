@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from PyQt6.QtCore import QPoint, QRect, Qt
+from PyQt6.QtCore import QEvent, QPoint, QRect, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QApplication, QLabel, QStyleOptionViewItem, QTableWidget
 
@@ -737,6 +737,59 @@ def test_compact_overlay_table_screen_position_stays_fixed_when_panel_expands_up
         assert window._table.mapToGlobal(QPoint(0, 0)).y() == compact_table_top
         assert window._panel.height() > 80
         assert window.y() < 180
+    finally:
+        client.close()
+
+
+def test_geometry_leave_event_keeps_hover_when_cursor_still_over_row(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    detailed = _app(
+        applicant_id="detailed",
+        fetch_status="ready",
+        mplus_dps=90.0,
+        mplus_dps_median=80.0,
+        mplus_dps_breakdown=[
+            {
+                "name": f"Dungeon {idx}",
+                "parse_percent": 80.0 + idx,
+                "median_percent": 70.0 + idx,
+                "key_level": 10 + idx,
+                "run_count": 2,
+            }
+            for idx in range(8)
+        ],
+    )
+    state.add_or_update(detailed)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.setGeometry(160, 180, 360, 240)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        window._on_cell_entered(0, 0)
+        QApplication.processEvents()
+        viewport = window._table.viewport()
+        assert viewport is not None
+        cursor_pos = viewport.mapToGlobal(
+            QPoint(8, window._table.rowViewportPosition(0) + window._table.rowHeight(0) // 2)
+        )
+        monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: cursor_pos)
+
+        window.eventFilter(viewport, QEvent(QEvent.Type.Leave))
+        QApplication.processEvents()
+
+        assert window._hover_id == "detailed"
+        assert window._panel.height() == window._panel.target_height()
     finally:
         client.close()
 

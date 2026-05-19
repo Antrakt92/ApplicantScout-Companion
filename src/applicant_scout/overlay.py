@@ -3338,8 +3338,13 @@ class OverlayWindow(QMainWindow):
         table_vp = self._table.viewport()
         if event is not None and table_vp is not None and obj is table_vp:
             if event.type() == QEvent.Type.Leave:
-                if self._hover_id is not None:
-                    self._hover_id = None
+                # Qt can emit Leave while the overlay is resizing upward to
+                # make room for the expanded info panel. Re-resolve from the
+                # global cursor before clearing, otherwise hover can oscillate
+                # between detailed and placeholder states.
+                new_id = self._resolve_hover_from_cursor()
+                if new_id != self._hover_id:
+                    self._hover_id = new_id
                     self._sync_delegate_and_panel()
             elif event.type() == QEvent.Type.MouseMove:
                 # Cursor over the empty area below the last row → clear hover.
