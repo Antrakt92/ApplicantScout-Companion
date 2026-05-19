@@ -1027,6 +1027,31 @@ def test_roster_snapshot_adds_party_members_separately_from_applicants():
     assert state.party_members["friend-realm"].role == "HEALER"
 
 
+def test_roster_snapshot_maps_current_and_main_scores_separately():
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            roster=[
+                _roster_decoded(
+                    "Alt-Realm",
+                    score=2443,
+                    main_score=3468,
+                    rio_profile=True,
+                ),
+            ],
+        )
+    )
+
+    member = state.party_members["alt-realm"]
+    assert member.score == 2443
+    assert member.main_score == 3468
+    assert member.rio_profile is True
+
+
 def test_roster_snapshot_updates_and_removes_members_by_identity():
     state = AppState()
     sm = StateMachine(state)

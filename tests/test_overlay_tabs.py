@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 
-from applicant_scout.overlay import _mplus_cell_visuals, OverlayWindow
+from applicant_scout.__main__ import StateMachine
+from applicant_scout.overlay import COL_RIO, _mplus_cell_visuals, OverlayWindow
 from applicant_scout.scoring import CONTEXT_RAID, detect_listing_context
+from applicant_scout.screenshot import (
+    DecodedApplicant,
+    DecodedRosterMember,
+    DecodedVersion,
+    Snapshot,
+)
 from applicant_scout.state import AppState, Applicant, Listing, RosterMember
 
 
@@ -33,15 +40,23 @@ def _app(applicant_id: str, name: str, role: str = "DAMAGER") -> Applicant:
     )
 
 
-def _member(member_id: str, name: str, role: str = "DAMAGER") -> RosterMember:
+def _member(
+    member_id: str,
+    name: str,
+    role: str = "DAMAGER",
+    *,
+    score: int = 3100,
+    main_score: int = 0,
+) -> RosterMember:
     return RosterMember(
         applicant_id=member_id,
         name=name,
         cls="PRIEST" if role == "HEALER" else "WARRIOR",
         spec_id=257 if role == "HEALER" else 71,
         ilvl=701,
-        score=3100,
+        score=score,
         role=role,
+        main_score=main_score,
     )
 
 
@@ -77,6 +92,61 @@ def _listing(
         key_level=key_level,
         category_id=category_id,
         difficulty_id=difficulty_id,
+    )
+
+
+def _version(player_name: str = "Host-Realm") -> DecodedVersion:
+    return DecodedVersion(
+        addon_version="0.1.0",
+        game_version="12.0.5",
+        region_id=3,
+        player_name=player_name,
+    )
+
+
+def _decoded_applicant(aid: int, member_idx: int, name: str) -> DecodedApplicant:
+    return DecodedApplicant(
+        applicant_id=aid,
+        member_idx=member_idx,
+        name=name,
+        spec_id=71,
+        class_id=1,
+        ilvl=700,
+        score=3000,
+        main_score=0,
+        rio_profile=False,
+        rio_best_key=0,
+        rio_best_dungeon_key=0,
+        rio_timed_at_or_above=0,
+        rio_timed_at_or_above_minus1=0,
+        rio_timed_at_or_above_minus2=0,
+        rio_completed_at_or_above_minus1=0,
+        rio_dungeon_count=0,
+        rio_dungeons=[],
+        role=2,
+    )
+
+
+def _decoded_roster(name: str) -> DecodedRosterMember:
+    return DecodedRosterMember(
+        unit_index=0,
+        flags=1,
+        subgroup=1,
+        class_id=1,
+        spec_id=71,
+        ilvl=701,
+        score=2443,
+        main_score=3468,
+        rio_profile=True,
+        rio_best_key=0,
+        rio_best_dungeon_key=0,
+        rio_timed_at_or_above=0,
+        rio_timed_at_or_above_minus1=0,
+        rio_timed_at_or_above_minus2=0,
+        rio_completed_at_or_above_minus1=0,
+        rio_dungeon_count=0,
+        role=2,
+        name=name,
     )
 
 
@@ -163,6 +233,21 @@ def test_roster_only_update_prepares_party_tab_without_forcing_overlay_open(
     assert win._table.rowCount() == 1
 
 
+def test_party_tab_rio_cell_shows_current_and_main_scores(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["alt-realm"] = _member(
+        "alt-realm",
+        "Alt-Realm",
+        score=2443,
+        main_score=3468,
+    )
+    win = _window(tmp_path, qtbot, state)
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+
+    assert win._table.item(0, COL_RIO).text() == "2443 [3468]"
+
+
 def test_cleared_snapshot_preserves_visible_party_roster(qtbot, tmp_path):
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
@@ -176,6 +261,58 @@ def test_cleared_snapshot_preserves_visible_party_roster(qtbot, tmp_path):
     assert win.isVisible()
     assert win._active_tab == "party"
     assert win._table.rowCount() == 1
+
+
+def test_last_applicant_removed_preserves_visible_party_roster(qtbot, tmp_path):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win.show()
+
+    state.remove("7:1")
+    win.on_applicant_removed("7:1")
+    win._flush_overlay_refresh()
+
+    assert win.isVisible()
+    assert win._active_tab == "party"
+    assert win._table.rowCount() == 1
+    assert win._id_by_row == ["host-realm"]
+
+
+def test_snapshot_removal_then_roster_preserves_visible_party_roster(qtbot, tmp_path):
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version(),
+            applicants=[_decoded_applicant(7, 1, "Applicant-Realm")],
+            roster=[],
+        )
+    )
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _member: None
+    sm.applicantRemoved.connect(win.on_applicant_removed)
+    sm.rosterChanged.connect(win.on_roster_changed)
+    win.show()
+    win._flush_overlay_refresh()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version(),
+            applicants=[],
+            roster=[_decoded_roster("Host-Realm")],
+        )
+    )
+    win._flush_overlay_refresh()
+
+    assert win.isVisible()
+    assert win._active_tab == "party"
+    assert win._table.rowCount() == 1
+    assert win._id_by_row == ["host-realm"]
 
 
 def test_empty_roster_update_hides_party_only_overlay(qtbot, tmp_path):

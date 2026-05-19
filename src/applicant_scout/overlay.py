@@ -1979,6 +1979,7 @@ class OverlayWindow(QMainWindow):
         self._refresh_flush_pending = False
         self._refresh_needs_title = False
         self._refresh_needs_show = False
+        self._restore_party_on_next_roster = False
 
         # Restore geometry, clamped to a visible screen so off-monitor positions
         # from a previous multi-monitor session don't render the window invisibly
@@ -2166,6 +2167,7 @@ class OverlayWindow(QMainWindow):
         return listing.category_id in (0, _MPLUS_CATEGORY_ID)
 
     def on_applicant_added(self, applicant: Applicant) -> None:
+        self._restore_party_on_next_roster = False
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
         # "loading" before _refresh_table reads it. Otherwise the cell briefly
@@ -2175,6 +2177,7 @@ class OverlayWindow(QMainWindow):
         self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_updated(self, applicant: Applicant) -> None:
+        self._restore_party_on_next_roster = False
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Re-fetch ONLY when fetch_status is "pending" — apply_snapshot resets
         # to pending on (a) newly seen applicant id and (b) spec_id change.
@@ -2202,16 +2205,28 @@ class OverlayWindow(QMainWindow):
             self._pinned_id = None
         self._schedule_overlay_refresh()
         if self._state.count() == 0:
+            has_party = len(self._state.party_members) > 0
+            was_visible = self.isVisible() and not self._collapsed_to_launcher
             # No applicants left. Two reasons: (a) addon delisted (handled by
             # on_cleared), (b) host invited everyone, listing still active.
-            # Case (b): listing remains, snapshots keep arriving with apps=[].
-            # Hide immediately AND start a guard timer — if a new listing event
-            # re-shows the window (comment change, etc.), the timer hides it
-            # again after a quiet period.
             # Defensive: clear both ids on hide so next show doesn't bring back
             # ghost panel content from a stale id.
             self._hover_id = None
             self._pinned_id = None
+            if has_party:
+                self._restore_party_on_next_roster = False
+                self._empty_hide_timer.stop()
+                self._active_tab = "party"
+                self._tab_bar.set_active("party", emit=False)
+                self._schedule_overlay_refresh(update_title=True, maybe_show=True)
+                return
+            self._restore_party_on_next_roster = (
+                was_visible and self._state.listing is not None
+            )
+            # Case (b): listing remains, snapshots keep arriving with apps=[].
+            # Hide immediately AND start a guard timer — if a new listing event
+            # re-shows the window (comment change, etc.), the timer hides it
+            # again after a quiet period.
             self.show_launcher_only()
             if self._state.listing is not None:
                 self._empty_hide_timer.start()
@@ -2246,6 +2261,7 @@ class OverlayWindow(QMainWindow):
     def on_cleared(self) -> None:
         self._listing_session_generation += 1
         self._fetches_in_flight.clear()
+        self._restore_party_on_next_roster = False
         self._refresh_flush_pending = False
         self._refresh_needs_title = False
         self._refresh_needs_show = False
@@ -2286,6 +2302,9 @@ class OverlayWindow(QMainWindow):
         if should_show_party:
             self._active_tab = "party"
             self._tab_bar.set_active("party", emit=False)
+            if self._restore_party_on_next_roster:
+                self._collapsed_to_launcher = False
+        self._restore_party_on_next_roster = False
         self._schedule_overlay_refresh(
             update_title=True,
             maybe_show=should_show_party,
@@ -2445,7 +2464,7 @@ class OverlayWindow(QMainWindow):
         """Fired EMPTY_HIDE_DELAY_S after applicants reached 0 with listing
         still active. Auto-hide as a safety net for cases where M+ keystone
         listing isn't auto-delisted by Blizzard after group fills."""
-        if self._state.count() == 0:
+        if self._state.count() == 0 and len(self._state.party_members) == 0:
             self.show_launcher_only()
 
     # ─── hover/pin panel orchestration ─────
