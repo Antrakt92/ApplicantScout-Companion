@@ -636,8 +636,14 @@ class SettingsDialog(QDialog):
             return
         self.quitRequested.emit()
 
-    def set_status(self, text: str, *, error: bool = False) -> None:
-        self._set_status(text, error=error)
+    def set_status(
+        self,
+        text: str,
+        *,
+        error: bool = False,
+        warning: bool = False,
+    ) -> None:
+        self._set_status(text, error=error, warning=warning)
 
     def flush_pending_values(self) -> bool:
         if not self._autosave_timer.isActive():
@@ -718,9 +724,15 @@ class SettingsDialog(QDialog):
         elif current.startswith("Screenshots folder warning:"):
             self._set_status("")
 
-    def _set_status(self, text: str, *, error: bool = False) -> None:
+    def _set_status(self, text: str, *, error: bool = False, warning: bool = False) -> None:
         self.status_label.setText(text)
-        self.status_label.setStyleSheet("color: #ff6666;" if error else "color: #9edc8a;")
+        if error:
+            colour = "#ff6666"
+        elif warning:
+            colour = "#e5cc80"
+        else:
+            colour = "#9edc8a"
+        self.status_label.setStyleSheet(f"color: {colour};")
 
     def _start_async_action(
         self,
@@ -774,6 +786,7 @@ class SettingsDialog(QDialog):
             if (
                 current.wcl_client_id != raw.success_payload.wcl_client_id
                 or current.wcl_client_secret != raw.success_payload.wcl_client_secret
+                or current.region != raw.success_payload.region
             ):
                 self._set_status("Credentials changed during test; test WCL again.", error=True)
                 return
@@ -781,6 +794,7 @@ class SettingsDialog(QDialog):
             if error is not None:
                 self._set_status(error, error=True)
                 return
+            self._autosave_timer.stop()
             self.credentialsValidated.emit(current)
 
     def _show_wcl_setup_example(self) -> None:

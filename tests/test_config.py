@@ -614,6 +614,24 @@ def test_persist_settings_values_promotes_validated_wcl_credentials(
     assert saved["draft_wcl_client_secret"] == ""
 
 
+def test_has_pending_wcl_credentials_detects_partial_or_complete_drafts(
+    tmp_path: Path,
+):
+    cfg = _cfg(tmp_path)
+
+    assert not main_mod._has_pending_wcl_credentials(cfg)
+
+    cfg.draft_wcl_client_id = "draft-client"
+    assert main_mod._has_pending_wcl_credentials(cfg)
+
+    cfg.draft_wcl_client_id = ""
+    cfg.draft_wcl_client_secret = "draft-secret"
+    assert main_mod._has_pending_wcl_credentials(cfg)
+
+    cfg.draft_wcl_client_id = "draft-client"
+    assert main_mod._has_pending_wcl_credentials(cfg)
+
+
 def test_persist_settings_values_clearing_screenshots_override_preserves_fallback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -1888,6 +1906,73 @@ def test_settings_saved_status_preserves_screenshots_path_warning(tmp_path: Path
 
     assert is_error
     assert "Screenshots folder warning" in text
+
+
+def test_settings_autosave_status_reports_pending_wcl_validation(tmp_path: Path):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
+    cfg = _cfg(tmp_path)
+    cfg.draft_wcl_client_id = "draft-client"
+    cfg.draft_wcl_client_secret = "draft-secret"
+
+    text, is_error, is_warning = main_mod._settings_autosave_status(values, [], cfg)
+
+    assert not is_error
+    assert is_warning
+    assert text.startswith("Saved.")
+    assert "pending validation" in text
+    assert "Test WCL" in text
+
+
+def test_settings_autosave_status_keeps_plain_saved_without_pending_draft(
+    tmp_path: Path,
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
+    cfg = _cfg(tmp_path)
+
+    text, is_error, is_warning = main_mod._settings_autosave_status(values, [], cfg)
+
+    assert (text, is_error, is_warning) == ("Saved.", False, False)
+
+
+def test_settings_autosave_status_combines_pending_validation_with_env_override(
+    tmp_path: Path,
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
+    cfg = _cfg(tmp_path)
+    cfg.draft_wcl_client_id = "draft-client"
+
+    text, is_error, is_warning = main_mod._settings_autosave_status(
+        values,
+        ["APSCOUT_DRAFT_WCL_CLIENT_ID"],
+        cfg,
+    )
+
+    assert is_error
+    assert not is_warning
+    assert "environment overrides" in text
+    assert "APSCOUT_DRAFT_WCL_CLIENT_ID" in text
+    assert "pending validation" in text
+
+
+def test_settings_autosave_status_combines_pending_validation_with_screenshots_warning(
+    tmp_path: Path,
+):
+    values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
+    cfg = _cfg(tmp_path)
+    cfg.draft_wcl_client_secret = "draft-secret"
+
+    text, is_error, is_warning = main_mod._settings_autosave_status(values, [], cfg)
+
+    assert is_error
+    assert not is_warning
+    assert "Screenshots folder warning" in text
+    assert "pending validation" in text
 
 
 def test_settings_wcl_test_success_status_does_not_look_like_plain_autosave(

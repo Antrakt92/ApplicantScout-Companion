@@ -473,6 +473,19 @@ def test_settings_dialog_more_quit_action_blocks_during_update(qtbot, tmp_path: 
     assert "#ff6666" in dialog.status_label.styleSheet()
 
 
+def test_settings_dialog_status_supports_warning_style(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    dialog.set_status("Pending validation.", warning=True)
+
+    assert "#e5cc80" in dialog.status_label.styleSheet()
+
+    dialog.set_status("Hard failure.", error=True, warning=True)
+
+    assert "#ff6666" in dialog.status_label.styleSheet()
+
+
 def test_release_notes_dialog_renders_markdown_changelog(qtbot):
     dialog = ReleaseNotesDialog(
         "# ApplicantScout Companion 0.5.0\n\n- Fixed updater shutdown guard."
@@ -740,6 +753,30 @@ def test_settings_dialog_emits_validated_credentials_after_successful_test(
     assert seen[-1].wcl_client_secret == "new-secret"
 
 
+def test_settings_dialog_successful_wcl_test_stops_pending_autosave(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        credential_tester=lambda *_args: "credentials ok",
+    )
+    qtbot.addWidget(dialog)
+    dialog._autosave_timer.setInterval(5000)
+    validated = []
+    autosaved = []
+    dialog.credentialsValidated.connect(validated.append)
+    dialog.valuesChanged.connect(autosaved.append)
+
+    dialog.client_id_edit.setText("new-client")
+    dialog.client_secret_edit.setText("new-secret")
+    assert dialog._autosave_timer.isActive()
+    dialog.test_button.click()
+
+    qtbot.waitUntil(lambda: bool(validated), timeout=1500)
+    assert not dialog._autosave_timer.isActive()
+    assert autosaved == []
+
+
 def test_settings_dialog_ignores_stale_credentials_test_result(
     qtbot, tmp_path: Path
 ):
@@ -768,6 +805,37 @@ def test_settings_dialog_ignores_stale_credentials_test_result(
         timeout=1500,
     )
     assert seen == []
+
+
+def test_settings_dialog_ignores_stale_region_test_result(
+    qtbot, tmp_path: Path
+):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        assert release_tester.wait(2)
+        return "credentials ok"
+
+    dialog = SettingsDialog(_cfg(tmp_path), credential_tester=tester)
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.credentialsValidated.connect(seen.append)
+
+    dialog.client_id_edit.setText("new-client")
+    dialog.client_secret_edit.setText("new-secret")
+    dialog.test_button.click()
+    assert tester_entered.wait(2)
+    dialog.region_combo.setCurrentText("US")
+    release_tester.set()
+
+    qtbot.waitUntil(
+        lambda: bool(seen) or "changed" in dialog.status_label.text().lower(),
+        timeout=1500,
+    )
+    assert seen == []
+    assert "changed" in dialog.status_label.text().lower()
 
 
 def test_settings_dialog_rejects_validated_credentials_when_current_values_invalid(

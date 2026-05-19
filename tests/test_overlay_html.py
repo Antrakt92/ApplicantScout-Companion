@@ -10,10 +10,13 @@ from dataclasses import replace
 
 import pytest
 
+from PyQt6.QtCore import QRect
+
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
     COLUMN_WIDTHS,
     NAME_COLUMN_MAX_WIDTH,
+    _clamp_rect_to_bounds,
     _metric_text,
     _mplus_cell_visuals,
     _mplus_dungeon_metric_text,
@@ -347,3 +350,48 @@ def test_current_geometry_version_is_left_unchanged():
     geo = WindowGeometry(10, 20, 610, 520, WINDOW_GEOMETRY_LAYOUT_VERSION)
 
     assert _normalize_loaded_geometry(geo) == geo
+
+
+def test_clamp_rect_shrinks_oversized_visible_geometry_to_available_bounds():
+    assert _clamp_rect_to_bounds(40, 50, 5000, 3000, QRect(0, 0, 1920, 1080)) == (
+        0,
+        0,
+        1920,
+        1080,
+    )
+
+
+def test_clamp_rect_clamps_position_after_width_shrink_at_right_edge():
+    assert _clamp_rect_to_bounds(1800, 20, 400, 300, QRect(0, 0, 1920, 1080)) == (
+        1520,
+        20,
+        400,
+        300,
+    )
+
+
+def test_clamp_rect_clamps_position_after_height_shrink_at_bottom_edge():
+    assert _clamp_rect_to_bounds(20, 980, 400, 300, QRect(0, 0, 1920, 1080)) == (
+        20,
+        780,
+        400,
+        300,
+    )
+
+
+def test_clamp_rect_handles_negative_monitor_coordinates():
+    assert _clamp_rect_to_bounds(-2500, 900, 900, 400, QRect(-1920, 0, 1920, 1080)) == (
+        -1920,
+        680,
+        900,
+        400,
+    )
+
+
+def test_clamp_rect_leaves_small_launcher_rect_inside_bounds_unchanged():
+    assert _clamp_rect_to_bounds(100, 120, 42, 42, QRect(0, 0, 1920, 1080)) == (
+        100,
+        120,
+        42,
+        42,
+    )

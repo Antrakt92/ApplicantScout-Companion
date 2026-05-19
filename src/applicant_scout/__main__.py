@@ -1294,6 +1294,25 @@ def _settings_saved_status(values, override_keys: list[str]) -> tuple[str, bool]
     return "Saved.", False
 
 
+def _has_pending_wcl_credentials(cfg: Config) -> bool:
+    return bool(cfg.draft_wcl_client_id or cfg.draft_wcl_client_secret)
+
+
+def _settings_autosave_status(
+    values,
+    override_keys: list[str],
+    cfg: Config,
+) -> tuple[str, bool, bool]:
+    saved_text, saved_error = _settings_saved_status(values, override_keys)
+    if not _has_pending_wcl_credentials(cfg):
+        return saved_text, saved_error, False
+    pending_text = (
+        "WCL credential changes are pending validation; "
+        "click Test WCL to activate them."
+    )
+    return f"{saved_text} {pending_text}", saved_error, not saved_error
+
+
 def _settings_wcl_test_success_status(
     values,
     override_keys: list[str],
@@ -1698,7 +1717,17 @@ def main(argv: list[str] | None = None) -> int:
                     overrides,
                 )
             else:
-                status_text, status_error = _settings_saved_status(values, overrides)
+                status_text, status_error, status_warning = _settings_autosave_status(
+                    values,
+                    overrides,
+                    cfg,
+                )
+                dialog.set_status(
+                    status_text,
+                    error=status_error,
+                    warning=status_warning,
+                )
+                return
             dialog.set_status(status_text, error=status_error)
 
         def _handle_values_changed(values) -> None:

@@ -34,7 +34,13 @@ from applicant_scout.metric_preferences import (
     MetricPreferences,
 )
 from applicant_scout.scoring import PackageFit, package_fit
-from applicant_scout.state import DEFAULT_WINDOW_WIDTH, AppState, Applicant, Listing
+from applicant_scout.state import (
+    DEFAULT_WINDOW_WIDTH,
+    WINDOW_GEOMETRY_LAYOUT_VERSION,
+    AppState,
+    Applicant,
+    Listing,
+)
 from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
 
 
@@ -793,6 +799,37 @@ def test_overlay_constructor_uses_safe_defaults_for_corrupt_window_json(
     try:
         assert window.geometry().width() >= window.minimumWidth()
         assert window.geometry().height() >= window.minimumHeight()
+    finally:
+        client.close()
+
+
+def test_overlay_constructor_clamps_oversized_saved_geometry_to_current_screen(
+    qtbot, tmp_path
+):
+    (tmp_path / "window.json").write_text(
+        json.dumps(
+            {
+                "x": 40,
+                "y": 50,
+                "w": 100000,
+                "h": 100000,
+                "layout_version": WINDOW_GEOMETRY_LAYOUT_VERSION,
+            }
+        ),
+        encoding="utf-8",
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        screen = window.screen() or QApplication.primaryScreen()
+        assert screen is not None
+        available = screen.availableGeometry()
+        assert window.geometry().width() <= available.width()
+        assert window.geometry().height() <= available.height()
     finally:
         client.close()
 

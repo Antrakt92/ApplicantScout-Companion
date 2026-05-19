@@ -3381,6 +3381,26 @@ def _normalize_loaded_geometry(geo: WindowGeometry) -> WindowGeometry:
     return WindowGeometry(geo.x, geo.y, geo.w, geo.h, WINDOW_GEOMETRY_LAYOUT_VERSION)
 
 
+def _clamp_rect_to_bounds(
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    bounds: QRect,
+) -> tuple[int, int, int, int]:
+    if bounds.width() <= 0 or bounds.height() <= 0:
+        return (x, y, w, h)
+    cw = min(max(1, w), bounds.width())
+    ch = min(max(1, h), bounds.height())
+    min_x = bounds.x()
+    min_y = bounds.y()
+    max_x = bounds.x() + bounds.width() - cw
+    max_y = bounds.y() + bounds.height() - ch
+    cx = min(max(x, min_x), max_x)
+    cy = min(max(y, min_y), max_y)
+    return (cx, cy, cw, ch)
+
+
 def _clamp_geometry_to_screen(
     x: int, y: int, w: int, h: int, *, min_visible_px: int = 80
 ) -> tuple[int, int, int, int]:
@@ -3397,22 +3417,22 @@ def _clamp_geometry_to_screen(
     if not screens:
         return (x, y, w, h)
     for s in screens:
-        sg = s.geometry()
+        sg = s.availableGeometry()
         # Visible overlap on each axis
         ox = max(0, min(x + w, sg.x() + sg.width()) - max(x, sg.x()))
         oy = max(0, min(y + h, sg.y() + sg.height()) - max(y, sg.y()))
         if ox >= min_visible_px and oy >= min_visible_px:
-            return (x, y, w, h)
+            return _clamp_rect_to_bounds(x, y, w, h, sg)
     # No good intersection — center on primary
     primary = QGuiApplication.primaryScreen()
     if primary is None:
         return (x, y, w, h)
-    pg = primary.geometry()
+    pg = primary.availableGeometry()
     cw = min(w, pg.width())
     ch = min(h, pg.height())
     cx = pg.x() + (pg.width() - cw) // 2
     cy = pg.y() + (pg.height() - ch) // 2
-    return (cx, cy, cw, ch)
+    return _clamp_rect_to_bounds(cx, cy, cw, ch, pg)
 
 
 # ───────────────────────────────────────────────────────────────────
