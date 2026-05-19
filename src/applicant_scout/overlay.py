@@ -2284,6 +2284,7 @@ class OverlayWindow(QMainWindow):
         if self._state.party_members:
             self._active_tab = "party"
             self._tab_bar.set_active("party", emit=False)
+            self._clear_role_filter()
             self._schedule_overlay_refresh(update_title=True, maybe_show=True)
             return
         # Only hide if there's also no active listing or Party roster. EMPTY
@@ -2314,6 +2315,7 @@ class OverlayWindow(QMainWindow):
         if should_show_party:
             self._active_tab = "party"
             self._tab_bar.set_active("party", emit=False)
+            self._clear_role_filter()
             if self._restore_party_on_next_roster:
                 self._collapsed_to_launcher = False
         self._restore_party_on_next_roster = False

@@ -881,8 +881,45 @@ class StateMachine(QObject):
 
 
 class UpdateSignals(QObject):
-    checked = pyqtSignal(object)
+    checked = pyqtSignal(int, object)
     completed = pyqtSignal(str, bool)
+
+
+class _UpdateCheckCoordinator:
+    def __init__(self) -> None:
+        self._latest_generation = 0
+
+    def next_generation(self) -> int:
+        self._latest_generation += 1
+        return self._latest_generation
+
+    def is_current(self, generation: int) -> bool:
+        return generation == self._latest_generation
+
+
+@dataclass(frozen=True)
+class _UpdateCheckDecision:
+    is_current: bool
+    pending_update_version: str | None
+
+
+def _resolve_update_check_result(
+    coordinator: _UpdateCheckCoordinator,
+    generation: int,
+    result: object,
+) -> _UpdateCheckDecision:
+    if not coordinator.is_current(generation):
+        return _UpdateCheckDecision(is_current=False, pending_update_version=None)
+
+    latest_version = getattr(result, "latest_version", None)
+    if getattr(result, "status", None) == "available" and _update_result_has_installable_asset(
+        result
+    ):
+        return _UpdateCheckDecision(
+            is_current=True,
+            pending_update_version=str(latest_version or "available"),
+        )
+    return _UpdateCheckDecision(is_current=True, pending_update_version=None)
 
 
 def _setup_logging(log_dir: Path | None = None) -> None:
@@ -1838,6 +1875,7 @@ def main(argv: list[str] | None = None) -> int:
     window.setWindowIcon(_app_icon())
     show_settings_action.set_callback(_show_settings)
     update_signals = UpdateSignals(app)
+    update_check_coordinator = _UpdateCheckCoordinator()
 
     def _run_update() -> None:
         if update_in_progress:
@@ -1874,9 +1912,11 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     def _run_silent_update_check() -> None:
+        generation = update_check_coordinator.next_generation()
+
         def _worker() -> None:
             result = check_for_update(__version__)
-            update_signals.checked.emit(result)
+            update_signals.checked.emit(generation, result)
 
         threading.Thread(
             target=_worker,
@@ -1884,16 +1924,17 @@ def main(argv: list[str] | None = None) -> int:
             daemon=True,
         ).start()
 
-    def _handle_update_checked(result: object) -> None:
+    def _handle_update_checked(generation: int, result: object) -> None:
         nonlocal pending_update_version
         nonlocal startup_update_prompt_pending
-        latest_version = getattr(result, "latest_version", None)
-        if getattr(result, "status", None) == "available" and _update_result_has_installable_asset(
-            result
-        ):
-            pending_update_version = str(latest_version or "available")
-        else:
-            pending_update_version = None
+        decision = _resolve_update_check_result(
+            update_check_coordinator,
+            generation,
+            result,
+        )
+        if not decision.is_current:
+            return
+        pending_update_version = decision.pending_update_version
         if tray_controller is not None:
             tray_controller.set_update_available(pending_update_version)
         if settings_dialog is not None:

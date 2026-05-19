@@ -263,6 +263,30 @@ def test_cleared_snapshot_preserves_visible_party_roster(qtbot, tmp_path):
     assert win._table.rowCount() == 1
 
 
+def test_cleared_snapshot_does_not_carry_applicant_filter_into_party_auto_switch(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["host-realm"].fetch_status = "ready"
+    win = _window(tmp_path, qtbot, state)
+    win._role_filter = {"DAMAGER"}
+    win._role_filter_bar._active = {"DAMAGER"}
+    win.show()
+
+    win.on_cleared()
+    win._flush_overlay_refresh()
+
+    visible_rows = [
+        row for row in range(win._table.rowCount()) if not win._table.isRowHidden(row)
+    ]
+    assert win.isVisible()
+    assert win._active_tab == "party"
+    assert win._role_filter == set()
+    assert win._id_by_row == ["host-realm"]
+    assert visible_rows == [0]
+
+
 def test_last_applicant_removed_preserves_visible_party_roster(qtbot, tmp_path):
     state = AppState()
     state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
@@ -350,6 +374,28 @@ def test_empty_roster_update_hides_party_only_overlay(qtbot, tmp_path):
     win._flush_overlay_refresh()
 
     assert not win.isVisible()
+
+
+def test_delayed_roster_update_does_not_carry_applicant_filter_into_party_auto_switch(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["host-realm"].fetch_status = "ready"
+    win = _window(tmp_path, qtbot, state)
+    win._role_filter = {"DAMAGER"}
+    win._role_filter_bar._active = {"DAMAGER"}
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    visible_rows = [
+        row for row in range(win._table.rowCount()) if not win._table.isRowHidden(row)
+    ]
+    assert win._active_tab == "party"
+    assert win._role_filter == set()
+    assert win._id_by_row == ["host-realm"]
+    assert visible_rows == [0]
 
 
 def test_empty_roster_switches_back_to_applicants_when_applicants_remain(

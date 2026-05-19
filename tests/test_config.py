@@ -2428,6 +2428,47 @@ def test_update_checks_run_hourly_after_initial_startup():
     assert main_mod.UPDATE_CHECK_INTERVAL_MS == 60 * 60 * 1000
 
 
+def test_update_check_coordinator_rejects_stale_out_of_order_results():
+    coordinator = main_mod._UpdateCheckCoordinator()
+
+    slow_old_generation = coordinator.next_generation()
+    fast_new_generation = coordinator.next_generation()
+
+    assert not coordinator.is_current(slow_old_generation)
+    assert coordinator.is_current(fast_new_generation)
+
+
+def test_update_check_result_resolver_ignores_stale_available_result():
+    coordinator = main_mod._UpdateCheckCoordinator()
+
+    slow_old_generation = coordinator.next_generation()
+    fast_new_generation = coordinator.next_generation()
+    stale_available = SimpleNamespace(
+        status="available",
+        latest_version="0.2.0",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        asset_url="https://example.test/setup.exe",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+        checksum_url="https://example.test/setup.exe.sha256",
+    )
+
+    stale_decision = main_mod._resolve_update_check_result(
+        coordinator,
+        slow_old_generation,
+        stale_available,
+    )
+    current_decision = main_mod._resolve_update_check_result(
+        coordinator,
+        fast_new_generation,
+        stale_available,
+    )
+
+    assert not stale_decision.is_current
+    assert stale_decision.pending_update_version is None
+    assert current_decision.is_current
+    assert current_decision.pending_update_version == "0.2.0"
+
+
 def test_wow_start_update_prompt_only_shows_for_initial_wow_launch_update():
     assert main_mod._should_show_wow_start_update_prompt(
         wow_watch_mode=True,
