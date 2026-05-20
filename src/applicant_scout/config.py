@@ -207,10 +207,20 @@ def _read_env_file(path: Path) -> dict[str, str]:
 def _config_values() -> dict[str, str]:
     config_path = user_config_path()
     if config_path.exists():
-        return _read_env_file(config_path)
+        try:
+            return _read_env_file(config_path)
+        except OSError as exc:
+            raise ConfigError(
+                f"Could not read ApplicantScout config at {config_path}: {exc}"
+            ) from exc
     legacy_path = _legacy_env_path()
     if legacy_path is not None:
-        return _read_env_file(legacy_path)
+        try:
+            return _read_env_file(legacy_path)
+        except OSError as exc:
+            raise ConfigError(
+                f"Could not read ApplicantScout config at {legacy_path}: {exc}"
+            ) from exc
     return {}
 
 
@@ -369,9 +379,15 @@ def load_config() -> Config:
     cache_dir = user_cache_dir()
     config_dir = user_config_dir()
     log_dir = user_log_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    config_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConfigError(
+            f"Could not create ApplicantScout data directories under "
+            f"{_user_data_dir()}: {exc}"
+        ) from exc
 
     return Config(
         wcl_client_id=client_id,

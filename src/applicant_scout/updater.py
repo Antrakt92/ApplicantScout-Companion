@@ -342,8 +342,12 @@ def download_update_installer(
         response.raise_for_status()
         checksum_response = http.get(checksum_url, follow_redirects=True)
         checksum_response.raise_for_status()
+        try:
+            checksum_text = _response_bytes(checksum_response).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("Malformed update checksum.") from exc
         expected_digest = _parse_sha256_checksum(
-            _response_bytes(checksum_response).decode("utf-8"),
+            checksum_text,
             expected_name=asset_name,
         )
         fd, tmp_name = tempfile.mkstemp(

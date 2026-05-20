@@ -1624,11 +1624,7 @@ def _apply_settings_change(
         values,
         apply_credentials=apply_credentials,
     )
-    new_screenshots_dir = (
-        Path(new_cfg.screenshots_path)
-        if new_cfg.screenshots_path is not None
-        else resolve_screenshots_path(new_cfg)
-    )
+    new_screenshots_dir = resolve_screenshots_path(new_cfg)
     _persist_settings_values(
         old_cfg,
         values,

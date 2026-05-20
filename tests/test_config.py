@@ -7,6 +7,7 @@ import pytest
 
 import applicant_scout.__main__ as main_mod
 from applicant_scout import atomic_io
+import applicant_scout.config as config_mod
 from applicant_scout.config import (
     Config,
     ConfigError,
@@ -753,12 +754,14 @@ def test_persist_settings_values_clearing_screenshots_override_preserves_fallbac
 def test_settings_change_rolls_back_config_when_screenshot_runtime_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    cfg = _cfg(tmp_path, screenshots_path=tmp_path / "old" / "Screenshots")
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    cfg = _cfg(tmp_path, screenshots_path=root / "old" / "Screenshots")
     values = SimpleNamespace(
         wcl_client_id=cfg.wcl_client_id,
         wcl_client_secret=cfg.wcl_client_secret,
         region=cfg.region,
-        screenshots_path=str(tmp_path / "new" / "Screenshots"),
+        screenshots_path=str(root / "new" / "Screenshots"),
         metric_preferences=cfg.metric_preferences,
         sync_with_wow=cfg.sync_with_wow,
     )
@@ -809,7 +812,9 @@ def test_settings_change_rolls_back_config_when_screenshot_runtime_fails(
 def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    cfg = _cfg(tmp_path, screenshots_path=tmp_path / "Screenshots")
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    cfg = _cfg(tmp_path, screenshots_path=root / "Screenshots")
     cfg.sync_with_wow = False
     values = SimpleNamespace(
         wcl_client_id=cfg.wcl_client_id,
@@ -925,6 +930,64 @@ def test_settings_change_validates_screenshots_before_wow_sync_runtime(
     assert calls == []
 
 
+def test_settings_change_rejects_explicit_suspicious_screenshots_before_persist_or_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path, screenshots_path=tmp_path / "old" / "Screenshots")
+    suspicious_path = tmp_path / "NotWow"
+    suspicious_path.mkdir()
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(suspicious_path),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("persist"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_apply_wow_sync_runtime",
+        lambda *_args, **_kwargs: calls.append("wow-sync"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_replace_screenshots_runtime",
+        lambda *_args, **_kwargs: calls.append("replace") or object(),
+    )
+
+    with pytest.raises(ConfigError, match="Screenshots folder warning"):
+        main_mod._apply_settings_change(
+            app=object(),
+            cfg=cfg,
+            values=values,
+            apply_credentials=False,
+            auth=object(),
+            wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+            region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+            window=SimpleNamespace(
+                apply_metric_preferences=lambda *_args, **_kwargs: None,
+                bump_wcl_runtime_generation=lambda: None,
+            ),
+            watcher=object(),
+            current_screenshots_dir=cfg.screenshots_path,
+            machine=object(),
+            decode_failed_callback=lambda *_args: None,
+            signal_gate=main_mod._WatcherSignalGate(),
+            wow_exit_timer=None,
+            quit_app=lambda: None,
+            can_quit=lambda: True,
+        )
+
+    assert calls == []
+
+
 def test_load_config_uses_legacy_env_only_when_user_config_is_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -943,6 +1006,34 @@ def test_load_config_uses_legacy_env_only_when_user_config_is_absent(
     assert cfg.wcl_client_id == "legacy-client"
     assert cfg.wcl_client_secret == "legacy-secret"
     assert not user_config_path().exists()
+
+
+def test_load_config_wraps_unreadable_user_config_as_config_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    user_config_path().parent.mkdir(parents=True)
+    user_config_path().write_text("WCL_CLIENT_ID=client\n", encoding="utf-8")
+    monkeypatch.setattr(
+        config_mod,
+        "_read_env_file",
+        lambda _path: (_ for _ in ()).throw(OSError("locked")),
+    )
+
+    with pytest.raises(ConfigError, match="Could not read ApplicantScout config"):
+        load_config()
+
+
+def test_load_config_wraps_unwritable_user_data_dir_as_config_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    cache_path = tmp_path / "localappdata" / "applicant-scout" / "cache"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="Could not create ApplicantScout data directories"):
+        load_config()
 
 
 def test_load_config_missing_credentials_returns_incomplete_config(

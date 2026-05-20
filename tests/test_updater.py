@@ -612,6 +612,32 @@ def test_download_update_installer_rejects_malformed_checksum(tmp_path):
         raise AssertionError("malformed checksum should be rejected")
 
 
+def test_download_update_installer_rejects_non_utf8_checksum_as_malformed(tmp_path):
+    result = UpdateResult(
+        status="available",
+        message="available",
+        current_version="0.1.0",
+        latest_version="0.2.0",
+        asset_url="https://example.test/setup.exe",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+    )
+
+    try:
+        download_update_installer(
+            result,
+            download_dir=tmp_path,
+            client=_DownloadClient(
+                {"https://example.test/setup.exe.sha256": b"\xff\xfe\x00"}
+            ),
+        )  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        assert "malformed" in str(exc).lower()
+    else:
+        raise AssertionError("binary checksum should be rejected as malformed")
+
+
 def test_download_update_installer_rejects_checksum_for_wrong_filename(tmp_path):
     digest = hashlib.sha256(b"setup-bytes").hexdigest()
     result = UpdateResult(
