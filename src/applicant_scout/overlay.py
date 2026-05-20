@@ -2710,24 +2710,31 @@ class OverlayWindow(QMainWindow):
         base_y = geom.y() + previous_y_offset
         base_height = max(self.minimumHeight(), geom.height() - previous_extra)
 
-        self._panel.setMinimumHeight(target_height)
-        self._panel.setMaximumHeight(target_height)
+        updates_enabled = self.updatesEnabled()
+        if updates_enabled:
+            self.setUpdatesEnabled(False)
+        try:
+            self._panel.setMinimumHeight(target_height)
+            self._panel.setMaximumHeight(target_height)
 
-        new_y = base_y - new_extra
-        screen = self.screen()
-        if screen is not None:
-            new_y = max(screen.availableGeometry().top(), new_y)
-        self._panel_anchor_extra_height = new_extra
-        self._panel_anchor_y_offset = max(0, base_y - new_y)
-        new_height = max(self.minimumHeight(), base_height + new_extra)
-        if (new_y, new_height) == (geom.y(), geom.height()):
-            return
-        self._set_geometry_without_persist(
-            geom.x(),
-            new_y,
-            geom.width(),
-            new_height,
-        )
+            new_y = base_y - new_extra
+            screen = self.screen()
+            if screen is not None:
+                new_y = max(screen.availableGeometry().top(), new_y)
+            self._panel_anchor_extra_height = new_extra
+            self._panel_anchor_y_offset = max(0, base_y - new_y)
+            new_height = max(self.minimumHeight(), base_height + new_extra)
+            if (new_y, new_height) != (geom.y(), geom.height()):
+                self._set_geometry_without_persist(
+                    geom.x(),
+                    new_y,
+                    geom.width(),
+                    new_height,
+                )
+        finally:
+            if updates_enabled:
+                self.setUpdatesEnabled(True)
+                self.update()
 
     def _set_geometry_without_persist(self, x: int, y: int, w: int, h: int) -> None:
         self._suppress_geometry_persist = True

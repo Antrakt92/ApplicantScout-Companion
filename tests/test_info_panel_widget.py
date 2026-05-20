@@ -762,6 +762,83 @@ def test_compact_overlay_table_screen_position_stays_fixed_when_panel_expands_up
         client.close()
 
 
+def test_panel_height_change_batches_window_updates_to_avoid_hover_jitter(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(
+            applicant_id="detailed",
+            fetch_status="ready",
+            mplus_dps=90.0,
+            mplus_dps_median=80.0,
+            mplus_dps_breakdown=[
+                {
+                    "name": f"Dungeon {idx}",
+                    "parse_percent": 80.0 + idx,
+                    "median_percent": 70.0 + idx,
+                    "key_level": 10 + idx,
+                    "run_count": 2,
+                }
+                for idx in range(8)
+            ],
+        )
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    update_states: list[bool] = []
+    panel_mutations: list[bool] = []
+    geometry_mutations: list[bool] = []
+    original_updates = window.setUpdatesEnabled
+    original_minimum = window._panel.setMinimumHeight
+    original_maximum = window._panel.setMaximumHeight
+    original_geometry = window._set_geometry_without_persist
+
+    def record_updates(enabled: bool) -> None:
+        update_states.append(enabled)
+        original_updates(enabled)
+
+    def record_minimum(height: int) -> None:
+        panel_mutations.append(window.updatesEnabled())
+        original_minimum(height)
+
+    def record_maximum(height: int) -> None:
+        panel_mutations.append(window.updatesEnabled())
+        original_maximum(height)
+
+    def record_geometry(x: int, y: int, w: int, h: int) -> None:
+        geometry_mutations.append(window.updatesEnabled())
+        original_geometry(x, y, w, h)
+
+    monkeypatch.setattr(window, "setUpdatesEnabled", record_updates)
+    monkeypatch.setattr(window._panel, "setMinimumHeight", record_minimum)
+    monkeypatch.setattr(window._panel, "setMaximumHeight", record_maximum)
+    monkeypatch.setattr(window, "_set_geometry_without_persist", record_geometry)
+
+    try:
+        window.setGeometry(160, 180, 360, 240)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        window._hover_id = "detailed"
+        window._sync_delegate_and_panel()
+
+        assert panel_mutations
+        assert geometry_mutations
+        assert panel_mutations == [False, False]
+        assert geometry_mutations == [False]
+        assert update_states[0] is False
+        assert update_states[-1] is True
+    finally:
+        client.close()
+
+
 def test_geometry_leave_event_keeps_hover_when_cursor_still_over_row(
     qtbot, tmp_path, monkeypatch
 ):
