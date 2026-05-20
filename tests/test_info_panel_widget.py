@@ -1421,7 +1421,7 @@ def test_launcher_drag_release_stays_stable_through_foreground_poll(qtbot, tmp_p
 
 
 def test_launcher_drag_cancelled_by_mouse_ungrab_resumes_foreground_polling(
-    qtbot, tmp_path
+    qtbot, tmp_path, monkeypatch
 ):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
@@ -1436,6 +1436,11 @@ def test_launcher_drag_cancelled_by_mouse_ungrab_resumes_foreground_polling(
         qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
         assert window._launcher.is_dragging()
         assert not window._foreground_timer.isActive()
+        monkeypatch.setattr(
+            overlay_mod.QApplication,
+            "mouseButtons",
+            lambda: Qt.MouseButton.NoButton,
+        )
 
         QApplication.sendEvent(
             window._launcher,
@@ -1449,6 +1454,140 @@ def test_launcher_drag_cancelled_by_mouse_ungrab_resumes_foreground_polling(
         assert saved == {
             "x": window._launcher.pos().x(),
             "y": window._launcher.pos().y(),
+        }
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_survives_transient_ungrab_while_button_held(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        position_after_first_move = window._launcher.pos()
+        press_global_pos = window._launcher._press_global_pos
+        assert press_global_pos is not None
+
+        monkeypatch.setattr(
+            overlay_mod.QApplication,
+            "mouseButtons",
+            lambda: Qt.MouseButton.LeftButton,
+        )
+        QApplication.sendEvent(
+            window._launcher,
+            QEvent(QEvent.Type.UngrabMouse),
+        )
+
+        assert window._launcher.is_dragging()
+        assert not window._foreground_timer.isActive()
+        cursor_pos = press_global_pos + QPoint(56, 36)
+        monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: cursor_pos)
+        window._launcher._poll_drag_cursor()
+        position_after_poll = window._launcher.pos()
+
+        assert position_after_poll != position_after_first_move
+        qtbot.mouseRelease(
+            window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(34, 24)
+        )
+        saved = json.loads((tmp_path / "launcher.json").read_text(encoding="utf-8"))
+        assert saved == {
+            "x": position_after_poll.x(),
+            "y": position_after_poll.y(),
+        }
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_survives_foreground_drop_after_transient_ungrab(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        dragged_pos = window._launcher.pos()
+        monkeypatch.setattr(
+            overlay_mod.QApplication,
+            "mouseButtons",
+            lambda: Qt.MouseButton.LeftButton,
+        )
+
+        QApplication.sendEvent(
+            window._launcher,
+            QEvent(QEvent.Type.UngrabMouse),
+        )
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+
+        assert window._launcher.is_dragging()
+        assert window._launcher.isVisible()
+        assert window._launcher.pos() == dragged_pos
+        assert not window._foreground_timer.isActive()
+        qtbot.mouseRelease(
+            window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(28, 20)
+        )
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_poll_finishes_lost_release_and_persists_position(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        released_pos = window._launcher.pos()
+        monkeypatch.setattr(
+            overlay_mod.QApplication,
+            "mouseButtons",
+            lambda: Qt.MouseButton.NoButton,
+        )
+
+        window._launcher._poll_drag_cursor()
+
+        assert not window._launcher.is_dragging()
+        assert window._foreground_timer.isActive()
+        saved = json.loads((tmp_path / "launcher.json").read_text(encoding="utf-8"))
+        assert saved == {
+            "x": released_pos.x(),
+            "y": released_pos.y(),
         }
     finally:
         if QWidget.mouseGrabber() is window._launcher:

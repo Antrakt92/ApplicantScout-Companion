@@ -136,6 +136,7 @@ INFO_PANEL_MIN_HEIGHT = 80
 INFO_PANEL_PREFERRED_HEIGHT = 220
 LAUNCHER_SIZE = 42
 GAME_FOREGROUND_POLL_MS = 500
+LAUNCHER_DRAG_POLL_MS = 16
 LAUNCHER_FOREGROUND_GRACE_S = 3.0
 MPLUS_GROUP_COLUMN_WIDTH = 188
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
@@ -998,6 +999,9 @@ class OverlayLauncher(QFrame):
         self._press_window_pos: QPoint | None = None
         self._drag_active = False
         self._dragged = False
+        self._drag_timer = QTimer(self)
+        self._drag_timer.setInterval(LAUNCHER_DRAG_POLL_MS)
+        self._drag_timer.timeout.connect(self._poll_drag_cursor)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1031,6 +1035,26 @@ class OverlayLauncher(QFrame):
         )
         self.move(QPoint(x, y))
 
+    def _move_drag_to_global_pos(self, global_pos: QPoint) -> None:
+        if self._press_global_pos is None or self._press_window_pos is None:
+            return
+        delta = global_pos - self._press_global_pos
+        if delta.manhattanLength() > 3:
+            self._dragged = True
+        self._move_to_drag_position(self._press_window_pos + delta)
+
+    def _left_mouse_button_down(self) -> bool:
+        return bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+
+    def _poll_drag_cursor(self) -> None:
+        if not self._drag_active:
+            self._drag_timer.stop()
+            return
+        if not self._left_mouse_button_down():
+            self._finish_drag(emit_click=True)
+            return
+        self._move_drag_to_global_pos(QCursor.pos())
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_global_pos = event.globalPosition().toPoint()
@@ -1038,6 +1062,7 @@ class OverlayLauncher(QFrame):
             self._drag_active = True
             self._dragged = False
             self.grabMouse()
+            self._drag_timer.start()
             self.dragStarted.emit()
             event.accept()
             return
@@ -1049,10 +1074,7 @@ class OverlayLauncher(QFrame):
             and self._press_global_pos is not None
             and self._press_window_pos is not None
         ):
-            delta = event.globalPosition().toPoint() - self._press_global_pos
-            if delta.manhattanLength() > 3:
-                self._dragged = True
-            self._move_to_drag_position(self._press_window_pos + delta)
+            self._move_drag_to_global_pos(event.globalPosition().toPoint())
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -1066,6 +1088,7 @@ class OverlayLauncher(QFrame):
             return
         was_dragged = self._dragged
         should_click = emit_click and not was_dragged
+        self._drag_timer.stop()
         self._press_global_pos = None
         self._press_window_pos = None
         self._drag_active = False
@@ -1086,11 +1109,13 @@ class OverlayLauncher(QFrame):
         super().mouseReleaseEvent(event)
 
     def event(self, event: QEvent) -> bool:
-        if event.type() in (
-            QEvent.Type.UngrabMouse,
-            QEvent.Type.Hide,
-            QEvent.Type.Close,
+        if (
+            event.type() == QEvent.Type.UngrabMouse
+            and self._drag_active
+            and self._left_mouse_button_down()
         ):
+            return super().event(event)
+        if event.type() in (QEvent.Type.UngrabMouse, QEvent.Type.Hide, QEvent.Type.Close):
             self._finish_drag(emit_click=False)
         return super().event(event)
 
