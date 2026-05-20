@@ -1459,6 +1459,25 @@ def test_show_settings_on_start_opens_for_manual_launch_or_explicit_arg():
     )
 
 
+def test_duplicate_launch_command_only_notifies_manual_owner():
+    assert main_mod._duplicate_launch_command([], wow_watch_mode=False) == (
+        main_mod.CONTROL_SHOW_SETTINGS_COMMAND
+    )
+    assert (
+        main_mod._duplicate_launch_command(
+            [main_mod.SHOW_SETTINGS_ARG], wow_watch_mode=False
+        )
+        == main_mod.CONTROL_SHOW_SETTINGS_COMMAND
+    )
+    assert main_mod._duplicate_launch_command([], wow_watch_mode=True) is None
+    assert (
+        main_mod._duplicate_launch_command(
+            [main_mod.SHOW_SETTINGS_ARG], wow_watch_mode=True
+        )
+        is None
+    )
+
+
 def test_wow_watch_mode_exits_if_sync_is_disabled_while_waiting(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -1700,6 +1719,54 @@ def test_wow_lifecycle_timer_does_not_run_process_scan_on_gui_tick(
     workers[0]()
 
     assert calls == ["scan", "quit"]
+
+
+def test_wow_lifecycle_timer_retries_after_process_scan_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks = []
+    workers = []
+    calls: list[str] = []
+    states = iter([RuntimeError("tasklist failed"), False])
+
+    class FakeTimer:
+        def __init__(self, _parent) -> None:
+            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
+
+        def setInterval(self, _interval: int) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    class FakeApp:
+        def quit(self) -> None:
+            calls.append("quit")
+
+    def running_checker() -> bool:
+        state = next(states)
+        if isinstance(state, Exception):
+            raise state
+        return state
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        running_checker=running_checker,
+        async_runner=workers.append,
+    )
+
+    callbacks[0]()
+    workers[0]()
+
+    assert calls == []
+
+    callbacks[0]()
+    workers[1]()
+
+    assert calls == ["quit"]
 
 
 def test_wow_lifecycle_timer_rearms_watcher_before_quitting(

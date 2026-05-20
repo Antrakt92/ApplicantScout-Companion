@@ -1060,13 +1060,9 @@ class OverlayLauncher(QFrame):
         if not self._drag_active:
             self._drag_timer.stop()
             return
-        cursor_pos = QCursor.pos()
         if self._left_mouse_button_down():
             self._drag_button_up_since = None
-            self._move_drag_to_global_pos(cursor_pos)
-            return
-        if cursor_pos != self._last_drag_cursor_pos:
-            self._drag_button_up_since = None
+            cursor_pos = QCursor.pos()
             self._move_drag_to_global_pos(cursor_pos)
             return
         if self._drag_button_up_since is None:
@@ -2234,14 +2230,7 @@ class OverlayWindow(QMainWindow):
         )
         if not foreground and launcher_interaction_foreground:
             return
-        launcher_interaction_active = (
-            self._collapsed_to_launcher
-            and self._launcher.isVisible()
-            and self._launcher.is_dragging()
-        )
         if foreground == self._game_foreground:
-            if not foreground and launcher_interaction_active:
-                return
             if not foreground and self._collapsed_to_launcher and self._launcher.isVisible():
                 self._launcher.hide()
                 return
@@ -2254,8 +2243,6 @@ class OverlayWindow(QMainWindow):
             return
         self._game_foreground = foreground
         if not foreground:
-            if launcher_interaction_active:
-                return
             self._launcher.hide()
             if self.isVisible() and not self.isActiveWindow():
                 self.hide()

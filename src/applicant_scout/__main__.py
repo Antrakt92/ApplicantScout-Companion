@@ -133,6 +133,7 @@ class _WCLRegionRuntime:
 
 class _WowLifecycleSignals(QObject):
     checked = pyqtSignal(bool)
+    checkFailed = pyqtSignal()
 
 
 class TrayController:
@@ -1076,12 +1077,10 @@ def _should_show_settings_on_start(
     return SHOW_SETTINGS_ARG in args or not wow_watch_mode
 
 
-def _duplicate_launch_command(args: list[str], *, wow_watch_mode: bool) -> bytes | None:
+def _duplicate_launch_command(_args: list[str], *, wow_watch_mode: bool) -> bytes | None:
     if wow_watch_mode:
         return None
-    if SHOW_SETTINGS_ARG in args or not wow_watch_mode:
-        return CONTROL_SHOW_SETTINGS_COMMAND
-    return None
+    return CONTROL_SHOW_SETTINGS_COMMAND
 
 
 def _should_show_wow_start_update_prompt(
@@ -1175,7 +1174,11 @@ def _start_wow_lifecycle_timer(
                 log.warning("Could not re-arm WoW lifecycle watcher: %s", exc)
             quit_callback()
 
+    def _handle_wow_check_failed() -> None:
+        state["checking"] = False
+
     signals.checked.connect(_handle_wow_running)
+    signals.checkFailed.connect(_handle_wow_check_failed)
 
     def _quit_after_wow_cycle() -> None:
         if state["checking"]:
@@ -1187,7 +1190,8 @@ def _start_wow_lifecycle_timer(
                 running = check_wow_running()
             except Exception as exc:  # noqa: BLE001
                 log.warning("Could not check WoW lifecycle state: %s", exc)
-                running = False
+                signals.checkFailed.emit()
+                return
             signals.checked.emit(running)
 
         run_async(_worker)

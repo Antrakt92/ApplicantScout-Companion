@@ -1508,7 +1508,7 @@ def test_launcher_drag_ungrab_waits_for_stable_button_up_before_finishing(
         client.close()
 
 
-def test_launcher_drag_survives_false_no_button_while_cursor_keeps_moving(
+def test_launcher_drag_ignores_cursor_motion_after_confirmed_button_release(
     qtbot, tmp_path, monkeypatch
 ):
     auth = WCLAuth("client", "secret", tmp_path)
@@ -1528,22 +1528,30 @@ def test_launcher_drag_survives_false_no_button_while_cursor_keeps_moving(
             "mouseButtons",
             lambda: Qt.MouseButton.NoButton,
         )
+        monkeypatch.setattr(
+            overlay_mod, "_native_left_mouse_button_down", lambda: False
+        )
         now = {"value": 20.0}
         cursor_pos = {"value": press_global_pos}
         monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
         monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: cursor_pos["value"])
 
-        for step in range(1, 9):
-            now["value"] += 0.75
-            cursor_pos["value"] = press_global_pos + QPoint(step * 8, step * 5)
-            window._launcher._poll_drag_cursor()
-
+        original_pos = window._launcher.pos()
+        cursor_pos["value"] = press_global_pos + QPoint(40, 25)
+        window._launcher._poll_drag_cursor()
+        now["value"] += 0.5
+        cursor_pos["value"] = press_global_pos + QPoint(80, 50)
+        window._launcher._poll_drag_cursor()
         assert window._launcher.is_dragging()
         assert not window._foreground_timer.isActive()
-        assert window._launcher.pos() != window._launcher._press_window_pos
-        qtbot.mouseRelease(
-            window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(34, 24)
-        )
+        assert window._launcher.pos() == original_pos
+
+        now["value"] += 0.6
+        cursor_pos["value"] = press_global_pos + QPoint(120, 75)
+        window._launcher._poll_drag_cursor()
+        assert not window._launcher.is_dragging()
+        assert window._launcher.pos() == original_pos
+        assert window._foreground_timer.isActive()
     finally:
         if QWidget.mouseGrabber() is window._launcher:
             window._launcher.releaseMouse()
@@ -1571,16 +1579,19 @@ def test_launcher_drag_uses_native_left_button_when_qt_reports_no_button(
             lambda: Qt.MouseButton.NoButton,
         )
         monkeypatch.setattr(overlay_mod, "_native_left_mouse_button_down", lambda: True)
-        monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: last_cursor_pos)
+        cursor_pos = {"value": last_cursor_pos}
+        monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: cursor_pos["value"])
         now = {"value": 40.0}
         monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
 
         window._launcher._poll_drag_cursor()
+        cursor_pos["value"] = last_cursor_pos + QPoint(22, 14)
         now["value"] += 2.0
         window._launcher._poll_drag_cursor()
 
         assert window._launcher.is_dragging()
         assert not window._foreground_timer.isActive()
+        assert window._launcher.pos() != window._launcher._press_window_pos
         qtbot.mouseRelease(
             window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(34, 24)
         )
