@@ -1004,6 +1004,8 @@ class OverlayLauncher(QFrame):
         layout.addWidget(label)
 
     def show_at(self, pos: QPoint) -> None:
+        if self._drag_active:
+            return
         self.move(pos)
         self.show()
         self.raise_()
@@ -2107,6 +2109,9 @@ class OverlayWindow(QMainWindow):
     def show_launcher_only(self) -> None:
         self._collapsed_to_launcher = True
         self.hide()
+        if self._launcher.is_dragging():
+            self._launcher.show_at(self._launcher.pos())
+            return
         if self._game_foreground:
             self._launcher.show_at(self._default_launcher_position())
         else:
@@ -2347,7 +2352,7 @@ class OverlayWindow(QMainWindow):
             self._active_tab = "party"
             self._tab_bar.set_active("party", emit=False)
             self._clear_role_filter()
-            if self._restore_party_on_next_roster:
+            if self._restore_party_on_next_roster and not self._launcher.is_dragging():
                 self._collapsed_to_launcher = False
         self._restore_party_on_next_roster = False
         self._schedule_overlay_refresh(
@@ -2742,6 +2747,8 @@ class OverlayWindow(QMainWindow):
 
     def _maybe_show(self) -> None:
         if not self._game_foreground:
+            if self._collapsed_to_launcher and self._launcher.is_dragging():
+                return
             self._launcher.hide()
             if not self.isActiveWindow():
                 self.hide()

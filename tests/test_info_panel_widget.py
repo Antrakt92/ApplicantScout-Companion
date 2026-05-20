@@ -47,6 +47,7 @@ from applicant_scout.state import (
     AppState,
     Applicant,
     Listing,
+    RosterMember,
 )
 from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
 
@@ -101,6 +102,19 @@ def _listing() -> Listing:
         key_level=16,
         category_id=2,
         difficulty_id=8,
+    )
+
+
+def _member(applicant_id: str = "host-realm", name: str = "Host-Realm") -> RosterMember:
+    return RosterMember(
+        applicant_id=applicant_id,
+        name=name,
+        cls="WARRIOR",
+        spec_id=71,
+        ilvl=701,
+        score=2443,
+        role="TANK",
+        fetch_status="ready",
     )
 
 
@@ -1360,6 +1374,170 @@ def test_launcher_drag_hides_after_release_when_game_stays_background(qtbot, tmp
         assert window._collapsed_to_launcher
         assert not window._launcher.isVisible()
         assert not window.isVisible()
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_refresh_does_not_reposition_during_drag(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        dragged_pos = window._launcher.pos()
+
+        window._maybe_show()
+        window.show_launcher_only()
+
+        assert window._launcher.isVisible()
+        assert window._launcher.pos() == dragged_pos
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_refresh_does_not_hide_during_drag_after_foreground_drop(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        dragged_pos = window._launcher.pos()
+
+        window.show_launcher_only()
+        window._maybe_show()
+
+        assert window._launcher.isVisible()
+        assert window._launcher.pos() == dragged_pos
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_survives_applicant_refresh(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        dragged_pos = window._launcher.pos()
+
+        applicant = _app(applicant_id="during-drag")
+        state.add_or_update(applicant)
+        window.on_applicant_added(applicant)
+        window._flush_overlay_refresh()
+
+        assert QWidget.mouseGrabber() is window._launcher
+        assert window._collapsed_to_launcher
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+        assert window._launcher.pos() == dragged_pos
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_survives_listing_refresh(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.add_or_update(_app(applicant_id="existing"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        dragged_pos = window._launcher.pos()
+
+        state.listing = _listing()
+        window.on_listing_changed()
+        window._flush_overlay_refresh()
+
+        assert QWidget.mouseGrabber() is window._launcher
+        assert window._collapsed_to_launcher
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+        assert window._launcher.pos() == dragged_pos
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_drag_survives_delayed_roster_restore_after_last_applicant_removed(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    applicant = _app(applicant_id="42:1")
+    state.add_or_update(applicant)
+    state.listing = _listing()
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        state.remove("42:1")
+        window.on_applicant_removed("42:1")
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        assert window._restore_party_on_next_roster
+
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
+        dragged_pos = window._launcher.pos()
+
+        state.add_or_update_party_member(_member())
+        window.on_roster_changed()
+        window._flush_overlay_refresh()
+
+        assert QWidget.mouseGrabber() is window._launcher
+        assert window._collapsed_to_launcher
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+        assert window._launcher.pos() == dragged_pos
     finally:
         if QWidget.mouseGrabber() is window._launcher:
             window._launcher.releaseMouse()
