@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 from PyQt6.QtCore import (
+    QEvent,
     Qt,
     QSize,
     pyqtSignal,
@@ -135,6 +136,7 @@ INFO_PANEL_MIN_HEIGHT = 80
 INFO_PANEL_PREFERRED_HEIGHT = 220
 LAUNCHER_SIZE = 42
 GAME_FOREGROUND_POLL_MS = 500
+LAUNCHER_FOREGROUND_GRACE_S = 3.0
 MPLUS_GROUP_COLUMN_WIDTH = 188
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
 MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
@@ -977,6 +979,8 @@ class TitleBar(QWidget):
 
 class OverlayLauncher(QFrame):
     clicked = pyqtSignal()
+    dragStarted = pyqtSignal()
+    dragFinished = pyqtSignal()
     positionChanged = pyqtSignal()
 
     def __init__(self) -> None:
@@ -1010,6 +1014,10 @@ class OverlayLauncher(QFrame):
         self.show()
         self.raise_()
 
+    def show_without_repositioning(self) -> None:
+        if not self.isVisible():
+            self.show()
+
     def is_dragging(self) -> bool:
         return self._drag_active
 
@@ -1030,6 +1038,7 @@ class OverlayLauncher(QFrame):
             self._drag_active = True
             self._dragged = False
             self.grabMouse()
+            self.dragStarted.emit()
             event.accept()
             return
         super().mousePressEvent(event)
@@ -1048,22 +1057,42 @@ class OverlayLauncher(QFrame):
             return
         super().mouseMoveEvent(event)
 
+    def _finish_drag(self, *, emit_click: bool) -> None:
+        if (
+            not self._drag_active
+            and self._press_global_pos is None
+            and self._press_window_pos is None
+        ):
+            return
+        was_dragged = self._dragged
+        should_click = emit_click and not was_dragged
+        self._press_global_pos = None
+        self._press_window_pos = None
+        self._drag_active = False
+        self._dragged = False
+        if QWidget.mouseGrabber() is self:
+            self.releaseMouse()
+        if should_click:
+            self.clicked.emit()
+        elif was_dragged:
+            self.positionChanged.emit()
+        self.dragFinished.emit()
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            was_dragged = self._dragged
-            if not was_dragged:
-                self.clicked.emit()
-            else:
-                self.positionChanged.emit()
-            self._press_global_pos = None
-            self._press_window_pos = None
-            self._drag_active = False
-            self._dragged = False
-            if QWidget.mouseGrabber() is self:
-                self.releaseMouse()
+            self._finish_drag(emit_click=True)
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() in (
+            QEvent.Type.UngrabMouse,
+            QEvent.Type.Hide,
+            QEvent.Type.Close,
+        ):
+            self._finish_drag(emit_click=False)
+        return super().event(event)
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -1790,9 +1819,12 @@ class OverlayWindow(QMainWindow):
         self._show_settings = show_settings
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
         self._game_foreground = self._is_game_foreground()
+        self._launcher_foreground_grace_until = 0.0
         self._collapsed_to_launcher = False
         self._launcher = OverlayLauncher()
         self._launcher.clicked.connect(self.restore_from_launcher)
+        self._launcher.dragStarted.connect(self._pause_foreground_polling_for_launcher_drag)
+        self._launcher.dragFinished.connect(self._resume_foreground_polling_after_launcher_drag)
         self._launcher.positionChanged.connect(self._persist_launcher_position)
         self._saved_launcher_position = load_launcher_position(self._config_dir)
         self._pool = QThreadPool.globalInstance()
@@ -2110,7 +2142,7 @@ class OverlayWindow(QMainWindow):
         self._collapsed_to_launcher = True
         self.hide()
         if self._launcher.is_dragging():
-            self._launcher.show_at(self._launcher.pos())
+            self._launcher.show_without_repositioning()
             return
         if self._game_foreground:
             self._launcher.show_at(self._default_launcher_position())
@@ -2132,8 +2164,31 @@ class OverlayWindow(QMainWindow):
             _log.warning("Game foreground probe failed: %s", exc)
             return True
 
+    def _pause_foreground_polling_for_launcher_drag(self) -> None:
+        if self._foreground_timer.isActive():
+            self._foreground_timer.stop()
+
+    def _resume_foreground_polling_after_launcher_drag(self) -> None:
+        self._launcher_foreground_grace_until = (
+            time.monotonic() + LAUNCHER_FOREGROUND_GRACE_S
+        )
+        if not self._foreground_timer.isActive():
+            self._foreground_timer.start()
+
     def _sync_game_foreground_visibility(self) -> None:
+        if self._launcher.is_dragging():
+            return
         foreground = self._is_game_foreground()
+        launcher_interaction_foreground = (
+            self._collapsed_to_launcher
+            and self._launcher.isVisible()
+            and (
+                self._launcher.isActiveWindow()
+                or time.monotonic() < self._launcher_foreground_grace_until
+            )
+        )
+        if not foreground and launcher_interaction_foreground:
+            return
         launcher_interaction_active = (
             self._collapsed_to_launcher
             and self._launcher.isVisible()
