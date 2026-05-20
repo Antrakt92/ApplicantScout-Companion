@@ -1802,7 +1802,7 @@ def test_launcher_drag_survives_delayed_roster_restore_after_last_applicant_remo
 def test_launcher_drag_position_is_clamped_to_visible_screen(qtbot, tmp_path):
     screen = QApplication.primaryScreen()
     assert screen is not None
-    available = screen.availableGeometry()
+    geometry = screen.geometry()
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -1814,12 +1814,12 @@ def test_launcher_drag_position_is_clamped_to_visible_screen(qtbot, tmp_path):
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
 
         window._launcher._move_to_drag_position(
-            QPoint(available.right() + 5000, available.bottom() + 5000)
+            QPoint(geometry.right() + 5000, geometry.bottom() + 5000)
         )
         pos = window._launcher.pos()
 
-        assert available.x() <= pos.x() <= available.right() - LAUNCHER_SIZE + 1
-        assert available.y() <= pos.y() <= available.bottom() - LAUNCHER_SIZE + 1
+        assert geometry.x() <= pos.x() <= geometry.right() - LAUNCHER_SIZE + 1
+        assert geometry.y() <= pos.y() <= geometry.bottom() - LAUNCHER_SIZE + 1
     finally:
         client.close()
 
@@ -1827,7 +1827,7 @@ def test_launcher_drag_position_is_clamped_to_visible_screen(qtbot, tmp_path):
 def test_launcher_drag_near_screen_edge_clamps_without_recentering(qtbot, tmp_path):
     screen = QApplication.primaryScreen()
     assert screen is not None
-    available = screen.availableGeometry()
+    geometry = screen.geometry()
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -1839,15 +1839,47 @@ def test_launcher_drag_near_screen_edge_clamps_without_recentering(qtbot, tmp_pa
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
 
         window._launcher._move_to_drag_position(
-            QPoint(available.right() - 5, available.y() + 10)
+            QPoint(geometry.right() - 5, geometry.y() + 10)
         )
 
         assert window._launcher.pos() == QPoint(
-            available.x() + available.width() - LAUNCHER_SIZE,
-            available.y() + 10,
+            geometry.x() + geometry.width() - LAUNCHER_SIZE,
+            geometry.y() + 10,
         )
     finally:
         client.close()
+
+
+def test_launcher_clamp_uses_physical_screen_beyond_work_area(monkeypatch):
+    class FakeScreen:
+        def geometry(self) -> QRect:
+            return QRect(0, 0, 1920, 1080)
+
+        def availableGeometry(self) -> QRect:
+            return QRect(0, 0, 1920, 1040)
+
+    screen = FakeScreen()
+    monkeypatch.setattr(overlay_mod.QGuiApplication, "screens", lambda: [screen])
+    monkeypatch.setattr(overlay_mod.QGuiApplication, "primaryScreen", lambda: screen)
+
+    _x, y, _w, _h = overlay_mod._clamp_geometry_to_screen(
+        100,
+        1030,
+        LAUNCHER_SIZE,
+        LAUNCHER_SIZE,
+        min_visible_px=1,
+        use_available_geometry=False,
+    )
+    _work_x, work_y, _work_w, _work_h = overlay_mod._clamp_geometry_to_screen(
+        100,
+        1030,
+        LAUNCHER_SIZE,
+        LAUNCHER_SIZE,
+        min_visible_px=1,
+    )
+
+    assert y == 1030
+    assert work_y == 1040 - LAUNCHER_SIZE
 
 
 def test_default_launcher_tracks_overlay_until_user_drags_launcher(qtbot, tmp_path):
@@ -1932,12 +1964,12 @@ def test_launcher_position_persists_across_overlay_restarts(qtbot, tmp_path):
         client.close()
 
 
-def test_saved_launcher_position_near_taskbar_clamps_to_screen_edge(qtbot, tmp_path):
+def test_saved_launcher_position_near_bottom_clamps_to_physical_screen_edge(qtbot, tmp_path):
     screen = QApplication.primaryScreen()
     assert screen is not None
-    available = screen.availableGeometry()
-    saved_x = available.x() + max(0, (available.width() - LAUNCHER_SIZE) // 2)
-    saved_y = available.y() + available.height() - 8
+    geometry = screen.geometry()
+    saved_x = geometry.x() + max(0, (geometry.width() - LAUNCHER_SIZE) // 2)
+    saved_y = geometry.y() + geometry.height() - 8
     (tmp_path / "launcher.json").write_text(
         json.dumps({"x": saved_x, "y": saved_y}),
         encoding="utf-8",
@@ -1954,7 +1986,7 @@ def test_saved_launcher_position_near_taskbar_clamps_to_screen_edge(qtbot, tmp_p
 
         assert window._launcher.pos() == QPoint(
             saved_x,
-            available.y() + available.height() - LAUNCHER_SIZE,
+            geometry.y() + geometry.height() - LAUNCHER_SIZE,
         )
     finally:
         client.close()

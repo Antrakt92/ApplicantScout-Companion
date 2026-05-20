@@ -1031,6 +1031,7 @@ class OverlayLauncher(QFrame):
             pos.y(),
             LAUNCHER_SIZE,
             LAUNCHER_SIZE,
+            use_available_geometry=False,
             min_visible_px=1,
         )
         self.move(QPoint(x, y))
@@ -2800,10 +2801,10 @@ class OverlayWindow(QMainWindow):
                 self._saved_launcher_position.y,
                 LAUNCHER_SIZE,
                 LAUNCHER_SIZE,
-                # WHY: a taskbar/available-geometry change can leave a saved
-                # launcher position barely visible at the screen edge. Clamp
-                # that back onto the same screen instead of treating it like a
-                # disconnected monitor and recentering the launcher.
+                use_available_geometry=False,
+                # WHY: keep the in-game launcher inside the physical screen,
+                # not the Windows work area. Taskbar-reserved space can still
+                # be valid inside fullscreen/borderless WoW.
                 min_visible_px=1,
             )
             return QPoint(x, y)
@@ -2815,6 +2816,7 @@ class OverlayWindow(QMainWindow):
             y,
             LAUNCHER_SIZE,
             LAUNCHER_SIZE,
+            use_available_geometry=False,
             min_visible_px=20,
         )
         return QPoint(x, y)
@@ -3582,8 +3584,20 @@ def _clamp_rect_to_bounds(
     return (cx, cy, cw, ch)
 
 
+def _screen_bounds(screen, *, use_available_geometry: bool) -> QRect:
+    if use_available_geometry:
+        return screen.availableGeometry()
+    return screen.geometry()
+
+
 def _clamp_geometry_to_screen(
-    x: int, y: int, w: int, h: int, *, min_visible_px: int = 80
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    min_visible_px: int = 80,
+    use_available_geometry: bool = True,
 ) -> tuple[int, int, int, int]:
     """Clamp window rect to a visible screen. Picks first screen whose
     geometry intersects the saved rect by ≥80px on each axis (ensures the
@@ -3598,7 +3612,7 @@ def _clamp_geometry_to_screen(
     if not screens:
         return (x, y, w, h)
     for s in screens:
-        sg = s.availableGeometry()
+        sg = _screen_bounds(s, use_available_geometry=use_available_geometry)
         # Visible overlap on each axis
         ox = max(0, min(x + w, sg.x() + sg.width()) - max(x, sg.x()))
         oy = max(0, min(y + h, sg.y() + sg.height()) - max(y, sg.y()))
@@ -3608,7 +3622,7 @@ def _clamp_geometry_to_screen(
     primary = QGuiApplication.primaryScreen()
     if primary is None:
         return (x, y, w, h)
-    pg = primary.availableGeometry()
+    pg = _screen_bounds(primary, use_available_geometry=use_available_geometry)
     cw = min(w, pg.width())
     ch = min(h, pg.height())
     cx = pg.x() + (pg.width() - cw) // 2
