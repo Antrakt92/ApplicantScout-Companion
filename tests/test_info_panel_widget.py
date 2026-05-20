@@ -1415,7 +1415,7 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
 
 
 def test_launcher_click_during_foreground_grace_does_not_show_overlay_outside_game(
-    qtbot, tmp_path
+    qtbot, tmp_path, monkeypatch
 ):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
@@ -1441,12 +1441,85 @@ def test_launcher_click_during_foreground_grace_does_not_show_overlay_outside_ga
         assert window._game_foreground
         assert window._launcher.isVisible()
 
+        monkeypatch.setattr(
+            overlay_mod.OverlayLauncher, "isActiveWindow", lambda _self: True
+        )
         window.restore_from_launcher()
 
         assert not window.isVisible()
         assert not window._launcher.isVisible()
         assert window._collapsed_to_launcher
         assert not window._game_foreground
+    finally:
+        client.close()
+
+
+def test_launcher_mouse_click_restores_overlay_when_probe_sees_launcher(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        foreground["active"] = False
+        monkeypatch.setattr(
+            overlay_mod.OverlayLauncher, "isActiveWindow", lambda _self: False
+        )
+        qtbot.mouseClick(
+            window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6)
+        )
+
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+        assert window._game_foreground
+    finally:
+        client.close()
+
+
+def test_launcher_click_restores_overlay_when_launcher_has_foreground(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        foreground["active"] = False
+        monkeypatch.setattr(
+            overlay_mod.OverlayLauncher, "isActiveWindow", lambda _self: True
+        )
+        window.restore_from_launcher()
+
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+        assert window._game_foreground
     finally:
         client.close()
 

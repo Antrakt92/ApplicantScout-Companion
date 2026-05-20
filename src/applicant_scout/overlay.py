@@ -1005,6 +1005,7 @@ class OverlayLauncher(QFrame):
         self._dragged = False
         self._drag_button_up_since: float | None = None
         self._last_drag_cursor_pos: QPoint | None = None
+        self._click_emit_active = False
         self._drag_timer = QTimer(self)
         self._drag_timer.setInterval(LAUNCHER_DRAG_POLL_MS)
         self._drag_timer.timeout.connect(self._poll_drag_cursor)
@@ -1030,6 +1031,9 @@ class OverlayLauncher(QFrame):
 
     def is_dragging(self) -> bool:
         return self._drag_active
+
+    def is_click_emitting(self) -> bool:
+        return self._click_emit_active
 
     def _move_to_drag_position(self, pos: QPoint) -> None:
         x, y, _w, _h = _clamp_geometry_to_screen(
@@ -1116,7 +1120,11 @@ class OverlayLauncher(QFrame):
         if QWidget.mouseGrabber() is self:
             self.releaseMouse()
         if should_click:
-            self.clicked.emit()
+            self._click_emit_active = True
+            try:
+                self.clicked.emit()
+            finally:
+                self._click_emit_active = False
         elif was_dragged:
             self.positionChanged.emit()
         self.dragFinished.emit()
@@ -1874,6 +1882,7 @@ class OverlayWindow(QMainWindow):
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
         self._game_foreground = self._is_game_foreground()
         self._launcher_foreground_grace_until = 0.0
+        self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
         self._closed = False
         self._launcher = OverlayLauncher()
@@ -2210,12 +2219,24 @@ class OverlayWindow(QMainWindow):
     def restore_from_launcher(self) -> None:
         if self._closed:
             return
-        if not self._is_game_foreground():
+        launcher_interaction_foreground = (
+            self._collapsed_to_launcher
+            and self._launcher.isVisible()
+            and self._game_foreground
+            and not self._launcher_visible_after_non_game_foreground
+            and (
+                self._launcher.isActiveWindow()
+                or self._launcher.is_click_emitting()
+            )
+        )
+        if not self._is_game_foreground() and not launcher_interaction_foreground:
             self._game_foreground = False
             self._collapsed_to_launcher = True
+            self._launcher_visible_after_non_game_foreground = False
             self._launcher.hide()
             return
         self._game_foreground = True
+        self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
         self._launcher.hide()
         self.show()
@@ -2257,9 +2278,11 @@ class OverlayWindow(QMainWindow):
             )
         )
         if not foreground and launcher_interaction_foreground:
+            self._launcher_visible_after_non_game_foreground = True
             return
         if foreground == self._game_foreground:
             if not foreground and self._collapsed_to_launcher and self._launcher.isVisible():
+                self._launcher_visible_after_non_game_foreground = False
                 self._launcher.hide()
                 return
             if (
@@ -2271,10 +2294,12 @@ class OverlayWindow(QMainWindow):
             return
         self._game_foreground = foreground
         if not foreground:
+            self._launcher_visible_after_non_game_foreground = False
             self._launcher.hide()
             if self.isVisible() and not self.isActiveWindow():
                 self.hide()
             return
+        self._launcher_visible_after_non_game_foreground = False
         if self._collapsed_to_launcher:
             self._launcher.show_at(self._default_launcher_position())
         else:
