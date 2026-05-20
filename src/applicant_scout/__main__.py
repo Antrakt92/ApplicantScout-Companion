@@ -29,13 +29,14 @@ from .config import (
     is_config_ready,
     load_config,
     normalize_wcl_region,
+    read_user_config_values,
     resolve_screenshots_path,
     save_config_values,
     screenshots_path_health_warning,
     user_log_dir,
 )
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
-from .metric_preferences import MetricPreferences
+from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .overlay import OverlayWindow
 from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_path
 from .screenshot import DecodedRosterMember, ScreenshotWatcher, Snapshot
@@ -1498,6 +1499,41 @@ def _process_env_bool_override(key: str, current: bool) -> bool:
     raise ConfigError(f"{key} must be one of: 1, 0, true, false, yes, no, on, off")
 
 
+def _parse_saved_bool(key: str, raw: str | None, *, default: bool) -> bool:
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if not value:
+        return default
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{key} must be one of: 1, 0, true, false, yes, no, on, off")
+
+
+def _saved_config_value_for_process_override(
+    saved_values: dict[str, str],
+    key: str,
+    current: str,
+) -> str:
+    if os.environ.get(key) is None:
+        return current
+    return saved_values.get(key, "").strip()
+
+
+def _saved_config_bool_for_process_override(
+    saved_values: dict[str, str],
+    key: str,
+    current: bool,
+    *,
+    default: bool,
+) -> bool:
+    if os.environ.get(key) is None:
+        return current
+    return _parse_saved_bool(key, saved_values.get(key), default=default)
+
+
 def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
     screenshots_override = os.environ.get("APSCOUT_SCREENSHOTS_PATH")
     region_override = os.environ.get("APSCOUT_REGION")
@@ -1602,6 +1638,7 @@ def _persist_settings_values(
     *,
     apply_credentials: bool = True,
 ) -> Path:
+    saved_values = read_user_config_values(cfg.config_path) if cfg.config_path else {}
     credentials_changed = (
         values.wcl_client_id != cfg.wcl_client_id
         or values.wcl_client_secret != cfg.wcl_client_secret
@@ -1621,17 +1658,88 @@ def _persist_settings_values(
         active_client_secret = cfg.wcl_client_secret
         draft_client_id = ""
         draft_client_secret = ""
+    active_client_id = _saved_config_value_for_process_override(
+        saved_values,
+        "WCL_CLIENT_ID",
+        active_client_id,
+    )
+    active_client_secret = _saved_config_value_for_process_override(
+        saved_values,
+        "WCL_CLIENT_SECRET",
+        active_client_secret,
+    )
+    draft_client_id = _saved_config_value_for_process_override(
+        saved_values,
+        "APSCOUT_DRAFT_WCL_CLIENT_ID",
+        draft_client_id,
+    )
+    draft_client_secret = _saved_config_value_for_process_override(
+        saved_values,
+        "APSCOUT_DRAFT_WCL_CLIENT_SECRET",
+        draft_client_secret,
+    )
+    region = _saved_config_value_for_process_override(
+        saved_values,
+        "APSCOUT_REGION",
+        values.region,
+    )
+    screenshots_path = _saved_config_value_for_process_override(
+        saved_values,
+        "APSCOUT_SCREENSHOTS_PATH",
+        values.screenshots_path,
+    )
+    metric_preferences = MetricPreferences(
+        mplus=_saved_config_bool_for_process_override(
+            saved_values,
+            "APSCOUT_FETCH_MPLUS",
+            values.metric_preferences.mplus,
+            default=DEFAULT_METRIC_PREFERENCES.mplus,
+        ),
+        raid_normal=_saved_config_bool_for_process_override(
+            saved_values,
+            "APSCOUT_FETCH_RAID_NORMAL",
+            values.metric_preferences.raid_normal,
+            default=DEFAULT_METRIC_PREFERENCES.raid_normal,
+        ),
+        raid_heroic=_saved_config_bool_for_process_override(
+            saved_values,
+            "APSCOUT_FETCH_RAID_HEROIC",
+            values.metric_preferences.raid_heroic,
+            default=DEFAULT_METRIC_PREFERENCES.raid_heroic,
+        ),
+        raid_mythic=_saved_config_bool_for_process_override(
+            saved_values,
+            "APSCOUT_FETCH_RAID_MYTHIC",
+            values.metric_preferences.raid_mythic,
+            default=DEFAULT_METRIC_PREFERENCES.raid_mythic,
+        ),
+    )
+    sync_with_wow = _saved_config_bool_for_process_override(
+        saved_values,
+        "APSCOUT_SYNC_WITH_WOW",
+        values.sync_with_wow,
+        default=False,
+    )
+    chatlog_path = (
+        _saved_config_value_for_process_override(
+            saved_values,
+            "APSCOUT_CHATLOG_PATH",
+            str(cfg.chatlog_path),
+        )
+        if not screenshots_path
+        else ""
+    )
     return save_config_values(
         wcl_client_id=active_client_id,
         wcl_client_secret=active_client_secret,
         draft_wcl_client_id=draft_client_id,
         draft_wcl_client_secret=draft_client_secret,
-        region=values.region,
-        screenshots_path=values.screenshots_path,
+        region=region,
+        screenshots_path=screenshots_path,
         cache_ttl_seconds=cfg.cache_ttl_seconds,
-        metric_preferences=values.metric_preferences,
-        sync_with_wow=values.sync_with_wow,
-        chatlog_path="" if values.screenshots_path else str(cfg.chatlog_path),
+        metric_preferences=metric_preferences,
+        sync_with_wow=sync_with_wow,
+        chatlog_path=chatlog_path,
     )
 
 
@@ -1825,10 +1933,17 @@ def _run_first_run_settings(
     values = dialog.values()
     try:
         configure_wow_sync_startup(values.sync_with_wow)
-        if values.sync_with_wow:
-            start_wow_sync_watcher()
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         log.warning("Could not configure WoW lifecycle startup shortcut: %s", exc)
+        if not values.sync_with_wow:
+            QMessageBox.warning(
+                None,
+                "ApplicantScout settings",
+                "Settings were saved, but the WoW startup shortcut could not be "
+                f"updated: {exc}",
+            )
+            _persist_settings_values(cfg, values)
+            return True
         QMessageBox.warning(
             None,
             "ApplicantScout settings",
@@ -1836,6 +1951,17 @@ def _run_first_run_settings(
         )
         return False
     _persist_settings_values(cfg, values)
+    if values.sync_with_wow:
+        try:
+            start_wow_sync_watcher()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            log.warning("Could not start WoW lifecycle watcher: %s", exc)
+            QMessageBox.warning(
+                None,
+                "ApplicantScout settings",
+                "Settings were saved, but the current-session WoW watcher "
+                f"could not be started: {exc}",
+            )
     return True
 
 
@@ -2141,6 +2267,7 @@ def main(argv: list[str] | None = None) -> int:
 
         dialog.valuesChanged.connect(_handle_values_changed)
         dialog.credentialsValidated.connect(_handle_credentials_validated)
+        dialog.updateStarted.connect(window.flush_geometry)
         dialog.updateStarted.connect(lambda: _set_update_in_progress(True))
         dialog.updateFinished.connect(lambda _error: _set_update_in_progress(False))
         dialog.updateCompleted.connect(_handle_dialog_update_completed)
@@ -2172,6 +2299,7 @@ def main(argv: list[str] | None = None) -> int:
             return
         if not _flush_settings_before_update(settings_dialog):
             return
+        window.flush_geometry()
         _set_update_in_progress(True)
 
         def _worker() -> None:

@@ -385,7 +385,12 @@ def launch_update_installer(installer_path: Path) -> None:
     if not installer_path.is_file():
         raise RuntimeError(f"Update installer was not downloaded: {installer_path}")
     subprocess.Popen(
-        [str(installer_path), *_INSTALLER_ARGS, *_installer_self_update_args()],
+        [
+            str(installer_path),
+            *_INSTALLER_ARGS,
+            *_installer_self_update_args(),
+            *_installer_current_dir_args(),
+        ],
         close_fds=True,
         cwd=str(installer_path.parent),
     )
@@ -397,3 +402,12 @@ def _installer_self_update_args() -> list[str]:
         f"/APSCOUT_SOURCE_PID={os.getpid()}",
         f"/APSCOUT_SOURCE_PATH={sys.executable}",
     ]
+
+
+def _installer_current_dir_args() -> list[str]:
+    if not getattr(sys, "frozen", False):
+        return []
+    executable = Path(sys.executable)
+    if executable.name.lower() != "applicantscout.exe":
+        return []
+    return [f"/DIR={executable.parent}"]

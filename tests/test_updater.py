@@ -741,3 +741,24 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
             f"/APSCOUT_SOURCE_PATH={sys.executable}",
         ]
     ]
+
+
+def test_launch_update_installer_preserves_frozen_install_directory(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+    current_exe = r"C:\Custom Apps\ApplicantScout Companion\ApplicantScout.exe"
+    calls: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, args, **_kwargs) -> None:
+            calls.append(args)
+
+    monkeypatch.setattr("applicant_scout.updater.sys.frozen", True, raising=False)
+    monkeypatch.setattr("applicant_scout.updater.sys.executable", current_exe)
+    monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
+
+    launch_update_installer(installer)
+
+    assert f"/DIR={os.path.dirname(current_exe)}" in calls[0]

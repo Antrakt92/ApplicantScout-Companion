@@ -1998,7 +1998,57 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
     )
 
     assert main_mod._run_first_run_settings(cfg)
-    assert calls == ["shortcut", "watcher", "save"]
+    assert calls == ["shortcut", "save", "watcher"]
+
+
+def test_persist_settings_values_preserves_process_env_overridden_saved_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    saved_shots = tmp_path / "saved" / "World of Warcraft" / "_retail_" / "Screenshots"
+    env_shots = tmp_path / "env" / "World of Warcraft" / "_retail_" / "Screenshots"
+    for path in (saved_shots, env_shots):
+        (path.parent / "Interface" / "AddOns").mkdir(parents=True)
+        path.mkdir(parents=True)
+    config_path = save_config_values(
+        wcl_client_id="saved-client",
+        wcl_client_secret="saved-secret",
+        region="EU",
+        screenshots_path=str(saved_shots),
+        metric_preferences=MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=False,
+        ),
+        sync_with_wow=False,
+    )
+    monkeypatch.setenv("WCL_CLIENT_ID", "env-client")
+    monkeypatch.setenv("WCL_CLIENT_SECRET", "env-secret")
+    monkeypatch.setenv("APSCOUT_SCREENSHOTS_PATH", str(env_shots))
+    monkeypatch.setenv("APSCOUT_FETCH_MPLUS", "0")
+    monkeypatch.setenv("APSCOUT_FETCH_RAID_NORMAL", "1")
+    monkeypatch.setenv("APSCOUT_SYNC_WITH_WOW", "1")
+    cfg = load_config()
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region="US",
+        screenshots_path=str(cfg.screenshots_path),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+
+    main_mod._persist_settings_values(cfg, values, apply_credentials=False)
+    saved = config_mod._read_env_file(config_path)
+
+    assert saved["WCL_CLIENT_ID"] == "saved-client"
+    assert saved["WCL_CLIENT_SECRET"] == "saved-secret"
+    assert saved["APSCOUT_SCREENSHOTS_PATH"] == str(saved_shots)
+    assert saved["APSCOUT_FETCH_MPLUS"] == "1"
+    assert saved["APSCOUT_FETCH_RAID_NORMAL"] == "0"
+    assert saved["APSCOUT_SYNC_WITH_WOW"] == "0"
+    assert saved["APSCOUT_REGION"] == "US"
 
 
 def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
@@ -2047,6 +2097,55 @@ def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
     assert calls == []
     assert len(warnings) == 1
     assert "shortcut failed" in warnings[0]
+
+
+def test_first_run_wow_sync_disable_cleanup_failure_still_saves_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    calls: list[str] = []
+    warnings: list[str] = []
+
+    class FakeDialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setWindowIcon(self, _icon) -> None:
+            pass
+
+        def exec(self):
+            return main_mod.QDialog.DialogCode.Accepted
+
+        def values(self):
+            class Values:
+                wcl_client_id = "client"
+                wcl_client_secret = "secret"
+                region = "EU"
+                screenshots_path = str(tmp_path / "Screenshots")
+                metric_preferences = cfg.metric_preferences
+                sync_with_wow = False
+
+            return Values()
+
+    monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
+    monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
+    monkeypatch.setattr(main_mod, "save_config_values", lambda **_kwargs: calls.append("save"))
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda _enabled: (_ for _ in ()).throw(RuntimeError("shortcut cleanup failed")),
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    assert main_mod._run_first_run_settings(cfg)
+    assert calls == ["save"]
+    assert len(warnings) == 1
+    assert "Settings were saved" in warnings[0]
+    assert "shortcut cleanup failed" in warnings[0]
 
 
 def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(

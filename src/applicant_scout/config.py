@@ -229,6 +229,29 @@ def _config_values() -> dict[str, str]:
     return {}
 
 
+def read_user_config_values(config_path: Path | None = None) -> dict[str, str]:
+    """Read persisted values without process environment overrides."""
+    target = config_path or user_config_path()
+    if target.exists():
+        try:
+            return _read_env_file(target)
+        except (OSError, UnicodeError) as exc:
+            raise ConfigError(
+                f"Could not read ApplicantScout config at {target}: {exc}"
+            ) from exc
+    if target != user_config_path():
+        return {}
+    legacy_path = _legacy_env_path()
+    if legacy_path is None:
+        return {}
+    try:
+        return _read_env_file(legacy_path)
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(
+            f"Could not read ApplicantScout config at {legacy_path}: {exc}"
+        ) from exc
+
+
 def _value(values: dict[str, str], key: str, default: str = "") -> str:
     env_value = os.environ.get(key)
     if env_value is not None:

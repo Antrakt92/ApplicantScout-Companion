@@ -655,6 +655,22 @@ def test_settings_update_flushes_pending_values_before_update_start(
     assert not dialog._autosave_timer.isActive()
 
 
+def test_settings_update_started_signal_fires_before_update_action(qtbot, tmp_path: Path):
+    seen: list[str] = []
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: seen.append("action") or "Installing update.",
+    )
+    qtbot.addWidget(dialog)
+    dialog.updateStarted.connect(lambda: seen.append("started"))
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    qtbot.waitUntil(lambda: "action" in seen, timeout=1000)
+    assert seen[:2] == ["started", "action"]
+
+
 def test_settings_update_aborts_when_pending_values_apply_fails(
     qtbot,
     tmp_path: Path,
