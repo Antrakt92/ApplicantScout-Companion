@@ -8,6 +8,11 @@ and update/install lifecycle predictable during real WoW foreground changes.
 
 ### Improved
 
+- Settings now includes an in-app changelog viewer and an explicit Quit action
+  in the secondary actions menu, making release notes and full shutdown easier
+  to find.
+- The cache reset action copy is clearer about what will be deleted before the
+  user confirms it.
 - The collapsed launcher is now much more stable during long drags, fast mouse
   movement, WoW foreground changes, and background overlay refreshes.
 - The launcher can now reach the physical screen edge and restores saved edge
@@ -17,11 +22,14 @@ and update/install lifecycle predictable during real WoW foreground changes.
 - New Mythic+ listings created after a roster-only Party view now return focus
   to `Applicants`, while manually selected Party views stay intact for group
   review.
-- Release checks and branch checks now cover more companion/addon contract
-  surfaces before packaging.
+- Release workflows now pin more build dependencies, and branch checks cover
+  more companion/addon contract, release metadata, and parser surfaces before
+  packaging.
 
 ### Fixed
 
+- Fixed the Party roster staying hidden or losing focus after the last applicant
+  leaves the list while the current group still needs review.
 - Fixed the collapsed launcher sometimes appearing above non-game windows after
   companion restart while WoW was running in the background.
 - Fixed launcher clicks hiding the small icon and then restoring it instead of
@@ -34,6 +42,12 @@ and update/install lifecycle predictable during real WoW foreground changes.
   thing the host needs to see is incoming applicants.
 - Fixed stopped screenshot watcher snapshots and stale watcher callbacks that
   could otherwise update the overlay after a watcher replacement.
+- Fixed settings save/apply and update-install handoff races that could leave
+  stale config, lost pending saves, or unclear blocked-quit behavior.
+- Fixed overlay geometry and launcher-position clamps around monitor/work-area
+  changes so saved positions recover safely.
+- Fixed hidden role-filter state and malformed applicant/roster snapshot inputs
+  that could otherwise leave stale rows, stale focus, or unclear rejected data.
 - Hardened config, updater, screenshot, Warcraft Logs, cache, and malformed
   snapshot boundaries that could leave stale UI state or unclear runtime
   errors.
