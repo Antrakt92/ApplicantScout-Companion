@@ -277,7 +277,7 @@ def load_geometry(config_dir: Path) -> WindowGeometry:
         if not isinstance(data, dict):
             return WindowGeometry()
         return _geometry_from_dict(data)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeError):
         return WindowGeometry()
 
 
@@ -319,7 +319,7 @@ def load_launcher_position(config_dir: Path) -> LauncherPosition | None:
         if not isinstance(data, dict):
             return None
         return _launcher_position_from_dict(data)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeError):
         return None
 
 

@@ -1546,6 +1546,19 @@ def test_character_cache_get_discards_entries_with_malformed_fetched_at(tmp_path
     assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
 
 
+def test_character_cache_get_discards_entries_with_future_fetched_at(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+    key = CharacterCache._key("Scout", "ravencrest", "EU", 71, "DAMAGER")
+    raw["entries"][key]["fetched_at"] = time.time() + 365 * 24 * 60 * 60
+    cache._path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = CharacterCache(tmp_path, ttl_seconds=1)
+
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
 def test_fetch_character_ranks_rejects_non_dict_response():
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._http.close()

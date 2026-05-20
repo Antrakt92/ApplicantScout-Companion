@@ -742,14 +742,14 @@ class StateMachine(QObject):
         if new_listing is None and old_listing is not None:
             self._state.listing = None
             self._state.clear_all()
+            self.listingChanged.emit()
+            self.cleared.emit()
             self._apply_roster_snapshot(
                 snap.roster,
                 region_identity_changed=region_identity_changed,
                 default_realm_changed=default_realm_changed,
                 rio_summary_target_key=0,
             )
-            self.listingChanged.emit()
-            self.cleared.emit()
             return
 
         # No listing in snap AND no prior listing → roster/version can still update.

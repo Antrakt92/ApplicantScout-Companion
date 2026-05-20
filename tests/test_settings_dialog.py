@@ -568,7 +568,38 @@ def test_settings_dialog_keeps_update_icon_visible_after_update_failure(
 
     qtbot.waitUntil(lambda: "offline" in dialog.status_label.text(), timeout=1000)
     assert not dialog.update_button.isHidden()
+    assert "v0.2.0" in dialog.update_button.toolTip()
     assert "#ff6666" in dialog.status_label.styleSheet()
+
+
+def test_settings_dialog_disables_editable_settings_during_update(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    dialog.set_update_in_progress(True)
+
+    assert not dialog.client_id_edit.isEnabled()
+    assert not dialog.client_secret_edit.isEnabled()
+    assert not dialog.region_combo.isEnabled()
+    assert not dialog.screenshots_edit.isEnabled()
+    assert not dialog.test_button.isEnabled()
+
+
+def test_settings_dialog_suppresses_pending_values_while_update_in_progress(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog._autosave_timer.setInterval(5000)
+    seen: list[str] = []
+    dialog.valuesChanged.connect(lambda values: seen.append(values.wcl_client_id))
+
+    dialog.client_id_edit.setText("new-client")
+    assert dialog._autosave_timer.isActive()
+    dialog.set_update_in_progress(True)
+
+    assert not dialog.flush_pending_values()
+    assert seen == []
 
 
 def test_settings_dialog_emits_update_lifecycle_for_failure(qtbot, tmp_path: Path):

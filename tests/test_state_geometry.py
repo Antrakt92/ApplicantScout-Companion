@@ -31,6 +31,12 @@ def test_load_geometry_defaults_for_malformed_json(tmp_path):
     assert load_geometry(tmp_path) == WindowGeometry()
 
 
+def test_load_geometry_defaults_for_non_utf8_file(tmp_path):
+    (tmp_path / "window.json").write_bytes(b"\xff\xfe\xfa")
+
+    assert load_geometry(tmp_path) == WindowGeometry()
+
+
 def test_load_geometry_defaults_for_non_dict_json(tmp_path):
     _write_geometry(tmp_path, ["not", "a", "dict"])
 
@@ -175,5 +181,11 @@ def test_load_launcher_position_rejects_malformed_coordinates(tmp_path):
         '{"x": "left", "y": "top"}',
         encoding="utf-8",
     )
+
+    assert load_launcher_position(tmp_path) is None
+
+
+def test_load_launcher_position_rejects_non_utf8_file(tmp_path):
+    (tmp_path / "launcher.json").write_bytes(b"\xff\xfe\xfa")
 
     assert load_launcher_position(tmp_path) is None

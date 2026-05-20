@@ -194,6 +194,7 @@ class SettingsDialog(QDialog):
         self._clear_cache = clear_cache
         self._check_updates = check_updates
         self._last_values_apply_succeeded = True
+        self._latest_update_version: str | None = None
         self._signals = _AsyncSignals(self)
         self._signals.finished.connect(self._finish_async_action)
         self._title_drag_offset: QPoint | None = None
@@ -300,11 +301,11 @@ class SettingsDialog(QDialog):
         )
         self.screenshots_edit.textChanged.connect(self._handle_screenshots_text_changed)
         path_layout.addWidget(self.screenshots_edit, stretch=1)
-        browse_button = QPushButton("Browse")
-        browse_button.setObjectName("browseScreenshots")
-        browse_button.setToolTip("Browse to WoW's in-game Screenshots folder.")
-        browse_button.clicked.connect(self._browse_screenshots)
-        path_layout.addWidget(browse_button)
+        self.browse_button = QPushButton("Browse")
+        self.browse_button.setObjectName("browseScreenshots")
+        self.browse_button.setToolTip("Browse to WoW's in-game Screenshots folder.")
+        self.browse_button.clicked.connect(self._browse_screenshots)
+        path_layout.addWidget(self.browse_button)
         form.addRow("WoW Screenshots folder", path_row)
 
         metrics_row = QWidget(self)
@@ -584,6 +585,7 @@ class SettingsDialog(QDialog):
         )
 
     def set_update_available(self, latest_version: str | None) -> None:
+        self._latest_update_version = latest_version
         if latest_version:
             self.update_button.setToolTip(
                 f"Install ApplicantScout Companion {latest_version}."
@@ -595,12 +597,35 @@ class SettingsDialog(QDialog):
 
     def set_update_in_progress(self, in_progress: bool) -> None:
         self._update_in_progress = in_progress
+        if in_progress:
+            self._autosave_timer.stop()
         self.update_button.setEnabled(not in_progress)
+        self._set_settings_controls_enabled(not in_progress)
         if in_progress:
             self.update_button.show()
             self.update_button.setToolTip("Installing ApplicantScout update...")
         elif self.update_button.isHidden():
             self.update_button.setToolTip("Install available ApplicantScout update.")
+        else:
+            self.set_update_available(self._latest_update_version)
+
+    def _set_settings_controls_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self.wcl_example_button,
+            self.client_id_edit,
+            self.client_secret_edit,
+            self.region_combo,
+            self.screenshots_edit,
+            self.browse_button,
+            self.mplus_check,
+            self.raid_normal_check,
+            self.raid_heroic_check,
+            self.raid_mythic_check,
+            self.sync_with_wow_check,
+            self.test_button,
+            self.more_actions_button,
+        ):
+            widget.setEnabled(enabled)
 
     def accept(self) -> None:  # type: ignore[override]
         values = self.values()
@@ -647,6 +672,9 @@ class SettingsDialog(QDialog):
         self._set_status(text, error=error, warning=warning)
 
     def flush_pending_values(self) -> bool:
+        if self._update_in_progress:
+            self._autosave_timer.stop()
+            return False
         if not self._autosave_timer.isActive():
             return self._last_values_apply_succeeded
         self._autosave_timer.stop()
@@ -689,6 +717,8 @@ class SettingsDialog(QDialog):
         self._autosave_timer.start()
 
     def _emit_values_changed_if_valid(self) -> bool:
+        if self._update_in_progress:
+            return False
         values = self.values()
         error = self._hard_validation_error(values)
         if error is not None:

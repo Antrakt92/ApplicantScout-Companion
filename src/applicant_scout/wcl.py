@@ -1507,8 +1507,10 @@ class CharacterCache:
         with self._lock:
             candidates: list[tuple[int, float, int, _CacheEntry]] = []
             exact_entry = self._data.get(key)
-            if exact_entry is not None and now - exact_entry.fetched_at <= self._ttl_seconds:
-                candidates.append((0, -exact_entry.fetched_at, -1, exact_entry))
+            if exact_entry is not None:
+                exact_age = now - exact_entry.fetched_at
+                if 0 <= exact_age <= self._ttl_seconds:
+                    candidates.append((0, -exact_entry.fetched_at, -1, exact_entry))
             for index, (stored_key, entry) in enumerate(self._data.items()):
                 if stored_key == key or not stored_key.startswith(f"{prefix}:"):
                     continue
@@ -1518,7 +1520,8 @@ class CharacterCache:
                     continue
                 if not stored_preferences.covers(metric_preferences):
                     continue
-                if now - entry.fetched_at > self._ttl_seconds:
+                age = now - entry.fetched_at
+                if age < 0 or age > self._ttl_seconds:
                     continue
                 breadth = _metric_preference_breadth(stored_preferences)
                 candidates.append((breadth, -entry.fetched_at, index, entry))
