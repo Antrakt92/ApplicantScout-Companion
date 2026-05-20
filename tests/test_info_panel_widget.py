@@ -1015,6 +1015,42 @@ def test_geometry_mouse_move_empty_local_pos_keeps_hover_when_cursor_still_over_
         client.close()
 
 
+def test_pinned_row_can_be_unpinned_from_info_panel(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="42", name="Pinned-Realm"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        row = window._row_for_id["42"]
+        window._on_cell_clicked(row, 0)
+        window._hover_id = None
+        window._sync_delegate_and_panel()
+
+        assert window._pinned_id == "42"
+        assert window._pinned_by_tab["applicants"] == "42"
+        assert window._panel._unpin_button.isVisible()
+
+        qtbot.mouseClick(window._panel._unpin_button, Qt.MouseButton.LeftButton)
+
+        assert window._pinned_id is None
+        assert window._pinned_by_tab["applicants"] is None
+        assert window._delegate._pinned_row == -1
+        assert window._panel._status_label.text() == "Hover a row for applicant details."
+        assert window._panel._unpin_button.isHidden()
+    finally:
+        client.close()
+
+
 def test_overlay_constructor_initializes_geometry_event_state_before_set_geometry(
     monkeypatch, qtbot, tmp_path
 ):

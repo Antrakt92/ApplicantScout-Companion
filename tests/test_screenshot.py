@@ -1444,6 +1444,70 @@ def test_watcher_stable_timeout_emits_marker_parse_failure_and_deletes_transport
     assert not image_path.exists()
 
 
+def test_watcher_stop_mid_new_file_does_not_delete_unemitted_marker_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"transport")
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+
+    def stop_during_stable_wait(_path: Path) -> bool:
+        watcher.stop()
+        return True
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_wait_for_stable_size",
+        stop_during_stable_wait,
+    )
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert snapshots == []
+    assert failures == []
+    assert image_path.exists()
+
+
+def test_watcher_stop_during_snapshot_emit_preserves_marker_file(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"transport")
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    def stop_before_emit(_snap: Snapshot) -> bool:
+        watcher.stop()
+        return False
+
+    monkeypatch.setattr(watcher, "_emit_snapshot", stop_before_emit)
+
+    watcher._on_new_file(image_path)
+
+    assert snapshots == []
+    assert image_path.exists()
+
+
 def test_backlog_does_not_apply_older_snapshot_after_newest_marker_decode_failure(
     monkeypatch,
     tmp_path: Path,
@@ -1580,6 +1644,68 @@ def test_backlog_unstable_newest_manual_does_not_delete_older_valid_snapshot_wit
     assert failures == []
     assert newest.exists()
     assert not older.exists()
+
+
+def test_backlog_stop_mid_scan_preserves_unapplied_marker_files(
+    monkeypatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"transport")
+    os.utime(image_path, (now, now))
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+
+    def stop_during_decode(_path: Path) -> screenshot_mod.DecodeResult:
+        watcher.stop()
+        return screenshot_mod.DecodeResult(snapshot, True)
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", stop_during_decode)
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == []
+    assert failures == []
+    assert image_path.exists()
+
+
+def test_backlog_stop_during_snapshot_emit_preserves_marker_file(
+    monkeypatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"transport")
+    os.utime(image_path, (now, now))
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    def stop_before_emit(_snap: Snapshot) -> bool:
+        watcher.stop()
+        return False
+
+    monkeypatch.setattr(watcher, "_emit_snapshot", stop_before_emit)
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == []
+    assert image_path.exists()
 
 
 def test_watcher_stop_suppresses_backlog_signals(monkeypatch, tmp_path: Path):

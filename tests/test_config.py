@@ -505,6 +505,45 @@ def test_load_config_defaults_to_mplus_only_for_first_run(
     )
 
 
+def test_load_config_rejects_all_wcl_metric_flags_disabled_from_user_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=False,
+        ),
+    )
+
+    with pytest.raises(ConfigError, match="at least one WCL data type"):
+        load_config()
+
+
+def test_apply_process_env_overrides_rejects_all_wcl_metric_flags_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    cfg.metric_preferences = MetricPreferences(
+        mplus=True,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    monkeypatch.setenv("APSCOUT_FETCH_MPLUS", "0")
+    monkeypatch.setenv("APSCOUT_FETCH_RAID_NORMAL", "0")
+    monkeypatch.setenv("APSCOUT_FETCH_RAID_HEROIC", "0")
+    monkeypatch.setenv("APSCOUT_FETCH_RAID_MYTHIC", "0")
+
+    with pytest.raises(ConfigError, match="at least one WCL data type"):
+        main_mod._apply_process_env_overrides_to_config(cfg)
+
+
 def test_load_config_rejects_invalid_metric_bool_from_process_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1583,6 +1622,24 @@ def test_shutdown_running_instance_reports_blocked_quit(
             connected=True,
             written=True,
             response=b"blocked",
+        ),
+    )
+
+    assert main_mod._shutdown_running_instance() == 1
+
+
+@pytest.mark.parametrize("response", [None, b"unknown"])
+def test_shutdown_running_instance_requires_ok_response(
+    monkeypatch: pytest.MonkeyPatch,
+    response: bytes | None,
+):
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: main_mod._ControlCommandResult(
+            connected=True,
+            written=True,
+            response=response,
         ),
     )
 

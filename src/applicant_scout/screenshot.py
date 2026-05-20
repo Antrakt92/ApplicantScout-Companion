@@ -820,13 +820,17 @@ class ScreenshotWatcher(QObject):
         # We don't .join here: it may be in the middle of a 30-80 ms pyzbar
         # call we can't interrupt cleanly. Daemonised so it dies with us.
 
-    def _emit_snapshot(self, snap: Snapshot) -> None:
-        if not self._stopped.is_set():
-            self.snapshotReceived.emit(snap)
+    def _emit_snapshot(self, snap: Snapshot) -> bool:
+        if self._stopped.is_set():
+            return False
+        self.snapshotReceived.emit(snap)
+        return True
 
-    def _emit_decode_failed(self, path: Path, reason: str) -> None:
-        if not self._stopped.is_set():
-            self.decodeFailed.emit(str(path), reason)
+    def _emit_decode_failed(self, path: Path, reason: str) -> bool:
+        if self._stopped.is_set():
+            return False
+        self.decodeFailed.emit(str(path), reason)
+        return True
 
     def _scan_recent_backlog(self) -> None:
         """Startup cleanup pass over WoWScrnShot JPG/TGA files. Two jobs:
@@ -879,17 +883,23 @@ class ScreenshotWatcher(QObject):
             except Exception as e:
                 _log.warning("backlog decode error %s: %s", p.name, e)
                 result = DecodeResult(None, False)
+            if self._stopped.is_set():
+                return
             if (
                 result.snapshot is not None
                 and not apply_closed
                 and mtime >= apply_cutoff
                 and not self._stopped.is_set()
             ):
-                self._emit_snapshot(result.snapshot)
+                if not self._emit_snapshot(result.snapshot):
+                    return
                 _log.info("backlog: applied snapshot from %s", p.name)
                 apply_closed = True
             elif result.has_marker and not apply_closed and mtime >= apply_cutoff:
-                self._emit_decode_failed(p, result.error_reason or "parse failed")
+                if not self._emit_decode_failed(
+                    p, result.error_reason or "parse failed"
+                ):
+                    return
                 _log.warning(
                     "backlog: newest recent ApScout screenshot %s has marker but no "
                     "snapshot; suppressing older startup fallback",
@@ -897,6 +907,8 @@ class ScreenshotWatcher(QObject):
                 )
                 apply_closed = True
             if result.has_marker:
+                if self._stopped.is_set():
+                    return
                 try:
                     p.unlink()
                     deleted += 1
@@ -921,6 +933,8 @@ class ScreenshotWatcher(QObject):
         _log.info("new file: %s", path.name)
         wait_started = time.perf_counter()
         if not _wait_for_stable_size(path):
+            if self._stopped.is_set():
+                return
             wait_elapsed = time.perf_counter() - wait_started
             if wait_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S:
                 _log.info(
@@ -936,12 +950,17 @@ class ScreenshotWatcher(QObject):
             except Exception as e:
                 self._emit_decode_failed(path, repr(e))
                 result = DecodeResult(None, False)
+            if self._stopped.is_set():
+                return
             if result.snapshot is not None:
-                self._emit_snapshot(result.snapshot)
+                if not self._emit_snapshot(result.snapshot):
+                    return
             if result.has_marker:
                 reason = result.error_reason or "size never stabilized"
-                if result.snapshot is None:
-                    self._emit_decode_failed(path, reason)
+                if result.snapshot is None and not self._emit_decode_failed(path, reason):
+                    return
+                if self._stopped.is_set():
+                    return
                 try:
                     path.unlink()
                 except OSError:
@@ -954,6 +973,8 @@ class ScreenshotWatcher(QObject):
         except Exception as e:
             self._emit_decode_failed(path, repr(e))
             result = DecodeResult(None, False)
+        if self._stopped.is_set():
+            return
         decode_elapsed = time.perf_counter() - decode_started
         if (
             wait_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S
@@ -969,14 +990,20 @@ class ScreenshotWatcher(QObject):
         snap = result.snapshot
         marker = result.has_marker
         if snap is not None:
-            self._emit_snapshot(snap)
+            if not self._emit_snapshot(snap):
+                return
         if marker:
             if snap is None:
-                self._emit_decode_failed(path, result.error_reason or "parse failed")
+                if not self._emit_decode_failed(
+                    path, result.error_reason or "parse failed"
+                ):
+                    return
                 _log.warning(
                     "decode returned None for %s — APS1 marker FOUND but parse failed",
                     path.name,
                 )
+            if self._stopped.is_set():
+                return
             try:
                 path.unlink()
             except OSError as e:

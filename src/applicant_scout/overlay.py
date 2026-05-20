@@ -1353,6 +1353,8 @@ class ApplicantInfoPanel(QFrame):
     below it. Child widgets are created once and updated in-place on each
     hover; this keeps fast mouse movement cheap and avoids layout churn."""
 
+    pinCleared = pyqtSignal()
+
     def __init__(
         self,
         parent: QWidget,
@@ -1386,6 +1388,13 @@ class ApplicantInfoPanel(QFrame):
         header_layout.addWidget(self._name_label)
         header_layout.addWidget(self._realm_label)
         header_layout.addStretch(1)
+        self._unpin_button = QPushButton("×")
+        self._unpin_button.setObjectName("infoUnpinButton")
+        self._unpin_button.setFixedSize(22, 22)
+        self._unpin_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._unpin_button.setToolTip("Clear pinned applicant")
+        self._unpin_button.clicked.connect(self.pinCleared.emit)
+        header_layout.addWidget(self._unpin_button)
         outer.addWidget(header)
 
         identity = QWidget(self)
@@ -1504,8 +1513,11 @@ class ApplicantInfoPanel(QFrame):
         applicant: Applicant,
         listing: Listing | None = None,
         package: PackageFit | None = None,
+        *,
+        pinned: bool = False,
     ) -> None:
         """Show full applicant scout data in the fixed widget layout."""
+        self._unpin_button.setVisible(pinned)
         self._set_identity(applicant)
         self._set_package(package, applicant, listing)
         self._set_status_or_data(applicant, listing)
@@ -1521,6 +1533,7 @@ class ApplicantInfoPanel(QFrame):
         ):
             label.setText("")
             label.setVisible(False)
+        self._unpin_button.hide()
         for label in self._metric_labels.values():
             label.setText("")
             label.setVisible(False)
@@ -1930,6 +1943,7 @@ class OverlayWindow(QMainWindow):
         # Applicant info panel — fixed-height QWidget scout card. It updates
         # existing labels on hover/pin so the table below never jolts.
         self._panel = ApplicantInfoPanel(container, metric_preferences)
+        self._panel.pinCleared.connect(self._clear_pin)
         layout.addWidget(self._panel)
 
         # Table — _TooltipTableWidget overrides viewportEvent to render tooltips
@@ -2715,6 +2729,7 @@ class OverlayWindow(QMainWindow):
             applicant,
             self._effective_listing(),
             self._package_fit_by_raw.get(raw_aid) if self._active_tab == "applicants" else None,
+            pinned=visible_id == self._pinned_id,
         )
 
     def _apply_panel_height_above_table(self) -> None:
@@ -2810,13 +2825,20 @@ class OverlayWindow(QMainWindow):
 
     def _on_cell_clicked(self, row: int, _col: int) -> None:
         # cellClicked is left-button-only by Qt convention. REPLACE pin every
-        # click — never toggle. The X close button is the only un-pin path
+        # click — never toggle. The info-panel close button is the only un-pin path
         # (avoids "click pinned row to confirm" surprising the user with
         # silent un-pin).
         if not (0 <= row < len(self._id_by_row)):
             return
         self._pinned_id = self._id_by_row[row]
         self._pinned_by_tab[self._active_tab] = self._pinned_id
+        self._sync_delegate_and_panel()
+
+    def _clear_pin(self) -> None:
+        if self._pinned_id is None and self._pinned_by_tab.get(self._active_tab) is None:
+            return
+        self._pinned_id = None
+        self._pinned_by_tab[self._active_tab] = None
         self._sync_delegate_and_panel()
 
     def _resolve_hover_from_cursor(self) -> str | None:
@@ -4177,6 +4199,18 @@ _STYLESHEET = """
     color: #8d8d98;
     font-size: 12px;
     padding-top: 2px;
+}
+#infoUnpinButton {
+    color: #d8d8e2;
+    background-color: rgba(42, 42, 56, 210);
+    border: 1px solid rgba(90, 90, 118, 210);
+    border-radius: 3px;
+    font-size: 15px;
+    font-weight: bold;
+    padding-bottom: 2px;
+}
+#infoUnpinButton:hover {
+    background-color: rgba(74, 74, 96, 230);
 }
 #infoDungeonName {
     color: #d2d2dc;

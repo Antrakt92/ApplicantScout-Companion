@@ -34,6 +34,7 @@ from .config import (
     save_config_values,
     screenshots_path_health_warning,
     user_log_dir,
+    validate_metric_preferences,
 )
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
@@ -340,6 +341,12 @@ def _shutdown_running_instance(timeout_ms: int = 2000) -> int:
         return 1
     if result.response == b"blocked":
         log.warning("Running ApplicantScout instance refused the shutdown command.")
+        return 1
+    if result.response != b"ok":
+        log.warning(
+            "Running ApplicantScout instance did not acknowledge shutdown: %r",
+            result.response,
+        )
         return 1
     return 0
 
@@ -1547,6 +1554,22 @@ def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
     if screenshots_override is not None:
         clean_screenshots_path = screenshots_override.strip()
         screenshots_path = Path(clean_screenshots_path) if clean_screenshots_path else None
+    metric_preferences = validate_metric_preferences(
+        MetricPreferences(
+            mplus=_process_env_bool_override(
+                "APSCOUT_FETCH_MPLUS", cfg.metric_preferences.mplus
+            ),
+            raid_normal=_process_env_bool_override(
+                "APSCOUT_FETCH_RAID_NORMAL", cfg.metric_preferences.raid_normal
+            ),
+            raid_heroic=_process_env_bool_override(
+                "APSCOUT_FETCH_RAID_HEROIC", cfg.metric_preferences.raid_heroic
+            ),
+            raid_mythic=_process_env_bool_override(
+                "APSCOUT_FETCH_RAID_MYTHIC", cfg.metric_preferences.raid_mythic
+            ),
+        )
+    )
     return replace(
         cfg,
         wcl_client_id=os.environ.get("WCL_CLIENT_ID", cfg.wcl_client_id).strip(),
@@ -1563,20 +1586,7 @@ def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
             region_override if region_override is not None else cfg.region
         ),
         screenshots_path=screenshots_path,
-        metric_preferences=MetricPreferences(
-            mplus=_process_env_bool_override(
-                "APSCOUT_FETCH_MPLUS", cfg.metric_preferences.mplus
-            ),
-            raid_normal=_process_env_bool_override(
-                "APSCOUT_FETCH_RAID_NORMAL", cfg.metric_preferences.raid_normal
-            ),
-            raid_heroic=_process_env_bool_override(
-                "APSCOUT_FETCH_RAID_HEROIC", cfg.metric_preferences.raid_heroic
-            ),
-            raid_mythic=_process_env_bool_override(
-                "APSCOUT_FETCH_RAID_MYTHIC", cfg.metric_preferences.raid_mythic
-            ),
-        ),
+        metric_preferences=metric_preferences,
         sync_with_wow=_process_env_bool_override(
             "APSCOUT_SYNC_WITH_WOW", cfg.sync_with_wow
         ),
