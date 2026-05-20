@@ -165,6 +165,7 @@ class _QuotaSnapshot:
 @dataclass(frozen=True)
 class _QuotaReservation:
     points: float
+    auth_generation: int
 
 
 @dataclass
@@ -690,12 +691,17 @@ class WCLClient:
                 return guard_error
             reserved = max(0.0, points)
             self._reserved_quota_points += reserved
-            return _QuotaReservation(points=reserved)
+            return _QuotaReservation(
+                points=reserved,
+                auth_generation=self._auth_generation,
+            )
 
     def _release_quota_reservation(self, reservation: _QuotaReservation) -> None:
         if reservation.points <= 0:
             return
         with self._quota_lock:
+            if reservation.auth_generation != self._auth_generation:
+                return
             self._reserved_quota_points = max(
                 0.0, self._reserved_quota_points - reservation.points
             )
@@ -835,7 +841,10 @@ class WCLClient:
                             )
                     raise
                 if resp.status_code == 401 and attempt == 0:
-                    auth.invalidate()
+                    with self._quota_lock:
+                        is_current_auth = auth_generation == self._auth_generation
+                    if is_current_auth:
+                        auth.invalidate()
                     continue
                 if resp.status_code in (401, 403):
                     raise WCLApiError(

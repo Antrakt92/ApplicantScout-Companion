@@ -3322,6 +3322,9 @@ class OverlayWindow(QMainWindow):
         ) or not fetched_identity.metric_preferences.covers(
             current_identity.metric_preferences
         ):
+            if applicant.fetch_status in {"error", "not_found"}:
+                self._sync_delegate_and_panel()
+                return
             if not self._is_fetch_in_flight_for(
                 current_identity
             ) and not applicant.wcl_data_covers(self._metric_preferences):

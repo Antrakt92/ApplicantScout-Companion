@@ -808,6 +808,8 @@ class SettingsDialog(QDialog):
     def _finish_async_action(self, raw: object) -> None:
         if not isinstance(raw, _AsyncActionResult):
             return
+        if self._update_in_progress and raw.button is not self.update_button:
+            return
         raw.button.setEnabled(True)
         self._set_status(raw.message, error=raw.error)
         if raw.button is self.update_button:

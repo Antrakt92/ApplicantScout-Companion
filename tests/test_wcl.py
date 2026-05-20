@@ -828,6 +828,25 @@ def test_reconfigure_auth_clears_quota_reservation_state(
     assert client.quota_guard_retry_remaining_seconds(now=now) == 0.0
 
 
+def test_stale_quota_reservation_release_after_reconfigure_does_not_clear_new_reservation():
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+
+    old_reservation = client._reserve_quota_for_fetch(12.0)
+    assert not isinstance(old_reservation, CharacterRanks)
+    assert client._reserved_quota_points == pytest.approx(12.0)
+
+    client.reconfigure_auth(_FakeAuth())  # type: ignore[arg-type]
+    new_reservation = client._reserve_quota_for_fetch(12.0)
+    assert not isinstance(new_reservation, CharacterRanks)
+    assert client._reserved_quota_points == pytest.approx(12.0)
+
+    client._release_quota_reservation(old_reservation)
+    assert client._reserved_quota_points == pytest.approx(12.0)
+
+    client._release_quota_reservation(new_reservation)
+    assert client._reserved_quota_points == pytest.approx(0.0)
+
+
 def test_reconfigure_auth_ignores_stale_quota_snapshot_from_in_flight_fetch():
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
 
@@ -873,6 +892,31 @@ def test_reconfigure_auth_ignores_stale_429_from_in_flight_fetch(
 
     assert excinfo.value.error_kind == WCL_ERROR_RATE_LIMITED
     assert client.rate_limit_retry_remaining_seconds(now=now) == 0.0
+
+
+def test_reconfigure_auth_ignores_stale_401_invalidation():
+    old_auth = _FakeAuth()
+    client = WCLClient(old_auth, region="EU")  # type: ignore[arg-type]
+
+    class ReconfigureThenUnauthorizedHTTP:
+        calls = 0
+
+        def post(self, *_args, **_kwargs):
+            self.calls += 1
+            client.reconfigure_auth(_FakeAuth())  # type: ignore[arg-type]
+            return _FakeResponse({"error": "unauthorized"}, status_code=401)
+
+        def close(self) -> None:
+            pass
+
+    client._http.close()
+    client._http = ReconfigureThenUnauthorizedHTTP()  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_ranks("First", "ravencrest", spec_id=71)
+
+    assert excinfo.value.error_kind == WCL_ERROR_AUTH
+    assert old_auth.invalidations == 0
 
 
 def test_quota_guard_blocks_before_reset_without_spending_http_call(

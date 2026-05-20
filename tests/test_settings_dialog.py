@@ -966,6 +966,38 @@ def test_settings_dialog_ignores_stale_region_test_result(
     assert "changed" in dialog.status_label.text().lower()
 
 
+def test_settings_dialog_ignores_credential_result_during_update(
+    qtbot, tmp_path: Path
+):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+    tester_returned = threading.Event()
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        assert release_tester.wait(2)
+        tester_returned.set()
+        return "credentials ok"
+
+    dialog = SettingsDialog(_cfg(tmp_path), credential_tester=tester)
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.credentialsValidated.connect(seen.append)
+
+    dialog.client_id_edit.setText("new-client")
+    dialog.client_secret_edit.setText("new-secret")
+    dialog.test_button.click()
+    assert tester_entered.wait(2)
+    dialog.set_update_in_progress(True)
+    release_tester.set()
+
+    assert tester_returned.wait(2)
+    qtbot.wait(100)
+    assert seen == []
+    assert not dialog.test_button.isEnabled()
+    assert "credentials ok" not in dialog.status_label.text().lower()
+
+
 def test_settings_dialog_rejects_validated_credentials_when_current_values_invalid(
     qtbot, tmp_path: Path
 ):

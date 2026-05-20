@@ -114,6 +114,24 @@ def test_release_notes_loader_falls_back_to_source_checkout(
     assert main_mod._load_release_notes_text() == "# Source notes\n"
 
 
+def test_release_notes_loader_skips_non_utf8_candidate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    app_dir = tmp_path / "ApplicantScout"
+    app_dir.mkdir()
+    (app_dir / "RELEASE_NOTES.md").write_bytes(b"\xff\xfe\x00")
+    root = tmp_path / "repo"
+    module_dir = root / "src" / "applicant_scout"
+    module_dir.mkdir(parents=True)
+    (root / "RELEASE_NOTES.md").write_text("# Source notes\n", encoding="utf-8")
+    monkeypatch.setattr(main_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(main_mod.sys, "executable", str(app_dir / "ApplicantScout.exe"))
+    monkeypatch.setattr(main_mod, "__file__", str(module_dir / "__main__.py"))
+    monkeypatch.delattr(main_mod.sys, "_MEIPASS", raising=False)
+
+    assert main_mod._load_release_notes_text() == "# Source notes\n"
+
+
 def test_show_release_notes_dialog_uses_loaded_notes(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -135,6 +153,32 @@ def test_show_release_notes_dialog_uses_loaded_notes(
 
     assert created == [("# Notes", parent)]
     assert exec_calls == [True]
+
+
+def test_show_release_notes_dialog_warns_when_notes_are_not_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    warnings: list[tuple[object, str, str]] = []
+
+    def fake_warning(parent, title: str, text: str) -> None:
+        warnings.append((parent, title, text))
+
+    parent = object()
+    monkeypatch.setattr(
+        main_mod,
+        "_load_release_notes_text",
+        lambda: (_ for _ in ()).throw(
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        ),
+    )
+    monkeypatch.setattr(main_mod.QMessageBox, "warning", fake_warning)
+
+    main_mod._show_release_notes_dialog(parent)
+
+    assert warnings
+    assert warnings[0][0] is parent
+    assert warnings[0][1] == "ApplicantScout changelog"
+    assert "Could not open changelog" in warnings[0][2]
 
 
 def test_explicit_nonexistent_screenshots_override_returns_path(tmp_path: Path):
@@ -502,6 +546,19 @@ def test_load_config_rejects_invalid_metric_bool_from_user_config_before_legacy_
     )
 
     with pytest.raises(ConfigError, match="APSCOUT_FETCH_RAID_NORMAL"):
+        load_config()
+
+
+def test_load_config_rejects_malformed_user_config_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    config_path = user_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text('WCL_CLIENT_ID="unterminated\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="Could not parse ApplicantScout config"):
         load_config()
 
 

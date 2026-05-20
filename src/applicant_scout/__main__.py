@@ -646,7 +646,8 @@ class StateMachine(QObject):
         region_identity_changed: bool = False,
         default_realm_changed: bool = False,
         rio_summary_target_key: int = 0,
-    ) -> None:
+        emit_signal: bool = True,
+    ) -> bool:
         new_by_id = {
             self._roster_key(decoded.name): decoded
             for decoded in roster
@@ -683,8 +684,9 @@ class StateMachine(QObject):
                 changed = True
             self._state.add_or_update_party_member(member)
 
-        if changed:
+        if changed and emit_signal:
             self.rosterChanged.emit()
+        return changed
 
     def apply_snapshot(self, snap: Snapshot) -> None:
         region_identity_changed = False
@@ -742,14 +744,17 @@ class StateMachine(QObject):
         if new_listing is None and old_listing is not None:
             self._state.listing = None
             self._state.clear_all()
-            self.listingChanged.emit()
-            self.cleared.emit()
-            self._apply_roster_snapshot(
+            roster_changed = self._apply_roster_snapshot(
                 snap.roster,
                 region_identity_changed=region_identity_changed,
                 default_realm_changed=default_realm_changed,
                 rio_summary_target_key=0,
+                emit_signal=False,
             )
+            self.listingChanged.emit()
+            self.cleared.emit()
+            if roster_changed:
+                self.rosterChanged.emit()
             return
 
         # No listing in snap AND no prior listing → roster/version can still update.
@@ -1012,14 +1017,14 @@ def _release_notes_candidate_paths() -> tuple[Path, ...]:
 
 
 def _load_release_notes_text() -> str:
-    last_error: OSError | None = None
+    last_error: OSError | UnicodeError | None = None
     candidates = _release_notes_candidate_paths()
     for path in candidates:
         try:
             return path.read_text(encoding="utf-8")
         except FileNotFoundError:
             continue
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             last_error = exc
     searched = ", ".join(str(path) for path in candidates)
     if last_error is not None:
@@ -1030,7 +1035,7 @@ def _load_release_notes_text() -> str:
 def _show_release_notes_dialog(parent: Any | None = None) -> None:
     try:
         release_notes = _load_release_notes_text()
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, UnicodeError) as exc:
         log.warning("Could not open ApplicantScout changelog: %s", exc)
         QMessageBox.warning(
             parent,

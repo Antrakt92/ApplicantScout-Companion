@@ -140,7 +140,14 @@ def check_for_update(
 ) -> UpdateResult:
     """Return latest non-prerelease GitHub Release status."""
     owns_client = client is None
-    http = client or httpx.Client(timeout=10.0)
+    try:
+        http = client or httpx.Client(timeout=10.0)
+    except httpx.HTTPError as exc:
+        return UpdateResult(
+            status="unavailable",
+            message=f"GitHub update check failed: {exc}",
+            current_version=current_version,
+        )
     try:
         resp = http.get(
             f"{GITHUB_API_BASE}/repos/{repo}/releases",

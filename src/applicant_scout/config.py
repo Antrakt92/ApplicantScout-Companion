@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import dotenv_values
+from dotenv.parser import parse_stream
 
 from .atomic_io import atomic_write_text
 from .constants import REGION_ID_TO_WCL
@@ -196,11 +196,16 @@ def _legacy_env_path() -> Path | None:
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
-    raw = dotenv_values(path)
     values: dict[str, str] = {}
-    for key, value in raw.items():
-        if value is not None:
-            values[key] = value
+    with path.open(encoding="utf-8") as stream:
+        for binding in parse_stream(stream):
+            if binding.error:
+                raise ConfigError(
+                    f"Could not parse ApplicantScout config at {path}: "
+                    f"invalid line {binding.original.line}"
+                )
+            if binding.key is not None and binding.value is not None:
+                values[binding.key] = binding.value
     return values
 
 

@@ -1306,6 +1306,83 @@ def test_old_narrow_completion_does_not_clear_ready_broad_data(qtbot, tmp_path):
         client.close()
 
 
+def test_old_narrow_completion_does_not_refetch_after_broad_not_found(
+    qtbot, tmp_path
+):
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=narrow)
+
+    try:
+        window._launch_fetch(app)
+        narrow_identity = window._in_flight_identity(app.applicant_id)
+        assert narrow_identity is not None
+
+        window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
+        broad_identity = window._in_flight_identity(app.applicant_id)
+        assert broad_identity is not None
+
+        window._on_fetch_done(broad_identity, CharacterRanks.empty(not_found=True))
+        assert app.fetch_status == "not_found"
+
+        window._on_fetch_done(
+            narrow_identity, _ranks_with(raid_heroic=11.0, mplus_dps=22.0)
+        )
+
+        assert app.fetch_status == "not_found"
+        assert window._in_flight_identity(app.applicant_id) is None
+    finally:
+        client.close()
+
+
+def test_old_narrow_completion_does_not_refetch_after_broad_error(qtbot, tmp_path):
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=narrow)
+
+    try:
+        window._launch_fetch(app)
+        narrow_identity = window._in_flight_identity(app.applicant_id)
+        assert narrow_identity is not None
+
+        window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
+        broad_identity = window._in_flight_identity(app.applicant_id)
+        assert broad_identity is not None
+
+        window._on_fetch_done(
+            broad_identity,
+            CharacterRanks.empty(error="WCL server error", error_kind=WCL_ERROR_SERVER),
+        )
+        assert app.fetch_status == "error"
+        assert app.error_message == "WCL server error"
+
+        window._on_fetch_done(
+            narrow_identity, _ranks_with(raid_heroic=11.0, mplus_dps=22.0)
+        )
+
+        assert app.fetch_status == "error"
+        assert app.error_message == "WCL server error"
+        assert window._in_flight_identity(app.applicant_id) is None
+    finally:
+        client.close()
+
+
 def test_wcl_runtime_generation_bump_refetches_party_members(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")
@@ -1382,6 +1459,7 @@ def test_stale_fetch_generation_does_not_apply(qtbot, tmp_path):
 def test_listing_clear_roster_snapshot_does_not_requeue_stale_party_fetch(
     qtbot,
     tmp_path,
+    monkeypatch,
 ):
     state = AppState()
     machine = StateMachine(state)
@@ -1439,8 +1517,16 @@ def test_listing_clear_roster_snapshot_does_not_requeue_stale_party_fetch(
         machine.apply_snapshot(listed)
         assert window._listing_session_generation == 0
 
+        launcher_calls: list[str] = []
+        monkeypatch.setattr(
+            window,
+            "show_launcher_only",
+            lambda: launcher_calls.append("show_launcher_only"),
+        )
+
         machine.apply_snapshot(roster_only)
 
+        assert launcher_calls == []
         assert window._listing_session_generation == 1
         assert len(queued_pool.tasks) == 1
         stale_identity = queued_pool.tasks[0]._identity
