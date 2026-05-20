@@ -987,6 +987,86 @@ def test_settings_change_validates_screenshots_before_wow_sync_runtime(
     assert calls == []
 
 
+def test_settings_apply_respects_process_env_overrides_for_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    env_root = tmp_path / "env" / "World of Warcraft" / "_retail_"
+    ui_root = tmp_path / "ui" / "World of Warcraft" / "_retail_"
+    for root in (env_root, ui_root):
+        (root / "Interface" / "AddOns").mkdir(parents=True)
+        (root / "Screenshots").mkdir()
+    env_screenshots = env_root / "Screenshots"
+    ui_screenshots = ui_root / "Screenshots"
+    env_prefs = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    cfg = _cfg(tmp_path, screenshots_path=env_screenshots)
+    cfg.metric_preferences = env_prefs
+    cfg.sync_with_wow = True
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(ui_screenshots),
+        metric_preferences=MetricPreferences(),
+        sync_with_wow=False,
+    )
+    applied_preferences: list[MetricPreferences] = []
+    calls: list[str] = []
+
+    monkeypatch.setenv("APSCOUT_SCREENSHOTS_PATH", str(env_screenshots))
+    monkeypatch.setenv("APSCOUT_FETCH_MPLUS", "0")
+    monkeypatch.setenv("APSCOUT_FETCH_RAID_NORMAL", "0")
+    monkeypatch.setenv("APSCOUT_FETCH_RAID_HEROIC", "1")
+    monkeypatch.setenv("APSCOUT_FETCH_RAID_MYTHIC", "0")
+    monkeypatch.setenv("APSCOUT_SYNC_WITH_WOW", "1")
+    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_replace_screenshots_runtime",
+        lambda *_args, **_kwargs: calls.append("replace-screenshots"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_apply_wow_sync_runtime",
+        lambda *_args, **_kwargs: calls.append("wow-sync"),
+    )
+
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=False,
+        auth=object(),
+        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda prefs, **_kwargs: applied_preferences.append(
+                prefs
+            ),
+            bump_wcl_runtime_generation=lambda: None,
+        ),
+        watcher=object(),
+        current_screenshots_dir=env_screenshots,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=object(),
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert result.cfg.screenshots_path == env_screenshots
+    assert result.cfg.metric_preferences == env_prefs
+    assert result.cfg.sync_with_wow is True
+    assert result.current_screenshots_dir == env_screenshots
+    assert applied_preferences == [env_prefs]
+    assert calls == []
+
+
 def test_settings_change_rejects_explicit_suspicious_screenshots_before_persist_or_runtime(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -1918,7 +1998,55 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
     )
 
     assert main_mod._run_first_run_settings(cfg)
-    assert calls == ["save", "shortcut", "watcher"]
+    assert calls == ["shortcut", "watcher", "save"]
+
+
+def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    calls: list[str] = []
+    warnings: list[str] = []
+
+    class FakeDialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setWindowIcon(self, _icon) -> None:
+            pass
+
+        def exec(self):
+            return main_mod.QDialog.DialogCode.Accepted
+
+        def values(self):
+            class Values:
+                wcl_client_id = "client"
+                wcl_client_secret = "secret"
+                region = "EU"
+                screenshots_path = str(tmp_path / "Screenshots")
+                metric_preferences = cfg.metric_preferences
+                sync_with_wow = True
+
+            return Values()
+
+    monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
+    monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
+    monkeypatch.setattr(main_mod, "save_config_values", lambda **_kwargs: calls.append("save"))
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda _enabled: (_ for _ in ()).throw(RuntimeError("shortcut failed")),
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    assert not main_mod._run_first_run_settings(cfg)
+    assert calls == []
+    assert len(warnings) == 1
+    assert "shortcut failed" in warnings[0]
 
 
 def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
@@ -3067,11 +3195,13 @@ def test_check_updates_downloads_and_launches_installable_release(
         lambda path: calls.append(path),
     )
 
-    message, open_url = main_mod._check_updates()
+    update_result = main_mod._check_updates()
 
     assert calls == [result, installer]
-    assert open_url is None
-    assert "Installing ApplicantScout Companion v0.2.0" in message
+    assert isinstance(update_result, main_mod.SettingsUpdateResult)
+    assert update_result.open_url is None
+    assert update_result.installer_handoff is True
+    assert "Installing ApplicantScout Companion v0.2.0" in update_result.message
 
 
 def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(

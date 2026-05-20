@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import ctypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -35,10 +35,16 @@ from .config import (
     user_log_dir,
 )
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
+from .metric_preferences import MetricPreferences
 from .overlay import OverlayWindow
 from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_path
 from .screenshot import DecodedRosterMember, ScreenshotWatcher, Snapshot
-from .settings_dialog import ReleaseNotesDialog, SettingsDialog, open_folder
+from .settings_dialog import (
+    ReleaseNotesDialog,
+    SettingsDialog,
+    SettingsUpdateResult,
+    open_folder,
+)
 from .state import Applicant, AppState, Listing, RosterMember, WoWPlayer
 from .updater import (
     check_for_update,
@@ -908,7 +914,7 @@ class StateMachine(QObject):
 
 class UpdateSignals(QObject):
     checked = pyqtSignal(int, object)
-    completed = pyqtSignal(str, bool)
+    completed = pyqtSignal(str, bool, bool)
 
 
 class _UpdateCheckCoordinator:
@@ -1078,7 +1084,7 @@ def _safe_check_for_update(current_version: str) -> UpdateResult:
         )
 
 
-def _check_updates() -> tuple[str, str | None]:
+def _check_updates() -> SettingsUpdateResult | tuple[str, str | None]:
     if not _UPDATE_INSTALL_LOCK.acquire(blocking=False):
         raise RuntimeError("Update is already in progress.")
     try:
@@ -1093,10 +1099,12 @@ def _check_updates() -> tuple[str, str | None]:
             raise RuntimeError(str(message))
         installer = download_update_installer(result)
         launch_update_installer(installer)
-        return (
-            f"Installing ApplicantScout Companion {getattr(result, 'latest_version', 'update')}. "
-            "The companion may close and reopen during the update.",
-            None,
+        return SettingsUpdateResult(
+            message=(
+                f"Installing ApplicantScout Companion {getattr(result, 'latest_version', 'update')}. "
+                "The companion may close and reopen during the update."
+            ),
+            installer_handoff=True,
         )
     finally:
         _UPDATE_INSTALL_LOCK.release()
@@ -1476,6 +1484,63 @@ def _settings_env_override_keys() -> list[str]:
     return [key for key in keys if os.environ.get(key) is not None]
 
 
+def _process_env_bool_override(key: str, current: bool) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return current
+    value = raw.strip().lower()
+    if not value:
+        return current
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{key} must be one of: 1, 0, true, false, yes, no, on, off")
+
+
+def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
+    screenshots_override = os.environ.get("APSCOUT_SCREENSHOTS_PATH")
+    region_override = os.environ.get("APSCOUT_REGION")
+    screenshots_path = cfg.screenshots_path
+    if screenshots_override is not None:
+        clean_screenshots_path = screenshots_override.strip()
+        screenshots_path = Path(clean_screenshots_path) if clean_screenshots_path else None
+    return replace(
+        cfg,
+        wcl_client_id=os.environ.get("WCL_CLIENT_ID", cfg.wcl_client_id).strip(),
+        wcl_client_secret=os.environ.get(
+            "WCL_CLIENT_SECRET", cfg.wcl_client_secret
+        ).strip(),
+        draft_wcl_client_id=os.environ.get(
+            "APSCOUT_DRAFT_WCL_CLIENT_ID", cfg.draft_wcl_client_id
+        ).strip(),
+        draft_wcl_client_secret=os.environ.get(
+            "APSCOUT_DRAFT_WCL_CLIENT_SECRET", cfg.draft_wcl_client_secret
+        ).strip(),
+        region=normalize_wcl_region(
+            region_override if region_override is not None else cfg.region
+        ),
+        screenshots_path=screenshots_path,
+        metric_preferences=MetricPreferences(
+            mplus=_process_env_bool_override(
+                "APSCOUT_FETCH_MPLUS", cfg.metric_preferences.mplus
+            ),
+            raid_normal=_process_env_bool_override(
+                "APSCOUT_FETCH_RAID_NORMAL", cfg.metric_preferences.raid_normal
+            ),
+            raid_heroic=_process_env_bool_override(
+                "APSCOUT_FETCH_RAID_HEROIC", cfg.metric_preferences.raid_heroic
+            ),
+            raid_mythic=_process_env_bool_override(
+                "APSCOUT_FETCH_RAID_MYTHIC", cfg.metric_preferences.raid_mythic
+            ),
+        ),
+        sync_with_wow=_process_env_bool_override(
+            "APSCOUT_SYNC_WITH_WOW", cfg.sync_with_wow
+        ),
+    )
+
+
 def _settings_saved_status(values, override_keys: list[str]) -> tuple[str, bool]:
     path_warning = (
         screenshots_path_health_warning(Path(values.screenshots_path))
@@ -1655,6 +1720,7 @@ def _apply_settings_change(
         values,
         apply_credentials=apply_credentials,
     )
+    new_cfg = _apply_process_env_overrides_to_config(new_cfg)
     new_screenshots_dir = resolve_screenshots_path(new_cfg)
     _persist_settings_values(
         old_cfg,
@@ -1757,7 +1823,6 @@ def _run_first_run_settings(
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return False
     values = dialog.values()
-    _persist_settings_values(cfg, values)
     try:
         configure_wow_sync_startup(values.sync_with_wow)
         if values.sync_with_wow:
@@ -1767,8 +1832,10 @@ def _run_first_run_settings(
         QMessageBox.warning(
             None,
             "ApplicantScout settings",
-            f"Settings were saved, but the WoW startup shortcut could not be updated: {exc}",
+            f"Settings were not saved because the WoW startup shortcut could not be updated: {exc}",
         )
+        return False
+    _persist_settings_values(cfg, values)
     return True
 
 
@@ -2109,20 +2176,34 @@ def main(argv: list[str] | None = None) -> int:
 
         def _worker() -> None:
             try:
-                message, _url = _check_updates()
-                update_signals.completed.emit(message, False)
+                result = _check_updates()
+                if isinstance(result, SettingsUpdateResult):
+                    message = result.message
+                    installer_handoff = result.installer_handoff
+                else:
+                    message, _url = result
+                    installer_handoff = False
+                update_signals.completed.emit(message, False, installer_handoff)
             except Exception as exc:  # noqa: BLE001
-                update_signals.completed.emit(f"Update failed: {exc}", True)
+                update_signals.completed.emit(f"Update failed: {exc}", True, False)
 
         threading.Thread(target=_worker, name="ApplicantScoutUpdater", daemon=True).start()
 
-    def _handle_update_completed(message: str, error: bool) -> None:
+    def _handle_update_completed(
+        message: str, error: bool, installer_handoff: bool
+    ) -> None:
         nonlocal pending_update_version
         if error:
             _set_update_in_progress(False)
             QMessageBox.warning(window, "ApplicantScout update", message)
             return
         pending_update_version = None
+        if not installer_handoff:
+            _set_update_in_progress(False)
+            if settings_dialog is not None:
+                settings_dialog.set_update_available(None)
+            if tray_controller is not None:
+                tray_controller.set_update_available(None)
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",

@@ -844,7 +844,6 @@ class ScreenshotWatcher(QObject):
                     "backlog: skipping unstable recent screenshot %s",
                     p.name,
                 )
-                apply_closed = True
                 continue
             # Single decode pass. Within apply window AND not yet applied → emit
             # the parsed snapshot. Outside window OR apply closed → still

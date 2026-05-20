@@ -1498,6 +1498,45 @@ def test_backlog_skips_unstable_recent_file_without_decoding_or_deleting(
     assert image_path.exists()
 
 
+def test_backlog_unstable_newest_manual_does_not_delete_older_valid_snapshot_without_applying(
+    monkeypatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    newest = tmp_path / "WoWScrnShot_0001.jpg"
+    older = tmp_path / "WoWScrnShot_9999.jpg"
+    newest.write_bytes(b"manual-still-writing")
+    older.write_bytes(b"transport")
+    os.utime(newest, (now, now))
+    os.utime(older, (now - 5.0, now - 5.0))
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_wait_for_stable_size",
+        lambda path: path != newest,
+    )
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: screenshot_mod.DecodeResult(snapshot, True)
+        if path == older
+        else screenshot_mod.DecodeResult(None, False),
+    )
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == [snapshot]
+    assert failures == []
+    assert newest.exists()
+    assert not older.exists()
+
+
 def test_watcher_stop_suppresses_backlog_signals(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     image_path.write_bytes(b"x")

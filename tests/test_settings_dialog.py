@@ -20,7 +20,11 @@ from applicant_scout import __version__
 from applicant_scout.config import Config
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 import applicant_scout.settings_dialog as settings_mod
-from applicant_scout.settings_dialog import ReleaseNotesDialog, SettingsDialog
+from applicant_scout.settings_dialog import (
+    ReleaseNotesDialog,
+    SettingsDialog,
+    SettingsUpdateResult,
+)
 
 
 def _cfg(tmp_path: Path, *, client_id: str = "client", secret: str = "secret") -> Config:
@@ -625,7 +629,10 @@ def test_settings_update_flushes_pending_values_before_update_start(
 ):
     dialog = SettingsDialog(
         _cfg(tmp_path),
-        check_updates=lambda: "Installing update.",
+        check_updates=lambda: SettingsUpdateResult(
+            "Installing update.",
+            installer_handoff=True,
+        ),
     )
     qtbot.addWidget(dialog)
     dialog._autosave_timer.setInterval(5000)
@@ -654,7 +661,10 @@ def test_settings_update_aborts_when_pending_values_apply_fails(
 ):
     dialog = SettingsDialog(
         _cfg(tmp_path),
-        check_updates=lambda: "Installing update.",
+        check_updates=lambda: SettingsUpdateResult(
+            "Installing update.",
+            installer_handoff=True,
+        ),
     )
     qtbot.addWidget(dialog)
     dialog._autosave_timer.setInterval(5000)
@@ -721,7 +731,10 @@ def test_settings_dialog_keeps_update_blocked_after_installer_handoff(
 ):
     dialog = SettingsDialog(
         _cfg(tmp_path),
-        check_updates=lambda: "Installing update.",
+        check_updates=lambda: SettingsUpdateResult(
+            "Installing update.",
+            installer_handoff=True,
+        ),
     )
     qtbot.addWidget(dialog)
     finished: list[bool] = []
@@ -740,6 +753,28 @@ def test_settings_dialog_keeps_update_blocked_after_installer_handoff(
     assert completed == []
     assert not dialog.update_button.isHidden()
     assert not dialog.update_button.isEnabled()
+
+
+def test_settings_dialog_finishes_update_when_no_installer_handoff(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: "ApplicantScout Companion is up to date.",
+    )
+    qtbot.addWidget(dialog)
+    finished: list[bool] = []
+    completed: list[None] = []
+    dialog.updateFinished.connect(lambda error: finished.append(error))
+    dialog.updateCompleted.connect(lambda: completed.append(None))
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    qtbot.waitUntil(lambda: bool(completed), timeout=1000)
+    assert finished == [False]
+    assert completed == [None]
+    assert dialog.update_button.isHidden()
 
 
 def test_normal_settings_close_button_hides_to_tray(qtbot, tmp_path: Path):

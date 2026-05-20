@@ -52,7 +52,6 @@ from .metric_preferences import MetricPreferences
 
 CredentialTester = Callable[[str, str, str], str]
 SimpleAction = Callable[[], str]
-UpdateAction = Callable[[], tuple[str, str | None]]
 COMMON_WOW_RETAIL_ROOTS = (
     Path(r"C:\Games\World of Warcraft\_retail_"),
     Path(r"C:\Program Files (x86)\World of Warcraft\_retail_"),
@@ -104,12 +103,24 @@ class SettingsValues:
 
 
 @dataclass(frozen=True)
+class SettingsUpdateResult:
+    message: str
+    open_url: str | None = None
+    installer_handoff: bool = False
+
+
+ActionReturn = str | tuple[str, str | None] | SettingsUpdateResult
+UpdateAction = Callable[[], ActionReturn]
+
+
+@dataclass(frozen=True)
 class _AsyncActionResult:
     button: QAbstractButton | QAction
     message: str
     error: bool = False
     open_url: str | None = None
     success_payload: object | None = None
+    keep_disabled: bool = False
 
 
 class _AsyncSignals(QObject):
@@ -776,7 +787,7 @@ class SettingsDialog(QDialog):
         button: QAbstractButton | QAction,
         busy_text: str,
         error_prefix: str,
-        action: Callable[[], str | tuple[str, str | None]],
+        action: Callable[[], ActionReturn],
         success_payload: object | None = None,
     ) -> None:
         button.setEnabled(False)
@@ -785,7 +796,12 @@ class SettingsDialog(QDialog):
         def _worker() -> None:
             try:
                 result = action()
-                if isinstance(result, tuple):
+                keep_disabled = False
+                if isinstance(result, SettingsUpdateResult):
+                    message = result.message
+                    open_url = result.open_url
+                    keep_disabled = result.installer_handoff
+                elif isinstance(result, tuple):
                     message, open_url = result
                 else:
                     message, open_url = result, None
@@ -794,6 +810,7 @@ class SettingsDialog(QDialog):
                     message,
                     open_url=open_url,
                     success_payload=success_payload,
+                    keep_disabled=keep_disabled,
                 )
             except Exception as exc:  # noqa: BLE001
                 outcome = _AsyncActionResult(
@@ -815,10 +832,15 @@ class SettingsDialog(QDialog):
             if raw.error:
                 raw.button.setEnabled(True)
                 self.updateFinished.emit(True)
-            else:
+            elif raw.keep_disabled:
                 raw.button.setEnabled(False)
                 self.update_button.show()
                 raw.button.setToolTip("Installing ApplicantScout update...")
+            else:
+                raw.button.setEnabled(True)
+                self.updateFinished.emit(False)
+                self.set_update_available(None)
+                self.updateCompleted.emit()
             return
         raw.button.setEnabled(True)
         if not raw.error and raw.open_url:

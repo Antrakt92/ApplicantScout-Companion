@@ -1611,3 +1611,86 @@ def test_listing_clear_roster_snapshot_does_not_requeue_stale_party_fetch(
         assert state.party_members["host-realma"].fetch_status == "ready"
     finally:
         client.close()
+
+
+def test_listing_clear_with_unchanged_party_roster_does_not_leave_loading_without_inflight(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    state = AppState()
+    machine = StateMachine(state)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+    machine.applicantAdded.connect(window.on_applicant_added)
+    machine.applicantUpdated.connect(window.on_applicant_updated)
+    machine.applicantRemoved.connect(window.on_applicant_removed)
+    machine.listingChanged.connect(window.on_listing_changed)
+    machine.rosterChanged.connect(window.on_roster_changed)
+    machine.cleared.connect(window.on_cleared)
+
+    listed = Snapshot(
+        listing=DecodedListing(
+            activity_id=401,
+            dungeon_name="Pit of Saron",
+            listing_name="+14",
+            comment="",
+            key_level=14,
+            category_id=2,
+        ),
+        version=DecodedVersion(
+            addon_version="1.0.0",
+            game_version="12.0.0",
+            region_id=3,
+            player_name="Host-RealmA",
+        ),
+        roster=[
+            DecodedRosterMember(
+                unit_index=0,
+                flags=1,
+                subgroup=1,
+                class_id=1,
+                spec_id=71,
+                ilvl=480,
+                score=2400,
+                main_score=0,
+                role=2,
+                name="Host-RealmA",
+            )
+        ],
+    )
+    roster_only = Snapshot(
+        listing=None,
+        version=DecodedVersion(
+            addon_version="1.0.0",
+            game_version="12.0.0",
+            region_id=3,
+            player_name="Host-RealmA",
+        ),
+        roster=listed.roster,
+    )
+
+    try:
+        machine.apply_snapshot(listed)
+        assert len(queued_pool.tasks) == 1
+
+        launcher_calls: list[str] = []
+        monkeypatch.setattr(
+            window,
+            "show_launcher_only",
+            lambda: launcher_calls.append("show_launcher_only"),
+        )
+
+        machine.apply_snapshot(roster_only)
+
+        member = state.party_members["host-realma"]
+        assert launcher_calls == []
+        assert member.fetch_status == "loading"
+        assert len(queued_pool.tasks) == 2
+        assert len(window._fetches_in_flight) == 1
+        identity = queued_pool.tasks[-1]._identity
+        assert identity.row_source == "party"
+        assert identity.listing_session_generation == 1
+    finally:
+        client.close()

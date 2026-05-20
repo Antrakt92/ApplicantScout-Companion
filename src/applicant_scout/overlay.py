@@ -2389,6 +2389,11 @@ class OverlayWindow(QMainWindow):
 
     def on_cleared(self) -> None:
         self._listing_session_generation += 1
+        party_fetches_to_restore = [
+            identity
+            for identity in self._fetches_in_flight.values()
+            if identity.row_source == "party"
+        ]
         self._fetches_in_flight.clear()
         self._restore_party_on_next_roster = False
         self._clear_role_filter()
@@ -2406,6 +2411,10 @@ class OverlayWindow(QMainWindow):
         self._sync_delegate_and_panel()
         self._update_title()
         if self._state.party_members:
+            for identity in party_fetches_to_restore:
+                member = self._state.party_members.get(identity.applicant_id)
+                if member is not None and member.fetch_status in {"pending", "loading"}:
+                    self._launch_fetch(member)
             self._active_tab = "party"
             self._tab_bar.set_active("party", emit=False)
             self._schedule_overlay_refresh(update_title=True, maybe_show=True)
