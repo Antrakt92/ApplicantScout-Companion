@@ -1601,6 +1601,29 @@ def test_character_cache_clear_rejects_stale_generation_put(tmp_path):
     assert not cache._path.exists()
 
 
+def test_character_cache_clear_during_get_rejects_selected_stale_entry(
+    monkeypatch, tmp_path
+):
+    cache = CharacterCache(tmp_path)
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+    )
+    original_ranks_from_entry = cache._ranks_from_entry
+
+    def clear_before_rebuild(entry):
+        cache.clear()
+        return original_ranks_from_entry(entry)
+
+    monkeypatch.setattr(cache, "_ranks_from_entry", clear_before_rebuild)
+
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
 def test_character_cache_put_accepts_current_generation_after_clear(tmp_path):
     cache = CharacterCache(tmp_path)
     old_generation = cache.generation

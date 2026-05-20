@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 
-from PyQt6.QtCore import QEvent, QPoint, QRect, Qt
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
@@ -954,6 +955,66 @@ def test_geometry_leave_event_keeps_hover_when_cursor_still_over_row(
         client.close()
 
 
+def test_geometry_mouse_move_empty_local_pos_keeps_hover_when_cursor_still_over_row(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    detailed = _app(
+        applicant_id="detailed",
+        fetch_status="ready",
+        mplus_dps=90.0,
+        mplus_dps_median=80.0,
+        mplus_dps_breakdown=[
+            {
+                "name": f"Dungeon {idx}",
+                "parse_percent": 80.0 + idx,
+                "median_percent": 70.0 + idx,
+                "key_level": 10 + idx,
+                "run_count": 2,
+            }
+            for idx in range(8)
+        ],
+    )
+    state.add_or_update(detailed)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    class FakeMouseMove:
+        def type(self):
+            return QEvent.Type.MouseMove
+
+        def position(self):
+            return QPointF(8, window._table.viewport().height() + 12)
+
+    try:
+        window.setGeometry(160, 180, 360, 240)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        window._on_cell_entered(0, 0)
+        QApplication.processEvents()
+        viewport = window._table.viewport()
+        assert viewport is not None
+        cursor_pos = viewport.mapToGlobal(
+            QPoint(8, window._table.rowViewportPosition(0) + window._table.rowHeight(0) // 2)
+        )
+        monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: cursor_pos)
+
+        window.eventFilter(viewport, FakeMouseMove())
+        QApplication.processEvents()
+
+        assert window._hover_id == "detailed"
+        assert window._panel.height() == window._panel.target_height()
+    finally:
+        client.close()
+
+
 def test_overlay_constructor_initializes_geometry_event_state_before_set_geometry(
     monkeypatch, qtbot, tmp_path
 ):
@@ -1317,6 +1378,43 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
         client.close()
 
 
+def test_launcher_click_during_foreground_grace_does_not_show_overlay_outside_game(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        assert window._game_foreground
+
+        foreground["active"] = False
+        window._launcher_foreground_grace_until = time.monotonic() + 10.0
+        window._sync_game_foreground_visibility()
+        assert window._game_foreground
+        assert window._launcher.isVisible()
+
+        window.restore_from_launcher()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert window._collapsed_to_launcher
+        assert not window._game_foreground
+    finally:
+        client.close()
+
+
 def test_open_overlay_stays_visible_while_companion_window_is_active(
     qtbot, tmp_path, monkeypatch
 ):
@@ -1425,6 +1523,44 @@ def test_title_bar_hide_button_collapses_to_launcher_without_shutdown(qtbot, tmp
         assert window._wcl_client is client
         assert not client._http.is_closed
     finally:
+        client.close()
+
+
+def test_overlay_close_hides_launcher_window(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        assert window.close()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._launcher.is_dragging()
+        assert QWidget.mouseGrabber() is not window._launcher
+
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
         client.close()
 
 

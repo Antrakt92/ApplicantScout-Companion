@@ -1144,6 +1144,51 @@ def test_decode_screenshot_falls_through_corrupt_raw_to_valid_hex(
     assert [a.name for a in snap.applicants] == ["Fallback-Realm"]
 
 
+def test_decode_screenshot_falls_back_to_full_image_when_crop_has_corrupt_appscout_qr(
+    monkeypatch, tmp_path: Path
+):
+    image_path = tmp_path / "crop_corrupt_full_valid.png"
+    Image.new("L", (1000, 1000), 255).save(image_path)
+    corrupt_crop = bytearray(_wrap_payload(_build_body([])))
+    corrupt_crop[-1] ^= 0xFF
+    full_payload = _wrap_payload(
+        _build_body(
+            [
+                _build_applicant_block(
+                    aid=11,
+                    class_id=1,
+                    spec_id=71,
+                    ilvl=480,
+                    score=2443,
+                    role=2,
+                    name="Full-Realm",
+                    version=1,
+                )
+            ]
+        ),
+        wire_ver=0x01,
+    )
+    seen_sizes: list[tuple[int, int]] = []
+
+    def fake_decode(img, symbols=None):
+        seen_sizes.append(img.size)
+        if img.size == (screenshot_mod.QR_SCAN_CROP_PX, screenshot_mod.QR_SCAN_CROP_PX):
+            return [SimpleNamespace(data=bytes(corrupt_crop))]
+        return [SimpleNamespace(data=full_payload)]
+
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", fake_decode)
+
+    snap, marker = decode_screenshot(image_path)
+
+    assert marker is True
+    assert snap is not None
+    assert [a.name for a in snap.applicants] == ["Full-Realm"]
+    assert seen_sizes == [
+        (screenshot_mod.QR_SCAN_CROP_PX, screenshot_mod.QR_SCAN_CROP_PX),
+        (1000, 1000),
+    ]
+
+
 def test_decode_screenshot_marks_corrupt_appscout_payload_as_ours(
     monkeypatch, tmp_path: Path
 ):

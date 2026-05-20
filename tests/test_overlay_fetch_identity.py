@@ -8,6 +8,7 @@ import applicant_scout.wcl as wcl_mod
 from applicant_scout.__main__ import StateMachine
 from applicant_scout.overlay import (
     _FetchIdentity,
+    _FetchTask,
     _fetch_identity_for_applicant,
     OverlayWindow,
 )
@@ -57,6 +58,30 @@ class _UiThreadCacheProbe:
     def get(self, *_args, **_kwargs):
         self.get_called = True
         raise AssertionError("cache lookup must stay off the UI launch path")
+
+
+class _GenerationChangingCache:
+    generation = 0
+
+    def __init__(self) -> None:
+        self.put_expected_generation: int | None = None
+
+    def get(self, *_args, **_kwargs):
+        self.generation += 1
+        return _ranks_with(raid_heroic=22.0, mplus_dps=77.0)
+
+    def put(self, *_args, expected_generation: int | None = None, **_kwargs) -> bool:
+        self.put_expected_generation = expected_generation
+        return False
+
+
+class _FreshFetchClient:
+    def __init__(self) -> None:
+        self.fetch_called = False
+
+    def fetch_character_ranks(self, *_args, **_kwargs) -> CharacterRanks:
+        self.fetch_called = True
+        return _ranks_with(raid_heroic=44.0, mplus_dps=88.0)
 
 
 def _app(**overrides) -> Applicant:
@@ -235,6 +260,30 @@ def test_cache_hit_applies_from_worker_without_network_fetch(qtbot, tmp_path):
         assert app.applicant_id not in window._fetches_in_flight
     finally:
         client.close()
+
+
+def test_fetch_task_refetches_when_cache_generation_changes_after_hit():
+    identity = _FetchIdentity(
+        applicant_id="42:1",
+        charname_key="scout",
+        server_slug="realma",
+        region="EU",
+        spec_id=71,
+        metric_role="DPS",
+        metric_preferences=ALL_METRIC_PREFERENCES,
+    )
+    cache = _GenerationChangingCache()
+    client = _FreshFetchClient()
+    task = _FetchTask(identity, "Scout", client, cache)  # type: ignore[arg-type]
+    emitted: list[CharacterRanks] = []
+    task.signals.done.connect(lambda _identity, ranks: emitted.append(ranks))
+
+    task.run()
+
+    assert client.fetch_called is True
+    assert emitted[-1].raid_heroic == 44.0
+    assert emitted[-1].mplus_dps == 88.0
+    assert cache.put_expected_generation == 0
 
 
 def test_fetch_done_burst_coalesces_overlay_refresh(qtbot, tmp_path):

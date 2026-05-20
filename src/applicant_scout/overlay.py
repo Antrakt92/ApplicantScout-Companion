@@ -368,7 +368,7 @@ class _FetchTask(QRunnable):
             identity.metric_role,
             identity.metric_preferences,
         )
-        if cached is not None:
+        if cached is not None and self._cache.generation == self._cache_generation:
             _log.info(
                 "WCL fetch cache hit: %s-%s in %.2fs",
                 self._name,
@@ -1862,6 +1862,7 @@ class OverlayWindow(QMainWindow):
         self._game_foreground = self._is_game_foreground()
         self._launcher_foreground_grace_until = 0.0
         self._collapsed_to_launcher = False
+        self._closed = False
         self._launcher = OverlayLauncher()
         self._launcher.clicked.connect(self.restore_from_launcher)
         self._launcher.dragStarted.connect(self._pause_foreground_polling_for_launcher_drag)
@@ -2180,6 +2181,8 @@ class OverlayWindow(QMainWindow):
         self.show_launcher_only()
 
     def show_launcher_only(self) -> None:
+        if self._closed:
+            return
         self._collapsed_to_launcher = True
         self.hide()
         if self._launcher.is_dragging():
@@ -2191,12 +2194,19 @@ class OverlayWindow(QMainWindow):
             self._launcher.hide()
 
     def restore_from_launcher(self) -> None:
+        if self._closed:
+            return
+        if not self._is_game_foreground():
+            self._game_foreground = False
+            self._collapsed_to_launcher = True
+            self._launcher.hide()
+            return
+        self._game_foreground = True
         self._collapsed_to_launcher = False
         self._launcher.hide()
-        if self._game_foreground:
-            self.show()
-            self.raise_()
-            self.activateWindow()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _is_game_foreground(self) -> bool:
         try:
@@ -2210,6 +2220,8 @@ class OverlayWindow(QMainWindow):
             self._foreground_timer.stop()
 
     def _resume_foreground_polling_after_launcher_drag(self) -> None:
+        if self._closed:
+            return
         self._launcher_foreground_grace_until = (
             time.monotonic() + LAUNCHER_FOREGROUND_GRACE_S
         )
@@ -2217,6 +2229,8 @@ class OverlayWindow(QMainWindow):
             self._foreground_timer.start()
 
     def _sync_game_foreground_visibility(self) -> None:
+        if self._closed:
+            return
         if self._launcher.is_dragging():
             return
         foreground = self._is_game_foreground()
@@ -2866,6 +2880,8 @@ class OverlayWindow(QMainWindow):
         save_launcher_position(self._config_dir, launcher_position)
 
     def _maybe_show(self) -> None:
+        if self._closed:
+            return
         if not self._game_foreground:
             if self._collapsed_to_launcher and self._launcher.is_dragging():
                 return
@@ -3554,11 +3570,17 @@ class OverlayWindow(QMainWindow):
                     self._sync_delegate_and_panel()
             elif event.type() == QEvent.Type.MouseMove:
                 # Cursor over the empty area below the last row → clear hover.
+                # Re-resolve from the global cursor first because a panel height
+                # change can move the window between Qt's local event coordinate
+                # calculation and this filter, briefly making a valid hover look
+                # like empty local space.
                 # event has position() in Qt6 (returns QPointF).
                 pos = event.position().toPoint()  # type: ignore[attr-defined]
                 if self._table.rowAt(pos.y()) < 0 and self._hover_id is not None:
-                    self._hover_id = None
-                    self._sync_delegate_and_panel()
+                    new_id = self._resolve_hover_from_cursor()
+                    if new_id != self._hover_id:
+                        self._hover_id = new_id
+                        self._sync_delegate_and_panel()
             return False  # never consume — let Qt continue normal processing
         # Branch D — Alt-Tab away from window.
         if (
@@ -3608,7 +3630,14 @@ class OverlayWindow(QMainWindow):
         self._reresolve_hover_from_cursor()
 
     def closeEvent(self, event):
+        self._closed = True
+        self._foreground_timer.stop()
+        self._empty_hide_timer.stop()
+        self._quota_timer.stop()
+        self._wcl_retry_timer.stop()
         self.flush_geometry()
+        self._launcher.hide()
+        self._launcher.close()
         super().closeEvent(event)
 
 

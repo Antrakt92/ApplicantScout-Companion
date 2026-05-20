@@ -1514,6 +1514,7 @@ class CharacterCache:
         key = f"{prefix}:{metric_preferences.cache_key()}"
         now = time.time()
         with self._lock:
+            generation = self._generation
             candidates: list[tuple[int, float, int, int, _CacheEntry]] = []
             exact_entry = self._data.get(key)
             if exact_entry is not None:
@@ -1540,6 +1541,9 @@ class CharacterCache:
         for _exact_rank, _fetched_at, _breadth, _index, entry in candidates:
             ranks = self._ranks_from_entry(entry)
             if ranks is not None:
+                with self._lock:
+                    if generation != self._generation:
+                        return None
                 return _project_ranks_to_metric_preferences(ranks, metric_preferences)
         return None
 

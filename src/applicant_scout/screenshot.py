@@ -179,14 +179,19 @@ def _has_appscout_symbol(payloads: list[bytes]) -> bool:
     return bool(_collect_appscout_qr_candidates(payloads))
 
 
-def _decode_qr_symbol_data(image_path: Path) -> list[bytes]:
-    """Return raw pyzbar symbol bytes from one screenshot image.
+def _iter_qr_symbol_data_batches(image_path: Path) -> Iterator[list[bytes]]:
+    """Yield raw pyzbar symbol batches from one screenshot image.
 
     pyzbar exposes zbar's payload pointer together with an explicit data length,
     so embedded NUL bytes survive intact. That lets us support both transport
     variants the addon may emit:
       * legacy hex text QR (decode via `bytes.fromhex(...)`)
       * raw APS1 byte-mode QR fallback for oversized payloads
+
+    The top-left crop is yielded first for normal transport performance. If the
+    crop contains an ApplicantScout marker but its payload later fails parsing,
+    callers can continue to the full-image batch and recover from a stale/corrupt
+    QR in the crop while a valid moved/debug QR exists elsewhere in the screenshot.
     """
     # Context-managed Image.open: PIL keeps a lazy file handle until pixel
     # access. If pyzbar_decode raises before the bitmap is materialised
@@ -206,13 +211,26 @@ def _decode_qr_symbol_data(image_path: Path) -> list[bytes]:
                 with img.crop((0, 0, crop_width, crop_height)) as cropped:
                     payloads = _decode_qr_symbols(cropped)
                 if _has_appscout_symbol(payloads):
-                    return payloads
+                    yield payloads
+                    full_payloads = _decode_qr_symbols(img)
+                    if full_payloads:
+                        yield full_payloads
+                    return
                 full_payloads = _decode_qr_symbols(img)
-                return full_payloads
-            return _decode_qr_symbols(img)
+                if full_payloads:
+                    yield full_payloads
+                return
+            payloads = _decode_qr_symbols(img)
+            if payloads:
+                yield payloads
     except (OSError, IOError) as e:
         _log.debug("Image.open failed %s: %s", image_path.name, e)
-        return []
+
+
+def _decode_qr_symbol_data(image_path: Path) -> list[bytes]:
+    for payloads in _iter_qr_symbol_data_batches(image_path):
+        return payloads
+    return []
 
 
 def _decode_legacy_hex_qr(data: bytes) -> Optional[bytes]:
@@ -587,33 +605,39 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
     `decode_screenshot(p) ... if not snap and _has_marker(p): unlink()` would
     pay TWO ~30-80ms decodes per failure. The tuple return collapses to one.
     """
-    symbol_payloads = _decode_qr_symbol_data(image_path)
-    candidates = _collect_appscout_qr_candidates(symbol_payloads)
-    if not candidates:
-        return DecodeResult(None, False)  # no QR / unrelated QR
-
     first_error: Optional[str] = None
-    for kind, raw in candidates:
-        snap, err = _try_parse_appscout_payload(raw)
-        if snap is not None:
-            wire_ver = raw[4]
-            # Diagnostic: confirms which wire version we just parsed. v0x01 =
-            # leader-only (legacy); v0x02 = multi-member groups; v0x03 =
-            # listing context. If you reload the addon and still see an older
-            # wire version, you're likely processing a stale screenshot taken
-            # before the addon update.
-            _log.info(
-                "decoded %s: mode=%s wire=0x%02x apps=%d",
-                image_path.name,
-                kind,
-                wire_ver,
-                len(snap.applicants),
-            )
-            return DecodeResult(snap, True)
-        if err is not None:
-            if first_error is None:
-                first_error = f"{kind}: {err}"
-            _log.debug("candidate rejected in %s (%s): %s", image_path.name, kind, err)
+    has_marker = False
+    for symbol_payloads in _iter_qr_symbol_data_batches(image_path):
+        candidates = _collect_appscout_qr_candidates(symbol_payloads)
+        if not candidates:
+            continue
+        has_marker = True
+        for kind, raw in candidates:
+            snap, err = _try_parse_appscout_payload(raw)
+            if snap is not None:
+                wire_ver = raw[4]
+                # Diagnostic: confirms which wire version we just parsed. v0x01 =
+                # leader-only (legacy); v0x02 = multi-member groups; v0x03 =
+                # listing context. If you reload the addon and still see an older
+                # wire version, you're likely processing a stale screenshot taken
+                # before the addon update.
+                _log.info(
+                    "decoded %s: mode=%s wire=0x%02x apps=%d",
+                    image_path.name,
+                    kind,
+                    wire_ver,
+                    len(snap.applicants),
+                )
+                return DecodeResult(snap, True)
+            if err is not None:
+                if first_error is None:
+                    first_error = f"{kind}: {err}"
+                _log.debug(
+                    "candidate rejected in %s (%s): %s", image_path.name, kind, err
+                )
+
+    if not has_marker:
+        return DecodeResult(None, False)  # no QR / unrelated QR
 
     if first_error is not None:
         _log.warning("decode failed in %s: %s", image_path.name, first_error)
