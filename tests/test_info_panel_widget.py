@@ -1172,6 +1172,66 @@ def test_flush_geometry_near_screen_top_preserves_unexpanded_window_origin(
         client.close()
 
 
+def test_hidden_panel_refresh_preserves_unexpanded_geometry_for_quit_flush(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(
+            applicant_id="detailed",
+            fetch_status="ready",
+            mplus_dps=90.0,
+            mplus_dps_median=80.0,
+            mplus_dps_breakdown=[
+                {
+                    "name": f"Dungeon {idx}",
+                    "parse_percent": 80.0 + idx,
+                    "median_percent": 70.0 + idx,
+                    "key_level": 10 + idx,
+                    "run_count": 2,
+                }
+                for idx in range(8)
+            ],
+        )
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.setGeometry(160, 180, 360, 240)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        window._on_cell_entered(0, 0)
+        QApplication.processEvents()
+        assert window.geometry().y() < 180
+        assert window.geometry().height() > 240
+
+        window.collapse_to_launcher()
+        saved_after_collapse = json.loads(
+            (tmp_path / "window.json").read_text(encoding="utf-8")
+        )
+        assert saved_after_collapse["y"] == 180
+        assert saved_after_collapse["h"] == 240
+
+        window._sync_delegate_and_panel()
+        window.flush_geometry()
+
+        saved_after_hidden_refresh = json.loads(
+            (tmp_path / "window.json").read_text(encoding="utf-8")
+        )
+        assert saved_after_hidden_refresh["y"] == 180
+        assert saved_after_hidden_refresh["h"] == 240
+    finally:
+        client.close()
+
+
 def test_overlay_starts_collapsed_with_launcher_visible(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)

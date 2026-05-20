@@ -856,6 +856,23 @@ def test_custom_titlebar_close_respects_no_tray_quit_policy(qtbot, tmp_path: Pat
     assert quit_requested == [True]
 
 
+def test_no_tray_close_flushes_pending_text_values_before_quit(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
+    qtbot.addWidget(dialog)
+    seen: list[tuple[str, str]] = []
+    dialog.valuesChanged.connect(lambda values: seen.append(("saved", values.wcl_client_id)))
+    dialog.quitRequested.connect(lambda: seen.append(("quit", "")))
+    dialog.show()
+
+    dialog.client_id_edit.setText("new-client")
+    assert dialog._autosave_timer.isActive()
+
+    closed = dialog.close()
+
+    assert closed
+    assert seen == [("saved", "new-client"), ("quit", "")]
+
+
 def test_settings_close_ignored_while_update_in_progress(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
     qtbot.addWidget(dialog)

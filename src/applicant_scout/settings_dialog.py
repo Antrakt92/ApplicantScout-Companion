@@ -655,6 +655,7 @@ class SettingsDialog(QDialog):
             self._set_status("Update is installing. Wait for it to finish before closing.", error=True)
             return
         if not self._hide_to_tray_on_close:
+            self.flush_pending_values()
             super().closeEvent(event)
             self.quitRequested.emit()
             return

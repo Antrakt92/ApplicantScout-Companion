@@ -235,6 +235,24 @@ def test_solo_app_creates_single_entry_with_member_idx_one():
     assert list(state.applicants.keys()) == ["99:1"]
 
 
+def test_placeholder_applicant_name_is_skipped():
+    state = AppState()
+    sm = StateMachine(state)
+    snap = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(aid=42, member_idx=1, name="?"),
+            _decoded(aid=99, member_idx=1, name="Solo-Realm"),
+        ],
+    )
+
+    sm.apply_snapshot(snap)
+
+    assert list(state.applicants.keys()) == ["99:1"]
+    assert state.applicants["99:1"].name == "Solo-Realm"
+
+
 def test_new_applicant_maps_main_score():
     state = AppState()
     sm = StateMachine(state)

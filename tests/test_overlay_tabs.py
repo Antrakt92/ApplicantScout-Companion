@@ -215,6 +215,28 @@ def test_tabs_preserve_pins_independently(qtbot, tmp_path):
     assert win._pinned_id == "7:1"
 
 
+def test_hide_show_clears_inactive_tab_hover_cache(qtbot, tmp_path):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+
+    win.show()
+    qtbot.waitUntil(win.isVisible, timeout=1000)
+    win._refresh_table()
+    win._on_cell_entered(0, 0)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    assert win._hover_by_tab["applicants"] == "7:1"
+
+    win.hide()
+    win.show()
+    qtbot.waitUntil(win.isVisible, timeout=1000)
+    qtbot.mouseClick(win._tab_bar._buttons["applicants"], Qt.MouseButton.LeftButton)
+
+    assert win._hover_by_tab["applicants"] is None
+    assert win._hover_id is None
+
+
 def test_roster_only_update_prepares_party_tab_without_forcing_overlay_open(
     qtbot, tmp_path
 ):

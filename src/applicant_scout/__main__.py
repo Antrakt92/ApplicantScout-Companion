@@ -800,13 +800,16 @@ class StateMachine(QObject):
         # all sharing applicant_id but with distinct member_idx 1..N). Solo
         # apps + legacy v0x01 payloads decode with member_idx=1, producing
         # keys like "42:1" — same shape, no special-casing needed.
-        new_by_id = {f"{a.applicant_id}:{a.member_idx}": a for a in snap.applicants}
+        valid_applicants = [
+            a for a in snap.applicants if (name := a.name.strip()) and name != "?"
+        ]
+        new_by_id = {f"{a.applicant_id}:{a.member_idx}": a for a in valid_applicants}
         # Diagnostic: per-applicant_id member-count distribution. Helps verify
         # multi-member group emit is reaching the companion (expect aid_groups
         # like {42: 2, 99: 1} when a 2-person group + a solo apply together).
-        if snap.applicants:
+        if valid_applicants:
             aid_groups: dict[int, int] = {}
-            for a in snap.applicants:
+            for a in valid_applicants:
                 aid_groups[a.applicant_id] = aid_groups.get(a.applicant_id, 0) + 1
             multi_member = {aid: c for aid, c in aid_groups.items() if c > 1}
             if multi_member:
@@ -1531,7 +1534,10 @@ def _saved_config_bool_for_process_override(
 ) -> bool:
     if os.environ.get(key) is None:
         return current
-    return _parse_saved_bool(key, saved_values.get(key), default=default)
+    try:
+        return _parse_saved_bool(key, saved_values.get(key), default=default)
+    except ConfigError:
+        return current
 
 
 def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
@@ -1639,11 +1645,20 @@ def _persist_settings_values(
     apply_credentials: bool = True,
 ) -> Path:
     saved_values = read_user_config_values(cfg.config_path) if cfg.config_path else {}
+    wcl_env_blocks_active_credentials = (
+        os.environ.get("WCL_CLIENT_ID") is not None
+        or os.environ.get("WCL_CLIENT_SECRET") is not None
+    )
     credentials_changed = (
         values.wcl_client_id != cfg.wcl_client_id
         or values.wcl_client_secret != cfg.wcl_client_secret
     )
-    if apply_credentials:
+    if apply_credentials and wcl_env_blocks_active_credentials:
+        active_client_id = cfg.wcl_client_id
+        active_client_secret = cfg.wcl_client_secret
+        draft_client_id = values.wcl_client_id
+        draft_client_secret = values.wcl_client_secret
+    elif apply_credentials:
         active_client_id = values.wcl_client_id
         active_client_secret = values.wcl_client_secret
         draft_client_id = ""

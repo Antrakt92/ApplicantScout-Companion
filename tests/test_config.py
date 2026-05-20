@@ -767,6 +767,78 @@ def test_persist_settings_values_promotes_validated_wcl_credentials(
     assert saved["draft_wcl_client_secret"] == ""
 
 
+def test_persist_settings_values_keeps_validated_wcl_draft_when_env_blocks_promotion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    config_path = save_config_values(
+        wcl_client_id="saved-client",
+        wcl_client_secret="saved-secret",
+        draft_wcl_client_id="draft-client",
+        draft_wcl_client_secret="draft-secret",
+        region="EU",
+    )
+    monkeypatch.setenv("WCL_CLIENT_ID", "env-client")
+    monkeypatch.setenv("WCL_CLIENT_SECRET", "env-secret")
+    cfg = load_config()
+    values = SimpleNamespace(
+        wcl_client_id="draft-client",
+        wcl_client_secret="draft-secret",
+        region=cfg.region,
+        screenshots_path="",
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+
+    main_mod._persist_settings_values(cfg, values, apply_credentials=True)
+    saved = config_mod._read_env_file(config_path)
+
+    assert saved["WCL_CLIENT_ID"] == "saved-client"
+    assert saved["WCL_CLIENT_SECRET"] == "saved-secret"
+    assert saved["APSCOUT_DRAFT_WCL_CLIENT_ID"] == "draft-client"
+    assert saved["APSCOUT_DRAFT_WCL_CLIENT_SECRET"] == "draft-secret"
+
+
+def test_persist_settings_values_repairs_invalid_saved_bool_masked_by_env_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    config_path = save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=True,
+            raid_heroic=False,
+            raid_mythic=False,
+        ),
+    )
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'APSCOUT_FETCH_MPLUS="0"',
+            'APSCOUT_FETCH_MPLUS="definitely"',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("APSCOUT_FETCH_MPLUS", "1")
+    cfg = load_config()
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region="US",
+        screenshots_path="",
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+
+    main_mod._persist_settings_values(cfg, values, apply_credentials=False)
+    saved = config_mod._read_env_file(config_path)
+
+    assert saved["APSCOUT_REGION"] == "US"
+    assert saved["APSCOUT_FETCH_MPLUS"] == "1"
+
+
 def test_has_pending_wcl_credentials_detects_partial_or_complete_drafts(
     tmp_path: Path,
 ):

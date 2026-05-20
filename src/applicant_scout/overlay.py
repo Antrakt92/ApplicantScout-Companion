@@ -2705,8 +2705,6 @@ class OverlayWindow(QMainWindow):
 
     def _apply_panel_height_above_table(self) -> None:
         if not self.isVisible():
-            self._panel_anchor_extra_height = 0
-            self._panel_anchor_y_offset = 0
             return
 
         target_height = self._panel.target_height()
@@ -3579,9 +3577,13 @@ class OverlayWindow(QMainWindow):
         self._launcher.hide()
         super().showEvent(event)
         # Mouse may have moved while window was hidden — drop stale hover.
-        # Pin survives intentionally (it's persistent user state).
-        if self._hover_id is not None:
-            self._hover_id = None
+        # Pin survives intentionally (it's persistent user state), but hover is
+        # transient for every tab and must not resurrect from an inactive tab.
+        had_hover = self._hover_id is not None or any(self._hover_by_tab.values())
+        self._hover_id = None
+        for tab_key in self._hover_by_tab:
+            self._hover_by_tab[tab_key] = None
+        if had_hover:
             self._sync_delegate_and_panel()
         QTimer.singleShot(0, self._apply_panel_height_above_table)
         # Defer cursor-resolve to next event-loop tick: showEvent fires BEFORE
