@@ -255,6 +255,30 @@ def test_roster_only_update_prepares_party_tab_without_forcing_overlay_open(
     assert win._table.rowCount() == 1
 
 
+def test_listing_created_after_roster_only_state_switches_back_to_applicants(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    state.party_members["host-realm"].fetch_status = "ready"
+    win = _window(tmp_path, qtbot, state)
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._active_tab == "party"
+
+    qtbot.mouseClick(win._role_filter_bar._buttons["TANK"], Qt.MouseButton.LeftButton)
+    assert win._role_filter == {"TANK"}
+
+    state.listing = _listing()
+    win.on_listing_changed()
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == []
+    assert win._role_filter == set()
+
+
 def test_party_tab_rio_cell_shows_current_and_main_scores(qtbot, tmp_path):
     state = AppState()
     state.party_members["alt-realm"] = _member(

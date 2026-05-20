@@ -1877,6 +1877,7 @@ class OverlayWindow(QMainWindow):
         self._wcl_client = wcl_client
         self._cache = cache
         self._config_dir = config_dir
+        self._listing_present = state.listing is not None
         self._metric_preferences = metric_preferences
         self._show_settings = show_settings
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
@@ -1920,6 +1921,7 @@ class OverlayWindow(QMainWindow):
         layout.addWidget(self._title_bar)
 
         self._active_tab = "applicants"
+        self._party_tab_auto_selected = False
         self._hover_by_tab: dict[str, str | None] = {
             "applicants": None,
             "party": None,
@@ -2312,6 +2314,7 @@ class OverlayWindow(QMainWindow):
         self._hover_by_tab[self._active_tab] = self._hover_id
         self._pinned_by_tab[self._active_tab] = self._pinned_id
         self._active_tab = key
+        self._party_tab_auto_selected = False
         self._hover_id = self._hover_by_tab.get(key)
         self._pinned_id = self._pinned_by_tab.get(key)
         self._refresh_table()
@@ -2398,6 +2401,7 @@ class OverlayWindow(QMainWindow):
                 self._restore_party_on_next_roster = False
                 self._empty_hide_timer.stop()
                 self._active_tab = "party"
+                self._party_tab_auto_selected = True
                 self._tab_bar.set_active("party", emit=False)
                 self._clear_role_filter()
                 self._schedule_overlay_refresh(update_title=True, maybe_show=True)
@@ -2415,6 +2419,8 @@ class OverlayWindow(QMainWindow):
 
     def on_listing_changed(self) -> None:
         listing = self._state.listing
+        listing_created = listing is not None and not self._listing_present
+        self._listing_present = listing is not None
         if (
             self._manual_target_key is not None
             and listing is not None
@@ -2432,6 +2438,11 @@ class OverlayWindow(QMainWindow):
         # listing comment edits would re-show the window otherwise.
         if self._state.listing is None:
             return
+        if listing_created and self._active_tab == "party" and self._party_tab_auto_selected:
+            self._active_tab = "applicants"
+            self._party_tab_auto_selected = False
+            self._tab_bar.set_active("applicants", emit=False)
+            self._clear_role_filter()
         if self._state.count() > 0:
             self._maybe_show()
         else:
@@ -2469,6 +2480,7 @@ class OverlayWindow(QMainWindow):
                 if member is not None and member.fetch_status in {"pending", "loading"}:
                     self._launch_fetch(member)
             self._active_tab = "party"
+            self._party_tab_auto_selected = True
             self._tab_bar.set_active("party", emit=False)
             self._schedule_overlay_refresh(update_title=True, maybe_show=True)
             return
@@ -2500,11 +2512,13 @@ class OverlayWindow(QMainWindow):
             return
         if self._active_tab == "party" and len(self._state.party_members) == 0:
             self._active_tab = "applicants"
+            self._party_tab_auto_selected = False
             self._tab_bar.set_active("applicants", emit=False)
             self._clear_role_filter()
         should_show_party = self._state.count() == 0 and len(self._state.party_members) > 0
         if should_show_party:
             self._active_tab = "party"
+            self._party_tab_auto_selected = True
             self._tab_bar.set_active("party", emit=False)
             self._clear_role_filter()
             if self._restore_party_on_next_roster and not self._launcher.is_dragging():
