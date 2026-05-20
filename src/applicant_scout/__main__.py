@@ -28,6 +28,7 @@ from .config import (
     ConfigError,
     is_config_ready,
     load_config,
+    normalize_wcl_region,
     resolve_screenshots_path,
     save_config_values,
     screenshots_path_health_warning,
@@ -134,6 +135,16 @@ class _WCLRegionRuntime:
 class _WowLifecycleSignals(QObject):
     checked = pyqtSignal(bool)
     checkFailed = pyqtSignal()
+
+
+@dataclass(frozen=True)
+class _SettingsApplyResult:
+    cfg: Config
+    auth: Any
+    watcher: Any
+    current_screenshots_dir: Path
+    wow_exit_timer: Any
+    overrides: list[str]
 
 
 class TrayController:
@@ -1213,21 +1224,25 @@ def _apply_wow_sync_runtime(
 ) -> QTimer | None:
     configure_wow_sync_startup(enabled)
     if enabled:
-        start_wow_sync_watcher()
-        if current_timer is None:
-            if can_quit is not None:
+        try:
+            start_wow_sync_watcher()
+            if current_timer is None:
+                if can_quit is not None:
+                    return _start_wow_lifecycle_timer(
+                        app,
+                        has_seen_wow=is_wow_running(),
+                        quit_app=quit_app,
+                        can_quit=can_quit,
+                    )
                 return _start_wow_lifecycle_timer(
                     app,
                     has_seen_wow=is_wow_running(),
                     quit_app=quit_app,
-                    can_quit=can_quit,
                 )
-            return _start_wow_lifecycle_timer(
-                app,
-                has_seen_wow=is_wow_running(),
-                quit_app=quit_app,
-            )
-        return current_timer
+            return current_timer
+        except Exception:
+            configure_wow_sync_startup(False)
+            raise
     if current_timer is not None:
         state = getattr(current_timer, "_applicant_scout_wow_lifecycle_state", None)
         if isinstance(state, dict):
@@ -1524,6 +1539,174 @@ def _persist_settings_values(
     )
 
 
+def _persist_config_snapshot(cfg: Config) -> Path:
+    return save_config_values(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        draft_wcl_client_id=cfg.draft_wcl_client_id,
+        draft_wcl_client_secret=cfg.draft_wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(cfg.screenshots_path) if cfg.screenshots_path else "",
+        cache_ttl_seconds=cfg.cache_ttl_seconds,
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+        chatlog_path="" if cfg.screenshots_path else str(cfg.chatlog_path),
+        config_path=cfg.config_path,
+    )
+
+
+def _settings_values_to_config(
+    cfg: Config,
+    values,
+    *,
+    apply_credentials: bool = True,
+) -> Config:
+    credentials_changed = (
+        values.wcl_client_id != cfg.wcl_client_id
+        or values.wcl_client_secret != cfg.wcl_client_secret
+    )
+    if apply_credentials:
+        active_client_id = values.wcl_client_id
+        active_client_secret = values.wcl_client_secret
+        draft_client_id = ""
+        draft_client_secret = ""
+    elif credentials_changed:
+        active_client_id = cfg.wcl_client_id
+        active_client_secret = cfg.wcl_client_secret
+        draft_client_id = values.wcl_client_id
+        draft_client_secret = values.wcl_client_secret
+    else:
+        active_client_id = cfg.wcl_client_id
+        active_client_secret = cfg.wcl_client_secret
+        draft_client_id = ""
+        draft_client_secret = ""
+    screenshots_text = str(values.screenshots_path or "").strip()
+    return Config(
+        wcl_client_id=active_client_id,
+        wcl_client_secret=active_client_secret,
+        chatlog_path=cfg.chatlog_path,
+        region=normalize_wcl_region(values.region),
+        cache_dir=cfg.cache_dir,
+        config_dir=cfg.config_dir,
+        screenshots_path=Path(screenshots_text) if screenshots_text else None,
+        cache_ttl_seconds=cfg.cache_ttl_seconds,
+        config_path=cfg.config_path,
+        log_dir=cfg.log_dir,
+        metric_preferences=values.metric_preferences,
+        sync_with_wow=bool(values.sync_with_wow),
+        draft_wcl_client_id=draft_client_id,
+        draft_wcl_client_secret=draft_client_secret,
+    )
+
+
+def _apply_settings_change(
+    *,
+    app: QApplication,
+    cfg: Config,
+    values,
+    apply_credentials: bool,
+    auth,
+    wcl_client,
+    region_runtime: _WCLRegionRuntime,
+    window,
+    watcher,
+    current_screenshots_dir: Path,
+    machine,
+    decode_failed_callback: Callable[[str, str], None],
+    signal_gate: _WatcherSignalGate,
+    wow_exit_timer,
+    quit_app: Callable[[], None],
+    can_quit: Callable[[], bool],
+) -> _SettingsApplyResult:
+    old_cfg = cfg
+    new_cfg = _settings_values_to_config(
+        old_cfg,
+        values,
+        apply_credentials=apply_credentials,
+    )
+    new_screenshots_dir = (
+        Path(new_cfg.screenshots_path)
+        if new_cfg.screenshots_path is not None
+        else resolve_screenshots_path(new_cfg)
+    )
+    _persist_settings_values(
+        old_cfg,
+        values,
+        apply_credentials=apply_credentials,
+    )
+    new_wow_exit_timer = wow_exit_timer
+    wow_sync_changed = old_cfg.sync_with_wow != new_cfg.sync_with_wow
+    new_watcher = watcher
+    try:
+        if wow_sync_changed:
+            new_wow_exit_timer = _apply_wow_sync_runtime(
+                app,
+                new_cfg.sync_with_wow,
+                wow_exit_timer,
+                quit_app=quit_app,
+                can_quit=can_quit,
+            )
+        if new_screenshots_dir != current_screenshots_dir:
+            new_watcher = _replace_screenshots_runtime(
+                watcher,
+                new_screenshots_dir,
+                machine,
+                window,
+                decode_failed_callback,
+                signal_gate=signal_gate,
+            )
+    except Exception:
+        if wow_sync_changed:
+            try:
+                _apply_wow_sync_runtime(
+                    app,
+                    old_cfg.sync_with_wow,
+                    new_wow_exit_timer,
+                    quit_app=quit_app,
+                    can_quit=can_quit,
+                )
+            except Exception as rollback_exc:  # noqa: BLE001
+                log.warning("Could not roll back WoW sync runtime: %s", rollback_exc)
+        try:
+            _persist_config_snapshot(old_cfg)
+        except Exception as rollback_exc:  # noqa: BLE001
+            log.warning("Could not roll back settings file: %s", rollback_exc)
+        raise
+
+    credentials_promoted = apply_credentials and (
+        old_cfg.wcl_client_id != new_cfg.wcl_client_id
+        or old_cfg.wcl_client_secret != new_cfg.wcl_client_secret
+    )
+    region_effective_changed = region_runtime.set_fallback(new_cfg.region)
+    wcl_runtime_changed = credentials_promoted or region_effective_changed
+    new_auth = auth
+    if new_cfg.wcl_client_id and new_cfg.wcl_client_secret and credentials_promoted:
+        new_auth = WCLAuth(
+            new_cfg.wcl_client_id,
+            new_cfg.wcl_client_secret,
+            new_cfg.cache_dir,
+        )
+        wcl_client.reconfigure_auth(new_auth)
+    if wcl_runtime_changed:
+        wcl_client.region = region_runtime.effective_region
+        window.apply_metric_preferences(
+            new_cfg.metric_preferences,
+            refetch_missing=False,
+        )
+        window.bump_wcl_runtime_generation()
+    else:
+        window.apply_metric_preferences(new_cfg.metric_preferences)
+
+    return _SettingsApplyResult(
+        cfg=new_cfg,
+        auth=new_auth,
+        watcher=new_watcher,
+        current_screenshots_dir=new_screenshots_dir,
+        wow_exit_timer=new_wow_exit_timer,
+        overrides=_settings_env_override_keys(),
+    )
+
+
 def _run_first_run_settings(
     cfg: Config,
     *,
@@ -1799,70 +1982,36 @@ def main(argv: list[str] | None = None) -> int:
             nonlocal current_screenshots_dir
             nonlocal watcher
             nonlocal wow_exit_timer
-            old_cfg = cfg
             dialog.set_status("Saving...")
             try:
-                _persist_settings_values(
-                    cfg,
-                    values,
+                result = _apply_settings_change(
+                    app=app,
+                    cfg=cfg,
+                    values=values,
                     apply_credentials=apply_credentials,
+                    auth=auth,
+                    wcl_client=wcl_client,
+                    region_runtime=region_runtime,
+                    window=window,
+                    watcher=watcher,
+                    current_screenshots_dir=current_screenshots_dir,
+                    machine=machine,
+                    decode_failed_callback=_log_decode_failed,
+                    signal_gate=watcher_signal_gate,
+                    wow_exit_timer=wow_exit_timer,
+                    quit_app=_request_quit_application,
+                    can_quit=_can_quit_application,
                 )
-                new_cfg = load_config()
-                if old_cfg.sync_with_wow != new_cfg.sync_with_wow:
-                    wow_exit_timer = _apply_wow_sync_runtime(
-                        app,
-                        new_cfg.sync_with_wow,
-                        wow_exit_timer,
-                        quit_app=_request_quit_application,
-                        can_quit=_can_quit_application,
-                    )
-                credentials_promoted = apply_credentials and (
-                    old_cfg.wcl_client_id != new_cfg.wcl_client_id
-                    or old_cfg.wcl_client_secret != new_cfg.wcl_client_secret
-                )
-                region_effective_changed = region_runtime.set_fallback(new_cfg.region)
-                wcl_runtime_changed = credentials_promoted or region_effective_changed
-                if new_cfg.wcl_client_id and new_cfg.wcl_client_secret:
-                    if credentials_promoted:
-                        auth = WCLAuth(
-                            new_cfg.wcl_client_id,
-                            new_cfg.wcl_client_secret,
-                            new_cfg.cache_dir,
-                        )
-                        wcl_client.reconfigure_auth(auth)
-                if wcl_runtime_changed:
-                    wcl_client.region = region_runtime.effective_region
-                if wcl_runtime_changed:
-                    window.apply_metric_preferences(
-                        new_cfg.metric_preferences,
-                        refetch_missing=False,
-                    )
-                    window.bump_wcl_runtime_generation()
-                else:
-                    window.apply_metric_preferences(new_cfg.metric_preferences)
-
-                new_screenshots_dir = (
-                    Path(new_cfg.screenshots_path)
-                    if new_cfg.screenshots_path is not None
-                    else resolve_screenshots_path(new_cfg)
-                )
-                if new_screenshots_dir != current_screenshots_dir:
-                    watcher = _replace_screenshots_runtime(
-                        watcher,
-                        new_screenshots_dir,
-                        machine,
-                        window,
-                        _log_decode_failed,
-                        signal_gate=watcher_signal_gate,
-                    )
-                    current_screenshots_dir = new_screenshots_dir
-
-                cfg = new_cfg
-                overrides = _settings_env_override_keys()
             except (ConfigError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 log.warning("Could not apply settings change: %s", exc)
                 dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
                 return
+            cfg = result.cfg
+            auth = result.auth
+            watcher = result.watcher
+            current_screenshots_dir = result.current_screenshots_dir
+            wow_exit_timer = result.wow_exit_timer
+            overrides = result.overrides
             if apply_credentials:
                 status_text, status_error = _settings_wcl_test_success_status(
                     values,

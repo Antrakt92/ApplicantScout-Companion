@@ -750,6 +750,181 @@ def test_persist_settings_values_clearing_screenshots_override_preserves_fallbac
     assert saved["chatlog_path"] == str(chatlog)
 
 
+def test_settings_change_rolls_back_config_when_screenshot_runtime_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path, screenshots_path=tmp_path / "old" / "Screenshots")
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(tmp_path / "new" / "Screenshots"),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        main_mod,
+        "_replace_screenshots_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("watch failed")),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("persist-new"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_config_snapshot",
+        lambda _cfg: calls.append("rollback-old"),
+    )
+
+    with pytest.raises(RuntimeError, match="watch failed"):
+        main_mod._apply_settings_change(
+            app=object(),
+            cfg=cfg,
+            values=values,
+            apply_credentials=False,
+            auth=object(),
+            wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+            region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+            window=SimpleNamespace(
+                apply_metric_preferences=lambda *_args, **_kwargs: None,
+                bump_wcl_runtime_generation=lambda: None,
+            ),
+            watcher=object(),
+            current_screenshots_dir=cfg.screenshots_path,
+            machine=object(),
+            decode_failed_callback=lambda *_args: None,
+            signal_gate=main_mod._WatcherSignalGate(),
+            wow_exit_timer=None,
+            quit_app=lambda: None,
+            can_quit=lambda: True,
+        )
+
+    assert calls == ["persist-new", "rollback-old"]
+
+
+def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path, screenshots_path=tmp_path / "Screenshots")
+    cfg.sync_with_wow = False
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(cfg.screenshots_path),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=True,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        main_mod,
+        "_apply_wow_sync_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("shortcut failed")),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("persist-new"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_config_snapshot",
+        lambda _cfg: calls.append("rollback-old"),
+    )
+
+    with pytest.raises(RuntimeError, match="shortcut failed"):
+        main_mod._apply_settings_change(
+            app=object(),
+            cfg=cfg,
+            values=values,
+            apply_credentials=False,
+            auth=object(),
+            wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+            region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+            window=SimpleNamespace(
+                apply_metric_preferences=lambda *_args, **_kwargs: None,
+                bump_wcl_runtime_generation=lambda: None,
+            ),
+            watcher=object(),
+            current_screenshots_dir=cfg.screenshots_path,
+            machine=object(),
+            decode_failed_callback=lambda *_args: None,
+            signal_gate=main_mod._WatcherSignalGate(),
+            wow_exit_timer=None,
+            quit_app=lambda: None,
+            can_quit=lambda: True,
+        )
+
+    assert calls == ["persist-new", "rollback-old"]
+
+
+def test_settings_change_validates_screenshots_before_wow_sync_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path, screenshots_path=None)
+    cfg.sync_with_wow = False
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path="",
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=True,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        main_mod,
+        "resolve_screenshots_path",
+        lambda _cfg: (_ for _ in ()).throw(ConfigError("screenshots invalid")),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_apply_wow_sync_runtime",
+        lambda *_args, **_kwargs: calls.append("wow-sync"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("persist"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_config_snapshot",
+        lambda _cfg: calls.append("rollback"),
+    )
+
+    with pytest.raises(ConfigError, match="screenshots invalid"):
+        main_mod._apply_settings_change(
+            app=object(),
+            cfg=cfg,
+            values=values,
+            apply_credentials=False,
+            auth=object(),
+            wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+            region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+            window=SimpleNamespace(
+                apply_metric_preferences=lambda *_args, **_kwargs: None,
+                bump_wcl_runtime_generation=lambda: None,
+            ),
+            watcher=object(),
+            current_screenshots_dir=tmp_path / "old" / "Screenshots",
+            machine=object(),
+            decode_failed_callback=lambda *_args: None,
+            signal_gate=main_mod._WatcherSignalGate(),
+            wow_exit_timer=None,
+            quit_app=lambda: None,
+            can_quit=lambda: True,
+        )
+
+    assert calls == []
+
+
 def test_load_config_uses_legacy_env_only_when_user_config_is_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -1638,6 +1813,29 @@ def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
         "timer-stop",
         "timer-delete",
     ]
+
+
+def test_wow_sync_runtime_apply_rolls_back_startup_when_watcher_start_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda enabled: calls.append(f"shortcut:{enabled}"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "start_wow_sync_watcher",
+        lambda: calls.append("watcher")
+        or (_ for _ in ()).throw(RuntimeError("watcher failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="watcher failed"):
+        main_mod._apply_wow_sync_runtime(object(), True, None)
+
+    assert calls == ["shortcut:True", "watcher", "shortcut:False"]
 
 
 def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
