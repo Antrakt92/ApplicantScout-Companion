@@ -1383,6 +1383,78 @@ def test_old_narrow_completion_does_not_refetch_after_broad_error(qtbot, tmp_pat
         client.close()
 
 
+def test_completion_after_disabling_all_metrics_is_ignored(qtbot, tmp_path):
+    disabled = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window._launch_fetch(app)
+        identity = window._in_flight_identity(app.applicant_id)
+        assert identity is not None
+
+        window.apply_metric_preferences(disabled)
+        assert app.fetch_status == "ready"
+        assert app.applicant_id not in window._fetches_in_flight
+
+        window._on_fetch_done(
+            identity,
+            CharacterRanks.empty(error="WCL server error", error_kind=WCL_ERROR_SERVER),
+        )
+        assert app.fetch_status == "ready"
+        assert app.error_message == ""
+        assert app.wcl_error_kind == ""
+
+        window._on_fetch_done(identity, CharacterRanks.empty(not_found=True))
+        assert app.fetch_status == "ready"
+        assert app.error_message == ""
+        assert app.wcl_error_kind == ""
+    finally:
+        client.close()
+
+
+def test_party_completion_after_disabling_all_metrics_clears_in_flight_key(
+    qtbot, tmp_path
+):
+    disabled = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    member = _member(fetch_status="pending")
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window._launch_fetch(member)
+        identity = window._fetches_in_flight.get(f"party:{member.applicant_id}")
+        assert identity is not None
+
+        window.apply_metric_preferences(disabled)
+
+        assert f"party:{member.applicant_id}" not in window._fetches_in_flight
+        window._on_fetch_done(
+            identity,
+            CharacterRanks.empty(error="WCL server error", error_kind=WCL_ERROR_SERVER),
+        )
+        assert member.fetch_status == "ready"
+        assert member.error_message == ""
+        assert member.wcl_error_kind == ""
+    finally:
+        client.close()
+
+
 def test_wcl_runtime_generation_bump_refetches_party_members(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")

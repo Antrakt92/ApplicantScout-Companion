@@ -1514,12 +1514,12 @@ class CharacterCache:
         key = f"{prefix}:{metric_preferences.cache_key()}"
         now = time.time()
         with self._lock:
-            candidates: list[tuple[int, float, int, _CacheEntry]] = []
+            candidates: list[tuple[int, float, int, int, _CacheEntry]] = []
             exact_entry = self._data.get(key)
             if exact_entry is not None:
                 exact_age = now - exact_entry.fetched_at
                 if 0 <= exact_age <= self._ttl_seconds:
-                    candidates.append((0, -exact_entry.fetched_at, -1, exact_entry))
+                    candidates.append((0, -exact_entry.fetched_at, 0, -1, exact_entry))
             for index, (stored_key, entry) in enumerate(self._data.items()):
                 if stored_key == key or not stored_key.startswith(f"{prefix}:"):
                     continue
@@ -1533,11 +1533,11 @@ class CharacterCache:
                 if age < 0 or age > self._ttl_seconds:
                     continue
                 breadth = _metric_preference_breadth(stored_preferences)
-                candidates.append((breadth, -entry.fetched_at, index, entry))
+                candidates.append((1, -entry.fetched_at, breadth, index, entry))
         if not candidates:
             return None
         candidates.sort()
-        for _breadth, _fetched_at, _index, entry in candidates:
+        for _exact_rank, _fetched_at, _breadth, _index, entry in candidates:
             ranks = self._ranks_from_entry(entry)
             if ranks is not None:
                 return _project_ranks_to_metric_preferences(ranks, metric_preferences)

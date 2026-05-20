@@ -716,7 +716,7 @@ def test_settings_update_aborts_when_pending_values_are_invalid(qtbot, tmp_path:
     assert "required" in dialog.status_label.text()
 
 
-def test_settings_dialog_emits_update_completed_after_successful_update(
+def test_settings_dialog_keeps_update_blocked_after_installer_handoff(
     qtbot, tmp_path: Path
 ):
     dialog = SettingsDialog(
@@ -724,14 +724,22 @@ def test_settings_dialog_emits_update_completed_after_successful_update(
         check_updates=lambda: "Installing update.",
     )
     qtbot.addWidget(dialog)
-    seen: list[None] = []
-    dialog.updateCompleted.connect(lambda: seen.append(None))
+    finished: list[bool] = []
+    completed: list[None] = []
+    dialog.updateFinished.connect(lambda error: finished.append(error))
+    dialog.updateCompleted.connect(lambda: completed.append(None))
     dialog.set_update_available("v0.2.0")
 
     dialog.update_button.click()
 
-    qtbot.waitUntil(lambda: bool(seen), timeout=1000)
-    assert dialog.update_button.isHidden()
+    qtbot.waitUntil(
+        lambda: dialog.status_label.text() == "Installing update.",
+        timeout=1000,
+    )
+    assert finished == []
+    assert completed == []
+    assert not dialog.update_button.isHidden()
+    assert not dialog.update_button.isEnabled()
 
 
 def test_normal_settings_close_button_hides_to_tray(qtbot, tmp_path: Path):

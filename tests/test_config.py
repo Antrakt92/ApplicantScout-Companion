@@ -2996,6 +2996,22 @@ def test_check_updates_treats_unavailable_update_check_as_error(
         main_mod._check_updates()
 
 
+def test_safe_update_check_reports_unavailable_on_unexpected_exception(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        main_mod,
+        "check_for_update",
+        lambda _version: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = main_mod._safe_check_for_update("0.1.0")
+
+    assert result.status == "unavailable"
+    assert result.current_version == "0.1.0"
+    assert "boom" in result.message
+
+
 def test_check_updates_treats_uninstallable_available_release_as_error(
     monkeypatch: pytest.MonkeyPatch,
 ):

@@ -1367,6 +1367,64 @@ def test_character_cache_tie_breaks_same_timestamp_broader_scopes(tmp_path):
     assert result.raid_heroic in {31.0, 32.0}
 
 
+def test_character_cache_prefers_newest_covering_scope_when_exact_missing(tmp_path):
+    cache = CharacterCache(tmp_path)
+    normal_heroic = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    all_metrics = MetricPreferences()
+    requested = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    older = _ranks()
+    older.raid_heroic = 31.0
+    newer = _ranks()
+    newer.raid_heroic = 64.0
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        older,
+        role="DAMAGER",
+        metric_preferences=normal_heroic,
+    )
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        newer,
+        role="DAMAGER",
+        metric_preferences=all_metrics,
+    )
+    now = time.time()
+    for key, entry in cache._data.items():
+        preferences_key = key.rsplit(":", 1)[-1]
+        if preferences_key == normal_heroic.cache_key():
+            entry.fetched_at = now - 60 * 60
+        elif preferences_key == all_metrics.cache_key():
+            entry.fetched_at = now
+
+    result = cache.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=requested,
+    )
+
+    assert result is not None
+    assert result.raid_heroic == pytest.approx(64.0)
+
+
 def test_character_cache_ignores_malformed_scope_key_entries(tmp_path):
     cache = CharacterCache(tmp_path)
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")

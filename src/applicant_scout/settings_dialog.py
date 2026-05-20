@@ -810,13 +810,17 @@ class SettingsDialog(QDialog):
             return
         if self._update_in_progress and raw.button is not self.update_button:
             return
-        raw.button.setEnabled(True)
         self._set_status(raw.message, error=raw.error)
         if raw.button is self.update_button:
-            self.updateFinished.emit(raw.error)
-            if not raw.error:
-                self.set_update_available(None)
-                self.updateCompleted.emit()
+            if raw.error:
+                raw.button.setEnabled(True)
+                self.updateFinished.emit(True)
+            else:
+                raw.button.setEnabled(False)
+                self.update_button.show()
+                raw.button.setToolTip("Installing ApplicantScout update...")
+            return
+        raw.button.setEnabled(True)
         if not raw.error and raw.open_url:
             QDesktopServices.openUrl(QUrl(raw.open_url))
         if not raw.error and isinstance(raw.success_payload, SettingsValues):

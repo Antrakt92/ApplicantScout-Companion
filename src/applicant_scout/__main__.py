@@ -40,7 +40,12 @@ from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_pa
 from .screenshot import DecodedRosterMember, ScreenshotWatcher, Snapshot
 from .settings_dialog import ReleaseNotesDialog, SettingsDialog, open_folder
 from .state import Applicant, AppState, Listing, RosterMember, WoWPlayer
-from .updater import check_for_update, download_update_installer, launch_update_installer
+from .updater import (
+    check_for_update,
+    download_update_installer,
+    launch_update_installer,
+    UpdateResult,
+)
 from .wcl import (
     CharacterCache,
     WCLAuth,
@@ -1061,11 +1066,23 @@ def _test_wcl_credentials(cache_dir: Path, client_id: str, client_secret: str, _
     return "WCL credentials are valid."
 
 
+def _safe_check_for_update(current_version: str) -> UpdateResult:
+    try:
+        return check_for_update(current_version)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("GitHub update check failed unexpectedly: %s", exc)
+        return UpdateResult(
+            status="unavailable",
+            message=f"GitHub update check failed: {exc}",
+            current_version=current_version,
+        )
+
+
 def _check_updates() -> tuple[str, str | None]:
     if not _UPDATE_INSTALL_LOCK.acquire(blocking=False):
         raise RuntimeError("Update is already in progress.")
     try:
-        result = check_for_update(__version__)
+        result = _safe_check_for_update(__version__)
         status = getattr(result, "status", None)
         message = getattr(result, "message", "Update check failed.")
         if status == "unavailable":
@@ -2106,11 +2123,6 @@ def main(argv: list[str] | None = None) -> int:
             QMessageBox.warning(window, "ApplicantScout update", message)
             return
         pending_update_version = None
-        _set_update_in_progress(False)
-        if settings_dialog is not None:
-            settings_dialog.set_update_available(None)
-        if tray_controller is not None:
-            tray_controller.set_update_available(None)
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",
@@ -2123,7 +2135,7 @@ def main(argv: list[str] | None = None) -> int:
         generation = update_check_coordinator.next_generation()
 
         def _worker() -> None:
-            result = check_for_update(__version__)
+            result = _safe_check_for_update(__version__)
             update_signals.checked.emit(generation, result)
 
         threading.Thread(

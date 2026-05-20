@@ -3176,6 +3176,13 @@ class OverlayWindow(QMainWindow):
         self._apply_metric_minimum_width()
         for applicant in self._fetch_rows():
             if not metric_preferences.any_enabled:
+                row_source = self._row_source_for(applicant)
+                storage_key = (
+                    applicant.applicant_id
+                    if row_source == "applicants"
+                    else f"{row_source}:{applicant.applicant_id}"
+                )
+                self._fetches_in_flight.pop(storage_key, None)
                 applicant.clear_wcl_data(fetch_status="ready")
                 continue
             applicant.project_wcl_data_to_preferences(metric_preferences)
@@ -3300,6 +3307,10 @@ class OverlayWindow(QMainWindow):
         self._refresh_quota_label()
         applicant = self._row_for_fetch_identity(fetched_identity)
         if applicant is None:
+            return
+        if not self._metric_preferences.any_enabled:
+            applicant.clear_wcl_data(fetch_status="ready")
+            self._sync_delegate_and_panel()
             return
         current = _fetch_identity_for_applicant(
             applicant,

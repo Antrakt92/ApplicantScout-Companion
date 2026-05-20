@@ -142,7 +142,7 @@ def check_for_update(
     owns_client = client is None
     try:
         http = client or httpx.Client(timeout=10.0)
-    except httpx.HTTPError as exc:
+    except Exception as exc:  # noqa: BLE001
         return UpdateResult(
             status="unavailable",
             message=f"GitHub update check failed: {exc}",

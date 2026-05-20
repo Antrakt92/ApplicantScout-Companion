@@ -445,6 +445,18 @@ def test_update_check_handles_owned_client_construction_error(monkeypatch):
     assert "bad proxy config" in result.message
 
 
+def test_update_check_handles_non_http_owned_client_construction_error(monkeypatch):
+    def fail_client(**_kwargs):
+        raise FileNotFoundError("missing cert bundle")
+
+    monkeypatch.setattr("applicant_scout.updater.httpx.Client", fail_client)
+
+    result = check_for_update("0.1.0")
+
+    assert result.status == "unavailable"
+    assert "missing cert bundle" in result.message
+
+
 def test_update_check_closes_owned_client_on_json_error(monkeypatch):
     client = _Client(_Response(200, ValueError("not json")))
 
