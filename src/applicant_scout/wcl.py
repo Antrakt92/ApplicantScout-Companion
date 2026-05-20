@@ -812,7 +812,15 @@ class WCLClient:
             body = {"query": query, "variables": variables}
 
             for attempt in range(2):
-                token = auth.get_token()
+                try:
+                    token = auth.get_token()
+                except (httpx.TimeoutException, httpx.RequestError):
+                    with self._quota_lock:
+                        if auth_generation == self._auth_generation:
+                            self._network_retry_until = (
+                                time.time() + WCL_NETWORK_RETRY_SECONDS
+                            )
+                    raise
                 try:
                     resp = self._http.post(
                         WCL_API_URL,

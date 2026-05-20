@@ -980,6 +980,102 @@ def test_network_timeout_sets_short_retry_block(
     assert len(http.calls) == 1
 
 
+def test_oauth_refresh_network_error_sets_short_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class FlakyAuth(_FakeAuth):
+        calls = 0
+
+        def get_token(self) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ReadTimeout("oauth timed out")
+            return "fresh-token"
+
+    auth = FlakyAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP(_wcl_payload(_character()))
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(httpx.TimeoutException):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+    current[0] += 1.0
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.error == "WCL network error; retrying in 29s"
+    assert result.error_kind == WCL_ERROR_NETWORK
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+    current[0] += 30.0
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.error == ""
+    assert auth.calls == 2
+    assert len(http.calls) == 1
+
+
+def test_second_oauth_refresh_network_error_sets_short_retry_after_401(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class TimeoutAfterInvalidateAuth(_FakeAuth):
+        calls = 0
+        invalidated = False
+
+        def get_token(self) -> str:
+            self.calls += 1
+            if self.invalidated:
+                raise httpx.ReadTimeout("oauth refresh timed out")
+            return "stale-token"
+
+        def invalidate(self) -> None:
+            self.invalidated = True
+
+    auth = TimeoutAfterInvalidateAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP({"error": "unauthorized"}, status_code=401)
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(httpx.TimeoutException):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert auth.calls == 2
+    assert len(http.calls) == 1
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+
+
+def test_stale_oauth_refresh_network_error_does_not_set_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class ReconfiguredTimeoutAuth(_FakeAuth):
+        def get_token(self) -> str:
+            client.reconfigure_auth(_FakeAuth())
+            raise httpx.ReadTimeout("old oauth timed out")
+
+    client = WCLClient(ReconfiguredTimeoutAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    client._http = _FakeHTTP(_wcl_payload(_character()))  # type: ignore[assignment]
+
+    with pytest.raises(httpx.TimeoutException):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert client.retry_block_remaining_seconds(now=current[0]) == 0.0
+
+
 def test_fetch_character_ranks_unexpected_400_is_non_retryable_http_error():
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._http.close()

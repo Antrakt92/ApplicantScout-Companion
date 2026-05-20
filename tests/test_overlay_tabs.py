@@ -488,6 +488,61 @@ def test_party_title_keeps_listing_key_context(qtbot, tmp_path):
     assert win._title_bar.title_label.text() == "Party — Nexus-Point Xenas +12 (1)"
 
 
+def test_party_title_count_uses_visible_role_filter_rows(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["tank-realm"] = _member("tank-realm", "Tank-Realm", "TANK")
+    state.party_members["heal-realm"] = _member(
+        "heal-realm", "Heal-Realm", "HEALER"
+    )
+    state.party_members["dps-realm"] = _member("dps-realm", "Dps-Realm", "DAMAGER")
+    win = _window(tmp_path, qtbot, state)
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(win._role_filter_bar._buttons["HEALER"], Qt.MouseButton.LeftButton)
+
+    visible_rows = [
+        row for row in range(win._table.rowCount()) if not win._table.isRowHidden(row)
+    ]
+    assert len(visible_rows) == 1
+    assert win._id_by_row[visible_rows[0]] == "heal-realm"
+    assert win._title_bar.title_label.text() == "Party (1 / 3)"
+
+
+def test_party_title_filter_count_preserves_listing_context(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing()
+    state.party_members["tank-realm"] = _member("tank-realm", "Tank-Realm", "TANK")
+    state.party_members["heal-realm"] = _member(
+        "heal-realm", "Heal-Realm", "HEALER"
+    )
+    state.party_members["dps-realm"] = _member("dps-realm", "Dps-Realm", "DAMAGER")
+    win = _window(tmp_path, qtbot, state)
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(win._role_filter_bar._buttons["HEALER"], Qt.MouseButton.LeftButton)
+
+    assert (
+        win._title_bar.title_label.text()
+        == "Party — Nexus-Point Xenas +12 (1 / 3)"
+    )
+
+
+def test_party_title_all_roles_selected_uses_total_count(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["tank-realm"] = _member("tank-realm", "Tank-Realm", "TANK")
+    state.party_members["heal-realm"] = _member(
+        "heal-realm", "Heal-Realm", "HEALER"
+    )
+    state.party_members["dps-realm"] = _member("dps-realm", "Dps-Realm", "DAMAGER")
+    win = _window(tmp_path, qtbot, state)
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    for role in ("TANK", "HEALER", "DAMAGER"):
+        qtbot.mouseClick(win._role_filter_bar._buttons[role], Qt.MouseButton.LeftButton)
+
+    assert win._title_bar.title_label.text() == "Party (3)"
+
+
 def test_target_key_control_defaults_to_listing_key(qtbot, tmp_path):
     state = AppState()
     state.listing = _listing(key_level=12)

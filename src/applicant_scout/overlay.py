@@ -3386,6 +3386,15 @@ class OverlayWindow(QMainWindow):
         self._sync_target_key_control()
         if self._active_tab == "party":
             n = len(self._state.party_members)
+            if self._is_filter_active():
+                n_visible = sum(
+                    1
+                    for member in self._state.party_members.values()
+                    if member.role in self._role_filter
+                )
+                count_str = f"({n_visible} / {n})"
+            else:
+                count_str = f"({n})"
             listing = self._effective_listing()
             if listing is not None:
                 level = f" +{listing.key_level}" if listing.key_level > 0 else ""
@@ -3395,11 +3404,11 @@ class OverlayWindow(QMainWindow):
                     "mythic plus",
                 )
                 if generic:
-                    self._title_bar.setTitleText(f"Party{level} ({n})")
+                    self._title_bar.setTitleText(f"Party{level} {count_str}")
                 else:
-                    self._title_bar.setTitleText(f"Party — {dn}{level} ({n})")
+                    self._title_bar.setTitleText(f"Party — {dn}{level} {count_str}")
             else:
-                self._title_bar.setTitleText(f"Party ({n})")
+                self._title_bar.setTitleText(f"Party {count_str}")
             self._title_bar.title_label.setToolTip(_format_listing_tooltip(listing))
             return
         listing = self._effective_listing()

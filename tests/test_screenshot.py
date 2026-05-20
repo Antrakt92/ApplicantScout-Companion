@@ -1326,6 +1326,79 @@ def test_watcher_emits_decode_failed_for_marker_parse_failure(
     assert not image_path.exists()
 
 
+def test_watcher_stable_timeout_preserves_manual_screenshot_without_failure(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"manual")
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: False)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, False),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert snapshots == []
+    assert failures == []
+    assert image_path.exists()
+
+
+def test_watcher_stable_timeout_emits_marker_snapshot_and_deletes_transport(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"transport")
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: False)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert snapshots == [snapshot]
+    assert failures == []
+    assert not image_path.exists()
+
+
+def test_watcher_stable_timeout_emits_marker_parse_failure_and_deletes_transport(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    failures: list[tuple[str, str]] = []
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: False)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, True, "CRC mismatch"),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert failures == [(str(image_path), "CRC mismatch")]
+    assert not image_path.exists()
+
+
 def test_backlog_does_not_apply_older_snapshot_after_newest_marker_decode_failure(
     monkeypatch,
     tmp_path: Path,

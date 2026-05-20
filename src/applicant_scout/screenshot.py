@@ -905,9 +905,20 @@ class ScreenshotWatcher(QObject):
                     path.name,
                     wait_elapsed,
                 )
-            self._emit_decode_failed(path, "size never stabilized")
-            # Even with unstable size the QR may still decode; if ours, drop it.
-            if _has_marker(path):
+            # Manual screenshots can be large/slow too. Only surface a health
+            # failure when the timed-out file is actually an ApScout transport
+            # image; unrelated screenshots must stay silent and preserved.
+            try:
+                result = _decode_screenshot_result(path)
+            except Exception as e:
+                self._emit_decode_failed(path, repr(e))
+                result = DecodeResult(None, False)
+            if result.snapshot is not None:
+                self._emit_snapshot(result.snapshot)
+            if result.has_marker:
+                reason = result.error_reason or "size never stabilized"
+                if result.snapshot is None:
+                    self._emit_decode_failed(path, reason)
                 try:
                     path.unlink()
                 except OSError:
