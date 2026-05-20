@@ -1,5 +1,50 @@
 # ApplicantScout Companion Release Notes
 
+## 0.5.1 - 20-May-2026
+
+Overlay reliability and release hardening patch for live applicant scouting.
+This release focuses on keeping the collapsed launcher, Applicants/Party tabs,
+and update/install lifecycle predictable during real WoW foreground changes.
+
+### Improved
+
+- The collapsed launcher is now much more stable during long drags, fast mouse
+  movement, WoW foreground changes, and background overlay refreshes.
+- The launcher can now reach the physical screen edge and restores saved edge
+  positions without being pulled back to the Windows work area.
+- Overlay hover/details refreshes are batched more carefully, reducing visible
+  table and top-panel jitter while moving between applicant rows.
+- New Mythic+ listings created after a roster-only Party view now return focus
+  to `Applicants`, while manually selected Party views stay intact for group
+  review.
+- Release checks and branch checks now cover more companion/addon contract
+  surfaces before packaging.
+
+### Fixed
+
+- Fixed the collapsed launcher sometimes appearing above non-game windows after
+  companion restart while WoW was running in the background.
+- Fixed launcher clicks hiding the small icon and then restoring it instead of
+  opening the full overlay.
+- Fixed launcher drag stalls caused by synchronous WoW lifecycle checks running
+  on the GUI event loop.
+- Fixed launcher position resets, disappearing launcher states, and stale
+  foreground polling during drag/release edge cases.
+- Fixed the overlay staying on `Party` after creating a new key when the next
+  thing the host needs to see is incoming applicants.
+- Fixed stopped screenshot watcher snapshots and stale watcher callbacks that
+  could otherwise update the overlay after a watcher replacement.
+- Hardened config, updater, screenshot, Warcraft Logs, cache, and malformed
+  snapshot boundaries that could leave stale UI state or unclear runtime
+  errors.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.3.2`.
+- Installer: `ApplicantScoutCompanionSetup-0.5.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.5.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.5.1-portable.zip`
+
 ## 0.5.0 - 18-May-2026
 
 Mythic+ ranking calibration release for making applicant order, group packages,
