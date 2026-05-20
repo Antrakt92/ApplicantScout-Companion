@@ -287,6 +287,37 @@ def test_cleared_snapshot_does_not_carry_applicant_filter_into_party_auto_switch
     assert visible_rows == [0]
 
 
+def test_cleared_listing_resets_role_filter_before_next_applicant_session(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.listing = _listing()
+    state.applicants["7:1"] = _app("7:1", "Healer-Realm", "HEALER")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+    win._refresh_table()
+
+    qtbot.mouseClick(win._role_filter_bar._buttons["HEALER"], Qt.MouseButton.LeftButton)
+    state.clear_all()
+    state.listing = None
+    win.on_cleared()
+    win._flush_overlay_refresh()
+
+    state.listing = _listing()
+    state.applicants["8:1"] = _app("8:1", "Dps-Realm", "DAMAGER")
+    win.on_listing_changed()
+    win.on_applicant_added(state.applicants["8:1"])
+    win._flush_overlay_refresh()
+
+    visible_rows = [
+        row for row in range(win._table.rowCount()) if not win._table.isRowHidden(row)
+    ]
+    assert win._role_filter == set()
+    assert win._id_by_row == ["8:1"]
+    assert visible_rows == [0]
+    assert win._title_bar.title_label.text().endswith("(1)")
+
+
 def test_last_applicant_removed_preserves_visible_party_roster(qtbot, tmp_path):
     state = AppState()
     state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
@@ -417,6 +448,33 @@ def test_empty_roster_switches_back_to_applicants_when_applicants_remain(
     assert win.isVisible()
     assert win._active_tab == "applicants"
     assert win._id_by_row == ["7:1"]
+
+
+def test_empty_roster_clears_party_pin_cache_before_same_member_returns(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _member: None
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    win._on_cell_clicked(0, 0)
+    assert win._pinned_by_tab["party"] == "host-realm"
+
+    state.party_members.clear()
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+
+    assert win._pinned_id is None
+    assert win._pinned_by_tab["party"] is None
+    assert win._panel._status_label.text() == "Hover a row for applicant details."
 
 
 def test_party_title_keeps_listing_key_context(qtbot, tmp_path):

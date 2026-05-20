@@ -2391,6 +2391,7 @@ class OverlayWindow(QMainWindow):
         self._listing_session_generation += 1
         self._fetches_in_flight.clear()
         self._restore_party_on_next_roster = False
+        self._clear_role_filter()
         self._refresh_flush_pending = False
         self._refresh_needs_title = False
         self._refresh_needs_show = False
@@ -2407,7 +2408,6 @@ class OverlayWindow(QMainWindow):
         if self._state.party_members:
             self._active_tab = "party"
             self._tab_bar.set_active("party", emit=False)
-            self._clear_role_filter()
             self._schedule_overlay_refresh(update_title=True, maybe_show=True)
             return
         # Only hide if there's also no active listing or Party roster. EMPTY
@@ -2421,6 +2421,12 @@ class OverlayWindow(QMainWindow):
         for member in self._state.party_members.values():
             if member.fetch_status == "pending":
                 self._launch_fetch(member)
+        if len(self._state.party_members) == 0:
+            self._hover_by_tab["party"] = None
+            self._pinned_by_tab["party"] = None
+            if self._active_tab == "party":
+                self._hover_id = None
+                self._pinned_id = None
         if (
             len(self._state.party_members) == 0
             and self._state.count() == 0
