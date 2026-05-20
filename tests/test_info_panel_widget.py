@@ -2690,6 +2690,41 @@ def test_role_filter_clears_pin_when_pinned_group_is_hidden(qtbot, tmp_path):
         client.close()
 
 
+def test_role_update_clears_hidden_hover_and_pin_under_active_filter(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.add_or_update(_app(applicant_id="42", name="Damage-Realm", role="DAMAGER"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window._refresh_table()
+        window._on_role_filter_changed({"DAMAGER"})
+        window._hover_id = "42"
+        window._hover_by_tab["applicants"] = "42"
+        window._pinned_id = "42"
+        window._pinned_by_tab["applicants"] = "42"
+        window._sync_delegate_and_panel()
+
+        state.add_or_update(_app(applicant_id="42", name="Damage-Realm", role="TANK"))
+        window.on_applicant_updated(state.applicants["42"])
+        window._flush_overlay_refresh()
+
+        assert window._hover_id is None
+        assert window._hover_by_tab["applicants"] is None
+        assert window._pinned_id is None
+        assert window._pinned_by_tab["applicants"] is None
+        assert window._delegate._hover_row == -1
+        assert window._delegate._pinned_row == -1
+        assert (
+            window._panel._status_label.text() == "Hover a row for applicant details."
+        )
+    finally:
+        client.close()
+
+
 def test_applicant_tab_pin_cache_clears_when_listing_clears_to_party(
     qtbot, tmp_path
 ):

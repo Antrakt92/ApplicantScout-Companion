@@ -3054,19 +3054,9 @@ class OverlayWindow(QMainWindow):
 
     def _on_role_filter_changed(self, active: set) -> None:
         """RoleFilterBar.filterChanged slot. Mutates _role_filter, possibly
-        clears the pin if pinned applicant is now filtered out, then re-
-        applies filter + re-resolves hover + refreshes panel + updates title."""
+        clears hidden hover/pin state, then re-applies filter + re-resolves
+        hover + refreshes panel + updates title."""
         self._role_filter = active
-        if self._pinned_id is not None and self._is_filter_active():
-            pinned = self._active_row_map().get(self._pinned_id)
-            if self._active_tab == "party":
-                keep_pin = pinned is not None and pinned.role in self._role_filter
-            else:
-                raw_aid, _ = _split_composite(self._pinned_id)
-                keep_pin = raw_aid in self._role_filter_visible_raw_ids()
-            if not keep_pin:
-                self._pinned_id = None
-                self._pinned_by_tab[self._active_tab] = None
         self._apply_role_filter()
         # Hovered row may now be hidden — re-resolve from cursor position.
         self._reresolve_hover_from_cursor()
@@ -3121,6 +3111,19 @@ class OverlayWindow(QMainWindow):
             self._delegate.set_group_markers(_build_group_markers(visible_id_by_row))
         else:
             self._delegate.set_group_markers({})
+        self._clear_hidden_hover_and_pin()
+
+    def _clear_hidden_hover_and_pin(self) -> None:
+        if self._hover_id is not None and not self._is_row_visible_for_applicant(
+            self._hover_id
+        ):
+            self._hover_id = None
+            self._hover_by_tab[self._active_tab] = None
+        if self._pinned_id is not None and not self._is_row_visible_for_applicant(
+            self._pinned_id
+        ):
+            self._pinned_id = None
+            self._pinned_by_tab[self._active_tab] = None
 
     def _maybe_grow_name_column(self, applicants: list[Applicant]) -> None:
         """Grow Name column a little, capped to preserve compact overlay width."""
