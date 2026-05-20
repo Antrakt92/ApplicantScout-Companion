@@ -131,6 +131,10 @@ class _WCLRegionRuntime:
         return self.effective_region != before
 
 
+class _WowLifecycleSignals(QObject):
+    checked = pyqtSignal(bool)
+
+
 class TrayController:
     def __init__(
         self,
@@ -1134,16 +1138,31 @@ def _start_wow_lifecycle_timer(
     has_seen_wow: bool,
     quit_app: Callable[[], None] | None = None,
     can_quit: Callable[[], bool] | None = None,
+    running_checker: Callable[[], bool] | None = None,
+    async_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> QTimer:
     timer = QTimer(app)
     timer.setInterval(WOW_EXIT_POLL_MS)
     observed_wow = has_seen_wow
     quit_callback = quit_app or app.quit
     can_quit_callback = can_quit or (lambda: True)
+    check_wow_running = running_checker or is_wow_running
+    signals = _WowLifecycleSignals()
+    state = {"checking": False, "active": True}
+    run_async = async_runner or (
+        lambda worker: threading.Thread(
+            target=worker,
+            name="ApplicantScoutWoWLifecycleCheck",
+            daemon=True,
+        ).start()
+    )
 
-    def _quit_after_wow_cycle() -> None:
+    def _handle_wow_running(running: bool) -> None:
         nonlocal observed_wow
-        if is_wow_running():
+        state["checking"] = False
+        if not state["active"]:
+            return
+        if running:
             observed_wow = True
             return
         if observed_wow:
@@ -1156,6 +1175,25 @@ def _start_wow_lifecycle_timer(
                 log.warning("Could not re-arm WoW lifecycle watcher: %s", exc)
             quit_callback()
 
+    signals.checked.connect(_handle_wow_running)
+
+    def _quit_after_wow_cycle() -> None:
+        if state["checking"]:
+            return
+        state["checking"] = True
+
+        def _worker() -> None:
+            try:
+                running = check_wow_running()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not check WoW lifecycle state: %s", exc)
+                running = False
+            signals.checked.emit(running)
+
+        run_async(_worker)
+
+    setattr(timer, "_applicant_scout_wow_lifecycle_signals", signals)
+    setattr(timer, "_applicant_scout_wow_lifecycle_state", state)
     timer.timeout.connect(_quit_after_wow_cycle)
     timer.start()
     return timer
@@ -1187,6 +1225,9 @@ def _apply_wow_sync_runtime(
             )
         return current_timer
     if current_timer is not None:
+        state = getattr(current_timer, "_applicant_scout_wow_lifecycle_state", None)
+        if isinstance(state, dict):
+            state["active"] = False
         current_timer.stop()
         current_timer.deleteLater()
     return None

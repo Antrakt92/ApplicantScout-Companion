@@ -4,7 +4,9 @@ from __future__ import annotations
 
 
 import html
+import ctypes
 import logging
+import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -139,6 +141,7 @@ GAME_FOREGROUND_POLL_MS = 500
 LAUNCHER_DRAG_POLL_MS = 16
 LAUNCHER_DRAG_RELEASE_GRACE_S = 1.0
 LAUNCHER_FOREGROUND_GRACE_S = 3.0
+VK_LBUTTON = 0x01
 MPLUS_GROUP_COLUMN_WIDTH = 188
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
 MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
@@ -1049,7 +1052,9 @@ class OverlayLauncher(QFrame):
         self._move_to_drag_position(self._press_window_pos + delta)
 
     def _left_mouse_button_down(self) -> bool:
-        return bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+        if QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            return True
+        return _native_left_mouse_button_down()
 
     def _poll_drag_cursor(self) -> None:
         if not self._drag_active:
@@ -2609,6 +2614,9 @@ class OverlayWindow(QMainWindow):
         """Fired EMPTY_HIDE_DELAY_S after applicants reached 0 with listing
         still active. Auto-hide as a safety net for cases where M+ keystone
         listing isn't auto-delisted by Blizzard after group fills."""
+        if self._launcher.is_dragging():
+            self._empty_hide_timer.start()
+            return
         if self._state.count() == 0 and len(self._state.party_members) == 0:
             self.show_launcher_only()
 
@@ -3596,6 +3604,17 @@ def _clamp_rect_to_bounds(
     cx = min(max(x, min_x), max_x)
     cy = min(max(y, min_y), max_y)
     return (cx, cy, cw, ch)
+
+
+def _native_left_mouse_button_down() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        windll = getattr(ctypes, "windll")
+        state = windll.user32.GetAsyncKeyState(VK_LBUTTON)
+    except (AttributeError, OSError):
+        return False
+    return bool(state & 0x8000)
 
 
 def _screen_bounds(screen, *, use_available_geometry: bool) -> QRect:

@@ -1645,13 +1645,61 @@ def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
     monkeypatch.setattr(main_mod, "is_wow_running", lambda: next(states))
 
-    main_mod._start_wow_lifecycle_timer(FakeApp(), has_seen_wow=False)
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=False,
+        async_runner=lambda worker: worker(),
+    )
 
     callbacks[0]()
     callbacks[0]()
     callbacks[0]()
 
     assert quit_calls == ["quit"]
+
+
+def test_wow_lifecycle_timer_does_not_run_process_scan_on_gui_tick(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks = []
+    workers = []
+    calls: list[str] = []
+
+    class FakeTimer:
+        def __init__(self, _parent) -> None:
+            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
+
+        def setInterval(self, _interval: int) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    class FakeApp:
+        def quit(self) -> None:
+            calls.append("quit")
+
+    def running_checker() -> bool:
+        calls.append("scan")
+        return False
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        running_checker=running_checker,
+        async_runner=workers.append,
+    )
+
+    callbacks[0]()
+
+    assert calls == []
+    assert len(workers) == 1
+
+    workers[0]()
+
+    assert calls == ["scan", "quit"]
 
 
 def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
@@ -1682,7 +1730,11 @@ def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
         lambda: calls.append("watcher"),
     )
 
-    main_mod._start_wow_lifecycle_timer(FakeApp(), has_seen_wow=True)
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        async_runner=lambda worker: worker(),
+    )
 
     callbacks[0]()
 
@@ -1723,6 +1775,7 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
         has_seen_wow=True,
         quit_app=lambda: calls.append("quit"),
         can_quit=lambda: next(can_quit_values),
+        async_runner=lambda worker: worker(),
     )
 
     callbacks[0]()
