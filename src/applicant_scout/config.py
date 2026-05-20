@@ -209,7 +209,7 @@ def _config_values() -> dict[str, str]:
     if config_path.exists():
         try:
             return _read_env_file(config_path)
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             raise ConfigError(
                 f"Could not read ApplicantScout config at {config_path}: {exc}"
             ) from exc
@@ -217,7 +217,7 @@ def _config_values() -> dict[str, str]:
     if legacy_path is not None:
         try:
             return _read_env_file(legacy_path)
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             raise ConfigError(
                 f"Could not read ApplicantScout config at {legacy_path}: {exc}"
             ) from exc

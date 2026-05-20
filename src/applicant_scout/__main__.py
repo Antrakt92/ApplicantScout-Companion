@@ -2009,8 +2009,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except (ConfigError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 log.warning("Could not apply settings change: %s", exc)
+                dialog.report_values_apply_result(False)
                 dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
                 return
+            dialog.report_values_apply_result(True)
             cfg = result.cfg
             auth = result.auth
             watcher = result.watcher

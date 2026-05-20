@@ -1430,7 +1430,7 @@ class CharacterCache:
             return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeError):
             return {}
         if not isinstance(raw, dict):
             return {}

@@ -1459,6 +1459,15 @@ def test_character_cache_get_sanitizes_scalar_percentiles(tmp_path):
     assert raw["__version__"] == _CACHE_VERSION
 
 
+def test_character_cache_ignores_non_utf8_cache_file(tmp_path):
+    cache_file = tmp_path / "character-cache.json"
+    cache_file.write_bytes(b"\xff\xfe\xfa")
+
+    loaded = CharacterCache(tmp_path)
+
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
 def test_character_cache_clear_drops_memory_and_disk_entries(tmp_path):
     cache = CharacterCache(tmp_path)
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")

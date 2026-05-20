@@ -193,6 +193,7 @@ class SettingsDialog(QDialog):
         self._open_logs = open_logs
         self._clear_cache = clear_cache
         self._check_updates = check_updates
+        self._last_values_apply_succeeded = True
         self._signals = _AsyncSignals(self)
         self._signals.finished.connect(self._finish_async_action)
         self._title_drag_offset: QPoint | None = None
@@ -647,9 +648,12 @@ class SettingsDialog(QDialog):
 
     def flush_pending_values(self) -> bool:
         if not self._autosave_timer.isActive():
-            return True
+            return self._last_values_apply_succeeded
         self._autosave_timer.stop()
         return self._emit_values_changed_if_valid()
+
+    def report_values_apply_result(self, success: bool) -> None:
+        self._last_values_apply_succeeded = success
 
     def _hard_validation_error(self, values: SettingsValues) -> str | None:
         if not values.wcl_client_id or not values.wcl_client_secret:
@@ -689,9 +693,11 @@ class SettingsDialog(QDialog):
         error = self._hard_validation_error(values)
         if error is not None:
             self._set_status(error, error=True)
+            self._last_values_apply_succeeded = False
             return False
+        self._last_values_apply_succeeded = True
         self.valuesChanged.emit(values)
-        return True
+        return self._last_values_apply_succeeded
 
     def _handle_metric_checkbox_toggled(self, checked: bool) -> None:
         if checked or self.values().metric_preferences.any_enabled:

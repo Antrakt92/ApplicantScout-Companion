@@ -2763,8 +2763,17 @@ class OverlayWindow(QMainWindow):
         vp = self._table.viewport()
         if vp is not None:
             vp.update()
-        self._refresh_panel()
-        self._apply_panel_height_above_table()
+        updates_enabled = self.updatesEnabled()
+        batch_updates = updates_enabled and self.isVisible()
+        if batch_updates:
+            self.setUpdatesEnabled(False)
+        try:
+            self._refresh_panel()
+            self._apply_panel_height_above_table()
+        finally:
+            if batch_updates:
+                self.setUpdatesEnabled(True)
+                self.update()
 
     def _on_cell_entered(self, row: int, _col: int) -> None:
         # Bounds check guards against (a) ever-zero state during init,

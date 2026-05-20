@@ -1024,6 +1024,19 @@ def test_load_config_wraps_unreadable_user_config_as_config_error(
         load_config()
 
 
+def test_load_config_wraps_non_utf8_user_config_as_config_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("WCL_CLIENT_ID")
+    monkeypatch.delenv("WCL_CLIENT_SECRET")
+    user_config_path().parent.mkdir(parents=True)
+    user_config_path().write_bytes(b"\xff\xfe\xfa")
+
+    with pytest.raises(ConfigError, match="Could not read ApplicantScout config"):
+        load_config()
+
+
 def test_load_config_wraps_unwritable_user_data_dir_as_config_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

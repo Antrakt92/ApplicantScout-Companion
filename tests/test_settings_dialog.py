@@ -617,6 +617,53 @@ def test_settings_update_flushes_pending_values_before_update_start(
     assert not dialog._autosave_timer.isActive()
 
 
+def test_settings_update_aborts_when_pending_values_apply_fails(
+    qtbot,
+    tmp_path: Path,
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: "Installing update.",
+    )
+    qtbot.addWidget(dialog)
+    dialog._autosave_timer.setInterval(5000)
+    seen: list[str] = []
+
+    def reject_apply(_values) -> None:
+        seen.append("saved")
+        dialog.report_values_apply_result(False)
+
+    dialog.valuesChanged.connect(reject_apply)
+    dialog.updateStarted.connect(lambda: seen.append("started"))
+    dialog.set_update_available("v0.2.0")
+
+    dialog.client_id_edit.setText("new-client")
+    assert dialog._autosave_timer.isActive()
+    dialog.update_button.click()
+
+    assert seen == ["saved"]
+    assert not dialog._autosave_timer.isActive()
+
+
+def test_settings_update_aborts_after_immediate_values_apply_failure(
+    qtbot,
+    tmp_path: Path,
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: "Installing update.",
+    )
+    qtbot.addWidget(dialog)
+    seen: list[str] = []
+    dialog.updateStarted.connect(lambda: seen.append("started"))
+    dialog.set_update_available("v0.2.0")
+    dialog.report_values_apply_result(False)
+
+    dialog.update_button.click()
+
+    assert seen == []
+
+
 def test_settings_update_aborts_when_pending_values_are_invalid(qtbot, tmp_path: Path):
     dialog = SettingsDialog(
         _cfg(tmp_path),
