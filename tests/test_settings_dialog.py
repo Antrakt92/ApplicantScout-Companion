@@ -588,6 +588,56 @@ def test_settings_dialog_emits_update_lifecycle_for_failure(qtbot, tmp_path: Pat
     assert seen == [("started", None), ("finished", True)]
 
 
+def test_settings_update_flushes_pending_values_before_update_start(
+    qtbot,
+    tmp_path: Path,
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: "Installing update.",
+    )
+    qtbot.addWidget(dialog)
+    dialog._autosave_timer.setInterval(5000)
+    seen: list[tuple[str, str]] = []
+    dialog.valuesChanged.connect(
+        lambda values: seen.append(("saved", values.wcl_client_id))
+    )
+    dialog.updateStarted.connect(lambda: seen.append(("started", "")))
+    dialog.set_update_available("v0.2.0")
+
+    dialog.client_id_edit.setText("new-client")
+    assert dialog._autosave_timer.isActive()
+    dialog.update_button.click()
+
+    qtbot.waitUntil(
+        lambda: any(kind == "started" for kind, _value in seen),
+        timeout=1000,
+    )
+    assert seen[:2] == [("saved", "new-client"), ("started", "")]
+    assert not dialog._autosave_timer.isActive()
+
+
+def test_settings_update_aborts_when_pending_values_are_invalid(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: "Installing update.",
+    )
+    qtbot.addWidget(dialog)
+    dialog._autosave_timer.setInterval(5000)
+    seen: list[str] = []
+    dialog.valuesChanged.connect(lambda _values: seen.append("saved"))
+    dialog.updateStarted.connect(lambda: seen.append("started"))
+    dialog.set_update_available("v0.2.0")
+
+    dialog.client_id_edit.setText("")
+    assert dialog._autosave_timer.isActive()
+    dialog.update_button.click()
+
+    assert seen == []
+    assert dialog._autosave_timer.isActive() is False
+    assert "required" in dialog.status_label.text()
+
+
 def test_settings_dialog_emits_update_completed_after_successful_update(
     qtbot, tmp_path: Path
 ):

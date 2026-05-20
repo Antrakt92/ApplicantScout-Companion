@@ -976,6 +976,8 @@ class SettingsDialog(QDialog):
             return
         if not self.update_button.isEnabled():
             return
+        if not self.flush_pending_values():
+            return
         check_updates = self._check_updates
         self.updateStarted.emit()
         self._start_async_action(

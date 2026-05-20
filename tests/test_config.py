@@ -3439,6 +3439,30 @@ def test_tray_open_logs_failure_surfaces_notification_without_raising(
     ]
 
 
+def test_main_update_flushes_pending_settings_before_starting_worker():
+    calls: list[str] = []
+
+    class FakeSettingsDialog:
+        def flush_pending_values(self) -> bool:
+            calls.append("flush")
+            return True
+
+    assert main_mod._flush_settings_before_update(FakeSettingsDialog()) is True
+    assert calls == ["flush"]
+
+
+def test_main_update_flush_failure_blocks_worker_start():
+    calls: list[str] = []
+
+    class FakeSettingsDialog:
+        def flush_pending_values(self) -> bool:
+            calls.append("flush")
+            return False
+
+    assert main_mod._flush_settings_before_update(FakeSettingsDialog()) is False
+    assert calls == ["flush"]
+
+
 def test_wcl_credential_test_ignores_shared_cached_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

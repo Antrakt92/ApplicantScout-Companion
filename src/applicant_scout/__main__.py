@@ -1112,6 +1112,15 @@ def _wow_start_update_prompt_message(latest_version: str) -> str:
     )
 
 
+def _flush_settings_before_update(settings_dialog: object | None) -> bool:
+    if settings_dialog is None:
+        return True
+    flush = getattr(settings_dialog, "flush_pending_values", None)
+    if not callable(flush):
+        return True
+    return bool(flush())
+
+
 def _prepare_wow_watch_mode(args: list[str]) -> tuple[list[str], bool, int | None]:
     if WATCH_WOW_ARG not in args:
         return args, False, None
@@ -2069,6 +2078,8 @@ def main(argv: list[str] | None = None) -> int:
 
     def _run_update() -> None:
         if update_in_progress:
+            return
+        if not _flush_settings_before_update(settings_dialog):
             return
         _set_update_in_progress(True)
 
