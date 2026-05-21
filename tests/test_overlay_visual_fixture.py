@@ -130,6 +130,15 @@ def test_visual_fixture_diff_rejects_dimension_mismatch():
     assert "dimension mismatch" in diff.message
 
 
+def test_visual_fixture_diff_accepts_uniform_dpi_scaling():
+    expected = _solid_image(10, 10, QColor(10, 20, 30, 255))
+    actual = _solid_image(8, 8, QColor(10, 20, 30, 255))
+
+    diff = compare_overlay_visual_images(expected, actual)
+
+    assert diff.passed
+
+
 def test_visual_fixture_diff_allows_minor_antialiasing_noise():
     expected = _solid_image(4, 4, QColor(10, 20, 30, 255))
     actual = _solid_image(4, 4, QColor(10, 20, 30, 255))

@@ -1,6 +1,6 @@
 # ApplicantScout Companion Release Notes
 
-## 0.5.2 - 21-May-2026
+## 0.5.3 - 21-May-2026
 
 Lifecycle and fetch-scope hardening patch for live applicant scouting.
 This release focuses on cleaner startup/shutdown behavior, safer update/cache
@@ -41,9 +41,9 @@ temporarily lacks spec context.
 ### Release Assets
 
 - Requires the ApplicantScout WoW addon `0.3.3`.
-- Installer: `ApplicantScoutCompanionSetup-0.5.2.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.5.2.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.5.2-portable.zip`
+- Installer: `ApplicantScoutCompanionSetup-0.5.3.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.5.3.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.5.3-portable.zip`
 
 ## 0.5.1 - 20-May-2026
 

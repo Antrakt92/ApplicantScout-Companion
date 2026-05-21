@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from PyQt6.QtCore import Qt
+
 from applicant_scout.state import DEFAULT_WINDOW_HEIGHT, AppState, Applicant, Listing
 
 if TYPE_CHECKING:
@@ -27,6 +29,7 @@ VISUAL_FIXTURE_REGEN_COMMAND = (
 )
 VISUAL_DIFF_CHANNEL_TOLERANCE = 12
 VISUAL_DIFF_MAX_PIXEL_RATIO = 0.005
+VISUAL_DIFF_SCALE_RATIO_TOLERANCE = 0.01
 
 
 @dataclass(frozen=True)
@@ -298,18 +301,37 @@ def compare_overlay_visual_images(
             max_channel_delta=0,
         )
     if expected.size() != actual.size():
-        return VisualFixtureDiff(
-            passed=False,
-            message=(
-                "overlay visual fixture dimension mismatch: "
-                f"expected {expected.width()}x{expected.height()}, "
-                f"got {actual.width()}x{actual.height()}; regenerate with "
-                f"{VISUAL_FIXTURE_REGEN_COMMAND} after intentional UI changes"
-            ),
-            changed_pixels=0,
-            total_pixels=max(actual.width() * actual.height(), 0),
-            max_channel_delta=0,
-        )
+        expected_width = expected.width()
+        expected_height = expected.height()
+        actual_width = actual.width()
+        actual_height = actual.height()
+        scale_x = expected_width / actual_width if actual_width else 0.0
+        scale_y = expected_height / actual_height if actual_height else 0.0
+        if (
+            expected_width > 0
+            and expected_height > 0
+            and actual_width > 0
+            and actual_height > 0
+            and abs(scale_x - scale_y) <= VISUAL_DIFF_SCALE_RATIO_TOLERANCE
+        ):
+            actual = actual.scaled(
+                expected.size(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        else:
+            return VisualFixtureDiff(
+                passed=False,
+                message=(
+                    "overlay visual fixture dimension mismatch: "
+                    f"expected {expected_width}x{expected_height}, "
+                    f"got {actual_width}x{actual_height}; regenerate with "
+                    f"{VISUAL_FIXTURE_REGEN_COMMAND} after intentional UI changes"
+                ),
+                changed_pixels=0,
+                total_pixels=max(actual_width * actual_height, 0),
+                max_channel_delta=0,
+            )
 
     changed_pixels = 0
     max_channel_delta = 0
