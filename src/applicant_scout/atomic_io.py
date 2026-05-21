@@ -11,7 +11,7 @@ from pathlib import Path
 _PRIVATE_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR
 
 
-def _chmod_private(path: Path) -> None:
+def apply_private_file_mode(path: Path) -> None:
     try:
         path.chmod(_PRIVATE_FILE_MODE)
     except OSError:
@@ -38,7 +38,7 @@ def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
         )
         temp_path = Path(temp_name)
         if private:
-            _chmod_private(temp_path)
+            apply_private_file_mode(temp_path)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             fd = -1
             handle.write(text)
@@ -47,7 +47,7 @@ def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
         os.replace(temp_path, path)
         temp_path = None
         if private:
-            _chmod_private(path)
+            apply_private_file_mode(path)
     except BaseException:
         if fd != -1:
             try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,6 +58,25 @@ def _clean_load_config_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 
 def _retail_root(tmp_path: Path) -> Path:
     return tmp_path / "World of Warcraft" / "_retail_"
+
+
+def _without_root_logging_handlers() -> tuple[logging.Logger, list[logging.Handler]]:
+    root = logging.getLogger()
+    old_handlers = list(root.handlers)
+    for handler in old_handlers:
+        root.removeHandler(handler)
+    return root, old_handlers
+
+
+def _restore_root_logging_handlers(
+    root: logging.Logger,
+    old_handlers: list[logging.Handler],
+) -> None:
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        handler.close()
+    for handler in old_handlers:
+        root.addHandler(handler)
 
 
 def test_wcl_region_runtime_uses_fallback_until_live_region_known():
@@ -130,6 +150,72 @@ def test_release_notes_loader_skips_non_utf8_candidate(
     monkeypatch.delattr(main_mod.sys, "_MEIPASS", raising=False)
 
     assert main_mod._load_release_notes_text() == "# Source notes\n"
+
+
+def test_setup_logging_applies_private_mode_to_log_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        main_mod,
+        "apply_private_file_mode",
+        lambda path: calls.append(Path(path)),
+    )
+    root, old_handlers = _without_root_logging_handlers()
+    try:
+        main_mod._setup_logging(tmp_path)
+    finally:
+        _restore_root_logging_handlers(root, old_handlers)
+
+    assert tmp_path / "applicant-scout.log" in calls
+
+
+def test_private_rotating_file_handler_applies_private_mode_to_rollover_backups(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        main_mod,
+        "apply_private_file_mode",
+        lambda path: calls.append(Path(path)),
+    )
+    log_path = tmp_path / "applicant-scout.log"
+    handler = main_mod._PrivateRotatingFileHandler(
+        log_path,
+        maxBytes=1,
+        backupCount=1,
+        encoding="utf-8",
+    )
+    try:
+        record = logging.LogRecord("test", logging.INFO, __file__, 1, "abcd", (), None)
+        handler.emit(record)
+        handler.emit(record)
+    finally:
+        handler.close()
+
+    assert log_path in calls
+    assert tmp_path / "applicant-scout.log.1" in calls
+
+
+def test_setup_logging_closes_replaced_handlers(tmp_path: Path):
+    class DummyHandler(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed_by_setup = False
+
+        def close(self) -> None:
+            self.closed_by_setup = True
+            super().close()
+
+    root, old_handlers = _without_root_logging_handlers()
+    dummy = DummyHandler()
+    root.addHandler(dummy)
+    try:
+        main_mod._setup_logging(tmp_path)
+    finally:
+        _restore_root_logging_handlers(root, old_handlers)
+
+    assert dummy.closed_by_setup is True
 
 
 def test_show_release_notes_dialog_uses_loaded_notes(

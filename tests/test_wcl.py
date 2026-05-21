@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import time
 
 import httpx
@@ -1482,6 +1483,65 @@ def test_character_cache_failed_replace_preserves_previous_disk_cache(
     assert list(tmp_path.glob(".character-cache.json.*.tmp")) == []
 
 
+def test_character_cache_saves_private_file_mode(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    cache = CharacterCache(tmp_path)
+    calls: list[tuple[object, int]] = []
+    path_type = type(cache._path)
+    original_chmod = path_type.chmod
+
+    def record_chmod(self, mode: int) -> None:
+        calls.append((self, mode))
+        original_chmod(self, mode)
+
+    monkeypatch.setattr(path_type, "chmod", record_chmod)
+
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+
+    assert any(path == cache._path for path, _mode in calls)
+    assert all(mode == stat.S_IRUSR | stat.S_IWUSR for _path, mode in calls)
+
+
+def test_character_cache_applies_private_mode_to_existing_cache_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache_file = tmp_path / "character-cache.json"
+    cache_file.write_text(
+        json.dumps({"__version__": _CACHE_VERSION, "entries": {}}),
+        encoding="utf-8",
+    )
+    calls: list[tuple[object, int]] = []
+    path_type = type(cache_file)
+    original_chmod = path_type.chmod
+
+    def record_chmod(self, mode: int) -> None:
+        calls.append((self, mode))
+        original_chmod(self, mode)
+
+    monkeypatch.setattr(path_type, "chmod", record_chmod)
+
+    CharacterCache(tmp_path)
+
+    assert (cache_file, stat.S_IRUSR | stat.S_IWUSR) in calls
+
+
+def test_character_cache_private_mode_failure_does_not_break_save(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache = CharacterCache(tmp_path)
+    calls: list[object] = []
+
+    def fail_chmod(self, _mode: int) -> None:
+        calls.append(self)
+        raise PermissionError("policy")
+
+    monkeypatch.setattr(type(cache._path), "chmod", fail_chmod)
+
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+
+    assert cache._path.exists()
+    assert any(path == cache._path for path in calls)
+
+
 def test_character_cache_ttl_override_is_instance_local(tmp_path):
     short_cache = CharacterCache(tmp_path / "short", ttl_seconds=1)
     default_cache = CharacterCache(tmp_path / "default")
@@ -1924,6 +1984,64 @@ def test_oauth_token_save_failure_preserves_previous_token_file(
     assert auth.get_token() == "fresh-token"
     assert token_path.read_text(encoding="utf-8") == "old-token"
     assert list(tmp_path.glob(".token.json.*.tmp")) == []
+
+
+def test_oauth_auth_applies_private_mode_to_existing_token_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    token_path = tmp_path / "token.json"
+    token_path.write_text(
+        json.dumps(
+            {
+                "access_token": "cached-token",
+                "expires_at": time.time() + 3600,
+                "client_fingerprint": wcl_mod._client_fingerprint("client", "secret"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[tuple[object, int]] = []
+    path_type = type(token_path)
+    original_chmod = path_type.chmod
+
+    def record_chmod(self, mode: int) -> None:
+        calls.append((self, mode))
+        original_chmod(self, mode)
+
+    monkeypatch.setattr(path_type, "chmod", record_chmod)
+
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    assert auth.get_token() == "cached-token"
+    assert (token_path, stat.S_IRUSR | stat.S_IWUSR) in calls
+
+
+def test_oauth_auth_private_mode_failure_does_not_break_cached_token_load(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    token_path = tmp_path / "token.json"
+    token_path.write_text(
+        json.dumps(
+            {
+                "access_token": "cached-token",
+                "expires_at": time.time() + 3600,
+                "client_fingerprint": wcl_mod._client_fingerprint("client", "secret"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[object] = []
+
+    def fail_chmod(self, _mode: int) -> None:
+        calls.append(self)
+        raise PermissionError("policy")
+
+    monkeypatch.setattr(type(token_path), "chmod", fail_chmod)
+
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    assert auth.get_token() == "cached-token"
+    assert token_path in calls
 
 
 def test_oauth_cached_token_ignored_for_different_client_fingerprint(

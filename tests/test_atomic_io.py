@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from applicant_scout import atomic_io
-from applicant_scout.atomic_io import atomic_write_text
+from applicant_scout.atomic_io import apply_private_file_mode, atomic_write_text
 
 
 def _temp_files(path: Path) -> list[Path]:
@@ -87,6 +87,22 @@ def test_atomic_write_text_private_mode_chmods_temp_and_target(
     assert target.read_text(encoding="utf-8") == "secret"
     assert any(path == target for path, _mode in calls)
     assert all(mode == stat.S_IRUSR | stat.S_IWUSR for _path, mode in calls)
+
+
+def test_apply_private_file_mode_ignores_os_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+
+    def fail_chmod(_self: Path, _mode: int) -> None:
+        raise PermissionError("policy")
+
+    monkeypatch.setattr(type(target), "chmod", fail_chmod)
+
+    apply_private_file_mode(target)
+
+    assert target.read_text(encoding="utf-8") == "secret"
 
 
 def test_atomic_write_text_uses_target_directory_for_temp_file(

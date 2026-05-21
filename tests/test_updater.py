@@ -6,7 +6,9 @@ import sys
 from typing import Any
 
 import httpx
+import pytest
 
+import applicant_scout.updater as updater_mod
 from applicant_scout.updater import (
     DEFAULT_RELEASE_REPO,
     UpdateResult,
@@ -42,26 +44,49 @@ class _Client:
 
 
 class _DownloadResponse:
-    def __init__(self, content: bytes = b"installer") -> None:
-        self.content = content
+    def __init__(
+        self,
+        chunks: bytes | list[bytes] = b"installer",
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self._chunks = [chunks] if isinstance(chunks, bytes) else chunks
+        self.headers = headers or {}
         self.status_code = 200
+        self.closed = False
+
+    @property
+    def content(self) -> bytes:
+        raise AssertionError("download responses must be streamed, not materialized")
+
+    def __enter__(self) -> "_DownloadResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.closed = True
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise httpx.HTTPStatusError("bad", request=None, response=None)
 
     def iter_bytes(self):
-        yield self.content
+        yield from self._chunks
 
 
 class _DownloadClient:
-    def __init__(self, responses: dict[str, bytes] | None = None) -> None:
+    def __init__(self, responses: dict[str, bytes | _DownloadResponse] | None = None) -> None:
         self.urls: list[str] = []
         self.responses = responses or {}
 
-    def get(self, url: str, **_kwargs) -> _DownloadResponse:
+    def get(self, _url: str, **_kwargs) -> _DownloadResponse:
+        raise AssertionError("download installer must use client.stream()")
+
+    def stream(self, _method: str, url: str, **_kwargs) -> _DownloadResponse:
         self.urls.append(url)
-        return _DownloadResponse(self.responses.get(url, b"setup-bytes"))
+        response = self.responses.get(url, b"setup-bytes")
+        if isinstance(response, _DownloadResponse):
+            return response
+        return _DownloadResponse(response)
 
 
 def test_default_release_repo_points_to_public_companion_repo():
@@ -82,6 +107,25 @@ def _release(
         "draft": draft,
         "assets": assets or [],
     }
+
+
+def _installer_result(
+    *,
+    asset_url: str = "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe",
+    asset_name: str = "ApplicantScoutCompanionSetup-0.2.0.exe",
+    checksum_url: str = "https://example.test/setup.exe.sha256",
+    checksum_name: str = "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+) -> UpdateResult:
+    return UpdateResult(
+        status="available",
+        message="available",
+        current_version="0.1.0",
+        latest_version="0.2.0",
+        asset_url=asset_url,
+        asset_name=asset_name,
+        checksum_url=checksum_url,
+        checksum_name=checksum_name,
+    )
 
 
 def test_update_check_prefers_installer_asset():
@@ -474,24 +518,15 @@ def test_download_update_installer_saves_setup_asset_atomically(tmp_path):
     client = _DownloadClient(
         {"https://example.test/setup.exe.sha256": f"{digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()}
     )
-    result = UpdateResult(
-        status="available",
-        message="available",
-        current_version="0.1.0",
-        latest_version="0.2.0",
-        asset_url="https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe",
-        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
-        checksum_url="https://example.test/setup.exe.sha256",
-        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
-    )
+    result = _installer_result()
 
     path = download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
 
     assert path == tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     assert path.read_bytes() == b"setup-bytes"
     assert client.urls == [
-        "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe",
         "https://example.test/setup.exe.sha256",
+        "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe",
     ]
     assert not list(tmp_path.glob("*.tmp"))
 
@@ -715,6 +750,137 @@ def test_download_update_installer_rejects_hash_mismatch(tmp_path):
     else:
         raise AssertionError("hash mismatch should be rejected")
     assert not (tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe").exists()
+
+
+def test_download_update_installer_streams_installer_without_response_content(tmp_path):
+    chunks = [b"setup-", b"bytes"]
+    digest = hashlib.sha256(b"".join(chunks)).hexdigest()
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
+            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(chunks),
+        }
+    )
+
+    path = download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert path.read_bytes() == b"setup-bytes"
+    assert client.urls == [
+        "https://example.test/setup.exe.sha256",
+        "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe",
+    ]
+
+
+def test_download_update_installer_rejects_oversized_checksum_before_installer_download(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    monkeypatch.setattr(updater_mod, "_MAX_CHECKSUM_DOWNLOAD_BYTES", 8, raising=False)
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            "https://example.test/setup.exe.sha256": _DownloadResponse(
+                b"9" * 9,
+                headers={"content-length": "9"},
+            )
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="checksum.*too large"):
+        download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert client.urls == ["https://example.test/setup.exe.sha256"]
+    assert not (tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe").exists()
+
+
+def test_download_update_installer_rejects_checksum_that_exceeds_limit_while_streaming(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    monkeypatch.setattr(updater_mod, "_MAX_CHECKSUM_DOWNLOAD_BYTES", 8, raising=False)
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            "https://example.test/setup.exe.sha256": _DownloadResponse(
+                [b"1234", b"56789"],
+                headers={"content-length": "8"},
+            )
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="checksum.*too large"):
+        download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert client.urls == ["https://example.test/setup.exe.sha256"]
+    assert not (tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe").exists()
+
+
+def test_download_update_installer_rejects_oversized_installer_content_length(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    monkeypatch.setattr(updater_mod, "_MAX_INSTALLER_DOWNLOAD_BYTES", 8, raising=False)
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
+            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
+                b"setup-bytes",
+                headers={"content-length": "9"},
+            ),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="installer.*too large"):
+        download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert not (tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe").exists()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_download_update_installer_rejects_installer_that_exceeds_limit_while_streaming(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    monkeypatch.setattr(updater_mod, "_MAX_INSTALLER_DOWNLOAD_BYTES", 8, raising=False)
+    chunks = [b"setup", b"-byt"]
+    digest = hashlib.sha256(b"".join(chunks)).hexdigest()
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
+            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
+                [b"setup", b"-byte"],
+                headers={"content-length": "8"},
+            ),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="installer.*too large"):
+        download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert not (tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe").exists()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_download_update_installer_accepts_installer_at_size_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    monkeypatch.setattr(updater_mod, "_MAX_INSTALLER_DOWNLOAD_BYTES", 8, raising=False)
+    content = b"12345678"
+    digest = hashlib.sha256(content).hexdigest()
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
+            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
+                [b"1234", b"5678"],
+                headers={"content-length": "8"},
+            ),
+        }
+    )
+
+    path = download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert path.read_bytes() == content
 
 
 def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):

@@ -14,7 +14,7 @@ from typing import Optional
 
 import httpx
 
-from .atomic_io import atomic_write_text
+from .atomic_io import apply_private_file_mode, atomic_write_text
 from .constants import (
     CURRENT_RAID_ZONE_ID,
     MPLUS_ENCOUNTERS,
@@ -302,6 +302,8 @@ class WCLAuth:
         self._client_secret = client_secret
         self._client_fingerprint = _client_fingerprint(client_id, client_secret)
         self._token_path = cache_dir / "token.json"
+        if self._token_path.exists():
+            apply_private_file_mode(self._token_path)
         self._token: Optional[_Token] = self._load_cached()
         # Two QRunnable workers can hit get_token() simultaneously for the
         # first request after token expiry. Without this lock both would call
@@ -1386,6 +1388,8 @@ class CharacterCache:
     def __init__(self, cache_dir: Path, ttl_seconds: int | None = None):
         self._path = cache_dir / "character-cache.json"
         self._ttl_seconds = ttl_seconds if ttl_seconds is not None else self.TTL_SECONDS
+        if self._path.exists():
+            apply_private_file_mode(self._path)
         self._data: dict[str, _CacheEntry] = self._load()
         # Without this, two workers calling put() in parallel can race: thread A
         # iterating self._data inside json.dumps while thread B inserts a new
@@ -1486,6 +1490,7 @@ class CharacterCache:
                         "entries": {k: asdict(v) for k, v in self._data.items()},
                     }
                 ),
+                private=True,
             )
         except OSError:
             pass

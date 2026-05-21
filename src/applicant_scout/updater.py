@@ -25,6 +25,8 @@ UpdateStatus = Literal["available", "up_to_date", "unavailable"]
 _INSTALLER_PREFIX = "ApplicantScoutCompanionSetup-"
 _INSTALLER_ARGS = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
 _SELF_UPDATE_FLAG = "/APSCOUT_SELFUPDATE=1"
+_MAX_INSTALLER_DOWNLOAD_BYTES = 256 * 1024 * 1024
+_MAX_CHECKSUM_DOWNLOAD_BYTES = 8 * 1024
 
 
 @dataclass(frozen=True)
@@ -281,10 +283,44 @@ def _default_update_download_dir() -> Path:
     return user_cache_dir() / "updates"
 
 
-def _response_bytes(response: Any) -> bytes:
-    if hasattr(response, "iter_bytes"):
-        return b"".join(chunk for chunk in response.iter_bytes() if chunk)
-    return bytes(response.content)
+def _content_length(response: Any) -> int | None:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        raw_length = headers.get("content-length")
+    except AttributeError:
+        return None
+    if raw_length is None:
+        return None
+    try:
+        length = int(raw_length)
+    except (TypeError, ValueError):
+        return None
+    if length < 0:
+        return None
+    return length
+
+
+def _raise_if_response_too_large(response: Any, *, limit: int, label: str) -> None:
+    length = _content_length(response)
+    if length is not None and length > limit:
+        raise RuntimeError(f"Update {label} is too large.")
+
+
+def _read_capped_response_bytes(response: Any, *, limit: int, label: str) -> bytes:
+    response.raise_for_status()
+    _raise_if_response_too_large(response, limit=limit, label=label)
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_bytes():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit:
+            raise RuntimeError(f"Update {label} is too large.")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _parse_sha256_checksum(text: str, *, expected_name: str) -> str:
@@ -306,11 +342,25 @@ def _parse_sha256_checksum(text: str, *, expected_name: str) -> str:
     raise RuntimeError("Malformed update checksum.")
 
 
-def _sha256_file(path: Path) -> str:
+def _write_capped_response_to_file(
+    response: Any,
+    handle: Any,
+    *,
+    limit: int,
+    label: str,
+) -> str:
+    response.raise_for_status()
+    _raise_if_response_too_large(response, limit=limit, label=label)
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    total = 0
+    for chunk in response.iter_bytes():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit:
+            raise RuntimeError(f"Update {label} is too large.")
+        digest.update(chunk)
+        handle.write(chunk)
     return digest.hexdigest()
 
 
@@ -343,14 +393,17 @@ def download_update_installer(
 
     owns_client = client is None
     http = client or httpx.Client(timeout=120.0, follow_redirects=True)
+    fd = -1
     tmp_path: Path | None = None
     try:
-        response = http.get(asset_url, follow_redirects=True)
-        response.raise_for_status()
-        checksum_response = http.get(checksum_url, follow_redirects=True)
-        checksum_response.raise_for_status()
+        with http.stream("GET", checksum_url, follow_redirects=True) as checksum_response:
+            checksum_bytes = _read_capped_response_bytes(
+                checksum_response,
+                limit=_MAX_CHECKSUM_DOWNLOAD_BYTES,
+                label="checksum",
+            )
         try:
-            checksum_text = _response_bytes(checksum_response).decode("utf-8")
+            checksum_text = checksum_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise RuntimeError("Malformed update checksum.") from exc
         expected_digest = _parse_sha256_checksum(
@@ -363,15 +416,26 @@ def download_update_installer(
             dir=target_dir,
         )
         tmp_path = Path(tmp_name)
-        with open(fd, "wb", closefd=True) as handle:
-            handle.write(_response_bytes(response))
-        actual_digest = _sha256_file(tmp_path)
+        with http.stream("GET", asset_url, follow_redirects=True) as response:
+            with open(fd, "wb", closefd=True) as handle:
+                fd = -1
+                actual_digest = _write_capped_response_to_file(
+                    response,
+                    handle,
+                    limit=_MAX_INSTALLER_DOWNLOAD_BYTES,
+                    label="installer",
+                )
         if actual_digest.lower() != expected_digest.lower():
             raise RuntimeError("Update installer checksum mismatch.")
         tmp_path.replace(target)
         tmp_path = None
         return target
     finally:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         if tmp_path is not None:
             try:
                 tmp_path.unlink()

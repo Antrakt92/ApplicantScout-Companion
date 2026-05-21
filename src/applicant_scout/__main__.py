@@ -23,6 +23,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import __version__
+from .atomic_io import apply_private_file_mode
 from .config import (
     Config,
     ConfigError,
@@ -946,6 +947,25 @@ class _UpdateCheckDecision:
     pending_update_version: str | None
 
 
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._apply_private_modes()
+
+    def _apply_private_modes(self) -> None:
+        base_path = Path(self.baseFilename)
+        if base_path.exists():
+            apply_private_file_mode(base_path)
+        for index in range(1, self.backupCount + 1):
+            backup_path = Path(f"{self.baseFilename}.{index}")
+            if backup_path.exists():
+                apply_private_file_mode(backup_path)
+
+    def doRollover(self) -> None:  # noqa: N802 - stdlib logging API name.
+        super().doRollover()
+        self._apply_private_modes()
+
+
 def _resolve_update_check_result(
     coordinator: _UpdateCheckCoordinator,
     generation: int,
@@ -969,6 +989,7 @@ def _setup_logging(log_dir: Path | None = None) -> None:
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
+        handler.close()
     root.setLevel(logging.INFO)
     formatter = logging.Formatter(
         "%(asctime)s %(name)s %(levelname)s: %(message)s",
@@ -980,7 +1001,7 @@ def _setup_logging(log_dir: Path | None = None) -> None:
     target_log_dir = log_dir or user_log_dir()
     try:
         target_log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
+        file_handler = _PrivateRotatingFileHandler(
             target_log_dir / "applicant-scout.log",
             maxBytes=1_000_000,
             backupCount=3,
