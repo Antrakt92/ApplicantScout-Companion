@@ -1069,6 +1069,19 @@ class OverlayLauncher(QFrame):
             cursor_pos = QCursor.pos()
             self._move_drag_to_global_pos(cursor_pos)
             return
+        # WHY: Qt can miss MouseRelease for this always-on-top Tool window.
+        # Pure clicks should restore immediately; only drag-like movement needs
+        # the release-grace guard that protects launcher position saves.
+        if not self._dragged and self._press_global_pos is not None:
+            release_pos = QCursor.pos()
+            if (release_pos - self._press_global_pos).manhattanLength() > 3:
+                self._dragged = True
+            else:
+                self._finish_drag(emit_click=True)
+                return
+        if not self._dragged:
+            self._finish_drag(emit_click=True)
+            return
         if self._drag_button_up_since is None:
             self._drag_button_up_since = time.monotonic()
             return
@@ -2202,7 +2215,6 @@ class OverlayWindow(QMainWindow):
             self._maybe_show()
 
     def collapse_to_launcher(self) -> None:
-        self.flush_geometry()
         self.show_launcher_only()
 
     def show_launcher_only(self) -> None:
@@ -2231,7 +2243,7 @@ class OverlayWindow(QMainWindow):
                 or self._launcher.is_click_emitting()
             )
         )
-        if not self._is_game_foreground() and not launcher_interaction_foreground:
+        if not launcher_interaction_foreground and not self._is_game_foreground():
             self._game_foreground = False
             self._collapsed_to_launcher = True
             self._launcher_visible_after_non_game_foreground = False

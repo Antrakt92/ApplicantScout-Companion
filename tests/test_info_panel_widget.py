@@ -1311,11 +1311,7 @@ def test_hidden_panel_refresh_preserves_unexpanded_geometry_for_quit_flush(
         assert window.geometry().height() > 240
 
         window.collapse_to_launcher()
-        saved_after_collapse = json.loads(
-            (tmp_path / "window.json").read_text(encoding="utf-8")
-        )
-        assert saved_after_collapse["y"] == 180
-        assert saved_after_collapse["h"] == 240
+        assert not (tmp_path / "window.json").exists()
 
         window._sync_delegate_and_panel()
         window.flush_geometry()
@@ -1325,6 +1321,66 @@ def test_hidden_panel_refresh_preserves_unexpanded_geometry_for_quit_flush(
         )
         assert saved_after_hidden_refresh["y"] == 180
         assert saved_after_hidden_refresh["h"] == 240
+    finally:
+        client.close()
+
+
+def test_collapse_to_launcher_does_not_flush_geometry_on_click(
+    qtbot, tmp_path, monkeypatch
+):
+    calls: list[object] = []
+    monkeypatch.setattr(
+        overlay_mod,
+        "save_geometry",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._save_timer.start()
+
+        window.collapse_to_launcher()
+
+        assert calls == []
+        assert window._save_timer.isActive()
+        assert not window.isVisible()
+        assert window._launcher.isVisible()
+        assert window._collapsed_to_launcher
+    finally:
+        client.close()
+
+
+def test_collapse_to_launcher_keeps_pending_geometry_save_async(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        window.setGeometry(188, 211, 430, 260)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._save_timer.setInterval(1)
+        window._save_timer.start()
+
+        window.collapse_to_launcher()
+
+        assert not (tmp_path / "window.json").exists()
+        qtbot.waitUntil(lambda: (tmp_path / "window.json").exists(), timeout=1000)
+        saved = json.loads((tmp_path / "window.json").read_text(encoding="utf-8"))
+        assert saved["x"] == 188
+        assert saved["y"] == 211
+        assert saved["w"] == 430
+        assert saved["h"] == 260
     finally:
         client.close()
 
@@ -1486,6 +1542,44 @@ def test_launcher_mouse_click_restores_overlay_when_probe_sees_launcher(
         assert not window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert window._game_foreground
+    finally:
+        client.close()
+
+
+def test_launcher_click_restore_skips_foreground_probe_on_hot_path(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    probe_calls = {"count": 0}
+
+    def foreground_probe() -> bool:
+        probe_calls["count"] += 1
+        return True
+
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=foreground_probe,
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        probe_calls["count"] = 0
+        window._launcher._click_emit_active = True
+
+        try:
+            window.restore_from_launcher()
+        finally:
+            window._launcher._click_emit_active = False
+
+        assert probe_calls["count"] == 0
+        assert window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
     finally:
         client.close()
 
@@ -1916,6 +2010,9 @@ def test_launcher_drag_ungrab_waits_for_stable_button_up_before_finishing(
             "mouseButtons",
             lambda: Qt.MouseButton.NoButton,
         )
+        monkeypatch.setattr(
+            overlay_mod, "_native_left_mouse_button_down", lambda: False
+        )
         released_pos = window._launcher.pos()
         last_cursor_pos = window._launcher._last_drag_cursor_pos
         assert last_cursor_pos is not None
@@ -1946,6 +2043,91 @@ def test_launcher_drag_ungrab_waits_for_stable_button_up_before_finishing(
             "x": released_pos.x(),
             "y": released_pos.y(),
         }
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_click_fallback_restores_overlay_without_release_grace(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        assert window._launcher.is_dragging()
+        assert not window._foreground_timer.isActive()
+        monkeypatch.setattr(
+            overlay_mod.QApplication,
+            "mouseButtons",
+            lambda: Qt.MouseButton.NoButton,
+        )
+        monkeypatch.setattr(
+            overlay_mod, "_native_left_mouse_button_down", lambda: False
+        )
+        now = {"value": 10.0}
+        monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        press_global_pos = window._launcher._press_global_pos
+        assert press_global_pos is not None
+        monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: press_global_pos)
+
+        window._launcher._poll_drag_cursor()
+
+        assert not window._launcher.is_dragging()
+        assert window._foreground_timer.isActive()
+        assert window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+    finally:
+        if QWidget.mouseGrabber() is window._launcher:
+            window._launcher.releaseMouse()
+        client.close()
+
+
+def test_launcher_click_fallback_allows_threshold_cursor_jitter(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+        assert window._launcher.is_dragging()
+        monkeypatch.setattr(
+            overlay_mod.QApplication,
+            "mouseButtons",
+            lambda: Qt.MouseButton.NoButton,
+        )
+        monkeypatch.setattr(
+            overlay_mod, "_native_left_mouse_button_down", lambda: False
+        )
+        press_global_pos = window._launcher._press_global_pos
+        assert press_global_pos is not None
+        monkeypatch.setattr(
+            overlay_mod.QCursor,
+            "pos",
+            lambda: press_global_pos + QPoint(3, 0),
+        )
+
+        window._launcher._poll_drag_cursor()
+
+        assert not window._launcher.is_dragging()
+        assert window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+        assert not (tmp_path / "launcher.json").exists()
     finally:
         if QWidget.mouseGrabber() is window._launcher:
             window._launcher.releaseMouse()
@@ -2162,6 +2344,9 @@ def test_launcher_drag_poll_finishes_lost_release_and_persists_position(
             overlay_mod.QApplication,
             "mouseButtons",
             lambda: Qt.MouseButton.NoButton,
+        )
+        monkeypatch.setattr(
+            overlay_mod, "_native_left_mouse_button_down", lambda: False
         )
         last_cursor_pos = window._launcher._last_drag_cursor_pos
         assert last_cursor_pos is not None
