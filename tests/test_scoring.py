@@ -1469,12 +1469,12 @@ def test_mplus_same_dungeon_distinct_wcl_key_brackets_do_not_inflate_breadth():
     assert distinct_fit.confidence == single_fit.confidence
 
 
-def test_mplus_duplicate_bad_wcl_dungeon_rows_apply_one_worst_penalty():
+def test_mplus_duplicate_bad_wcl_dungeon_rows_use_representative_penalty():
     target = _listing(key_level=15, dungeon_name="Skyreach")
     canonical = _app(
         score=3270,
         **_rio_profile([15] * 8, target_key=15),
-        dps_breakdown=[_dungeon("Skyreach", [(15, 12.0, 12.0, 1)])],
+        dps_breakdown=[_dungeon("Skyreach", [(15, 20.0, 20.0, 1)])],
     )
     duplicate = _app(
         score=3270,
@@ -1488,7 +1488,7 @@ def test_mplus_duplicate_bad_wcl_dungeon_rows_apply_one_worst_penalty():
     assert candidate_fit(duplicate, target).score == candidate_fit(canonical, target).score
 
 
-def test_mplus_mixed_duplicate_wcl_rows_keep_best_positive_and_worst_bad():
+def test_mplus_mixed_duplicate_wcl_rows_use_representative_positive():
     target = _listing(key_level=15, dungeon_name="Skyreach")
     mixed = _app(
         score=3270,
@@ -1511,8 +1511,66 @@ def test_mplus_mixed_duplicate_wcl_rows_keep_best_positive_and_worst_bad():
 
     mixed_fit = candidate_fit(mixed, target)
 
-    assert mixed_fit.score < candidate_fit(best_positive, target).score
+    assert mixed_fit.score == candidate_fit(best_positive, target).score
     assert mixed_fit.score > candidate_fit(worst_bad, target).score
+
+
+def test_mplus_bad_wcl_ignores_hidden_worse_bracket_when_representative_row_is_good():
+    target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
+    rio_profile = _rio_profile([18, 17, 17, 17, 17, 17, 17, 17], target_key=18)
+    representative_good = _app(
+        score=3552,
+        **rio_profile,
+        dps_breakdown=[_dungeon("Skyreach", [(17, 78.0, 70.0, 1)])],
+    )
+    hidden_bad = _app(
+        score=3552,
+        **rio_profile,
+        dps_breakdown=[_dungeon("Skyreach", [(18, 8.0, 8.0, 1), (17, 78.0, 70.0, 1)])],
+    )
+
+    assert candidate_fit(hidden_bad, target).score == pytest.approx(
+        candidate_fit(representative_good, target).score
+    )
+
+
+def test_mplus_broad_rio_with_bad_representative_wcl_stays_risky_not_zero():
+    target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
+    applicant = _app(
+        score=3552,
+        **_rio_profile([18, 17, 17, 17, 17, 17, 17, 17], target_key=18),
+        dps_breakdown=[
+            _dungeon("Skyreach", [(18, 8.0, 8.0, 1)]),
+            _dungeon("Magisters' Terrace", [(17, 2.0, 2.0, 1)]),
+            _dungeon("Seat of the Triumvirate", [(17, 1.0, 1.0, 1)]),
+            _dungeon("Pit of Saron", [(16, 9.0, 9.0, 1)]),
+        ],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.score >= 20.0
+    assert fit.score < 40.0
+
+
+def test_mplus_healer_broad_rio_low_hps_is_warning_not_hard_veto():
+    target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
+    healer = _app(
+        role="HEALER",
+        score=3552,
+        **_rio_profile([18, 17, 17, 17, 17, 17, 17, 17], target_key=18),
+        hps_breakdown=[
+            _dungeon("Windrunner Spire", [(18, 1.0, 1.0, 1)]),
+            _dungeon("Pit of Saron", [(17, 3.0, 3.0, 1)]),
+            _dungeon("Magisters' Terrace", [(17, 18.0, 18.0, 1)]),
+            _dungeon("Algeth'ar Academy", [(17, 23.0, 18.0, 2)]),
+        ],
+    )
+
+    fit = candidate_fit(healer, target)
+
+    assert fit.score >= 30.0
+    assert fit.score < 45.0
 
 
 def test_package_fit_penalizes_weak_member_in_multi_member_group():

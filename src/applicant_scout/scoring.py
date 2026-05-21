@@ -391,18 +391,26 @@ def _mplus_scorecard_candidate_fit(
     wcl_gray_completion = _mplus_wcl_gray_completion_score(
         wcl_signals, target_key, rio_key_levels
     )
-    wcl_gray_penalty = _mplus_wcl_gray_penalty(wcl_signals, target_key)
-    wcl_bad_penalty = _mplus_wcl_bad_penalty(wcl_signals, target_key)
+    representative_wcl_signals = _mplus_representative_wcl_signals(
+        wcl_signals, target_key
+    )
+    wcl_gray_penalty = _mplus_wcl_gray_penalty(representative_wcl_signals, target_key)
+    wcl_bad_penalty = _mplus_wcl_bad_penalty(representative_wcl_signals, target_key)
+    readiness_score = (
+        key_score + carry + same_bonus + consistency + completion_experience
+    )
     raw_score = (
-        key_score
-        + carry
-        + same_bonus
-        + consistency
-        + completion_experience
+        readiness_score
         + wcl_positive
         + wcl_gray_completion
         - wcl_gray_penalty
         - wcl_bad_penalty
+    )
+    raw_score = max(
+        raw_score,
+        _mplus_rio_completion_risk_floor(
+            applicant, rio_key_levels, target_key, readiness_score
+        ),
     )
 
     has_relevant_wcl = any(
@@ -487,6 +495,70 @@ def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCL
                 )
             )
     return signals
+
+
+def _mplus_representative_wcl_signals(
+    signals: list[_MPlusWCLSignal], target_key: int
+) -> list[_MPlusWCLSignal]:
+    by_dungeon: dict[str, list[_MPlusWCLSignal]] = {}
+    for signal in signals:
+        dungeon_key = _mplus_wcl_dungeon_key(signal)
+        if dungeon_key is None:
+            continue
+        by_dungeon.setdefault(dungeon_key, []).append(signal)
+
+    representatives: list[_MPlusWCLSignal] = []
+    for dungeon_signals in by_dungeon.values():
+        best_signal: tuple[float, _MPlusWCLSignal] | None = None
+        window_signal: tuple[float, _MPlusWCLSignal] | None = None
+        for signal in dungeon_signals:
+            fit = _mplus_signal_fit(signal, target_key)
+            if fit is None:
+                continue
+            candidate = (fit, signal)
+            if best_signal is None or fit > best_signal[0]:
+                best_signal = candidate
+            if abs(signal.key_level - target_key) <= 2 and (
+                window_signal is None or fit > window_signal[0]
+            ):
+                window_signal = candidate
+        selected = window_signal or best_signal
+        if selected is not None:
+            representatives.append(selected[1])
+    return representatives
+
+
+def _mplus_signal_fit(signal: _MPlusWCLSignal, target_key: int) -> float | None:
+    return _mplus_bracket_fit(
+        {
+            "key_level": signal.key_level,
+            "parse_percent": signal.percentile,
+            "median_percent": signal.median_percent,
+            "run_count": signal.run_count,
+        },
+        target_key,
+    )
+
+
+def _mplus_rio_completion_risk_floor(
+    applicant: Applicant,
+    rio_key_levels: list[int],
+    target_key: int,
+    readiness_score: float,
+) -> float:
+    if target_key <= 0 or readiness_score <= 0.0:
+        return 0.0
+    near_target_count = sum(
+        1 for level in rio_key_levels[:MPLUS_DUNGEON_COUNT] if level >= target_key - 1
+    )
+    at_target_count = sum(
+        1 for level in rio_key_levels[:MPLUS_DUNGEON_COUNT] if level >= target_key
+    )
+    if near_target_count < 6 or at_target_count < 1:
+        return 0.0
+    if applicant.role == "HEALER":
+        return min(38.0, readiness_score * 0.75)
+    return min(30.0, readiness_score * 0.55)
 
 
 def _mplus_primary_key(

@@ -11,6 +11,13 @@ temporarily lacks spec context.
 
 - Launcher hover and click handling is more responsive during fast interactions
   and overlay refreshes.
+- Mythic+ fit scoring now uses the same representative per-dungeon WCL rows that
+  the details panel shows, so hidden older/worse brackets no longer overrule the
+  visible evidence for a dungeon.
+- Broad Mythic+ listings now treat strong near-target RaiderIO completion
+  history as real evidence even when sparse WCL logs are weak, keeping risky
+  applicants in a reviewable `Fit` range instead of collapsing to a misleading
+  zero-like score.
 - Update downloads now stream to disk and private cache/config writes are more
   defensive against partial writes and file-permission edge cases.
 - Developer watcher startup and detection are more explicit, making packaged
