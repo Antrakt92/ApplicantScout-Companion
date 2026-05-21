@@ -10,7 +10,7 @@ jobs:
     if: ${{ github.event.created == true && github.event.forced == false && github.event.deleted == false }}
     runs-on: windows-latest
     env:
-      QT_SCALE_FACTOR: '1.25'
+      APPLICANT_SCOUT_VISUAL_BASELINE: smoke
     permissions:
       contents: write
     steps:

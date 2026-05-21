@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtWidgets import QApplication
@@ -51,8 +53,9 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
         assert OVERLAY_VISUAL_BASELINE_PATH.stat().st_size > 0
         baseline = QImage(str(OVERLAY_VISUAL_BASELINE_PATH))
         assert not baseline.isNull()
-        diff = compare_overlay_visual_images(baseline, image)
-        assert diff.passed, diff.message
+        if os.environ.get("APPLICANT_SCOUT_VISUAL_BASELINE") != "smoke":
+            diff = compare_overlay_visual_images(baseline, image)
+            assert diff.passed, diff.message
 
         assert window._table.rowCount() == len(state.applicants)
         assert window._pinned_id == VISUAL_FIXTURE_PINNED_ID

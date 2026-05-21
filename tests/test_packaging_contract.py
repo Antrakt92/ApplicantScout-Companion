@@ -438,7 +438,7 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assert "python-version: '3.13'" in workflow
     assert "constraints-release.txt" in workflow
     assert ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in workflow
-    assert "QT_SCALE_FACTOR: '1.25'" in workflow
+    assert "APPLICANT_SCOUT_VISUAL_BASELINE: smoke" in workflow
     assert "choco install lua51 --version=5.1.5" in workflow
     assert "choco install innosetup --version=6.7.1" in workflow
     assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
@@ -523,7 +523,7 @@ def test_check_workflow_runs_non_release_companion_and_addon_gates():
     assert "path: ApplicantScout-Companion" in workflow
     assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
     assert "path: ApplicantScout-Addon" in workflow
-    assert "QT_SCALE_FACTOR: '1.25'" in workflow
+    assert "APPLICANT_SCOUT_VISUAL_BASELINE: smoke" in workflow
     assert ".\\scripts\\check.ps1 -AddonRoot ..\\ApplicantScout-Addon" in workflow
     assert "gh release" not in workflow
     assert "build-windows.ps1" not in workflow

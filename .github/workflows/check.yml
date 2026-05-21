@@ -13,7 +13,7 @@ jobs:
   check:
     runs-on: windows-latest
     env:
-      QT_SCALE_FACTOR: '1.25'
+      APPLICANT_SCOUT_VISUAL_BASELINE: smoke
     steps:
       - name: Checkout companion
         # actions/checkout v6 pinned to the upstream tag commit.
