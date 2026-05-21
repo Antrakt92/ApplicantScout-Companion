@@ -18,6 +18,7 @@ WATCH_WOW_ARG = "--watch-wow"
 WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe", "WowClassic.exe", "WowClassicT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_ARGUMENT_LIST_SEPARATOR = "\x1f"
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ def is_wow_sync_watcher_running(
     spec = companion_launch_spec()
     executable = executable_path or spec.executable
     expected_arguments = arguments if arguments is not None else spec.arguments
+    expected_argument_text = _ARGUMENT_LIST_SEPARATOR.join(expected_arguments)
     pid = os.getpid() if current_pid is None else current_pid
     target = str(executable).casefold()
     try:
@@ -159,26 +161,45 @@ def is_wow_sync_watcher_running(
                 "Bypass",
                 "-Command",
                 (
-                    "$target = $args[0]; "
-                    "$currentPid = [int]$args[1]; "
-                    "$watchArg = $args[2]; "
-                    "$needles = @($args | Select-Object -Skip 3); "
+                    "& { param("
+                    "[string]$target, "
+                    "[int]$currentPid, "
+                    "[string]$watchArg, "
+                    "[string]$needleText"
+                    ") "
+                    "$targetFull = [System.IO.Path]::GetFullPath($target); "
+                    "$needles = if ($needleText) { "
+                    "$needleText -split [char]31 "
+                    "} else { @() }; "
                     "$found = Get-CimInstance Win32_Process | Where-Object { "
                     "$cmd = [string]$_.CommandLine; "
-                    "$matchesArgs = $cmd -like ('*' + $watchArg + '*'); "
+                    "$exe = [string]$_.ExecutablePath; "
+                    "$matchesTarget = $false; "
+                    "if ($exe) { try { "
+                    "$matchesTarget = "
+                    "([System.IO.Path]::GetFullPath($exe) -ieq $targetFull) "
+                    "} catch { $matchesTarget = $false } }; "
+                    "if (-not $matchesTarget -and $cmd) { "
+                    "$matchesTarget = $cmd.IndexOf("
+                    "$target, [System.StringComparison]::OrdinalIgnoreCase"
+                    ") -ge 0 }; "
+                    "$matchesArgs = $cmd -and ($cmd.IndexOf("
+                    "$watchArg, [System.StringComparison]::OrdinalIgnoreCase"
+                    ") -ge 0); "
                     "foreach ($needle in $needles) { "
-                    "if ($needle -and $cmd -notlike ('*' + $needle + '*')) { "
+                    "if ($needle -and "
+                    "$cmd.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) "
+                    "-lt 0) { "
                     "$matchesArgs = $false } }; "
-                    "$_.ExecutablePath -and $_.ProcessId -ne $currentPid -and "
-                    "([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq "
-                    "[System.IO.Path]::GetFullPath($target)) -and $matchesArgs "
+                    "$_.ProcessId -ne $currentPid -and $matchesTarget -and $matchesArgs "
                     "}; "
                     "if ($found) { exit 0 } else { exit 1 }"
+                    " }"
                 ),
                 str(executable),
                 str(pid),
                 WATCH_WOW_ARG,
-                *expected_arguments,
+                expected_argument_text,
             ],
             check=False,
             capture_output=True,

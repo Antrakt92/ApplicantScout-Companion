@@ -156,8 +156,13 @@ def test_is_wow_sync_watcher_running_matches_python_module_command(
         arguments=("-m", "applicant_scout"),
     )
     command = captured[0][captured[0].index("-Command") + 1]
+    assert "param(" in command
+    assert "Select-Object -Skip" not in command
     assert "$_.Name -ieq 'ApplicantScout.exe'" not in command
-    assert "applicant_scout" in captured[0]
+    assert "CommandLine" in command
+    assert "IndexOf($target" in command
+    assert "[System.IO.Path]::GetFullPath($exe)" in command
+    assert "\x1f".join(("-m", "applicant_scout")) in captured[0]
 
 
 def test_configure_wow_sync_startup_creates_watch_shortcut(
