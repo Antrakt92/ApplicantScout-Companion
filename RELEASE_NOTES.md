@@ -1,5 +1,40 @@
 # ApplicantScout Companion Release Notes
 
+## 0.5.2 - 21-May-2026
+
+Lifecycle and fetch-scope hardening patch for live applicant scouting.
+This release focuses on cleaner startup/shutdown behavior, safer update/cache
+I/O, and avoiding unnecessary Warcraft Logs work when an applicant snapshot
+temporarily lacks spec context.
+
+### Improved
+
+- Launcher hover and click handling is more responsive during fast interactions
+  and overlay refreshes.
+- Update downloads now stream to disk and private cache/config writes are more
+  defensive against partial writes and file-permission edge cases.
+- Developer watcher startup and detection are more explicit, making packaged
+  and local development launches easier to distinguish.
+
+### Fixed
+
+- Fixed WoW lifecycle re-arm warnings caused by the watcher detector matching
+  the PowerShell probe process instead of a real companion watcher.
+- Fixed unknown-spec applicants temporarily queueing Mythic+ Warcraft Logs
+  fetches with `spec=0`; M+ evidence now waits until the addon supplies a real
+  spec, while raid-only scopes remain available.
+- Fixed stale WCL completions from an older applicant/spec snapshot overwriting
+  the current ready/no-data state.
+- Fixed the debug cache-TTL environment override persisting into the saved
+  settings file.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.3.3`.
+- Installer: `ApplicantScoutCompanionSetup-0.5.2.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.5.2.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.5.2-portable.zip`
+
 ## 0.5.1 - 20-May-2026
 
 Overlay reliability and release hardening patch for live applicant scouting.
