@@ -27,6 +27,7 @@ from .atomic_io import apply_private_file_mode
 from .config import (
     Config,
     ConfigError,
+    _parse_cache_ttl_seconds,
     is_config_ready,
     load_config,
     normalize_wcl_region,
@@ -1511,6 +1512,7 @@ def _settings_env_override_keys() -> list[str]:
         "APSCOUT_FETCH_RAID_NORMAL",
         "APSCOUT_FETCH_RAID_HEROIC",
         "APSCOUT_FETCH_RAID_MYTHIC",
+        "APSCOUT_CACHE_TTL_SECONDS",
         "APSCOUT_SYNC_WITH_WOW",
     )
     return [key for key in keys if os.environ.get(key) is not None]
@@ -1566,6 +1568,18 @@ def _saved_config_bool_for_process_override(
         return _parse_saved_bool(key, saved_values.get(key), default=default)
     except ConfigError:
         return current
+
+
+def _saved_config_cache_ttl_for_process_override(
+    saved_values: dict[str, str],
+    current: int | None,
+) -> int | None:
+    if os.environ.get("APSCOUT_CACHE_TTL_SECONDS") is None:
+        return current
+    try:
+        return _parse_cache_ttl_seconds(saved_values.get("APSCOUT_CACHE_TTL_SECONDS"))
+    except ConfigError:
+        return None
 
 
 def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
@@ -1766,6 +1780,10 @@ def _persist_settings_values(
         values.sync_with_wow,
         default=False,
     )
+    cache_ttl_seconds = _saved_config_cache_ttl_for_process_override(
+        saved_values,
+        cfg.cache_ttl_seconds,
+    )
     chatlog_path = (
         _saved_config_value_for_process_override(
             saved_values,
@@ -1782,7 +1800,7 @@ def _persist_settings_values(
         draft_wcl_client_secret=draft_client_secret,
         region=region,
         screenshots_path=screenshots_path,
-        cache_ttl_seconds=cfg.cache_ttl_seconds,
+        cache_ttl_seconds=cache_ttl_seconds,
         metric_preferences=metric_preferences,
         sync_with_wow=sync_with_wow,
         chatlog_path=chatlog_path,
@@ -1790,6 +1808,11 @@ def _persist_settings_values(
 
 
 def _persist_config_snapshot(cfg: Config) -> Path:
+    saved_values = read_user_config_values(cfg.config_path) if cfg.config_path else {}
+    cache_ttl_seconds = _saved_config_cache_ttl_for_process_override(
+        saved_values,
+        cfg.cache_ttl_seconds,
+    )
     return save_config_values(
         wcl_client_id=cfg.wcl_client_id,
         wcl_client_secret=cfg.wcl_client_secret,
@@ -1797,7 +1820,7 @@ def _persist_config_snapshot(cfg: Config) -> Path:
         draft_wcl_client_secret=cfg.draft_wcl_client_secret,
         region=cfg.region,
         screenshots_path=str(cfg.screenshots_path) if cfg.screenshots_path else "",
-        cache_ttl_seconds=cfg.cache_ttl_seconds,
+        cache_ttl_seconds=cache_ttl_seconds,
         metric_preferences=cfg.metric_preferences,
         sync_with_wow=cfg.sync_with_wow,
         chatlog_path="" if cfg.screenshots_path else str(cfg.chatlog_path),

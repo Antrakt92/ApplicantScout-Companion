@@ -21,7 +21,11 @@ from .constants import (
     ROLE_TO_RAID_METRIC,
     SPEC_ID_TO_WCL_NAME,
 )
-from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from .metric_preferences import (
+    DEFAULT_METRIC_PREFERENCES,
+    MetricPreferences,
+    effective_wcl_preferences_for_spec,
+)
 
 
 _log = logging.getLogger("applicant_scout.wcl")
@@ -746,6 +750,10 @@ class WCLClient:
             doesn't snapshot)."""
         # Short-circuit during rate-limit cooldown.
         metric_preferences = metric_preferences or self.metric_preferences
+        metric_preferences = effective_wcl_preferences_for_spec(
+            spec_id,
+            metric_preferences,
+        )
         if not metric_preferences.any_enabled:
             return CharacterRanks.empty()
         now = time.time()

@@ -73,3 +73,18 @@ DEFAULT_METRIC_PREFERENCES = MetricPreferences(
     raid_heroic=False,
     raid_mythic=False,
 )
+
+
+def effective_wcl_preferences_for_spec(
+    spec_id: int,
+    metric_preferences: MetricPreferences,
+) -> MetricPreferences:
+    """Return the WCL scope that is useful for the current spec snapshot."""
+    if spec_id > 0 or not metric_preferences.mplus:
+        return metric_preferences
+    return MetricPreferences(
+        mplus=False,
+        raid_normal=metric_preferences.raid_normal,
+        raid_heroic=metric_preferences.raid_heroic,
+        raid_mythic=metric_preferences.raid_mythic,
+    )

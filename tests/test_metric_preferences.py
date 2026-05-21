@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from applicant_scout.metric_preferences import (
+    DEFAULT_METRIC_PREFERENCES,
+    MetricPreferences,
+    effective_wcl_preferences_for_spec,
+)
 
 
 def test_default_metric_preferences_enable_only_mplus():
@@ -68,3 +72,30 @@ def test_metric_preferences_covers_independent_metrics():
 
     assert not mplus_only.covers(heroic_only)
     assert not heroic_only.covers(mplus_only)
+
+
+def test_effective_wcl_preferences_for_known_spec_preserves_requested_scope():
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+
+    assert effective_wcl_preferences_for_spec(71, prefs) == prefs
+
+
+def test_effective_wcl_preferences_for_unknown_spec_disables_mplus_only():
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+
+    assert effective_wcl_preferences_for_spec(0, prefs) == MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )

@@ -2266,6 +2266,141 @@ def test_persist_settings_values_preserves_process_env_overridden_saved_values(
     assert saved["APSCOUT_REGION"] == "US"
 
 
+def test_settings_env_override_keys_includes_cache_ttl_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("APSCOUT_CACHE_TTL_SECONDS", "60")
+
+    assert "APSCOUT_CACHE_TTL_SECONDS" in main_mod._settings_env_override_keys()
+
+
+def test_persist_settings_values_preserves_saved_cache_ttl_when_env_override_active(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    config_path = save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        cache_ttl_seconds=43200,
+        metric_preferences=MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=False,
+        ),
+    )
+    monkeypatch.setenv("APSCOUT_CACHE_TTL_SECONDS", "60")
+    cfg = load_config()
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path="",
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+
+    main_mod._persist_settings_values(cfg, values, apply_credentials=False)
+    saved = config_mod._read_env_file(config_path)
+
+    assert saved["APSCOUT_CACHE_TTL_SECONDS"] == "43200"
+
+
+def test_persist_settings_values_does_not_persist_env_only_cache_ttl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    config_path = save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        metric_preferences=MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=False,
+        ),
+    )
+    monkeypatch.setenv("APSCOUT_CACHE_TTL_SECONDS", "60")
+    cfg = load_config()
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path="",
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+
+    main_mod._persist_settings_values(cfg, values, apply_credentials=False)
+    saved = config_mod._read_env_file(config_path)
+
+    assert "APSCOUT_CACHE_TTL_SECONDS" not in saved
+
+
+def test_persist_config_snapshot_preserves_saved_cache_ttl_when_env_override_active(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    config_path = save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        cache_ttl_seconds=43200,
+        metric_preferences=MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=False,
+        ),
+    )
+    monkeypatch.setenv("APSCOUT_CACHE_TTL_SECONDS", "60")
+    cfg = load_config()
+
+    main_mod._persist_config_snapshot(cfg)
+    saved = config_mod._read_env_file(config_path)
+
+    assert saved["APSCOUT_CACHE_TTL_SECONDS"] == "43200"
+
+
+def test_persist_settings_values_repairs_invalid_saved_cache_ttl_masked_by_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    config_path = save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        metric_preferences=MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=False,
+        ),
+    )
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "APSCOUT_CACHE_TTL_SECONDS=not-an-int\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("APSCOUT_CACHE_TTL_SECONDS", "60")
+    cfg = load_config()
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path="",
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+
+    main_mod._persist_settings_values(cfg, values, apply_credentials=False)
+    saved = config_mod._read_env_file(config_path)
+
+    assert "APSCOUT_CACHE_TTL_SECONDS" not in saved
+
+
 def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

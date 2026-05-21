@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -160,9 +161,42 @@ def test_is_wow_sync_watcher_running_matches_python_module_command(
     assert "Select-Object -Skip" not in command
     assert "$_.Name -ieq 'ApplicantScout.exe'" not in command
     assert "CommandLine" in command
-    assert "IndexOf($target" in command
+    assert "IndexOf($target" not in command
     assert "[System.IO.Path]::GetFullPath($exe)" in command
     assert "\x1f".join(("-m", "applicant_scout")) in captured[0]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process enumeration only")
+def test_is_wow_sync_watcher_running_does_not_match_probe_for_missing_packaged_target():
+    assert not wow_lifecycle.is_wow_sync_watcher_running(
+        executable_path=Path(r"C:\DefinitelyMissing\ApplicantScout.exe"),
+        arguments=(),
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process enumeration only")
+def test_is_wow_sync_watcher_running_does_not_match_probe_for_missing_dev_target():
+    assert not wow_lifecycle.is_wow_sync_watcher_running(
+        executable_path=Path(r"C:\DefinitelyMissing\python.exe"),
+        arguments=("-m", "applicant_scout"),
+    )
+
+
+def test_start_wow_sync_watcher_propagates_invalid_executable_oserror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    exe = tmp_path / "ApplicantScout.exe"
+    exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(wow_lifecycle, "is_wow_sync_watcher_running", lambda **_kwargs: False)
+
+    def fake_popen(*_args, **_kwargs):
+        raise OSError(193, "%1 is not a valid Win32 application")
+
+    monkeypatch.setattr(wow_lifecycle.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(OSError, match="valid Win32 application"):
+        wow_lifecycle.start_wow_sync_watcher(executable_path=exe)
 
 
 def test_configure_wow_sync_startup_creates_watch_shortcut(

@@ -1095,6 +1095,118 @@ def test_launch_fetch_queues_without_ui_thread_cache_lookup(qtbot, tmp_path):
         client.close()
 
 
+def test_launch_fetch_unknown_spec_mplus_only_marks_ready_without_queue(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(spec_id=0, fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=prefs)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(app)
+
+        assert queued_pool.tasks == []
+        assert window._in_flight_identity(app.applicant_id) is None
+        assert app.fetch_status == "ready"
+        assert app.wcl_metric_preferences is None
+        assert app.mplus_dps is None
+    finally:
+        client.close()
+
+
+def test_unknown_spec_raid_fetch_uses_effective_preferences_without_loop(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    effective = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(spec_id=0, fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=prefs)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(app)
+        identity = window._in_flight_identity(app.applicant_id)
+
+        assert identity is not None
+        assert identity.metric_preferences == effective
+        assert len(queued_pool.tasks) == 1
+
+        window._on_fetch_done(identity, _ranks_with(raid_heroic=44.0, mplus_dps=88.0))
+
+        assert app.fetch_status == "ready"
+        assert app.raid_heroic == 44.0
+        assert app.mplus_dps is None
+        assert app.wcl_metric_preferences == effective
+        assert window._in_flight_identity(app.applicant_id) is None
+
+        window.apply_metric_preferences(prefs)
+
+        assert len(queued_pool.tasks) == 1
+        assert app.fetch_status == "ready"
+        assert app.wcl_metric_preferences == effective
+    finally:
+        client.close()
+
+
+def test_window_init_projects_unknown_spec_to_effective_preferences(qtbot, tmp_path):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    effective = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(
+        spec_id=0,
+        fetch_status="ready",
+        raid_heroic=44.0,
+        mplus_dps=88.0,
+        wcl_metric_preferences=effective,
+    )
+    state.add_or_update(app)
+
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=prefs)
+
+    try:
+        assert app.raid_heroic == 44.0
+        assert app.mplus_dps is None
+        assert app.wcl_metric_preferences == effective
+        assert window._in_flight_identity(app.applicant_id) is None
+    finally:
+        client.close()
+
+
 def test_fetch_task_uses_broader_cached_scope_for_narrow_identity(qtbot, tmp_path):
     narrow = MetricPreferences(
         mplus=False,
@@ -1451,6 +1563,52 @@ def test_completion_after_disabling_all_metrics_is_ignored(qtbot, tmp_path):
         assert identity is not None
 
         window.apply_metric_preferences(disabled)
+        assert app.fetch_status == "ready"
+        assert app.applicant_id not in window._fetches_in_flight
+
+        window._on_fetch_done(
+            identity,
+            CharacterRanks.empty(error="WCL server error", error_kind=WCL_ERROR_SERVER),
+        )
+        assert app.fetch_status == "ready"
+        assert app.error_message == ""
+        assert app.wcl_error_kind == ""
+
+        window._on_fetch_done(identity, CharacterRanks.empty(not_found=True))
+        assert app.fetch_status == "ready"
+        assert app.error_message == ""
+        assert app.wcl_error_kind == ""
+    finally:
+        client.close()
+
+
+def test_completion_after_unknown_spec_effective_metrics_empty_is_ignored(
+    qtbot, tmp_path
+):
+    raid_and_mplus = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    mplus_only = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(spec_id=0, fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=raid_and_mplus)
+
+    try:
+        window._launch_fetch(app)
+        identity = window._in_flight_identity(app.applicant_id)
+        assert identity is not None
+
+        window.apply_metric_preferences(mplus_only)
         assert app.fetch_status == "ready"
         assert app.applicant_id not in window._fetches_in_flight
 

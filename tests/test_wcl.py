@@ -684,6 +684,58 @@ def test_fetch_character_ranks_respects_metric_preferences():
     assert result.mplus_dps_breakdown == []
 
 
+def test_fetch_character_ranks_spec_zero_mplus_only_returns_empty_without_http():
+    client, http = _client_for_payload(_wcl_payload(_character()))
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+
+    result = client.fetch_character_ranks(
+        "Unknown",
+        "ravencrest",
+        spec_id=0,
+        role="DAMAGER",
+        metric_preferences=prefs,
+    )
+
+    assert len(http.calls) == 0
+    assert client.last_quota is None
+    assert result == CharacterRanks.empty()
+
+
+def test_fetch_character_ranks_spec_zero_omits_mplus_but_keeps_raid_query():
+    client, http = _client_for_payload(_wcl_payload(_character()))
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+
+    result = client.fetch_character_ranks(
+        "Unknown",
+        "ravencrest",
+        spec_id=0,
+        role="DAMAGER",
+        metric_preferences=prefs,
+    )
+
+    assert len(http.calls) == 1
+    query = http.calls[0]["json"]["query"]
+    assert "encounterRankings" not in query
+    assert "raidNormal: zoneRankings" not in query
+    assert "raidHeroic: zoneRankings" in query
+    assert "raidMythic: zoneRankings" not in query
+    assert result.raid_heroic == pytest.approx(81.0)
+    assert result.mplus_dps is None
+    assert result.mplus_hps is None
+    assert result.mplus_dps_breakdown == []
+    assert result.mplus_hps_breakdown == []
+
+
 def test_fetch_character_ranks_second_401_is_auth_error_kind():
     auth = _FakeAuth()
     client = WCLClient(auth, region="EU")  # type: ignore[arg-type]

@@ -69,7 +69,11 @@ from .constants import (
     percentile_colour,
     rio_score_colour,
 )
-from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from .metric_preferences import (
+    DEFAULT_METRIC_PREFERENCES,
+    MetricPreferences,
+    effective_wcl_preferences_for_spec,
+)
 from .scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
@@ -307,6 +311,10 @@ def _fetch_identity_for_applicant(
     server_slug = derive_server_slug(realm)
     if not charname or not server_slug:
         return None
+    effective_preferences = effective_wcl_preferences_for_spec(
+        applicant.spec_id,
+        metric_preferences,
+    )
     return (
         _FetchIdentity(
             applicant_id=applicant.applicant_id,
@@ -317,7 +325,7 @@ def _fetch_identity_for_applicant(
             metric_role=wcl_metric_role(applicant.role),
             row_source=row_source,
             runtime_generation=runtime_generation,
-            metric_preferences=metric_preferences,
+            metric_preferences=effective_preferences,
             listing_session_generation=listing_session_generation,
         ),
         charname,
@@ -2183,8 +2191,13 @@ class OverlayWindow(QMainWindow):
         self._foreground_timer.timeout.connect(self._sync_game_foreground_visibility)
         self._foreground_timer.start()
         self._refresh_status_row()  # initial paint of "WCL: —/—" + "shot —"
-        for applicant in self._state.applicants.values():
-            applicant.project_wcl_data_to_preferences(self._metric_preferences)
+        for applicant in self._fetch_rows():
+            applicant.project_wcl_data_to_preferences(
+                effective_wcl_preferences_for_spec(
+                    applicant.spec_id,
+                    self._metric_preferences,
+                )
+            )
         self._schedule_wcl_retry()
 
     # ─── public slots called from main app ─────
@@ -3276,21 +3289,29 @@ class OverlayWindow(QMainWindow):
         self._apply_metric_column_visibility()
         self._apply_metric_minimum_width()
         for applicant in self._fetch_rows():
+            row_source = self._row_source_for(applicant)
+            storage_key = (
+                applicant.applicant_id
+                if row_source == "applicants"
+                else f"{row_source}:{applicant.applicant_id}"
+            )
             if not metric_preferences.any_enabled:
-                row_source = self._row_source_for(applicant)
-                storage_key = (
-                    applicant.applicant_id
-                    if row_source == "applicants"
-                    else f"{row_source}:{applicant.applicant_id}"
-                )
                 self._fetches_in_flight.pop(storage_key, None)
                 applicant.clear_wcl_data(fetch_status="ready")
                 continue
-            applicant.project_wcl_data_to_preferences(metric_preferences)
+            effective_preferences = effective_wcl_preferences_for_spec(
+                applicant.spec_id,
+                metric_preferences,
+            )
+            if not effective_preferences.any_enabled:
+                self._fetches_in_flight.pop(storage_key, None)
+                applicant.clear_wcl_data(fetch_status="ready")
+                continue
+            applicant.project_wcl_data_to_preferences(effective_preferences)
             if (
                 refetch_missing
                 and applicant.fetch_status == "ready"
-                and not applicant.wcl_data_covers(metric_preferences)
+                and not applicant.wcl_data_covers(effective_preferences)
             ):
                 applicant.clear_wcl_data()
                 self._launch_fetch(applicant)
@@ -3376,6 +3397,9 @@ class OverlayWindow(QMainWindow):
             applicant.wcl_error_kind = ""
             return  # caller (on_applicant_added/_updated) refreshes table after
         identity, charname = resolved
+        if not identity.metric_preferences.any_enabled:
+            applicant.clear_wcl_data(fetch_status="ready")
+            return
         if self._is_fetch_in_flight_for(identity):
             return  # avoid duplicate concurrent fetches for the same WCL scope
         applicant.fetch_status = "loading"
@@ -3429,6 +3453,10 @@ class OverlayWindow(QMainWindow):
             self._sync_delegate_and_panel()
             return
         current_identity, _ = current
+        if not current_identity.metric_preferences.any_enabled:
+            applicant.clear_wcl_data(fetch_status="ready")
+            self._sync_delegate_and_panel()
+            return
         if not _same_fetch_target_except_preferences(
             current_identity, fetched_identity
         ) or not fetched_identity.metric_preferences.covers(
@@ -3439,7 +3467,7 @@ class OverlayWindow(QMainWindow):
                 return
             if not self._is_fetch_in_flight_for(
                 current_identity
-            ) and not applicant.wcl_data_covers(self._metric_preferences):
+            ) and not applicant.wcl_data_covers(current_identity.metric_preferences):
                 applicant.clear_wcl_data()
                 self._launch_fetch(applicant)
             self._sync_delegate_and_panel()
@@ -3495,7 +3523,7 @@ class OverlayWindow(QMainWindow):
             applicant.mplus_hps_breakdown = [
                 _dungeon_perf_dict(d) for d in ranks.mplus_hps_breakdown
             ]
-            applicant.project_wcl_data_to_preferences(self._metric_preferences)
+            applicant.project_wcl_data_to_preferences(current_identity.metric_preferences)
         # Re-sort: this fetch may have produced a new M+ value that changes the
         # applicant's row position. _refresh_table ends with sync — so a pinned
         # panel showing this applicant rebuilds its HTML automatically here.
