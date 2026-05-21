@@ -2,16 +2,40 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from applicant_scout.state import DEFAULT_WINDOW_HEIGHT, AppState, Applicant, Listing
 
 if TYPE_CHECKING:
+    from PyQt6.QtGui import QImage, QPixmap
     from applicant_scout.overlay import OverlayWindow
+    from applicant_scout.wcl import WCLClient
 
 
+OVERLAY_VISUAL_BASELINE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs"
+    / "visual"
+    / "overlay-polish-fixture.png"
+)
 VISUAL_FIXTURE_PINNED_ID = "10:2"
+VISUAL_FIXTURE_REGEN_COMMAND = (
+    r".\.venv\Scripts\python scripts\render_overlay_fixture.py"
+)
+VISUAL_DIFF_CHANNEL_TOLERANCE = 12
+VISUAL_DIFF_MAX_PIXEL_RATIO = 0.005
+
+
+@dataclass(frozen=True)
+class VisualFixtureDiff:
+    passed: bool
+    message: str
+    changed_pixels: int
+    total_pixels: int
+    max_channel_delta: int
 
 
 def _app(**overrides) -> Applicant:
@@ -208,3 +232,119 @@ def prepare_overlay_visual_window(window: OverlayWindow) -> None:
         window._role_filter_bar._buttons[role].setChecked(True)
     window._pinned_id = VISUAL_FIXTURE_PINNED_ID
     window._sync_delegate_and_panel()
+
+
+def create_overlay_visual_window(
+    work_dir: Path,
+) -> tuple[AppState, "OverlayWindow", "WCLClient"]:
+    from applicant_scout.overlay import OverlayWindow
+    from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
+
+    state = build_overlay_visual_state()
+    auth = WCLAuth("visual-fixture-client", "visual-fixture-secret", work_dir)
+    client = WCLClient(auth)
+    cache = CharacterCache(work_dir)
+    window = OverlayWindow(state, client, cache, work_dir)
+    return state, window, client
+
+
+def show_overlay_visual_window(
+    window: "OverlayWindow",
+    *,
+    process_events: Callable[[], None],
+) -> None:
+    prepare_overlay_visual_window(window)
+    window.show()
+    for _ in range(8):
+        process_events()
+        viewport = window._table.viewport()
+        if (
+            viewport is not None
+            and viewport.width() > 0
+            and window._panel.height() == window._panel.target_height()
+        ):
+            return
+    raise RuntimeError("Overlay visual fixture did not settle before screenshot")
+
+
+def grab_overlay_visual_image(window: "OverlayWindow") -> "QPixmap":
+    return window.grab()
+
+
+def _channel_delta(expected: "QImage", actual: "QImage", x: int, y: int) -> int:
+    expected_color = expected.pixelColor(x, y)
+    actual_color = actual.pixelColor(x, y)
+    return max(
+        abs(expected_color.red() - actual_color.red()),
+        abs(expected_color.green() - actual_color.green()),
+        abs(expected_color.blue() - actual_color.blue()),
+        abs(expected_color.alpha() - actual_color.alpha()),
+    )
+
+
+def compare_overlay_visual_images(
+    expected: "QImage",
+    actual: "QImage",
+) -> VisualFixtureDiff:
+    if expected.isNull() or actual.isNull():
+        return VisualFixtureDiff(
+            passed=False,
+            message=(
+                "overlay visual fixture comparison received a null image; "
+                f"regenerate with {VISUAL_FIXTURE_REGEN_COMMAND}"
+            ),
+            changed_pixels=0,
+            total_pixels=0,
+            max_channel_delta=0,
+        )
+    if expected.size() != actual.size():
+        return VisualFixtureDiff(
+            passed=False,
+            message=(
+                "overlay visual fixture dimension mismatch: "
+                f"expected {expected.width()}x{expected.height()}, "
+                f"got {actual.width()}x{actual.height()}; regenerate with "
+                f"{VISUAL_FIXTURE_REGEN_COMMAND} after intentional UI changes"
+            ),
+            changed_pixels=0,
+            total_pixels=max(actual.width() * actual.height(), 0),
+            max_channel_delta=0,
+        )
+
+    changed_pixels = 0
+    max_channel_delta = 0
+    total_pixels = expected.width() * expected.height()
+    for x in range(expected.width()):
+        for y in range(expected.height()):
+            delta = _channel_delta(expected, actual, x, y)
+            max_channel_delta = max(max_channel_delta, delta)
+            if delta > VISUAL_DIFF_CHANNEL_TOLERANCE:
+                changed_pixels += 1
+
+    changed_ratio = changed_pixels / total_pixels if total_pixels else 0.0
+    passed = changed_ratio <= VISUAL_DIFF_MAX_PIXEL_RATIO
+    if passed:
+        return VisualFixtureDiff(
+            passed=True,
+            message=(
+                "overlay visual fixture matched committed baseline "
+                f"({changed_pixels}/{total_pixels} changed pixels over tolerance)"
+            ),
+            changed_pixels=changed_pixels,
+            total_pixels=total_pixels,
+            max_channel_delta=max_channel_delta,
+        )
+    return VisualFixtureDiff(
+        passed=False,
+        message=(
+            "overlay visual fixture drift exceeded tolerance: "
+            f"{changed_pixels}/{total_pixels} changed pixels "
+            f"({changed_ratio:.2%}) over channel delta "
+            f"{VISUAL_DIFF_CHANNEL_TOLERANCE}, max channel delta "
+            f"{max_channel_delta}; regenerate with "
+            f"{VISUAL_FIXTURE_REGEN_COMMAND} after intentional UI changes"
+        ),
+        changed_pixels=changed_pixels,
+        total_pixels=total_pixels,
+        max_channel_delta=max_channel_delta,
+    )

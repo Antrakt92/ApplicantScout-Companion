@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QPoint
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtWidgets import QApplication
 
 import applicant_scout.overlay as overlay_mod
 from applicant_scout.constants import ALL_ROLES
-from applicant_scout.overlay import OverlayWindow
-from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
 from scripts.overlay_visual_fixture import (
+    OVERLAY_VISUAL_BASELINE_PATH,
     VISUAL_FIXTURE_PINNED_ID,
-    build_overlay_visual_state,
-    prepare_overlay_visual_window,
+    compare_overlay_visual_images,
+    create_overlay_visual_window,
+    grab_overlay_visual_image,
+    show_overlay_visual_window,
 )
 
 
@@ -28,21 +29,14 @@ def _sampled_colours(image: QImage) -> set[int]:
 
 
 def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
-    state = build_overlay_visual_state()
-    auth = WCLAuth("client", "secret", tmp_path)
-    client = WCLClient(auth)
-    cache = CharacterCache(tmp_path)
-    window = OverlayWindow(state, client, cache, tmp_path)
+    state, window, client = create_overlay_visual_window(tmp_path)
     qtbot.addWidget(window)
 
     try:
-        prepare_overlay_visual_window(window)
-        window.show()
-        qtbot.waitUntil(lambda: window._table.viewport().width() > 0, timeout=1000)
-        QApplication.processEvents()
+        show_overlay_visual_window(window, process_events=QApplication.processEvents)
 
         screenshot_path = tmp_path / "overlay-polish-fixture.png"
-        pixmap = window.grab()
+        pixmap = grab_overlay_visual_image(window)
         assert not pixmap.isNull()
         assert pixmap.save(str(screenshot_path))
         assert screenshot_path.stat().st_size > 0
@@ -52,6 +46,13 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
         assert image.width() == round(window.size().width() * dpr)
         assert image.height() == round(window.size().height() * dpr)
         assert len(_sampled_colours(image)) > 1
+
+        assert OVERLAY_VISUAL_BASELINE_PATH.exists()
+        assert OVERLAY_VISUAL_BASELINE_PATH.stat().st_size > 0
+        baseline = QImage(str(OVERLAY_VISUAL_BASELINE_PATH))
+        assert not baseline.isNull()
+        diff = compare_overlay_visual_images(baseline, image)
+        assert diff.passed, diff.message
 
         assert window._table.rowCount() == len(state.applicants)
         assert window._pinned_id == VISUAL_FIXTURE_PINNED_ID
@@ -75,18 +76,11 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
 def test_visual_fixture_disabled_tracking_blocks_cursor_hover(
     qtbot, monkeypatch, tmp_path
 ):
-    state = build_overlay_visual_state()
-    auth = WCLAuth("client", "secret", tmp_path)
-    client = WCLClient(auth)
-    cache = CharacterCache(tmp_path)
-    window = OverlayWindow(state, client, cache, tmp_path)
+    _state, window, client = create_overlay_visual_window(tmp_path)
     qtbot.addWidget(window)
 
     try:
-        prepare_overlay_visual_window(window)
-        window.show()
-        qtbot.waitUntil(lambda: window._table.viewport().width() > 0, timeout=1000)
-        QApplication.processEvents()
+        show_overlay_visual_window(window, process_events=QApplication.processEvents)
 
         viewport = window._table.viewport()
         row0_rect = window._table.visualRect(window._table.model().index(0, 0))
@@ -109,3 +103,51 @@ def test_visual_fixture_disabled_tracking_blocks_cursor_hover(
         assert window._panel._name_label.text() == "Bloomwell"
     finally:
         client.close()
+
+
+def _solid_image(width: int, height: int, color: QColor) -> QImage:
+    image = QImage(width, height, QImage.Format.Format_ARGB32)
+    image.fill(color)
+    return image
+
+
+def test_visual_fixture_diff_accepts_identical_images():
+    image = _solid_image(4, 4, QColor(10, 20, 30, 255))
+
+    diff = compare_overlay_visual_images(image, image)
+
+    assert diff.passed
+    assert diff.changed_pixels == 0
+
+
+def test_visual_fixture_diff_rejects_dimension_mismatch():
+    expected = _solid_image(4, 4, QColor(10, 20, 30, 255))
+    actual = _solid_image(5, 4, QColor(10, 20, 30, 255))
+
+    diff = compare_overlay_visual_images(expected, actual)
+
+    assert not diff.passed
+    assert "dimension mismatch" in diff.message
+
+
+def test_visual_fixture_diff_allows_minor_antialiasing_noise():
+    expected = _solid_image(4, 4, QColor(10, 20, 30, 255))
+    actual = _solid_image(4, 4, QColor(10, 20, 30, 255))
+    actual.setPixelColor(0, 0, QColor(14, 24, 34, 255))
+
+    diff = compare_overlay_visual_images(expected, actual)
+
+    assert diff.passed
+
+
+def test_visual_fixture_diff_rejects_broad_layout_drift():
+    expected = _solid_image(20, 20, QColor(10, 20, 30, 255))
+    actual = _solid_image(20, 20, QColor(10, 20, 30, 255))
+    for x in range(5):
+        for y in range(5):
+            actual.setPixelColor(x, y, QColor(240, 240, 240, 255))
+
+    diff = compare_overlay_visual_images(expected, actual)
+
+    assert not diff.passed
+    assert "changed pixels" in diff.message
