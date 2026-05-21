@@ -34,6 +34,9 @@ temporarily lacks spec context.
   the current ready/no-data state.
 - Fixed the debug cache-TTL environment override persisting into the saved
   settings file.
+- The paired addon now prioritizes empty applicant-list clears after applicants
+  were previously shown, so the overlay does not keep a stale applicant visible
+  while the in-game list is already empty.
 
 ### Release Assets
 
