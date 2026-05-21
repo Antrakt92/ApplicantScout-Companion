@@ -189,6 +189,14 @@ def _role_icon(role: str) -> QIcon | None:
     return _ROLE_ICON_CACHE[role]
 
 
+def _bold_cell_font(base: QFont | None = None) -> QFont:
+    font = QFont(base or QApplication.font())
+    if font.pointSize() <= 0 and font.pixelSize() <= 0:
+        font = QFont(QApplication.font())
+    font.setBold(True)
+    return font
+
+
 # Per-column legend shown when the user hovers a header cell. Surfaces the
 # meaning of each column without requiring docs / a separate help screen,
 # and explains the raid pair + context-fit conventions used by score cells.
@@ -3002,17 +3010,14 @@ class OverlayWindow(QMainWindow):
         cls_hex = CLASS_COLOURS.get(applicant.cls, "#888888")
         spec_item.setBackground(QColor(cls_hex))
         spec_item.setForeground(QColor("#000000"))
-        spec_bold = QFont()
-        spec_bold.setBold(True)
-        spec_item.setFont(spec_bold)
+        spec_item.setFont(_bold_cell_font(spec_item.font()))
         self._table.setItem(row, COL_SPEC, spec_item)
 
         # Display Charname only (without -Realm) for compactness; full in panel
         display_name = applicant.name.split("-", 1)[0]
         name_item = QTableWidgetItem(display_name)
         name_item.setForeground(QColor(CLASS_COLOURS.get(applicant.cls, "#FFFFFF")))
-        f = QFont()
-        f.setBold(True)
+        f = _bold_cell_font(name_item.font())
         name_item.setFont(f)
         self._table.setItem(row, COL_NAME, name_item)
 
@@ -3848,9 +3853,7 @@ def _raid_dual_cell(
         item.setForeground(QColor(fg))
     if bg is not None:
         item.setBackground(QColor(bg))
-        f = QFont()
-        f.setBold(True)
-        item.setFont(f)
+        item.setFont(_bold_cell_font(item.font()))
     return item
 
 
@@ -4042,9 +4045,7 @@ def _mplus_dual_cell(
         item.setForeground(QColor(fg))
     if bg is not None:
         item.setBackground(QColor(bg))
-        f = QFont()
-        f.setBold(True)
-        item.setFont(f)
+        item.setFont(_bold_cell_font(item.font()))
     return item
 
 
@@ -4065,9 +4066,7 @@ def _mplus_group_cell(
     item.setData(MPLUS_INDIVIDUAL_TEXT_ROLE, individual_text)
     item.setData(MPLUS_INDIVIDUAL_FG_ROLE, individual_fg or "")
     item.setData(MPLUS_INDIVIDUAL_BG_ROLE, individual_bg or "")
-    f = QFont()
-    f.setBold(True)
-    item.setFont(f)
+    item.setFont(_bold_cell_font(item.font()))
     return item
 
 

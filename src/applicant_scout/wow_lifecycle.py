@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import ctypes
 from ctypes import wintypes
+from dataclasses import dataclass
 import io
 import os
 from pathlib import Path
@@ -17,6 +18,12 @@ WATCH_WOW_ARG = "--watch-wow"
 WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe", "WowClassic.exe", "WowClassicT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+@dataclass(frozen=True)
+class LaunchSpec:
+    executable: Path
+    arguments: tuple[str, ...] = ()
 
 
 def _tasklist_image_names(stdout: str) -> list[str]:
@@ -47,10 +54,14 @@ def startup_shortcut_path() -> Path:
     return _startup_folder() / STARTUP_SHORTCUT_NAME
 
 
-def companion_executable_path() -> Path:
+def companion_launch_spec() -> LaunchSpec:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable)
-    return Path(sys.argv[0]).resolve()
+        return LaunchSpec(Path(sys.executable))
+    return LaunchSpec(Path(sys.executable), ("-m", "applicant_scout"))
+
+
+def companion_executable_path() -> Path:
+    return companion_launch_spec().executable
 
 
 def is_wow_running(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
@@ -128,10 +139,15 @@ def is_wow_foreground(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> boo
 
 
 def is_wow_sync_watcher_running(
-    *, executable_path: Path | None = None, current_pid: int | None = None
+    *,
+    executable_path: Path | None = None,
+    arguments: tuple[str, ...] | None = None,
+    current_pid: int | None = None,
 ) -> bool:
     """Return True when this executable already has a --watch-wow helper."""
-    executable = executable_path or companion_executable_path()
+    spec = companion_launch_spec()
+    executable = executable_path or spec.executable
+    expected_arguments = arguments if arguments is not None else spec.arguments
     pid = os.getpid() if current_pid is None else current_pid
     target = str(executable).casefold()
     try:
@@ -145,17 +161,24 @@ def is_wow_sync_watcher_running(
                 (
                     "$target = $args[0]; "
                     "$currentPid = [int]$args[1]; "
+                    "$watchArg = $args[2]; "
+                    "$needles = @($args | Select-Object -Skip 3); "
                     "$found = Get-CimInstance Win32_Process | Where-Object { "
-                    "$_.Name -ieq 'ApplicantScout.exe' -and $_.ExecutablePath -and "
-                    "$_.ProcessId -ne $currentPid -and "
+                    "$cmd = [string]$_.CommandLine; "
+                    "$matchesArgs = $cmd -like ('*' + $watchArg + '*'); "
+                    "foreach ($needle in $needles) { "
+                    "if ($needle -and $cmd -notlike ('*' + $needle + '*')) { "
+                    "$matchesArgs = $false } }; "
+                    "$_.ExecutablePath -and $_.ProcessId -ne $currentPid -and "
                     "([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq "
-                    "[System.IO.Path]::GetFullPath($target)) -and "
-                    "$_.CommandLine -match '--watch-wow' "
+                    "[System.IO.Path]::GetFullPath($target)) -and $matchesArgs "
                     "}; "
                     "if ($found) { exit 0 } else { exit 1 }"
                 ),
                 str(executable),
                 str(pid),
+                WATCH_WOW_ARG,
+                *expected_arguments,
             ],
             check=False,
             capture_output=True,
@@ -175,10 +198,12 @@ def _ps_single_quoted(value: str) -> str:
 def _create_shortcut(
     *,
     executable_path: Path,
+    arguments: tuple[str, ...],
     shortcut_path: Path,
 ) -> None:
     shortcut_path.parent.mkdir(parents=True, exist_ok=True)
     exe = str(executable_path)
+    shortcut_arguments = subprocess.list2cmdline([*arguments, WATCH_WOW_ARG])
     shortcut = str(shortcut_path)
     working_dir = str(executable_path.parent)
     script = "\n".join(
@@ -187,7 +212,7 @@ def _create_shortcut(
             "$shell = New-Object -ComObject WScript.Shell",
             f"$shortcut = $shell.CreateShortcut({_ps_single_quoted(shortcut)})",
             f"$shortcut.TargetPath = {_ps_single_quoted(exe)}",
-            f"$shortcut.Arguments = {_ps_single_quoted(WATCH_WOW_ARG)}",
+            f"$shortcut.Arguments = {_ps_single_quoted(shortcut_arguments)}",
             f"$shortcut.WorkingDirectory = {_ps_single_quoted(working_dir)}",
             f"$shortcut.IconLocation = {_ps_single_quoted(exe + ',0')}",
             "$shortcut.WindowStyle = 7",
@@ -212,6 +237,7 @@ def configure_wow_sync_startup(
     enabled: bool,
     *,
     executable_path: Path | None = None,
+    arguments: tuple[str, ...] | None = None,
     shortcut_path: Path | None = None,
 ) -> Path | None:
     """Create/remove a per-user Startup shortcut for WoW lifecycle mode."""
@@ -223,13 +249,21 @@ def configure_wow_sync_startup(
             pass
         return None
 
-    executable = executable_path or companion_executable_path()
-    _create_shortcut(executable_path=executable, shortcut_path=shortcut)
+    spec = companion_launch_spec()
+    executable = executable_path or spec.executable
+    launch_arguments = arguments if arguments is not None else spec.arguments
+    _create_shortcut(
+        executable_path=executable,
+        arguments=launch_arguments,
+        shortcut_path=shortcut,
+    )
     return shortcut
 
 
 def start_wow_sync_watcher(
-    *, executable_path: Path | None = None
+    *,
+    executable_path: Path | None = None,
+    arguments: tuple[str, ...] | None = None,
 ) -> subprocess.Popen | None:
     """Start the current-session watcher used by the Startup shortcut.
 
@@ -237,11 +271,16 @@ def start_wow_sync_watcher(
     "Start and stop with WoW" from Settings mid-session, launch the same watcher
     immediately so the next WoW launch in this session is also covered.
     """
-    executable = executable_path or companion_executable_path()
-    if is_wow_sync_watcher_running(executable_path=executable):
+    spec = companion_launch_spec()
+    executable = executable_path or spec.executable
+    launch_arguments = arguments if arguments is not None else spec.arguments
+    if is_wow_sync_watcher_running(
+        executable_path=executable,
+        arguments=launch_arguments,
+    ):
         return None
     return subprocess.Popen(
-        [str(executable), WATCH_WOW_ARG],
+        [str(executable), *launch_arguments, WATCH_WOW_ARG],
         cwd=str(executable.parent),
         close_fds=True,
         creationflags=_CREATE_NO_WINDOW,

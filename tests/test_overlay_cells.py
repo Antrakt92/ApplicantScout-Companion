@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont
 
 from applicant_scout.constants import percentile_colour
-from applicant_scout.overlay import _mplus_dual_cell, _rio_display_text, _text_colour_for_bg
+from applicant_scout.overlay import (
+    _bold_cell_font,
+    _mplus_dual_cell,
+    _rio_display_text,
+    _text_colour_for_bg,
+)
 from applicant_scout.state import Applicant, Listing
 
 
@@ -58,6 +63,15 @@ def test_mplus_dual_cell_uses_visual_boundary():
         _text_colour_for_bg(percentile_colour(80.0))
     ).name()
     assert item.font().bold()
+
+
+def test_bold_cell_font_uses_resolved_application_size(qtbot):
+    font = QFont()
+
+    result = _bold_cell_font(font)
+
+    assert result.bold()
+    assert result.pointSize() > 0 or result.pixelSize() > 0
 
 
 def test_mplus_dual_cell_uses_context_fit_for_mplus_listing():

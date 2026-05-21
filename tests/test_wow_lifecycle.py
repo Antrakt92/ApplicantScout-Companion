@@ -117,6 +117,49 @@ def test_is_wow_sync_watcher_running_excludes_current_pid_from_query(
     assert "4321" in captured[0]
 
 
+def test_dev_launch_spec_runs_python_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    python_exe = tmp_path / ".venv" / "Scripts" / "python.exe"
+    module_main = tmp_path / "src" / "applicant_scout" / "__main__.py"
+    python_exe.parent.mkdir(parents=True)
+    module_main.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    module_main.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(wow_lifecycle.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(wow_lifecycle.sys, "executable", str(python_exe))
+    monkeypatch.setattr(wow_lifecycle.sys, "argv", [str(module_main)])
+
+    spec = wow_lifecycle.companion_launch_spec()
+
+    assert spec.executable == python_exe
+    assert spec.arguments == ("-m", "applicant_scout")
+
+
+def test_is_wow_sync_watcher_running_matches_python_module_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    python_exe = tmp_path / ".venv" / "Scripts" / "python.exe"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    captured: list[list[str]] = []
+
+    monkeypatch.setattr(wow_lifecycle.os, "getpid", lambda: 4321)
+
+    def fake_run(args, **_kwargs):
+        captured.append(args)
+        return _Completed(returncode=0)
+
+    monkeypatch.setattr(wow_lifecycle.subprocess, "run", fake_run)
+
+    assert wow_lifecycle.is_wow_sync_watcher_running(
+        executable_path=python_exe,
+        arguments=("-m", "applicant_scout"),
+    )
+    command = captured[0][captured[0].index("-Command") + 1]
+    assert "$_.Name -ieq 'ApplicantScout.exe'" not in command
+    assert "applicant_scout" in captured[0]
+
+
 def test_configure_wow_sync_startup_creates_watch_shortcut(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -144,6 +187,31 @@ def test_configure_wow_sync_startup_creates_watch_shortcut(
     assert str(exe) in script
     assert "--watch-wow" in script
     assert str(shortcut) in script
+
+
+def test_configure_wow_sync_startup_writes_dev_module_arguments(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    shortcut = tmp_path / "Startup" / "ApplicantScout Companion.lnk"
+    python_exe = tmp_path / ".venv" / "Scripts" / "python.exe"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(wow_lifecycle.subprocess, "run", lambda args, **_kwargs: commands.append(args) or _Completed())
+
+    result = wow_lifecycle.configure_wow_sync_startup(
+        True,
+        executable_path=python_exe,
+        arguments=("-m", "applicant_scout"),
+        shortcut_path=shortcut,
+    )
+
+    assert result == shortcut
+    script = commands[0][-1]
+    assert str(python_exe) in script
+    assert "-m applicant_scout --watch-wow" in script
+
 
 
 def test_configure_wow_sync_startup_removes_existing_shortcut(tmp_path: Path):
@@ -176,3 +244,26 @@ def test_start_wow_sync_watcher_skips_existing_watcher(
 
     assert wow_lifecycle.start_wow_sync_watcher(executable_path=exe) is None
     assert calls == []
+
+
+def test_start_wow_sync_watcher_uses_dev_module_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    python_exe = tmp_path / ".venv" / "Scripts" / "python.exe"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(wow_lifecycle, "is_wow_sync_watcher_running", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        wow_lifecycle.subprocess,
+        "Popen",
+        lambda args, **_kwargs: calls.append(args),
+    )
+
+    wow_lifecycle.start_wow_sync_watcher(
+        executable_path=python_exe,
+        arguments=("-m", "applicant_scout"),
+    )
+
+    assert calls == [[str(python_exe), "-m", "applicant_scout", "--watch-wow"]]
