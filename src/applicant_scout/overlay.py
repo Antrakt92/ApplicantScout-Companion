@@ -2383,8 +2383,17 @@ class OverlayWindow(QMainWindow):
             return False
         return listing.category_id in (0, _MPLUS_CATEGORY_ID)
 
+    def _restore_applicants_after_party_fallback(self) -> None:
+        if self._active_tab != "party" or not self._party_tab_auto_selected:
+            return
+        self._active_tab = "applicants"
+        self._party_tab_auto_selected = False
+        self._tab_bar.set_active("applicants", emit=False)
+        self._clear_role_filter()
+
     def on_applicant_added(self, applicant: Applicant) -> None:
         self._restore_party_on_next_roster = False
+        self._restore_applicants_after_party_fallback()
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
         # "loading" before _refresh_table reads it. Otherwise the cell briefly
@@ -2395,6 +2404,7 @@ class OverlayWindow(QMainWindow):
 
     def on_applicant_updated(self, applicant: Applicant) -> None:
         self._restore_party_on_next_roster = False
+        self._restore_applicants_after_party_fallback()
         self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Re-fetch ONLY when fetch_status is "pending" — apply_snapshot resets
         # to pending on (a) newly seen applicant id and (b) spec_id change.

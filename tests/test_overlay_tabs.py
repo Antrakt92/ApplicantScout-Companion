@@ -406,6 +406,72 @@ def test_last_applicant_removed_does_not_carry_applicant_filter_into_party_auto_
     assert win._role_filter == set()
 
 
+def test_new_applicant_after_party_auto_switch_returns_to_applicants(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["host-realm"].fetch_status = "ready"
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._active_tab == "party"
+
+    qtbot.mouseClick(win._role_filter_bar._buttons["TANK"], Qt.MouseButton.LeftButton)
+    assert win._role_filter == {"TANK"}
+
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm", "DAMAGER")
+    win.on_applicant_added(state.applicants["7:1"])
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == ["7:1"]
+    assert win._role_filter == set()
+
+
+def test_applicant_update_after_party_auto_switch_returns_to_applicants(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    state.party_members["host-realm"].fetch_status = "ready"
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._active_tab == "party"
+
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    win.on_applicant_updated(state.applicants["7:1"])
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == ["7:1"]
+
+
+def test_new_applicant_does_not_override_manual_party_tab(qtbot, tmp_path):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win._refresh_table()
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    assert win._active_tab == "party"
+    assert not win._party_tab_auto_selected
+
+    state.applicants["8:1"] = _app("8:1", "New-Realm")
+    win.on_applicant_added(state.applicants["8:1"])
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "party"
+    assert win._id_by_row == ["host-realm"]
+
+
 def test_snapshot_removal_then_roster_preserves_visible_party_roster(qtbot, tmp_path):
     state = AppState()
     sm = StateMachine(state)
