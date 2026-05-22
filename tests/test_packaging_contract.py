@@ -141,6 +141,35 @@ def _run_release_check(repo: Path, *args: str) -> subprocess.CompletedProcess[st
     )
 
 
+def _paired_addon_fixture(
+    tmp_path: Path,
+    *,
+    addon_version: str,
+    companion_version: str,
+) -> Path:
+    addon = tmp_path / "ApplicantScout-Addon"
+    addon.mkdir()
+    (addon / "ApplicantScout.toc").write_text(
+        f"## Version: {addon_version}\n",
+        encoding="utf-8",
+    )
+    (addon / "CHANGELOG.md").write_text(
+        "\n".join(
+            [
+                "# Changelog",
+                "",
+                f"## {addon_version} - 21-May-2026 - Companion {companion_version} release train",
+                "",
+                "This paired addon release is paired with "
+                f"ApplicantScout Companion `{companion_version}`.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return addon
+
+
 def test_inno_script_requires_build_env_version_and_source_dir():
     script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
 
@@ -317,6 +346,8 @@ def test_release_license_artifacts_exist_and_are_copied_into_dist():
 
     assert "Copy-ReleaseTextArtifacts" in build_script
     assert "Copy-DependencyLicenseArtifacts" in build_script
+    assert "collect_dependency_licenses.py" in build_script
+    assert "packages = [" not in build_script
     assert "THIRD-PARTY-NOTICES.md" in build_script
     assert "RELEASE_NOTES.md" in build_script
     assert "LICENSE" in build_script
@@ -445,6 +476,9 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assert "id: paired-addon" in workflow
     assert "-PairedAddonRefOutputPath $env:GITHUB_OUTPUT" in workflow
     assert "ref: ${{ steps.paired-addon.outputs.ref }}" in workflow
+    assert "Validate paired addon metadata" in workflow
+    assert "-PairedAddonRoot ..\\ApplicantScout-Addon" in workflow
+    paired_version_idx = workflow.index("-PairedAddonRoot ..\\ApplicantScout-Addon")
     check_idx = workflow.index(".\\scripts\\check.ps1 -AddonRoot")
     version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag", check_idx)
     build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
@@ -452,7 +486,7 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     release_idx = workflow.index("gh release create")
     publish_idx = workflow.index("gh release edit")
 
-    assert check_idx < version_idx < build_idx < assets_idx < release_idx < publish_idx
+    assert paired_version_idx < check_idx < version_idx < build_idx < assets_idx < release_idx < publish_idx
 
 
 def test_release_workflow_pins_external_actions_to_commit_shas():
@@ -509,6 +543,81 @@ def test_release_workflow_checks_out_paired_addon_tag_from_release_notes():
     assert "-PairedAddonRefOutputPath $env:GITHUB_OUTPUT" in workflow
     assert '"ref=v$($Match.Groups[1].Value)"' not in workflow
     assert "$env:GITHUB_OUTPUT" in workflow
+
+
+def test_release_version_check_accepts_paired_addon_metadata(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    addon = _paired_addon_fixture(
+        tmp_path,
+        addon_version=_paired_addon_version(),
+        companion_version=project_version,
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRoot",
+        str(addon),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_release_version_check_rejects_paired_addon_naming_other_companion(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    addon = _paired_addon_fixture(
+        tmp_path,
+        addon_version=_paired_addon_version(),
+        companion_version=_previous_patch_version(project_version),
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRoot",
+        str(addon),
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "names companion" in output
+    assert project_version in output
+
+
+def test_release_version_check_rejects_paired_addon_version_mismatch(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    addon = _paired_addon_fixture(
+        tmp_path,
+        addon_version="9.9.9",
+        companion_version=project_version,
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRoot",
+        str(addon),
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "paired addon version is 9.9.9" in output.lower()
+    assert f"expected {_paired_addon_version()}" in output
+
+
+def test_release_version_check_does_not_invoke_addon_release_script():
+    script = _read_repo_text("scripts/check-release-version.ps1")
+
+    assert "ApplicantScout-Addon\\scripts\\check-release-version.ps1" not in script
+    assert "ApplicantScout-Addon/scripts/check-release-version.ps1" not in script
 
 
 def test_check_workflow_runs_non_release_companion_and_addon_gates():

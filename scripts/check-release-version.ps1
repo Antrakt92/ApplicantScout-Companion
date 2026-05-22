@@ -1,7 +1,8 @@
 param(
     [string]$Tag = $env:GITHUB_REF_NAME,
     [switch]$RequireAssets,
-    [string]$PairedAddonRefOutputPath
+    [string]$PairedAddonRefOutputPath,
+    [string]$PairedAddonRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,6 +50,63 @@ function Get-FirstRegexMatch {
         throw "Could not find $Description in $Path."
     }
     return $Match.Groups[1].Value
+}
+
+function Get-PairedAddonMetadata {
+    param(
+        [string]$Root
+    )
+
+    $ResolvedRoot = (Resolve-Path -LiteralPath $Root).Path
+    $TocPath = Join-Path $ResolvedRoot "ApplicantScout.toc"
+    if (-not (Test-Path -LiteralPath $TocPath)) {
+        throw "Missing paired addon TOC: $TocPath"
+    }
+    $TocText = Get-Content -LiteralPath $TocPath -Raw -Encoding UTF8
+    $TocMatches = [regex]::Matches(
+        $TocText,
+        '^##\s+Version:\s*([0-9]+\.[0-9]+\.[0-9]+)\s*$',
+        [System.Text.RegularExpressions.RegexOptions]::Multiline
+    )
+    if ($TocMatches.Count -ne 1) {
+        throw "Expected exactly one paired addon TOC version in $TocPath, found $($TocMatches.Count)."
+    }
+
+    $ChangelogPath = Join-Path $ResolvedRoot "CHANGELOG.md"
+    if (-not (Test-Path -LiteralPath $ChangelogPath)) {
+        throw "Missing paired addon changelog: $ChangelogPath"
+    }
+    $ChangelogText = Get-Content -LiteralPath $ChangelogPath -Raw -Encoding UTF8
+    $Options = [System.Text.RegularExpressions.RegexOptions]::Multiline -bor
+        [System.Text.RegularExpressions.RegexOptions]::Singleline
+    $TopChangelogMatch = [regex]::Match(
+        $ChangelogText,
+        '^##\s+([0-9]+\.[0-9]+\.[0-9]+)\s+-\s+.+?(?=^##\s+[0-9]+\.[0-9]+\.[0-9]+\s+-\s+|\z)',
+        $Options
+    )
+    if (-not $TopChangelogMatch.Success) {
+        throw "Missing top paired addon changelog entry in $ChangelogPath"
+    }
+    $TopChangelogSection = $TopChangelogMatch.Value
+    $CompanionMatches = [regex]::Matches(
+        $TopChangelogSection,
+        '(?i)(?:ApplicantScout\s+)?Companion\s+`?([0-9]+\.[0-9]+\.[0-9]+)`?',
+        [System.Text.RegularExpressions.RegexOptions]::Multiline
+    )
+    $CompanionVersions = @(
+        $CompanionMatches |
+            ForEach-Object { $_.Groups[1].Value } |
+            Sort-Object -Unique
+    )
+    if ($CompanionVersions.Count -ne 1) {
+        throw "Paired addon CHANGELOG.md top entry must name exactly one ApplicantScout Companion version; found $($CompanionVersions.Count)."
+    }
+
+    return @{
+        TocVersion = $TocMatches[0].Groups[1].Value
+        ChangelogVersion = $TopChangelogMatch.Groups[1].Value
+        CompanionVersion = $CompanionVersions[0]
+    }
 }
 
 function Test-InstallerChecksum {
@@ -211,6 +269,26 @@ if ($RequireAssets) {
         if ($ChecksumError) {
             $Errors += $ChecksumError
         }
+    }
+}
+
+if ($Errors.Count -gt 0) {
+    foreach ($ErrorMessage in $Errors) {
+        Write-Host "ERROR: $ErrorMessage" -ForegroundColor Red
+    }
+    throw "Release version check failed."
+}
+
+if ($PairedAddonRoot) {
+    $AddonMetadata = Get-PairedAddonMetadata -Root $PairedAddonRoot
+    if ($AddonMetadata.TocVersion -ne $PairedAddonVersion) {
+        $Errors += "Paired addon version is $($AddonMetadata.TocVersion), expected $PairedAddonVersion from RELEASE_NOTES.md."
+    }
+    if ($AddonMetadata.ChangelogVersion -ne $PairedAddonVersion) {
+        $Errors += "Paired addon CHANGELOG.md top entry is $($AddonMetadata.ChangelogVersion), expected $PairedAddonVersion from RELEASE_NOTES.md."
+    }
+    if ($AddonMetadata.CompanionVersion -ne $TagVersion) {
+        $Errors += "Paired addon CHANGELOG.md top entry names companion $($AddonMetadata.CompanionVersion), expected $TagVersion."
     }
 }
 

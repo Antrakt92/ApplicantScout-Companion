@@ -50,85 +50,14 @@ function Copy-DependencyLicenseArtifacts {
     )
 
     $LicenseDir = Join-Path $TargetDir "licenses"
-    New-Item -ItemType Directory -Path $LicenseDir -Force | Out-Null
-    $PreviousLicenseDest = $env:APSCOUT_LICENSE_DEST
-    $env:APSCOUT_LICENSE_DEST = $LicenseDir
-    try {
-        $PythonCode = @'
-from importlib import metadata
-import os
-import shutil
-from pathlib import Path
-
-dest = Path(os.environ["APSCOUT_LICENSE_DEST"])
-packages = [
-    "altgraph",
-    "anyio",
-    "build",
-    "certifi",
-    "colorama",
-    "h11",
-    "httpcore",
-    "httpx",
-    "idna",
-    "iniconfig",
-    "nodeenv",
-    "numpy",
-    "packaging",
-    "pefile",
-    "Pillow",
-    "pluggy",
-    "Pygments",
-    "PyInstaller",
-    "pyinstaller-hooks-contrib",
-    "pyproject_hooks",
-    "PyQt6",
-    "PyQt6-Qt6",
-    "PyQt6-sip",
-    "pyright",
-    "pyzbar",
-    "pytest",
-    "pytest-qt",
-    "python-dotenv",
-    "pywin32-ctypes",
-    "ruff",
-    "setuptools",
-    "typing_extensions",
-    "watchdog",
-]
-tokens = ("license", "copying", "notice")
-for package in packages:
-    try:
-        dist = metadata.distribution(package)
-    except metadata.PackageNotFoundError:
-        continue
-    name = dist.metadata.get("Name", package)
-    package_dest = dest / name
-    copied = False
-    for file in dist.files or ():
-        rel = Path(str(file))
-        if not any(token in rel.name.lower() for token in tokens):
-            continue
-        source = Path(dist.locate_file(file))
-        if not source.is_file():
-            continue
-        target = package_dest / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        copied = True
-    if not copied:
-        package_dest.mkdir(parents=True, exist_ok=True)
-        (package_dest / "NO-LICENSE-FILE-FOUND.txt").write_text(
-            f"No license-like file was exposed by installed metadata for {name}.\n",
-            encoding="utf-8",
-        )
-'@
-        Invoke-NativeChecked -Label "Collect dependency license files" -Command {
-            & $Python -c $PythonCode
-        }
+    $Constraints = Join-Path $RepoRoot "constraints-release.txt"
+    $Collector = Join-Path $RepoRoot "scripts\collect_dependency_licenses.py"
+    if (-not (Test-Path -LiteralPath $Collector)) {
+        throw "Missing dependency license collector: $Collector"
     }
-    finally {
-        $env:APSCOUT_LICENSE_DEST = $PreviousLicenseDest
+    New-Item -ItemType Directory -Path $LicenseDir -Force | Out-Null
+    Invoke-NativeChecked -Label "Collect dependency license files" -Command {
+        & $Python $Collector --constraints $Constraints --dest $LicenseDir
     }
 }
 

@@ -36,6 +36,11 @@ jobs:
           fetch-depth: 0
           path: ApplicantScout-Addon
 
+      - name: Validate paired addon metadata
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -PairedAddonRoot ..\ApplicantScout-Addon
+
       - name: Set up Python
         # actions/setup-python v6 pinned to the upstream tag commit.
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
