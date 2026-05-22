@@ -2326,14 +2326,16 @@ def test_oauth_invalidate_after_parallel_refresh_forces_next_refresh(
     refresh_thread.start()
     assert started.wait(timeout=2.0)
 
-    invalidate_thread = threading.Thread(target=auth.invalidate)
-    invalidate_thread.start()
-    release.set()
-    refresh_thread.join(timeout=2.0)
-    invalidate_thread.join(timeout=2.0)
+    try:
+        invalidate_thread = threading.Thread(target=auth.invalidate)
+        invalidate_thread.start()
+        invalidate_thread.join(timeout=0.2)
+        assert not invalidate_thread.is_alive()
+    finally:
+        release.set()
+        refresh_thread.join(timeout=2.0)
 
     assert not refresh_thread.is_alive()
-    assert not invalidate_thread.is_alive()
     assert results == ["refresh-token"]
     assert auth.get_token() == "after-reset-token"
     assert posts == [0, 1]

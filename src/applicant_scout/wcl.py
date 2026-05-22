@@ -315,6 +315,8 @@ class WCLAuth:
         # write. Lock keeps the second caller waiting for the first refresh
         # to finish, then returns the same fresh token.
         self._refresh_lock = threading.Lock()
+        self._token_state_lock = threading.Lock()
+        self._invalidate_generation = 0
 
     def _load_cached(self) -> Optional[_Token]:
         # Failure must not propagate — _load_cached runs synchronously inside
@@ -354,9 +356,7 @@ class WCLAuth:
         except (json.JSONDecodeError, TypeError, ValueError, OSError):
             return None
 
-    def _save_cached(self) -> None:
-        if self._token is None:
-            return
+    def _save_cached(self, token: _Token) -> None:
         # Failure is non-fatal — the fresh token is still in memory and will
         # serve the next get_token call. Only side effect of a missed save is
         # one extra OAuth refresh on next process start (~1s). Better than
@@ -365,7 +365,7 @@ class WCLAuth:
         try:
             atomic_write_text(
                 self._token_path,
-                json.dumps(asdict(self._token)),
+                json.dumps(asdict(token)),
                 private=True,
             )
         except OSError as e:
@@ -374,26 +374,27 @@ class WCLAuth:
     def get_token(self) -> str:
         """Returns valid access token, refreshing if within 60s of expiry."""
         # Fast path: cached & valid → no lock contention.
-        if self._token and self._token.expires_at - 60 > time.time():
-            return self._token.access_token
+        token = self._token
+        if token and token.expires_at - 60 > time.time():
+            return token.access_token
         with self._refresh_lock:
             # Double-check inside the lock: a parallel caller may have just
             # refreshed; if so we serve the new token without firing again.
-            if self._token and self._token.expires_at - 60 > time.time():
-                return self._token.access_token
+            token = self._token
+            if token and token.expires_at - 60 > time.time():
+                return token.access_token
             return self._refresh()
 
     def invalidate(self) -> None:
         """Force refresh on next get_token (call on 401 response)."""
-        with self._refresh_lock:
+        with self._token_state_lock:
+            self._invalidate_generation += 1
             self._token = None
-            if self._token_path.exists():
-                try:
-                    self._token_path.unlink()
-                except OSError:
-                    pass
+        self._delete_cached_token()
 
     def _refresh(self) -> str:
+        with self._token_state_lock:
+            refresh_generation = self._invalidate_generation
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(
                 WCL_OAUTH_URL,
@@ -417,13 +418,30 @@ class WCLAuth:
             raise WCLAuthError("OAuth response has invalid expires_in") from None
         if expires_in <= 0:
             raise WCLAuthError("OAuth response has invalid expires_in")
-        self._token = _Token(
+        token = _Token(
             access_token=access_token.strip(),
             expires_at=time.time() + expires_in,
             client_fingerprint=self._client_fingerprint,
         )
-        self._save_cached()
-        return self._token.access_token
+        with self._token_state_lock:
+            if refresh_generation != self._invalidate_generation:
+                return token.access_token
+            self._token = token
+        self._save_cached(token)
+        with self._token_state_lock:
+            stale_after_save = refresh_generation != self._invalidate_generation
+            if stale_after_save:
+                self._token = None
+        if stale_after_save:
+            self._delete_cached_token()
+        return token.access_token
+
+    def _delete_cached_token(self) -> None:
+        if self._token_path.exists():
+            try:
+                self._token_path.unlink()
+            except OSError:
+                pass
 
 
 class WCLAuthError(Exception):

@@ -756,7 +756,10 @@ def test_compact_overlay_table_screen_position_stays_fixed_when_panel_expands_up
         window._sync_delegate_and_panel()
         QApplication.processEvents()
 
-        assert window._table.mapToGlobal(QPoint(0, 0)).y() == compact_table_top
+        table_top = window._table.mapToGlobal(QPoint(0, 0)).y()
+        # Qt's native Windows metrics can differ by a few pixels across hosted
+        # runner images; the user-facing contract is no visible table jump.
+        assert abs(table_top - compact_table_top) <= 4
         assert window._panel.height() > 80
         assert window.y() < 180
     finally:
