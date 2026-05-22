@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import logging
 import re
 import threading
+import time
 from pathlib import Path
 
 
@@ -21,6 +22,8 @@ _REGION_FILE_TOKENS = {
 }
 
 _DUNGEON_LEVELS_FIELD = 10
+_NEGATIVE_CACHE_TTL_SECONDS = 30.0
+_RegionDBFingerprint = tuple[tuple[str, bool, int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -35,12 +38,19 @@ class _ProviderMeta:
     encoding_order: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class _RegionCacheEntry:
+    db: _RegionDB | None
+    fingerprint: _RegionDBFingerprint
+    cached_at: float
+
+
 class RaiderIOLocalReader:
     """Lazy reader for RaiderIO's generated local Mythic+ database."""
 
     def __init__(self, retail_root: Path):
         self._retail_root = Path(retail_root)
-        self._cache: dict[str, _RegionDB | None] = {}
+        self._cache: dict[str, _RegionCacheEntry] = {}
         self._loading: set[str] = set()
         self._load_callbacks: dict[str, list[Callable[[], None]]] = {}
         self._lock = threading.Lock()
@@ -55,7 +65,8 @@ class RaiderIOLocalReader:
             db = self._region_db(token)
         else:
             with self._lock:
-                db = self._cache.get(token)
+                entry = self._cache.get(token)
+                db = entry.db if entry is not None else None
         if db is None:
             return None
         return db.lookup_profile(name, realm)
@@ -67,8 +78,13 @@ class RaiderIOLocalReader:
         if not token:
             return
         call_now = False
+        now = time.monotonic()
+        fingerprint = _region_db_fingerprint(self._retail_root, token)
         with self._lock:
-            if token in self._cache:
+            entry = self._cache.get(token)
+            if entry is not None and not _negative_cache_entry_is_stale(
+                entry, fingerprint, now
+            ):
                 call_now = on_loaded is not None
             elif token in self._loading:
                 if on_loaded is not None:
@@ -107,16 +123,25 @@ class RaiderIOLocalReader:
         ).start()
 
     def _region_db(self, token: str) -> _RegionDB | None:
+        now = time.monotonic()
+        fingerprint = _region_db_fingerprint(self._retail_root, token)
         with self._lock:
-            if token in self._cache:
-                return self._cache[token]
+            entry = self._cache.get(token)
+            if entry is not None and not _negative_cache_entry_is_stale(
+                entry, fingerprint, now
+            ):
+                return entry.db
         try:
             loaded = _RegionDB.load(self._retail_root, token)
         except Exception as exc:  # noqa: BLE001
             _log.warning("RaiderIO local DB unavailable for %s: %s", token, exc)
             loaded = None
         with self._lock:
-            self._cache[token] = loaded
+            self._cache[token] = _RegionCacheEntry(
+                db=loaded,
+                fingerprint=fingerprint,
+                cached_at=now,
+            )
         return loaded
 
 
@@ -196,6 +221,43 @@ class _RegionDB:
             text = self._characters_path.read_text(encoding="utf-8", errors="replace")
             self._realm_cache[cache_key] = _parse_realm_data(text, realm)
         return self._realm_cache[cache_key]
+
+
+def _negative_cache_entry_is_stale(
+    entry: _RegionCacheEntry,
+    fingerprint: _RegionDBFingerprint,
+    now: float,
+) -> bool:
+    if entry.db is not None:
+        return False
+    return (
+        entry.fingerprint != fingerprint
+        or now - entry.cached_at >= _NEGATIVE_CACHE_TTL_SECONDS
+    )
+
+
+def _region_db_fingerprint(retail_root: Path, token: str) -> _RegionDBFingerprint:
+    return tuple(
+        _file_fingerprint(path)
+        for path in _region_db_paths(retail_root, token)
+    )
+
+
+def _region_db_paths(retail_root: Path, token: str) -> tuple[Path, Path, Path]:
+    db_root = retail_root / "Interface" / "AddOns" / "RaiderIO" / "db"
+    return (
+        db_root / f"db_mythicplus_{token}_characters.lua",
+        db_root / f"db_mythicplus_{token}_lookup.lua",
+        db_root / "db_dungeons.lua",
+    )
+
+
+def _file_fingerprint(path: Path) -> tuple[str, bool, int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (path.name, False, 0, 0)
+    return (path.name, True, stat.st_mtime_ns, stat.st_size)
 
 
 def retail_root_from_screenshots_path(path: Path) -> Path | None:

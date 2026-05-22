@@ -18,7 +18,7 @@ def _write_test_db(
     dungeons: tuple[str, ...] = ("Skyreach", "Pit of Saron"),
 ) -> None:
     db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
-    db.mkdir(parents=True)
+    db.mkdir(parents=True, exist_ok=True)
     (db / "db_dungeons.lua").write_text(
         (
             """
@@ -142,6 +142,48 @@ def test_preload_region_async_invokes_completion_for_missing_db(tmp_path: Path):
 
     assert completed.wait(timeout=2.0)
     assert reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False) is None
+
+
+def test_preload_region_async_retries_missing_db_when_files_appear(tmp_path: Path):
+    reader = RaiderIOLocalReader(tmp_path)
+    first_completed = threading.Event()
+
+    reader.preload_region_async("EU", on_loaded=first_completed.set)
+
+    assert first_completed.wait(timeout=2.0)
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False) is None
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    second_completed = threading.Event()
+    reader.preload_region_async("EU", on_loaded=second_completed.set)
+
+    assert second_completed.wait(timeout=2.0)
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False)
+    assert profile is not None
+    assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+
+
+def test_lookup_profile_retries_malformed_db_when_files_become_valid(tmp_path: Path):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 1),
+        encoding_order=(1, 99, 10),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") is None
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert profile is not None
+    assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
 
 
 def test_reader_rejects_unknown_encoding_field_id(tmp_path: Path, caplog: pytest.LogCaptureFixture):

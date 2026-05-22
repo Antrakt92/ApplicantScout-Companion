@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import stat
+import threading
 import time
 
 import httpx
@@ -2289,6 +2290,53 @@ def test_oauth_token_save_failure_preserves_previous_token_file(
     assert auth.get_token() == "fresh-token"
     assert token_path.read_text(encoding="utf-8") == "old-token"
     assert list(tmp_path.glob(".token.json.*.tmp")) == []
+
+
+def test_oauth_invalidate_after_parallel_refresh_forces_next_refresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    started = threading.Event()
+    release = threading.Event()
+    posts: list[int] = []
+    results: list[str] = []
+
+    class _OAuthClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, *args, **kwargs):
+            call_index = len(posts)
+            posts.append(call_index)
+            if call_index == 0:
+                started.set()
+                assert release.wait(timeout=2.0)
+                return _FakeResponse({"access_token": "refresh-token", "expires_in": 3600})
+            return _FakeResponse({"access_token": "after-reset-token", "expires_in": 3600})
+
+    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    refresh_thread = threading.Thread(target=lambda: results.append(auth.get_token()))
+    refresh_thread.start()
+    assert started.wait(timeout=2.0)
+
+    invalidate_thread = threading.Thread(target=auth.invalidate)
+    invalidate_thread.start()
+    release.set()
+    refresh_thread.join(timeout=2.0)
+    invalidate_thread.join(timeout=2.0)
+
+    assert not refresh_thread.is_alive()
+    assert not invalidate_thread.is_alive()
+    assert results == ["refresh-token"]
+    assert auth.get_token() == "after-reset-token"
+    assert posts == [0, 1]
 
 
 def test_oauth_auth_applies_private_mode_to_existing_token_file(

@@ -1025,17 +1025,25 @@ def _show_config_error(message: str) -> None:
     QMessageBox.critical(None, "ApplicantScout setup", message)
 
 
-def _clear_cache_dir(cache_dir: Path, character_cache: CharacterCache | None = None) -> str:
-    if character_cache is not None:
-        character_cache.clear()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    for child in cache_dir.iterdir():
-        if child.name == UPDATE_DOWNLOADS_DIR_NAME:
-            continue
-        if child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+def _clear_cache_dir(
+    cache_dir: Path,
+    character_cache: CharacterCache | None = None,
+    auth: WCLAuth | None = None,
+) -> str:
+    try:
+        if character_cache is not None:
+            character_cache.clear()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for child in cache_dir.iterdir():
+            if child.name == UPDATE_DOWNLOADS_DIR_NAME:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    finally:
+        if auth is not None:
+            auth.invalidate()
     return "Cache cleared."
 
 
@@ -2258,7 +2266,7 @@ def main(argv: list[str] | None = None) -> int:
                 region,
             ),
             open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
-            clear_cache=lambda: _clear_cache_dir(cfg.cache_dir, cache),
+            clear_cache=lambda: _clear_cache_dir(cfg.cache_dir, cache, auth),
             check_updates=_check_updates,
             hide_to_tray_on_close=tray_controller is not None,
             parent=window,

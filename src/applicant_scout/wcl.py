@@ -385,12 +385,13 @@ class WCLAuth:
 
     def invalidate(self) -> None:
         """Force refresh on next get_token (call on 401 response)."""
-        self._token = None
-        if self._token_path.exists():
-            try:
-                self._token_path.unlink()
-            except OSError:
-                pass
+        with self._refresh_lock:
+            self._token = None
+            if self._token_path.exists():
+                try:
+                    self._token_path.unlink()
+                except OSError:
+                    pass
 
     def _refresh(self) -> str:
         with httpx.Client(timeout=10.0) as client:

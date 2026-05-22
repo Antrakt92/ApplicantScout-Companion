@@ -24,6 +24,15 @@ def _read_repo_text(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def _job_block(workflow: str, job_name: str) -> str:
+    match = re.search(
+        rf"(?ms)^  {re.escape(job_name)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        workflow,
+    )
+    assert match is not None, f"Missing workflow job: {job_name}"
+    return match.group(0)
+
+
 def _workflow_action_refs(workflow: str) -> list[tuple[str, str]]:
     refs: list[tuple[str, str]] = []
     for uses_target in _ACTION_USES_RE.findall(workflow):
@@ -463,13 +472,14 @@ def test_release_version_check_script_documents_asset_contract():
 
 def test_release_workflow_runs_existing_gates_before_publishing():
     workflow = _read_repo_text(".github/workflows/release.yml")
+    release = _job_block(workflow, "release")
 
     assert "tags:" in workflow
     assert "'v*'" in workflow
     assert "github.event.created == true" in workflow
     assert "github.event.forced == false" in workflow
     assert "github.event.deleted == false" in workflow
-    assert "windows-latest" in workflow
+    assert re.search(r"(?m)^    runs-on: windows-2022\s*$", release)
     assert "contents: write" in workflow
     assert "python-version: '3.13'" in workflow
     assert "constraints-release.txt" in workflow
@@ -642,11 +652,12 @@ def test_release_version_check_does_not_invoke_addon_release_script():
 
 def test_check_workflow_runs_non_release_companion_and_addon_gates():
     workflow = _read_repo_text(".github/workflows/check.yml")
+    check = _job_block(workflow, "check")
 
     assert "push:" in workflow
     assert "pull_request:" in workflow
     assert "tags:" not in workflow
-    assert "windows-latest" in workflow
+    assert re.search(r"(?m)^    runs-on: windows-2022\s*$", check)
     assert "contents: read" in workflow
     assert "contents: write" not in workflow
     assert "path: ApplicantScout-Companion" in workflow

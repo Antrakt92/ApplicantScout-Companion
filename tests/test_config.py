@@ -3886,14 +3886,23 @@ def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(
     character_cache = main_mod.CharacterCache(cache_dir)
     (cache_dir / "character-cache.json").write_text("{}", encoding="utf-8")
     generation = character_cache.generation
+    invalidated: list[str] = []
 
-    assert main_mod._clear_cache_dir(cache_dir, character_cache) == "Cache cleared."
+    class FakeAuth:
+        def invalidate(self) -> None:
+            invalidated.append("auth")
+
+    assert (
+        main_mod._clear_cache_dir(cache_dir, character_cache, FakeAuth())
+        == "Cache cleared."
+    )
 
     assert installer.read_bytes() == b"installer"
     assert not (cache_dir / "token.json").exists()
     assert not (cache_dir / "character-cache.json").exists()
     assert not stale_dir.exists()
     assert character_cache.generation > generation
+    assert invalidated == ["auth"]
 
 
 def test_settings_dialog_gets_explicit_app_icon_before_exec(
