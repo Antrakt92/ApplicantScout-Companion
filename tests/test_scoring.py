@@ -399,7 +399,7 @@ def test_mplus_fit_rows_colour_printed_percentile_not_context_fit():
 
     rows = mplus_dungeon_fit_rows(applicant, target)
 
-    assert rows[0].text == "64"
+    assert rows[0].text == "64 N=1"
     assert rows[0].score < 55.0
     assert rows[0].colour == percentile_colour(64.0)
 

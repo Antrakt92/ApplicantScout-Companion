@@ -65,7 +65,8 @@ class Applicant:
     # M+ headline best/median avg across the 8 dungeons. Only the role-relevant
     # metric is populated — DPS for tank+damager, HPS for healer (the OTHER
     # metric stays None to save WCL quota: 8 unneeded encounter queries).
-    # Overlay displays as "best/median" pair from the populated metric.
+    # Overlay displays best/median when median evidence exists; all-N=1 data is
+    # marked as low-evidence from the populated metric.
     mplus_dps: Optional[float] = None
     mplus_hps: Optional[float] = None
     mplus_dps_median: Optional[float] = None

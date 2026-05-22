@@ -1312,15 +1312,26 @@ def _mplus_support_percent(applicant: Applicant) -> float:
     return best * 0.60 + median * 0.40
 
 
-def _bracket_metric_text(bracket: dict) -> str:
-    best = safe_percent(bracket.get("parse_percent"))
-    if best is None:
+def mplus_metric_text(best: object, median: object, run_count: object) -> str:
+    best_pct = safe_percent(best)
+    if best_pct is None:
         return "—"
-    median = safe_percent(bracket.get("median_percent"))
-    run_count = nonnegative_int(bracket.get("run_count"))
-    if run_count >= 2 and median is not None:
-        return f"{int(round(best))}/{int(round(median))}"
-    return f"{int(round(best))}"
+    median_pct = safe_percent(median)
+    count = nonnegative_int(run_count)
+    best_text = f"{int(round(best_pct))}"
+    if count >= 2 and median_pct is not None:
+        return f"{best_text}/{int(round(median_pct))}"
+    if count == 1:
+        return f"{best_text} N=1"
+    return best_text
+
+
+def _bracket_metric_text(bracket: dict) -> str:
+    return mplus_metric_text(
+        bracket.get("parse_percent"),
+        bracket.get("median_percent"),
+        bracket.get("run_count"),
+    )
 
 
 def safe_percent(value: object) -> float | None:

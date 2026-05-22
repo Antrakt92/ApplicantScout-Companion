@@ -108,7 +108,8 @@ the overriding environment variable.
 The overlay shows a context-aware numeric M+ fit score for the hosted key,
 coloured with the Warcraft Logs percentile palette, package ratings for grouped
 applicants who are accepted together, and raw WCL raid/M+ percentiles as
-supporting evidence. Healer M+ rows use HPS; tank and damage rows use DPS.
+supporting evidence. Healer M+ rows use HPS; tank and damage rows use DPS. `N=1`
+marks a single logged run at that key, so there is no median signal.
 
 The RIO column shows the applying character's current score. If the RaiderIO
 addon is installed in WoW and exposes a higher current-season main score for an

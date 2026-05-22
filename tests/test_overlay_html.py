@@ -205,6 +205,85 @@ def test_mplus_cell_visuals_median_missing_keeps_key_suffix():
     assert text == "80 +14"
 
 
+def test_mplus_cell_visuals_all_single_run_marks_low_evidence():
+    text, _fg, _bg = _mplus_cell_visuals(
+        _app(
+            mplus_dps=80.0,
+            mplus_dps_median=None,
+            mplus_dps_breakdown=[
+                {
+                    "name": "Pit of Saron",
+                    "parse_percent": 80.0,
+                    "median_percent": None,
+                    "key_level": 14,
+                    "run_count": 1,
+                },
+                {
+                    "name": "Skyreach",
+                    "parse_percent": 80.0,
+                    "median_percent": None,
+                    "key_level": 12,
+                    "run_count": 1,
+                },
+            ],
+        )
+    )
+
+    assert text == "80 N=1 +14"
+
+
+def test_mplus_cell_visuals_run_count_zero_cache_does_not_mark_n1():
+    text, _fg, _bg = _mplus_cell_visuals(
+        _app(
+            mplus_dps=80.0,
+            mplus_dps_median=None,
+            mplus_dps_breakdown=[
+                {
+                    "name": "Old Cache",
+                    "parse_percent": 80.0,
+                    "median_percent": None,
+                    "key_level": 14,
+                    "run_count": 0,
+                }
+            ],
+        )
+    )
+
+    assert text == "80 +14"
+
+
+def test_mplus_cell_visuals_single_run_healer_uses_hps_breakdown():
+    text, _fg, _bg = _mplus_cell_visuals(
+        _app(
+            role="HEALER",
+            mplus_dps=99.0,
+            mplus_dps_median=None,
+            mplus_hps=70.0,
+            mplus_hps_median=None,
+            mplus_dps_breakdown=[
+                {
+                    "name": "Damage Dungeon",
+                    "parse_percent": 99.0,
+                    "median_percent": None,
+                    "key_level": 20,
+                    "run_count": 1,
+                }
+            ],
+            mplus_hps_breakdown=[
+                {
+                    "name": "Healing Dungeon",
+                    "parse_percent": 70.0,
+                    "median_percent": None,
+                    "key_level": 10,
+                    "run_count": 1,
+                }
+            ],
+        )
+    )
+
+    assert text == "70 N=1 +10"
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
@@ -267,6 +346,12 @@ def test_mplus_dungeon_metric_text_respects_run_count():
     assert (
         _mplus_dungeon_metric_text(
             {"parse_percent": 70.0, "median_percent": 50.0, "run_count": 1}
+        )
+        == "70 N=1"
+    )
+    assert (
+        _mplus_dungeon_metric_text(
+            {"parse_percent": 70.0, "median_percent": None, "run_count": 0}
         )
         == "70"
     )

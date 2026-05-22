@@ -189,7 +189,7 @@ def test_context_dungeon_rows_colour_the_printed_percentile(qtbot):
 
     _name_label, _rio_label, wcl_key_label, value_label = panel._dungeon_rows[0]
     assert wcl_key_label.text() == "WCL +16"
-    assert value_label.text() == "83"
+    assert value_label.text() == "83 N=1"
     assert percentile_colour(83.0) in value_label.styleSheet()
 
 

@@ -543,6 +543,36 @@ def _ranks_for_graphql_errors(
     )
 
 
+def _mplus_alias_payload(char: dict, alias: str) -> dict:
+    if alias not in char:
+        raise WCLApiError(
+            f"Malformed WCL response: {alias} is missing",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    enc_data = char.get(alias)
+    if enc_data is None:
+        raise WCLApiError(
+            f"Malformed WCL response: {alias} is null",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    if not isinstance(enc_data, dict):
+        raise WCLApiError(
+            f"Malformed WCL response: {alias} is not an object",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    if "ranks" not in enc_data:
+        raise WCLApiError(
+            f"Malformed WCL response: {alias}.ranks is missing",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    if not isinstance(enc_data.get("ranks"), list):
+        raise WCLApiError(
+            f"Malformed WCL response: {alias}.ranks is not a list",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    return enc_data
+
+
 # ───────────────────────────────────────────────────────────────────
 # GraphQL
 
@@ -936,7 +966,7 @@ class WCLClient:
             if metric_preferences.mplus:
                 for alias, _eid, dungeon_name in MPLUS_ENCOUNTERS:
                     perf = _process_encounter_ranks(
-                        char.get(alias), spec_name, dungeon_name
+                        _mplus_alias_payload(char, alias), spec_name, dungeon_name
                     )
                     if perf is not None:
                         breakdown.append(perf)
@@ -1392,6 +1422,7 @@ class CharacterCache:
     # without changing the scouting decision. A Config-provided
     # APSCOUT_CACHE_TTL_SECONDS override is stored per CharacterCache instance.
     TTL_SECONDS = 12 * 60 * 60
+    NOT_FOUND_TTL_SECONDS = 30 * 60
 
     def __init__(self, cache_dir: Path, ttl_seconds: int | None = None):
         self._path = cache_dir / "character-cache.json"
@@ -1431,6 +1462,10 @@ class CharacterCache:
         # has HPS data). Tank and damager share the dps metric so they
         # cache-collide intentionally (single stored value reused across both).
         return f"{region}:{server_slug}:{name.lower()}:{spec_id}:{wcl_metric_role(role)}"
+
+    @staticmethod
+    def _not_found_key(name: str, server_slug: str, region: str) -> str:
+        return f"nf:{region}:{server_slug}:{name.lower()}"
 
     @staticmethod
     def _key(
@@ -1514,6 +1549,9 @@ class CharacterCache:
             except OSError:
                 self._save_locked()
 
+    def _not_found_ttl_seconds(self) -> int:
+        return min(self._ttl_seconds, self.NOT_FOUND_TTL_SECONDS)
+
     def get(
         self,
         name: str,
@@ -1525,9 +1563,16 @@ class CharacterCache:
     ) -> Optional[CharacterRanks]:
         prefix = self._key_prefix(name, server_slug, region, spec_id, role)
         key = f"{prefix}:{metric_preferences.cache_key()}"
+        not_found_key = self._not_found_key(name, server_slug, region)
         now = time.time()
         with self._lock:
             generation = self._generation
+            negative_candidate = None
+            negative_entry = self._data.get(not_found_key)
+            if negative_entry is not None:
+                negative_age = now - negative_entry.fetched_at
+                if 0 <= negative_age <= self._not_found_ttl_seconds():
+                    negative_candidate = negative_entry
             candidates: list[tuple[int, float, int, int, _CacheEntry]] = []
             exact_entry = self._data.get(key)
             if exact_entry is not None:
@@ -1548,6 +1593,17 @@ class CharacterCache:
                     continue
                 breadth = _metric_preference_breadth(stored_preferences)
                 candidates.append((1, -entry.fetched_at, breadth, index, entry))
+        if negative_candidate is not None:
+            ranks = self._ranks_from_entry(negative_candidate)
+            if ranks is not None and ranks.not_found:
+                with self._lock:
+                    if generation != self._generation:
+                        return None
+                return CharacterRanks.empty(
+                    not_found=True,
+                    error=ranks.error,
+                    error_kind=ranks.error_kind,
+                )
         if not candidates:
             return None
         candidates.sort()
@@ -1612,12 +1668,25 @@ class CharacterCache:
         expected_generation: int | None = None,
     ) -> bool:
         key = self._key(name, server_slug, region, spec_id, role, metric_preferences)
+        not_found_key = self._not_found_key(name, server_slug, region)
         with self._lock:
             if (
                 expected_generation is not None
                 and expected_generation != self._generation
             ):
                 return False
-            self._data[key] = _CacheEntry(fetched_at=time.time(), ranks=asdict(ranks))
+            if ranks.not_found:
+                identity_prefix = f"{region}:{server_slug}:{name.lower()}:"
+                for stored_key in list(self._data):
+                    if stored_key.startswith(identity_prefix):
+                        self._data.pop(stored_key, None)
+                self._data[not_found_key] = _CacheEntry(
+                    fetched_at=time.time(), ranks=asdict(ranks)
+                )
+            else:
+                self._data.pop(not_found_key, None)
+                self._data[key] = _CacheEntry(
+                    fetched_at=time.time(), ranks=asdict(ranks)
+                )
             self._save_locked()
         return True

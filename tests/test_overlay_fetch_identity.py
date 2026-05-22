@@ -1074,6 +1074,37 @@ def test_fetch_task_started_before_clear_does_not_repopulate_character_cache(
         client.close()
 
 
+def test_fetch_task_started_before_clear_does_not_repopulate_not_found_cache(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    def fake_fetch(*_args, **_kwargs):
+        return CharacterRanks.empty(not_found=True)
+
+    client.fetch_character_ranks = fake_fetch  # type: ignore[method-assign]
+
+    try:
+        window._launch_fetch(app)
+        assert len(queued_pool.tasks) == 1
+
+        window._cache.clear()
+        queued_pool.tasks[0].run()
+
+        assert app.fetch_status == "not_found"
+        assert window._cache.get("Scout", "realma", "EU", 71, "DPS") is None
+        assert not window._cache._path.exists()
+    finally:
+        client.close()
+
+
 def test_launch_fetch_queues_without_ui_thread_cache_lookup(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")
@@ -1684,15 +1715,20 @@ def test_wcl_runtime_generation_bump_refetches_party_members(qtbot, tmp_path):
         client.close()
 
 
-def test_fetch_task_does_not_persist_not_found_results(qtbot, tmp_path):
+def test_fetch_task_persists_not_found_and_reuses_across_identity_churn(
+    qtbot, tmp_path
+):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")
     app = _app(fetch_status="pending")
     state.add_or_update(app)
     window, client = _window(qtbot, tmp_path, state)
     window._pool = _SyncPool()
+    calls = 0
 
     def fake_fetch(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
         return CharacterRanks.empty(not_found=True)
 
     client.fetch_character_ranks = fake_fetch  # type: ignore[method-assign]
@@ -1701,7 +1737,18 @@ def test_fetch_task_does_not_persist_not_found_results(qtbot, tmp_path):
         window._launch_fetch(app)
 
         assert app.fetch_status == "not_found"
-        assert window._cache.get("Scout", "realma", "EU", 71, "DPS") is None
+        assert calls == 1
+        cached = window._cache.get("Scout", "realma", "EU", 71, "DPS")
+        assert cached is not None
+        assert cached.not_found is True
+
+        app.spec_id = 72
+        app.role = "HEALER"
+        app.fetch_status = "pending"
+        window._launch_fetch(app)
+
+        assert app.fetch_status == "not_found"
+        assert calls == 1
     finally:
         client.close()
 

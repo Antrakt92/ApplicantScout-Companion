@@ -310,6 +310,12 @@ def _character(**encounters: dict) -> dict:
     }
 
 
+def _character_with_empty_mplus(**encounters: dict) -> dict:
+    payload = {alias: {"ranks": []} for alias, _eid, _name in MPLUS_ENCOUNTERS}
+    payload.update(encounters)
+    return _character(**payload)
+
+
 def test_process_ranks_none_data():
     assert _process_encounter_ranks(None, "Brewmaster", "X") is None
 
@@ -521,7 +527,7 @@ def test_character_ranks_query_omits_disabled_raid_variables():
 def test_fetch_character_ranks_healer_routes_mplus_to_hps_breakdown():
     client, http = _client_for_payload(
         _wcl_payload(
-            _character(
+            _character_with_empty_mplus(
                 aa={
                     "ranks": [
                         _rank(spec="Windwalker", bracket=14, percent=99.0),
@@ -573,7 +579,7 @@ def test_fetch_character_ranks_healer_routes_mplus_to_hps_breakdown():
 def test_fetch_character_ranks_dps_roles_route_mplus_to_dps_breakdown(role):
     client, http = _client_for_payload(
         _wcl_payload(
-            _character(
+            _character_with_empty_mplus(
                 mt={
                     "ranks": [
                         _rank(spec="Marksmanship", bracket=13, percent=97.0),
@@ -617,7 +623,7 @@ def test_fetch_character_ranks_dps_roles_route_mplus_to_dps_breakdown(role):
 def test_fetch_character_ranks_devourer_filters_other_dh_specs():
     client, http = _client_for_payload(
         _wcl_payload(
-            _character(
+            _character_with_empty_mplus(
                 mt={
                     "ranks": [
                         _rank(spec="Havoc", bracket=13, percent=97.0),
@@ -685,7 +691,7 @@ def test_fetch_character_ranks_respects_metric_preferences():
 
 
 def test_fetch_character_ranks_spec_zero_mplus_only_returns_empty_without_http():
-    client, http = _client_for_payload(_wcl_payload(_character()))
+    client, http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
     prefs = MetricPreferences(
         mplus=True,
         raid_normal=False,
@@ -763,7 +769,7 @@ def test_fetch_character_ranks_401_retry_success_preserves_token_refresh():
     http = _SequenceHTTP(
         [
             _FakeResponse({"error": "expired"}, status_code=401),
-            _FakeResponse(_wcl_payload(_character())),
+            _FakeResponse(_wcl_payload(_character_with_empty_mplus())),
         ]
     )
     client._http = http  # type: ignore[assignment]
@@ -808,7 +814,7 @@ def test_quota_reservation_blocks_second_cache_miss_before_http(
         )
 
     client._http.close()
-    http = _ReentrantHTTP(_wcl_payload(_character()), fetch_second)
+    http = _ReentrantHTTP(_wcl_payload(_character_with_empty_mplus()), fetch_second)
     client._http = http  # type: ignore[assignment]
 
     first = client.fetch_character_ranks("First", "ravencrest", spec_id=71)
@@ -847,7 +853,7 @@ def test_quota_reservation_releases_after_network_exception(
     with pytest.raises(httpx.RequestError):
         client.fetch_character_ranks("First", "ravencrest", spec_id=71)
 
-    http = _FakeHTTP(_wcl_payload(_character()))
+    http = _FakeHTTP(_wcl_payload(_character_with_empty_mplus()))
     client._http = http  # type: ignore[assignment]
 
     blocked = client.fetch_character_ranks("Second", "ravencrest", spec_id=71)
@@ -908,7 +914,7 @@ def test_reconfigure_auth_ignores_stale_quota_snapshot_from_in_flight_fetch():
 
     client._http.close()
     client._http = _ReentrantHTTP(  # type: ignore[assignment]
-        _wcl_payload(_character()),
+        _wcl_payload(_character_with_empty_mplus()),
         reconfigure_before_response,
     )
 
@@ -977,7 +983,7 @@ def test_quota_guard_blocks_before_reset_without_spending_http_call(
 ):
     now = 1_000.0
     monkeypatch.setattr(wcl_mod.time, "time", lambda: now + 10.0)
-    client, http = _client_for_payload(_wcl_payload(_character()))
+    client, http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
     client._record_quota_snapshot(
         RateLimitInfo(limit_per_hour=100.0, points_spent=90.0, reset_in_seconds=60.0),
         now=now,
@@ -994,7 +1000,7 @@ def test_quota_guard_lifts_after_recorded_reset_deadline(
 ):
     current = [1_000.0]
     monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
-    client, http = _client_for_payload(_wcl_payload(_character()))
+    client, http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
     client._record_quota_snapshot(
         RateLimitInfo(limit_per_hour=100.0, points_spent=90.0, reset_in_seconds=60.0),
         now=current[0],
@@ -1095,7 +1101,7 @@ def test_oauth_refresh_network_error_sets_short_retry_block(
     auth = FlakyAuth()
     client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
     client._http.close()
-    http = _FakeHTTP(_wcl_payload(_character()))
+    http = _FakeHTTP(_wcl_payload(_character_with_empty_mplus()))
     client._http = http  # type: ignore[assignment]
 
     with pytest.raises(httpx.TimeoutException):
@@ -1315,6 +1321,183 @@ def test_character_cache_does_not_reuse_narrow_scope_for_broad_request(tmp_path)
     )
 
     assert result is None
+
+
+def test_character_cache_not_found_is_scoped_to_character_identity_only(tmp_path):
+    cache = CharacterCache(tmp_path)
+    stored = cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        CharacterRanks.empty(not_found=True, error="Could not find character"),
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+
+    assert stored is True
+    for spec_id, role, prefs in (
+        (71, "DAMAGER", MetricPreferences()),
+        (72, "DAMAGER", MetricPreferences()),
+        (71, "HEALER", MetricPreferences()),
+        (
+            71,
+            "DAMAGER",
+            MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=True,
+                raid_mythic=False,
+            ),
+        ),
+    ):
+        result = cache.get(
+            "Scout",
+            "ravencrest",
+            "EU",
+            spec_id,
+            role,
+            metric_preferences=prefs,
+        )
+        assert result is not None
+        assert result.not_found is True
+        assert result.error == "Could not find character"
+
+    assert cache.get("Other", "ravencrest", "EU", 71, "DAMAGER") is None
+    assert cache.get("Scout", "argent-dawn", "EU", 71, "DAMAGER") is None
+    assert cache.get("Scout", "ravencrest", "US", 71, "DAMAGER") is None
+
+
+def test_character_cache_not_found_expires_with_negative_ttl(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        CharacterRanks.empty(not_found=True),
+        role="DAMAGER",
+    )
+    key = CharacterCache._not_found_key("Scout", "ravencrest", "EU")
+    cache._data[key].fetched_at = time.time() - CharacterCache.NOT_FOUND_TTL_SECONDS - 1
+
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
+def test_character_cache_not_found_evicts_stale_positive_identity_entries(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        72,
+        _ranks(),
+        role="HEALER",
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+    )
+
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        CharacterRanks.empty(not_found=True),
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+    not_found_key = CharacterCache._not_found_key("Scout", "ravencrest", "EU")
+    cache._data[not_found_key].fetched_at = (
+        time.time() - CharacterCache.NOT_FOUND_TTL_SECONDS - 1
+    )
+
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+    assert cache.get("Scout", "ravencrest", "EU", 72, "HEALER") is None
+
+
+def test_character_cache_not_found_respects_ttl_override(tmp_path):
+    cache = CharacterCache(tmp_path, ttl_seconds=1)
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        CharacterRanks.empty(not_found=True),
+        role="DAMAGER",
+    )
+    key = CharacterCache._not_found_key("Scout", "ravencrest", "EU")
+    cache._data[key].fetched_at = time.time() - 2
+
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
+def test_character_cache_positive_put_clears_prior_not_found(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        CharacterRanks.empty(not_found=True),
+        role="DAMAGER",
+    )
+
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+
+    key = CharacterCache._not_found_key("Scout", "ravencrest", "EU")
+    assert key not in cache._data
+    result = cache.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+    assert result is not None
+    assert result.not_found is False
+    assert result.raid_heroic == pytest.approx(22.0)
+
+
+def test_character_cache_stale_generation_rejects_not_found_put(tmp_path):
+    cache = CharacterCache(tmp_path)
+    old_generation = cache.generation
+
+    cache.clear()
+    stored = cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        CharacterRanks.empty(not_found=True),
+        role="DAMAGER",
+        expected_generation=old_generation,
+    )
+
+    assert stored is False
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+    assert not cache._path.exists()
 
 
 def test_character_cache_prefers_exact_scope_over_broader_scope(tmp_path):
@@ -1972,7 +2155,7 @@ def test_fetch_character_ranks_normalizes_malformed_graphql_errors(
 
 
 def test_fetch_character_ranks_ignores_malformed_quota():
-    payload = _wcl_payload(_character())
+    payload = _wcl_payload(_character_with_empty_mplus())
     payload["data"]["rateLimitData"] = {
         "limitPerHour": "NaN",
         "pointsSpentThisHour": 10,
@@ -1984,6 +2167,76 @@ def test_fetch_character_ranks_ignores_malformed_quota():
 
     assert result.not_found is False
     assert client.last_quota is None
+
+
+@pytest.mark.parametrize(
+    ("alias_value", "expected_message"),
+    [
+        (None, "aa is null"),
+        ({}, "aa.ranks is missing"),
+        ({"ranks": None}, "aa.ranks is not a list"),
+        ({"ranks": "bad"}, "aa.ranks is not a list"),
+    ],
+)
+def test_fetch_character_ranks_rejects_malformed_mplus_alias_payload(
+    alias_value,
+    expected_message,
+):
+    character = _character_with_empty_mplus()
+    character["aa"] = alias_value
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    with pytest.raises(WCLApiError, match=expected_message) as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_fetch_character_ranks_rejects_missing_mplus_alias():
+    character = _character_with_empty_mplus()
+    del character["aa"]
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    with pytest.raises(WCLApiError, match="aa is missing") as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_fetch_character_ranks_allows_empty_mplus_ranks_lists():
+    client, _http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
+
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.error == ""
+    assert result.mplus_dps is None
+    assert result.mplus_dps_breakdown == []
+
+
+def test_fetch_character_ranks_graphql_error_precedes_malformed_mplus_alias():
+    payload = _wcl_payload(
+        _character_with_empty_mplus(aa={"ranks": "bad"}),
+        errors=[{"message": "Encounter not found"}],
+    )
+    client, _http = _client_for_payload(payload)
+
+    with pytest.raises(WCLApiError, match="GraphQL error: Encounter not found") as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
+
+
+def test_fetch_character_ranks_character_not_found_precedes_malformed_mplus_alias():
+    payload = _wcl_payload(
+        _character_with_empty_mplus(aa={"ranks": "bad"}),
+        errors=[{"message": "Could not find character"}],
+    )
+    client, _http = _client_for_payload(payload)
+
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.not_found is True
+    assert result.error == "Could not find character"
 
 
 def test_oauth_refresh_malformed_json_raises_wcl_auth_error(monkeypatch, tmp_path):

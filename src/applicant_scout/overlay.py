@@ -82,6 +82,7 @@ from .scoring import (
     detect_listing_context,
     effective_rio_score,
     listing_dungeon_keys,
+    mplus_metric_text,
     mplus_dungeon_fit_rows,
     package_fit,
     nonnegative_int,
@@ -247,6 +248,7 @@ HEADER_TOOLTIPS: list[str] = [
     "Mythic+ fit for the current listing when the companion knows your\n"
     "hosted key level; otherwise falls back to the old best/median headline.\n\n"
     "Metric: DPS for tank / damage applicants, HPS for healers.\n"
+    "N=1 marks a single logged run at that key, so there is no median signal.\n"
     "Fit labels are driven primarily by relevant WCL bracket performance,\n"
     "then adjusted for key-level context, same-dungeon evidence, and profile\n"
     "consistency. Sparse coverage penalizes the fit and lowers confidence\n"
@@ -414,19 +416,19 @@ class _FetchTask(QRunnable):
             # applicant row stays on 'loading' forever.
             ranks = CharacterRanks.empty(error=str(e))
         elapsed = time.perf_counter() - started_at
-        if ranks.error:
+        if ranks.not_found:
+            _log.info(
+                "WCL fetch finished not_found: %s-%s in %.2fs",
+                self._name,
+                identity.server_slug,
+                elapsed,
+            )
+        elif ranks.error:
             _log.info(
                 "WCL fetch finished with error: %s-%s kind=%s in %.2fs",
                 self._name,
                 identity.server_slug,
                 ranks.error_kind or "unknown",
-                elapsed,
-            )
-        elif ranks.not_found:
-            _log.info(
-                "WCL fetch finished not_found: %s-%s in %.2fs",
-                self._name,
-                identity.server_slug,
                 elapsed,
             )
         else:
@@ -436,7 +438,7 @@ class _FetchTask(QRunnable):
                 identity.server_slug,
                 elapsed,
             )
-        if not ranks.error and not ranks.not_found:
+        if ranks.not_found or not ranks.error:
             self._cache.put(
                 self._name,
                 identity.server_slug,
@@ -4011,6 +4013,19 @@ def _highest_mplus_key_level(breakdown: Iterable[object]) -> int:
     return highest
 
 
+def _mplus_breakdown_all_single_run(breakdown: Iterable[object]) -> bool:
+    seen_valid = False
+    for entry in breakdown:
+        if not isinstance(entry, dict):
+            continue
+        if safe_percent(entry.get("parse_percent")) is None:
+            continue
+        seen_valid = True
+        if _mplus_run_count(entry) != 1:
+            return False
+    return seen_valid
+
+
 def _mplus_cell_visuals(
     applicant: Applicant, listing: Listing | None = None
 ) -> tuple[str, str | None, str | None]:
@@ -4034,11 +4049,13 @@ def _mplus_cell_visuals(
     if best is None and median is None:
         return "—", "#5d5d5d", None
 
-    best_str = f"{int(round(best))}" if best is not None else "—"
-    if median is None:
-        text = best_str if best is not None else "—"
+    if median is not None:
+        headline_run_count = 2
+    elif _mplus_breakdown_all_single_run(breakdown):
+        headline_run_count = 1
     else:
-        text = f"{best_str}/{int(round(median))}"
+        headline_run_count = 0
+    text = mplus_metric_text(best, median, headline_run_count)
 
     highest_key = _highest_mplus_key_level(breakdown)
     if highest_key > 0:
@@ -4052,14 +4069,11 @@ def _mplus_cell_visuals(
 def _mplus_dungeon_metric_text(entry: object) -> str:
     if not isinstance(entry, dict):
         return "—"
-    best = safe_percent(entry.get("parse_percent"))
-    median = safe_percent(entry.get("median_percent"))
-    run_count = _mplus_run_count(entry)
-    if best is None:
-        return "—"
-    if run_count >= 2 and median is not None:
-        return _metric_text(best, median)
-    return _metric_text(best, None)
+    return mplus_metric_text(
+        entry.get("parse_percent"),
+        entry.get("median_percent"),
+        entry.get("run_count"),
+    )
 
 
 def _mplus_dual_cell(
