@@ -79,6 +79,36 @@ def _restore_root_logging_handlers(
         root.addHandler(handler)
 
 
+def _log_record(message: str) -> logging.LogRecord:
+    return logging.LogRecord("test", logging.INFO, __file__, 1, message, (), None)
+
+
+def _assert_emit_survives_locked_rollover(
+    handler: logging.Handler,
+    log_path: Path,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handle_errors: list[logging.LogRecord] = []
+    original_handle_error = handler.handleError
+
+    def record_handle_error(record: logging.LogRecord) -> None:
+        handle_errors.append(record)
+        original_handle_error(record)
+
+    monkeypatch.setattr(handler, "handleError", record_handle_error)
+
+    handler.emit(_log_record(message))
+    handler.flush()
+
+    captured = capsys.readouterr()
+    assert handle_errors == []
+    assert "--- Logging error ---" not in captured.err
+    assert message in log_path.read_text(encoding="utf-8")
+    assert getattr(handler, "stream", None) is not None
+
+
 def test_wcl_region_runtime_uses_fallback_until_live_region_known():
     runtime = main_mod._WCLRegionRuntime("EU")
 
@@ -195,6 +225,194 @@ def test_private_rotating_file_handler_applies_private_mode_to_rollover_backups(
 
     assert log_path in calls
     assert tmp_path / "applicant-scout.log.1" in calls
+
+
+@pytest.mark.parametrize(
+    "case_name",
+    [
+        "base-rotate",
+        "backup-shift",
+        "backup-remove",
+    ],
+)
+def test_private_rotating_file_handler_tolerates_locked_rollover_targets(
+    case_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    log_path = tmp_path / "applicant-scout.log"
+    log_path.write_text("seed\n", encoding="utf-8")
+    backup_count = 2
+    if case_name in {"backup-shift", "backup-remove"}:
+        (tmp_path / "applicant-scout.log.1").write_text("old1\n", encoding="utf-8")
+    if case_name == "backup-remove":
+        (tmp_path / "applicant-scout.log.2").write_text("old2\n", encoding="utf-8")
+
+    handler = main_mod._PrivateRotatingFileHandler(
+        log_path,
+        maxBytes=1,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    rollover_attempts: list[tuple[str, str]] = []
+    remove_attempts: list[str] = []
+    original_rename = main_mod.os.rename
+    original_remove = main_mod.os.remove
+
+    def locked_rename(source: str, dest: str) -> None:
+        source_name = Path(source).name
+        dest_name = Path(dest).name
+        rollover_attempts.append((source_name, dest_name))
+        if case_name == "base-rotate" and source_name == "applicant-scout.log":
+            raise PermissionError("locked base log")
+        if (
+            case_name == "backup-shift"
+            and source_name == "applicant-scout.log.1"
+            and dest_name == "applicant-scout.log.2"
+        ):
+            raise PermissionError("locked backup shift")
+        original_rename(source, dest)
+
+    def locked_remove(path: str) -> None:
+        path_name = Path(path).name
+        remove_attempts.append(path_name)
+        if case_name == "backup-remove" and path_name == "applicant-scout.log.2":
+            raise PermissionError("locked backup target")
+        original_remove(path)
+
+    monkeypatch.setattr(main_mod.os, "rename", locked_rename)
+    monkeypatch.setattr(main_mod.os, "remove", locked_remove)
+
+    try:
+        _assert_emit_survives_locked_rollover(
+            handler,
+            log_path,
+            f"after-{case_name}",
+            monkeypatch,
+            capsys,
+        )
+    finally:
+        handler.close()
+
+    if case_name == "backup-remove":
+        assert remove_attempts == ["applicant-scout.log.2"]
+    else:
+        assert rollover_attempts
+
+
+def test_private_rotating_file_handler_retries_locked_rollover_without_losing_records(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    log_path = tmp_path / "applicant-scout.log"
+    log_path.write_text("seed\n", encoding="utf-8")
+    handler = main_mod._PrivateRotatingFileHandler(
+        log_path,
+        maxBytes=1,
+        backupCount=1,
+        encoding="utf-8",
+    )
+    rollover_attempts: list[tuple[str, str]] = []
+
+    def locked_rename(source: str, dest: str) -> None:
+        rollover_attempts.append((Path(source).name, Path(dest).name))
+        raise PermissionError("locked base log")
+
+    monkeypatch.setattr(main_mod.os, "rename", locked_rename)
+    handle_errors: list[logging.LogRecord] = []
+    original_handle_error = handler.handleError
+
+    def record_handle_error(record: logging.LogRecord) -> None:
+        handle_errors.append(record)
+        original_handle_error(record)
+
+    monkeypatch.setattr(handler, "handleError", record_handle_error)
+
+    try:
+        for message in ("one", "two", "three"):
+            handler.emit(_log_record(message))
+        handler.flush()
+    finally:
+        handler.close()
+
+    captured = capsys.readouterr()
+    assert handle_errors == []
+    assert "--- Logging error ---" not in captured.err
+    assert rollover_attempts == [
+        ("applicant-scout.log", "applicant-scout.log.1"),
+        ("applicant-scout.log", "applicant-scout.log.1"),
+        ("applicant-scout.log", "applicant-scout.log.1"),
+    ]
+    text = log_path.read_text(encoding="utf-8")
+    assert "one" in text
+    assert "two" in text
+    assert "three" in text
+
+
+def test_private_rotating_file_handler_delay_mode_survives_locked_rollover(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    log_path = tmp_path / "applicant-scout.log"
+    log_path.write_text("seed\n", encoding="utf-8")
+    handler = main_mod._PrivateRotatingFileHandler(
+        log_path,
+        maxBytes=1,
+        backupCount=1,
+        encoding="utf-8",
+        delay=True,
+    )
+
+    def locked_rename(source: str, dest: str) -> None:
+        raise PermissionError("locked base log")
+
+    monkeypatch.setattr(main_mod.os, "rename", locked_rename)
+
+    try:
+        _assert_emit_survives_locked_rollover(
+            handler,
+            log_path,
+            "after-delay-lock",
+            monkeypatch,
+            capsys,
+        )
+    finally:
+        handler.close()
+
+
+def test_private_rotating_file_handler_reports_non_permission_rollover_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    log_path = tmp_path / "applicant-scout.log"
+    log_path.write_text("seed\n", encoding="utf-8")
+    handler = main_mod._PrivateRotatingFileHandler(
+        log_path,
+        maxBytes=1,
+        backupCount=1,
+        encoding="utf-8",
+    )
+    handle_errors: list[logging.LogRecord] = []
+
+    def broken_rename(source: str, dest: str) -> None:
+        raise OSError("disk full")
+
+    def record_handle_error(record: logging.LogRecord) -> None:
+        handle_errors.append(record)
+
+    monkeypatch.setattr(main_mod.os, "rename", broken_rename)
+    monkeypatch.setattr(handler, "handleError", record_handle_error)
+
+    try:
+        handler.emit(_log_record("not-written"))
+    finally:
+        handler.close()
+
+    assert handle_errors
+    assert "not-written" not in log_path.read_text(encoding="utf-8")
 
 
 def test_setup_logging_closes_replaced_handlers(tmp_path: Path):

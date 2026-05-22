@@ -963,7 +963,14 @@ class _PrivateRotatingFileHandler(RotatingFileHandler):
                 apply_private_file_mode(backup_path)
 
     def doRollover(self) -> None:  # noqa: N802 - stdlib logging API name.
-        super().doRollover()
+        try:
+            super().doRollover()
+        except PermissionError:
+            # WHY: Windows can reject rollover when another companion process holds
+            # the log or a backup; keep logging without noisy handler tracebacks.
+            if self.stream is None and not self.delay:
+                self.stream = self._open()
+            return
         self._apply_private_modes()
 
 
