@@ -104,6 +104,11 @@ def _previous_patch_version(version: str) -> str:
     raise AssertionError("Cannot derive a prior stale version before 0.0.0")
 
 
+def _next_patch_version(version: str) -> str:
+    major, minor, patch = (int(part) for part in version.split("."))
+    return f"{major}.{minor}.{patch + 1}"
+
+
 def _copy_release_check_fixture(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
@@ -565,9 +570,7 @@ def test_release_version_check_accepts_paired_addon_metadata(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_release_version_check_rejects_paired_addon_naming_other_companion(
-    tmp_path,
-):
+def test_release_version_check_accepts_minimum_addon_release_train_copy(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
     addon = _paired_addon_fixture(
@@ -584,18 +587,15 @@ def test_release_version_check_rejects_paired_addon_naming_other_companion(
         str(addon),
     )
 
-    assert result.returncode != 0
-    output = result.stdout + result.stderr
-    assert "names companion" in output
-    assert project_version in output
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_release_version_check_rejects_paired_addon_version_mismatch(tmp_path):
+def test_release_version_check_rejects_paired_addon_older_than_minimum(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
     addon = _paired_addon_fixture(
         tmp_path,
-        addon_version="9.9.9",
+        addon_version="0.3.2",
         companion_version=project_version,
     )
 
@@ -609,8 +609,28 @@ def test_release_version_check_rejects_paired_addon_version_mismatch(tmp_path):
 
     assert result.returncode != 0
     output = result.stdout + result.stderr
-    assert "paired addon version is 9.9.9" in output.lower()
-    assert f"expected {_paired_addon_version()}" in output
+    assert "paired addon version is 0.3.2" in output.lower()
+    assert f"older than required {_paired_addon_version()}" in output
+
+
+def test_release_version_check_accepts_newer_addon_than_release_minimum(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    addon = _paired_addon_fixture(
+        tmp_path,
+        addon_version=_next_patch_version(_paired_addon_version()),
+        companion_version=project_version,
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRoot",
+        str(addon),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_release_version_check_does_not_invoke_addon_release_script():

@@ -72,41 +72,28 @@ function Get-PairedAddonMetadata {
         throw "Expected exactly one paired addon TOC version in $TocPath, found $($TocMatches.Count)."
     }
 
-    $ChangelogPath = Join-Path $ResolvedRoot "CHANGELOG.md"
-    if (-not (Test-Path -LiteralPath $ChangelogPath)) {
-        throw "Missing paired addon changelog: $ChangelogPath"
-    }
-    $ChangelogText = Get-Content -LiteralPath $ChangelogPath -Raw -Encoding UTF8
-    $Options = [System.Text.RegularExpressions.RegexOptions]::Multiline -bor
-        [System.Text.RegularExpressions.RegexOptions]::Singleline
-    $TopChangelogMatch = [regex]::Match(
-        $ChangelogText,
-        '^##\s+([0-9]+\.[0-9]+\.[0-9]+)\s+-\s+.+?(?=^##\s+[0-9]+\.[0-9]+\.[0-9]+\s+-\s+|\z)',
-        $Options
-    )
-    if (-not $TopChangelogMatch.Success) {
-        throw "Missing top paired addon changelog entry in $ChangelogPath"
-    }
-    $TopChangelogSection = $TopChangelogMatch.Value
-    $CompanionMatches = [regex]::Matches(
-        $TopChangelogSection,
-        '(?i)(?:ApplicantScout\s+)?Companion\s+`?([0-9]+\.[0-9]+\.[0-9]+)`?',
-        [System.Text.RegularExpressions.RegexOptions]::Multiline
-    )
-    $CompanionVersions = @(
-        $CompanionMatches |
-            ForEach-Object { $_.Groups[1].Value } |
-            Sort-Object -Unique
-    )
-    if ($CompanionVersions.Count -ne 1) {
-        throw "Paired addon CHANGELOG.md top entry must name exactly one ApplicantScout Companion version; found $($CompanionVersions.Count)."
-    }
-
     return @{
         TocVersion = $TocMatches[0].Groups[1].Value
-        ChangelogVersion = $TopChangelogMatch.Groups[1].Value
-        CompanionVersion = $CompanionVersions[0]
     }
+}
+
+function Compare-SemVer {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    $LeftParts = @($Left.Split(".") | ForEach-Object { [int]$_ })
+    $RightParts = @($Right.Split(".") | ForEach-Object { [int]$_ })
+    for ($Index = 0; $Index -lt 3; $Index++) {
+        if ($LeftParts[$Index] -lt $RightParts[$Index]) {
+            return -1
+        }
+        if ($LeftParts[$Index] -gt $RightParts[$Index]) {
+            return 1
+        }
+    }
+    return 0
 }
 
 function Test-InstallerChecksum {
@@ -281,14 +268,8 @@ if ($Errors.Count -gt 0) {
 
 if ($PairedAddonRoot) {
     $AddonMetadata = Get-PairedAddonMetadata -Root $PairedAddonRoot
-    if ($AddonMetadata.TocVersion -ne $PairedAddonVersion) {
-        $Errors += "Paired addon version is $($AddonMetadata.TocVersion), expected $PairedAddonVersion from RELEASE_NOTES.md."
-    }
-    if ($AddonMetadata.ChangelogVersion -ne $PairedAddonVersion) {
-        $Errors += "Paired addon CHANGELOG.md top entry is $($AddonMetadata.ChangelogVersion), expected $PairedAddonVersion from RELEASE_NOTES.md."
-    }
-    if ($AddonMetadata.CompanionVersion -ne $TagVersion) {
-        $Errors += "Paired addon CHANGELOG.md top entry names companion $($AddonMetadata.CompanionVersion), expected $TagVersion."
+    if ((Compare-SemVer -Left $AddonMetadata.TocVersion -Right $PairedAddonVersion) -lt 0) {
+        $Errors += "Paired addon version is $($AddonMetadata.TocVersion), which is older than required $PairedAddonVersion from RELEASE_NOTES.md."
     }
 }
 
