@@ -1,5 +1,26 @@
 # ApplicantScout Companion Release Notes
 
+## 0.5.5 - 22-May-2026
+
+Release and log-rollover hardening patch paired with the latest addon roster
+transport fix.
+
+### Fixed
+
+- Fixed startup/log rollover recovery when the previous companion log file is
+  still locked by Windows or another process.
+- Fixed companion release metadata checks so paired addon requirements can
+  accept a newer already-published addon release.
+- Hardened paired release validation around addon metadata before publishing
+  companion installer assets.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.3.4`.
+- Installer: `ApplicantScoutCompanionSetup-0.5.5.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.5.5.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.5.5-portable.zip`
+
 ## 0.5.4 - 21-May-2026
 
 Lifecycle and fetch-scope hardening patch for live applicant scouting.
