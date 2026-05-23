@@ -25,9 +25,26 @@ automatic Mythic+ target-key calibration from the current group leader.
   snapshot instead of forgetting the update.
 - Cache reset and WCL cache recovery are more responsive around locked files,
   stale state, and partial cache data.
-- Mythic+ evidence display is more explicit for sparse or low-evidence rows.
-- Setup, updater, seasonal fixtures, overlay tab behavior, Lua payload golden
-  coverage, and paired release gates all have stronger regression coverage.
+- WCL character-not-found cache entries are scoped by character identity with a
+  short TTL, so a missing character result no longer poisons later spec, role,
+  or metric-scope lookups indefinitely.
+- Malformed Warcraft Logs Mythic+ payloads now fail with explicit malformed-data
+  errors instead of being treated like valid empty evidence.
+- Mythic+ evidence display is more explicit for sparse or low-evidence rows;
+  all-single-run rows are marked as `N=1` instead of presenting best as a
+  stable median-like signal.
+- RaiderIO local database loading retries after missing or malformed DB files
+  appear or become valid, instead of caching the failure for the whole session.
+- Cache reset also invalidates WCL OAuth token state, and OAuth invalidation is
+  protected against parallel refresh races.
+- Update checks now preserve an already pending installable update across
+  transient GitHub/network failures while still clearing stale pending state for
+  confirmed no-release or incomplete-asset responses.
+- Screenshots path validation now rejects nested `_retail_` folders such as
+  addon subdirectories without creating the bad path.
+- Setup, updater, seasonal activity mapping, overlay visual fixtures, overlay
+  tab behavior, Lua payload golden coverage, and paired release gates all have
+  stronger regression coverage.
 
 ### Fixed
 
