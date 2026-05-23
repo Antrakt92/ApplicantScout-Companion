@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 
-from applicant_scout.state import DEFAULT_WINDOW_HEIGHT, AppState, Applicant, Listing
+from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from applicant_scout.state import (
+    DEFAULT_WINDOW_HEIGHT,
+    AppState,
+    Applicant,
+    Listing,
+    RosterMember,
+)
 
 if TYPE_CHECKING:
     from PyQt6.QtGui import QImage, QPixmap
@@ -25,11 +32,12 @@ OVERLAY_VISUAL_BASELINE_PATH = (
 )
 VISUAL_FIXTURE_PINNED_ID = "10:2"
 VISUAL_FIXTURE_REGEN_COMMAND = (
-    r".\.venv\Scripts\python scripts\render_overlay_fixture.py"
+    r".\.venv\Scripts\python scripts\render_overlay_fixture.py --all"
 )
 VISUAL_DIFF_CHANNEL_TOLERANCE = 12
 VISUAL_DIFF_MAX_PIXEL_RATIO = 0.005
 VISUAL_DIFF_SCALE_RATIO_TOLERANCE = 0.01
+DEFAULT_VISUAL_FIXTURE_SCENARIO = "applicants-default"
 
 
 @dataclass(frozen=True)
@@ -39,6 +47,15 @@ class VisualFixtureDiff:
     changed_pixels: int
     total_pixels: int
     max_channel_delta: int
+
+
+@dataclass(frozen=True)
+class VisualFixtureScenario:
+    name: str
+    baseline_path: Path
+    build_state: Callable[[], AppState]
+    metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES
+    prepare_window: Callable[["OverlayWindow"], None] | None = None
 
 
 def _app(**overrides) -> Applicant:
@@ -104,7 +121,7 @@ def _healer_breakdown() -> list[dict]:
 def build_overlay_visual_state() -> AppState:
     state = AppState()
     state.listing = Listing(
-        activity_id=401,
+        activity_id=182,
         dungeon_name="Skyreach",
         listing_name="+16 Skyreach - visual QA",
         comment="Representative overlay fixture for UI polish review.",
@@ -221,7 +238,72 @@ def build_overlay_visual_state() -> AppState:
     return state
 
 
-def prepare_overlay_visual_window(window: OverlayWindow) -> None:
+def _party_member(unit_index: int, **overrides) -> RosterMember:
+    base = _app(**overrides)
+    values = base.__dict__.copy()
+    values.update(unit_index=unit_index, subgroup=1)
+    return RosterMember(**values)
+
+
+def build_party_visual_state(*, include_listing: bool) -> AppState:
+    state = AppState()
+    if include_listing:
+        state.listing = Listing(
+            activity_id=182,
+            dungeon_name="Skyreach",
+            listing_name="+15 Skyreach - party visual QA",
+            comment="",
+            key_level=15,
+            category_id=2,
+            difficulty_id=8,
+        )
+    for member in (
+        _party_member(
+            1,
+            applicant_id="party:tank",
+            name="Shieldwake-Area 52",
+            cls="PALADIN",
+            spec_id=66,
+            role="TANK",
+            score=2760,
+            main_score=3340,
+            rio_profile=True,
+            rio_best_key=16,
+            rio_best_dungeon_key=15,
+            rio_summary_target_key=16,
+        ),
+        _party_member(
+            2,
+            applicant_id="party:healer",
+            name="Bloomwell-Area 52",
+            cls="DRUID",
+            spec_id=105,
+            role="HEALER",
+            score=2740,
+            mplus_dps=None,
+            mplus_dps_median=None,
+            mplus_dps_breakdown=[],
+            mplus_hps=92.0,
+            mplus_hps_median=84.0,
+            mplus_hps_breakdown=_healer_breakdown(),
+        ),
+        _party_member(
+            3,
+            applicant_id="party:dps",
+            name="Cinderbolt-Area 52",
+            cls="MAGE",
+            spec_id=63,
+            role="DAMAGER",
+            score=2685,
+            mplus_dps=88.0,
+            mplus_dps_median=75.0,
+        ),
+    ):
+        state.add_or_update_party_member(member)
+    return state
+
+
+def _prepare_common_visual_window(window: OverlayWindow) -> None:
     window.resize(window.minimumWidth(), DEFAULT_WINDOW_HEIGHT)
     window._refresh_table()
     window._update_title()
@@ -233,30 +315,123 @@ def prepare_overlay_visual_window(window: OverlayWindow) -> None:
         viewport.setMouseTracking(False)
     for role in ("TANK", "HEALER", "DAMAGER"):
         window._role_filter_bar._buttons[role].setChecked(True)
+
+
+def _pin_visual_row(window: OverlayWindow, applicant_id: str) -> None:
     window._pinned_id = VISUAL_FIXTURE_PINNED_ID
+    if applicant_id != VISUAL_FIXTURE_PINNED_ID:
+        window._pinned_id = applicant_id
     window._sync_delegate_and_panel()
+
+
+def prepare_overlay_visual_window(
+    window: OverlayWindow,
+    scenario: str | VisualFixtureScenario = DEFAULT_VISUAL_FIXTURE_SCENARIO,
+) -> None:
+    resolved = resolve_visual_fixture_scenario(scenario)
+    _prepare_common_visual_window(window)
+    if resolved.prepare_window is not None:
+        resolved.prepare_window(window)
+    else:
+        _pin_visual_row(window, VISUAL_FIXTURE_PINNED_ID)
+
+
+def _prepare_party_manual_key_window(window: OverlayWindow) -> None:
+    window._tab_bar.set_active("party")
+    window._tab_bar._key_spin.setValue(16)
+    _pin_visual_row(window, "party:healer")
+
+
+def _prepare_party_no_listing_manual_key_window(window: OverlayWindow) -> None:
+    window._tab_bar.set_active("party")
+    window._tab_bar._key_spin.setValue(14)
+    _pin_visual_row(window, "party:healer")
+
+
+def _prepare_metrics_raid_only_window(window: OverlayWindow) -> None:
+    _pin_visual_row(window, VISUAL_FIXTURE_PINNED_ID)
+
+
+def _baseline_path(name: str) -> Path:
+    if name == DEFAULT_VISUAL_FIXTURE_SCENARIO:
+        return OVERLAY_VISUAL_BASELINE_PATH
+    return OVERLAY_VISUAL_BASELINE_PATH.with_name(f"overlay-polish-fixture-{name}.png")
+
+
+OVERLAY_VISUAL_SCENARIOS: dict[str, VisualFixtureScenario] = {
+    DEFAULT_VISUAL_FIXTURE_SCENARIO: VisualFixtureScenario(
+        name=DEFAULT_VISUAL_FIXTURE_SCENARIO,
+        baseline_path=_baseline_path(DEFAULT_VISUAL_FIXTURE_SCENARIO),
+        build_state=build_overlay_visual_state,
+    ),
+    "party-manual-key": VisualFixtureScenario(
+        name="party-manual-key",
+        baseline_path=_baseline_path("party-manual-key"),
+        build_state=lambda: build_party_visual_state(include_listing=True),
+        prepare_window=_prepare_party_manual_key_window,
+    ),
+    "party-no-listing-manual-key": VisualFixtureScenario(
+        name="party-no-listing-manual-key",
+        baseline_path=_baseline_path("party-no-listing-manual-key"),
+        build_state=lambda: build_party_visual_state(include_listing=False),
+        prepare_window=_prepare_party_no_listing_manual_key_window,
+    ),
+    "metrics-raid-only": VisualFixtureScenario(
+        name="metrics-raid-only",
+        baseline_path=_baseline_path("metrics-raid-only"),
+        build_state=build_overlay_visual_state,
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=True,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+        prepare_window=_prepare_metrics_raid_only_window,
+    ),
+}
+
+
+def resolve_visual_fixture_scenario(
+    scenario: str | VisualFixtureScenario = DEFAULT_VISUAL_FIXTURE_SCENARIO,
+) -> VisualFixtureScenario:
+    if isinstance(scenario, VisualFixtureScenario):
+        return scenario
+    try:
+        return OVERLAY_VISUAL_SCENARIOS[scenario]
+    except KeyError as exc:
+        names = ", ".join(sorted(OVERLAY_VISUAL_SCENARIOS))
+        raise ValueError(f"unknown overlay visual fixture scenario {scenario!r}; choices: {names}") from exc
 
 
 def create_overlay_visual_window(
     work_dir: Path,
+    scenario: str | VisualFixtureScenario = DEFAULT_VISUAL_FIXTURE_SCENARIO,
 ) -> tuple[AppState, "OverlayWindow", "WCLClient"]:
     from applicant_scout.overlay import OverlayWindow
     from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
 
-    state = build_overlay_visual_state()
+    resolved = resolve_visual_fixture_scenario(scenario)
+    state = resolved.build_state()
     auth = WCLAuth("visual-fixture-client", "visual-fixture-secret", work_dir)
-    client = WCLClient(auth)
+    client = WCLClient(auth, metric_preferences=resolved.metric_preferences)
     cache = CharacterCache(work_dir)
-    window = OverlayWindow(state, client, cache, work_dir)
+    window = OverlayWindow(
+        state,
+        client,
+        cache,
+        work_dir,
+        metric_preferences=resolved.metric_preferences,
+    )
     return state, window, client
 
 
 def show_overlay_visual_window(
     window: "OverlayWindow",
+    scenario: str | VisualFixtureScenario = DEFAULT_VISUAL_FIXTURE_SCENARIO,
     *,
     process_events: Callable[[], None],
 ) -> None:
-    prepare_overlay_visual_window(window)
+    prepare_overlay_visual_window(window, scenario)
     window.show()
     for _ in range(8):
         process_events()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from applicant_scout.constants import (
+    MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME,
     MPLUS_ENCOUNTERS,
     SPEC_ID_TO_WCL_NAME,
     SPEC_SHORT_NAMES,
@@ -87,6 +88,19 @@ def test_mplus_activity_id_mapping_covers_current_season_dungeons():
     encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
 
     assert mapped_names == encounter_names
+
+
+def test_all_mplus_activity_id_mapping_names_are_current_encounters():
+    encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
+
+    assert set(MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME.values()) <= encounter_names
+
+
+def test_each_current_mplus_encounter_has_activity_id_mapping():
+    encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
+    mapped_names = set(MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME.values())
+
+    assert encounter_names <= mapped_names
 
 
 def test_mplus_activity_id_mapping_rejects_non_numeric_values():

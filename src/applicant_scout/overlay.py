@@ -202,9 +202,9 @@ def _bold_cell_font(base: QFont | None = None) -> QFont:
     return font
 
 
-# Per-column legend shown when the user hovers a header cell. Surfaces the
-# meaning of each column without requiring docs / a separate help screen,
-# and explains the raid pair + context-fit conventions used by score cells.
+# Per-column legend shown when the user hovers a header cell. Keep this to
+# quick definitions; durable scoring policy belongs in README/help copy and the
+# row hover panel.
 # Indexed by column INDEX (matches COLUMN_HEADERS positions) so refactors
 # of header text don't desync the lookup.
 HEADER_TOOLTIPS: list[str] = [
@@ -223,8 +223,9 @@ HEADER_TOOLTIPS: list[str] = [
     "use alongside RIO + raid/M+ percentiles.",
     # RIO
     "RaiderIO M+ score for this character. If RaiderIO is installed and exposes\n"
-    "a higher main score for an alt, the cell shows current [main] and sorting\n"
-    "uses the higher score.\n\n"
+    "a higher main score for an alt, the cell shows current [main]. Known\n"
+    "M+/raid listings sort by context/package fit; no-listing or unknown\n"
+    "contexts use RaiderIO as fallback ordering support.\n\n"
     "Coloured by tier band (gold ≥3200, purple ≥2700, blue ≥2200,\n"
     "green ≥1700, white below). Mid-Midnight-S1 thresholds.",
     # N
@@ -246,15 +247,14 @@ HEADER_TOOLTIPS: list[str] = [
     "here; '—' means no Mythic logs in current spec.",
     # M+
     "Mythic+ fit for the current listing when the companion knows your\n"
-    "hosted key level; otherwise falls back to the old best/median headline.\n\n"
+    "hosted key level or manual Party target key.\n\n"
     "Metric: DPS for tank / damage applicants, HPS for healers.\n"
     "N=1 marks a single logged run at that key, so there is no median signal.\n"
-    "Fit labels are driven primarily by relevant WCL bracket performance,\n"
-    "then adjusted for key-level context, same-dungeon evidence, and profile\n"
-    "consistency. Sparse coverage penalizes the fit and lowers confidence\n"
-    "instead of giving free score; RIO support is only a small nudge or\n"
-    "fallback when WCL data is missing. Group rows show a package rating on\n"
-    "the leader row because group applicants are accepted together.\n\n"
+    "Fit labels combine relevant WCL bracket performance, RaiderIO completion\n"
+    "evidence, key-level context, same-dungeon evidence, and profile\n"
+    "consistency. Score-only fallback stays capped and low-confidence. Grouped\n"
+    "applicants are accepted together, so grouped rows can show package fit\n"
+    "alongside individual context.\n\n"
     "Background colour follows the numeric fit score with the WCL ranking\n"
     "palette, after those context guards are applied.\n\n"
     "Hover the row for the per-dungeon breakdown in the top panel.",

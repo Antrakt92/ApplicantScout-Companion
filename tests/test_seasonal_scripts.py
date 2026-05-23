@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.seasonal import get_mplus_encounter_ids
+from scripts.seasonal import get_mplus_activity_ids, get_mplus_encounter_ids
 
 
 def test_format_mplus_tuples_outputs_copyable_constants():
@@ -78,3 +78,105 @@ def test_json_object_response_rejects_non_object_json():
 
     with pytest.raises(get_mplus_encounter_ids.SeasonalScriptError, match="object"):
         get_mplus_encounter_ids.json_object_response(Response())
+
+
+def _activity_csv(*rows: str) -> str:
+    header = (
+        "ID,FullName_lang,ShortName_lang,GroupFinderCategoryID,"
+        "GroupFinderActivityGrpID,MapID,DifficultyID,ExpansionID,"
+        "MaxPlayers,MapChallengeModeID"
+    )
+    return "\n".join((header, *rows))
+
+
+def test_extract_mplus_activity_mapping_selects_current_group_with_keystone_row():
+    csv_text = _activity_csv(
+        '99,Magisters\' Terrace (Heroic),Heroic,2,20,585,2,1,5,0',
+        '100,Magisters\' Terrace (Mythic),Mythic,2,20,585,23,1,5,0',
+        '1757,Magisters\' Terrace (Normal),Normal,2,399,2811,1,11,5,0',
+        '1758,Magisters\' Terrace (Heroic),Heroic,2,399,2811,2,11,5,0',
+        '1759,Magisters\' Terrace (Mythic),Mythic,2,399,2811,23,11,5,0',
+        '1760,Magisters\' Terrace (Mythic Keystone),Mythic+,2,399,2811,8,11,5,0',
+    )
+
+    mapping = get_mplus_activity_ids.extract_mplus_activity_mapping(
+        csv_text, ["Magisters' Terrace"]
+    )
+
+    assert mapping == {
+        1757: "Magisters' Terrace",
+        1758: "Magisters' Terrace",
+        1759: "Magisters' Terrace",
+        1760: "Magisters' Terrace",
+    }
+
+
+def test_extract_mplus_activity_mapping_keeps_duplicate_same_name_groups():
+    csv_text = _activity_csv(
+        "484,Seat of the Triumvirate (Heroic),Heroic,2,133,1753,2,6,5,0",
+        "485,Seat of the Triumvirate (Mythic),Mythic,2,133,1753,23,6,5,0",
+        "486,Seat of the Triumvirate (Mythic Keystone),Mythic+,2,133,1753,8,6,5,0",
+        "1622,Seat of the Triumvirate (Heroic),Heroic,2,133,1753,2,6,5,0",
+        "1644,Seat of the Triumvirate (Mythic),Mythic,2,133,1753,23,6,5,0",
+    )
+
+    mapping = get_mplus_activity_ids.extract_mplus_activity_mapping(
+        csv_text, ["Seat of the Triumvirate"]
+    )
+
+    assert mapping == {
+        484: "Seat of the Triumvirate",
+        485: "Seat of the Triumvirate",
+        486: "Seat of the Triumvirate",
+        1622: "Seat of the Triumvirate",
+        1644: "Seat of the Triumvirate",
+    }
+
+
+def test_extract_mplus_activity_mapping_rejects_missing_columns():
+    csv_text = "ID,FullName_lang\n1,Skyreach (Mythic Keystone)"
+
+    with pytest.raises(get_mplus_activity_ids.SeasonalScriptError, match="columns"):
+        get_mplus_activity_ids.extract_mplus_activity_mapping(csv_text, ["Skyreach"])
+
+
+def test_extract_mplus_activity_mapping_rejects_bad_numeric_fields():
+    csv_text = _activity_csv(
+        "bad,Skyreach (Mythic Keystone),Mythic+,2,9,1209,8,5,5,0"
+    )
+
+    with pytest.raises(get_mplus_activity_ids.SeasonalScriptError, match="ID"):
+        get_mplus_activity_ids.extract_mplus_activity_mapping(csv_text, ["Skyreach"])
+
+
+def test_extract_mplus_activity_mapping_rejects_missing_keystone_group():
+    csv_text = _activity_csv(
+        "24,Skyreach (Normal),Normal,2,9,1209,1,5,5,0",
+        "32,Skyreach (Heroic),Heroic,2,9,1209,2,5,5,0",
+    )
+
+    with pytest.raises(get_mplus_activity_ids.SeasonalScriptError, match="Skyreach"):
+        get_mplus_activity_ids.extract_mplus_activity_mapping(csv_text, ["Skyreach"])
+
+
+def test_extract_mplus_activity_mapping_rejects_conflicting_duplicate_ids():
+    csv_text = _activity_csv(
+        "182,Skyreach (Mythic Keystone),Mythic+,2,9,1209,8,5,5,0",
+        "182,Pit of Saron (Mythic Keystone),Mythic+,2,52,658,8,2,5,0",
+    )
+
+    with pytest.raises(get_mplus_activity_ids.SeasonalScriptError, match="Duplicate"):
+        get_mplus_activity_ids.extract_mplus_activity_mapping(
+            csv_text, ["Skyreach", "Pit of Saron"]
+        )
+
+
+def test_format_activity_mapping_outputs_copyable_constants():
+    text = get_mplus_activity_ids.format_activity_mapping(
+        {182: "Skyreach", 404: "Skyreach", 1770: "Pit of Saron"}
+    )
+
+    assert "MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME" in text
+    assert '182: "Skyreach",' in text
+    assert '404: "Skyreach",' in text
+    assert '1770: "Pit of Saron",' in text

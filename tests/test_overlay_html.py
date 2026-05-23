@@ -14,7 +14,11 @@ from PyQt6.QtCore import QRect
 
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
+    COL_MPLUS,
+    COL_RIO,
+    COLUMN_HEADERS,
     COLUMN_WIDTHS,
+    HEADER_TOOLTIPS,
     NAME_COLUMN_MAX_WIDTH,
     _clamp_rect_to_bounds,
     _metric_text,
@@ -116,6 +120,36 @@ def test_column_width_contract_is_compact():
     assert NAME_COLUMN_MAX_WIDTH == 126
     assert DEFAULT_WINDOW_WIDTH == 572
     assert WINDOW_GEOMETRY_LAYOUT_VERSION == 5
+
+
+def test_header_tooltips_match_columns_and_avoid_stale_scoring_claims():
+    assert len(HEADER_TOOLTIPS) == len(COLUMN_HEADERS)
+    assert all(tip.strip() for tip in HEADER_TOOLTIPS)
+
+    combined = "\n".join(HEADER_TOOLTIPS).casefold()
+    for stale_phrase in (
+        "sorting uses the higher score",
+        "only a small nudge",
+        "old best/median",
+        "leader row",
+    ):
+        assert stale_phrase not in combined
+
+
+def test_rio_header_tooltip_describes_conditional_sorting_semantics():
+    tip = HEADER_TOOLTIPS[COL_RIO].casefold()
+
+    assert "current [main]" in tip
+    assert "fallback" in tip
+    assert "context" in tip
+
+
+def test_mplus_header_tooltip_describes_package_and_completion_evidence():
+    tip = HEADER_TOOLTIPS[COL_MPLUS].casefold()
+
+    assert "package" in tip
+    assert "raiderio completion" in tip
+    assert "score-only" in tip
 
 
 @pytest.mark.parametrize(

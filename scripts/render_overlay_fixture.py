@@ -20,7 +20,8 @@ from PyQt6.QtGui import QImage  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from scripts.overlay_visual_fixture import (  # noqa: E402
-    OVERLAY_VISUAL_BASELINE_PATH,
+    DEFAULT_VISUAL_FIXTURE_SCENARIO,
+    OVERLAY_VISUAL_SCENARIOS,
     compare_overlay_visual_images,
     create_overlay_visual_window,
     grab_overlay_visual_image,
@@ -42,18 +43,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Compare a fresh render to the committed baseline without writing files.",
     )
+    parser.add_argument(
+        "--scenario",
+        choices=sorted(OVERLAY_VISUAL_SCENARIOS),
+        default=DEFAULT_VISUAL_FIXTURE_SCENARIO,
+        help="Visual fixture scenario to render.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Render or check every committed visual fixture scenario.",
+    )
     args = parser.parse_args(argv)
     if args.check and args.output is not None:
         parser.error("--check cannot be combined with --output")
+    if args.all and args.output is not None:
+        parser.error("--all cannot be combined with --output")
     return args
 
 
-def _render_fixture_pixmap(app: QCoreApplication):
+def _render_fixture_pixmap(app: QCoreApplication, scenario_name: str):
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        _state, window, client = create_overlay_visual_window(tmp_path)
+        _state, window, client = create_overlay_visual_window(tmp_path, scenario_name)
         try:
-            show_overlay_visual_window(window, process_events=app.processEvents)
+            show_overlay_visual_window(
+                window,
+                scenario_name,
+                process_events=app.processEvents,
+            )
             pixmap = grab_overlay_visual_image(window)
             if pixmap.isNull():
                 raise RuntimeError("Rendered overlay visual fixture is null")
@@ -95,17 +113,28 @@ def main(argv: list[str] | None = None) -> int:
     existing_app = QApplication.instance()
     app = existing_app if isinstance(existing_app, QApplication) else QApplication(sys.argv)
 
-    pixmap = _render_fixture_pixmap(app)
-    if args.check:
-        baseline = QImage(str(OVERLAY_VISUAL_BASELINE_PATH))
-        diff = compare_overlay_visual_images(baseline, pixmap.toImage())
-        print(diff.message, file=sys.stderr if not diff.passed else sys.stdout)
-        return 0 if diff.passed else 1
+    scenario_names = (
+        sorted(OVERLAY_VISUAL_SCENARIOS) if args.all else [args.scenario]
+    )
+    failed = False
+    for scenario_name in scenario_names:
+        scenario = OVERLAY_VISUAL_SCENARIOS[scenario_name]
+        pixmap = _render_fixture_pixmap(app, scenario_name)
+        if args.check:
+            baseline = QImage(str(scenario.baseline_path))
+            diff = compare_overlay_visual_images(baseline, pixmap.toImage())
+            prefix = f"{scenario_name}: "
+            print(
+                prefix + diff.message,
+                file=sys.stderr if not diff.passed else sys.stdout,
+            )
+            failed = failed or not diff.passed
+            continue
 
-    output = args.output or OVERLAY_VISUAL_BASELINE_PATH
-    _save_pixmap_atomic(pixmap, output)
-    print(output)
-    return 0
+        output = args.output or scenario.baseline_path
+        _save_pixmap_atomic(pixmap, output)
+        print(output)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

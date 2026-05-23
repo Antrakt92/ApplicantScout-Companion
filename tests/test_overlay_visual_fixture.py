@@ -4,20 +4,66 @@ from __future__ import annotations
 
 import os
 
+import pytest
 from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtWidgets import QApplication
 
 import applicant_scout.overlay as overlay_mod
 from applicant_scout.constants import ALL_ROLES
+from applicant_scout.overlay import COL_H, COL_M, COL_MPLUS, COL_N
+from scripts import render_overlay_fixture
 from scripts.overlay_visual_fixture import (
+    DEFAULT_VISUAL_FIXTURE_SCENARIO,
+    OVERLAY_VISUAL_SCENARIOS,
     OVERLAY_VISUAL_BASELINE_PATH,
     VISUAL_FIXTURE_PINNED_ID,
+    VISUAL_FIXTURE_REGEN_COMMAND,
     compare_overlay_visual_images,
     create_overlay_visual_window,
     grab_overlay_visual_image,
     show_overlay_visual_window,
 )
+
+
+def test_visual_fixture_scenarios_are_small_and_unique():
+    assert DEFAULT_VISUAL_FIXTURE_SCENARIO == "applicants-default"
+    assert set(OVERLAY_VISUAL_SCENARIOS) == {
+        "applicants-default",
+        "party-manual-key",
+        "party-no-listing-manual-key",
+        "metrics-raid-only",
+    }
+    assert (
+        OVERLAY_VISUAL_SCENARIOS[DEFAULT_VISUAL_FIXTURE_SCENARIO].baseline_path
+        == OVERLAY_VISUAL_BASELINE_PATH
+    )
+    assert len(
+        {scenario.baseline_path for scenario in OVERLAY_VISUAL_SCENARIOS.values()}
+    ) == len(OVERLAY_VISUAL_SCENARIOS)
+
+
+def test_render_overlay_fixture_cli_defaults_to_single_default_scenario():
+    args = render_overlay_fixture.parse_args([])
+
+    assert args.scenario == DEFAULT_VISUAL_FIXTURE_SCENARIO
+    assert not args.all
+
+
+def test_render_overlay_fixture_cli_accepts_all_scenarios():
+    args = render_overlay_fixture.parse_args(["--check", "--all"])
+
+    assert args.check
+    assert args.all
+
+
+def test_render_overlay_fixture_cli_rejects_output_with_all():
+    with pytest.raises(SystemExit):
+        render_overlay_fixture.parse_args(["--all", "--output", "out.png"])
+
+
+def test_visual_fixture_regen_command_refreshes_all_scenarios():
+    assert "--all" in VISUAL_FIXTURE_REGEN_COMMAND
 
 
 def _sampled_colours(image: QImage) -> set[int]:
@@ -72,6 +118,98 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
             not window._table.isRowHidden(row)
             for row in range(window._table.rowCount())
         )
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("scenario_name", sorted(OVERLAY_VISUAL_SCENARIOS))
+def test_overlay_visual_fixture_scenarios_render_nonblank(
+    qtbot, tmp_path, scenario_name
+):
+    _state, window, client = create_overlay_visual_window(tmp_path, scenario_name)
+    qtbot.addWidget(window)
+
+    try:
+        show_overlay_visual_window(
+            window,
+            scenario_name,
+            process_events=QApplication.processEvents,
+        )
+
+        pixmap = grab_overlay_visual_image(window)
+        assert not pixmap.isNull()
+        image = pixmap.toImage()
+        assert len(_sampled_colours(image)) > 1
+    finally:
+        client.close()
+
+
+def test_party_manual_key_visual_scenario_uses_manual_override_path(qtbot, tmp_path):
+    _state, window, client = create_overlay_visual_window(tmp_path, "party-manual-key")
+    qtbot.addWidget(window)
+
+    try:
+        show_overlay_visual_window(
+            window,
+            "party-manual-key",
+            process_events=QApplication.processEvents,
+        )
+
+        assert window._active_tab == "party"
+        assert window._manual_target_key == 16
+        assert window._tab_bar._key_spin.value() == 16
+        listing = window._effective_listing()
+        assert listing is not None
+        assert listing.key_level == 16
+        assert window._table.rowCount() == len(window._state.party_members)
+    finally:
+        client.close()
+
+
+def test_party_no_listing_manual_key_visual_scenario_synthesizes_listing(
+    qtbot, tmp_path
+):
+    _state, window, client = create_overlay_visual_window(
+        tmp_path, "party-no-listing-manual-key"
+    )
+    qtbot.addWidget(window)
+
+    try:
+        show_overlay_visual_window(
+            window,
+            "party-no-listing-manual-key",
+            process_events=QApplication.processEvents,
+        )
+
+        listing = window._effective_listing()
+        assert window._active_tab == "party"
+        assert window._manual_target_key == 14
+        assert listing is not None
+        assert listing.dungeon_name == "Mythic+"
+        assert listing.key_level == 14
+    finally:
+        client.close()
+
+
+def test_metrics_raid_only_visual_scenario_hides_disabled_columns(qtbot, tmp_path):
+    _state, window, client = create_overlay_visual_window(tmp_path, "metrics-raid-only")
+    qtbot.addWidget(window)
+
+    try:
+        show_overlay_visual_window(
+            window,
+            "metrics-raid-only",
+            process_events=QApplication.processEvents,
+        )
+
+        assert not window._table.isColumnHidden(COL_N)
+        assert window._table.isColumnHidden(COL_H)
+        assert not window._table.isColumnHidden(COL_M)
+        assert window._table.isColumnHidden(COL_MPLUS)
+        assert not window._panel._metric_labels["N"].isHidden()
+        assert window._panel._metric_labels["H"].isHidden()
+        assert not window._panel._metric_labels["M"].isHidden()
+        assert window._panel._metric_labels["M+"].isHidden()
     finally:
         client.close()
 
