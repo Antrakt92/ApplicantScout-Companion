@@ -507,6 +507,19 @@ def test_explicit_suspicious_screenshots_override_raises_without_creating_path(
     assert not explicit.exists()
 
 
+def test_explicit_nested_screenshots_override_raises_without_creating_path(
+    tmp_path: Path,
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    explicit = root / "Interface" / "AddOns" / "SomeAddon" / "Screenshots"
+
+    with pytest.raises(ConfigError, match="Screenshots folder warning"):
+        resolve_screenshots_path(_cfg(tmp_path, screenshots_path=explicit))
+
+    assert not explicit.exists()
+
+
 def test_explicit_existing_file_screenshots_override_raises(tmp_path: Path):
     explicit_file = tmp_path / "not-a-folder"
     explicit_file.write_text("x", encoding="utf-8")
@@ -529,6 +542,19 @@ def test_screenshots_path_warning_flags_non_screenshots_folder(tmp_path: Path):
 
     assert warning is not None
     assert "Screenshots" in warning
+
+
+def test_screenshots_path_warning_flags_nested_screenshots_under_retail_root(
+    tmp_path: Path,
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    warning = screenshots_path_health_warning(
+        root / "Interface" / "AddOns" / "SomeAddon" / "Screenshots"
+    )
+
+    assert warning is not None
+    assert "_retail_" in warning
 
 
 def test_screenshots_path_warning_flags_path_outside_retail_root(tmp_path: Path):
@@ -1228,12 +1254,14 @@ def test_settings_change_rolls_back_config_when_screenshot_runtime_fails(
 ):
     root = _retail_root(tmp_path)
     (root / "Interface" / "AddOns").mkdir(parents=True)
-    cfg = _cfg(tmp_path, screenshots_path=root / "old" / "Screenshots")
+    new_root = tmp_path / "Other World of Warcraft" / "_retail_"
+    (new_root / "Interface" / "AddOns").mkdir(parents=True)
+    cfg = _cfg(tmp_path, screenshots_path=root / "Screenshots")
     values = SimpleNamespace(
         wcl_client_id=cfg.wcl_client_id,
         wcl_client_secret=cfg.wcl_client_secret,
         region=cfg.region,
-        screenshots_path=str(root / "new" / "Screenshots"),
+        screenshots_path=str(new_root / "Screenshots"),
         metric_preferences=cfg.metric_preferences,
         sync_with_wow=cfg.sync_with_wow,
     )
@@ -2269,6 +2297,36 @@ def test_load_startup_config_rejects_suspicious_process_env_override_without_pro
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     bad_path = tmp_path / "not-wow" / "Shots"
+    cfg = _cfg(tmp_path, screenshots_path=bad_path)
+    calls: list[str] = []
+
+    monkeypatch.setenv("APSCOUT_SCREENSHOTS_PATH", str(bad_path))
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        main_mod,
+        "_run_settings_dialog",
+        lambda *_args, **_kwargs: calls.append("settings") or True,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_show_config_error",
+        lambda message: calls.append(message),
+    )
+
+    loaded = main_mod._load_startup_config()
+
+    assert loaded is None
+    assert calls
+    assert "APSCOUT_SCREENSHOTS_PATH" in calls[0]
+    assert calls == [calls[0]]
+
+
+def test_load_startup_config_rejects_nested_process_env_override_without_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    bad_path = root / "Interface" / "AddOns" / "SomeAddon" / "Screenshots"
     cfg = _cfg(tmp_path, screenshots_path=bad_path)
     calls: list[str] = []
 
@@ -3730,17 +3788,174 @@ def test_update_check_result_resolver_ignores_stale_available_result():
         coordinator,
         slow_old_generation,
         stale_available,
+        previous_pending_update_version="0.1.0",
     )
     current_decision = main_mod._resolve_update_check_result(
         coordinator,
         fast_new_generation,
         stale_available,
+        previous_pending_update_version="0.1.0",
     )
 
     assert not stale_decision.is_current
-    assert stale_decision.pending_update_version is None
+    assert stale_decision.action == "ignore"
+    assert stale_decision.pending_update_version == "0.1.0"
     assert current_decision.is_current
+    assert current_decision.action == "set"
     assert current_decision.pending_update_version == "0.2.0"
+
+
+def test_update_check_result_resolver_preserves_pending_on_current_transient_unavailable():
+    coordinator = main_mod._UpdateCheckCoordinator()
+    generation = coordinator.next_generation()
+    unavailable = SimpleNamespace(
+        status="unavailable",
+        reason="network_error",
+        message="GitHub update check failed: offline",
+    )
+
+    decision = main_mod._resolve_update_check_result(
+        coordinator,
+        generation,
+        unavailable,
+        previous_pending_update_version="0.2.0",
+    )
+
+    assert decision.is_current
+    assert decision.action == "preserve"
+    assert decision.pending_update_version == "0.2.0"
+
+
+def test_update_check_result_resolver_clears_empty_pending_on_transient_unavailable():
+    coordinator = main_mod._UpdateCheckCoordinator()
+    generation = coordinator.next_generation()
+    unavailable = SimpleNamespace(
+        status="unavailable",
+        reason="network_error",
+        message="GitHub update check failed: offline",
+    )
+
+    decision = main_mod._resolve_update_check_result(
+        coordinator,
+        generation,
+        unavailable,
+        previous_pending_update_version=None,
+    )
+
+    assert decision.is_current
+    assert decision.action == "clear"
+    assert decision.pending_update_version is None
+
+
+def test_update_check_result_resolver_clears_pending_on_current_up_to_date():
+    coordinator = main_mod._UpdateCheckCoordinator()
+    generation = coordinator.next_generation()
+    up_to_date = SimpleNamespace(
+        status="up_to_date",
+        latest_version="0.2.0",
+    )
+
+    decision = main_mod._resolve_update_check_result(
+        coordinator,
+        generation,
+        up_to_date,
+        previous_pending_update_version="0.2.0",
+    )
+
+    assert decision.is_current
+    assert decision.action == "clear"
+    assert decision.pending_update_version is None
+
+
+def test_update_check_result_resolver_clears_pending_on_available_without_installable_asset():
+    coordinator = main_mod._UpdateCheckCoordinator()
+    generation = coordinator.next_generation()
+    available_without_installer = SimpleNamespace(
+        status="available",
+        latest_version="0.3.0",
+        asset_name=None,
+        asset_url=None,
+        checksum_name=None,
+        checksum_url=None,
+    )
+
+    decision = main_mod._resolve_update_check_result(
+        coordinator,
+        generation,
+        available_without_installer,
+        previous_pending_update_version="0.2.0",
+    )
+
+    assert decision.is_current
+    assert decision.action == "clear"
+    assert decision.pending_update_version is None
+
+
+def test_update_check_result_resolver_does_not_preserve_pending_on_confirmed_no_release_state():
+    coordinator = main_mod._UpdateCheckCoordinator()
+    generation = coordinator.next_generation()
+    no_releases = SimpleNamespace(
+        status="unavailable",
+        reason="no_stable_releases",
+        message="No stable semantic GitHub Releases are published yet.",
+    )
+
+    decision = main_mod._resolve_update_check_result(
+        coordinator,
+        generation,
+        no_releases,
+        previous_pending_update_version="0.2.0",
+    )
+
+    assert decision.is_current
+    assert decision.action == "clear"
+    assert decision.pending_update_version is None
+
+
+def test_update_check_result_resolver_ignores_stale_unavailable_without_clearing_current_pending():
+    coordinator = main_mod._UpdateCheckCoordinator()
+    stale_generation = coordinator.next_generation()
+    coordinator.next_generation()
+    unavailable = SimpleNamespace(
+        status="unavailable",
+        reason="network_error",
+        message="GitHub update check failed: offline",
+    )
+
+    decision = main_mod._resolve_update_check_result(
+        coordinator,
+        stale_generation,
+        unavailable,
+        previous_pending_update_version="0.2.0",
+    )
+
+    assert not decision.is_current
+    assert decision.action == "ignore"
+    assert decision.pending_update_version == "0.2.0"
+
+
+def test_update_check_result_resolver_sets_new_installable_update_over_previous_pending():
+    coordinator = main_mod._UpdateCheckCoordinator()
+    generation = coordinator.next_generation()
+    available = SimpleNamespace(
+        status="available",
+        latest_version="0.3.0",
+        asset_name="ApplicantScoutCompanionSetup-0.3.0.exe",
+        asset_url="https://example.test/setup.exe",
+        checksum_name="ApplicantScoutCompanionSetup-0.3.0.exe.sha256",
+        checksum_url="https://example.test/setup.exe.sha256",
+    )
+
+    decision = main_mod._resolve_update_check_result(
+        coordinator,
+        generation,
+        available,
+        previous_pending_update_version="0.2.0",
+    )
+
+    assert decision.is_current
+    assert decision.action == "set"
+    assert decision.pending_update_version == "0.3.0"
 
 
 def test_wow_start_update_prompt_only_shows_for_initial_wow_launch_update():

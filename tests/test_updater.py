@@ -393,6 +393,7 @@ def test_update_check_reports_unavailable_when_newer_release_has_no_open_url():
     result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
 
     assert result.status == "unavailable"
+    assert result.reason == "missing_release_url"
     assert "no release URL" in result.message
     assert result.open_url is None
 
@@ -420,6 +421,7 @@ def test_update_check_ignores_prereleases_and_drafts():
     result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
 
     assert result.status == "unavailable"
+    assert result.reason == "no_stable_releases"
     assert "No stable" in result.message
 
 
@@ -465,7 +467,18 @@ def test_update_check_handles_github_error():
     result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
 
     assert result.status == "unavailable"
+    assert result.reason == "http_error"
     assert "HTTP 403" in result.message
+
+
+def test_update_check_handles_missing_releases_endpoint():
+    client = _Client(_Response(404, {"message": "not found"}))
+
+    result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
+
+    assert result.status == "unavailable"
+    assert result.reason == "not_found"
+    assert "No GitHub Releases" in result.message
 
 
 def test_update_check_handles_network_error():
@@ -474,6 +487,7 @@ def test_update_check_handles_network_error():
     result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
 
     assert result.status == "unavailable"
+    assert result.reason == "network_error"
     assert "offline" in result.message
 
 
@@ -486,6 +500,7 @@ def test_update_check_handles_owned_client_construction_error(monkeypatch):
     result = check_for_update("0.1.0")
 
     assert result.status == "unavailable"
+    assert result.reason == "client_error"
     assert "bad proxy config" in result.message
 
 
@@ -498,6 +513,7 @@ def test_update_check_handles_non_http_owned_client_construction_error(monkeypat
     result = check_for_update("0.1.0")
 
     assert result.status == "unavailable"
+    assert result.reason == "client_error"
     assert "missing cert bundle" in result.message
 
 
@@ -509,8 +525,19 @@ def test_update_check_closes_owned_client_on_json_error(monkeypatch):
     result = check_for_update("0.1.0")
 
     assert result.status == "unavailable"
+    assert result.reason == "malformed_json"
     assert "malformed JSON" in result.message
     assert client.closed is True
+
+
+def test_update_check_reports_reason_for_unexpected_response_shape():
+    client = _Client(_Response(200, {"message": "not a list"}))
+
+    result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
+
+    assert result.status == "unavailable"
+    assert result.reason == "unexpected_response"
+    assert "unexpected response" in result.message
 
 
 def test_download_update_installer_saves_setup_asset_atomically(tmp_path):

@@ -302,6 +302,29 @@ def test_settings_dialog_rejects_suspicious_screenshots_path(qtbot, tmp_path: Pa
     assert "Screenshots folder warning" in dialog.status_label.text()
 
 
+def test_settings_dialog_rejects_nested_screenshots_path(qtbot, tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    nested = (
+        cfg.screenshots_path.parent
+        / "Interface"
+        / "AddOns"
+        / "SomeAddon"
+        / "Screenshots"
+    )
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    dialog.screenshots_edit.setText(str(nested))
+
+    assert "Screenshots folder warning" in dialog.status_label.text()
+    assert "#ff6666" in dialog.status_label.styleSheet()
+
+    dialog.accept()
+
+    assert not dialog.result()
+    assert "Screenshots folder warning" in dialog.status_label.text()
+
+
 def test_settings_dialog_does_not_emit_values_changed_for_suspicious_screenshots_path(
     qtbot, tmp_path: Path
 ):
@@ -311,6 +334,29 @@ def test_settings_dialog_does_not_emit_values_changed_for_suspicious_screenshots
     dialog.valuesChanged.connect(seen.append)
 
     dialog.screenshots_edit.setText(str(tmp_path / "not-wow" / "Shots"))
+
+    assert not dialog.flush_pending_values()
+    assert seen == []
+    assert "Screenshots folder warning" in dialog.status_label.text()
+
+
+def test_settings_dialog_does_not_emit_values_changed_for_nested_screenshots_path(
+    qtbot, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    nested = (
+        cfg.screenshots_path.parent
+        / "Interface"
+        / "AddOns"
+        / "SomeAddon"
+        / "Screenshots"
+    )
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.valuesChanged.connect(seen.append)
+
+    dialog.screenshots_edit.setText(str(nested))
 
     assert not dialog.flush_pending_values()
     assert seen == []

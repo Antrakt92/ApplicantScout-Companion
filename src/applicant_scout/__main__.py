@@ -15,7 +15,7 @@ import threading
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from PyQt6.QtCore import QObject, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
@@ -945,7 +945,20 @@ class _UpdateCheckCoordinator:
 @dataclass(frozen=True)
 class _UpdateCheckDecision:
     is_current: bool
+    action: Literal["ignore", "set", "clear", "preserve"]
     pending_update_version: str | None
+
+
+_TRANSIENT_UPDATE_UNAVAILABLE_REASONS = frozenset(
+    {
+        "client_error",
+        "http_error",
+        "network_error",
+        "malformed_json",
+        "unexpected_response",
+        "unexpected_exception",
+    }
+)
 
 
 class _PrivateRotatingFileHandler(RotatingFileHandler):
@@ -978,9 +991,15 @@ def _resolve_update_check_result(
     coordinator: _UpdateCheckCoordinator,
     generation: int,
     result: object,
+    *,
+    previous_pending_update_version: str | None = None,
 ) -> _UpdateCheckDecision:
     if not coordinator.is_current(generation):
-        return _UpdateCheckDecision(is_current=False, pending_update_version=None)
+        return _UpdateCheckDecision(
+            is_current=False,
+            action="ignore",
+            pending_update_version=previous_pending_update_version,
+        )
 
     latest_version = getattr(result, "latest_version", None)
     if getattr(result, "status", None) == "available" and _update_result_has_installable_asset(
@@ -988,9 +1007,24 @@ def _resolve_update_check_result(
     ):
         return _UpdateCheckDecision(
             is_current=True,
+            action="set",
             pending_update_version=str(latest_version or "available"),
         )
-    return _UpdateCheckDecision(is_current=True, pending_update_version=None)
+    if (
+        getattr(result, "status", None) == "unavailable"
+        and getattr(result, "reason", None) in _TRANSIENT_UPDATE_UNAVAILABLE_REASONS
+        and previous_pending_update_version is not None
+    ):
+        return _UpdateCheckDecision(
+            is_current=True,
+            action="preserve",
+            pending_update_version=previous_pending_update_version,
+        )
+    return _UpdateCheckDecision(
+        is_current=True,
+        action="clear",
+        pending_update_version=None,
+    )
 
 
 def _setup_logging(log_dir: Path | None = None) -> None:
@@ -1129,6 +1163,7 @@ def _safe_check_for_update(current_version: str) -> UpdateResult:
             status="unavailable",
             message=f"GitHub update check failed: {exc}",
             current_version=current_version,
+            reason="unexpected_exception",
         )
 
 
@@ -2444,6 +2479,7 @@ def main(argv: list[str] | None = None) -> int:
             update_check_coordinator,
             generation,
             result,
+            previous_pending_update_version=pending_update_version,
         )
         if not decision.is_current:
             return

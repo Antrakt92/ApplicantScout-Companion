@@ -34,6 +34,7 @@ class UpdateResult:
     status: UpdateStatus
     message: str
     current_version: str
+    reason: str | None = None
     latest_version: str | None = None
     release_url: str | None = None
     asset_url: str | None = None
@@ -149,6 +150,7 @@ def check_for_update(
             status="unavailable",
             message=f"GitHub update check failed: {exc}",
             current_version=current_version,
+            reason="client_error",
         )
     try:
         resp = http.get(
@@ -164,12 +166,14 @@ def check_for_update(
                 status="unavailable",
                 message=f"No GitHub Releases found for {repo}.",
                 current_version=current_version,
+                reason="not_found",
             )
         if resp.status_code >= 400:
             return UpdateResult(
                 status="unavailable",
                 message=f"GitHub update check failed (HTTP {resp.status_code}).",
                 current_version=current_version,
+                reason="http_error",
             )
         try:
             releases = resp.json()
@@ -178,12 +182,14 @@ def check_for_update(
                 status="unavailable",
                 message="GitHub update check returned malformed JSON.",
                 current_version=current_version,
+                reason="malformed_json",
             )
         if not isinstance(releases, list):
             return UpdateResult(
                 status="unavailable",
                 message="GitHub update check returned an unexpected response.",
                 current_version=current_version,
+                reason="unexpected_response",
             )
         latest = _select_latest_stable_release(releases)
         if latest is None:
@@ -191,6 +197,7 @@ def check_for_update(
                 status="unavailable",
                 message="No stable semantic GitHub Releases are published yet.",
                 current_version=current_version,
+                reason="no_stable_releases",
             )
         tag_name = latest.get("tag_name")
         latest_version = tag_name if isinstance(tag_name, str) else ""
@@ -201,6 +208,7 @@ def check_for_update(
                 status="unavailable",
                 message="Latest GitHub Release has no version tag.",
                 current_version=current_version,
+                reason="missing_version_tag",
                 release_url=release_url,
             )
         if not _is_newer(latest_version, current_version):
@@ -238,6 +246,7 @@ def check_for_update(
                     status="unavailable",
                     message="Latest GitHub Release has no release URL.",
                     current_version=current_version,
+                    reason="missing_release_url",
                     latest_version=latest_version,
                 )
             return UpdateResult(
@@ -266,6 +275,7 @@ def check_for_update(
             status="unavailable",
             message=f"GitHub update check failed: {exc}",
             current_version=current_version,
+            reason="network_error",
         )
     finally:
         if owns_client:

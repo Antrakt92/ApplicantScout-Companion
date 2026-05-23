@@ -109,12 +109,9 @@ def screenshots_path_health_warning(path: Path) -> str | None:
     if path.name.lower() != "screenshots":
         problems.append("folder is not named Screenshots")
 
-    retail_root = next(
-        (parent for parent in (path, *path.parents) if parent.name.lower() == "_retail_"),
-        None,
-    )
+    retail_root = path.parent if path.parent.name.lower() == "_retail_" else None
     if retail_root is None:
-        problems.append(r"path is not under a _retail_ folder")
+        problems.append(r"path is not directly under a _retail_ folder")
     elif not retail_root.exists():
         problems.append(r"_retail_ folder does not exist")
     elif not _looks_like_wow_retail_root(retail_root):
