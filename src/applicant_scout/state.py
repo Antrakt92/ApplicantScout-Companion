@@ -164,6 +164,13 @@ class Listing:
 
 
 @dataclass
+class LeaderKey:
+    key_level: int
+    challenge_map_id: int = 0
+    player_name: str = ""
+
+
+@dataclass
 class WoWPlayer:
     """Info about the player from [APSCOUT|VERSION] line."""
 
@@ -182,6 +189,7 @@ class AppState:
         self.applicants: dict[str, Applicant] = {}
         self.party_members: dict[str, RosterMember] = {}
         self.listing: Optional[Listing] = None
+        self.leader_key: Optional[LeaderKey] = None
         self.player: WoWPlayer = WoWPlayer()
 
     def add_or_update(self, app: Applicant) -> None:

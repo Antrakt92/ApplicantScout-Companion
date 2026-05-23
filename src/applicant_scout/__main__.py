@@ -49,7 +49,7 @@ from .settings_dialog import (
     SettingsUpdateResult,
     open_folder,
 )
-from .state import Applicant, AppState, Listing, RosterMember, WoWPlayer
+from .state import Applicant, AppState, LeaderKey, Listing, RosterMember, WoWPlayer
 from .updater import (
     check_for_update,
     download_update_installer,
@@ -745,6 +745,18 @@ class StateMachine(QObject):
             if snap.version.region_id != old_player.region_id:
                 self.versionUpdated.emit(snap.version.region_id)
 
+        # ─── Leader keystone ───
+        old_leader_key = self._state.leader_key
+        new_leader_key: LeaderKey | None = None
+        if snap.leader_key is not None and snap.leader_key.key_level > 0:
+            new_leader_key = LeaderKey(
+                key_level=snap.leader_key.key_level,
+                challenge_map_id=snap.leader_key.challenge_map_id,
+                player_name=snap.leader_key.player_name,
+            )
+        leader_key_changed = new_leader_key != old_leader_key
+        self._state.leader_key = new_leader_key
+
         # ─── Listing ───
         new_listing: Listing | None = None
         if snap.listing is not None:
@@ -769,7 +781,9 @@ class StateMachine(QObject):
                 snap.roster,
                 region_identity_changed=region_identity_changed,
                 default_realm_changed=default_realm_changed,
-                rio_summary_target_key=0,
+                rio_summary_target_key=(
+                    new_leader_key.key_level if new_leader_key is not None else 0
+                ),
                 emit_signal=False,
             )
             self.listingChanged.emit()
@@ -784,11 +798,19 @@ class StateMachine(QObject):
                 snap.roster,
                 region_identity_changed=region_identity_changed,
                 default_realm_changed=default_realm_changed,
-                rio_summary_target_key=0,
+                rio_summary_target_key=(
+                    new_leader_key.key_level if new_leader_key is not None else 0
+                ),
             )
+            if leader_key_changed:
+                self.listingChanged.emit()
             return
 
-        rio_summary_target_key = new_listing.key_level if new_listing.key_level > 0 else 0
+        rio_summary_target_key = 0
+        if new_leader_key is not None:
+            rio_summary_target_key = new_leader_key.key_level
+        elif new_listing.key_level > 0:
+            rio_summary_target_key = new_listing.key_level
 
         # Listing changed (dungeon/key/comment) — fire signal so overlay re-titles
         if new_listing != old_listing:
@@ -801,6 +823,8 @@ class StateMachine(QObject):
                 new_listing.difficulty_id,
                 len(snap.applicants),
             )
+            self.listingChanged.emit()
+        elif leader_key_changed:
             self.listingChanged.emit()
 
         # ─── Applicants diff ───

@@ -717,7 +717,7 @@ def test_public_docs_do_not_reference_private_audit_backlog():
 def test_readme_documents_current_wire_support():
     readme = _read_repo_text("README.md")
 
-    assert "wire payloads through v6" in readme
+    assert "wire payloads through v7" in readme
     assert "wire payloads through v5" not in readme
 
 

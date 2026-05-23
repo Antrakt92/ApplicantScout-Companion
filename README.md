@@ -121,10 +121,14 @@ the applicant, and strong near-target logs can beat dry key completion.
 If RaiderIO is missing or has no profile for that character, the overlay falls
 back to the applying character's score and available logs.
 
+Starting with ApplicantScout addon wire v7, the Party view can use the current
+group leader's keystone as the automatic Mythic+ target key. A manual Party key
+override still takes priority, and raid contexts ignore leader-key calibration.
+
 ## Version Compatibility
 
 ApplicantScout Companion supports the latest ApplicantScout WoW addon release
-and ApplicantScout wire payloads through v6.
+and ApplicantScout wire payloads through v7.
 
 ## Updates
 

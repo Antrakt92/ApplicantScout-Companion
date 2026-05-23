@@ -1,5 +1,50 @@
 # ApplicantScout Companion Release Notes
 
+## 0.6.0 - 23-May-2026
+
+Leader-key and party-context release paired with ApplicantScout addon `0.4.0`.
+This release keeps the overlay focused on the active search while adding
+automatic Mythic+ target-key calibration from the current group leader.
+
+### Added
+
+- Added APS1 v7 payload decoding, including the optional leader-keystone block
+  emitted by the addon.
+- Added automatic Party target-key calibration from the current leader's key.
+  Manual Party key overrides still win, and raid contexts ignore leader-key
+  calibration.
+- Added Party context from leader-key data when you are in a group but the
+  original listing is no longer visible.
+
+### Improved
+
+- The overlay now stays on Applicants while an active listing/search is open,
+  even if the applicant list temporarily drops to zero.
+- Party roster refreshes are more reliable when group composition changes; the
+  paired addon waits briefly for inspect/spec data and then sends a fallback
+  snapshot instead of forgetting the update.
+- Cache reset and WCL cache recovery are more responsive around locked files,
+  stale state, and partial cache data.
+- Mythic+ evidence display is more explicit for sparse or low-evidence rows.
+- Setup, updater, seasonal fixtures, overlay tab behavior, Lua payload golden
+  coverage, and paired release gates all have stronger regression coverage.
+
+### Fixed
+
+- Fixed Party key context staying stale when the companion receives a newer
+  leader key from the addon.
+- Fixed active-search tab fallback cases that could make the user look at Party
+  view while they were still scouting applicants.
+- Fixed several release/setup hardening edges around paired addon metadata,
+  local cache handling, and update validation.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.4.0`.
+- Installer: `ApplicantScoutCompanionSetup-0.6.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.6.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.6.0-portable.zip`
+
 ## 0.5.5 - 22-May-2026
 
 Release and log-rollover hardening patch paired with the latest addon roster

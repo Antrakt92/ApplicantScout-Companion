@@ -20,6 +20,7 @@ from pathlib import Path
 from applicant_scout.__main__ import StateMachine
 from applicant_scout.screenshot import (
     DecodedApplicant,
+    DecodedLeaderKey,
     DecodedListing,
     DecodedRosterMember,
     DecodedVersion,
@@ -1155,6 +1156,55 @@ def test_roster_snapshot_adds_party_members_separately_from_applicants():
     assert set(state.party_members) == {"host-realm", "friend-realm"}
     assert state.party_members["host-realm"].is_self
     assert state.party_members["friend-realm"].role == "HEALER"
+
+
+def test_state_machine_tracks_leader_key_without_listing():
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Player-Realm"),
+            leader_key=DecodedLeaderKey(
+                key_level=17,
+                challenge_map_id=503,
+                player_name="Leader-Realm",
+            ),
+            roster=[_roster_decoded("Leader-Realm", unit_index=2)],
+        )
+    )
+
+    assert state.listing is None
+    assert state.leader_key is not None
+    assert state.leader_key.key_level == 17
+    assert state.leader_key.challenge_map_id == 503
+    assert state.leader_key.player_name == "Leader-Realm"
+
+
+def test_state_machine_uses_leader_key_for_compact_rio_target_key():
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=15),
+            version=_version("Player-Realm"),
+            leader_key=DecodedLeaderKey(
+                key_level=17,
+                challenge_map_id=503,
+                player_name="Leader-Realm",
+            ),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[_roster_decoded("Leader-Realm", unit_index=2)],
+        )
+    )
+
+    assert state.listing is not None
+    assert state.listing.key_level == 15
+    assert state.leader_key is not None
+    assert state.applicants["7:1"].rio_summary_target_key == 17
+    assert state.party_members["leader-realm"].rio_summary_target_key == 17
 
 
 def test_roster_snapshot_maps_current_and_main_scores_separately():

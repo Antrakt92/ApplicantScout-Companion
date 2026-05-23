@@ -13,7 +13,7 @@ from applicant_scout.screenshot import (
     DecodedVersion,
     Snapshot,
 )
-from applicant_scout.state import AppState, Applicant, Listing, RosterMember
+from applicant_scout.state import AppState, Applicant, LeaderKey, Listing, RosterMember
 
 
 class _FakeWCLClient:
@@ -381,6 +381,27 @@ def test_last_applicant_removed_preserves_visible_party_roster(qtbot, tmp_path):
     assert win._id_by_row == ["host-realm"]
 
 
+def test_last_applicant_removed_keeps_applicants_tab_while_listing_open(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.listing = _listing()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win.show()
+
+    state.remove("7:1")
+    win.on_applicant_removed("7:1")
+    win._flush_overlay_refresh()
+
+    assert win.isVisible()
+    assert win._active_tab == "applicants"
+    assert win._table.rowCount() == 0
+    assert win._id_by_row == []
+    assert not win._party_tab_auto_selected
+
+
 def test_last_applicant_removed_does_not_carry_applicant_filter_into_party_auto_switch(
     qtbot, tmp_path
 ):
@@ -472,7 +493,9 @@ def test_new_applicant_does_not_override_manual_party_tab(qtbot, tmp_path):
     assert win._id_by_row == ["host-realm"]
 
 
-def test_snapshot_removal_then_roster_preserves_visible_party_roster(qtbot, tmp_path):
+def test_snapshot_removal_then_roster_keeps_applicants_tab_while_listing_open(
+    qtbot, tmp_path
+):
     state = AppState()
     sm = StateMachine(state)
 
@@ -502,9 +525,10 @@ def test_snapshot_removal_then_roster_preserves_visible_party_roster(qtbot, tmp_
     win._flush_overlay_refresh()
 
     assert win.isVisible()
-    assert win._active_tab == "party"
-    assert win._table.rowCount() == 1
-    assert win._id_by_row == ["host-realm"]
+    assert win._active_tab == "applicants"
+    assert win._table.rowCount() == 0
+    assert win._id_by_row == []
+    assert not win._party_tab_auto_selected
 
 
 def test_empty_roster_update_hides_party_only_overlay(qtbot, tmp_path):
@@ -705,6 +729,44 @@ def test_manual_target_key_creates_effective_party_listing(qtbot, tmp_path):
     assert listing is not None
     assert listing.key_level == 10
     assert listing.dungeon_name == "Mythic+"
+
+
+def test_leader_key_creates_effective_party_listing(qtbot, tmp_path):
+    state = AppState()
+    state.leader_key = LeaderKey(
+        key_level=17,
+        challenge_map_id=503,
+        player_name="Leader-Realm",
+    )
+    state.party_members["dps-realm"] = _ready_mplus_member()
+    win = _window(tmp_path, qtbot, state)
+
+    listing = win._effective_listing()
+
+    assert listing is not None
+    assert listing.key_level == 17
+    assert listing.dungeon_name == "Mythic+"
+    win._update_title()
+    assert win._tab_bar._key_spin.value() == 17
+
+
+def test_manual_target_key_overrides_leader_key(qtbot, tmp_path):
+    state = AppState()
+    state.leader_key = LeaderKey(
+        key_level=17,
+        challenge_map_id=503,
+        player_name="Leader-Realm",
+    )
+    state.party_members["dps-realm"] = _ready_mplus_member()
+    win = _window(tmp_path, qtbot, state)
+
+    win._tab_bar._key_spin.setValue(16)
+
+    listing = win._effective_listing()
+    assert listing is not None
+    assert win._manual_target_key == 16
+    assert listing.key_level == 16
+    assert win._tab_bar._key_spin.value() == 16
 
 
 def test_manual_target_key_recomputes_party_mplus_cells(qtbot, tmp_path):

@@ -19,6 +19,7 @@ from PIL import Image
 import applicant_scout.screenshot as screenshot_mod
 from applicant_scout.screenshot import (
     DecodedApplicant,
+    DecodedLeaderKey,
     MAGIC,
     ScreenshotWatcher,
     Snapshot,
@@ -167,6 +168,30 @@ def _build_roster_block(
 
 def _build_body_v6(applicants: list[bytes], roster: list[bytes]) -> bytes:
     body = _build_body(applicants)
+    body += struct.pack(">H", len(roster))
+    for block in roster:
+        body += block
+    return body
+
+
+def _build_body_v7(
+    applicants: list[bytes],
+    roster: list[bytes],
+    *,
+    leader_key_level: int = 0,
+    leader_key_challenge_map_id: int = 0,
+    leader_key_player_name: str = "",
+) -> bytes:
+    body = bytes([0, 0])  # has_listing=0, has_version=0
+    if leader_key_level > 0:
+        body += bytes([1, leader_key_level])
+        body += struct.pack(">H", leader_key_challenge_map_id)
+        body += _pack_len_str(leader_key_player_name.encode("utf-8"))
+    else:
+        body += bytes([0])
+    body += struct.pack(">H", len(applicants))
+    for block in applicants:
+        body += block
     body += struct.pack(">H", len(roster))
     for block in roster:
         body += block
@@ -412,16 +437,17 @@ def test_wire_versions_supported_pin():
     assert 0x04 in WIRE_VERSIONS_SUPPORTED
     assert 0x05 in WIRE_VERSIONS_SUPPORTED
     assert 0x06 in WIRE_VERSIONS_SUPPORTED
+    assert 0x07 in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
-def test_v7_payload_is_rejected_instead_of_parsed_as_known_version():
-    raw = _wrap_payload(_build_body([]), wire_ver=0x07)
+def test_v8_payload_is_rejected_instead_of_parsed_as_known_version():
+    raw = _wrap_payload(_build_body([]), wire_ver=0x08)
 
     snap, error = _try_parse_appscout_payload(raw)
 
     assert snap is None
-    assert error == "unsupported wire version 0x07"
+    assert error == "unsupported wire version 0x08"
 
 
 def test_v6_roster_block_parses_current_party_members():
@@ -546,6 +572,26 @@ def test_v6_payload_crc_accepts_roster_block():
     assert err is None
     assert snap is not None
     assert [m.name for m in snap.roster] == ["Warrior-Realm"]
+
+
+def test_v7_payload_crc_accepts_leader_key_block():
+    body = _build_body_v7(
+        [],
+        [],
+        leader_key_level=17,
+        leader_key_challenge_map_id=503,
+        leader_key_player_name="Leader-Realm",
+    )
+
+    snap, err = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x07))
+
+    assert err is None
+    assert snap is not None
+    assert snap.leader_key == DecodedLeaderKey(
+        key_level=17,
+        challenge_map_id=503,
+        player_name="Leader-Realm",
+    )
 
 
 def test_crc_valid_payload_with_duplicate_applicant_composite_key_is_rejected():

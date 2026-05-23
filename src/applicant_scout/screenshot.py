@@ -55,7 +55,7 @@ MAGIC = b"APS1"
 # v0x05 = adds compact target-relative RaiderIO completion summary.
 # Set, not a min/max range — future versions may be incompatible with v1 but compatible
 # with v2; explicit allow-list is the cleanest contract.
-WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
+WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}
 
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
 STABLE_SIZE_POLL = 0.05  # poll interval
@@ -141,6 +141,13 @@ class DecodedListing:
 
 
 @dataclass
+class DecodedLeaderKey:
+    key_level: int
+    challenge_map_id: int = 0
+    player_name: str = ""
+
+
+@dataclass
 class DecodedVersion:
     addon_version: str
     game_version: str
@@ -154,6 +161,7 @@ class Snapshot:
 
     listing: Optional[DecodedListing]
     version: Optional[DecodedVersion]
+    leader_key: Optional[DecodedLeaderKey] = None
     applicants: list[DecodedApplicant] = field(default_factory=list)
     roster: list[DecodedRosterMember] = field(default_factory=list)
 
@@ -367,10 +375,12 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
       * v0x04: adds applicant main_score after current score.
       * v0x05: adds compact RaiderIO completion summary after main_score.
       * v0x06: adds current party/raid roster after applicants.
+      * v0x07: adds optional leader keystone context after version block.
     """
     cursor = 0
     listing: Optional[DecodedListing] = None
     version: Optional[DecodedVersion] = None
+    leader_key: Optional[DecodedLeaderKey] = None
     applicants: list[DecodedApplicant] = []
 
     # Listing block
@@ -428,6 +438,23 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
             region_id=region_id,
             player_name=player_name,
         )
+
+    if wire_ver >= 0x07:
+        has_leader_key = buf[cursor]
+        cursor += 1
+        if has_leader_key:
+            key_level = buf[cursor]
+            cursor += 1
+            challenge_map_id = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+            cursor += 2
+            player_name, cursor = _read_len_str(
+                buf, cursor, encoding="utf-8", field="leader_key.player_name"
+            )
+            leader_key = DecodedLeaderKey(
+                key_level=key_level,
+                challenge_map_id=challenge_map_id,
+                player_name=player_name,
+            )
 
     # Applicants array. LFG max is ~70 in practice; sane upper bound 200.
     count = struct.unpack(">H", buf[cursor : cursor + 2])[0]
@@ -587,6 +614,7 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
     return Snapshot(
         listing=listing,
         version=version,
+        leader_key=leader_key,
         applicants=applicants,
         roster=roster,
     )

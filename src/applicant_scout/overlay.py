@@ -157,14 +157,6 @@ MPLUS_GROUP_LANE_MAX_WIDTH = 72
 MPLUS_GROUP_LANE_MIN_WIDTH = 42
 MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 56
 
-
-# Auto-hide delay (seconds) when applicants drain to zero but listing is still
-# active. M+ keystone listings don't auto-delist after the group fills, so the
-# addon keeps emitting snapshots with `applicants=[]` indefinitely. Hiding
-# immediately on the first empty snapshot would flicker the window when
-# applicants come and go in churn — the timer rate-limits to one hide per
-# quiet period.
-EMPTY_HIDE_DELAY_S = 5
 MAX_WCL_RETRY_BATCH = 3
 WCL_RETRY_CUSHION_MS = 250
 WCL_RETRY_BATCH_DELAY_MS = 1500
@@ -2127,7 +2119,6 @@ class OverlayWindow(QMainWindow):
         self._refresh_flush_pending = False
         self._refresh_needs_title = False
         self._refresh_needs_show = False
-        self._restore_party_on_next_roster = False
 
         # Restore geometry, clamped to a visible screen so off-monitor positions
         # from a previous multi-monitor session don't render the window invisibly
@@ -2151,21 +2142,6 @@ class OverlayWindow(QMainWindow):
             )
         self.setGeometry(x, y, w, h)
         self.show_launcher_only()
-
-        # Auto-hide timer for "listing active but applicants empty" case.
-        # M+ keystone listings don't auto-delist when group fills — the host
-        # has to manually click Delist. After all applicants are accepted
-        # (count=0), listing remains active so the addon keeps emitting
-        # snapshots with listing!=None and applicants=[]. on_applicant_removed
-        # already hides on count==0, but if a NEW listing event re-shows the
-        # window (e.g. comment edit, dungeon change), we need a safety net.
-        # Timer: starts when applicants reach 0 with listing active; fires
-        # after EMPTY_HIDE_DELAY_S to hide the window. Cancelled if a new
-        # applicant arrives.
-        self._empty_hide_timer = QTimer(self)
-        self._empty_hide_timer.setSingleShot(True)
-        self._empty_hide_timer.setInterval(EMPTY_HIDE_DELAY_S * 1000)
-        self._empty_hide_timer.timeout.connect(self._on_empty_hide_timeout)
 
         # Last-decode timestamp populated by note_decode slot connected to
         # ScreenshotWatcher.snapshotReceived. Read by _refresh_health_label.
@@ -2383,6 +2359,13 @@ class OverlayWindow(QMainWindow):
             return False
         return listing.category_id in (0, _MPLUS_CATEGORY_ID)
 
+    def _leader_target_key(self) -> int:
+        listing = self._state.listing
+        if listing is not None and detect_listing_context(listing) == CONTEXT_RAID:
+            return 0
+        leader_key = getattr(self._state, "leader_key", None)
+        return positive_int(getattr(leader_key, "key_level", 0))
+
     def _restore_applicants_after_party_fallback(self) -> None:
         if self._active_tab != "party" or not self._party_tab_auto_selected:
             return
@@ -2391,10 +2374,15 @@ class OverlayWindow(QMainWindow):
         self._tab_bar.set_active("applicants", emit=False)
         self._clear_role_filter()
 
+    def _should_auto_select_party(self) -> bool:
+        return (
+            self._state.listing is None
+            and self._state.count() == 0
+            and len(self._state.party_members) > 0
+        )
+
     def on_applicant_added(self, applicant: Applicant) -> None:
-        self._restore_party_on_next_roster = False
         self._restore_applicants_after_party_fallback()
-        self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
         # "loading" before _refresh_table reads it. Otherwise the cell briefly
         # renders the default "pending" state (which displays as "no data") for
@@ -2403,9 +2391,7 @@ class OverlayWindow(QMainWindow):
         self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_updated(self, applicant: Applicant) -> None:
-        self._restore_party_on_next_roster = False
         self._restore_applicants_after_party_fallback()
-        self._empty_hide_timer.stop()  # cancel pending auto-hide — fresh activity
         # Re-fetch ONLY when fetch_status is "pending" — apply_snapshot resets
         # to pending on (a) newly seen applicant id and (b) spec_id change.
         # Other field updates (score, ilvl, role) don't invalidate WCL data, so
@@ -2433,34 +2419,25 @@ class OverlayWindow(QMainWindow):
         self._schedule_overlay_refresh()
         if self._state.count() == 0:
             has_party = len(self._state.party_members) > 0
-            was_visible = self.isVisible() and not self._collapsed_to_launcher
             # No applicants left. Two reasons: (a) addon delisted (handled by
             # on_cleared), (b) host invited everyone, listing still active.
-            # Defensive: clear both ids on hide so next show doesn't bring back
-            # ghost panel content from a stale id.
+            # Defensive: clear applicant hover/pin state so an empty search does
+            # not keep showing panel content from a stale applicant id.
             self._hover_id = None
             self._pinned_id = None
             self._hover_by_tab["applicants"] = None
             self._pinned_by_tab["applicants"] = None
+            if self._state.listing is not None:
+                self._schedule_overlay_refresh(update_title=True)
+                return
             if has_party:
-                self._restore_party_on_next_roster = False
-                self._empty_hide_timer.stop()
                 self._active_tab = "party"
                 self._party_tab_auto_selected = True
                 self._tab_bar.set_active("party", emit=False)
                 self._clear_role_filter()
                 self._schedule_overlay_refresh(update_title=True, maybe_show=True)
                 return
-            self._restore_party_on_next_roster = (
-                was_visible and self._state.listing is not None
-            )
-            # Case (b): listing remains, snapshots keep arriving with apps=[].
-            # Hide immediately AND start a guard timer — if a new listing event
-            # re-shows the window (comment change, etc.), the timer hides it
-            # again after a quiet period.
             self.show_launcher_only()
-            if self._state.listing is not None:
-                self._empty_hide_timer.start()
 
     def on_listing_changed(self) -> None:
         listing = self._state.listing
@@ -2490,11 +2467,6 @@ class OverlayWindow(QMainWindow):
             self._clear_role_filter()
         if self._state.count() > 0:
             self._maybe_show()
-        else:
-            # Listing active but empty — start guard timer to auto-hide if no
-            # new applicants arrive in EMPTY_HIDE_DELAY_S.
-            if not self._empty_hide_timer.isActive():
-                self._empty_hide_timer.start()
 
     def on_cleared(self) -> None:
         self._listing_session_generation += 1
@@ -2504,12 +2476,10 @@ class OverlayWindow(QMainWindow):
             if identity.row_source == "party"
         ]
         self._fetches_in_flight.clear()
-        self._restore_party_on_next_roster = False
         self._clear_role_filter()
         self._refresh_flush_pending = False
         self._refresh_needs_title = False
         self._refresh_needs_show = False
-        self._empty_hide_timer.stop()  # listing gone, no need for guard timer
         self._table.setRowCount(0)
         self._row_for_id.clear()
         self._id_by_row = []
@@ -2560,15 +2530,12 @@ class OverlayWindow(QMainWindow):
             self._party_tab_auto_selected = False
             self._tab_bar.set_active("applicants", emit=False)
             self._clear_role_filter()
-        should_show_party = self._state.count() == 0 and len(self._state.party_members) > 0
+        should_show_party = self._should_auto_select_party()
         if should_show_party:
             self._active_tab = "party"
             self._party_tab_auto_selected = True
             self._tab_bar.set_active("party", emit=False)
             self._clear_role_filter()
-            if self._restore_party_on_next_roster and not self._launcher.is_dragging():
-                self._collapsed_to_launcher = False
-        self._restore_party_on_next_roster = False
         self._schedule_overlay_refresh(
             update_title=True,
             maybe_show=should_show_party,
@@ -2724,16 +2691,6 @@ class OverlayWindow(QMainWindow):
             self._schedule_wcl_retry(WCL_RETRY_BATCH_DELAY_MS)
         return launched
 
-    def _on_empty_hide_timeout(self) -> None:
-        """Fired EMPTY_HIDE_DELAY_S after applicants reached 0 with listing
-        still active. Auto-hide as a safety net for cases where M+ keystone
-        listing isn't auto-delisted by Blizzard after group fills."""
-        if self._launcher.is_dragging():
-            self._empty_hide_timer.start()
-            return
-        if self._state.count() == 0 and len(self._state.party_members) == 0:
-            self.show_launcher_only()
-
     # ─── hover/pin panel orchestration ─────
 
     def _active_row_map(self) -> Mapping[str, Applicant]:
@@ -2742,7 +2699,19 @@ class OverlayWindow(QMainWindow):
         return self._state.applicants
 
     def _effective_listing(self) -> Listing | None:
+        leader_target_key = self._leader_target_key()
         if self._manual_target_key is None or not self._can_apply_manual_target_key():
+            if self._state.listing is not None and leader_target_key > 0:
+                return replace(self._state.listing, key_level=leader_target_key)
+            if self._state.listing is None and leader_target_key > 0:
+                return Listing(
+                    activity_id=0,
+                    dungeon_name="Mythic+",
+                    listing_name="",
+                    comment="",
+                    key_level=leader_target_key,
+                    category_id=2,
+                )
             return self._state.listing
         if self._state.listing is not None:
             return replace(self._state.listing, key_level=self._manual_target_key)
@@ -2758,6 +2727,10 @@ class OverlayWindow(QMainWindow):
     def _sync_target_key_control(self) -> None:
         if self._manual_target_key is not None:
             self._tab_bar.set_target_key(self._manual_target_key)
+            return
+        leader_target_key = self._leader_target_key()
+        if leader_target_key > 0:
+            self._tab_bar.set_target_key(leader_target_key)
             return
         listing = self._state.listing
         self._tab_bar.set_target_key(listing.key_level if listing is not None else 0)
@@ -3750,7 +3723,6 @@ class OverlayWindow(QMainWindow):
     def closeEvent(self, event):
         self._closed = True
         self._foreground_timer.stop()
-        self._empty_hide_timer.stop()
         self._quota_timer.stop()
         self._wcl_retry_timer.stop()
         self.flush_geometry()
