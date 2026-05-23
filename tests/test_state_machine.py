@@ -14,6 +14,9 @@ run without QApplication. State inspection via state.applicants dict.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from applicant_scout.__main__ import StateMachine
 from applicant_scout.screenshot import (
     DecodedApplicant,
@@ -21,8 +24,23 @@ from applicant_scout.screenshot import (
     DecodedRosterMember,
     DecodedVersion,
     Snapshot,
+    _try_parse_appscout_payload,
 )
 from applicant_scout.state import AppState, WoWPlayer
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+LUA_GOLDEN_HEX = FIXTURES / "aps1_v6_lua_golden.hex"
+LUA_GOLDEN_EXPECTED = FIXTURES / "aps1_v6_lua_golden.expected.json"
+
+
+def _load_lua_golden_snapshot() -> tuple[Snapshot, dict]:
+    payload = bytes.fromhex(LUA_GOLDEN_HEX.read_text(encoding="ascii"))
+    expected = json.loads(LUA_GOLDEN_EXPECTED.read_text(encoding="utf-8"))
+    snap, error = _try_parse_appscout_payload(payload)
+    assert error is None
+    assert snap is not None
+    return snap, expected
 
 
 class _FakeRioReader:
@@ -314,6 +332,72 @@ def test_new_applicant_maps_rio_completion_summary():
     assert applicant.rio_completed_at_or_above_minus1 == 8
     assert applicant.rio_dungeon_count == 8
     assert applicant.rio_summary_target_key == 14
+
+
+def test_state_machine_applies_lua_generated_aps1_v6_golden_snapshot():
+    snap, expected = _load_lua_golden_snapshot()
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(snap)
+
+    assert state.player.addon_version == expected["version"]["addon_version"]
+    assert state.player.game_version == expected["version"]["game_version"]
+    assert state.player.region_id == expected["version"]["region_id"]
+    assert state.player.full_name == expected["version"]["player_name"]
+    assert state.listing is not None
+    assert state.listing.activity_id == expected["listing"]["activity_id"]
+    assert state.listing.dungeon_name == expected["listing"]["dungeon_name"]
+    assert state.listing.listing_name == expected["listing"]["listing_name"]
+    assert state.listing.comment == expected["listing"]["comment"]
+    assert state.listing.key_level == expected["listing"]["key_level"]
+    assert state.listing.category_id == expected["listing"]["category_id"]
+    assert state.listing.difficulty_id == expected["listing"]["difficulty_id"]
+
+    assert set(state.applicants) == {
+        f'{a["applicant_id"]}:{a["member_idx"]}' for a in expected["applicants"]
+    }
+    applicant_expected = expected["applicants"][0]
+    applicant = state.applicants[
+        f'{applicant_expected["applicant_id"]}:{applicant_expected["member_idx"]}'
+    ]
+    assert applicant.name == applicant_expected["name"]
+    assert applicant.cls == "WARRIOR"
+    assert applicant.role == "TANK"
+    assert applicant.spec_id == applicant_expected["spec_id"]
+    assert applicant.ilvl == applicant_expected["ilvl"]
+    assert applicant.score == applicant_expected["score"]
+    assert applicant.main_score == applicant_expected["main_score"]
+    assert applicant.rio_profile == applicant_expected["rio_profile"]
+    assert applicant.rio_best_key == applicant_expected["rio_best_key"]
+    assert applicant.rio_best_dungeon_key == applicant_expected["rio_best_dungeon_key"]
+    assert applicant.rio_timed_at_or_above == applicant_expected[
+        "rio_timed_at_or_above"
+    ]
+    assert applicant.rio_completed_at_or_above_minus1 == applicant_expected[
+        "rio_completed_at_or_above_minus1"
+    ]
+    assert applicant.rio_dungeon_count == applicant_expected["rio_dungeon_count"]
+    assert applicant.rio_summary_target_key == expected["listing"]["key_level"]
+
+    assert set(state.party_members) == {
+        m["name"].strip().lower() for m in expected["roster"]
+    }
+    roster_expected = expected["roster"][0]
+    member = state.party_members[roster_expected["name"].lower()]
+    assert member.name == roster_expected["name"]
+    assert member.is_self is True
+    assert member.is_raid_member == bool(roster_expected["flags"] & 0x02)
+    assert member.unit_index == roster_expected["unit_index"]
+    assert member.subgroup == roster_expected["subgroup"]
+    assert member.cls == "WARRIOR"
+    assert member.role == "TANK"
+    assert member.score == roster_expected["score"]
+    assert member.main_score == roster_expected["main_score"]
+    assert member.rio_profile == roster_expected["rio_profile"]
+    assert member.rio_best_key == roster_expected["rio_best_key"]
+    assert member.rio_best_dungeon_key == roster_expected["rio_best_dungeon_key"]
+    assert member.rio_summary_target_key == expected["listing"]["key_level"]
 
 
 def test_new_applicant_maps_rio_dungeon_rows():

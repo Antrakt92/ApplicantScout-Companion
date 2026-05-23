@@ -1,0 +1,103 @@
+{
+  "applicants": [
+    {
+      "applicant_id": 42,
+      "class_id": 1,
+      "ilvl": 710,
+      "main_score": 3456,
+      "member_idx": 1,
+      "name": "Tankone-Realm",
+      "rio_best_dungeon_key": 18,
+      "rio_best_key": 18,
+      "rio_completed_at_or_above_minus1": 2,
+      "rio_dungeon_count": 3,
+      "rio_dungeons": [],
+      "rio_profile": true,
+      "rio_timed_at_or_above": 1,
+      "rio_timed_at_or_above_minus1": 2,
+      "rio_timed_at_or_above_minus2": 2,
+      "role": 0,
+      "score": 3210,
+      "spec_id": 73
+    },
+    {
+      "applicant_id": 42,
+      "class_id": 8,
+      "ilvl": 707,
+      "main_score": 3101,
+      "member_idx": 2,
+      "name": "Mageone-Realm",
+      "rio_best_dungeon_key": 16,
+      "rio_best_key": 16,
+      "rio_completed_at_or_above_minus1": 2,
+      "rio_dungeon_count": 3,
+      "rio_dungeons": [],
+      "rio_profile": true,
+      "rio_timed_at_or_above": 1,
+      "rio_timed_at_or_above_minus1": 2,
+      "rio_timed_at_or_above_minus2": 2,
+      "role": 2,
+      "score": 2988,
+      "spec_id": 63
+    }
+  ],
+  "listing": {
+    "activity_id": 401,
+    "category_id": 2,
+    "comment": "bring kicks",
+    "difficulty_id": 8,
+    "dungeon_name": "Fixture Halls",
+    "key_level": 16,
+    "listing_name": "+16 Fixture Halls"
+  },
+  "roster": [
+    {
+      "class_id": 1,
+      "flags": 1,
+      "ilvl": 710,
+      "main_score": 3500,
+      "name": "Host-Realm",
+      "rio_best_dungeon_key": 17,
+      "rio_best_key": 17,
+      "rio_completed_at_or_above_minus1": 2,
+      "rio_dungeon_count": 3,
+      "rio_dungeons": [],
+      "rio_profile": true,
+      "rio_timed_at_or_above": 2,
+      "rio_timed_at_or_above_minus1": 2,
+      "rio_timed_at_or_above_minus2": 2,
+      "role": 0,
+      "score": 3333,
+      "spec_id": 73,
+      "subgroup": 1,
+      "unit_index": 1
+    },
+    {
+      "class_id": 8,
+      "flags": 0,
+      "ilvl": 0,
+      "main_score": 2999,
+      "name": "Friend-Realm",
+      "rio_best_dungeon_key": 16,
+      "rio_best_key": 16,
+      "rio_completed_at_or_above_minus1": 1,
+      "rio_dungeon_count": 3,
+      "rio_dungeons": [],
+      "rio_profile": true,
+      "rio_timed_at_or_above": 1,
+      "rio_timed_at_or_above_minus1": 1,
+      "rio_timed_at_or_above_minus2": 2,
+      "role": 2,
+      "score": 2777,
+      "spec_id": 63,
+      "subgroup": 1,
+      "unit_index": 2
+    }
+  ],
+  "version": {
+    "addon_version": "0.3.4-fixture",
+    "game_version": "12.0.5",
+    "player_name": "Host-Realm",
+    "region_id": 3
+  }
+}

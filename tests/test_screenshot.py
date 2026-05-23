@@ -7,6 +7,7 @@ every member from a grouped application snapshot.
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 import zlib
@@ -29,6 +30,19 @@ from applicant_scout.screenshot import (
     _try_parse_appscout_payload,
     decode_screenshot,
 )
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+LUA_GOLDEN_HEX = FIXTURES / "aps1_v6_lua_golden.hex"
+LUA_GOLDEN_EXPECTED = FIXTURES / "aps1_v6_lua_golden.expected.json"
+
+
+def _load_lua_golden_payload() -> bytes:
+    return bytes.fromhex(LUA_GOLDEN_HEX.read_text(encoding="ascii"))
+
+
+def _load_lua_golden_expected() -> dict:
+    return json.loads(LUA_GOLDEN_EXPECTED.read_text(encoding="utf-8"))
 
 
 # ─── Helpers (mirror addon's _PackLenStr / per-applicant block layout) ──────
@@ -995,6 +1009,32 @@ def test_decode_screenshot_accepts_raw_byte_qr_with_embedded_nul(
     assert snap.applicants == []
 
 
+def test_decode_screenshot_accepts_lua_generated_aps1_v6_golden(
+    monkeypatch, tmp_path: Path
+):
+    image_path = tmp_path / "lua_golden_qr.png"
+    _write_blank_image(image_path)
+    raw_payload = _load_lua_golden_payload()
+    expected = _load_lua_golden_expected()
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [SimpleNamespace(data=raw_payload)],
+    )
+
+    snap, marker = decode_screenshot(image_path)
+
+    assert marker is True
+    assert snap is not None
+    assert snap.listing is not None
+    assert snap.version is not None
+    assert snap.listing.__dict__ == expected["listing"]
+    assert snap.version.__dict__ == expected["version"]
+    assert [a.__dict__ for a in snap.applicants] == expected["applicants"]
+    assert [m.__dict__ for m in snap.roster] == expected["roster"]
+
+
 def test_decode_screenshot_accepts_legacy_hex_qr(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "hex_qr.png"
     _write_blank_image(image_path)
@@ -1012,6 +1052,32 @@ def test_decode_screenshot_accepts_legacy_hex_qr(monkeypatch, tmp_path: Path):
     assert marker is True
     assert snap is not None
     assert snap.applicants == []
+
+
+def test_decode_screenshot_accepts_lua_generated_golden_as_legacy_hex(
+    monkeypatch, tmp_path: Path
+):
+    image_path = tmp_path / "lua_golden_hex_qr.png"
+    _write_blank_image(image_path)
+    raw_payload = _load_lua_golden_payload()
+    hex_payload = raw_payload.hex().upper().encode("ascii")
+    expected = _load_lua_golden_expected()
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [SimpleNamespace(data=hex_payload)],
+    )
+
+    snap, marker = decode_screenshot(image_path)
+
+    assert marker is True
+    assert snap is not None
+    assert snap.listing is not None
+    assert snap.listing.__dict__ == expected["listing"]
+    assert [(a.applicant_id, a.member_idx) for a in snap.applicants] == [
+        (a["applicant_id"], a["member_idx"]) for a in expected["applicants"]
+    ]
 
 
 def test_decode_screenshot_uses_top_left_crop_before_full_image(
@@ -1100,6 +1166,50 @@ def test_decode_screenshot_prefers_valid_raw_candidate_over_legacy_hex(
     assert marker is True
     assert snap is not None
     assert snap.applicants == []
+
+
+def test_decode_screenshot_prefers_raw_lua_golden_over_hex_candidate(
+    monkeypatch, tmp_path: Path
+):
+    image_path = tmp_path / "lua_golden_mixed_qr.png"
+    _write_blank_image(image_path)
+    raw_payload = _load_lua_golden_payload()
+    legacy_payload = _wrap_payload(
+        _build_body(
+            [
+                _build_applicant_block(
+                    aid=9,
+                    class_id=8,
+                    spec_id=63,
+                    ilvl=470,
+                    score=2000,
+                    role=2,
+                    name="Hex-Win",
+                    version=1,
+                )
+            ]
+        ),
+        wire_ver=0x01,
+    )
+    legacy_hex = legacy_payload.hex().upper().encode("ascii")
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [
+            SimpleNamespace(data=legacy_hex),
+            SimpleNamespace(data=raw_payload),
+        ],
+    )
+
+    snap, marker = decode_screenshot(image_path)
+
+    assert marker is True
+    assert snap is not None
+    assert snap.version is not None
+    assert snap.version.addon_version == _load_lua_golden_expected()["version"][
+        "addon_version"
+    ]
 
 
 def test_decode_screenshot_falls_through_corrupt_raw_to_valid_hex(
