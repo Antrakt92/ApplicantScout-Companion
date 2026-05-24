@@ -27,6 +27,7 @@ from applicant_scout.screenshot import (
     Snapshot,
     _try_parse_appscout_payload,
 )
+from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.state import AppState, WoWPlayer
 
 
@@ -62,14 +63,30 @@ class _FakeRioReader:
                     "dungeons": [
                         {"name": "Pit of Saron", "key_level": 12},
                         {"name": "Skyreach", "key_level": 14},
-                    ]
+                    ],
+                    "raid_progress": {
+                        "M": {
+                            "killed": 4,
+                            "total": 8,
+                            "bosses": {"Plexus Sentinel": True},
+                        }
+                    },
                 },
             )()
         if (name, realm, region) == ("Arthas", "Король-лич", "EU"):
             return type(
                 "Profile",
                 (),
-                {"dungeons": [{"name": "Skyreach", "key_level": 15}]},
+                {
+                    "dungeons": [{"name": "Skyreach", "key_level": 15}],
+                    "raid_progress": {
+                        "H": {
+                            "killed": 8,
+                            "total": 8,
+                            "bosses": {"Plexus Sentinel": True},
+                        }
+                    },
+                },
             )()
         return None
 
@@ -84,11 +101,49 @@ class _OSErrorRioReader:
         raise OSError("RaiderIO DB locked")
 
 
+class _RaidOnlyRioReader:
+    def lookup_profile(self, *_args: object, **_kwargs: object) -> object:
+        return type(
+            "Profile",
+            (),
+            {
+                "current_score": 0,
+                "dungeons": [],
+                "has_mplus_profile": False,
+                "raid_progress": {
+                    "M": {
+                        "killed": 2,
+                        "total": 8,
+                        "bosses": {"Plexus Sentinel": True},
+                    }
+                },
+            },
+        )()
+
+
+class _ScoreOnlyRioReader:
+    def __init__(self, current_score: int) -> None:
+        self.current_score = current_score
+
+    def lookup_profile(self, *_args: object, **_kwargs: object) -> object:
+        return type(
+            "Profile",
+            (),
+            {
+                "current_score": self.current_score,
+                "dungeons": [],
+                "raid_progress": {},
+                "has_mplus_profile": True,
+            },
+        )()
+
+
 class _ColdRioReader:
-    def __init__(self, rows: list[dict] | None = None) -> None:
+    def __init__(self, rows: list[dict] | None = None, current_score: int = 0) -> None:
         self.loaded = False
         self.callbacks = []
         self.rows = rows or [{"name": "Pit of Saron", "key_level": 12}]
+        self.current_score = current_score
 
     def lookup_profile(
         self,
@@ -101,7 +156,16 @@ class _ColdRioReader:
         assert allow_load is False
         if not self.loaded or (name, realm, region) != ("Chinie", "Ragnaros", "EU"):
             return None
-        return type("Profile", (), {"dungeons": [dict(row) for row in self.rows]})()
+        return type(
+            "Profile",
+            (),
+            {
+                "current_score": self.current_score,
+                "dungeons": [dict(row) for row in self.rows],
+                "raid_progress": {},
+                "has_mplus_profile": True,
+            },
+        )()
 
     def preload_region_async(self, region: str | None, on_loaded=None) -> None:
         assert region == "EU"
@@ -451,6 +515,131 @@ def test_new_applicant_enriches_rio_dungeon_rows_from_local_reader():
     ]
 
 
+def test_new_applicant_enriches_rio_raid_progress_from_local_reader():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_FakeRioReader())
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    rio_dungeons=[],
+                )
+            ],
+        )
+    )
+
+    assert state.applicants["42:1"].rio_raid_progress == {
+        "M": {
+            "killed": 4,
+            "total": 8,
+            "bosses": {"Plexus Sentinel": True},
+        }
+    }
+
+
+def test_raid_only_local_rio_profile_preserves_decoded_mplus_rows():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_RaidOnlyRioReader())
+    decoded_rows = [{"name": "Skyreach", "key_level": 15}]
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    rio_dungeons=decoded_rows,
+                )
+            ],
+        )
+    )
+
+    applicant = state.applicants["42:1"]
+    assert applicant.rio_dungeons == decoded_rows
+    assert applicant.rio_raid_progress["M"]["killed"] == 2
+
+
+def test_local_rio_profile_fills_missing_applicant_score():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_ScoreOnlyRioReader(2861))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    score=0,
+                    rio_profile=False,
+                )
+            ],
+        )
+    )
+
+    applicant = state.applicants["42:1"]
+    assert applicant.score == 2861
+    assert applicant.rio_profile is True
+
+
+def test_local_rio_profile_does_not_downgrade_higher_transport_score():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_ScoreOnlyRioReader(2861))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    score=3100,
+                    rio_profile=True,
+                )
+            ],
+        )
+    )
+
+    applicant = state.applicants["42:1"]
+    assert applicant.score == 3100
+    assert applicant.rio_profile is True
+
+
+def test_local_rio_profile_fills_missing_roster_score():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_ScoreOnlyRioReader(2861))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Dmss-Ragnaros"),
+            roster=[
+                _roster_decoded(
+                    "Chinie",
+                    score=0,
+                    rio_profile=False,
+                )
+            ],
+        )
+    )
+
+    member = state.party_members["chinie"]
+    assert member.score == 2861
+    assert member.rio_profile is True
+
+
 def test_new_applicant_enriches_explicit_hyphenated_realm_from_local_reader():
     state = AppState()
     sm = StateMachine(state, rio_reader=_FakeRioReader())
@@ -520,9 +709,38 @@ def test_local_rio_lookup_oserror_does_not_abort_snapshot():
     assert state.applicants["42:1"].rio_dungeons == decoded_rows
 
 
+def test_local_rio_reenrich_error_preserves_existing_raid_progress():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_FakeRioReader())
+    updated: list[str] = []
+    sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Chinie")],
+        )
+    )
+    applicant = state.applicants["42:1"]
+    assert applicant.rio_raid_progress
+    updated.clear()
+
+    sm._rio_reader = _OSErrorRioReader()
+    sm._reenrich_local_rio_rows()
+
+    assert applicant.rio_raid_progress == {
+        "M": {
+            "killed": 4,
+            "total": 8,
+            "bosses": {"Plexus Sentinel": True},
+        }
+    }
+    assert updated == []
+
+
 def test_first_snapshot_reenriches_applicant_after_async_rio_preload_completes():
     state = AppState()
-    reader = _ColdRioReader()
+    reader = _ColdRioReader(current_score=2861)
     sm = StateMachine(state, rio_reader=reader)
     updated: list[str] = []
     sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
@@ -538,12 +756,15 @@ def test_first_snapshot_reenriches_applicant_after_async_rio_preload_completes()
     state.applicants["42:1"].mplus_dps = 91.0
 
     assert state.applicants["42:1"].rio_dungeons == []
+    assert state.applicants["42:1"].score == 2000
 
     reader.finish()
 
     assert state.applicants["42:1"].rio_dungeons == [
         {"name": "Pit of Saron", "key_level": 12}
     ]
+    assert state.applicants["42:1"].score == 2861
+    assert state.applicants["42:1"].rio_profile is True
     assert state.applicants["42:1"].fetch_status == "ready"
     assert state.applicants["42:1"].mplus_dps == 91.0
     assert updated == ["42:1"]
@@ -551,7 +772,7 @@ def test_first_snapshot_reenriches_applicant_after_async_rio_preload_completes()
 
 def test_first_snapshot_reenriches_party_member_after_async_rio_preload_completes():
     state = AppState()
-    reader = _ColdRioReader()
+    reader = _ColdRioReader(current_score=2861)
     sm = StateMachine(state, rio_reader=reader)
     roster_updates = 0
 
@@ -569,6 +790,7 @@ def test_first_snapshot_reenriches_party_member_after_async_rio_preload_complete
     )
 
     assert state.party_members["chinie"].rio_dungeons == []
+    assert state.party_members["chinie"].score == 3000
     assert roster_updates == 1
 
     reader.finish()
@@ -576,6 +798,8 @@ def test_first_snapshot_reenriches_party_member_after_async_rio_preload_complete
     assert state.party_members["chinie"].rio_dungeons == [
         {"name": "Pit of Saron", "key_level": 12}
     ]
+    assert state.party_members["chinie"].score == 3000
+    assert state.party_members["chinie"].rio_profile is True
     assert roster_updates == 2
 
 
@@ -747,6 +971,84 @@ def test_name_change_at_same_composite_key_wipes_wcl_data():
     assert a.mplus_dps_breakdown == []  # WCL wiped
 
 
+def test_clear_wcl_data_removes_raid_boss_parses_but_preserves_rio_progress():
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=None,
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout-Realm", spec_id=71)],
+        )
+    )
+    applicant = state.applicants["42:1"]
+    applicant.fetch_status = "ready"
+    applicant.raid_boss_parses = {
+        "M": [
+            {
+                "name": "Plexus Sentinel",
+                "encounter_id": 3001,
+                "overall": 46.0,
+                "ilvl": 68.0,
+            }
+        ]
+    }
+    applicant.rio_raid_progress = {
+        "M": {
+            "killed": 1,
+            "total": 8,
+            "bosses": {"Plexus Sentinel": True},
+        }
+    }
+
+    applicant.clear_wcl_data()
+
+    assert applicant.raid_boss_parses == {}
+    assert applicant.rio_raid_progress == {
+        "M": {
+            "killed": 1,
+            "total": 8,
+            "bosses": {"Plexus Sentinel": True},
+        }
+    }
+
+
+def test_project_wcl_data_to_preferences_removes_disabled_raid_boss_difficulties():
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=None,
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout-Realm", spec_id=71)],
+        )
+    )
+    applicant = state.applicants["42:1"]
+    applicant.fetch_status = "ready"
+    applicant.wcl_metric_preferences = MetricPreferences(
+        mplus=True,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    applicant.raid_boss_parses = {
+        "N": [{"name": "Boss N", "overall": 70.0}],
+        "H": [{"name": "Boss H", "overall": 80.0}],
+        "M": [{"name": "Boss M", "overall": 90.0}],
+    }
+
+    applicant.project_wcl_data_to_preferences(
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        )
+    )
+
+    assert applicant.raid_boss_parses == {"H": [{"name": "Boss H", "overall": 80.0}]}
+
+
 def test_spec_change_wipes_wcl_data_unchanged_behavior():
     """Pin existing spec_changed wipe behavior — regression guard."""
     state = AppState()
@@ -772,6 +1074,50 @@ def test_spec_change_wipes_wcl_data_unchanged_behavior():
     assert a.spec_id == 63
     assert a.fetch_status == "pending"
     assert a.raid_mythic is None
+
+
+def test_transient_zero_spec_snapshot_preserves_existing_applicant_identity():
+    state = AppState()
+    sm = StateMachine(state)
+    snap1 = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(
+                aid=99,
+                member_idx=1,
+                name="Same-Realm",
+                spec_id=65,
+                ilvl=268,
+                role=1,
+            ),
+        ],
+    )
+    sm.apply_snapshot(snap1)
+    state.applicants["99:1"].fetch_status = "ready"
+    state.applicants["99:1"].mplus_hps = 72.0
+
+    snap2 = Snapshot(
+        listing=_listing(),
+        version=None,
+        applicants=[
+            _decoded(
+                aid=99,
+                member_idx=1,
+                name="Same-Realm",
+                spec_id=0,
+                ilvl=0,
+                role=1,
+            ),
+        ],
+    )
+    sm.apply_snapshot(snap2)
+
+    a = state.applicants["99:1"]
+    assert a.spec_id == 65
+    assert a.ilvl == 268
+    assert a.fetch_status == "ready"
+    assert a.mplus_hps == 72.0
 
 
 def test_metric_role_change_wipes_wcl_data():
@@ -1263,6 +1609,52 @@ def test_roster_snapshot_updates_and_removes_members_by_identity():
     assert set(state.party_members) == {"host-realm", "newfriend-realm"}
     assert state.party_members["host-realm"].score == 3100
     assert state.party_members["newfriend-realm"].score == 2600
+
+
+def test_transient_zero_spec_snapshot_preserves_existing_roster_identity():
+    state = AppState()
+    sm = StateMachine(state)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            roster=[
+                _roster_decoded(
+                    "Friend-Realm",
+                    unit_index=2,
+                    spec_id=65,
+                    ilvl=268,
+                    role=1,
+                ),
+            ],
+        )
+    )
+    member = state.party_members["friend-realm"]
+    member.fetch_status = "ready"
+    member.mplus_hps = 72.0
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            roster=[
+                _roster_decoded(
+                    "Friend-Realm",
+                    unit_index=2,
+                    spec_id=0,
+                    ilvl=0,
+                    role=1,
+                ),
+            ],
+        )
+    )
+
+    member = state.party_members["friend-realm"]
+    assert member.spec_id == 65
+    assert member.ilvl == 268
+    assert member.fetch_status == "ready"
+    assert member.mplus_hps == 72.0
 
 
 def test_empty_roster_snapshot_clears_party_without_clearing_applicants():

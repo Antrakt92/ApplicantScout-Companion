@@ -75,7 +75,7 @@
     {
       "class_id": 8,
       "flags": 0,
-      "ilvl": 0,
+      "ilvl": 704,
       "main_score": 2999,
       "name": "Friend-Realm",
       "rio_best_dungeon_key": 16,
@@ -96,7 +96,7 @@
     {
       "class_id": 5,
       "flags": 0,
-      "ilvl": 0,
+      "ilvl": 707,
       "main_score": 2700,
       "name": "Healer-Realm",
       "rio_best_dungeon_key": 15,
@@ -117,7 +117,7 @@
     {
       "class_id": 11,
       "flags": 0,
-      "ilvl": 0,
+      "ilvl": 702,
       "main_score": 2600,
       "name": "Feral-Realm",
       "rio_best_dungeon_key": 14,
@@ -138,7 +138,7 @@
     {
       "class_id": 2,
       "flags": 0,
-      "ilvl": 0,
+      "ilvl": 702,
       "main_score": 2500,
       "name": "Ret-Realm",
       "rio_best_dungeon_key": 13,

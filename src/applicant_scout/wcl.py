@@ -16,6 +16,7 @@ import httpx
 
 from .atomic_io import apply_private_file_mode, atomic_write_text
 from .constants import (
+    CURRENT_RAID_ENCOUNTERS,
     CURRENT_RAID_ZONE_ID,
     MPLUS_ENCOUNTERS,
     ROLE_TO_RAID_METRIC,
@@ -72,6 +73,12 @@ WCL_NETWORK_RETRY_SECONDS = 30.0
 # byBracket: true: percentile filtered to bracket of player's best timed key.
 # Within that bracket, rankPercent = comparison against same-bracket peers.
 _QUERY_CACHE: dict[tuple[str, str], str] = {}
+_RAID_DETAIL_QUERY_CACHE: dict[tuple[str, str], str] = {}
+_RAID_DETAIL_DIFFICULTIES: dict[str, tuple[str, int, str]] = {
+    "N": ("raid_n", 3, "raid_normal"),
+    "H": ("raid_h", 4, "raid_heroic"),
+    "M": ("raid_m", 5, "raid_mythic"),
+}
 
 
 def wcl_metric_role(role: str) -> str:
@@ -143,6 +150,55 @@ query CharacterRanks($name: String!, $serverSlug: String!, $serverRegion: String
 }}
 """.strip()
     _QUERY_CACHE[cache_key] = q
+    return q
+
+
+def _build_raid_boss_detail_query(
+    role: str,
+    metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+) -> str:
+    metric_role = wcl_metric_role(role)
+    cache_key = (metric_role, metric_preferences.cache_key())
+    cached = _RAID_DETAIL_QUERY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    metric = "hps" if metric_role == "HEALER" else "dps"
+    lines: list[str] = []
+    for difficulty_key, (alias_prefix, wcl_difficulty, pref_name) in (
+        _RAID_DETAIL_DIFFICULTIES.items()
+    ):
+        if not getattr(metric_preferences, pref_name):
+            continue
+        for encounter_alias, encounter_id, _name in CURRENT_RAID_ENCOUNTERS:
+            base = f"{alias_prefix}_{encounter_alias}"
+            lines.append(
+                f"      {base}_overall: encounterRankings(encounterID: {encounter_id}, "
+                f"difficulty: {wcl_difficulty}, metric: {metric}, "
+                "specName: $specName, compare: Parses)"
+            )
+            lines.append(
+                f"      {base}_ilvl: encounterRankings(encounterID: {encounter_id}, "
+                f"difficulty: {wcl_difficulty}, metric: {metric}, "
+                "specName: $specName, compare: Parses, byBracket: true)"
+            )
+    metric_blocks = "\n".join(lines).rstrip()
+    q = f"""
+query RaidBossDetails($name: String!, $serverSlug: String!, $serverRegion: String!, $specName: String!) {{
+  rateLimitData {{
+    limitPerHour
+    pointsSpentThisHour
+    pointsResetIn
+  }}
+  characterData {{
+    character(name: $name, serverSlug: $serverSlug, serverRegion: $serverRegion) {{
+      name
+      classID
+{metric_blocks}
+    }}
+  }}
+}}
+""".strip()
+    _RAID_DETAIL_QUERY_CACHE[cache_key] = q
     return q
 
 
@@ -715,6 +771,18 @@ class WCLClient:
         )
         return points
 
+    def _estimate_raid_boss_detail_quota_points(
+        self, metric_preferences: MetricPreferences
+    ) -> float:
+        enabled_difficulties = sum(
+            (
+                metric_preferences.raid_normal,
+                metric_preferences.raid_heroic,
+                metric_preferences.raid_mythic,
+            )
+        )
+        return 1.0 + float(enabled_difficulties * len(CURRENT_RAID_ENCOUNTERS) * 2)
+
     def _quota_guard_error_locked(
         self, now: float
     ) -> CharacterRanks | None:
@@ -1039,6 +1107,149 @@ class WCLClient:
         finally:
             self._release_quota_reservation(quota_reservation)
 
+    def fetch_character_raid_boss_details(
+        self,
+        name: str,
+        server_slug: str,
+        spec_id: int,
+        role: str = "DAMAGER",
+        region: Optional[str] = None,
+        metric_preferences: MetricPreferences | None = None,
+    ) -> dict[str, list[dict[str, object]]]:
+        metric_preferences = metric_preferences or self.metric_preferences
+        metric_preferences = MetricPreferences(
+            mplus=False,
+            raid_normal=metric_preferences.raid_normal,
+            raid_heroic=metric_preferences.raid_heroic,
+            raid_mythic=metric_preferences.raid_mythic,
+        )
+        if not metric_preferences.raid_enabled:
+            return {}
+        spec_name = SPEC_ID_TO_WCL_NAME.get(spec_id, "")
+        if spec_id <= 0 or not spec_name:
+            return {}
+        now = time.time()
+        with self._quota_lock:
+            auth = self._auth
+            auth_generation = self._auth_generation
+            retry_until = max(
+                self._rate_limited_until,
+                self._server_retry_until,
+                self._network_retry_until,
+            )
+        if now < retry_until:
+            raise WCLApiError(
+                f"WCL retry cooldown; retrying in {int(retry_until - now)}s",
+                error_kind=WCL_ERROR_RATE_LIMITED,
+            )
+        reservation = self._reserve_quota_for_fetch(
+            self._estimate_raid_boss_detail_quota_points(metric_preferences),
+            now=now,
+        )
+        if isinstance(reservation, CharacterRanks):
+            raise WCLApiError(
+                reservation.error or "WCL quota guard",
+                error_kind=reservation.error_kind or WCL_ERROR_QUOTA_GUARD,
+            )
+        try:
+            body = {
+                "query": _build_raid_boss_detail_query(role, metric_preferences),
+                "variables": {
+                    "name": name,
+                    "serverSlug": server_slug,
+                    "serverRegion": region if region is not None else self.region,
+                    "specName": spec_name,
+                },
+            }
+            for attempt in range(2):
+                token = auth.get_token()
+                resp = self._http.post(
+                    WCL_API_URL,
+                    json=body,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if resp.status_code == 401 and attempt == 0:
+                    auth.invalidate()
+                    continue
+                if resp.status_code in (401, 403):
+                    raise WCLApiError(
+                        f"Authentication failed (HTTP {resp.status_code})",
+                        error_kind=WCL_ERROR_AUTH,
+                    )
+                if resp.status_code == 429:
+                    with self._quota_lock:
+                        if auth_generation == self._auth_generation:
+                            self._rate_limited_until = time.time() + 300
+                    raise WCLApiError(
+                        "Rate limited (HTTP 429) — cooldown 5min",
+                        error_kind=WCL_ERROR_RATE_LIMITED,
+                    )
+                if resp.status_code >= 500:
+                    with self._quota_lock:
+                        if auth_generation == self._auth_generation:
+                            self._server_retry_until = (
+                                time.time() + WCL_SERVER_RETRY_SECONDS
+                            )
+                    raise WCLApiError(
+                        f"Server error (HTTP {resp.status_code})",
+                        error_kind=WCL_ERROR_SERVER,
+                    )
+                if resp.status_code != 200:
+                    raise WCLApiError(
+                        f"Unexpected HTTP {resp.status_code}: {resp.text[:200]}",
+                        error_kind=WCL_ERROR_HTTP,
+                    )
+                break
+            data = _json_object_response(resp, WCLApiError, "WCL response")
+            data_root = data.get("data")
+            if not isinstance(data_root, dict):
+                raise WCLApiError(
+                    "Malformed WCL response: data is not an object",
+                    error_kind=WCL_ERROR_MALFORMED,
+                )
+            quota = _rate_limit_info_from_dict(data_root.get("rateLimitData"))
+            if quota is not None:
+                self._record_quota_snapshot(quota, auth_generation=auth_generation)
+            graphql_result = _ranks_for_graphql_errors(
+                _graphql_errors(data.get("errors"))
+            )
+            if graphql_result is not None:
+                if graphql_result.not_found:
+                    return {}
+                if graphql_result.error:
+                    raise WCLApiError(
+                        graphql_result.error,
+                        error_kind=graphql_result.error_kind or WCL_ERROR_GRAPHQL,
+                    )
+            character_data = data_root.get("characterData")
+            if not isinstance(character_data, dict):
+                raise WCLApiError(
+                    "Malformed WCL response: characterData is not an object",
+                    error_kind=WCL_ERROR_MALFORMED,
+                )
+            char = character_data.get("character")
+            if char is None:
+                return {}
+            if not isinstance(char, dict):
+                raise WCLApiError(
+                    "Malformed WCL response: character is not an object",
+                    error_kind=WCL_ERROR_MALFORMED,
+                )
+            rows: dict[str, list[dict[str, object]]] = {}
+            for difficulty, (_prefix, _wcl_difficulty, pref_name) in (
+                _RAID_DETAIL_DIFFICULTIES.items()
+            ):
+                if not getattr(metric_preferences, pref_name):
+                    continue
+                parsed = _raid_boss_rows_from_character(
+                    char, difficulty, CURRENT_RAID_ENCOUNTERS, spec_name
+                )
+                if parsed:
+                    rows[difficulty] = parsed
+            return rows
+        finally:
+            self._release_quota_reservation(reservation)
+
 
 def _safe_nonnegative_cache_int(v) -> int:
     if isinstance(v, bool) or v is None:
@@ -1165,6 +1376,55 @@ def _spec_norm(s: str) -> str:
     if not isinstance(s, str):
         return ""
     return s.lower().replace(" ", "")
+
+
+def _raid_boss_rows_from_character(
+    char: dict,
+    difficulty_key: str,
+    encounters: list[tuple[str, int, str]] = CURRENT_RAID_ENCOUNTERS,
+    spec_name: str = "",
+) -> list[dict[str, object]]:
+    alias_info = _RAID_DETAIL_DIFFICULTIES.get(difficulty_key)
+    if not alias_info:
+        return []
+    alias_prefix, _wcl_difficulty, _pref_name = alias_info
+    rows: list[dict[str, object]] = []
+    for encounter_alias, encounter_id, name in encounters:
+        base = f"{alias_prefix}_{encounter_alias}"
+        overall = _best_rank_percent(char.get(f"{base}_overall"), spec_name)
+        ilvl = _best_rank_percent(char.get(f"{base}_ilvl"), spec_name)
+        if overall is None and ilvl is None:
+            continue
+        rows.append(
+            {
+                "encounter_id": encounter_id,
+                "name": name,
+                "overall": overall,
+                "ilvl": ilvl,
+            }
+        )
+    return rows
+
+
+def _best_rank_percent(enc_data: object, spec_name: str = "") -> Optional[float]:
+    if not isinstance(enc_data, dict):
+        return None
+    ranks = enc_data.get("ranks")
+    if not isinstance(ranks, list):
+        return None
+    wanted_spec = _spec_norm(spec_name)
+    values: list[float] = []
+    for rank in ranks:
+        if not isinstance(rank, dict):
+            continue
+        if wanted_spec:
+            rank_spec = rank.get("spec")
+            if not isinstance(rank_spec, str) or _spec_norm(rank_spec) != wanted_spec:
+                continue
+        value = _safe_cache_percent(rank.get("rankPercent"))
+        if value is not None:
+            values.append(value)
+    return max(values) if values else None
 
 
 def _process_encounter_ranks(

@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFontMetrics
 
 from applicant_scout.__main__ import StateMachine
-from applicant_scout.overlay import COL_RIO, _mplus_cell_visuals, OverlayWindow
+from applicant_scout.metric_preferences import MetricPreferences
+from applicant_scout.overlay import (
+    COL_H,
+    COL_MPLUS,
+    COL_RIO,
+    INFO_PANEL_PREFERRED_HEIGHT,
+    METRIC_COLUMN_TEXT_PADDING,
+    _mplus_cell_visuals,
+    OverlayWindow,
+)
 from applicant_scout.scoring import CONTEXT_RAID, detect_listing_context
 from applicant_scout.screenshot import (
     DecodedApplicant,
@@ -157,6 +167,36 @@ def _window(tmp_path, qtbot, state: AppState) -> OverlayWindow:
     return win
 
 
+def test_info_panel_defaults_to_first_visible_party_row(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win = _window(tmp_path, qtbot, state)
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    win._hover_id = None
+    win._pinned_id = None
+    win._sync_delegate_and_panel()
+
+    assert win._panel._current_applicant is not None
+    assert win._panel._current_applicant.applicant_id == win._id_by_row[0]
+    assert win._panel._unpin_button.isHidden()
+
+
+def test_empty_info_panel_keeps_full_height(qtbot, tmp_path):
+    state = AppState()
+    win = _window(tmp_path, qtbot, state)
+
+    win._refresh_table()
+
+    assert win._id_by_row == []
+    assert win._panel._current_applicant is None
+    assert win._panel._status_label.text() == "Hover a row for applicant details."
+    assert win._panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
+
+
 def test_tabs_switch_between_applicants_and_party_rows(qtbot, tmp_path):
     state = AppState()
     state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
@@ -215,7 +255,7 @@ def test_tabs_preserve_pins_independently(qtbot, tmp_path):
     assert win._pinned_id == "7:1"
 
 
-def test_hide_show_clears_inactive_tab_hover_cache(qtbot, tmp_path):
+def test_hide_show_clears_inactive_tab_hover_cache(qtbot, tmp_path, monkeypatch):
     state = AppState()
     state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
@@ -228,6 +268,7 @@ def test_hide_show_clears_inactive_tab_hover_cache(qtbot, tmp_path):
     qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
     assert win._hover_by_tab["applicants"] == "7:1"
 
+    monkeypatch.setattr(win, "_resolve_hover_from_cursor", lambda: None)
     win.hide()
     win.show()
     qtbot.waitUntil(win.isVisible, timeout=1000)
@@ -307,6 +348,47 @@ def test_cleared_snapshot_preserves_visible_party_roster(qtbot, tmp_path):
     assert win.isVisible()
     assert win._active_tab == "party"
     assert win._table.rowCount() == 1
+
+
+def test_cleared_raid_listing_preserves_party_raid_difficulty(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    member = _ready_mplus_member("host-realm")
+    member.name = "Host-Realm"
+    member.raid_heroic = 82.0
+    member.raid_heroic_median = 82.0
+    state.party_members["host-realm"] = member
+    win = _window(tmp_path, qtbot, state)
+    win.apply_metric_preferences(
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+        refetch_missing=False,
+    )
+    win.on_listing_changed()
+
+    state.listing = None
+    state.clear_all()
+    win.on_cleared()
+    win._flush_overlay_refresh()
+
+    listing = win._effective_listing()
+    assert listing is not None
+    assert detect_listing_context(listing) == CONTEXT_RAID
+    assert listing.difficulty_id == 15
+    assert win._active_tab == "party"
+    assert win._title_bar.title_label.text() == "Party — Manaforge Omega (1)"
+    assert win._table.item(0, COL_H).text().startswith(
+        ("FIT ", "OK ", "RISK ", "SUP ", "EST ")
+    )
 
 
 def test_cleared_snapshot_does_not_carry_applicant_filter_into_party_auto_switch(
@@ -450,6 +532,31 @@ def test_new_applicant_after_party_auto_switch_returns_to_applicants(
     assert win._active_tab == "applicants"
     assert win._id_by_row == ["7:1"]
     assert win._role_filter == set()
+
+
+def test_clicking_auto_selected_party_tab_makes_it_manual(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["host-realm"].fetch_status = "ready"
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._active_tab == "party"
+    assert win._party_tab_auto_selected
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+
+    assert win._active_tab == "party"
+    assert not win._party_tab_auto_selected
+
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm", "DAMAGER")
+    win.on_applicant_added(state.applicants["7:1"])
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "party"
+    assert win._id_by_row == ["host-realm"]
 
 
 def test_applicant_update_after_party_auto_switch_returns_to_applicants(
@@ -610,7 +717,9 @@ def test_empty_roster_clears_party_pin_cache_before_same_member_returns(
 
     assert win._pinned_id is None
     assert win._pinned_by_tab["party"] is None
-    assert win._panel._status_label.text() == "Hover a row for applicant details."
+    assert win._panel._current_applicant is not None
+    assert win._panel._current_applicant.applicant_id == "host-realm"
+    assert win._panel._unpin_button.isHidden()
 
 
 def test_party_title_keeps_listing_key_context(qtbot, tmp_path):
@@ -694,6 +803,41 @@ def test_target_key_control_defaults_to_listing_key(qtbot, tmp_path):
     assert not win._tab_bar._key_down_button.isHidden()
     assert win._tab_bar._key_up_button.text() == "▲"
     assert win._tab_bar._key_down_button.text() == "▼"
+
+
+def test_target_key_control_hides_for_raid_contexts(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    win = _window(tmp_path, qtbot, state)
+
+    win._update_title()
+
+    assert win._tab_bar._key_label.isHidden()
+    assert win._tab_bar._key_control.isHidden()
+
+    state.listing = _listing(key_level=12)
+    win.on_listing_changed()
+    win._flush_overlay_refresh()
+
+    assert not win._tab_bar._key_label.isHidden()
+    assert not win._tab_bar._key_control.isHidden()
+
+    member = _ready_mplus_member()
+    member.is_raid_member = True
+    state.listing = None
+    state.party_members["dps-realm"] = member
+    win.on_listing_changed()
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+
+    assert win._tab_bar._key_label.isHidden()
+    assert win._tab_bar._key_control.isHidden()
 
 
 def test_target_key_down_button_overrides_known_mplus_listing_without_collapsing(
@@ -845,6 +989,180 @@ def test_manual_target_key_does_not_override_raid_listing(qtbot, tmp_path):
     assert listing is not None
     assert listing.key_level == 0
     assert detect_listing_context(listing) == CONTEXT_RAID
+
+
+def test_raid_listing_renders_fit_in_target_column_and_neutral_mplus(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    applicant = _ready_mplus_member("7:1")
+    applicant.applicant_id = "7:1"
+    applicant.name = "Applicant-Realm"
+    applicant.mplus_dps = 44.0
+    applicant.mplus_dps_median = None
+    applicant.mplus_dps_breakdown = [
+        {
+            "name": "Pit of Saron",
+            "parse_percent": 44.0,
+            "median_percent": None,
+            "key_level": 18,
+            "run_count": 1,
+        }
+    ]
+    state.applicants["7:1"] = applicant
+    win = _window(tmp_path, qtbot, state)
+    applicant.raid_heroic = 82.0
+    applicant.raid_heroic_median = 82.0
+    win.apply_metric_preferences(
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+        refetch_missing=False,
+    )
+
+    win._refresh_table()
+
+    assert win._table.item(0, COL_H).text().startswith("FIT ")
+    assert "82/82" in win._table.item(0, COL_H).text()
+    assert win._table.item(0, COL_MPLUS).text() == "44 N=1 +18"
+    _text, _fg, mplus_bg = _mplus_cell_visuals(applicant, win._effective_listing())
+    assert mplus_bg is None
+
+
+def test_raid_fit_column_expands_to_fit_rendered_text(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    applicant = _ready_mplus_member("7:1")
+    applicant.applicant_id = "7:1"
+    applicant.name = "Applicant-Realm"
+    state.applicants["7:1"] = applicant
+    win = _window(tmp_path, qtbot, state)
+    applicant.raid_heroic = 82.0
+    applicant.raid_heroic_median = 82.0
+    win.apply_metric_preferences(
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+        refetch_missing=False,
+    )
+
+    win._refresh_table()
+
+    item = win._table.item(0, COL_H)
+    required = (
+        QFontMetrics(item.font()).horizontalAdvance(item.text())
+        + METRIC_COLUMN_TEXT_PADDING
+    )
+    assert item.text().startswith("FIT ")
+    assert "82/82" in item.text()
+    assert win._table.columnWidth(COL_H) >= required
+
+
+def test_raid_listing_forces_disabled_target_column_with_estimated_fit(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    applicant = _app("7:1", "Applicant-Realm")
+    applicant.fetch_status = "ready"
+    state.applicants["7:1"] = applicant
+    win = _window(tmp_path, qtbot, state)
+    applicant.raid_mythic = 70.0
+    applicant.raid_mythic_median = 60.0
+    win.apply_metric_preferences(
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+        refetch_missing=False,
+    )
+
+    win._refresh_table()
+
+    assert not win._table.isColumnHidden(COL_H)
+    assert win._table.item(0, COL_H).text().startswith("EST ")
+    assert "M 70/60" in win._table.item(0, COL_H).text()
+
+
+def test_raid_listing_target_column_keeps_loading_state(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    applicant = _app("7:1", "Applicant-Realm")
+    applicant.fetch_status = "loading"
+    state.applicants["7:1"] = applicant
+    win = _window(tmp_path, qtbot, state)
+    win._metric_preferences = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    win._panel.set_metric_preferences(win._metric_preferences)
+    win._apply_metric_column_visibility()
+
+    win._refresh_table()
+
+    assert win._table.item(0, COL_H).text() == "…"
+    assert win._table.item(0, COL_MPLUS).text() == "…"
+
+
+def test_raid_group_target_column_waits_for_ready_members(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    leader = _app("7:1", "Leader-Realm", "TANK")
+    follower = _app("7:2", "Follower-Realm", "DAMAGER")
+    leader.fetch_status = "loading"
+    follower.fetch_status = "loading"
+    state.applicants["7:1"] = leader
+    state.applicants["7:2"] = follower
+    win = _window(tmp_path, qtbot, state)
+    win._metric_preferences = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    win._panel.set_metric_preferences(win._metric_preferences)
+    win._apply_metric_column_visibility()
+
+    win._refresh_table()
+
+    assert win._table.item(0, COL_H).text() == "…"
+    assert win._table.item(1, COL_H).text() == "…"
 
 
 def test_empty_roster_clears_manual_target_key(qtbot, tmp_path):

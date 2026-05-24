@@ -28,11 +28,17 @@ from applicant_scout.overlay import (
     DUNGEON_NAME_WIDTH,
     DUNGEON_WCL_KEY_WIDTH,
     GAME_FOREGROUND_POLL_MS,
+    INFO_PANEL_PREFERRED_HEIGHT,
     LAUNCHER_SIZE,
     MPLUS_INDIVIDUAL_BG_ROLE,
     MPLUS_INDIVIDUAL_TEXT_ROLE,
     MPLUS_PACKAGE_BG_ROLE,
     MPLUS_PACKAGE_TEXT_ROLE,
+    RAID_KILL_WIDTH,
+    RAID_METRIC_WIDTH,
+    RAID_NAME_WIDTH,
+    RAID_SINGLE_KILL_WIDTH,
+    RAID_SINGLE_METRIC_WIDTH,
     ApplicantInfoPanel,
     OverlayWindow,
     _HoverHighlightDelegate,
@@ -107,6 +113,18 @@ def _listing() -> Listing:
     )
 
 
+def _raid_listing(difficulty_id: int = 16) -> Listing:
+    return Listing(
+        activity_id=0,
+        dungeon_name="",
+        listing_name="Mythic Raid",
+        comment="",
+        key_level=0,
+        category_id=3,
+        difficulty_id=difficulty_id,
+    )
+
+
 def _member(applicant_id: str = "host-realm", name: str = "Host-Realm") -> RosterMember:
     return RosterMember(
         applicant_id=applicant_id,
@@ -158,6 +176,461 @@ def test_ready_panel_renders_identity_metrics_and_dungeons(qtbot):
     assert key_label.width() == DUNGEON_KEY_WIDTH
     assert wcl_key_label.width() == DUNGEON_WCL_KEY_WIDTH
     assert value_label.width() == DUNGEON_METRIC_WIDTH
+
+
+def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+    qtbot.addWidget(panel)
+
+    panel.setApplicantData(
+        _app(
+            rio_raid_progress={
+                "M": {
+                    "killed": 1,
+                    "total": 9,
+                    "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
+                }
+            },
+            raid_boss_parses={
+                "M": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 46.0,
+                        "ilvl": 68.0,
+                    }
+                ]
+            },
+        ),
+        _raid_listing(),
+    )
+
+    assert panel._detail_mode == "raid"
+    name_label, rio_label, wcl_key_label, value_label = panel._dungeon_rows[0]
+    assert name_label.text() == "Imperator Averzian"
+    assert rio_label.text() == "M2"
+    assert "#ffe36a" in rio_label.styleSheet()
+    assert wcl_key_label.text() == ""
+    assert value_label.text() == "M 46-68"
+    assert name_label.width() == RAID_NAME_WIDTH
+    assert rio_label.width() == RAID_SINGLE_KILL_WIDTH
+    assert wcl_key_label.width() == 0
+    assert value_label.width() == RAID_SINGLE_METRIC_WIDTH
+    assert value_label.width() <= 80
+    assert value_label.alignment() & Qt.AlignmentFlag.AlignHCenter
+
+
+def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=True,
+        ),
+    )
+    qtbot.addWidget(panel)
+
+    panel.setApplicantData(
+        _app(
+            rio_raid_progress={
+                "M": {
+                    "killed": 1,
+                    "total": 9,
+                    "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
+                },
+                "H": {
+                    "killed": 1,
+                    "total": 9,
+                    "boss_kills": [1, 0, 0, 0, 0, 0, 0, 0, 0],
+                },
+            },
+            raid_boss_parses={
+                "M": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 46.0,
+                        "ilvl": 68.0,
+                    }
+                ],
+                "H": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 83.0,
+                        "ilvl": 63.0,
+                    }
+                ],
+            },
+        ),
+        _raid_listing(),
+    )
+
+    assert panel._detail_mode == "raid"
+    assert panel._dungeon_rows[0][0].text() == "Imperator Averzian"
+    assert panel._dungeon_rows[0][1].text() == "H1 · M2"
+    assert panel._dungeon_rows[0][2].text() == ""
+    assert panel._dungeon_rows[0][3].text() == "H 83-63 · M 46-68"
+    assert panel._dungeon_rows[0][1].width() == RAID_KILL_WIDTH
+    assert panel._dungeon_rows[0][3].width() == RAID_METRIC_WIDTH
+    assert panel._dungeon_rows[1][0].text() == "Vorasius"
+    assert panel._dungeon_rows[1][1].text() == ""
+    assert panel._visible_detail_rows == 9
+    assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
+
+
+def test_raid_listing_panel_remembers_manual_mplus_detail_tab(qtbot):
+    panel = ApplicantInfoPanel(None, MetricPreferences())
+    qtbot.addWidget(panel)
+    app = _app()
+    listing = _raid_listing()
+
+    panel.setApplicantData(app, listing)
+    panel._on_detail_mode_clicked("mplus")
+    panel.setApplicantData(app, listing)
+
+    assert panel._detail_mode == "mplus"
+    assert panel._dungeon_rows[0][0].text() == "Pit of Saron"
+
+
+def test_mplus_detail_widths_restore_after_raid_detail(qtbot):
+    panel = ApplicantInfoPanel(None, MetricPreferences())
+    qtbot.addWidget(panel)
+    app = _app(
+        rio_raid_progress={
+            "N": {"boss_kills": [5, 0, 0, 0, 0, 0, 0, 0, 0]},
+            "H": {"boss_kills": [3, 0, 0, 0, 0, 0, 0, 0, 0]},
+            "M": {"boss_kills": [1, 0, 0, 0, 0, 0, 2, 0, 0]},
+        },
+        raid_boss_parses={
+            "N": [{"encounter_id": 3176, "overall": 91.0, "ilvl": 78.0}],
+            "H": [{"encounter_id": 3176, "overall": 83.0, "ilvl": 63.0}],
+            "M": [{"encounter_id": 3176, "overall": 46.0, "ilvl": 68.0}],
+        },
+    )
+
+    panel.setApplicantData(app, _raid_listing())
+    assert panel._dungeon_rows[0][1].text() == "N5 · H3 · M1"
+    assert panel._dungeon_rows[0][3].text() == "N 91-78 · H 83-63 · M 46-68"
+    assert panel._dungeon_rows[0][3].width() > DUNGEON_METRIC_WIDTH
+
+    panel._on_detail_mode_clicked("mplus")
+
+    assert panel._dungeon_rows[0][0].text() == "Pit of Saron"
+    assert panel._dungeon_rows[0][2].text() == "WCL +14"
+    assert panel._dungeon_rows[0][3].text() == "100/80"
+    assert panel._dungeon_rows[0][1].width() == DUNGEON_KEY_WIDTH
+    assert panel._dungeon_rows[0][3].width() == DUNGEON_METRIC_WIDTH
+
+
+def test_overlay_queues_raid_boss_fetch_when_panel_switches_back_to_raid(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={"M": []})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        window._raid_boss_fetches_in_flight.clear()
+
+        window._panel._on_detail_mode_clicked("mplus")
+        assert window._raid_boss_fetches_in_flight == {}
+
+        app.raid_boss_parses = {}
+        window._panel._on_detail_mode_clicked("raid")
+
+        assert window._raid_boss_fetches_in_flight
+    finally:
+        window.close()
+
+
+def test_raid_boss_fetch_done_preserves_existing_mplus_data(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest")
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        base_identity = window._current_fetch_identity_for(app)
+        assert base_identity is not None
+        detail_identity = replace(
+            base_identity,
+            metric_preferences=window._raid_detail_preferences(),
+        )
+
+        window._on_raid_boss_fetch_done(
+            detail_identity,
+            {
+                "M": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 46.0,
+                        "ilvl": 68.0,
+                    }
+                ]
+            },
+            "",
+        )
+
+        assert app.raid_boss_parses["M"][0]["overall"] == 46.0
+        assert app.mplus_dps == 80.0
+        assert app.mplus_dps_median == 62.0
+        assert app.mplus_dps_breakdown
+    finally:
+        window.close()
+
+
+def test_stale_raid_boss_fetch_does_not_apply_after_difficulty_change(
+    qtbot, tmp_path
+):
+    initial_prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    updated_prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=initial_prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(
+        state, client, cache, tmp_path, metric_preferences=initial_prefs
+    )
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        base_identity = window._current_fetch_identity_for(app)
+        assert base_identity is not None
+        stale_detail_identity = replace(
+            base_identity,
+            metric_preferences=window._raid_detail_preferences(),
+        )
+
+        window.apply_metric_preferences(updated_prefs, refetch_missing=False)
+        window._raid_boss_fetches_in_flight.clear()
+
+        window._on_raid_boss_fetch_done(
+            stale_detail_identity,
+            {
+                "M": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 46.0,
+                        "ilvl": 68.0,
+                    }
+                ]
+            },
+            "",
+        )
+
+        assert app.raid_boss_parses == {}
+        assert window._raid_boss_fetches_in_flight
+        queued = next(iter(window._raid_boss_fetches_in_flight.values()))
+        assert queued.metric_preferences.raid_heroic
+        assert queued.metric_preferences.raid_mythic
+    finally:
+        window.close()
+
+
+def test_raid_boss_fetch_failure_is_scoped_to_metric_preferences(qtbot, tmp_path):
+    initial_prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    updated_prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=initial_prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(
+        state, client, cache, tmp_path, metric_preferences=initial_prefs
+    )
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        base_identity = window._current_fetch_identity_for(app)
+        assert base_identity is not None
+        failed_detail_identity = replace(
+            base_identity,
+            metric_preferences=window._raid_detail_preferences(),
+        )
+
+        window._on_raid_boss_fetch_done(failed_detail_identity, {}, "quota")
+        window._launch_raid_boss_fetch_if_needed(app)
+        assert window._raid_boss_fetches_in_flight == {}
+
+        window.apply_metric_preferences(updated_prefs, refetch_missing=False)
+
+        assert window._raid_boss_fetches_in_flight
+        queued = next(iter(window._raid_boss_fetches_in_flight.values()))
+        assert queued.metric_preferences.raid_heroic
+        assert queued.metric_preferences.raid_mythic
+    finally:
+        window.close()
+
+
+def test_raid_boss_fetch_failure_is_scoped_to_character_identity(qtbot, tmp_path):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        base_identity = window._current_fetch_identity_for(app)
+        assert base_identity is not None
+        failed_detail_identity = replace(
+            base_identity,
+            metric_preferences=window._raid_detail_preferences(),
+        )
+
+        window._on_raid_boss_fetch_done(failed_detail_identity, {}, "quota")
+        window._launch_raid_boss_fetch_if_needed(app)
+        assert window._raid_boss_fetches_in_flight == {}
+
+        app.name = "Other-Ravencrest"
+        app.raid_boss_parses = {}
+        window._launch_raid_boss_fetch_if_needed(app)
+
+        assert window._raid_boss_fetches_in_flight
+        queued = next(iter(window._raid_boss_fetches_in_flight.values()))
+        assert queued.charname_key == "other"
+    finally:
+        window.close()
+
+
+def test_retryable_raid_boss_fetch_failure_expires(qtbot, tmp_path, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now[0])
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        base_identity = window._current_fetch_identity_for(app)
+        assert base_identity is not None
+        failed_detail_identity = replace(
+            base_identity,
+            metric_preferences=window._raid_detail_preferences(),
+        )
+
+        window._on_raid_boss_fetch_done(
+            failed_detail_identity,
+            {},
+            "network",
+            overlay_mod.WCL_ERROR_NETWORK,
+        )
+        window._launch_raid_boss_fetch_if_needed(app)
+        assert window._raid_boss_fetches_in_flight == {}
+
+        now[0] += 2.0
+        window._launch_raid_boss_fetch_if_needed(app)
+
+        assert window._raid_boss_fetches_in_flight
+    finally:
+        window.close()
 
 
 def test_panel_renders_current_and_better_main_score(qtbot):
@@ -1048,7 +1521,8 @@ def test_pinned_row_can_be_unpinned_from_info_panel(qtbot, tmp_path):
         assert window._pinned_id is None
         assert window._pinned_by_tab["applicants"] is None
         assert window._delegate._pinned_row == -1
-        assert window._panel._status_label.text() == "Hover a row for applicant details."
+        assert window._panel._current_applicant is not None
+        assert window._panel._current_applicant.applicant_id == "42"
         assert window._panel._unpin_button.isHidden()
     finally:
         client.close()
@@ -1209,7 +1683,7 @@ def test_flush_geometry_stops_pending_timer_and_persists_window_json(qtbot, tmp_
         client.close()
 
 
-def test_flush_geometry_near_screen_top_preserves_unexpanded_window_origin(
+def test_flush_geometry_near_screen_top_persists_unexpanded_window_origin(
     qtbot, tmp_path
 ):
     auth = WCLAuth("client", "secret", tmp_path)
@@ -1257,11 +1731,10 @@ def test_flush_geometry_near_screen_top_preserves_unexpanded_window_origin(
         window._sync_delegate_and_panel()
         QApplication.processEvents()
 
-        assert window.geometry().y() == original_y
-        assert window.geometry().height() == 240
-
-        window._on_cell_entered(0, 0)
-        QApplication.processEvents()
+        assert window._panel._current_applicant is not None
+        assert window._panel._current_applicant.applicant_id == "detailed"
+        assert window.geometry().y() == top
+        assert window.geometry().height() > 240
 
         window.flush_geometry()
 
@@ -3207,9 +3680,8 @@ def test_role_filter_clears_pin_when_pinned_group_is_hidden(qtbot, tmp_path):
         )
 
         assert window._pinned_id is None
-        assert (
-            window._panel._status_label.text() == "Hover a row for applicant details."
-        )
+        assert window._panel._current_applicant is not None
+        assert window._panel._current_applicant.applicant_id == "20:1"
     finally:
         client.close()
 
@@ -3281,7 +3753,10 @@ def test_applicant_tab_pin_cache_clears_when_listing_clears_to_party(
         window._on_source_tab_changed("applicants")
 
         assert window._pinned_id is None
-        assert window._panel._name_label.text() != "New"
+        assert window._panel._current_applicant is not None
+        assert window._panel._current_applicant.applicant_id == "42"
+        assert window._panel._name_label.text() == "New"
+        assert window._panel._unpin_button.isHidden()
     finally:
         client.close()
 

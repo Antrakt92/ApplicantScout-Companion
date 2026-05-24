@@ -29,6 +29,7 @@ from PyQt6.QtGui import (
     QColor,
     QCursor,
     QFont,
+    QFontMetrics,
     QGuiApplication,
     QIcon,
     QMouseEvent,
@@ -59,6 +60,7 @@ from PyQt6.QtWidgets import (
 from .constants import (
     ALL_ROLES,
     CLASS_COLOURS,
+    CURRENT_RAID_ENCOUNTERS,
     ROLE_COLOURS,
     ROLE_GLYPHS,
     ROLE_LABELS,
@@ -78,6 +80,7 @@ from .scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
     PackageFit,
+    RAID_TARGET_BY_DIFFICULTY_ID,
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
@@ -134,13 +137,22 @@ DUNGEON_NAME_WIDTH = 148
 DUNGEON_KEY_WIDTH = 72
 DUNGEON_WCL_KEY_WIDTH = 72
 DUNGEON_METRIC_WIDTH = 58
+RAID_NAME_WIDTH = DUNGEON_NAME_WIDTH
+RAID_KILL_WIDTH = 96
+RAID_METRIC_WIDTH = 168
+RAID_SINGLE_KILL_WIDTH = 42
+RAID_SINGLE_METRIC_WIDTH = 72
+METRIC_COLUMN_TEXT_PADDING = 22
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
+RAID_COL_BY_TARGET = {"N": COL_N, "H": COL_H, "M": COL_M}
 WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
 MIN_VISIBLE_WINDOW_WIDTH = 420
 USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
 INFO_PANEL_MIN_HEIGHT = 80
-INFO_PANEL_PREFERRED_HEIGHT = 220
+INFO_PANEL_PREFERRED_HEIGHT = 238
+INFO_PANEL_DETAIL_BASE_ROWS = max(len(MPLUS_ENCOUNTERS), len(CURRENT_RAID_ENCOUNTERS))
+INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT = 17
 LAUNCHER_SIZE = 42
 GAME_FOREGROUND_POLL_MS = 500
 LAUNCHER_DRAG_POLL_MS = 16
@@ -259,6 +271,10 @@ HEADER_TOOLTIPS: list[str] = [
 
 class _FetchSignals(QObject):
     done = pyqtSignal(object, object)  # _FetchIdentity, CharacterRanks
+
+
+class _RaidBossFetchSignals(QObject):
+    done = pyqtSignal(object, object, object, object)  # identity, rows, error, kind
 
 
 @dataclass(frozen=True)
@@ -442,6 +458,39 @@ class _FetchTask(QRunnable):
                 expected_generation=self._cache_generation,
             )
         self.signals.done.emit(identity, ranks)
+
+
+class _RaidBossFetchTask(QRunnable):
+    def __init__(self, identity: _FetchIdentity, name: str, client: WCLClient):
+        super().__init__()
+        self.signals = _RaidBossFetchSignals()
+        self._identity = identity
+        self._name = name
+        self._client = client
+
+    def run(self) -> None:
+        try:
+            rows = self._client.fetch_character_raid_boss_details(
+                self._name,
+                self._identity.server_slug,
+                self._identity.spec_id,
+                self._identity.metric_role,
+                region=self._identity.region,
+                metric_preferences=self._identity.metric_preferences,
+            )
+        except WCLApiError as exc:
+            self.signals.done.emit(self._identity, {}, str(exc), exc.error_kind)
+            return
+        except WCLAuthError as exc:
+            self.signals.done.emit(self._identity, {}, str(exc), WCL_ERROR_AUTH)
+            return
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            self.signals.done.emit(self._identity, {}, str(exc), WCL_ERROR_NETWORK)
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.signals.done.emit(self._identity, {}, str(exc), "")
+            return
+        self.signals.done.emit(self._identity, rows, "", "")
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -1259,6 +1308,10 @@ class SourceTabBar(QWidget):
         self._key_spin.setValue(key_level)
         self._key_spin.blockSignals(was_blocked)
 
+    def set_target_key_visible(self, visible: bool) -> None:
+        self._key_label.setVisible(visible)
+        self._key_control.setVisible(visible)
+
 
 # ───────────────────────────────────────────────────────────────────
 # Role filter bar (above the info panel, below the title bar)
@@ -1385,6 +1438,7 @@ class ApplicantInfoPanel(QFrame):
     hover; this keeps fast mouse movement cheap and avoids layout churn."""
 
     pinCleared = pyqtSignal()
+    detailChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -1468,6 +1522,33 @@ class ApplicantInfoPanel(QFrame):
         self._package_label.setObjectName("infoPackageBadge")
         outer.addWidget(self._package_label)
 
+        self._current_applicant: Applicant | None = None
+        self._current_listing: Listing | None = None
+        self._current_detail_context_key = ""
+        self._detail_mode = "mplus"
+        self._detail_rows_enabled = False
+        self._visible_detail_rows = 0
+        self._detail_mode_by_context: dict[str, str] = {}
+
+        self._detail_tabs = QWidget(self)
+        self._detail_tabs.setObjectName("infoDetailTabs")
+        detail_layout = QHBoxLayout(self._detail_tabs)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(4)
+        self._detail_buttons: dict[str, QPushButton] = {}
+        for mode, label in (("raid", "Raid"), ("mplus", "M+")):
+            button = QPushButton(label)
+            button.setObjectName(f"infoDetailTab_{mode}")
+            button.setCheckable(True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(
+                lambda _checked=False, m=mode: self._on_detail_mode_clicked(m)
+            )
+            self._detail_buttons[mode] = button
+            detail_layout.addWidget(button)
+        detail_layout.addStretch(1)
+        outer.addWidget(self._detail_tabs)
+
         self._status_label = QLabel("")
         self._status_label.setObjectName("infoPanelStatus")
         self._status_label.setWordWrap(True)
@@ -1479,7 +1560,8 @@ class ApplicantInfoPanel(QFrame):
         self._dungeon_grid.setHorizontalSpacing(6)
         self._dungeon_grid.setVerticalSpacing(1)
         self._dungeon_rows: list[tuple[QLabel, QLabel, QLabel, QLabel]] = []
-        for row in range(8):
+        max_raid_detail_rows = len(CURRENT_RAID_ENCOUNTERS) * 3
+        for row in range(max(INFO_PANEL_DETAIL_BASE_ROWS, max_raid_detail_rows)):
             name = QLabel("")
             name.setObjectName("infoDungeonName")
             rio_key = QLabel("")
@@ -1517,6 +1599,8 @@ class ApplicantInfoPanel(QFrame):
 
     def set_metric_preferences(self, metric_preferences: MetricPreferences) -> None:
         self._metric_preferences = metric_preferences
+        if self._current_applicant is not None:
+            self._set_status_or_data(self._current_applicant, self._current_listing)
 
     def sizeHint(self) -> QSize:  # type: ignore[override]
         hint = super().sizeHint()
@@ -1527,15 +1611,18 @@ class ApplicantInfoPanel(QFrame):
         return QSize(hint.width(), INFO_PANEL_MIN_HEIGHT)
 
     def target_height(self) -> int:
-        return (
-            INFO_PANEL_PREFERRED_HEIGHT
-            if self._dungeon_widget.isVisible()
-            else INFO_PANEL_MIN_HEIGHT
+        if self._visible_detail_rows <= 0:
+            return INFO_PANEL_PREFERRED_HEIGHT
+        extra_rows = max(0, self._visible_detail_rows - INFO_PANEL_DETAIL_BASE_ROWS)
+        return INFO_PANEL_PREFERRED_HEIGHT + (
+            extra_rows * INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT
         )
 
     def setPlaceholder(self) -> None:
         """Show the compact hint when nothing is hovered/pinned."""
         self._hide_data_widgets()
+        self._current_applicant = None
+        self._current_listing = None
         self._status_label.setText("Hover a row for applicant details.")
         self._status_label.setVisible(True)
 
@@ -1548,6 +1635,8 @@ class ApplicantInfoPanel(QFrame):
         pinned: bool = False,
     ) -> None:
         """Show full applicant scout data in the fixed widget layout."""
+        self._current_applicant = applicant
+        self._current_listing = listing
         self._unpin_button.setVisible(pinned)
         self._set_identity(applicant)
         self._set_package(package, applicant, listing)
@@ -1570,6 +1659,8 @@ class ApplicantInfoPanel(QFrame):
             label.setVisible(False)
         self._package_label.setText("")
         self._package_label.setVisible(False)
+        self._detail_tabs.setVisible(False)
+        self._visible_detail_rows = 0
         for row in self._dungeon_rows:
             for label in row:
                 label.setText("")
@@ -1658,10 +1749,11 @@ class ApplicantInfoPanel(QFrame):
     ) -> None:
         status = applicant.fetch_status
         self._clear_metrics_and_dungeons()
+        self._sync_detail_controls(listing)
         self._status_label.setVisible(False)
         if status in ("loading", "pending"):
             self._show_status("Fetching from Warcraft Logs…")
-            self._set_dungeon_rows(applicant, listing)
+            self._set_detail_rows(applicant, listing)
             return
         if status == "error":
             msg = applicant.error_message or "unknown"
@@ -1673,7 +1765,7 @@ class ApplicantInfoPanel(QFrame):
             )
             self._show_status(f"WCL error: {msg}{source_note}", error=True)
             self._set_metric_badges(applicant, listing)
-            self._set_dungeon_rows(applicant, listing)
+            self._set_detail_rows(applicant, listing)
             return
         if status == "not_found":
             fit = candidate_fit(applicant, listing)
@@ -1684,14 +1776,14 @@ class ApplicantInfoPanel(QFrame):
             )
             self._show_status(f"Not found on Warcraft Logs{source_note}")
             self._set_metric_badges(applicant, listing)
-            self._set_dungeon_rows(applicant, listing)
+            self._set_detail_rows(applicant, listing)
             return
         if status != "ready":
             self._show_status("")
             return
 
         visible_metrics = self._set_metric_badges(applicant, listing)
-        visible_rows = self._set_dungeon_rows(applicant, listing)
+        visible_rows = self._set_detail_rows(applicant, listing)
         fit_status = self._mplus_fit_status_text(applicant, listing)
         if fit_status:
             self._show_status(fit_status)
@@ -1713,6 +1805,67 @@ class ApplicantInfoPanel(QFrame):
                 label.setText("")
                 label.setVisible(False)
         self._dungeon_widget.setVisible(False)
+        self._visible_detail_rows = 0
+
+    def _detail_context_key(self, listing: Listing | None) -> str:
+        context = detect_listing_context(listing)
+        if context == CONTEXT_RAID and listing is not None:
+            return f"raid:{listing.difficulty_id}:{listing.activity_id}"
+        if context == CONTEXT_MPLUS:
+            return "mplus"
+        return "unknown"
+
+    def _sync_detail_controls(self, listing: Listing | None) -> None:
+        self._current_detail_context_key = self._detail_context_key(listing)
+        context = detect_listing_context(listing)
+        modes: list[str] = []
+        if self._metric_preferences.raid_enabled and context == CONTEXT_RAID:
+            modes.append("raid")
+        if self._metric_preferences.mplus:
+            modes.append("mplus")
+        if not modes:
+            self._detail_rows_enabled = False
+            self._detail_tabs.setVisible(False)
+            return
+        self._detail_rows_enabled = True
+        default_mode = (
+            "raid"
+            if context == CONTEXT_RAID and "raid" in modes
+            else "mplus"
+            if "mplus" in modes
+            else modes[0]
+        )
+        mode = self._detail_mode_by_context.get(
+            self._current_detail_context_key, default_mode
+        )
+        if mode not in modes:
+            mode = default_mode
+        self._set_detail_mode(mode)
+        self._detail_tabs.setVisible(len(modes) > 1 or mode == "raid")
+
+    def _set_detail_mode(self, mode: str) -> None:
+        self._detail_mode = mode
+        for key, button in self._detail_buttons.items():
+            enabled = (
+                (key == "raid" and self._metric_preferences.raid_enabled)
+                or (key == "mplus" and self._metric_preferences.mplus)
+            )
+            button.setVisible(enabled)
+            button.setChecked(key == mode)
+
+    def _active_detail_mode(self) -> str:
+        if self._detail_mode == "raid" and self._metric_preferences.raid_enabled:
+            return "raid"
+        if self._detail_mode == "mplus" and self._metric_preferences.mplus:
+            return "mplus"
+        return "raid" if self._metric_preferences.raid_enabled else "mplus"
+
+    def _on_detail_mode_clicked(self, mode: str) -> None:
+        self._detail_mode_by_context[self._current_detail_context_key] = mode
+        self._set_detail_mode(mode)
+        if self._current_applicant is not None:
+            self._set_status_or_data(self._current_applicant, self._current_listing)
+        self.detailChanged.emit()
 
     def _set_metric_badges(
         self, applicant: Applicant, listing: Listing | None = None
@@ -1789,11 +1942,51 @@ class ApplicantInfoPanel(QFrame):
             f"cov {coverage}/{max(len(MPLUS_ENCOUNTERS), 1)} · {source}"
         )
 
+    @staticmethod
+    def _set_detail_row_widths(
+        labels: tuple[QLabel, QLabel, QLabel, QLabel],
+        *,
+        raid: bool,
+        raid_difficulty_count: int = 0,
+    ) -> None:
+        name_label, rio_label, wcl_key_label, value_label = labels
+        raid_single = raid and raid_difficulty_count <= 1
+        name_label.setFixedWidth(RAID_NAME_WIDTH if raid else DUNGEON_NAME_WIDTH)
+        rio_label.setFixedWidth(
+            RAID_SINGLE_KILL_WIDTH
+            if raid_single
+            else RAID_KILL_WIDTH
+            if raid
+            else DUNGEON_KEY_WIDTH
+        )
+        wcl_key_label.setFixedWidth(0 if raid else DUNGEON_WCL_KEY_WIDTH)
+        value_label.setFixedWidth(
+            RAID_SINGLE_METRIC_WIDTH
+            if raid_single
+            else RAID_METRIC_WIDTH
+            if raid
+            else DUNGEON_METRIC_WIDTH
+        )
+        if raid:
+            rio_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        else:
+            rio_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            value_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+        wcl_key_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
     def _set_dungeon_rows(
         self, applicant: Applicant, listing: Listing | None = None
     ) -> int:
         if not self._metric_preferences.mplus:
             self._dungeon_widget.setVisible(False)
+            self._visible_detail_rows = 0
             return 0
         rio_rows = _rio_dungeon_rows_by_name(applicant, listing)
         wcl_rows = _wcl_dungeon_rows_by_name(applicant, listing)
@@ -1814,6 +2007,7 @@ class ApplicantInfoPanel(QFrame):
             ),
         )[:8]
         for row_idx, labels in enumerate(self._dungeon_rows):
+            self._set_detail_row_widths(labels, raid=False)
             name_label, rio_label, wcl_key_label, value_label = labels
             if row_idx >= len(row_keys):
                 for label in labels:
@@ -1868,6 +2062,86 @@ class ApplicantInfoPanel(QFrame):
                 label.setVisible(True)
         visible = len(row_keys)
         self._dungeon_widget.setVisible(visible > 0)
+        self._visible_detail_rows = visible
+        return visible
+
+    def _set_detail_rows(
+        self, applicant: Applicant, listing: Listing | None = None
+    ) -> int:
+        if not self._detail_rows_enabled:
+            self._dungeon_widget.setVisible(False)
+            self._visible_detail_rows = 0
+            return 0
+        if self._active_detail_mode() == "raid":
+            return self._set_raid_rows(applicant)
+        return self._set_dungeon_rows(applicant, listing)
+
+    def _set_raid_rows(self, applicant: Applicant) -> int:
+        if not self._metric_preferences.raid_enabled:
+            self._dungeon_widget.setVisible(False)
+            self._visible_detail_rows = 0
+            return 0
+        difficulties = _enabled_raid_difficulty_keys(self._metric_preferences)
+        rows = _raid_boss_rows_for_display(applicant, difficulties)
+        for row_idx, labels in enumerate(self._dungeon_rows):
+            self._set_detail_row_widths(
+                labels, raid=True, raid_difficulty_count=len(difficulties)
+            )
+            name_label, rio_label, wcl_key_label, value_label = labels
+            if row_idx >= len(rows):
+                for label in labels:
+                    label.setText("")
+                    label.setVisible(False)
+                    label.setStyleSheet("")
+                continue
+            row = rows[row_idx]
+            raw_boss_name = row.get("name")
+            boss_name = "?" if raw_boss_name is None else str(raw_boss_name)
+            if boss_name:
+                name_label.setText(
+                    name_label.fontMetrics().elidedText(
+                        boss_name,
+                        Qt.TextElideMode.ElideRight,
+                        RAID_NAME_WIDTH,
+                    )
+                )
+                name_label.setToolTip(
+                    boss_name if name_label.text() != boss_name else ""
+                )
+            else:
+                name_label.setText("")
+                name_label.setToolTip("")
+            rio_text = str(row.get("rio_text") or "")
+            if rio_text:
+                rio_label.setText(rio_text)
+                rio_label.setStyleSheet(
+                    "background-color: #30313a; color: #ffe36a; "
+                    "border: 1px solid #555667; border-radius: 2px; "
+                    "padding: 0 4px; font-weight: bold;"
+                )
+            else:
+                rio_label.setText("")
+                rio_label.setStyleSheet("")
+            value_text = str(row.get("value") or "")
+            if value_text:
+                wcl_key_label.setText("")
+                wcl_key_label.setStyleSheet("")
+                value_label.setText(value_text)
+                bg = str(row.get("colour") or "#2a2a33")
+                value_label.setStyleSheet(
+                    f"background-color: {bg}; color: {_text_colour_for_bg(bg)}; "
+                    "border-radius: 2px; padding: 0 4px; font-weight: bold;"
+                )
+            else:
+                wcl_key_label.setText("")
+                wcl_key_label.setStyleSheet("")
+                value_label.setText("")
+                value_label.setStyleSheet("")
+            for label in labels:
+                label.setVisible(True)
+        visible = len(rows)
+        self._dungeon_widget.setVisible(visible > 0)
+        self._visible_detail_rows = visible
         return visible
 
     def _set_badge(self, label: QLabel, text: str, bg: str, fg: str) -> None:
@@ -1901,6 +2175,13 @@ class OverlayWindow(QMainWindow):
         self._cache = cache
         self._config_dir = config_dir
         self._listing_present = state.listing is not None
+        # WHY: when a raid listing closes after the group forms, Party still
+        # needs the last raid difficulty for fit scoring until the roster ends.
+        self._last_raid_listing: Listing | None = (
+            state.listing
+            if detect_listing_context(state.listing) == CONTEXT_RAID
+            else None
+        )
         self._metric_preferences = metric_preferences
         self._show_settings = show_settings
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
@@ -1978,6 +2259,7 @@ class OverlayWindow(QMainWindow):
         # existing labels on hover/pin so the table below never jolts.
         self._panel = ApplicantInfoPanel(container, metric_preferences)
         self._panel.pinCleared.connect(self._clear_pin)
+        self._panel.detailChanged.connect(self._on_panel_detail_changed)
         layout.addWidget(self._panel)
 
         # Table — _TooltipTableWidget overrides viewportEvent to render tooltips
@@ -2114,6 +2396,10 @@ class OverlayWindow(QMainWindow):
         # applicant_id. Old listing-session workers can complete after the same
         # id has been reused by a new listing.
         self._fetches_in_flight: dict[str, _FetchIdentity] = {}
+        self._raid_boss_fetches_in_flight: dict[str, _FetchIdentity] = {}
+        self._raid_boss_fetch_failures: dict[
+            tuple[str, str, str, str, int, str, str, int, int], float | None
+        ] = {}
         self._wcl_runtime_generation = 0
         self._listing_session_generation = 0
         self._refresh_flush_pending = False
@@ -2205,6 +2491,7 @@ class OverlayWindow(QMainWindow):
         self._refresh_flush_pending = False
         self._refresh_needs_title = False
         self._refresh_needs_show = False
+        self._apply_metric_column_visibility()
         self._refresh_table()
         if update_title:
             self._update_title()
@@ -2321,6 +2608,8 @@ class OverlayWindow(QMainWindow):
 
     def _on_source_tab_changed(self, key: str) -> None:
         if key == self._active_tab:
+            if key == "party":
+                self._party_tab_auto_selected = False
             return
         self._hover_by_tab[self._active_tab] = self._hover_id
         self._pinned_by_tab[self._active_tab] = self._pinned_id
@@ -2352,9 +2641,11 @@ class OverlayWindow(QMainWindow):
         self._sync_target_key_control()
 
     def _can_apply_manual_target_key(self) -> bool:
+        if self._party_roster_is_raid():
+            return False
         listing = self._state.listing
         if listing is None:
-            return True
+            return self._last_raid_listing is None
         if detect_listing_context(listing) == CONTEXT_RAID:
             return False
         return listing.category_id in (0, _MPLUS_CATEGORY_ID)
@@ -2363,8 +2654,24 @@ class OverlayWindow(QMainWindow):
         listing = self._state.listing
         if listing is not None and detect_listing_context(listing) == CONTEXT_RAID:
             return 0
+        if self._party_roster_is_raid():
+            return 0
         leader_key = getattr(self._state, "leader_key", None)
         return positive_int(getattr(leader_key, "key_level", 0))
+
+    def _party_roster_is_raid(self) -> bool:
+        return any(
+            getattr(member, "is_raid_member", False)
+            for member in self._state.party_members.values()
+        )
+
+    def _should_show_target_key_control(self) -> bool:
+        listing = self._state.listing
+        if listing is not None and detect_listing_context(listing) == CONTEXT_RAID:
+            return False
+        if listing is None and self._last_raid_listing is not None:
+            return False
+        return not self._party_roster_is_raid()
 
     def _restore_applicants_after_party_fallback(self) -> None:
         if self._active_tab != "party" or not self._party_tab_auto_selected:
@@ -2441,6 +2748,10 @@ class OverlayWindow(QMainWindow):
 
     def on_listing_changed(self) -> None:
         listing = self._state.listing
+        if detect_listing_context(listing) == CONTEXT_RAID:
+            self._last_raid_listing = listing
+        elif listing is not None:
+            self._last_raid_listing = None
         listing_created = listing is not None and not self._listing_present
         self._listing_present = listing is not None
         if (
@@ -2476,6 +2787,8 @@ class OverlayWindow(QMainWindow):
             if identity.row_source == "party"
         ]
         self._fetches_in_flight.clear()
+        self._raid_boss_fetches_in_flight.clear()
+        self._raid_boss_fetch_failures.clear()
         self._clear_role_filter()
         self._refresh_flush_pending = False
         self._refresh_needs_title = False
@@ -2503,6 +2816,7 @@ class OverlayWindow(QMainWindow):
         # arrives transiently when applicants come and go between listing-active
         # periods; hiding on every EMPTY would flicker the window.
         if self._state.listing is None:
+            self._last_raid_listing = None
             self._clear_manual_target_key()
             self.show_launcher_only()
 
@@ -2510,7 +2824,10 @@ class OverlayWindow(QMainWindow):
         for member in self._state.party_members.values():
             if member.fetch_status == "pending":
                 self._launch_fetch(member)
+        if self._manual_target_key is not None and not self._can_apply_manual_target_key():
+            self._clear_manual_target_key()
         if len(self._state.party_members) == 0:
+            self._last_raid_listing = None
             self._hover_by_tab["party"] = None
             self._pinned_by_tab["party"] = None
             if self._active_tab == "party":
@@ -2712,6 +3029,8 @@ class OverlayWindow(QMainWindow):
                     key_level=leader_target_key,
                     category_id=2,
                 )
+            if self._state.listing is None and self._state.party_members:
+                return self._last_raid_listing
             return self._state.listing
         if self._state.listing is not None:
             return replace(self._state.listing, key_level=self._manual_target_key)
@@ -2725,6 +3044,11 @@ class OverlayWindow(QMainWindow):
         )
 
     def _sync_target_key_control(self) -> None:
+        show_key_control = self._should_show_target_key_control()
+        self._tab_bar.set_target_key_visible(show_key_control)
+        if not show_key_control:
+            self._tab_bar.set_target_key(0)
+            return
         if self._manual_target_key is not None:
             self._tab_bar.set_target_key(self._manual_target_key)
             return
@@ -2743,8 +3067,12 @@ class OverlayWindow(QMainWindow):
         )
 
     def _resolve_visible_id(self) -> str | None:
-        """Hover wins over pin; both must reference an applicant currently in
-        state. Returns None when nothing should display."""
+        """Resolve which row should feed the info panel.
+
+        Hover wins over pin, and both must reference a currently visible row.
+        Without an explicit hover/pin, preview the first visible row so the
+        fixed-height info panel is never an empty spacer while rows exist.
+        """
         rows = self._active_row_map()
         if (
             self._hover_id
@@ -2758,6 +3086,12 @@ class OverlayWindow(QMainWindow):
             and self._is_row_visible_for_applicant(self._pinned_id)
         ):
             return self._pinned_id
+        return self._first_visible_row_id(rows)
+
+    def _first_visible_row_id(self, rows: Mapping[str, Applicant]) -> str | None:
+        for applicant_id in self._id_by_row:
+            if applicant_id in rows and self._is_row_visible_for_applicant(applicant_id):
+                return applicant_id
         return None
 
     def _is_row_visible_for_applicant(self, applicant_id: str) -> bool:
@@ -2788,6 +3122,7 @@ class OverlayWindow(QMainWindow):
             self._package_fit_by_raw.get(raw_aid) if self._active_tab == "applicants" else None,
             pinned=visible_id == self._pinned_id,
         )
+        self._launch_raid_boss_fetch_if_needed(applicant)
 
     def _apply_panel_height_above_table(self) -> None:
         if not self.isVisible():
@@ -2897,6 +3232,15 @@ class OverlayWindow(QMainWindow):
         self._pinned_id = None
         self._pinned_by_tab[self._active_tab] = None
         self._sync_delegate_and_panel()
+
+    def _on_panel_detail_changed(self) -> None:
+        visible_id = self._resolve_visible_id()
+        if visible_id is None:
+            return
+        applicant = self._active_row_map().get(visible_id)
+        if applicant is not None:
+            self._launch_raid_boss_fetch_if_needed(applicant)
+        self._apply_panel_height_above_table()
 
     def _resolve_hover_from_cursor(self) -> str | None:
         """Map global cursor position to an applicant_id under it (or None
@@ -3035,21 +3379,39 @@ class OverlayWindow(QMainWindow):
         rio_item.setForeground(QColor(rio_score_colour(rio_score)))
         self._table.setItem(row, COL_RIO, rio_item)
 
-        # Raid percentile cells: dual "best/median" display.
-        raid_cells = [
-            (COL_N, applicant.raid_normal, applicant.raid_normal_median),
-            (COL_H, applicant.raid_heroic, applicant.raid_heroic_median),
-            (COL_M, applicant.raid_mythic, applicant.raid_mythic_median),
-        ]
-        for col, best, median in raid_cells:
-            self._table.setItem(
-                row, col, _raid_dual_cell(best, median, applicant.fetch_status)
-            )
         raw_aid, _ = _split_composite(applicant.applicant_id)
         listing = self._effective_listing()
+        listing_context = detect_listing_context(listing)
+        target_raid = _raid_target_key_for_listing(listing)
         package = self._package_fit_by_raw.get(raw_aid)
+
+        # Raid percentile cells: dual "best/median" display. For active raid
+        # listings, the target difficulty cell becomes the recommendation slot.
+        raid_cells = [
+            ("N", COL_N, applicant.raid_normal, applicant.raid_normal_median),
+            ("H", COL_H, applicant.raid_heroic, applicant.raid_heroic_median),
+            ("M", COL_M, applicant.raid_mythic, applicant.raid_mythic_median),
+        ]
+        for raid_key, col, best, median in raid_cells:
+            if listing_context == CONTEXT_RAID and raid_key == target_raid:
+                item = (
+                    _raid_package_cell(package)
+                    if package is not None
+                    and package.display
+                    and self._group_ready_by_raw.get(raw_aid, False)
+                    and self._group_size_by_raw.get(raw_aid, 1) >= 2
+                    else _raid_fit_cell(applicant, listing, raid_key)
+                )
+            else:
+                item = _raid_dual_cell(best, median, applicant.fetch_status)
+            self._table.setItem(
+                row,
+                col,
+                item,
+            )
         if (
-            package is not None
+            listing_context == CONTEXT_MPLUS
+            and package is not None
             and package.display
             and self._group_size_by_raw.get(raw_aid, 1) >= 2
         ):
@@ -3059,10 +3421,10 @@ class OverlayWindow(QMainWindow):
                 _mplus_group_cell(package, applicant, listing),
             )
         else:
-            # M+ cell: context-fit display for M+ listings, legacy headline otherwise.
-            self._table.setItem(
-                row, COL_MPLUS, _mplus_dual_cell(applicant, listing)
-            )
+            # M+ cell: context-fit display for M+ listings, legacy headline
+            # otherwise. Raid listings keep this neutral so the target raid
+            # column owns the visible recommendation.
+            self._table.setItem(row, COL_MPLUS, _mplus_dual_cell(applicant, listing))
 
     def _refresh_table(self) -> None:
         """Rebuild table sorted by effective RIO score DESC.
@@ -3104,6 +3466,7 @@ class OverlayWindow(QMainWindow):
         sorted_applicants = self._active_sorted_rows()
         listing = self._effective_listing()
         self._group_size_by_raw = {}
+        self._group_ready_by_raw = {}
         self._package_fit_by_raw = {}
         if self._active_tab == "applicants":
             group_members: dict[str, list[Applicant]] = {}
@@ -3118,6 +3481,9 @@ class OverlayWindow(QMainWindow):
                 CONTEXT_RAID,
             ):
                 for raw_aid, members in group_members.items():
+                    self._group_ready_by_raw[raw_aid] = all(
+                        member.fetch_status == "ready" for member in members
+                    )
                     if len(members) < 2:
                         continue
                     fit = package_fit(members, listing)
@@ -3131,6 +3497,7 @@ class OverlayWindow(QMainWindow):
             self._row_for_id[applicant.applicant_id] = row
             self._render_row(row, applicant)
         self._maybe_grow_name_column(sorted_applicants)
+        self._auto_size_metric_columns()
 
         if self._active_tab == "applicants":
             self._delegate.set_group_markers(
@@ -3251,11 +3618,49 @@ class OverlayWindow(QMainWindow):
             self._table.setColumnWidth(COL_NAME, target)
             self._apply_metric_minimum_width()
 
+    def _auto_size_metric_columns(self) -> None:
+        """Size raid metric columns to their rendered text instead of eliding fit."""
+        for col in (COL_N, COL_H, COL_M):
+            if self._table.isColumnHidden(col):
+                continue
+            width = self._metric_column_required_width(col)
+            self._table.setColumnWidth(col, width)
+
+    def _metric_column_required_width(self, col: int) -> int:
+        width = COLUMN_WIDTHS[col]
+        header_item = self._table.horizontalHeaderItem(col)
+        if header_item is not None:
+            width = max(
+                width,
+                self._table.fontMetrics().horizontalAdvance(header_item.text())
+                + METRIC_COLUMN_TEXT_PADDING,
+            )
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, col)
+            if item is None:
+                continue
+            text = item.text()
+            if not text:
+                continue
+            width = max(
+                width,
+                QFontMetrics(item.font()).horizontalAdvance(text)
+                + METRIC_COLUMN_TEXT_PADDING,
+            )
+        return width
+
     def _apply_metric_column_visibility(self) -> None:
         prefs = self._metric_preferences
-        self._table.setColumnHidden(COL_N, not prefs.raid_normal)
-        self._table.setColumnHidden(COL_H, not prefs.raid_heroic)
-        self._table.setColumnHidden(COL_M, not prefs.raid_mythic)
+        target_raid_col = _raid_target_col_for_listing(self._effective_listing())
+        self._table.setColumnHidden(
+            COL_N, not (prefs.raid_normal or target_raid_col == COL_N)
+        )
+        self._table.setColumnHidden(
+            COL_H, not (prefs.raid_heroic or target_raid_col == COL_H)
+        )
+        self._table.setColumnHidden(
+            COL_M, not (prefs.raid_mythic or target_raid_col == COL_M)
+        )
         self._table.setColumnHidden(COL_MPLUS, not prefs.mplus)
         self._apply_metric_minimum_width()
 
@@ -3335,6 +3740,57 @@ class OverlayWindow(QMainWindow):
             and _same_fetch_target_except_preferences(current, identity)
             and current.metric_preferences.covers(identity.metric_preferences)
         )
+
+    def _raid_detail_preferences(self) -> MetricPreferences:
+        return MetricPreferences(
+            mplus=False,
+            raid_normal=self._metric_preferences.raid_normal,
+            raid_heroic=self._metric_preferences.raid_heroic,
+            raid_mythic=self._metric_preferences.raid_mythic,
+        )
+
+    def _missing_raid_boss_details(self, applicant: Applicant) -> bool:
+        prefs = self._raid_detail_preferences()
+        for key, enabled in (
+            ("N", prefs.raid_normal),
+            ("H", prefs.raid_heroic),
+            ("M", prefs.raid_mythic),
+        ):
+            if enabled and key not in applicant.raid_boss_parses:
+                return True
+        return False
+
+    def _launch_raid_boss_fetch_if_needed(self, applicant: Applicant) -> None:
+        listing = self._effective_listing()
+        if detect_listing_context(listing) != CONTEXT_RAID:
+            return
+        if self._panel._active_detail_mode() != "raid":
+            return
+        if applicant.fetch_status != "ready" or not self._missing_raid_boss_details(applicant):
+            return
+        prefs = self._raid_detail_preferences()
+        resolved = _fetch_identity_for_applicant(
+            applicant,
+            self._state.player.full_name,
+            self._wcl_client.region,
+            prefs,
+            self._wcl_runtime_generation,
+            self._listing_session_generation,
+            row_source=self._row_source_for(applicant),
+        )
+        if resolved is None:
+            return
+        identity, charname = resolved
+        if self._raid_boss_fetch_blocked_by_failure(identity):
+            return
+        if identity.storage_key in self._raid_boss_fetches_in_flight:
+            return
+        self._raid_boss_fetches_in_flight[identity.storage_key] = identity
+        task = _RaidBossFetchTask(identity, charname, self._wcl_client)
+        task.signals.done.connect(self._on_raid_boss_fetch_done)
+        if self._pool is not None:
+            self._pool.start(task)
+            self._refresh_quota_label()
 
     def _row_source_for(self, applicant: Applicant) -> str:
         if self._state.party_members.get(applicant.applicant_id) is applicant:
@@ -3514,6 +3970,100 @@ class OverlayWindow(QMainWindow):
         # panel showing this applicant rebuilds its HTML automatically here.
         # Don't add another _refresh_panel call — single bookkeeping point.
         self._schedule_overlay_refresh(update_title=False)
+
+    def _on_raid_boss_fetch_done(
+        self,
+        fetched_identity: _FetchIdentity,
+        rows: dict[str, list[dict[str, object]]],
+        error: str,
+        error_kind: str = "",
+    ) -> None:
+        if self._raid_boss_fetches_in_flight.get(
+            fetched_identity.storage_key
+        ) == fetched_identity:
+            self._raid_boss_fetches_in_flight.pop(fetched_identity.storage_key, None)
+        self._refresh_quota_label()
+        applicant = self._row_for_fetch_identity(fetched_identity)
+        if applicant is None:
+            return
+        current = _fetch_identity_for_applicant(
+            applicant,
+            self._state.player.full_name,
+            self._wcl_client.region,
+            self._raid_detail_preferences(),
+            self._wcl_runtime_generation,
+            self._listing_session_generation,
+            row_source=fetched_identity.row_source,
+        )
+        if current is None:
+            return
+        current_identity, _ = current
+        if not current_identity.metric_preferences.any_enabled:
+            return
+        if not _same_fetch_target_except_preferences(
+            current_identity, fetched_identity
+        ) or not fetched_identity.metric_preferences.covers(
+            current_identity.metric_preferences
+        ):
+            if not self._is_fetch_in_flight_for_raid_details(
+                current_identity
+            ) and self._missing_raid_boss_details(applicant):
+                self._launch_raid_boss_fetch_if_needed(applicant)
+            self._sync_delegate_and_panel()
+            return
+        if error:
+            self._record_raid_boss_fetch_failure(fetched_identity, error_kind)
+            _log.info(
+                "WCL raid boss detail fetch failed: %s kind=%s",
+                error,
+                error_kind or "unknown",
+            )
+            return
+        applicant.raid_boss_parses = {}
+        for difficulty, enabled in (
+            ("N", fetched_identity.metric_preferences.raid_normal),
+            ("H", fetched_identity.metric_preferences.raid_heroic),
+            ("M", fetched_identity.metric_preferences.raid_mythic),
+        ):
+            if enabled:
+                applicant.raid_boss_parses[difficulty] = [
+                    dict(row) for row in rows.get(difficulty, [])
+                ]
+        self._sync_delegate_and_panel()
+
+    def _is_fetch_in_flight_for_raid_details(self, identity: _FetchIdentity) -> bool:
+        current = self._raid_boss_fetches_in_flight.get(identity.storage_key)
+        return (
+            current is not None
+            and _same_fetch_target_except_preferences(current, identity)
+            and current.metric_preferences.covers(identity.metric_preferences)
+        )
+
+    def _raid_boss_fetch_blocked_by_failure(self, identity: _FetchIdentity) -> bool:
+        key = _raid_boss_fetch_failure_key(identity)
+        if key not in self._raid_boss_fetch_failures:
+            return False
+        expires_at = self._raid_boss_fetch_failures[key]
+        if expires_at is None:
+            return True
+        if time.monotonic() < expires_at:
+            return True
+        self._raid_boss_fetch_failures.pop(key, None)
+        return False
+
+    def _record_raid_boss_fetch_failure(
+        self, identity: _FetchIdentity, error_kind: str
+    ) -> None:
+        key = _raid_boss_fetch_failure_key(identity)
+        if error_kind in _RETRYABLE_WCL_ERROR_KINDS:
+            retry_after = max(
+                WCL_RETRY_BATCH_DELAY_MS / 1000.0,
+                self._wcl_client.retry_block_remaining_seconds()
+                + (WCL_RETRY_CUSHION_MS / 1000.0),
+            )
+            self._raid_boss_fetch_failures[key] = time.monotonic() + retry_after
+            return
+        self._raid_boss_fetch_failures[key] = None
 
     def _update_title(self) -> None:
         self._tab_bar.set_counts(
@@ -3900,6 +4450,104 @@ def _raid_cell_visuals(
     return text, fg, bg
 
 
+def _raid_values_for_key(
+    applicant: Applicant, key: str
+) -> tuple[float | None, float | None]:
+    if key == "N":
+        return applicant.raid_normal, applicant.raid_normal_median
+    if key == "H":
+        return applicant.raid_heroic, applicant.raid_heroic_median
+    if key == "M":
+        return applicant.raid_mythic, applicant.raid_mythic_median
+    return None, None
+
+
+def _raid_metric_text_for_key(applicant: Applicant, key: str) -> str:
+    best, median = _raid_values_for_key(applicant, key)
+    text, _fg, _bg = _raid_cell_visuals(best, median, "ready")
+    return "" if text == "—" else text
+
+
+def _raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> str:
+    if source == "raid_exact":
+        raw = _raid_metric_text_for_key(applicant, target)
+        return raw
+    order = ["N", "H", "M"]
+    target_idx = order.index(target) if target in order else -1
+    candidate_keys: list[str] = []
+    if source == "raid_higher_fallback" and target_idx >= 0:
+        candidate_keys = order[target_idx + 1 :]
+    elif source == "raid_lower_fallback" and target_idx >= 0:
+        candidate_keys = list(reversed(order[:target_idx]))
+    best_key = ""
+    best_score = -1.0
+    for key in candidate_keys:
+        best, median = _raid_values_for_key(applicant, key)
+        score = safe_percent(best)
+        if score is None:
+            score = safe_percent(median)
+        if score is not None and score > best_score:
+            best_key = key
+            best_score = score
+    raw = _raid_metric_text_for_key(applicant, best_key)
+    return f"{best_key} {raw}" if best_key and raw else ""
+
+
+def _raid_fit_cell(
+    applicant: Applicant, listing: Listing | None, target: str
+) -> QTableWidgetItem:
+    if applicant.fetch_status != "ready":
+        best, median = _raid_values_for_key(applicant, target)
+        return _raid_dual_cell(best, median, applicant.fetch_status)
+
+    fit = candidate_fit(applicant, listing)
+    if fit.context != CONTEXT_RAID or fit.target_raid != target or not fit.display:
+        best, median = _raid_values_for_key(applicant, target)
+        return _raid_dual_cell(best, median, applicant.fetch_status)
+
+    if fit.source == "raid_exact":
+        prefix = fit.label
+    elif fit.source in {"raid_higher_fallback", "raid_lower_fallback"}:
+        prefix = "EST"
+    else:
+        prefix = "SUP"
+
+    text = f"{prefix} {int(round(fit.score))}"
+    evidence = _raid_fit_evidence_text(applicant, target, fit.source)
+    if evidence:
+        text = f"{text} · {evidence}"
+
+    item = QTableWidgetItem(text)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    bg = fit.colour
+    if bg is not None:
+        item.setBackground(QColor(bg))
+        item.setForeground(QColor(_text_colour_for_bg(bg)))
+        item.setFont(_bold_cell_font(item.font()))
+    return item
+
+
+def _raid_package_cell(package: PackageFit) -> QTableWidgetItem:
+    item = QTableWidgetItem(package.display)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    bg = package.colour or "#2a2a33"
+    item.setBackground(QColor(bg))
+    item.setForeground(QColor(_text_colour_for_bg(bg)))
+    item.setFont(_bold_cell_font(item.font()))
+    return item
+
+
+def _raid_target_key_for_listing(listing: Listing | None) -> str:
+    if detect_listing_context(listing) != CONTEXT_RAID or listing is None:
+        return ""
+    return RAID_TARGET_BY_DIFFICULTY_ID.get(listing.difficulty_id, "")
+
+
+def _raid_target_col_for_listing(listing: Listing | None) -> int | None:
+    target = _raid_target_key_for_listing(listing)
+    return RAID_COL_BY_TARGET.get(target)
+
+
 def _mplus_key_level(entry: object) -> int:
     if not isinstance(entry, dict):
         return 0
@@ -3988,6 +4636,105 @@ def _wcl_dungeon_rows_by_name(
     return rows
 
 
+def _enabled_raid_difficulty_keys(metric_preferences: MetricPreferences) -> list[str]:
+    keys: list[str] = []
+    if metric_preferences.raid_normal:
+        keys.append("N")
+    if metric_preferences.raid_heroic:
+        keys.append("H")
+    if metric_preferences.raid_mythic:
+        keys.append("M")
+    return keys
+
+
+def _raid_boss_fetch_failure_key(
+    identity: _FetchIdentity,
+) -> tuple[str, str, str, str, int, str, str, int, int]:
+    return (
+        identity.storage_key,
+        identity.charname_key,
+        identity.server_slug,
+        identity.region,
+        identity.spec_id,
+        identity.metric_role,
+        identity.metric_preferences.cache_key(),
+        identity.runtime_generation,
+        identity.listing_session_generation,
+    )
+
+
+def _raid_boss_rows_for_display(
+    applicant: Applicant, difficulties: Iterable[str]
+) -> list[dict[str, object]]:
+    difficulty_keys = [key for key in difficulties if key in {"M", "H", "N"}]
+    parse_rows_by_difficulty = {
+        key: _raid_boss_parse_rows_by_encounter(applicant, key)
+        for key in difficulty_keys
+    }
+    boss_kills_by_difficulty: dict[str, list[object]] = {}
+    for key in difficulty_keys:
+        progress = applicant.rio_raid_progress.get(key, {})
+        boss_kills = progress.get("boss_kills") if isinstance(progress, dict) else None
+        boss_kills_by_difficulty[key] = boss_kills if isinstance(boss_kills, list) else []
+    rows: list[dict[str, object]] = []
+    for idx, (_alias, encounter_id, name) in enumerate(CURRENT_RAID_ENCOUNTERS):
+        kill_parts: list[str] = []
+        parse_parts: list[str] = []
+        colour_overalls: list[float] = []
+        for difficulty in difficulty_keys:
+            parse_rows = parse_rows_by_difficulty[difficulty]
+            boss_kills = boss_kills_by_difficulty[difficulty]
+            parse_row = parse_rows.get(encounter_id, {})
+            overall = safe_percent(parse_row.get("overall"))
+            ilvl = safe_percent(parse_row.get("ilvl"))
+            value = _raid_parse_pair_text(overall, ilvl)
+            kills = 0
+            if idx < len(boss_kills):
+                kills = nonnegative_int(boss_kills[idx])
+            if kills > 0:
+                kill_parts.append(f"{difficulty}{kills}")
+            if value:
+                parse_parts.append(f"{difficulty} {value}")
+                if overall is not None:
+                    colour_overalls.append(overall)
+        colour = percentile_colour(max(colour_overalls)) if colour_overalls else ""
+        rows.append(
+            {
+                "name": name,
+                "rio_text": " · ".join(kill_parts),
+                "wcl_text": "WCL" if parse_parts else "",
+                "value": " · ".join(parse_parts),
+                "colour": colour,
+            }
+        )
+    return rows
+
+
+def _raid_boss_parse_rows_by_encounter(
+    applicant: Applicant, difficulty: str
+) -> dict[int, dict[str, object]]:
+    rows: dict[int, dict[str, object]] = {}
+    raw_rows = applicant.raid_boss_parses.get(difficulty, [])
+    if not isinstance(raw_rows, list):
+        return rows
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        encounter_id = positive_int(row.get("encounter_id"))
+        if encounter_id <= 0:
+            continue
+        rows[encounter_id] = row
+    return rows
+
+
+def _raid_parse_pair_text(overall: float | None, ilvl: float | None) -> str:
+    if overall is None and ilvl is None:
+        return ""
+    left = str(int(round(overall))) if overall is not None else "-"
+    right = str(int(round(ilvl))) if ilvl is not None else "-"
+    return f"{left}-{right}"
+
+
 def _highest_mplus_key_level(breakdown: Iterable[object]) -> int:
     highest = 0
     for entry in breakdown:
@@ -4042,6 +4789,9 @@ def _mplus_cell_visuals(
     highest_key = _highest_mplus_key_level(breakdown)
     if highest_key > 0:
         text = f"{text} +{highest_key}"
+
+    if fit.context == CONTEXT_RAID:
+        return text, "#b8b8c8", None
 
     bg = percentile_colour(best) if best is not None else None
     fg = _text_colour_for_bg(bg) if bg is not None else None
@@ -4285,6 +5035,23 @@ _STYLESHEET = """
 }
 #infoUnpinButton:hover {
     background-color: rgba(74, 74, 96, 230);
+}
+#infoDetailTabs QPushButton {
+    color: #c9c9d4;
+    background-color: rgba(34, 34, 44, 165);
+    border: 1px solid rgba(78, 78, 98, 135);
+    border-radius: 3px;
+    padding: 1px 7px;
+    font-weight: bold;
+    font-size: 11px;
+}
+#infoDetailTabs QPushButton:hover {
+    background-color: rgba(52, 52, 66, 205);
+}
+#infoDetailTabs QPushButton:checked {
+    background-color: rgba(240, 120, 90, 220);
+    color: #ffffff;
+    border-color: rgba(255, 160, 130, 230);
 }
 #infoDungeonName {
     color: #d2d2dc;

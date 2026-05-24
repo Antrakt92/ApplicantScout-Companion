@@ -105,11 +105,13 @@ the overriding environment variable.
 
 ## Overlay Data
 
-The overlay shows a context-aware numeric M+ fit score for the hosted key,
+The overlay shows a context-aware numeric fit score for the hosted key or raid,
 coloured with the Warcraft Logs percentile palette, package ratings for grouped
 applicants who are accepted together, and raw WCL raid/M+ percentiles as
-supporting evidence. Healer M+ rows use HPS; tank and damage rows use DPS. `N=1`
-marks a single logged run at that key, so there is no median signal.
+supporting evidence. Raid listings place the fit signal in the matching
+Normal/Heroic/Mythic column, while the M+ column stays a neutral support signal.
+Healer M+ rows use HPS; tank and damage rows use DPS. `N=1` marks a single logged
+run at that key, so there is no median signal.
 
 The RIO column shows the applying character's current score. If the RaiderIO
 addon is installed in WoW and exposes a higher current-season main score for an
@@ -123,7 +125,8 @@ back to the applying character's score and available logs.
 
 Starting with ApplicantScout addon wire v7, the Party view can use the current
 group leader's keystone as the automatic Mythic+ target key. A manual Party key
-override still takes priority, and raid contexts ignore leader-key calibration.
+override still takes priority, raid contexts ignore leader-key calibration, and
+manually clicking Party keeps the overlay there while you review the group.
 
 ## Version Compatibility
 

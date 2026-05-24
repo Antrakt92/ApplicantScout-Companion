@@ -1,5 +1,69 @@
 # ApplicantScout Companion Release Notes
 
+## 0.7.0 - 24-May-2026
+
+Raid-fit and Party-focus release paired with ApplicantScout addon `0.4.1`.
+This release makes raid applicants read like raid applicants: the main fit signal
+moves into the relevant Normal/Heroic/Mythic column, while M+ remains supporting
+evidence instead of looking like the primary recommendation.
+
+### Added
+
+- Added raid-target fit cells for active raid listings. Heroic listings now use
+  the `H` column, Mythic listings use `M`, and Normal listings use `N`.
+- Added estimated raid fit in the target raid column when the exact raid
+  difficulty is disabled but other raid evidence is available.
+- Added raid detail rows in the hover/pin panel, including per-boss Warcraft
+  Logs parses and local RaiderIO raid kill progress.
+- Added Raid/M+ detail tabs so raid applicants can still expose their M+
+  support evidence without replacing the raid-first view.
+- Added local RaiderIO raid-progress enrichment and current-score fallback for
+  applicants and current party/raid members.
+
+### Improved
+
+- Raid listings now force the target raid column visible when needed, so
+  disabled metric settings do not hide the column that explains the active raid.
+- Raid fit columns now auto-size to their rendered recommendation text instead
+  of truncating `FIT`, `OK`, `RISK`, or `SUP` cells.
+- The info panel now previews the first visible applicant or party member by
+  default instead of showing an empty hover placeholder while rows are present.
+- Empty applicant and party views now keep the full info-panel height, avoiding
+  window jumps while rows disappear or reload.
+- Party view now keeps the last raid listing difficulty in memory after the LFG
+  listing closes, so Heroic/Mythic raid fit does not collapse to unknown context
+  while the formed group remains visible.
+- M+ cells in raid context now render as neutral support text instead of using a
+  saturated fit-style background.
+- Party view now respects a manual click on the already-selected Party tab, so a
+  new applicant or refresh does not pull you back to Applicants while you are
+  reviewing the group.
+- Raid contexts now hide the manual M+ target-key control, avoiding a
+  meaningless key selector while reviewing Normal/Heroic/Mythic applicants.
+- Transient zero spec/item-level snapshots now preserve the last known identity
+  data instead of wiping usable WCL state.
+- Raid boss detail fetches now ignore stale character, difficulty, or metric
+  completions and retry transient WCL failures without overwriting current
+  M+/raid evidence.
+- Overlay visual baselines and raid/M+ panel layout coverage were refreshed for
+  the new raid detail surface.
+
+### Fixed
+
+- Fixed raid target cells showing fit-like output while WCL data was still
+  loading.
+- Fixed grouped raid applicants showing a premature package fit before every
+  group member had finished loading.
+- Fixed raid listings where a green M+ support row could be mistaken for the
+  raid recommendation.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.4.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.7.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.7.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.7.0-portable.zip`
+
 ## 0.6.0 - 23-May-2026
 
 Leader-key and party-context release paired with ApplicantScout addon `0.4.0`.

@@ -9,6 +9,18 @@ CURRENT_MPLUS_ZONE_ID = 47  # Midnight Season 1
 CURRENT_RAID_ZONE_ID = 46  # VS / DR / MQD
 SEASON_NAME = "Midnight Season 1"
 
+CURRENT_RAID_ENCOUNTERS: list[tuple[str, int, str]] = [
+    ("ia", 3176, "Imperator Averzian"),
+    ("vo", 3177, "Vorasius"),
+    ("fk", 3179, "Fallen-King Salhadaar"),
+    ("ve", 3178, "Vaelgor & Ezzorak"),
+    ("lv", 3180, "Lightblinded Vanguard"),
+    ("cc", 3181, "Crown of the Cosmos"),
+    ("cu", 3306, "Chimaerus"),
+    ("ba", 3182, "Belo'ren"),
+    ("mf", 3183, "Midnight Falls"),
+]
+
 
 # WoW class file tokens (locale-stable English) → hex colours from Blizzard's RAID_CLASS_COLORS.
 CLASS_COLOURS: dict[str, str] = {

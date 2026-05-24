@@ -80,6 +80,12 @@ class Applicant:
     # (lucky/unlucky risk); N>=2 enables median signal.
     mplus_dps_breakdown: list[dict] = field(default_factory=list)
     mplus_hps_breakdown: list[dict] = field(default_factory=list)
+    # WCL per-boss raid detail keyed by difficulty ("N", "H", "M"). Each row is
+    # a primitive dict so state.py does not import WCL transport dataclasses.
+    raid_boss_parses: dict[str, list[dict]] = field(default_factory=dict)
+    # RaiderIO local raid progress keyed by difficulty. This is not WCL data and
+    # must survive WCL refetch/invalidation so `kill` evidence can still render.
+    rio_raid_progress: dict[str, dict] = field(default_factory=dict)
 
     # Scope that the currently populated WCL fields are allowed to represent.
     # None means unknown/no usable WCL data, so runtime scope changes must refetch
@@ -105,6 +111,7 @@ class Applicant:
         self.mplus_hps_median = None
         self.mplus_dps_breakdown = []
         self.mplus_hps_breakdown = []
+        self.raid_boss_parses = {}
         self.wcl_metric_preferences = None
 
     def wcl_data_covers(self, metric_preferences: MetricPreferences) -> bool:
@@ -122,12 +129,15 @@ class Applicant:
         if not metric_preferences.raid_normal:
             self.raid_normal = None
             self.raid_normal_median = None
+            self.raid_boss_parses.pop("N", None)
         if not metric_preferences.raid_heroic:
             self.raid_heroic = None
             self.raid_heroic_median = None
+            self.raid_boss_parses.pop("H", None)
         if not metric_preferences.raid_mythic:
             self.raid_mythic = None
             self.raid_mythic_median = None
+            self.raid_boss_parses.pop("M", None)
         if not metric_preferences.mplus:
             self.mplus_dps = None
             self.mplus_hps = None

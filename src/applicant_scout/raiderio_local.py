@@ -1,4 +1,4 @@
-"""Read installed RaiderIO addon DB files for local M+ dungeon completions."""
+"""Read installed RaiderIO addon DB files for local M+ and raid progress."""
 
 from __future__ import annotations
 
@@ -30,12 +30,21 @@ _RegionDBFingerprint = tuple[tuple[str, bool, int, int], ...]
 class RaiderIOLocalProfile:
     current_score: int
     dungeons: list[dict]
+    raid_progress: dict[str, dict]
+    has_mplus_profile: bool = True
 
 
 @dataclass(frozen=True)
 class _ProviderMeta:
     record_size: int
     encoding_order: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _RaidInfo:
+    name: str
+    short_name: str
+    boss_count: int
 
 
 @dataclass(frozen=True)
@@ -46,7 +55,7 @@ class _RegionCacheEntry:
 
 
 class RaiderIOLocalReader:
-    """Lazy reader for RaiderIO's generated local Mythic+ database."""
+    """Lazy reader for RaiderIO's generated local profile databases."""
 
     def __init__(self, retail_root: Path):
         self._retail_root = Path(retail_root)
@@ -149,38 +158,92 @@ class _RegionDB:
     def __init__(
         self,
         *,
-        characters_path: Path,
-        lookup_payload: bytes,
-        meta: _ProviderMeta,
+        mplus_characters_path: Path | None,
+        mplus_lookup_payload: bytes | None,
+        mplus_meta: _ProviderMeta | None,
         dungeons: list[str],
+        raid_characters_path: Path | None,
+        raid_lookup_payload: bytes | None,
+        raid_meta: _ProviderMeta | None,
+        current_raids: list[_RaidInfo],
+        previous_raids: list[_RaidInfo],
     ):
-        self._characters_path = characters_path
-        self._lookup_payload = lookup_payload
-        self._meta = meta
+        self._mplus_characters_path = mplus_characters_path
+        self._mplus_lookup_payload = mplus_lookup_payload
+        self._mplus_meta = mplus_meta
         self._dungeons = dungeons
-        self._realm_cache: dict[str, tuple[int, list[str]] | None] = {}
+        self._raid_characters_path = raid_characters_path
+        self._raid_lookup_payload = raid_lookup_payload
+        self._raid_meta = raid_meta
+        self._current_raids = current_raids
+        self._previous_raids = previous_raids
+        self._mplus_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
+        self._raid_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
 
     @classmethod
     def load(cls, retail_root: Path, token: str) -> _RegionDB | None:
         db_root = retail_root / "Interface" / "AddOns" / "RaiderIO" / "db"
-        characters_path = db_root / f"db_mythicplus_{token}_characters.lua"
-        lookup_path = db_root / f"db_mythicplus_{token}_lookup.lua"
+        mplus_characters_path = db_root / f"db_mythicplus_{token}_characters.lua"
+        mplus_lookup_path = db_root / f"db_mythicplus_{token}_lookup.lua"
+        raid_characters_path = db_root / f"db_raiding_{token}_characters.lua"
+        raid_lookup_path = db_root / f"db_raiding_{token}_lookup.lua"
         dungeons_path = db_root / "db_dungeons.lua"
-        if not (
-            characters_path.is_file()
-            and lookup_path.is_file()
+        has_mplus = (
+            mplus_characters_path.is_file()
+            and mplus_lookup_path.is_file()
             and dungeons_path.is_file()
-        ):
+        )
+        has_raid = raid_characters_path.is_file() and raid_lookup_path.is_file()
+        if not has_mplus and not has_raid:
             return None
-        lookup_text = lookup_path.read_text(encoding="utf-8", errors="replace")
-        meta = _parse_provider_meta(lookup_text)
-        dungeons = _parse_dungeon_names(dungeons_path.read_text(encoding="utf-8"))
-        _validate_encoding_plan(meta, len(dungeons))
+        dungeons: list[str] = []
+        mplus_meta: _ProviderMeta | None = None
+        mplus_lookup_payload: bytes | None = None
+        if has_mplus:
+            lookup_text = mplus_lookup_path.read_text(
+                encoding="utf-8", errors="replace"
+            )
+            mplus_meta = _parse_provider_meta(lookup_text)
+            dungeons = _parse_dungeon_names(dungeons_path.read_text(encoding="utf-8"))
+            _validate_encoding_plan(mplus_meta, len(dungeons))
+            mplus_lookup_payload = _parse_lookup_payload(lookup_text)
+        raid_meta: _ProviderMeta | None = None
+        raid_lookup_payload: bytes | None = None
+        current_raids: list[_RaidInfo] = []
+        previous_raids: list[_RaidInfo] = []
+        if has_raid:
+            try:
+                raid_lookup_text = raid_lookup_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                raid_meta = _parse_provider_meta(raid_lookup_text)
+                current_raids = _parse_provider_raids(raid_lookup_text, "currentRaids")
+                previous_raids = _parse_provider_raids(
+                    raid_lookup_text, "previousRaids"
+                )
+                _validate_raid_encoding_plan(raid_meta, current_raids, previous_raids)
+                raid_lookup_payload = _parse_lookup_payload(raid_lookup_text)
+            except (OSError, ValueError) as exc:
+                _log.warning(
+                    "could not load RaiderIO local raid DB for %s: %s", token, exc
+                )
+                raid_meta = None
+                raid_lookup_payload = None
+                current_raids = []
+                previous_raids = []
+                has_raid = False
+        if not has_mplus and not has_raid:
+            return None
         return cls(
-            characters_path=characters_path,
-            lookup_payload=_parse_lookup_payload(lookup_text),
-            meta=meta,
+            mplus_characters_path=mplus_characters_path if has_mplus else None,
+            mplus_lookup_payload=mplus_lookup_payload,
+            mplus_meta=mplus_meta,
             dungeons=dungeons,
+            raid_characters_path=raid_characters_path if has_raid else None,
+            raid_lookup_payload=raid_lookup_payload,
+            raid_meta=raid_meta,
+            current_raids=current_raids,
+            previous_raids=previous_raids,
         )
 
     def lookup_profile(self, name: str, realm: str) -> RaiderIOLocalProfile | None:
@@ -188,7 +251,86 @@ class _RegionDB:
         realm = realm.strip()
         if not name or not realm:
             return None
-        realm_data = self._realm_data(realm)
+        mplus_profile: RaiderIOLocalProfile | None = None
+        if (
+            self._mplus_characters_path is not None
+            and self._mplus_lookup_payload is not None
+            and self._mplus_meta is not None
+        ):
+            record = self._record_for(
+                self._mplus_characters_path,
+                self._mplus_lookup_payload,
+                self._mplus_meta,
+                self._mplus_realm_cache,
+                name,
+                realm,
+            )
+            if record is not None:
+                try:
+                    mplus_profile = _decode_profile(
+                        record, self._mplus_meta.encoding_order, self._dungeons
+                    )
+                except ValueError as exc:
+                    _log.warning(
+                        "could not decode RaiderIO local profile for %s-%s: %s",
+                        name,
+                        realm,
+                        exc,
+                    )
+        raid_progress: dict[str, dict] = {}
+        if (
+            self._raid_characters_path is not None
+            and self._raid_lookup_payload is not None
+            and self._raid_meta is not None
+        ):
+            record = self._record_for(
+                self._raid_characters_path,
+                self._raid_lookup_payload,
+                self._raid_meta,
+                self._raid_realm_cache,
+                name,
+                realm,
+            )
+            if record is not None:
+                try:
+                    raid_progress = _decode_raid_progress(
+                        record,
+                        self._raid_meta.encoding_order,
+                        self._current_raids,
+                        self._previous_raids,
+                    )
+                except ValueError as exc:
+                    _log.warning(
+                        "could not decode RaiderIO local raid profile for %s-%s: %s",
+                        name,
+                        realm,
+                        exc,
+                    )
+        if mplus_profile is None and not raid_progress:
+            return None
+        if mplus_profile is None:
+            return RaiderIOLocalProfile(
+                current_score=0,
+                dungeons=[],
+                raid_progress=raid_progress,
+                has_mplus_profile=False,
+            )
+        return RaiderIOLocalProfile(
+            current_score=mplus_profile.current_score,
+            dungeons=mplus_profile.dungeons,
+            raid_progress=raid_progress,
+        )
+
+    def _record_for(
+        self,
+        characters_path: Path,
+        lookup_payload: bytes,
+        meta: _ProviderMeta,
+        realm_cache: dict[str, tuple[int, list[str]] | None],
+        name: str,
+        realm: str,
+    ) -> bytes | None:
+        realm_data = self._realm_data(characters_path, realm_cache, realm)
         if realm_data is None:
             return None
         base_offset, names = realm_data
@@ -200,27 +342,23 @@ class _RegionDB:
             )
         except StopIteration:
             return None
-        record_offset = base_offset + name_index * self._meta.record_size
-        record = self._lookup_payload[record_offset : record_offset + self._meta.record_size]
-        if len(record) != self._meta.record_size:
+        record_offset = base_offset + name_index * meta.record_size
+        record = lookup_payload[record_offset : record_offset + meta.record_size]
+        if len(record) != meta.record_size:
             return None
-        try:
-            return _decode_profile(record, self._meta.encoding_order, self._dungeons)
-        except ValueError as exc:
-            _log.warning(
-                "could not decode RaiderIO local profile for %s-%s: %s",
-                name,
-                realm,
-                exc,
-            )
-            return None
+        return record
 
-    def _realm_data(self, realm: str) -> tuple[int, list[str]] | None:
+    def _realm_data(
+        self,
+        characters_path: Path,
+        realm_cache: dict[str, tuple[int, list[str]] | None],
+        realm: str,
+    ) -> tuple[int, list[str]] | None:
         cache_key = _realm_lookup_key(realm)
-        if cache_key not in self._realm_cache:
-            text = self._characters_path.read_text(encoding="utf-8", errors="replace")
-            self._realm_cache[cache_key] = _parse_realm_data(text, realm)
-        return self._realm_cache[cache_key]
+        if cache_key not in realm_cache:
+            text = characters_path.read_text(encoding="utf-8", errors="replace")
+            realm_cache[cache_key] = _parse_realm_data(text, realm)
+        return realm_cache[cache_key]
 
 
 def _negative_cache_entry_is_stale(
@@ -243,12 +381,14 @@ def _region_db_fingerprint(retail_root: Path, token: str) -> _RegionDBFingerprin
     )
 
 
-def _region_db_paths(retail_root: Path, token: str) -> tuple[Path, Path, Path]:
+def _region_db_paths(retail_root: Path, token: str) -> tuple[Path, ...]:
     db_root = retail_root / "Interface" / "AddOns" / "RaiderIO" / "db"
     return (
         db_root / f"db_mythicplus_{token}_characters.lua",
         db_root / f"db_mythicplus_{token}_lookup.lua",
         db_root / "db_dungeons.lua",
+        db_root / f"db_raiding_{token}_characters.lua",
+        db_root / f"db_raiding_{token}_lookup.lua",
     )
 
 
@@ -273,12 +413,76 @@ def _realm_lookup_key(realm: str) -> str:
 
 
 def _parse_provider_meta(text: str) -> _ProviderMeta:
-    record_match = re.search(r"recordSizeInBytes\s*=\s*(\d+)", text)
-    order_match = re.search(r"encodingOrder\s*=\s*\{([^}]*)\}", text)
+    record_match = re.search(
+        r'(?:\["recordSizeInBytes"\]|recordSizeInBytes)\s*=\s*(\d+)', text
+    )
+    order_match = re.search(
+        r'(?:\["encodingOrder"\]|encodingOrder)\s*=\s*\{([^}]*)\}', text
+    )
     if not record_match or not order_match:
         raise ValueError("RaiderIO lookup metadata missing record size or encoding order")
     order = tuple(int(value) for value in re.findall(r"\d+", order_match.group(1)))
     return _ProviderMeta(record_size=int(record_match.group(1)), encoding_order=order)
+
+
+def _parse_provider_raids(text: str, key: str) -> list[_RaidInfo]:
+    table = _extract_lua_table(text, key)
+    if table is None:
+        return []
+    raids: list[_RaidInfo] = []
+    for match in re.finditer(r"\{([^{}]*)\}", table):
+        body = match.group(1)
+        boss_count = _lua_number_field(body, "bossCount")
+        if boss_count is None:
+            continue
+        name = _lua_string_field(body, "name") or "Raid"
+        short_name = _lua_string_field(body, "shortName") or name
+        raids.append(_RaidInfo(name=name, short_name=short_name, boss_count=boss_count))
+    return raids
+
+
+def _extract_lua_table(text: str, key: str) -> str | None:
+    match = re.search(rf'(?:\["{re.escape(key)}"\]|{re.escape(key)})\s*=\s*\{{', text)
+    if not match:
+        return None
+    start = match.end() - 1
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
+
+
+def _lua_number_field(text: str, key: str) -> int | None:
+    match = re.search(rf'(?:\["{re.escape(key)}"\]|{re.escape(key)})\s*=\s*(\d+)', text)
+    return int(match.group(1)) if match else None
+
+
+def _lua_string_field(text: str, key: str) -> str | None:
+    match = re.search(
+        rf'(?:\["{re.escape(key)}"\]|{re.escape(key)})\s*=\s*"((?:\\.|[^"])*)"',
+        text,
+    )
+    if not match:
+        return None
+    return _decode_lua_string_bytes(match.group(1)).decode("utf-8", errors="replace")
 
 
 def _encoding_field_width(field: int, dungeon_count: int) -> int:
@@ -310,6 +514,35 @@ def _validate_encoding_plan(meta: _ProviderMeta, dungeon_count: int) -> None:
         raise ValueError(
             f"RaiderIO encoding plan uses {bit_budget} bits and exceeds record size "
             f"{meta.record_size} bytes ({max_bits} bits)"
+        )
+
+
+def _raid_encoding_field_width(
+    field: int, current_raids: list[_RaidInfo], previous_raids: list[_RaidInfo]
+) -> int:
+    if field == 1:
+        return sum(2 * (2 + raid.boss_count * 5) for raid in current_raids)
+    if field == 2:
+        return sum(2 + raid.boss_count * 5 for raid in previous_raids)
+    if field == 3:
+        return len(previous_raids) * 2 * 6
+    if field == 4:
+        return len(current_raids) * 2 * 6
+    raise ValueError(f"unsupported RaiderIO raid encoding field {field}")
+
+
+def _validate_raid_encoding_plan(
+    meta: _ProviderMeta, current_raids: list[_RaidInfo], previous_raids: list[_RaidInfo]
+) -> None:
+    bit_budget = sum(
+        _raid_encoding_field_width(field, current_raids, previous_raids)
+        for field in meta.encoding_order
+    )
+    max_bits = meta.record_size * 8
+    if bit_budget > max_bits:
+        raise ValueError(
+            f"RaiderIO raid encoding plan uses {bit_budget} bits and exceeds "
+            f"record size {meta.record_size} bytes ({max_bits} bits)"
         )
 
 
@@ -413,7 +646,127 @@ def _decode_profile(
             _, bit_offset = _read_bits(record, bit_offset, 4)
         elif field == 14:
             _, bit_offset = _read_dungeon_rows(record, bit_offset, dungeon_names)
-    return RaiderIOLocalProfile(current_score=current_score, dungeons=dungeon_rows)
+    return RaiderIOLocalProfile(
+        current_score=current_score, dungeons=dungeon_rows, raid_progress={}
+    )
+
+
+_RAID_DIFFICULTY_KEYS = {
+    1: "N",
+    2: "H",
+    3: "M",
+}
+
+_DECODE_BITS_5_TABLE = (
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    25,
+    30,
+    35,
+    40,
+    45,
+    50,
+)
+
+
+def _decode_raid_progress(
+    record: bytes,
+    encoding_order: tuple[int, ...],
+    current_raids: list[_RaidInfo],
+    previous_raids: list[_RaidInfo],
+) -> dict[str, dict]:
+    bit_offset = 0
+    progress: dict[str, dict] = {}
+    for field in encoding_order:
+        if field == 1:
+            for raid in current_raids:
+                for _idx in range(2):
+                    row, bit_offset = _read_full_raid_progress(
+                        record, bit_offset, raid
+                    )
+                    if row is None:
+                        continue
+                    key = row.pop("difficulty")
+                    existing = progress.get(key)
+                    if existing is None or row["killed"] > existing.get("killed", 0):
+                        progress[key] = row
+        elif field == 2:
+            for raid in previous_raids:
+                _, bit_offset = _read_full_raid_progress(record, bit_offset, raid)
+        elif field == 3:
+            bit_offset = _skip_summary_raid_progress(
+                record, bit_offset, len(previous_raids) * 2
+            )
+        elif field == 4:
+            bit_offset = _skip_summary_raid_progress(
+                record, bit_offset, len(current_raids) * 2
+            )
+        else:
+            raise ValueError(f"unsupported RaiderIO raid encoding field {field}")
+    return progress
+
+
+def _read_full_raid_progress(
+    record: bytes, bit_offset: int, raid: _RaidInfo
+) -> tuple[dict | None, int]:
+    raw_difficulty, bit_offset = _read_bits(record, bit_offset, 2)
+    difficulty = _RAID_DIFFICULTY_KEYS.get(raw_difficulty + 1)
+    boss_kills: list[int] = []
+    for _idx in range(raid.boss_count):
+        raw_kills, bit_offset = _read_bits(record, bit_offset, 5)
+        boss_kills.append(_decode_bits5(raw_kills))
+    killed = sum(1 for kills in boss_kills if kills > 0)
+    if not difficulty or killed == 0:
+        return None, bit_offset
+    return (
+        {
+            "difficulty": difficulty,
+            "killed": killed,
+            "total": raid.boss_count,
+            "boss_kills": boss_kills,
+            "raid_name": raid.name,
+        },
+        bit_offset,
+    )
+
+
+def _skip_summary_raid_progress(
+    record: bytes, bit_offset: int, count: int
+) -> int:
+    for _idx in range(count):
+        _, bit_offset = _read_bits(record, bit_offset, 2)
+        _, bit_offset = _read_bits(record, bit_offset, 4)
+    return bit_offset
+
+
+def _decode_bits5(value: int) -> int:
+    if 0 <= value < len(_DECODE_BITS_5_TABLE):
+        return _DECODE_BITS_5_TABLE[value]
+    return 0
 
 
 def _read_dungeon_rows(

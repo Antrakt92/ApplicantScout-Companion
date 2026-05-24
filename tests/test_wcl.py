@@ -12,7 +12,11 @@ import pytest
 
 from applicant_scout import atomic_io
 import applicant_scout.wcl as wcl_mod
-from applicant_scout.constants import MPLUS_ENCOUNTERS, REGION_ID_TO_WCL
+from applicant_scout.constants import (
+    CURRENT_RAID_ENCOUNTERS,
+    MPLUS_ENCOUNTERS,
+    REGION_ID_TO_WCL,
+)
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.wcl import (
     CharacterCache,
@@ -35,9 +39,11 @@ from applicant_scout.wcl import (
     WCLClient,
     _CACHE_VERSION,
     _build_character_ranks_query,
+    _build_raid_boss_detail_query,
     _compute_mplus_headline,
     _dict_to_dungeon_perf,
     _process_encounter_ranks,
+    _raid_boss_rows_from_character,
     _spec_norm,
     _zone_avg,
     derive_server_slug,
@@ -523,6 +529,92 @@ def test_character_ranks_query_omits_disabled_raid_variables():
     assert "zoneRankings" not in query
     assert "encounterRankings" in query
     assert "metric: hps" in query
+
+
+def test_raid_boss_detail_query_uses_two_aliases_per_enabled_boss():
+    query = _build_raid_boss_detail_query(
+        "DAMAGER",
+        MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+
+    lines = [line for line in query.splitlines() if "encounterRankings" in line]
+    assert len(lines) == len(CURRENT_RAID_ENCOUNTERS) * 2
+    assert all("difficulty: 5" in line for line in lines)
+    assert all("metric: dps" in line for line in lines)
+    assert all("compare: Parses" in line for line in lines)
+    assert any("byBracket: true" in line for line in lines)
+    assert "difficulty: 3" not in query
+    assert "difficulty: 4" not in query
+
+
+def test_raid_boss_rows_parse_overall_and_ilvl_percentiles_by_spec():
+    char = {
+        "raid_m_ia_overall": {
+            "ranks": [
+                {"spec": "Fury", "rankPercent": 99.0},
+                {"spec": "Arms", "rankPercent": 46.2},
+            ]
+        },
+        "raid_m_ia_ilvl": {
+            "ranks": [
+                {"spec": "Arms", "rankPercent": 68.4},
+                {"spec": "Arms", "rankPercent": 66.0},
+            ]
+        },
+        "raid_m_vo_overall": {"ranks": []},
+    }
+
+    rows = _raid_boss_rows_from_character(char, "M", spec_name="Arms")
+
+    assert rows == [
+        {
+            "encounter_id": 3176,
+            "name": "Imperator Averzian",
+            "overall": 46.2,
+            "ilvl": 68.4,
+        }
+    ]
+
+
+def test_fetch_character_raid_boss_details_returns_enabled_difficulty_rows():
+    client, http = _client_for_payload(
+        _wcl_payload(
+            _character(
+                raid_m_ia_overall={"ranks": [{"spec": "Arms", "rankPercent": 46.2}]},
+                raid_m_ia_ilvl={"ranks": [{"spec": "Arms", "rankPercent": 68.4}]},
+            )
+        )
+    )
+
+    rows = client.fetch_character_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        spec_id=71,
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+
+    assert http.calls[0]["json"]["variables"]["specName"] == "Arms"
+    assert rows == {
+        "M": [
+            {
+                "encounter_id": 3176,
+                "name": "Imperator Averzian",
+                "overall": 46.2,
+                "ilvl": 68.4,
+            }
+        ]
+    }
 
 
 def test_fetch_character_ranks_healer_routes_mplus_to_hps_breakdown():

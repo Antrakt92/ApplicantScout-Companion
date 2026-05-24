@@ -76,6 +76,7 @@ from .wow_lifecycle import (
 
 
 log = logging.getLogger("applicant_scout")
+_RIO_LOOKUP_FAILED = object()
 APP_ICON_PATH = Path(__file__).with_name("assets") / "app_icon.ico"
 APP_USER_MODEL_ID = "Antrakt.ApplicantScout.Companion"
 CONTROL_SERVER_NAME = "Antrakt.ApplicantScout.Companion.Control"
@@ -566,25 +567,56 @@ class StateMachine(QObject):
         if self._rio_reader is None:
             return
         for applicant in list(self._state.applicants.values()):
-            rows = self._rio_dungeon_rows_for(applicant.name, applicant.rio_dungeons)
-            if rows == applicant.rio_dungeons:
+            profile = self._rio_profile_for(applicant.name)
+            if profile is _RIO_LOOKUP_FAILED:
+                continue
+            rows = self._rio_dungeon_rows_from_profile(profile, applicant.rio_dungeons)
+            raid_progress = self._rio_raid_progress_from_profile(profile)
+            score = self._rio_score_from_profile(profile, applicant.score)
+            rio_profile = self._rio_profile_flag_from_profile(
+                profile, applicant.rio_profile
+            )
+            if (
+                rows == applicant.rio_dungeons
+                and raid_progress == applicant.rio_raid_progress
+                and score == applicant.score
+                and rio_profile == applicant.rio_profile
+            ):
                 continue
             applicant.rio_dungeons = rows
+            applicant.rio_raid_progress = raid_progress
+            applicant.score = score
+            applicant.rio_profile = rio_profile
             self.applicantUpdated.emit(applicant)
         roster_changed = False
         for member in list(self._state.party_members.values()):
-            rows = self._rio_dungeon_rows_for(member.name, member.rio_dungeons)
-            if rows == member.rio_dungeons:
+            profile = self._rio_profile_for(member.name)
+            if profile is _RIO_LOOKUP_FAILED:
+                continue
+            rows = self._rio_dungeon_rows_from_profile(profile, member.rio_dungeons)
+            raid_progress = self._rio_raid_progress_from_profile(profile)
+            score = self._rio_score_from_profile(profile, member.score)
+            rio_profile = self._rio_profile_flag_from_profile(
+                profile, member.rio_profile
+            )
+            if (
+                rows == member.rio_dungeons
+                and raid_progress == member.rio_raid_progress
+                and score == member.score
+                and rio_profile == member.rio_profile
+            ):
                 continue
             member.rio_dungeons = rows
+            member.rio_raid_progress = raid_progress
+            member.score = score
+            member.rio_profile = rio_profile
             roster_changed = True
         if roster_changed:
             self.rosterChanged.emit()
 
-    def _rio_dungeon_rows_for(self, decoded_name: str, decoded_rows: list[dict]) -> list[dict]:
-        rows = [dict(row) for row in decoded_rows]
+    def _rio_profile_for(self, decoded_name: str):
         if self._rio_reader is None:
-            return rows
+            return None
         default_realm = default_realm_from_player(self._state.player.full_name)
         name, realm = split_name_realm(decoded_name, default_realm)
         region = REGION_ID_TO_WCL.get(self._state.player.region_id)
@@ -600,10 +632,48 @@ class StateMachine(QObject):
                 profile = self._rio_reader.lookup_profile(name, realm, region)
         except (OSError, ValueError) as exc:
             log.warning("Local RaiderIO lookup failed for %s-%s: %s", name, realm, exc)
-            profile = None
-        if profile is None:
+            return _RIO_LOOKUP_FAILED
+        return profile
+
+    @staticmethod
+    def _rio_dungeon_rows_from_profile(profile, decoded_rows: list[dict]) -> list[dict]:
+        rows = [dict(row) for row in decoded_rows]
+        if profile is None or profile is _RIO_LOOKUP_FAILED:
+            return rows
+        if not getattr(profile, "has_mplus_profile", True):
             return rows
         return [dict(row) for row in profile.dungeons]
+
+    @staticmethod
+    def _rio_raid_progress_from_profile(profile) -> dict[str, dict]:
+        if profile is None or profile is _RIO_LOOKUP_FAILED:
+            return {}
+        progress = getattr(profile, "raid_progress", None)
+        if not isinstance(progress, dict):
+            return {}
+        return {
+            str(difficulty): dict(data)
+            for difficulty, data in progress.items()
+            if isinstance(data, dict)
+        }
+
+    @staticmethod
+    def _rio_score_from_profile(profile, decoded_score: int) -> int:
+        score = decoded_score if isinstance(decoded_score, int) else 0
+        if profile is None or profile is _RIO_LOOKUP_FAILED:
+            return score
+        profile_score = getattr(profile, "current_score", 0)
+        if isinstance(profile_score, bool) or not isinstance(profile_score, int):
+            return score
+        return max(score, profile_score)
+
+    @staticmethod
+    def _rio_profile_flag_from_profile(profile, decoded_flag: bool) -> bool:
+        if decoded_flag:
+            return True
+        if profile is None or profile is _RIO_LOOKUP_FAILED:
+            return False
+        return bool(getattr(profile, "has_mplus_profile", True))
 
     @staticmethod
     def _roster_key(name: str) -> str:
@@ -626,23 +696,38 @@ class StateMachine(QObject):
         target.mplus_hps_median = source.mplus_hps_median
         target.mplus_dps_breakdown = list(source.mplus_dps_breakdown)
         target.mplus_hps_breakdown = list(source.mplus_hps_breakdown)
+        target.raid_boss_parses = {
+            difficulty: [dict(row) for row in rows]
+            for difficulty, rows in source.raid_boss_parses.items()
+        }
         target.wcl_metric_preferences = source.wcl_metric_preferences
+
+    @staticmethod
+    def _preserve_known_transport_fields(source: Applicant, target: Applicant) -> None:
+        if target.name == source.name:
+            if target.spec_id <= 0 < source.spec_id:
+                target.spec_id = source.spec_id
+            if target.ilvl <= 0 < source.ilvl:
+                target.ilvl = source.ilvl
 
     def _roster_member_from_decoded(
         self, decoded: DecodedRosterMember, *, rio_summary_target_key: int = 0
     ) -> RosterMember:
         cls_name = CLASS_ID_TO_NAME.get(decoded.class_id, "?")
         role_name = ROLE_BYTE_TO_NAME.get(decoded.role, "DAMAGER")
+        rio_profile = self._rio_profile_for(decoded.name)
         return RosterMember(
             applicant_id=self._roster_key(decoded.name),
             name=decoded.name,
             cls=cls_name,
             spec_id=decoded.spec_id,
             ilvl=decoded.ilvl,
-            score=decoded.score,
+            score=self._rio_score_from_profile(rio_profile, decoded.score),
             role=role_name,
             main_score=decoded.main_score,
-            rio_profile=decoded.rio_profile,
+            rio_profile=self._rio_profile_flag_from_profile(
+                rio_profile, decoded.rio_profile
+            ),
             rio_best_key=decoded.rio_best_key,
             rio_best_dungeon_key=decoded.rio_best_dungeon_key,
             rio_timed_at_or_above=decoded.rio_timed_at_or_above,
@@ -651,9 +736,10 @@ class StateMachine(QObject):
             rio_completed_at_or_above_minus1=decoded.rio_completed_at_or_above_minus1,
             rio_dungeon_count=decoded.rio_dungeon_count,
             rio_summary_target_key=rio_summary_target_key,
-            rio_dungeons=self._rio_dungeon_rows_for(
-                decoded.name, decoded.rio_dungeons
+            rio_dungeons=self._rio_dungeon_rows_from_profile(
+                rio_profile, decoded.rio_dungeons
             ),
+            rio_raid_progress=self._rio_raid_progress_from_profile(rio_profile),
             unit_index=decoded.unit_index,
             subgroup=decoded.subgroup,
             is_self=decoded.is_self,
@@ -688,6 +774,7 @@ class StateMachine(QObject):
                 rio_summary_target_key=rio_summary_target_key,
             )
             if existing is not None:
+                self._preserve_known_transport_fields(existing, member)
                 needs_refetch = (
                     existing.spec_id != member.spec_id
                     or existing.name != member.name
@@ -865,6 +952,7 @@ class StateMachine(QObject):
             cls_name = CLASS_ID_TO_NAME.get(da.class_id, "?")
             role_name = ROLE_BYTE_TO_NAME.get(da.role, "DAMAGER")
             existing = self._state.applicants.get(aid)
+            rio_profile = self._rio_profile_for(da.name)
             if existing is None:
                 applicant = Applicant(
                     applicant_id=aid,
@@ -872,10 +960,12 @@ class StateMachine(QObject):
                     cls=cls_name,
                     spec_id=da.spec_id,
                     ilvl=da.ilvl,
-                    score=da.score,
+                    score=self._rio_score_from_profile(rio_profile, da.score),
                     role=role_name,
                     main_score=da.main_score,
-                    rio_profile=da.rio_profile,
+                    rio_profile=self._rio_profile_flag_from_profile(
+                        rio_profile, da.rio_profile
+                    ),
                     rio_best_key=da.rio_best_key,
                     rio_best_dungeon_key=da.rio_best_dungeon_key,
                     rio_timed_at_or_above=da.rio_timed_at_or_above,
@@ -886,7 +976,12 @@ class StateMachine(QObject):
                     ),
                     rio_dungeon_count=da.rio_dungeon_count,
                     rio_summary_target_key=rio_summary_target_key,
-                    rio_dungeons=self._rio_dungeon_rows_for(da.name, da.rio_dungeons),
+                    rio_dungeons=self._rio_dungeon_rows_from_profile(
+                        rio_profile, da.rio_dungeons
+                    ),
+                    rio_raid_progress=self._rio_raid_progress_from_profile(
+                        rio_profile
+                    ),
                 )
                 self._state.add_or_update(applicant)
                 log.info(
@@ -906,8 +1001,12 @@ class StateMachine(QObject):
                 # Preserve WCL percentiles only while the WCL result shape stays
                 # valid for this row. Gear/score changes are safe; character,
                 # spec, and DPS-vs-HEALER metric-role changes are not.
+                incoming_spec_id = (
+                    da.spec_id if da.spec_id > 0 else existing.spec_id
+                )
+                incoming_ilvl = da.ilvl if da.ilvl > 0 else existing.ilvl
                 needs_refetch = (
-                    existing.spec_id != da.spec_id
+                    existing.spec_id != incoming_spec_id
                     or existing.name != da.name
                     or wcl_metric_role(existing.role) != wcl_metric_role(role_name)
                     or region_identity_changed
@@ -918,12 +1017,14 @@ class StateMachine(QObject):
                 )
                 existing.name = da.name
                 existing.cls = cls_name
-                existing.spec_id = da.spec_id
-                existing.ilvl = da.ilvl
-                existing.score = da.score
+                existing.spec_id = incoming_spec_id
+                existing.ilvl = incoming_ilvl
+                existing.score = self._rio_score_from_profile(rio_profile, da.score)
                 existing.role = role_name
                 existing.main_score = da.main_score
-                existing.rio_profile = da.rio_profile
+                existing.rio_profile = self._rio_profile_flag_from_profile(
+                    rio_profile, da.rio_profile
+                )
                 existing.rio_best_key = da.rio_best_key
                 existing.rio_best_dungeon_key = da.rio_best_dungeon_key
                 existing.rio_timed_at_or_above = da.rio_timed_at_or_above
@@ -934,8 +1035,11 @@ class StateMachine(QObject):
                 )
                 existing.rio_dungeon_count = da.rio_dungeon_count
                 existing.rio_summary_target_key = rio_summary_target_key
-                existing.rio_dungeons = self._rio_dungeon_rows_for(
-                    da.name, da.rio_dungeons
+                existing.rio_dungeons = self._rio_dungeon_rows_from_profile(
+                    rio_profile, da.rio_dungeons
+                )
+                existing.rio_raid_progress = self._rio_raid_progress_from_profile(
+                    rio_profile
                 )
                 if needs_refetch:
                     existing.clear_wcl_data()

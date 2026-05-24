@@ -50,6 +50,49 @@ ns.dungeons = {
     )
 
 
+def _write_test_raid_db(
+    root: Path,
+    lookup_payload: bytes,
+    *,
+    record_size: int = 6,
+    encoding_order: tuple[int, ...] = (1, 4),
+    boss_count: int = 3,
+) -> None:
+    db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
+    db.mkdir(parents=True, exist_ok=True)
+    (db / "db_raiding_eu_characters.lua").write_text(
+        'local provider={name=...,data=2,region="eu",db={}}\n'
+        'provider.db["Ragnaros"]={0,"Alphapack","Chinie"}\n',
+        encoding="utf-8",
+    )
+    encoded = "".join(f"\\{byte}" for byte in lookup_payload)
+    order = ",".join(str(value) for value in encoding_order)
+    (db / "db_raiding_eu_lookup.lua").write_text(
+        'local provider={name=...,data=2,region="eu",lookup={},'
+        f"recordSizeInBytes={record_size},encodingOrder={{{order}}},"
+        f'currentRaids={{{{["id"]=1,["name"]="Test Raid",["shortName"]="TR",'
+        f'["bossCount"]={boss_count},["ordinal"]=1}}}},previousRaids={{}}}}\n'
+        f'provider.lookup[1] = "{encoded}"\n',
+        encoding="utf-8",
+    )
+
+
+def _write_invalid_test_raid_db(root: Path) -> None:
+    db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
+    db.mkdir(parents=True, exist_ok=True)
+    (db / "db_raiding_eu_characters.lua").write_text(
+        'local provider={name=...,data=2,region="eu",db={}}\n'
+        'provider.db["Ragnaros"]={0,"Chinie"}\n',
+        encoding="utf-8",
+    )
+    (db / "db_raiding_eu_lookup.lua").write_text(
+        'local provider={name=...,data=2,region="eu",lookup={},'
+        "recordSizeInBytes=1,encodingOrder={99},currentRaids={},previousRaids={}}\n"
+        'provider.lookup[1] = "\\0"\n',
+        encoding="utf-8",
+    )
+
+
 def _record(score: int, skyreach: int, pit: int, skyreach_upgrades: int, pit_upgrades: int) -> bytes:
     values = [
         (score, 13),
@@ -69,6 +112,31 @@ def _record(score: int, skyreach: int, pit: int, skyreach_upgrades: int, pit_upg
     return bytes(out)
 
 
+def _pack_bits(values: list[tuple[int, int]], size: int) -> bytes:
+    out = bytearray(size)
+    offset = 0
+    for value, width in values:
+        for bit_idx in range(width):
+            if value & (1 << bit_idx):
+                out[offset // 8] |= 1 << (offset % 8)
+            offset += 1
+    return bytes(out)
+
+
+def _raid_record(
+    first: tuple[int, tuple[int, ...]],
+    second: tuple[int, tuple[int, ...]],
+    *,
+    size: int = 6,
+) -> bytes:
+    values: list[tuple[int, int]] = []
+    for difficulty, boss_kills in (first, second):
+        values.append((difficulty - 1, 2))
+        values.extend((kills, 5) for kills in boss_kills)
+    values.extend([(0, 2), (0, 4), (0, 2), (0, 4)])
+    return _pack_bits(values, size)
+
+
 def test_reader_decodes_timed_dungeon_rows_from_local_raiderio_db(tmp_path: Path):
     _write_test_db(
         tmp_path,
@@ -81,6 +149,56 @@ def test_reader_decodes_timed_dungeon_rows_from_local_raiderio_db(tmp_path: Path
     assert profile is not None
     assert profile.current_score == 3074
     assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+    assert profile.raid_progress == {}
+
+
+def test_reader_decodes_current_raid_progress_from_local_raiderio_db(tmp_path: Path):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    _write_test_raid_db(
+        tmp_path,
+        _raid_record((1, (0, 0, 0)), (0, (0, 0, 0)))
+        + _raid_record((3, (2, 0, 1)), (2, (1, 1, 1))),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3074
+    assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+    assert profile.raid_progress == {
+        "M": {
+            "killed": 2,
+            "total": 3,
+            "boss_kills": [2, 0, 1],
+            "raid_name": "Test Raid",
+        },
+        "H": {
+            "killed": 3,
+            "total": 3,
+            "boss_kills": [1, 1, 1],
+            "raid_name": "Test Raid",
+        },
+    }
+
+
+def test_reader_keeps_mplus_available_when_raid_db_is_invalid(tmp_path: Path):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    _write_invalid_test_raid_db(tmp_path)
+    reader = RaiderIOLocalReader(tmp_path)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3074
+    assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+    assert profile.raid_progress == {}
 
 
 def test_reader_matches_display_realm_against_raiderio_normalized_realm_key(
