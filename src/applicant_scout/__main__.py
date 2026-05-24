@@ -364,6 +364,10 @@ def _shutdown_running_instance(timeout_ms: int = 2000) -> int:
     return 0
 
 
+def _control_command_acknowledged(result: _ControlCommandResult) -> bool:
+    return result.connected and result.written and result.response == b"ok"
+
+
 def _has_running_instance(timeout_ms: int = 200) -> bool:
     socket = QLocalSocket()
     socket.connectToServer(CONTROL_SERVER_NAME)
@@ -384,7 +388,13 @@ def _create_control_server(
     server = QLocalServer(app)
     if not server.listen(CONTROL_SERVER_NAME):
         active_owner = _send_control_command(CONTROL_SHOW_SETTINGS_COMMAND, timeout_ms=200)
+        if _control_command_acknowledged(active_owner):
+            raise _DuplicateInstanceFound
         if active_owner.connected and active_owner.written:
+            log.warning(
+                "Control server owner returned unexpected response while probing: %r",
+                active_owner.response,
+            )
             raise _DuplicateInstanceFound
         QLocalServer.removeServer(CONTROL_SERVER_NAME)
         if not server.listen(CONTROL_SERVER_NAME):
@@ -2095,6 +2105,7 @@ def _persist_settings_values(
         metric_preferences=metric_preferences,
         sync_with_wow=sync_with_wow,
         chatlog_path=chatlog_path,
+        config_path=cfg.config_path,
     )
 
 
@@ -2310,7 +2321,30 @@ def _run_first_run_settings(
             f"Settings were not saved because the WoW startup shortcut could not be updated: {exc}",
         )
         return False
-    _persist_settings_values(cfg, values)
+    try:
+        _persist_settings_values(cfg, values)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not persist first-run settings: %s", exc)
+        rollback_error = ""
+        try:
+            configure_wow_sync_startup(cfg.sync_with_wow)
+        except Exception as rollback_exc:  # noqa: BLE001
+            rollback_error = (
+                " The WoW startup shortcut rollback also failed: "
+                f"{rollback_exc}"
+            )
+            log.warning(
+                "Could not roll back WoW lifecycle startup shortcut after "
+                "settings save failure: %s",
+                rollback_exc,
+            )
+        QMessageBox.warning(
+            None,
+            "ApplicantScout settings",
+            "Settings were not saved because the config file could not be "
+            f"updated: {exc}.{rollback_error}",
+        )
+        return False
     if values.sync_with_wow:
         try:
             start_wow_sync_watcher()
@@ -2387,14 +2421,23 @@ def main(argv: list[str] | None = None) -> int:
     duplicate_command = _duplicate_launch_command(args, wow_watch_mode=wow_watch_mode)
     if duplicate_command is not None:
         result = _send_control_command(duplicate_command, timeout_ms=200)
-        if result.connected and result.written:
-            if result.response == b"unknown":
-                log.info(
-                    "Running ApplicantScout instance did not recognize %r; "
-                    "exiting duplicate launch.",
-                    duplicate_command,
-                )
+        if _control_command_acknowledged(result):
             return 0
+        if result.connected and result.written and result.response is None:
+            log.warning(
+                "Running ApplicantScout instance did not acknowledge %r; "
+                "refusing to start a duplicate instance.",
+                duplicate_command,
+            )
+            return 1
+        elif result.connected and result.written:
+            log.warning(
+                "Running ApplicantScout instance returned unexpected response "
+                "for %r: %r",
+                duplicate_command,
+                result.response,
+            )
+            return 1
         if result.connected and not result.written:
             log.warning(
                 "Could not send duplicate-launch control command: %s",

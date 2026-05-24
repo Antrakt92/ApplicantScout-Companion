@@ -93,6 +93,18 @@ def _write_invalid_test_raid_db(root: Path) -> None:
     )
 
 
+def _mark_test_db_changed(root: Path) -> None:
+    path = (
+        root
+        / "Interface"
+        / "AddOns"
+        / "RaiderIO"
+        / "db"
+        / "db_mythicplus_eu_lookup.lua"
+    )
+    path.write_text(path.read_text(encoding="utf-8") + "\n-- changed\n", encoding="utf-8")
+
+
 def _record(score: int, skyreach: int, pit: int, skyreach_upgrades: int, pit_upgrades: int) -> bytes:
     values = [
         (score, 13),
@@ -282,6 +294,173 @@ def test_preload_region_async_retries_missing_db_when_files_appear(tmp_path: Pat
     profile = reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False)
     assert profile is not None
     assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+
+
+def test_lookup_profile_reloads_positive_cache_when_fingerprint_changes(tmp_path: Path):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+    )
+    _mark_test_db_changed(tmp_path)
+
+    refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert refreshed is not None
+    assert refreshed.current_score == 3333
+    assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+
+
+def test_preload_region_async_reloads_positive_cache_when_fingerprint_changes(
+    tmp_path: Path,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first_completed = threading.Event()
+    reader.preload_region_async("EU", on_loaded=first_completed.set)
+    assert first_completed.wait(timeout=2.0)
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+    )
+    _mark_test_db_changed(tmp_path)
+    second_completed = threading.Event()
+
+    reader.preload_region_async("EU", on_loaded=second_completed.set)
+
+    assert second_completed.wait(timeout=2.0)
+    refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False)
+    assert refreshed is not None
+    assert refreshed.current_score == 3333
+    assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+
+
+def test_positive_cache_reload_failure_keeps_previous_working_db(tmp_path: Path):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+        encoding_order=(1, 99, 10),
+    )
+    _mark_test_db_changed(tmp_path)
+
+    fallback = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert fallback is not None
+    assert fallback.current_score == 3074
+    assert fallback.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+
+
+def test_failed_concurrent_positive_reload_does_not_overwrite_newer_good_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+    )
+    _mark_test_db_changed(tmp_path)
+    new_db = raiderio_local_mod._RegionDB.load(tmp_path, "eu")
+    assert new_db is not None
+
+    def fail_after_another_refresh(*_args: object) -> object:
+        fingerprint = raiderio_local_mod._region_db_fingerprint(tmp_path, "eu")
+        with reader._lock:
+            reader._cache["eu"] = raiderio_local_mod._RegionCacheEntry(
+                db=new_db,
+                fingerprint=fingerprint,
+                cached_at=raiderio_local_mod.time.monotonic(),
+            )
+        return None
+
+    monkeypatch.setattr(
+        raiderio_local_mod._RegionDB,
+        "load",
+        fail_after_another_refresh,
+    )
+
+    refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert refreshed is not None
+    assert refreshed.current_score == 3333
+    assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+
+
+def test_failed_positive_reload_does_not_overwrite_newer_fingerprint_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+    )
+    _mark_test_db_changed(tmp_path)
+
+    load_region_db = raiderio_local_mod._RegionDB.load
+
+    def fail_after_newer_refresh(*_args: object) -> object:
+        _write_test_db(
+            tmp_path,
+            _record(3200, 15, 14, 1, 0) + _record(3444, 0, 17, 0, 1),
+        )
+        _mark_test_db_changed(tmp_path)
+        newer_db = load_region_db(tmp_path, "eu")
+        newer_fingerprint = raiderio_local_mod._region_db_fingerprint(tmp_path, "eu")
+        assert newer_db is not None
+        with reader._lock:
+            reader._cache["eu"] = raiderio_local_mod._RegionCacheEntry(
+                db=newer_db,
+                fingerprint=newer_fingerprint,
+                cached_at=raiderio_local_mod.time.monotonic(),
+            )
+        return None
+
+    monkeypatch.setattr(
+        raiderio_local_mod._RegionDB,
+        "load",
+        fail_after_newer_refresh,
+    )
+
+    refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert refreshed is not None
+    assert refreshed.current_score == 3444
+    assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 17}]
 
 
 def test_lookup_profile_retries_malformed_db_when_files_become_valid(tmp_path: Path):

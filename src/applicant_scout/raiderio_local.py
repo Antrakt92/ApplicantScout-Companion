@@ -52,6 +52,7 @@ class _RegionCacheEntry:
     db: _RegionDB | None
     fingerprint: _RegionDBFingerprint
     cached_at: float
+    refresh_failed: bool = False
 
 
 class RaiderIOLocalReader:
@@ -91,7 +92,7 @@ class RaiderIOLocalReader:
         fingerprint = _region_db_fingerprint(self._retail_root, token)
         with self._lock:
             entry = self._cache.get(token)
-            if entry is not None and not _negative_cache_entry_is_stale(
+            if entry is not None and not _cache_entry_is_stale(
                 entry, fingerprint, now
             ):
                 call_now = on_loaded is not None
@@ -136,16 +137,33 @@ class RaiderIOLocalReader:
         fingerprint = _region_db_fingerprint(self._retail_root, token)
         with self._lock:
             entry = self._cache.get(token)
-            if entry is not None and not _negative_cache_entry_is_stale(
+            if entry is not None and not _cache_entry_is_stale(
                 entry, fingerprint, now
             ):
                 return entry.db
+            previous_entry = entry
         try:
             loaded = _RegionDB.load(self._retail_root, token)
         except Exception as exc:  # noqa: BLE001
             _log.warning("RaiderIO local DB unavailable for %s: %s", token, exc)
             loaded = None
         with self._lock:
+            if loaded is None and previous_entry is not None and previous_entry.db is not None:
+                current_entry = self._cache.get(token)
+                if (
+                    current_entry is not None
+                    and current_entry is not previous_entry
+                    and current_entry.db is not None
+                    and not current_entry.refresh_failed
+                ):
+                    return current_entry.db
+                self._cache[token] = _RegionCacheEntry(
+                    db=previous_entry.db,
+                    fingerprint=fingerprint,
+                    cached_at=now,
+                    refresh_failed=True,
+                )
+                return previous_entry.db
             self._cache[token] = _RegionCacheEntry(
                 db=loaded,
                 fingerprint=fingerprint,
@@ -361,13 +379,16 @@ class _RegionDB:
         return realm_cache[cache_key]
 
 
-def _negative_cache_entry_is_stale(
+def _cache_entry_is_stale(
     entry: _RegionCacheEntry,
     fingerprint: _RegionDBFingerprint,
     now: float,
 ) -> bool:
     if entry.db is not None:
-        return False
+        return entry.fingerprint != fingerprint or (
+            entry.refresh_failed
+            and now - entry.cached_at >= _NEGATIVE_CACHE_TTL_SECONDS
+        )
     return (
         entry.fingerprint != fingerprint
         or now - entry.cached_at >= _NEGATIVE_CACHE_TTL_SECONDS

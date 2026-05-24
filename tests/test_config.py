@@ -2099,11 +2099,59 @@ def test_create_control_server_detects_active_owner_before_stale_cleanup(
     assert calls == [f"listen:{main_mod.CONTROL_SERVER_NAME}", "show-settings"]
 
 
-def test_main_duplicate_launch_exits_before_startup_when_instance_is_running(
+def test_main_duplicate_launch_exits_before_startup_when_instance_acknowledges(
     monkeypatch: pytest.MonkeyPatch,
 ):
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("duplicate launch should exit before startup side effects")
+
+    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=True,
+            written=True,
+            response=b"ok",
+        ),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", fail_if_called)
+    monkeypatch.setattr(main_mod, "_load_startup_config", fail_if_called)
+    monkeypatch.setattr(main_mod, "WCLAuth", fail_if_called)
+    monkeypatch.setattr(main_mod, "WCLClient", fail_if_called)
+    monkeypatch.setattr(main_mod, "OverlayWindow", fail_if_called)
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", fail_if_called)
+
+    assert main_mod.main([]) == 0
+
+
+def test_main_duplicate_manual_launch_without_response_fails_before_startup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("unacknowledged duplicate response should stop startup")
+
+    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=True,
+            written=True,
+            response=None,
+        ),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", fail_if_called)
+    monkeypatch.setattr(main_mod, "_load_startup_config", fail_if_called)
+
+    assert main_mod.main([]) == 1
+
+
+def test_main_duplicate_manual_launch_unknown_response_fails_before_startup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("unknown duplicate response should stop startup")
 
     monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
     monkeypatch.setattr(
@@ -2117,12 +2165,8 @@ def test_main_duplicate_launch_exits_before_startup_when_instance_is_running(
     )
     monkeypatch.setattr(main_mod, "QApplication", fail_if_called)
     monkeypatch.setattr(main_mod, "_load_startup_config", fail_if_called)
-    monkeypatch.setattr(main_mod, "WCLAuth", fail_if_called)
-    monkeypatch.setattr(main_mod, "WCLClient", fail_if_called)
-    monkeypatch.setattr(main_mod, "OverlayWindow", fail_if_called)
-    monkeypatch.setattr(main_mod, "ScreenshotWatcher", fail_if_called)
 
-    assert main_mod.main([]) == 0
+    assert main_mod.main([]) == 1
 
 
 def test_main_duplicate_manual_launch_requests_settings_before_qapplication(
@@ -2200,6 +2244,51 @@ def test_main_manual_launch_continues_when_no_control_server_exists(
 
     assert main_mod.main([]) == 1
     assert calls == ["logging", "control", "app", "server", "config"]
+
+
+def test_create_control_server_does_not_remove_server_after_no_response_probe(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeServer:
+        def __init__(self, _app) -> None:
+            pass
+
+        def listen(self, server_name: str) -> bool:
+            calls.append(f"listen:{server_name}")
+            return False
+
+        def errorString(self) -> str:
+            return "already listening"
+
+    class FakeLocalServer:
+        def __call__(self, app):
+            return FakeServer(app)
+
+        @staticmethod
+        def removeServer(server_name: str) -> None:
+            calls.append(f"remove:{server_name}")
+
+    monkeypatch.setattr(main_mod, "QLocalServer", FakeLocalServer())
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda command, **_kwargs: calls.append(command.decode())
+        or SimpleNamespace(connected=True, written=True, response=None),
+    )
+
+    with pytest.raises(main_mod._DuplicateInstanceFound):
+        main_mod._create_control_server(
+            object(),
+            quit_app=lambda: None,
+            show_settings=lambda: None,
+        )
+
+    assert calls == [
+        f"listen:{main_mod.CONTROL_SERVER_NAME}",
+        "show-settings",
+    ]
 
 
 def test_main_claims_control_server_before_loading_startup_config(
@@ -2726,6 +2815,205 @@ def test_persist_settings_values_repairs_invalid_saved_cache_ttl_masked_by_env(
     saved = config_mod._read_env_file(config_path)
 
     assert "APSCOUT_CACHE_TTL_SECONDS" not in saved
+
+
+def test_persist_settings_values_writes_to_cfg_config_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    cfg.config_path = tmp_path / "custom.env"
+    saved: dict[str, object] = {}
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path="",
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+
+    monkeypatch.setattr(main_mod, "read_user_config_values", lambda _path: {})
+    monkeypatch.setattr(main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs))
+
+    main_mod._persist_settings_values(cfg, values, apply_credentials=False)
+
+    assert saved["config_path"] == cfg.config_path
+
+
+def test_first_run_wow_sync_enable_save_failure_rolls_back_shortcut(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    cfg.sync_with_wow = False
+    calls: list[str] = []
+    warnings: list[str] = []
+
+    class FakeDialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setWindowIcon(self, _icon) -> None:
+            pass
+
+        def exec(self):
+            return main_mod.QDialog.DialogCode.Accepted
+
+        def values(self):
+            class Values:
+                wcl_client_id = "client"
+                wcl_client_secret = "secret"
+                region = "EU"
+                screenshots_path = str(tmp_path / "Screenshots")
+                metric_preferences = cfg.metric_preferences
+                sync_with_wow = True
+
+            return Values()
+
+    monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
+    monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda enabled: calls.append(f"shortcut:{enabled}"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("save")
+        or (_ for _ in ()).throw(RuntimeError("save failed")),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "start_wow_sync_watcher",
+        lambda: calls.append("watcher"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    assert not main_mod._run_first_run_settings(cfg)
+    assert calls == ["shortcut:True", "save", "shortcut:False"]
+    assert len(warnings) == 1
+    assert "save failed" in warnings[0]
+
+
+def test_first_run_wow_sync_disable_save_failure_restores_previous_enabled_shortcut(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    cfg.sync_with_wow = True
+    calls: list[str] = []
+    warnings: list[str] = []
+
+    class FakeDialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setWindowIcon(self, _icon) -> None:
+            pass
+
+        def exec(self):
+            return main_mod.QDialog.DialogCode.Accepted
+
+        def values(self):
+            class Values:
+                wcl_client_id = "client"
+                wcl_client_secret = "secret"
+                region = "EU"
+                screenshots_path = str(tmp_path / "Screenshots")
+                metric_preferences = cfg.metric_preferences
+                sync_with_wow = False
+
+            return Values()
+
+    monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
+    monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda enabled: calls.append(f"shortcut:{enabled}"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("save")
+        or (_ for _ in ()).throw(RuntimeError("save failed")),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "start_wow_sync_watcher",
+        lambda: calls.append("watcher"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    assert not main_mod._run_first_run_settings(cfg)
+    assert calls == ["shortcut:False", "save", "shortcut:True"]
+    assert len(warnings) == 1
+    assert "save failed" in warnings[0]
+
+
+def test_first_run_wow_sync_save_failure_warns_when_rollback_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    cfg.sync_with_wow = False
+    calls: list[str] = []
+    warnings: list[str] = []
+
+    class FakeDialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setWindowIcon(self, _icon) -> None:
+            pass
+
+        def exec(self):
+            return main_mod.QDialog.DialogCode.Accepted
+
+        def values(self):
+            class Values:
+                wcl_client_id = "client"
+                wcl_client_secret = "secret"
+                region = "EU"
+                screenshots_path = str(tmp_path / "Screenshots")
+                metric_preferences = cfg.metric_preferences
+                sync_with_wow = True
+
+            return Values()
+
+    def configure(enabled: bool) -> None:
+        calls.append(f"shortcut:{enabled}")
+        if enabled is False:
+            raise RuntimeError("rollback failed")
+
+    monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
+    monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
+    monkeypatch.setattr(main_mod, "configure_wow_sync_startup", configure)
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("save")
+        or (_ for _ in ()).throw(RuntimeError("save failed")),
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    assert not main_mod._run_first_run_settings(cfg)
+    assert calls == ["shortcut:True", "save", "shortcut:False"]
+    assert len(warnings) == 1
+    assert "save failed" in warnings[0]
+    assert "rollback failed" in warnings[0]
 
 
 def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
