@@ -30,7 +30,7 @@ import threading
 import time
 import zlib
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -155,6 +155,13 @@ class DecodedVersion:
     player_name: str  # "Charname-Realm"
 
 
+@dataclass(frozen=True)
+class SnapshotSource:
+    mtime_ns: int
+    file_id: str
+    size: int
+
+
 @dataclass
 class Snapshot:
     """Result of decoding one screenshot. listing=None means session ended."""
@@ -164,6 +171,7 @@ class Snapshot:
     leader_key: Optional[DecodedLeaderKey] = None
     applicants: list[DecodedApplicant] = field(default_factory=list)
     roster: list[DecodedRosterMember] = field(default_factory=list)
+    source: SnapshotSource | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -801,7 +809,7 @@ class ScreenshotWatcher(QObject):
     addon already emitted but we missed the watchdog event."""
 
     snapshotReceived = pyqtSignal(object)  # Snapshot
-    decodeFailed = pyqtSignal(str, str)  # path, reason
+    decodeFailed = pyqtSignal(str, str, object)  # path, reason, SnapshotSource | None
 
     def __init__(self, screenshots_dir: Path, parent=None):
         super().__init__(parent)
@@ -854,11 +862,40 @@ class ScreenshotWatcher(QObject):
         self.snapshotReceived.emit(snap)
         return True
 
-    def _emit_decode_failed(self, path: Path, reason: str) -> bool:
+    def _emit_decode_failed(
+        self,
+        path: Path,
+        reason: str,
+        source: SnapshotSource | None = None,
+    ) -> bool:
         if self._stopped.is_set():
             return False
-        self.decodeFailed.emit(str(path), reason)
+        self.decodeFailed.emit(str(path), reason, source)
         return True
+
+    @staticmethod
+    def _source_from_stat(path: Path, stat_result: os.stat_result) -> SnapshotSource:
+        return SnapshotSource(
+            mtime_ns=stat_result.st_mtime_ns,
+            file_id=str(path),
+            size=stat_result.st_size,
+        )
+
+    def _snapshot_source_for_path(self, path: Path) -> SnapshotSource | None:
+        try:
+            stat_result = path.stat()
+        except OSError:
+            return None
+        return self._source_from_stat(path, stat_result)
+
+    @staticmethod
+    def _snapshot_with_source(
+        snap: Snapshot,
+        source: SnapshotSource | None,
+    ) -> Snapshot:
+        if source is None:
+            return snap
+        return replace(snap, source=source)
 
     def _scan_recent_backlog(self) -> None:
         """Startup cleanup pass over WoWScrnShot JPG/TGA files. Two jobs:
@@ -876,21 +913,23 @@ class ScreenshotWatcher(QObject):
             return
         now = time.time()
         apply_cutoff = now - 60
-        all_files: list[tuple[Path, float]] = []
+        all_files: list[tuple[Path, os.stat_result]] = []
         for p in _iter_screenshot_candidates(self._dir):
             try:
-                all_files.append((p, p.stat().st_mtime))
+                all_files.append((p, p.stat()))
             except OSError:
                 continue
         if not all_files:
             return
-        all_files.sort(key=lambda t: t[1], reverse=True)
+        all_files.sort(key=lambda t: t[1].st_mtime_ns, reverse=True)
         if len(all_files) > _BACKLOG_CLEANUP_LIMIT:
             all_files = all_files[:_BACKLOG_CLEANUP_LIMIT]
 
         apply_closed = False
         deleted = 0
-        for p, mtime in all_files:
+        for p, stat_result in all_files:
+            mtime = stat_result.st_mtime
+            source = self._source_from_stat(p, stat_result)
             if (
                 not apply_closed
                 and mtime >= apply_cutoff
@@ -919,13 +958,17 @@ class ScreenshotWatcher(QObject):
                 and mtime >= apply_cutoff
                 and not self._stopped.is_set()
             ):
-                if not self._emit_snapshot(result.snapshot):
+                if not self._emit_snapshot(
+                    self._snapshot_with_source(result.snapshot, source)
+                ):
                     return
                 _log.info("backlog: applied snapshot from %s", p.name)
                 apply_closed = True
             elif result.has_marker and not apply_closed and mtime >= apply_cutoff:
                 if not self._emit_decode_failed(
-                    p, result.error_reason or "parse failed"
+                    p,
+                    result.error_reason or "parse failed",
+                    source,
                 ):
                     return
                 _log.warning(
@@ -973,19 +1016,26 @@ class ScreenshotWatcher(QObject):
             # Manual screenshots can be large/slow too. Only surface a health
             # failure when the timed-out file is actually an ApScout transport
             # image; unrelated screenshots must stay silent and preserved.
+            source = self._snapshot_source_for_path(path)
             try:
                 result = _decode_screenshot_result(path)
             except Exception as e:
-                self._emit_decode_failed(path, repr(e))
+                self._emit_decode_failed(path, repr(e), source)
                 result = DecodeResult(None, False)
             if self._stopped.is_set():
                 return
             if result.snapshot is not None:
-                if not self._emit_snapshot(result.snapshot):
+                if not self._emit_snapshot(
+                    self._snapshot_with_source(result.snapshot, source)
+                ):
                     return
             if result.has_marker:
                 reason = result.error_reason or "size never stabilized"
-                if result.snapshot is None and not self._emit_decode_failed(path, reason):
+                if result.snapshot is None and not self._emit_decode_failed(
+                    path,
+                    reason,
+                    source,
+                ):
                     return
                 if self._stopped.is_set():
                     return
@@ -996,10 +1046,11 @@ class ScreenshotWatcher(QObject):
             return
         wait_elapsed = time.perf_counter() - wait_started
         decode_started = time.perf_counter()
+        source = self._snapshot_source_for_path(path)
         try:
             result = _decode_screenshot_result(path)
         except Exception as e:
-            self._emit_decode_failed(path, repr(e))
+            self._emit_decode_failed(path, repr(e), source)
             result = DecodeResult(None, False)
         if self._stopped.is_set():
             return
@@ -1018,12 +1069,14 @@ class ScreenshotWatcher(QObject):
         snap = result.snapshot
         marker = result.has_marker
         if snap is not None:
-            if not self._emit_snapshot(snap):
+            if not self._emit_snapshot(self._snapshot_with_source(snap, source)):
                 return
         if marker:
             if snap is None:
                 if not self._emit_decode_failed(
-                    path, result.error_reason or "parse failed"
+                    path,
+                    result.error_reason or "parse failed",
+                    source,
                 ):
                     return
                 _log.warning(

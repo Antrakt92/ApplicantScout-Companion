@@ -1578,6 +1578,33 @@ def test_watcher_stable_timeout_emits_marker_snapshot_and_deletes_transport(
     assert not image_path.exists()
 
 
+def test_watcher_stamps_live_snapshot_source_from_file_stat(monkeypatch, tmp_path: Path):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    content = b"transport"
+    image_path.write_bytes(content)
+    os.utime(image_path, ns=(1_700_000_000_123_456_789, 1_700_000_000_123_456_789))
+    expected_mtime_ns = image_path.stat().st_mtime_ns
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert snapshots == [snapshot]
+    source = snapshots[0].source
+    assert source is not None
+    assert source.mtime_ns == expected_mtime_ns
+    assert source.file_id == str(image_path)
+    assert source.size == len(content)
+
+
 def test_watcher_stable_timeout_emits_marker_parse_failure_and_deletes_transport(
     monkeypatch,
     tmp_path: Path,
@@ -1598,6 +1625,36 @@ def test_watcher_stable_timeout_emits_marker_parse_failure_and_deletes_transport
 
     assert failures == [(str(image_path), "CRC mismatch")]
     assert not image_path.exists()
+
+
+def test_watcher_decode_failure_includes_snapshot_source(monkeypatch, tmp_path: Path):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    content = b"transport"
+    image_path.write_bytes(content)
+    os.utime(image_path, ns=(1_700_000_001_123_456_789, 1_700_000_001_123_456_789))
+    expected_mtime_ns = image_path.stat().st_mtime_ns
+    watcher = ScreenshotWatcher(tmp_path)
+    failures: list[tuple[str, str, object]] = []
+    watcher.decodeFailed.connect(
+        lambda path, reason, source: failures.append((path, reason, source))
+    )
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, True, "CRC mismatch"),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert len(failures) == 1
+    path, reason, source = failures[0]
+    assert path == str(image_path)
+    assert reason == "CRC mismatch"
+    assert source is not None
+    assert source.mtime_ns == expected_mtime_ns
+    assert source.file_id == str(image_path)
+    assert source.size == len(content)
 
 
 def test_watcher_stop_mid_new_file_does_not_delete_unemitted_marker_snapshot(
@@ -1730,6 +1787,38 @@ def test_backlog_can_apply_older_snapshot_when_newest_file_has_no_marker(
     assert failures == []
     assert manual.exists()
     assert not older.exists()
+
+
+def test_backlog_stamps_snapshot_source_from_candidate_stat(
+    monkeypatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    content = b"transport"
+    image_path.write_bytes(content)
+    os.utime(image_path, ns=(1_700_000_002_123_456_789, 1_700_000_002_123_456_789))
+    expected_mtime_ns = image_path.stat().st_mtime_ns
+    snapshot = Snapshot(listing=None, version=None)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == [snapshot]
+    source = snapshots[0].source
+    assert source is not None
+    assert source.mtime_ns == expected_mtime_ns
+    assert source.file_id == str(image_path)
+    assert source.size == len(content)
 
 
 def test_backlog_skips_unstable_recent_file_without_decoding_or_deleting(

@@ -1614,6 +1614,34 @@ class _WatcherSignalGate:
         return generation == self._generation or generation == self._pending_generation
 
 
+class _SnapshotSourceGate:
+    def __init__(self) -> None:
+        self._latest_mtime_ns: int | None = None
+        self._accepted_latest_ids: set[tuple[str, int]] = set()
+
+    def accept(self, source: object | None) -> bool:
+        if source is None:
+            return True
+        mtime_ns = getattr(source, "mtime_ns", None)
+        file_id = getattr(source, "file_id", None)
+        size = getattr(source, "size", None)
+        if not isinstance(mtime_ns, int) or not isinstance(file_id, str):
+            return True
+        if not isinstance(size, int):
+            return True
+        identity = (file_id, size)
+        if self._latest_mtime_ns is None or mtime_ns > self._latest_mtime_ns:
+            self._latest_mtime_ns = mtime_ns
+            self._accepted_latest_ids = {identity}
+            return True
+        if mtime_ns < self._latest_mtime_ns:
+            return False
+        if identity in self._accepted_latest_ids:
+            return False
+        self._accepted_latest_ids.add(identity)
+        return True
+
+
 class _SnapshotApplier(Protocol):
     def apply_snapshot(self, snap: Snapshot) -> None: ...
 
@@ -1625,26 +1653,30 @@ def _connect_screenshot_watcher(
     decode_failed_callback: Callable[[str, str], None],
     *,
     signal_gate: _WatcherSignalGate,
+    source_gate: _SnapshotSourceGate,
     generation: int,
 ) -> None:
-    def _apply_snapshot_if_current(snap: object) -> None:
+    def _snapshot_if_current(snap: object) -> None:
         if not signal_gate.is_current(generation):
+            return
+        if not source_gate.accept(getattr(snap, "source", None)):
             return
         getattr(machine, "apply_snapshot", lambda *_args: None)(snap)
-
-    def _note_decode_if_current(snap: object) -> None:
-        if not signal_gate.is_current(generation):
-            return
         getattr(window, "note_decode", lambda *_args: None)(snap)
 
-    def _decode_failed_if_current(path: str, reason: str) -> None:
+    def _decode_failed_if_current(
+        path: str,
+        reason: str,
+        source: object | None = None,
+    ) -> None:
         if not signal_gate.is_current(generation):
+            return
+        if not source_gate.accept(source):
             return
         decode_failed_callback(path, reason)
         getattr(window, "note_decode_failed", lambda *_args: None)(path, reason)
 
-    watcher.snapshotReceived.connect(_apply_snapshot_if_current)
-    watcher.snapshotReceived.connect(_note_decode_if_current)
+    watcher.snapshotReceived.connect(_snapshot_if_current)
     watcher.decodeFailed.connect(_decode_failed_if_current)
 
 
@@ -1659,12 +1691,14 @@ def _replace_screenshot_watcher(
 ) -> ScreenshotWatcher:
     new_watcher = ScreenshotWatcher(screenshots_dir)
     generation = signal_gate.prepare_next()
+    source_gate = _SnapshotSourceGate()
     _connect_screenshot_watcher(
         new_watcher,
         machine,
         window,
         decode_failed_callback,
         signal_gate=signal_gate,
+        source_gate=source_gate,
         generation=generation,
     )
     try:

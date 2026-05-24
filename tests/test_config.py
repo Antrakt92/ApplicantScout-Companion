@@ -3257,6 +3257,170 @@ def test_replace_screenshot_watcher_ignores_old_queued_signals_after_replacement
     assert window.failures == [("new.jpg", "new failed")]
 
 
+def test_snapshot_source_gate_rejects_older_source():
+    gate = main_mod._SnapshotSourceGate()
+    newer = SimpleNamespace(mtime_ns=200, file_id="new.jpg", size=10)
+    older = SimpleNamespace(mtime_ns=100, file_id="old.jpg", size=10)
+
+    assert gate.accept(newer)
+    assert not gate.accept(older)
+
+
+def test_snapshot_source_gate_rejects_duplicate_same_file_source():
+    gate = main_mod._SnapshotSourceGate()
+    source = SimpleNamespace(mtime_ns=200, file_id="shot.jpg", size=10)
+
+    assert gate.accept(source)
+    assert not gate.accept(source)
+
+
+def test_snapshot_source_gate_accepts_equal_mtime_distinct_file():
+    gate = main_mod._SnapshotSourceGate()
+    left = SimpleNamespace(mtime_ns=200, file_id="left.jpg", size=10)
+    right = SimpleNamespace(mtime_ns=200, file_id="right.jpg", size=10)
+
+    assert gate.accept(left)
+    assert gate.accept(right)
+
+
+def test_connect_screenshot_watcher_ignores_stale_snapshot_after_newer_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self, _path: Path) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.decoded: list[object] = []
+
+        def note_decode(self, snap: object) -> None:
+            self.decoded.append(snap)
+
+        def note_decode_failed(self, _path: str, _reason: str) -> None:
+            raise AssertionError("unexpected decode failure")
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    machine = FakeMachine()
+    window = FakeWindow()
+    watcher = main_mod._replace_screenshot_watcher(
+        None,
+        tmp_path,
+        machine,
+        window,
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+    )
+    newer = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=200, file_id="new.jpg", size=10)
+    )
+    older = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=100, file_id="old.jpg", size=10)
+    )
+
+    watcher.snapshotReceived.emit(newer)
+    watcher.snapshotReceived.emit(older)
+
+    assert machine.snapshots == [newer]
+    assert window.decoded == [newer]
+
+
+def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self, _path: Path) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.decoded: list[object] = []
+            self.failures: list[tuple[str, str]] = []
+
+        def note_decode(self, snap: object) -> None:
+            self.decoded.append(snap)
+
+        def note_decode_failed(self, path: str, reason: str) -> None:
+            self.failures.append((path, reason))
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    machine = FakeMachine()
+    window = FakeWindow()
+    failures: list[tuple[str, str]] = []
+    watcher = main_mod._replace_screenshot_watcher(
+        None,
+        tmp_path,
+        machine,
+        window,
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=main_mod._WatcherSignalGate(),
+    )
+    newer = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=200, file_id="new.jpg", size=10)
+    )
+    older_source = SimpleNamespace(mtime_ns=100, file_id="old.jpg", size=10)
+
+    watcher.snapshotReceived.emit(newer)
+    watcher.decodeFailed.emit("old.jpg", "CRC mismatch", older_source)
+
+    assert machine.snapshots == [newer]
+    assert window.decoded == [newer]
+    assert failures == []
+    assert window.failures == []
+
+
 def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
