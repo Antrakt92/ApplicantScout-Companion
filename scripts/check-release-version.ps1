@@ -1,8 +1,12 @@
 param(
     [string]$Tag = $env:GITHUB_REF_NAME,
     [switch]$RequireAssets,
+    [switch]$RequirePublishedPairedAddonAssets,
     [string]$PairedAddonRefOutputPath,
-    [string]$PairedAddonRoot
+    [string]$PairedAddonRoot,
+    [string]$GitHubCliPath = "gh",
+    [int]$PublishedReleaseWaitSeconds = 120,
+    [int]$PublishedReleasePollSeconds = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,6 +56,28 @@ function Get-FirstRegexMatch {
     return $Match.Groups[1].Value
 }
 
+function Get-TopChangelogSection {
+    param(
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Missing paired addon changelog file: $Path"
+    }
+    $Text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $Options = [System.Text.RegularExpressions.RegexOptions]::Multiline -bor
+        [System.Text.RegularExpressions.RegexOptions]::Singleline
+    $Match = [regex]::Match(
+        $Text,
+        "^##\s+([0-9]+\.[0-9]+\.[0-9]+)\s+-\s+.+?(?=^##\s+[0-9]+\.[0-9]+\.[0-9]+\s+-\s+|\z)",
+        $Options
+    )
+    if (-not $Match.Success) {
+        throw "Missing top paired addon changelog section in $Path"
+    }
+    return $Match
+}
+
 function Get-PairedAddonMetadata {
     param(
         [string]$Root
@@ -72,8 +98,24 @@ function Get-PairedAddonMetadata {
         throw "Expected exactly one paired addon TOC version in $TocPath, found $($TocMatches.Count)."
     }
 
+    $ChangelogPath = Join-Path $ResolvedRoot "CHANGELOG.md"
+    $TopChangelogMatch = Get-TopChangelogSection -Path $ChangelogPath
+    $TopChangelogSection = $TopChangelogMatch.Value
+    $PairedCompanionMatches = [regex]::Matches(
+        $TopChangelogSection,
+        '(?i)(?:ApplicantScout\s+)?Companion\s+`?([0-9]+\.[0-9]+\.[0-9]+)`?',
+        [System.Text.RegularExpressions.RegexOptions]::Multiline
+    )
+    $PairedCompanionVersions = @(
+        $PairedCompanionMatches |
+            ForEach-Object { $_.Groups[1].Value } |
+            Sort-Object -Unique
+    )
+
     return @{
         TocVersion = $TocMatches[0].Groups[1].Value
+        ChangelogVersion = $TopChangelogMatch.Groups[1].Value
+        PairedCompanionVersions = $PairedCompanionVersions
     }
 }
 
@@ -140,6 +182,113 @@ function Test-InstallerChecksum {
     }
 
     return $null
+}
+
+function Invoke-GitHubReleaseView {
+    param(
+        [string]$CliPath,
+        [string]$Repo,
+        [string]$ReleaseTag
+    )
+
+    $ErrorPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $JsonLines = & $CliPath release view $ReleaseTag --repo $Repo --json "tagName,isDraft,isPrerelease,assets" 2> $ErrorPath
+        $ExitCode = $LASTEXITCODE
+        $ErrorRaw = Get-Content -LiteralPath $ErrorPath -Raw -ErrorAction SilentlyContinue
+        $ErrorText = if ($null -eq $ErrorRaw) { "" } else { $ErrorRaw.Trim() }
+        if ($ExitCode -ne 0) {
+            $Message = "gh release view failed for $Repo $ReleaseTag with exit code $ExitCode."
+            if ($ErrorText) {
+                $Message = "$Message $ErrorText"
+            }
+            throw $Message
+        }
+
+        $JsonText = ($JsonLines -join "`n").Trim()
+        if (-not $JsonText) {
+            throw "gh release view returned empty JSON for $Repo $ReleaseTag."
+        }
+        try {
+            return ($JsonText | ConvertFrom-Json)
+        }
+        catch {
+            throw "gh release view returned malformed JSON for $Repo $ReleaseTag."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $ErrorPath) {
+            Remove-Item -LiteralPath $ErrorPath -Force
+        }
+    }
+}
+
+function Test-GitHubReleaseAssets {
+    param(
+        [object]$Release,
+        [string]$Repo,
+        [string]$ReleaseTag,
+        [string[]]$ExpectedAssets
+    )
+
+    if ($null -eq $Release) {
+        throw "GitHub Release $ReleaseTag in $Repo was not returned by gh."
+    }
+    if ($Release.isDraft) {
+        throw "GitHub Release $ReleaseTag in $Repo is still draft; publish the paired release before releasing ApplicantScout Companion."
+    }
+    if ($Release.isPrerelease) {
+        throw "GitHub Release $ReleaseTag in $Repo is marked prerelease; publish the paired stable release before releasing ApplicantScout Companion."
+    }
+
+    $Assets = if ($null -eq $Release.assets) { @() } else { @($Release.assets) }
+    $AssetNames = @($Assets | ForEach-Object { $_.name })
+    foreach ($AssetName in $ExpectedAssets) {
+        if ($AssetNames -notcontains $AssetName) {
+            throw "GitHub Release $ReleaseTag in $Repo is missing asset: $AssetName"
+        }
+    }
+}
+
+function Wait-GitHubReleaseAssets {
+    param(
+        [string]$CliPath,
+        [string]$Repo,
+        [string]$ReleaseTag,
+        [string[]]$ExpectedAssets,
+        [int]$WaitSeconds,
+        [int]$PollSeconds
+    )
+
+    if ($WaitSeconds -lt 0) {
+        throw "PublishedReleaseWaitSeconds must be zero or greater."
+    }
+    if ($PollSeconds -lt 1) {
+        throw "PublishedReleasePollSeconds must be at least 1."
+    }
+
+    $Deadline = (Get-Date).AddSeconds($WaitSeconds)
+    $LastError = $null
+    do {
+        try {
+            $Release = Invoke-GitHubReleaseView -CliPath $CliPath -Repo $Repo -ReleaseTag $ReleaseTag
+            Test-GitHubReleaseAssets `
+                -Release $Release `
+                -Repo $Repo `
+                -ReleaseTag $ReleaseTag `
+                -ExpectedAssets $ExpectedAssets
+            return
+        }
+        catch {
+            $LastError = $_.Exception.Message
+            if ((Get-Date) -ge $Deadline) {
+                break
+            }
+            Start-Sleep -Seconds $PollSeconds
+        }
+    } while ($true)
+
+    throw $LastError
 }
 
 if (-not $Tag) {
@@ -268,6 +417,21 @@ if ($Errors.Count -gt 0) {
 
 if ($PairedAddonRoot) {
     $AddonMetadata = Get-PairedAddonMetadata -Root $PairedAddonRoot
+    if ($AddonMetadata.ChangelogVersion -ne $AddonMetadata.TocVersion) {
+        $Errors += "Paired addon CHANGELOG.md top entry is $($AddonMetadata.ChangelogVersion), expected $($AddonMetadata.TocVersion) from paired addon TOC."
+    }
+    if ($AddonMetadata.PairedCompanionVersions.Count -eq 0) {
+        $Errors += "Paired addon CHANGELOG.md top entry must name exactly one paired ApplicantScout Companion version."
+    }
+    if ($AddonMetadata.PairedCompanionVersions.Count -gt 1) {
+        $Errors += "Paired addon CHANGELOG.md top entry names multiple paired ApplicantScout Companion versions: $($AddonMetadata.PairedCompanionVersions -join ', ')."
+    }
+    if (
+        $AddonMetadata.PairedCompanionVersions.Count -eq 1 -and
+        $AddonMetadata.PairedCompanionVersions[0] -ne $TagVersion
+    ) {
+        $Errors += "Paired addon CHANGELOG.md top entry names companion $($AddonMetadata.PairedCompanionVersions[0]), expected $TagVersion."
+    }
     if ((Compare-SemVer -Left $AddonMetadata.TocVersion -Right $PairedAddonVersion) -lt 0) {
         $Errors += "Paired addon version is $($AddonMetadata.TocVersion), which is older than required $PairedAddonVersion from RELEASE_NOTES.md."
     }
@@ -278,6 +442,21 @@ if ($Errors.Count -gt 0) {
         Write-Host "ERROR: $ErrorMessage" -ForegroundColor Red
     }
     throw "Release version check failed."
+}
+
+if ($RequirePublishedPairedAddonAssets) {
+    $PairedAddonTag = "v$PairedAddonVersion"
+    $ExpectedAddonAssets = @(
+        "ApplicantScout-$PairedAddonTag.zip",
+        "release.json"
+    )
+    Wait-GitHubReleaseAssets `
+        -CliPath $GitHubCliPath `
+        -Repo "Antrakt92/ApplicantScout-Addon" `
+        -ReleaseTag $PairedAddonTag `
+        -ExpectedAssets $ExpectedAddonAssets `
+        -WaitSeconds $PublishedReleaseWaitSeconds `
+        -PollSeconds $PublishedReleasePollSeconds
 }
 
 if ($PairedAddonRefOutputPath) {

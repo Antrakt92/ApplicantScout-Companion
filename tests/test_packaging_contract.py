@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -155,6 +156,54 @@ def _run_release_check(repo: Path, *args: str) -> subprocess.CompletedProcess[st
     )
 
 
+def _fake_gh_release_view(
+    tmp_path: Path,
+    *,
+    release_json: dict[str, object] | None = None,
+    stdout_text: str | None = None,
+    exit_code: int = 0,
+    expected_repo: str = "Antrakt92/ApplicantScout-Addon",
+    expected_tag: str | None = None,
+    expected_json: str = "tagName,isDraft,isPrerelease,assets",
+    stderr: str = "",
+) -> Path:
+    script = tmp_path / "fake-gh.ps1"
+    args_path = tmp_path / "fake-gh-args.txt"
+    stdout = stdout_text if stdout_text is not None else json.dumps(release_json or {})
+    script.write_text(
+        "\n".join(
+            [
+                f"Set-Content -LiteralPath {str(args_path)!r} -Value ($args -join \"`n\") -Encoding UTF8",
+                "if ($args.Count -ne 7 -or $args[0] -ne 'release' -or $args[1] -ne 'view') {",
+                "    Write-Error 'unexpected gh invocation'",
+                "    exit 2",
+                "}",
+                f"if ($args[3] -ne '--repo' -or $args[4] -ne {expected_repo!r}) {{",
+                "    Write-Error 'unexpected gh repo'",
+                "    exit 2",
+                "}",
+                f"if ($args[5] -ne '--json' -or $args[6] -ne {expected_json!r}) {{",
+                "    Write-Error 'unexpected gh json fields'",
+                "    exit 2",
+                "}",
+                (
+                    f"if ($args[2] -ne {expected_tag!r}) {{ Write-Error 'unexpected gh tag'; exit 2 }}"
+                    if expected_tag is not None
+                    else ""
+                ),
+                f"if ({exit_code} -ne 0) {{",
+                f"    [Console]::Error.WriteLine({stderr!r})",
+                f"    exit {exit_code}",
+                "}",
+                f"Write-Output {stdout!r}",
+                "exit 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return script
+
+
 def _paired_addon_fixture(
     tmp_path: Path,
     *,
@@ -182,6 +231,10 @@ def _paired_addon_fixture(
         encoding="utf-8",
     )
     return addon
+
+
+def _set_paired_addon_changelog(addon: Path, text: str) -> None:
+    (addon / "CHANGELOG.md").write_text(text, encoding="utf-8")
 
 
 def test_inno_script_requires_build_env_version_and_source_dir():
@@ -498,10 +551,20 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag", check_idx)
     build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
     assets_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets")
+    published_addon_idx = workflow.index("-RequirePublishedPairedAddonAssets")
     release_idx = workflow.index("gh release create")
     publish_idx = workflow.index("gh release edit")
 
-    assert paired_version_idx < check_idx < version_idx < build_idx < assets_idx < release_idx < publish_idx
+    assert (
+        paired_version_idx
+        < check_idx
+        < version_idx
+        < build_idx
+        < assets_idx
+        < published_addon_idx
+        < release_idx
+        < publish_idx
+    )
 
 
 def test_release_workflow_pins_external_actions_to_commit_shas():
@@ -547,15 +610,24 @@ def test_check_wrapper_runs_addon_contract_tests_after_lua_syntax():
 
 def test_release_workflow_checks_out_paired_addon_tag_from_release_notes():
     workflow = _read_repo_text(".github/workflows/release.yml")
+    release = _job_block(workflow, "release")
 
     resolve_idx = workflow.index("Resolve paired addon tag")
+    wait_idx = workflow.index("Wait for paired addon tag")
     checkout_idx = workflow.index("Checkout addon")
+    tag_wait_step = release[
+        release.index("Wait for paired addon tag") : release.index("Checkout addon")
+    ]
 
-    assert resolve_idx < checkout_idx
+    assert resolve_idx < wait_idx < checkout_idx
     assert "RELEASE_NOTES.md" in workflow
     assert "paired-addon" in workflow
     assert ".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME" in workflow
     assert "-PairedAddonRefOutputPath $env:GITHUB_OUTPUT" in workflow
+    assert 'git/ref/tags/$Ref' in tag_wait_step
+    assert "Antrakt92/ApplicantScout-Addon" in tag_wait_step
+    assert "$Deadline" in tag_wait_step
+    assert "while ($true)" in tag_wait_step
     assert '"ref=v$($Match.Groups[1].Value)"' not in workflow
     assert "$env:GITHUB_OUTPUT" in workflow
 
@@ -580,13 +652,14 @@ def test_release_version_check_accepts_paired_addon_metadata(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_release_version_check_accepts_minimum_addon_release_train_copy(tmp_path):
+def test_release_version_check_rejects_stale_paired_addon_release_train_copy(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
+    stale_version = _previous_patch_version(project_version)
     addon = _paired_addon_fixture(
         tmp_path,
         addon_version=_paired_addon_version(),
-        companion_version=_previous_patch_version(project_version),
+        companion_version=stale_version,
     )
 
     result = _run_release_check(
@@ -597,7 +670,89 @@ def test_release_version_check_accepts_minimum_addon_release_train_copy(tmp_path
         str(addon),
     )
 
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "paired addon changelog.md top entry names companion" in output.lower()
+    assert stale_version in output
+    assert f"expected {project_version}" in output
+
+
+def test_release_version_check_rejects_missing_paired_addon_release_train_copy(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    addon = _paired_addon_fixture(
+        tmp_path,
+        addon_version=_paired_addon_version(),
+        companion_version=project_version,
+    )
+    _set_paired_addon_changelog(
+        addon,
+        "\n".join(
+            [
+                "# Changelog",
+                "",
+                f"## {_paired_addon_version()} - 21-May-2026 - Release train",
+                "",
+                "This paired addon release refreshes public copy.",
+                "",
+            ]
+        ),
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRoot",
+        str(addon),
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "paired addon changelog.md top entry must name exactly one" in output.lower()
+
+
+def test_release_version_check_rejects_multiple_paired_addon_release_train_versions(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    stale_version = _previous_patch_version(project_version)
+    addon = _paired_addon_fixture(
+        tmp_path,
+        addon_version=_paired_addon_version(),
+        companion_version=project_version,
+    )
+    _set_paired_addon_changelog(
+        addon,
+        "\n".join(
+            [
+                "# Changelog",
+                "",
+                f"## {_paired_addon_version()} - 21-May-2026 - Companion {project_version} release train",
+                "",
+                f"This release names ApplicantScout Companion `{project_version}`.",
+                f"A stale note also names Companion `{stale_version}`.",
+                "",
+            ]
+        ),
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRoot",
+        str(addon),
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "paired addon changelog.md top entry names multiple" in output.lower()
+    assert project_version in output
+    assert stale_version in output
 
 
 def test_release_version_check_rejects_paired_addon_older_than_minimum(tmp_path):
@@ -641,6 +796,192 @@ def test_release_version_check_accepts_newer_addon_than_release_minimum(tmp_path
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_release_version_check_accepts_published_paired_addon_assets(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    paired_addon_version = _paired_addon_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_tag=f"v{paired_addon_version}",
+        release_json={
+            "tagName": f"v{paired_addon_version}",
+            "isDraft": False,
+            "isPrerelease": False,
+            "assets": [
+                {"name": f"ApplicantScout-v{paired_addon_version}.zip"},
+                {"name": "release.json"},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedPairedAddonAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    gh_args = (tmp_path / "fake-gh-args.txt").read_text(encoding="utf-8")
+    assert "Antrakt92/ApplicantScout-Addon" in gh_args
+    assert f"v{paired_addon_version}" in gh_args
+
+
+def test_release_version_check_rejects_missing_published_paired_addon_asset(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    paired_addon_version = _paired_addon_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_tag=f"v{paired_addon_version}",
+        release_json={
+            "tagName": f"v{paired_addon_version}",
+            "isDraft": False,
+            "isPrerelease": False,
+            "assets": [{"name": "release.json"}],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedPairedAddonAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    assert f"missing asset: ApplicantScout-v{paired_addon_version}.zip" in (
+        result.stdout + result.stderr
+    )
+
+
+def test_release_version_check_rejects_draft_published_paired_addon_release(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    paired_addon_version = _paired_addon_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_tag=f"v{paired_addon_version}",
+        release_json={
+            "tagName": f"v{paired_addon_version}",
+            "isDraft": True,
+            "isPrerelease": False,
+            "assets": [
+                {"name": f"ApplicantScout-v{paired_addon_version}.zip"},
+                {"name": "release.json"},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedPairedAddonAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    assert "is still draft" in (result.stdout + result.stderr)
+
+
+def test_release_version_check_rejects_prerelease_paired_addon_release(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    paired_addon_version = _paired_addon_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_tag=f"v{paired_addon_version}",
+        release_json={
+            "tagName": f"v{paired_addon_version}",
+            "isDraft": False,
+            "isPrerelease": True,
+            "assets": [
+                {"name": f"ApplicantScout-v{paired_addon_version}.zip"},
+                {"name": "release.json"},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedPairedAddonAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    assert "marked prerelease" in (result.stdout + result.stderr)
+
+
+def test_release_version_check_reports_paired_addon_gh_failure(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    paired_addon_version = _paired_addon_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_tag=f"v{paired_addon_version}",
+        exit_code=1,
+        stderr="release not found",
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedPairedAddonAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "gh release view failed for Antrakt92/ApplicantScout-Addon" in output
+    assert "release not found" in output
+
+
+def test_release_version_check_rejects_malformed_paired_addon_release_json(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    paired_addon_version = _paired_addon_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_tag=f"v{paired_addon_version}",
+        stdout_text="not-json",
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedPairedAddonAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    assert "malformed JSON" in (result.stdout + result.stderr)
 
 
 def test_release_version_check_does_not_invoke_addon_release_script():

@@ -10,8 +10,9 @@ the matching installer assets only after all release checks pass.
    `RELEASE_NOTES.md`, and README wire-compatibility copy. Keep exact paired
    release versions in `RELEASE_NOTES.md`; README install links should continue
    to use `releases/latest`.
-2. Confirm the paired addon release is current. Companion `0.7.0` pairs with
-   ApplicantScout addon `0.4.1`.
+2. Confirm the paired addon release train is prepared. Companion `0.7.0` pairs
+   with ApplicantScout addon `0.4.1`; the addon `CHANGELOG.md` top entry must
+   name Companion `0.7.0`.
 3. Run:
 
    ```powershell
@@ -39,11 +40,18 @@ the matching installer assets only after all release checks pass.
 
 ## Publish
 
-1. Push tag `v0.7.0` after release-prep changes are committed.
-2. Confirm the `Build and release` GitHub Actions workflow completed.
-3. Confirm the GitHub Release contains all expected assets before announcing it.
-4. Do not publish an update release without the `.exe` and `.exe.sha256` pair;
+1. Push the paired addon/companion tags close together after release-prep
+   changes are committed. The addon release is the first public artifact; the
+   companion workflow waits for the addon GitHub Release to publish
+   `ApplicantScout-v0.4.1.zip` and `release.json` before it creates the
+   companion draft.
+2. Confirm the paired addon `Package and release` workflow completed and the
+   addon GitHub Release is public with its ZIP and `release.json`.
+3. Confirm the companion `Build and release` GitHub Actions workflow completed.
+4. Confirm the companion GitHub Release contains all expected assets before
+   announcing it.
+5. Do not publish an update release without the `.exe` and `.exe.sha256` pair;
    in-app updates intentionally refuse incomplete releases.
-5. Smoke-test from an installed `0.5.1` companion: update check should show the
+6. Smoke-test from an installed `0.5.1` companion: update check should show the
    blue install icon, download the installer, verify the checksum, install
    silently, close the old process, and relaunch `0.7.0`.

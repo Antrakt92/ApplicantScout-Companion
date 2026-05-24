@@ -27,6 +27,26 @@ jobs:
         working-directory: ApplicantScout-Companion
         run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -PairedAddonRefOutputPath $env:GITHUB_OUTPUT
 
+      - name: Wait for paired addon tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $Ref = "${{ steps.paired-addon.outputs.ref }}"
+          $Deadline = (Get-Date).AddSeconds(120)
+          do {
+            gh api --silent "repos/Antrakt92/ApplicantScout-Addon/git/ref/tags/$Ref"
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Paired addon tag is available: $Ref"
+              exit 0
+            }
+            if ((Get-Date) -ge $Deadline) {
+              break
+            }
+            Start-Sleep -Seconds 5
+          } while ($true)
+          throw "Timed out waiting for paired addon tag: $Ref"
+
       - name: Checkout addon
         # actions/checkout v6 pinned to the upstream tag commit.
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -78,6 +98,13 @@ jobs:
         shell: pwsh
         working-directory: ApplicantScout-Companion
         run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets
+
+      - name: Verify paired addon published release assets
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequirePublishedPairedAddonAssets -PublishedReleaseWaitSeconds 180
 
       - name: Extract release notes
         shell: pwsh
