@@ -916,12 +916,14 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
     calls: list[list[str]] = []
 
     class FakePopen:
+        pid = 4242
+
         def __init__(self, args, **_kwargs) -> None:
             calls.append(args)
 
     monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
 
-    launch_update_installer(installer)
+    launch = launch_update_installer(installer)
 
     assert calls == [
         [
@@ -934,6 +936,26 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
             f"/APSCOUT_SOURCE_PATH={sys.executable}",
         ]
     ]
+    assert launch.installer_path == installer
+    assert launch.pid == 4242
+
+
+def test_launch_update_installer_returns_pollable_launch(monkeypatch, tmp_path):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+
+    class FakePopen:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def poll(self) -> int:
+            return 7
+
+    monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
+
+    launch = launch_update_installer(installer)
+
+    assert launch.poll() == 7
 
 
 def test_launch_update_installer_preserves_frozen_install_directory(

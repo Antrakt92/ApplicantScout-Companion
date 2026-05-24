@@ -3760,6 +3760,124 @@ def test_update_checks_run_hourly_after_initial_startup():
     assert main_mod.UPDATE_CHECK_INTERVAL_MS == 60 * 60 * 1000
 
 
+class _FakeSignal:
+    def __init__(self) -> None:
+        self._callbacks = []
+
+    def connect(self, callback) -> None:
+        self._callbacks.append(callback)
+
+    def emit(self) -> None:
+        for callback in list(self._callbacks):
+            callback()
+
+
+class _FakeTimer:
+    instances: list["_FakeTimer"] = []
+
+    def __init__(self, _parent=None) -> None:
+        self.timeout = _FakeSignal()
+        self.interval = 0
+        self.started = False
+        self.stopped = False
+        self.__class__.instances.append(self)
+
+    def setInterval(self, interval: int) -> None:
+        self.interval = interval
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+def _handoff_controller(monotonic_values: list[float], callbacks: list[tuple[str, bool]]):
+    values = iter(monotonic_values)
+    return main_mod._UpdateHandoffRecoveryController(
+        None,
+        on_recover=lambda message, retry_available: callbacks.append(
+            (message, retry_available)
+        ),
+        timer_factory=_FakeTimer,
+        monotonic=lambda: next(values),
+        timeout_ms=1000,
+        poll_interval_ms=50,
+    )
+
+
+def test_update_handoff_recovery_waits_while_installer_is_running():
+    _FakeTimer.instances.clear()
+    callbacks: list[tuple[str, bool]] = []
+    controller = _handoff_controller([0.0, 0.5], callbacks)
+    launch = SimpleNamespace(poll=lambda: None)
+
+    controller.arm(launch, "Installing update.")
+    _FakeTimer.instances[-1].timeout.emit()
+
+    assert callbacks == []
+    assert _FakeTimer.instances[-1].started
+    assert _FakeTimer.instances[-1].interval == 50
+
+
+def test_update_handoff_recovery_recovers_when_installer_exits():
+    _FakeTimer.instances.clear()
+    callbacks: list[tuple[str, bool]] = []
+    controller = _handoff_controller([0.0, 0.2], callbacks)
+    launch = SimpleNamespace(poll=lambda: 7)
+
+    controller.arm(launch, "Installing update.")
+    _FakeTimer.instances[-1].timeout.emit()
+
+    assert callbacks == [
+        (
+            main_mod.UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE,
+            True,
+        )
+    ]
+    assert _FakeTimer.instances[-1].stopped
+
+
+def test_update_handoff_recovery_times_out_running_installer_without_retry():
+    _FakeTimer.instances.clear()
+    callbacks: list[tuple[str, bool]] = []
+    controller = _handoff_controller([0.0, 1.1], callbacks)
+    launch = SimpleNamespace(poll=lambda: None)
+
+    controller.arm(launch, "Installing update.")
+    _FakeTimer.instances[-1].timeout.emit()
+
+    assert callbacks == [
+        (
+            main_mod.UPDATE_HANDOFF_TIMEOUT_MESSAGE,
+            False,
+        )
+    ]
+    assert _FakeTimer.instances[-1].stopped
+
+
+def test_update_handoff_recovery_rearms_single_timer():
+    _FakeTimer.instances.clear()
+    callbacks: list[tuple[str, bool]] = []
+    controller = _handoff_controller([0.0, 0.1, 0.2], callbacks)
+    first_launch = SimpleNamespace(poll=lambda: None)
+    second_launch = SimpleNamespace(poll=lambda: 0)
+
+    controller.arm(first_launch, "First")
+    first_timer = _FakeTimer.instances[-1]
+    controller.arm(second_launch, "Second")
+    second_timer = _FakeTimer.instances[-1]
+    second_timer.timeout.emit()
+
+    assert first_timer.stopped
+    assert callbacks == [
+        (
+            main_mod.UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE,
+            True,
+        )
+    ]
+
+
 def test_update_check_coordinator_rejects_stale_out_of_order_results():
     coordinator = main_mod._UpdateCheckCoordinator()
 
@@ -4064,6 +4182,7 @@ def test_check_updates_downloads_and_launches_installable_release(
         checksum_url="https://example.test/setup.exe.sha256",
     )
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    launch = object()
     calls: list[object] = []
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
     monkeypatch.setattr(
@@ -4074,7 +4193,7 @@ def test_check_updates_downloads_and_launches_installable_release(
     monkeypatch.setattr(
         main_mod,
         "launch_update_installer",
-        lambda path: calls.append(path),
+        lambda path: calls.append(path) or launch,
     )
 
     update_result = main_mod._check_updates()
@@ -4083,6 +4202,7 @@ def test_check_updates_downloads_and_launches_installable_release(
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
     assert update_result.open_url is None
     assert update_result.installer_handoff is True
+    assert update_result.installer_launch is launch
     assert "Installing ApplicantScout Companion v0.2.0" in update_result.message
 
 

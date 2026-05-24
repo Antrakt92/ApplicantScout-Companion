@@ -791,18 +791,24 @@ def test_settings_update_aborts_when_pending_values_are_invalid(qtbot, tmp_path:
 def test_settings_dialog_keeps_update_blocked_after_installer_handoff(
     qtbot, tmp_path: Path
 ):
+    launch = object()
     dialog = SettingsDialog(
         _cfg(tmp_path),
         check_updates=lambda: SettingsUpdateResult(
             "Installing update.",
             installer_handoff=True,
+            installer_launch=launch,
         ),
     )
     qtbot.addWidget(dialog)
     finished: list[bool] = []
     completed: list[None] = []
+    handoffs: list[tuple[str, object]] = []
     dialog.updateFinished.connect(lambda error: finished.append(error))
     dialog.updateCompleted.connect(lambda: completed.append(None))
+    dialog.updateHandoffStarted.connect(
+        lambda message, installer_launch: handoffs.append((message, installer_launch))
+    )
     dialog.set_update_available("v0.2.0")
 
     dialog.update_button.click()
@@ -813,8 +819,31 @@ def test_settings_dialog_keeps_update_blocked_after_installer_handoff(
     )
     assert finished == []
     assert completed == []
+    assert handoffs == [("Installing update.", launch)]
     assert not dialog.update_button.isHidden()
     assert not dialog.update_button.isEnabled()
+
+
+def test_settings_dialog_does_not_emit_handoff_signal_without_installer_handoff(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: "ApplicantScout Companion is up to date.",
+    )
+    qtbot.addWidget(dialog)
+    handoffs: list[tuple[str, object]] = []
+    completed: list[None] = []
+    dialog.updateHandoffStarted.connect(
+        lambda message, installer_launch: handoffs.append((message, installer_launch))
+    )
+    dialog.updateCompleted.connect(lambda: completed.append(None))
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    qtbot.waitUntil(lambda: bool(completed), timeout=1000)
+    assert handoffs == []
 
 
 def test_settings_dialog_finishes_update_when_no_installer_handoff(

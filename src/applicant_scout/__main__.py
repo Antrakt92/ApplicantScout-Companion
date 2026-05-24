@@ -88,6 +88,16 @@ UPDATE_QUIT_BLOCKED_MESSAGE = "Update is installing. Wait for it to finish befor
 WOW_EXIT_POLL_MS = 5000
 UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
+UPDATE_HANDOFF_POLL_INTERVAL_MS = 1_000
+UPDATE_HANDOFF_RECOVERY_MS = 180_000
+UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE = (
+    "Update installer exited before closing ApplicantScout. "
+    "You can retry the update or quit and install manually."
+)
+UPDATE_HANDOFF_TIMEOUT_MESSAGE = (
+    "Update installer did not close ApplicantScout in time. "
+    "Finish or cancel any Windows installer prompt, then quit and install manually."
+)
 _UPDATE_INSTALL_LOCK = threading.Lock()
 _QT_APPLICATION_CLASS = QApplication
 # SYNC: updater._default_update_download_dir stores installers under this cache child.
@@ -1055,7 +1065,74 @@ class StateMachine(QObject):
 
 class UpdateSignals(QObject):
     checked = pyqtSignal(int, object)
-    completed = pyqtSignal(str, bool, bool)
+    completed = pyqtSignal(object)
+
+
+@dataclass(frozen=True)
+class _UpdateCompletion:
+    message: str
+    error: bool = False
+    installer_handoff: bool = False
+    installer_launch: object | None = None
+
+
+class _UpdateHandoffRecoveryController:
+    def __init__(
+        self,
+        parent: QObject | None,
+        *,
+        on_recover: Callable[[str, bool], None],
+        timer_factory: Callable[[QObject | None], Any] = QTimer,
+        monotonic: Callable[[], float] = time.monotonic,
+        timeout_ms: int = UPDATE_HANDOFF_RECOVERY_MS,
+        poll_interval_ms: int = UPDATE_HANDOFF_POLL_INTERVAL_MS,
+    ) -> None:
+        self._parent = parent
+        self._on_recover = on_recover
+        self._timer_factory = timer_factory
+        self._monotonic = monotonic
+        self._timeout_s = timeout_ms / 1000
+        self._poll_interval_ms = poll_interval_ms
+        self._timer: Any | None = None
+        self._installer_launch: object | None = None
+        self._started_at: float | None = None
+
+    def arm(self, installer_launch: object | None, _message: str) -> None:
+        self.disarm()
+        self._installer_launch = installer_launch
+        self._started_at = self._monotonic()
+        timer = self._timer_factory(self._parent)
+        timer.setInterval(self._poll_interval_ms)
+        timer.timeout.connect(self._tick)
+        timer.start()
+        self._timer = timer
+
+    def disarm(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+        self._timer = None
+        self._installer_launch = None
+        self._started_at = None
+
+    def _tick(self) -> None:
+        if self._started_at is None:
+            return
+        poll = getattr(self._installer_launch, "poll", None)
+        if callable(poll):
+            try:
+                if poll() is not None:
+                    self._recover(UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)
+                    return
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not poll update installer process: %s", exc)
+                self._recover(UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)
+                return
+        if self._monotonic() - self._started_at >= self._timeout_s:
+            self._recover(UPDATE_HANDOFF_TIMEOUT_MESSAGE, False)
+
+    def _recover(self, message: str, retry_available: bool) -> None:
+        self.disarm()
+        self._on_recover(message, retry_available)
 
 
 class _UpdateCheckCoordinator:
@@ -1309,13 +1386,14 @@ def _check_updates() -> SettingsUpdateResult | tuple[str, str | None]:
         if not _update_result_has_installable_asset(result):
             raise RuntimeError(str(message))
         installer = download_update_installer(result)
-        launch_update_installer(installer)
+        installer_launch = launch_update_installer(installer)
         return SettingsUpdateResult(
             message=(
                 f"Installing ApplicantScout Companion {getattr(result, 'latest_version', 'update')}. "
                 "The companion may close and reopen during the update."
             ),
             installer_handoff=True,
+            installer_launch=installer_launch,
         )
     finally:
         _UPDATE_INSTALL_LOCK.release()
@@ -2302,6 +2380,7 @@ def main(argv: list[str] | None = None) -> int:
     startup_update_prompt_pending = wow_watch_mode
     tray_controller: TrayController | None = None
     update_in_progress = False
+    update_handoff_recovery: _UpdateHandoffRecoveryController | None = None
 
     def _flush_before_quit() -> None:
         if settings_dialog is not None:
@@ -2310,6 +2389,8 @@ def main(argv: list[str] | None = None) -> int:
             active_window.flush_geometry()
 
     def _quit_application() -> None:
+        if update_handoff_recovery is not None:
+            update_handoff_recovery.disarm()
         _flush_before_quit()
         app.quit()
 
@@ -2405,6 +2486,38 @@ def main(argv: list[str] | None = None) -> int:
             tray_controller.set_update_in_progress(in_progress)
         if settings_dialog is not None:
             settings_dialog.set_update_in_progress(in_progress)
+
+    def _recover_update_handoff(message: str, retry_available: bool) -> None:
+        nonlocal pending_update_version
+        if not update_in_progress:
+            return
+        if not retry_available:
+            pending_update_version = None
+        _set_update_in_progress(False)
+        if settings_dialog is not None:
+            settings_dialog.set_update_available(pending_update_version)
+            settings_dialog.set_status(message, error=True)
+        if tray_controller is not None:
+            tray_controller.set_update_available(pending_update_version)
+            tray_controller.tray.showMessage(
+                "ApplicantScout update",
+                message,
+                QSystemTrayIcon.MessageIcon.Warning,
+                7000,
+            )
+
+    def _handle_update_handoff_started(
+        message: str, installer_launch: object | None
+    ) -> None:
+        if update_handoff_recovery is not None:
+            update_handoff_recovery.arm(installer_launch, message)
+        if tray_controller is not None:
+            tray_controller.tray.showMessage(
+                "ApplicantScout update",
+                message,
+                QSystemTrayIcon.MessageIcon.Information,
+                7000,
+            )
 
     def _show_settings() -> None:
         nonlocal auth
@@ -2518,6 +2631,7 @@ def main(argv: list[str] | None = None) -> int:
         dialog.updateStarted.connect(lambda: _set_update_in_progress(True))
         dialog.updateFinished.connect(lambda _error: _set_update_in_progress(False))
         dialog.updateCompleted.connect(_handle_dialog_update_completed)
+        dialog.updateHandoffStarted.connect(_handle_update_handoff_started)
         dialog.hideRequested.connect(lambda: None)
         dialog.quitRequested.connect(_request_quit_application)
         dialog.destroyed.connect(lambda *_args: _forget_dialog())
@@ -2540,6 +2654,10 @@ def main(argv: list[str] | None = None) -> int:
     show_settings_action.set_callback(_show_settings)
     update_signals = UpdateSignals(app)
     update_check_coordinator = _UpdateCheckCoordinator()
+    update_handoff_recovery = _UpdateHandoffRecoveryController(
+        app,
+        on_recover=_recover_update_handoff,
+    )
 
     def _run_update() -> None:
         if update_in_progress:
@@ -2553,27 +2671,41 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 result = _check_updates()
                 if isinstance(result, SettingsUpdateResult):
-                    message = result.message
-                    installer_handoff = result.installer_handoff
+                    completion = _UpdateCompletion(
+                        message=result.message,
+                        installer_handoff=result.installer_handoff,
+                        installer_launch=result.installer_launch,
+                    )
                 else:
                     message, _url = result
-                    installer_handoff = False
-                update_signals.completed.emit(message, False, installer_handoff)
+                    completion = _UpdateCompletion(message=message)
+                update_signals.completed.emit(completion)
             except Exception as exc:  # noqa: BLE001
-                update_signals.completed.emit(f"Update failed: {exc}", True, False)
+                update_signals.completed.emit(
+                    _UpdateCompletion(f"Update failed: {exc}", error=True)
+                )
 
         threading.Thread(target=_worker, name="ApplicantScoutUpdater", daemon=True).start()
 
-    def _handle_update_completed(
-        message: str, error: bool, installer_handoff: bool
-    ) -> None:
+    def _handle_update_completed(completion: object) -> None:
         nonlocal pending_update_version
-        if error:
-            _set_update_in_progress(False)
-            QMessageBox.warning(window, "ApplicantScout update", message)
+        if not isinstance(completion, _UpdateCompletion):
+            log.warning("Ignored unexpected update completion payload: %r", completion)
             return
+        if completion.error:
+            update_handoff_recovery.disarm()
+            _set_update_in_progress(False)
+            QMessageBox.warning(window, "ApplicantScout update", completion.message)
+            return
+        if completion.installer_handoff:
+            _handle_update_handoff_started(
+                completion.message,
+                completion.installer_launch,
+            )
+            return
+        update_handoff_recovery.disarm()
         pending_update_version = None
-        if not installer_handoff:
+        if not completion.installer_handoff:
             _set_update_in_progress(False)
             if settings_dialog is not None:
                 settings_dialog.set_update_available(None)
@@ -2582,7 +2714,7 @@ def main(argv: list[str] | None = None) -> int:
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",
-                message,
+                completion.message,
                 QSystemTrayIcon.MessageIcon.Information,
                 7000,
             )

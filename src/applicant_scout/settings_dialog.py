@@ -107,6 +107,7 @@ class SettingsUpdateResult:
     message: str
     open_url: str | None = None
     installer_handoff: bool = False
+    installer_launch: object | None = None
 
 
 ActionReturn = str | tuple[str, str | None] | SettingsUpdateResult
@@ -121,6 +122,7 @@ class _AsyncActionResult:
     open_url: str | None = None
     success_payload: object | None = None
     keep_disabled: bool = False
+    installer_launch: object | None = None
 
 
 class _AsyncSignals(QObject):
@@ -182,6 +184,7 @@ class SettingsDialog(QDialog):
     updateStarted = pyqtSignal()
     updateFinished = pyqtSignal(bool)
     updateCompleted = pyqtSignal()
+    updateHandoffStarted = pyqtSignal(str, object)
     changelogRequested = pyqtSignal()
 
     def __init__(
@@ -802,16 +805,20 @@ class SettingsDialog(QDialog):
                     message = result.message
                     open_url = result.open_url
                     keep_disabled = result.installer_handoff
+                    installer_launch = result.installer_launch
                 elif isinstance(result, tuple):
                     message, open_url = result
+                    installer_launch = None
                 else:
                     message, open_url = result, None
+                    installer_launch = None
                 outcome = _AsyncActionResult(
                     button,
                     message,
                     open_url=open_url,
                     success_payload=success_payload,
                     keep_disabled=keep_disabled,
+                    installer_launch=installer_launch,
                 )
             except Exception as exc:  # noqa: BLE001
                 outcome = _AsyncActionResult(
@@ -837,6 +844,7 @@ class SettingsDialog(QDialog):
                 raw.button.setEnabled(False)
                 self.update_button.show()
                 raw.button.setToolTip("Installing ApplicantScout update...")
+                self.updateHandoffStarted.emit(raw.message, raw.installer_launch)
             else:
                 raw.button.setEnabled(True)
                 self.updateFinished.emit(False)

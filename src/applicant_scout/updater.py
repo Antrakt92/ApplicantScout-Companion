@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -45,6 +45,19 @@ class UpdateResult:
     @property
     def open_url(self) -> str | None:
         return self.asset_url or self.release_url
+
+
+@dataclass(frozen=True)
+class InstallerLaunch:
+    installer_path: Path
+    _process: subprocess.Popen[Any] = field(repr=False, compare=False)
+
+    @property
+    def pid(self) -> int | None:
+        return getattr(self._process, "pid", None)
+
+    def poll(self) -> int | None:
+        return self._process.poll()
 
 
 def _semver_key(version: str) -> tuple[int, int, int] | None:
@@ -455,10 +468,10 @@ def download_update_installer(
             http.close()
 
 
-def launch_update_installer(installer_path: Path) -> None:
+def launch_update_installer(installer_path: Path) -> InstallerLaunch:
     if not installer_path.is_file():
         raise RuntimeError(f"Update installer was not downloaded: {installer_path}")
-    subprocess.Popen(
+    process = subprocess.Popen(
         [
             str(installer_path),
             *_INSTALLER_ARGS,
@@ -468,6 +481,7 @@ def launch_update_installer(installer_path: Path) -> None:
         close_fds=True,
         cwd=str(installer_path.parent),
     )
+    return InstallerLaunch(installer_path=installer_path, _process=process)
 
 
 def _installer_self_update_args() -> list[str]:
