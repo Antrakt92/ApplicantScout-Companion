@@ -837,6 +837,26 @@ class WCLClient:
             self.quota_guard_retry_remaining_seconds(now=now),
         )
 
+    def _active_wcl_retry_block(
+        self, now: float
+    ) -> tuple[str, str, float] | None:
+        with self._quota_lock:
+            rate_limited_until = self._rate_limited_until
+            server_retry_until = self._server_retry_until
+            network_retry_until = self._network_retry_until
+        if now < rate_limited_until:
+            return WCL_ERROR_RATE_LIMITED, "WCL rate-limited", rate_limited_until
+        if now < server_retry_until:
+            return WCL_ERROR_SERVER, "WCL server error", server_retry_until
+        if now < network_retry_until:
+            return WCL_ERROR_NETWORK, "WCL network error", network_retry_until
+        return None
+
+    def _set_network_retry_if_current(self, auth_generation: int) -> None:
+        with self._quota_lock:
+            if auth_generation == self._auth_generation:
+                self._network_retry_until = time.time() + WCL_NETWORK_RETRY_SECONDS
+
     def fetch_character_ranks(
         self,
         name: str,
@@ -948,11 +968,7 @@ class WCLClient:
                 try:
                     token = auth.get_token()
                 except (httpx.TimeoutException, httpx.RequestError):
-                    with self._quota_lock:
-                        if auth_generation == self._auth_generation:
-                            self._network_retry_until = (
-                                time.time() + WCL_NETWORK_RETRY_SECONDS
-                            )
+                    self._set_network_retry_if_current(auth_generation)
                     raise
                 try:
                     resp = self._http.post(
@@ -961,11 +977,7 @@ class WCLClient:
                         headers={"Authorization": f"Bearer {token}"},
                     )
                 except (httpx.TimeoutException, httpx.RequestError):
-                    with self._quota_lock:
-                        if auth_generation == self._auth_generation:
-                            self._network_retry_until = (
-                                time.time() + WCL_NETWORK_RETRY_SECONDS
-                            )
+                    self._set_network_retry_if_current(auth_generation)
                     raise
                 if resp.status_code == 401 and attempt == 0:
                     with self._quota_lock:
@@ -1132,15 +1144,12 @@ class WCLClient:
         with self._quota_lock:
             auth = self._auth
             auth_generation = self._auth_generation
-            retry_until = max(
-                self._rate_limited_until,
-                self._server_retry_until,
-                self._network_retry_until,
-            )
-        if now < retry_until:
+        retry_block = self._active_wcl_retry_block(now)
+        if retry_block is not None:
+            error_kind, error_prefix, retry_until = retry_block
             raise WCLApiError(
-                f"WCL retry cooldown; retrying in {int(retry_until - now)}s",
-                error_kind=WCL_ERROR_RATE_LIMITED,
+                f"{error_prefix}; retrying in {int(retry_until - now)}s",
+                error_kind=error_kind,
             )
         reservation = self._reserve_quota_for_fetch(
             self._estimate_raid_boss_detail_quota_points(metric_preferences),
@@ -1162,14 +1171,25 @@ class WCLClient:
                 },
             }
             for attempt in range(2):
-                token = auth.get_token()
-                resp = self._http.post(
-                    WCL_API_URL,
-                    json=body,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
+                try:
+                    token = auth.get_token()
+                except (httpx.TimeoutException, httpx.RequestError):
+                    self._set_network_retry_if_current(auth_generation)
+                    raise
+                try:
+                    resp = self._http.post(
+                        WCL_API_URL,
+                        json=body,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                except (httpx.TimeoutException, httpx.RequestError):
+                    self._set_network_retry_if_current(auth_generation)
+                    raise
                 if resp.status_code == 401 and attempt == 0:
-                    auth.invalidate()
+                    with self._quota_lock:
+                        is_current_auth = auth_generation == self._auth_generation
+                    if is_current_auth:
+                        auth.invalidate()
                     continue
                 if resp.status_code in (401, 403):
                     raise WCLApiError(

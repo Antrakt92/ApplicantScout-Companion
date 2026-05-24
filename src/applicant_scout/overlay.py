@@ -1633,6 +1633,8 @@ class ApplicantInfoPanel(QFrame):
         package: PackageFit | None = None,
         *,
         pinned: bool = False,
+        raid_detail_status: str = "",
+        raid_detail_status_error: bool = False,
     ) -> None:
         """Show full applicant scout data in the fixed widget layout."""
         self._current_applicant = applicant
@@ -1640,7 +1642,12 @@ class ApplicantInfoPanel(QFrame):
         self._unpin_button.setVisible(pinned)
         self._set_identity(applicant)
         self._set_package(package, applicant, listing)
-        self._set_status_or_data(applicant, listing)
+        self._set_status_or_data(
+            applicant,
+            listing,
+            raid_detail_status=raid_detail_status,
+            raid_detail_status_error=raid_detail_status_error,
+        )
 
     def _hide_data_widgets(self) -> None:
         for label in (
@@ -1745,7 +1752,12 @@ class ApplicantInfoPanel(QFrame):
         self._set_badge(self._package_label, text, bg, _text_colour_for_bg(bg))
 
     def _set_status_or_data(
-        self, applicant: Applicant, listing: Listing | None = None
+        self,
+        applicant: Applicant,
+        listing: Listing | None = None,
+        *,
+        raid_detail_status: str = "",
+        raid_detail_status_error: bool = False,
     ) -> None:
         status = applicant.fetch_status
         self._clear_metrics_and_dungeons()
@@ -1785,7 +1797,9 @@ class ApplicantInfoPanel(QFrame):
         visible_metrics = self._set_metric_badges(applicant, listing)
         visible_rows = self._set_detail_rows(applicant, listing)
         fit_status = self._mplus_fit_status_text(applicant, listing)
-        if fit_status:
+        if self._active_detail_mode() == "raid" and raid_detail_status:
+            self._show_status(raid_detail_status, error=raid_detail_status_error)
+        elif fit_status:
             self._show_status(fit_status)
         elif not visible_metrics and not visible_rows:
             self._show_status("No Warcraft Logs data")
@@ -3116,13 +3130,29 @@ class OverlayWindow(QMainWindow):
             self._panel.setPlaceholder()
             return
         raw_aid, _ = _split_composite(applicant.applicant_id)
+        raid_detail_status = self._raid_detail_status_for(applicant)
         self._panel.setApplicantData(
             applicant,
             self._effective_listing(),
             self._package_fit_by_raw.get(raw_aid) if self._active_tab == "applicants" else None,
             pinned=visible_id == self._pinned_id,
+            raid_detail_status=raid_detail_status[0] if raid_detail_status else "",
+            raid_detail_status_error=raid_detail_status[1] if raid_detail_status else False,
         )
-        self._launch_raid_boss_fetch_if_needed(applicant)
+        if self._launch_raid_boss_fetch_if_needed(applicant):
+            raid_detail_status = self._raid_detail_status_for(applicant)
+            self._panel.setApplicantData(
+                applicant,
+                self._effective_listing(),
+                self._package_fit_by_raw.get(raw_aid)
+                if self._active_tab == "applicants"
+                else None,
+                pinned=visible_id == self._pinned_id,
+                raid_detail_status=raid_detail_status[0] if raid_detail_status else "",
+                raid_detail_status_error=raid_detail_status[1]
+                if raid_detail_status
+                else False,
+            )
 
     def _apply_panel_height_above_table(self) -> None:
         if not self.isVisible():
@@ -3238,9 +3268,13 @@ class OverlayWindow(QMainWindow):
         if visible_id is None:
             return
         applicant = self._active_row_map().get(visible_id)
+        started = False
         if applicant is not None:
-            self._launch_raid_boss_fetch_if_needed(applicant)
-        self._apply_panel_height_above_table()
+            started = self._launch_raid_boss_fetch_if_needed(applicant)
+        if started:
+            self._sync_delegate_and_panel()
+        else:
+            self._apply_panel_height_above_table()
 
     def _resolve_hover_from_cursor(self) -> str | None:
         """Map global cursor position to an applicant_id under it (or None
@@ -3760,14 +3794,59 @@ class OverlayWindow(QMainWindow):
                 return True
         return False
 
-    def _launch_raid_boss_fetch_if_needed(self, applicant: Applicant) -> None:
+    def _raid_boss_fetch_failure_state(
+        self, identity: _FetchIdentity
+    ) -> str | None:
+        key = _raid_boss_fetch_failure_key(identity)
+        if key not in self._raid_boss_fetch_failures:
+            return None
+        expires_at = self._raid_boss_fetch_failures[key]
+        if expires_at is None:
+            return "unavailable"
+        if time.monotonic() < expires_at:
+            return "retrying"
+        self._raid_boss_fetch_failures.pop(key, None)
+        return None
+
+    def _raid_detail_status_for(self, applicant: Applicant) -> tuple[str, bool] | None:
         listing = self._effective_listing()
         if detect_listing_context(listing) != CONTEXT_RAID:
-            return
+            return None
         if self._panel._active_detail_mode() != "raid":
-            return
+            return None
+        if applicant.fetch_status != "ready" or not self._missing_raid_boss_details(
+            applicant
+        ):
+            return None
+        resolved = _fetch_identity_for_applicant(
+            applicant,
+            self._state.player.full_name,
+            self._wcl_client.region,
+            self._raid_detail_preferences(),
+            self._wcl_runtime_generation,
+            self._listing_session_generation,
+            row_source=self._row_source_for(applicant),
+        )
+        if resolved is None:
+            return None
+        identity, _ = resolved
+        if self._is_fetch_in_flight_for_raid_details(identity):
+            return "Fetching raid boss details…", False
+        failure_state = self._raid_boss_fetch_failure_state(identity)
+        if failure_state == "retrying":
+            return "Raid boss details retrying soon…", False
+        if failure_state == "unavailable":
+            return "Raid boss details unavailable", True
+        return None
+
+    def _launch_raid_boss_fetch_if_needed(self, applicant: Applicant) -> bool:
+        listing = self._effective_listing()
+        if detect_listing_context(listing) != CONTEXT_RAID:
+            return False
+        if self._panel._active_detail_mode() != "raid":
+            return False
         if applicant.fetch_status != "ready" or not self._missing_raid_boss_details(applicant):
-            return
+            return False
         prefs = self._raid_detail_preferences()
         resolved = _fetch_identity_for_applicant(
             applicant,
@@ -3779,18 +3858,19 @@ class OverlayWindow(QMainWindow):
             row_source=self._row_source_for(applicant),
         )
         if resolved is None:
-            return
+            return False
         identity, charname = resolved
         if self._raid_boss_fetch_blocked_by_failure(identity):
-            return
+            return False
         if identity.storage_key in self._raid_boss_fetches_in_flight:
-            return
+            return False
         self._raid_boss_fetches_in_flight[identity.storage_key] = identity
         task = _RaidBossFetchTask(identity, charname, self._wcl_client)
         task.signals.done.connect(self._on_raid_boss_fetch_done)
         if self._pool is not None:
             self._pool.start(task)
             self._refresh_quota_label()
+        return True
 
     def _row_source_for(self, applicant: Applicant) -> str:
         if self._state.party_members.get(applicant.applicant_id) is applicant:
@@ -4018,6 +4098,7 @@ class OverlayWindow(QMainWindow):
                 error,
                 error_kind or "unknown",
             )
+            self._sync_delegate_and_panel()
             return
         applicant.raid_boss_parses = {}
         for difficulty, enabled in (
@@ -4040,16 +4121,7 @@ class OverlayWindow(QMainWindow):
         )
 
     def _raid_boss_fetch_blocked_by_failure(self, identity: _FetchIdentity) -> bool:
-        key = _raid_boss_fetch_failure_key(identity)
-        if key not in self._raid_boss_fetch_failures:
-            return False
-        expires_at = self._raid_boss_fetch_failures[key]
-        if expires_at is None:
-            return True
-        if time.monotonic() < expires_at:
-            return True
-        self._raid_boss_fetch_failures.pop(key, None)
-        return False
+        return self._raid_boss_fetch_failure_state(identity) is not None
 
     def _record_raid_boss_fetch_failure(
         self, identity: _FetchIdentity, error_kind: str

@@ -633,6 +633,124 @@ def test_retryable_raid_boss_fetch_failure_expires(qtbot, tmp_path, monkeypatch)
         window.close()
 
 
+def test_raid_detail_loading_status_shows_without_changing_fetch_status(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+
+        assert window._raid_boss_fetches_in_flight
+        assert window._panel._status_label.text() == "Fetching raid boss details…"
+        assert app.fetch_status == "ready"
+    finally:
+        window.close()
+
+
+def test_raid_detail_retryable_failure_replaces_loading_status_after_done(
+    qtbot, tmp_path, monkeypatch
+):
+    now = [100.0]
+    monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now[0])
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
+
+        window._on_raid_boss_fetch_done(
+            failed_detail_identity,
+            {},
+            "network",
+            overlay_mod.WCL_ERROR_NETWORK,
+        )
+
+        assert window._panel._status_label.text() == "Raid boss details retrying soon…"
+        assert app.fetch_status == "ready"
+        assert not hasattr(app, "raid_detail_status")
+    finally:
+        window.close()
+
+
+def test_raid_detail_permanent_failure_shows_unavailable_without_requeue(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
+
+        window._on_raid_boss_fetch_done(
+            failed_detail_identity,
+            {},
+            "auth",
+            overlay_mod.WCL_ERROR_AUTH,
+        )
+        window._launch_raid_boss_fetch_if_needed(app)
+
+        assert window._raid_boss_fetches_in_flight == {}
+        assert window._panel._status_label.text() == "Raid boss details unavailable"
+        assert app.fetch_status == "ready"
+    finally:
+        window.close()
+
+
 def test_panel_renders_current_and_better_main_score(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)

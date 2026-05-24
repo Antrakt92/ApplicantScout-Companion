@@ -617,6 +617,179 @@ def test_fetch_character_raid_boss_details_returns_enabled_difficulty_rows():
     }
 
 
+def test_fetch_character_raid_boss_details_503_sets_server_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP({"error": "unavailable"}, status_code=503)
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError, match="Server error"):
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert len(http.calls) == 1
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+    current[0] += 1.0
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert excinfo.value.error_kind == WCL_ERROR_SERVER
+    assert len(http.calls) == 1
+
+
+def test_fetch_character_raid_boss_details_network_timeout_sets_short_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _TimeoutHTTP()
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(httpx.TimeoutException):
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert len(http.calls) == 1
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+    current[0] += 1.0
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert excinfo.value.error_kind == WCL_ERROR_NETWORK
+    assert len(http.calls) == 1
+
+
+def test_fetch_character_raid_boss_details_oauth_timeout_sets_short_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class FlakyAuth(_FakeAuth):
+        calls = 0
+
+        def get_token(self) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ReadTimeout("oauth timed out")
+            return "fresh-token"
+
+    auth = FlakyAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP(_wcl_payload(_character()))
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(httpx.TimeoutException):
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+    current[0] += 1.0
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert excinfo.value.error_kind == WCL_ERROR_NETWORK
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+
+
+def test_fetch_character_raid_boss_details_stale_oauth_timeout_does_not_set_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class ReconfiguredTimeoutAuth(_FakeAuth):
+        def get_token(self) -> str:
+            client.reconfigure_auth(_FakeAuth())
+            raise httpx.ReadTimeout("old oauth timed out")
+
+    client = WCLClient(ReconfiguredTimeoutAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    client._http = _FakeHTTP(_wcl_payload(_character()))  # type: ignore[assignment]
+
+    with pytest.raises(httpx.TimeoutException):
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert client.retry_block_remaining_seconds(now=current[0]) == 0.0
+
+
+def test_fetch_character_raid_boss_details_stale_401_does_not_invalidate_old_auth():
+    class ReconfigureThenAuthErrorHTTP:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def post(self, url: str, *, json: dict, headers: dict) -> _FakeResponse:
+            self.calls.append({"url": url, "json": json, "headers": headers})
+            if len(self.calls) == 1:
+                client.reconfigure_auth(_FakeAuth())
+                return _FakeResponse({"error": "unauthorized"}, status_code=401)
+            return _FakeResponse({"error": "forbidden"}, status_code=403)
+
+        def close(self) -> None:
+            pass
+
+    auth = _FakeAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    client._http = ReconfigureThenAuthErrorHTTP()  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert excinfo.value.error_kind == WCL_ERROR_AUTH
+    assert auth.invalidations == 0
+
+
 def test_fetch_character_ranks_healer_routes_mplus_to_hps_breakdown():
     client, http = _client_for_payload(
         _wcl_payload(
