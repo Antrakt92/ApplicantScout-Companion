@@ -751,6 +751,135 @@ def test_raid_detail_permanent_failure_shows_unavailable_without_requeue(
         window.close()
 
 
+def test_raid_detail_status_restored_when_returning_to_raid_tab_with_inflight_fetch(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        assert window._panel._status_label.text() == "Fetching raid boss details…"
+
+        window._panel._on_detail_mode_clicked("mplus")
+        assert window._panel._active_detail_mode() == "mplus"
+
+        window._panel._on_detail_mode_clicked("raid")
+
+        assert window._panel._status_label.text() == "Fetching raid boss details…"
+        assert app.fetch_status == "ready"
+    finally:
+        window.close()
+
+
+def test_retryable_raid_detail_failure_retries_after_idle_expiry(
+    qtbot, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(overlay_mod, "WCL_RETRY_BATCH_DELAY_MS", 50)
+    monkeypatch.setattr(overlay_mod, "WCL_RETRY_CUSHION_MS", 0)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
+
+        window._on_raid_boss_fetch_done(
+            failed_detail_identity,
+            {},
+            "network",
+            overlay_mod.WCL_ERROR_NETWORK,
+        )
+        assert window._raid_boss_fetches_in_flight == {}
+
+        qtbot.waitUntil(lambda: bool(window._raid_boss_fetches_in_flight), timeout=1000)
+
+        assert window._panel._status_label.text() == "Fetching raid boss details…"
+        assert app.fetch_status == "ready"
+    finally:
+        window.close()
+
+
+def test_raid_detail_retry_status_restored_when_returning_to_raid_tab(
+    qtbot, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(overlay_mod, "WCL_RETRY_BATCH_DELAY_MS", 500)
+    monkeypatch.setattr(overlay_mod, "WCL_RETRY_CUSHION_MS", 0)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
+        window._on_raid_boss_fetch_done(
+            failed_detail_identity,
+            {},
+            "network",
+            overlay_mod.WCL_ERROR_NETWORK,
+        )
+        assert window._panel._status_label.text() == "Raid boss details retrying soon…"
+
+        window._panel._on_detail_mode_clicked("mplus")
+        assert window._panel._active_detail_mode() == "mplus"
+
+        window._panel._on_detail_mode_clicked("raid")
+
+        assert window._panel._status_label.text() == "Raid boss details retrying soon…"
+    finally:
+        window.close()
+
+
 def test_panel_renders_current_and_better_main_score(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)

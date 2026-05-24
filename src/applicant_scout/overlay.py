@@ -2460,6 +2460,9 @@ class OverlayWindow(QMainWindow):
         self._wcl_retry_timer = QTimer(self)
         self._wcl_retry_timer.setSingleShot(True)
         self._wcl_retry_timer.timeout.connect(self._retry_failed_wcl_fetches)
+        self._raid_boss_retry_timer = QTimer(self)
+        self._raid_boss_retry_timer.setSingleShot(True)
+        self._raid_boss_retry_timer.timeout.connect(self._retry_ready_raid_boss_fetches)
         self._quota_timer = QTimer(self)
         self._quota_timer.setInterval(1000)
         self._quota_timer.timeout.connect(self._refresh_status_row)
@@ -3268,13 +3271,9 @@ class OverlayWindow(QMainWindow):
         if visible_id is None:
             return
         applicant = self._active_row_map().get(visible_id)
-        started = False
         if applicant is not None:
-            started = self._launch_raid_boss_fetch_if_needed(applicant)
-        if started:
-            self._sync_delegate_and_panel()
-        else:
-            self._apply_panel_height_above_table()
+            self._launch_raid_boss_fetch_if_needed(applicant)
+        self._sync_delegate_and_panel()
 
     def _resolve_hover_from_cursor(self) -> str | None:
         """Map global cursor position to an applicant_id under it (or None
@@ -3839,6 +3838,16 @@ class OverlayWindow(QMainWindow):
             return "Raid boss details unavailable", True
         return None
 
+    def _schedule_raid_boss_retry(self, delay_ms: int) -> None:
+        if self._raid_boss_retry_timer.isActive():
+            remaining = self._raid_boss_retry_timer.remainingTime()
+            if remaining >= 0 and remaining <= delay_ms:
+                return
+        self._raid_boss_retry_timer.start(max(0, delay_ms))
+
+    def _retry_ready_raid_boss_fetches(self) -> None:
+        self._sync_delegate_and_panel()
+
     def _launch_raid_boss_fetch_if_needed(self, applicant: Applicant) -> bool:
         listing = self._effective_listing()
         if detect_listing_context(listing) != CONTEXT_RAID:
@@ -4128,12 +4137,14 @@ class OverlayWindow(QMainWindow):
     ) -> None:
         key = _raid_boss_fetch_failure_key(identity)
         if error_kind in _RETRYABLE_WCL_ERROR_KINDS:
-            retry_after = max(
-                WCL_RETRY_BATCH_DELAY_MS / 1000.0,
-                self._wcl_client.retry_block_remaining_seconds()
-                + (WCL_RETRY_CUSHION_MS / 1000.0),
+            retry_delay_ms = max(
+                WCL_RETRY_BATCH_DELAY_MS,
+                int(self._wcl_client.retry_block_remaining_seconds() * 1000)
+                + WCL_RETRY_CUSHION_MS,
             )
+            retry_after = retry_delay_ms / 1000.0
             self._raid_boss_fetch_failures[key] = time.monotonic() + retry_after
+            self._schedule_raid_boss_retry(retry_delay_ms)
             return
         self._raid_boss_fetch_failures[key] = None
 
@@ -4347,6 +4358,7 @@ class OverlayWindow(QMainWindow):
         self._foreground_timer.stop()
         self._quota_timer.stop()
         self._wcl_retry_timer.stop()
+        self._raid_boss_retry_timer.stop()
         self.flush_geometry()
         self._launcher.hide()
         self._launcher.close()
