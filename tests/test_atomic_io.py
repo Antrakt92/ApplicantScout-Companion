@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from applicant_scout import atomic_io
-from applicant_scout.atomic_io import apply_private_file_mode, atomic_write_text
+from applicant_scout.atomic_io import (
+    apply_private_directory_mode,
+    apply_private_file_mode,
+    atomic_write_text,
+)
+
+
+class _Completed:
+    def __init__(self, *, returncode: int = 0, stdout: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
 
 
 def _temp_files(path: Path) -> list[Path]:
@@ -86,7 +97,206 @@ def test_atomic_write_text_private_mode_chmods_temp_and_target(
 
     assert target.read_text(encoding="utf-8") == "secret"
     assert any(path == target for path, _mode in calls)
-    assert all(mode == stat.S_IRUSR | stat.S_IWUSR for _path, mode in calls)
+    assert any(path == tmp_path for path, _mode in calls)
+    assert {mode for _path, mode in calls} <= {
+        stat.S_IRUSR | stat.S_IWUSR,
+        stat.S_IRWXU,
+    }
+
+
+def test_current_user_sid_parses_whoami_csv_output(monkeypatch: pytest.MonkeyPatch):
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> _Completed:
+        calls.append(args)
+        return _Completed(stdout='"desktop\\dima","S-1-5-21-1-2-3-1007"\n')
+
+    monkeypatch.setattr(atomic_io.subprocess, "run", fake_run)
+
+    assert atomic_io._current_user_sid() == "*S-1-5-21-1-2-3-1007"
+    assert calls == [["whoami", "/user", "/fo", "csv", "/nh"]]
+
+
+def test_current_user_sid_returns_none_for_malformed_output(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Completed(stdout="not csv\n"),
+    )
+
+    assert atomic_io._current_user_sid() is None
+
+
+def test_apply_private_file_mode_uses_windows_acl_sequence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    chmod_modes: list[int] = []
+    commands: list[list[str]] = []
+
+    def record_chmod(_self: Path, mode: int) -> None:
+        chmod_modes.append(mode)
+
+    def fake_run(args: list[str], **_kwargs: object) -> _Completed:
+        commands.append(args)
+        return _Completed(returncode=0)
+
+    monkeypatch.setattr(type(target), "chmod", record_chmod)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(atomic_io.subprocess, "run", fake_run)
+
+    apply_private_file_mode(target)
+
+    assert chmod_modes == [stat.S_IRUSR | stat.S_IWUSR]
+    assert commands == [
+        ["icacls", os.fspath(target), "/inheritance:r", "/Q"],
+        [
+            "icacls",
+            os.fspath(target),
+            "/remove:g",
+            "*S-1-1-0",
+            "*S-1-5-11",
+            "*S-1-5-32-545",
+            "/Q",
+        ],
+        [
+            "icacls",
+            os.fspath(target),
+            "/remove:d",
+            "*S-1-1-0",
+            "*S-1-5-11",
+            "*S-1-5-32-545",
+            "*S-1-5-21-1-2-3-1007",
+            "/Q",
+        ],
+        [
+            "icacls",
+            os.fspath(target),
+            "/grant:r",
+            "*S-1-5-21-1-2-3-1007:(F)",
+            "*S-1-5-18:(F)",
+            "*S-1-5-32-544:(F)",
+            "/Q",
+        ],
+    ]
+
+
+def test_apply_private_directory_mode_uses_inheritable_acl_sequence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(type(tmp_path), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda args, **_kwargs: commands.append(args) or _Completed(returncode=0),
+    )
+
+    apply_private_directory_mode(tmp_path)
+
+    assert commands[-1] == [
+        "icacls",
+        os.fspath(tmp_path),
+        "/grant:r",
+        "*S-1-5-21-1-2-3-1007:(OI)(CI)F",
+        "*S-1-5-18:(OI)(CI)F",
+        "*S-1-5-32-544:(OI)(CI)F",
+        "/Q",
+    ]
+
+
+def test_apply_private_file_mode_ignores_windows_acl_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("icacls")),
+    )
+
+    apply_private_file_mode(target)
+
+    assert target.read_text(encoding="utf-8") == "secret"
+
+
+def test_atomic_write_text_private_mode_hardens_parent_before_temp_and_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "nested" / "config.env"
+    calls: list[tuple[str, Path]] = []
+
+    monkeypatch.setattr(
+        atomic_io,
+        "apply_private_directory_mode",
+        lambda path: calls.append(("dir", Path(path))),
+    )
+    monkeypatch.setattr(
+        atomic_io,
+        "apply_private_file_mode",
+        lambda path: calls.append(("file", Path(path))),
+    )
+
+    atomic_write_text(target, "secret", private=True)
+
+    assert target.read_text(encoding="utf-8") == "secret"
+    assert calls[0] == ("dir", target.parent)
+    assert calls[-1] == ("file", target)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL integration test")
+def test_apply_private_file_mode_removes_inherited_everyone_acl(tmp_path: Path):
+    parent = tmp_path / "public-parent"
+    parent.mkdir()
+    target = parent / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    everyone_sid = "*S-1-1-0"
+    subprocess.run(
+        ["icacls", os.fspath(parent), "/grant", f"{everyone_sid}:(OI)(CI)R", "/Q"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    before = subprocess.run(
+        ["icacls", os.fspath(target), "/findsid", everyone_sid],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert "No files with a matching SID was found" not in before.stdout
+
+    apply_private_file_mode(target)
+
+    after = subprocess.run(
+        ["icacls", os.fspath(target), "/findsid", everyone_sid],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert "No files with a matching SID was found" in after.stdout
 
 
 def test_apply_private_file_mode_ignores_os_errors(

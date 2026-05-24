@@ -10,7 +10,11 @@ from pathlib import Path
 
 from dotenv.parser import parse_stream
 
-from .atomic_io import atomic_write_text
+from .atomic_io import (
+    apply_private_directory_mode,
+    apply_private_file_mode,
+    atomic_write_text,
+)
 from .constants import REGION_ID_TO_WCL
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 
@@ -421,6 +425,14 @@ def load_config() -> Config:
             f"Could not create ApplicantScout data directories under "
             f"{_user_data_dir()}: {exc}"
         ) from exc
+    app_data_dir = _user_data_dir()
+    apply_private_directory_mode(app_data_dir)
+    apply_private_directory_mode(config_dir)
+    apply_private_directory_mode(cache_dir)
+    apply_private_directory_mode(log_dir)
+    config_path = user_config_path()
+    if config_path.exists():
+        apply_private_file_mode(config_path)
 
     return Config(
         wcl_client_id=client_id,
@@ -431,7 +443,7 @@ def load_config() -> Config:
         config_dir=config_dir,
         screenshots_path=screenshots_path,
         cache_ttl_seconds=cache_ttl_seconds,
-        config_path=user_config_path(),
+        config_path=config_path,
         log_dir=log_dir,
         metric_preferences=metric_preferences,
         sync_with_wow=sync_with_wow,

@@ -200,6 +200,24 @@ def test_setup_logging_applies_private_mode_to_log_file(
     assert tmp_path / "applicant-scout.log" in calls
 
 
+def test_setup_logging_applies_private_mode_to_log_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        main_mod,
+        "apply_private_directory_mode",
+        lambda path: calls.append(Path(path)),
+    )
+    root, old_handlers = _without_root_logging_handlers()
+    try:
+        main_mod._setup_logging(tmp_path)
+    finally:
+        _restore_root_logging_handlers(root, old_handlers)
+
+    assert tmp_path in calls
+
+
 def test_private_rotating_file_handler_applies_private_mode_to_rollover_backups(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -731,6 +749,39 @@ def test_load_config_reads_user_config_file_without_cwd_dependency(
     assert cfg.region == "US"
     assert cfg.screenshots_path == tmp_path / "Shots"
     assert is_config_ready(cfg)
+
+
+def test_load_config_applies_private_modes_to_app_data_dirs_and_existing_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    config_path = user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("WCL_CLIENT_ID=stored\n", encoding="utf-8")
+    dir_calls: list[Path] = []
+    file_calls: list[Path] = []
+    monkeypatch.setattr(
+        config_mod,
+        "apply_private_directory_mode",
+        lambda path: dir_calls.append(Path(path)),
+    )
+    monkeypatch.setattr(
+        config_mod,
+        "apply_private_file_mode",
+        lambda path: file_calls.append(Path(path)),
+    )
+
+    cfg = load_config()
+
+    app_data_dir = tmp_path / "localappdata" / "applicant-scout"
+    assert {
+        app_data_dir,
+        app_data_dir / "config",
+        app_data_dir / "cache",
+        app_data_dir / "logs",
+    } <= set(dir_calls)
+    assert cfg.config_path == config_path
+    assert config_path in file_calls
 
 
 def test_load_config_rejects_unknown_region_env(

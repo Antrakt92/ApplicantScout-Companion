@@ -1998,8 +1998,12 @@ def test_character_cache_saves_private_file_mode(monkeypatch: pytest.MonkeyPatch
 
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
 
-    assert any(path == cache._path for path, _mode in calls)
-    assert all(mode == stat.S_IRUSR | stat.S_IWUSR for _path, mode in calls)
+    assert (cache._path, stat.S_IRUSR | stat.S_IWUSR) in calls
+    assert (cache._path.parent, stat.S_IRWXU) in calls
+    assert {mode for _path, mode in calls} <= {
+        stat.S_IRUSR | stat.S_IWUSR,
+        stat.S_IRWXU,
+    }
 
 
 def test_character_cache_applies_private_mode_to_existing_cache_file(

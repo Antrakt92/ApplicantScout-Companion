@@ -23,7 +23,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import __version__
-from .atomic_io import apply_private_file_mode
+from .atomic_io import apply_private_directory_mode, apply_private_file_mode
 from .config import (
     Config,
     ConfigError,
@@ -1248,6 +1248,7 @@ def _setup_logging(log_dir: Path | None = None) -> None:
     target_log_dir = log_dir or user_log_dir()
     try:
         target_log_dir.mkdir(parents=True, exist_ok=True)
+        apply_private_directory_mode(target_log_dir)
         file_handler = _PrivateRotatingFileHandler(
             target_log_dir / "applicant-scout.log",
             maxBytes=1_000_000,
