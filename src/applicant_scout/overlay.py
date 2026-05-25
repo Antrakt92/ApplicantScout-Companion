@@ -296,6 +296,21 @@ class _FetchIdentity:
             return self.applicant_id
         return f"{self.row_source}:{self.applicant_id}"
 
+    @property
+    def network_key(self) -> str:
+        return "|".join(
+            (
+                self.charname_key,
+                self.server_slug,
+                self.region,
+                str(self.spec_id),
+                self.metric_role,
+                str(self.runtime_generation),
+                str(self.listing_session_generation),
+                self.metric_preferences.cache_key(),
+            )
+        )
+
 
 @dataclass(frozen=True)
 class _GroupMarker:
@@ -2410,6 +2425,7 @@ class OverlayWindow(QMainWindow):
         # applicant_id. Old listing-session workers can complete after the same
         # id has been reused by a new listing.
         self._fetches_in_flight: dict[str, _FetchIdentity] = {}
+        self._fetch_waiters_by_target: dict[str, dict[str, _FetchIdentity]] = {}
         self._raid_boss_fetches_in_flight: dict[str, _FetchIdentity] = {}
         self._raid_boss_fetch_failures: dict[
             tuple[str, str, str, str, int, str, str, int, int], float | None
@@ -2804,6 +2820,7 @@ class OverlayWindow(QMainWindow):
             if identity.row_source == "party"
         ]
         self._fetches_in_flight.clear()
+        self._fetch_waiters_by_target.clear()
         self._raid_boss_fetches_in_flight.clear()
         self._raid_boss_fetch_failures.clear()
         self._clear_role_filter()
@@ -3766,6 +3783,19 @@ class OverlayWindow(QMainWindow):
         if self._fetches_in_flight.get(identity.storage_key) == identity:
             self._fetches_in_flight.pop(identity.storage_key, None)
 
+    def _mark_fetch_waiting_on_target(self, identity: _FetchIdentity) -> None:
+        self._fetch_waiters_by_target.setdefault(identity.network_key, {})[
+            identity.storage_key
+        ] = identity
+
+    def _coalesce_fetch_if_target_in_flight(self, identity: _FetchIdentity) -> bool:
+        waiters = self._fetch_waiters_by_target.get(identity.network_key)
+        if not waiters:
+            return False
+        self._mark_fetch_in_flight(identity)
+        waiters[identity.storage_key] = identity
+        return True
+
     def _is_fetch_in_flight_for(self, identity: _FetchIdentity) -> bool:
         current = self._fetches_in_flight.get(identity.storage_key)
         return (
@@ -3946,7 +3976,11 @@ class OverlayWindow(QMainWindow):
         applicant.fetch_status = "loading"
         applicant.error_message = ""
         applicant.wcl_error_kind = ""
+        if self._coalesce_fetch_if_target_in_flight(identity):
+            self._refresh_quota_label()
+            return
         self._mark_fetch_in_flight(identity)
+        self._mark_fetch_waiting_on_target(identity)
         task = _FetchTask(identity, charname, self._wcl_client, self._cache)
         task.signals.done.connect(self._on_fetch_done)
         if self._pool is not None:
@@ -3969,6 +4003,14 @@ class OverlayWindow(QMainWindow):
         fetched_identity: _FetchIdentity,
         ranks: CharacterRanks,
     ) -> None:
+        waiters = self._fetch_waiters_by_target.pop(
+            fetched_identity.network_key,
+            None,
+        )
+        if waiters is not None:
+            for waiter_identity in list(waiters.values()):
+                self._on_fetch_done(waiter_identity, ranks)
+            return
         self._discard_fetch_if_current(fetched_identity)
         self._refresh_quota_label()
         applicant = self._row_for_fetch_identity(fetched_identity)

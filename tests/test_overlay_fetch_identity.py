@@ -261,6 +261,45 @@ def test_cache_hit_applies_without_queueing_worker(qtbot, tmp_path):
         client.close()
 
 
+def test_same_character_party_and_applicant_fetch_coalesce_before_cache_write(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    applicant = _app(applicant_id="42:1", name="Scout-RealmA", fetch_status="pending")
+    member = _member(
+        applicant_id="scout-realma",
+        name="Scout-RealmA",
+        fetch_status="pending",
+    )
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(applicant)
+        window._launch_fetch(member)
+
+        assert len(queued_pool.tasks) == 1
+        assert applicant.fetch_status == "loading"
+        assert member.fetch_status == "loading"
+        assert applicant.applicant_id in window._fetches_in_flight
+        assert f"party:{member.applicant_id}" in window._fetches_in_flight
+
+        window._on_fetch_done(queued_pool.tasks[0]._identity, _ranks())
+
+        assert applicant.fetch_status == "ready"
+        assert member.fetch_status == "ready"
+        assert applicant.raid_heroic == 22.0
+        assert member.raid_heroic == 22.0
+        assert window._fetches_in_flight == {}
+    finally:
+        client.close()
+
+
 def test_fetch_task_refetches_when_cache_generation_changes_after_hit():
     identity = _FetchIdentity(
         applicant_id="42:1",
