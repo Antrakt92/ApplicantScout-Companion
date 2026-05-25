@@ -4093,6 +4093,30 @@ def test_screenshot_runtime_restores_rio_reader_when_watcher_start_fails(
     assert machine.reader == "old-reader"
 
 
+def test_raiderio_reader_for_screenshots_path_passes_cache_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots_dir = _retail_root(tmp_path) / "Screenshots"
+    screenshots_dir.mkdir(parents=True)
+    cache_dir = tmp_path / "cache"
+    seen: list[tuple[Path, Path | None]] = []
+
+    class FakeReader:
+        def __init__(self, retail_root: Path, *, cache_dir: Path | None = None):
+            seen.append((retail_root, cache_dir))
+
+    monkeypatch.setattr(main_mod, "RaiderIOLocalReader", FakeReader)
+
+    reader = main_mod._raiderio_reader_for_screenshots_path(
+        screenshots_dir,
+        cache_dir=cache_dir,
+    )
+
+    assert isinstance(reader, FakeReader)
+    assert seen == [(_retail_root(tmp_path), cache_dir)]
+
+
 def test_settings_saved_status_preserves_screenshots_path_warning(tmp_path: Path):
     values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
 

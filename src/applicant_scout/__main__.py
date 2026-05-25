@@ -1730,10 +1730,17 @@ def _replace_screenshots_runtime(
     window: OverlayWindow,
     decode_failed_callback: Callable[[str, str], None],
     *,
+    cache_dir: Path | None = None,
     signal_gate: _WatcherSignalGate,
 ) -> ScreenshotWatcher:
     previous_reader = getattr(machine, "_rio_reader", None)
-    next_reader = _raiderio_reader_for_screenshots_path(screenshots_dir)
+    if cache_dir is None:
+        next_reader = _raiderio_reader_for_screenshots_path(screenshots_dir)
+    else:
+        next_reader = _raiderio_reader_for_screenshots_path(
+            screenshots_dir,
+            cache_dir=cache_dir,
+        )
     try:
         watcher = _replace_screenshot_watcher(
             current_watcher,
@@ -1751,11 +1758,15 @@ def _replace_screenshots_runtime(
     return watcher
 
 
-def _raiderio_reader_for_screenshots_path(path: Path) -> RaiderIOLocalReader | None:
+def _raiderio_reader_for_screenshots_path(
+    path: Path,
+    *,
+    cache_dir: Path | None = None,
+) -> RaiderIOLocalReader | None:
     retail_root = retail_root_from_screenshots_path(path)
     if retail_root is None:
         return None
-    return RaiderIOLocalReader(retail_root)
+    return RaiderIOLocalReader(retail_root, cache_dir=cache_dir)
 
 
 class _ReaderBoundMachine:
@@ -2225,6 +2236,7 @@ def _apply_settings_change(
                 machine,
                 window,
                 decode_failed_callback,
+                cache_dir=new_cfg.cache_dir,
                 signal_gate=signal_gate,
             )
     except Exception:
@@ -2530,7 +2542,11 @@ def main(argv: list[str] | None = None) -> int:
     # path — no special UI plumbing needed.
     _validate_oauth_async(auth)
 
-    cache = CharacterCache(cfg.cache_dir, ttl_seconds=cfg.cache_ttl_seconds)
+    cache = CharacterCache(
+        cfg.cache_dir,
+        ttl_seconds=cfg.cache_ttl_seconds,
+        defer_saves=True,
+    )
     wcl_client = WCLClient(
         auth,
         region=region_runtime.effective_region,
@@ -2549,7 +2565,10 @@ def main(argv: list[str] | None = None) -> int:
     state = AppState()
     machine = StateMachine(
         state,
-        rio_reader=_raiderio_reader_for_screenshots_path(screenshots_dir),
+        rio_reader=_raiderio_reader_for_screenshots_path(
+            screenshots_dir,
+            cache_dir=cfg.cache_dir,
+        ),
     )
     watcher: ScreenshotWatcher | None = None
     watcher_signal_gate = _WatcherSignalGate()
@@ -2932,6 +2951,9 @@ def main(argv: list[str] | None = None) -> int:
     pool = QThreadPool.globalInstance()
     if pool is not None:
         pool.waitForDone(2000)
+    # Save the startup fetch burst once after workers drain instead of forcing a
+    # full JSON rewrite on every applicant result.
+    cache.flush()
     wcl_client.close()
     return rc
 

@@ -658,11 +658,12 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
                 # wire version, you're likely processing a stale screenshot taken
                 # before the addon update.
                 _log.info(
-                    "decoded %s: mode=%s wire=0x%02x apps=%d",
+                    "decoded %s: mode=%s wire=0x%02x apps=%d roster=%d",
                     image_path.name,
                     kind,
                     wire_ver,
                     len(snap.applicants),
+                    len(snap.roster),
                 )
                 return DecodeResult(snap, True)
             if err is not None:

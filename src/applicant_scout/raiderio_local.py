@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
+import os
 import re
 import threading
 import time
+import tempfile
 from pathlib import Path
 
 
@@ -23,6 +25,8 @@ _REGION_FILE_TOKENS = {
 
 _DUNGEON_LEVELS_FIELD = 10
 _NEGATIVE_CACHE_TTL_SECONDS = 30.0
+_LOOKUP_PAYLOAD_CACHE_DIR = "raiderio-local"
+_LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
 _RegionDBFingerprint = tuple[tuple[str, bool, int, int], ...]
 
 
@@ -58,8 +62,13 @@ class _RegionCacheEntry:
 class RaiderIOLocalReader:
     """Lazy reader for RaiderIO's generated local profile databases."""
 
-    def __init__(self, retail_root: Path):
+    def __init__(self, retail_root: Path, *, cache_dir: Path | None = None):
         self._retail_root = Path(retail_root)
+        self._payload_cache_dir = (
+            Path(cache_dir) / _LOOKUP_PAYLOAD_CACHE_DIR
+            if cache_dir is not None
+            else None
+        )
         self._cache: dict[str, _RegionCacheEntry] = {}
         self._loading: set[str] = set()
         self._load_callbacks: dict[str, list[Callable[[], None]]] = {}
@@ -143,7 +152,11 @@ class RaiderIOLocalReader:
                 return entry.db
             previous_entry = entry
         try:
-            loaded = _RegionDB.load(self._retail_root, token)
+            loaded = _RegionDB.load(
+                self._retail_root,
+                token,
+                payload_cache_dir=self._payload_cache_dir,
+            )
         except Exception as exc:  # noqa: BLE001
             _log.warning("RaiderIO local DB unavailable for %s: %s", token, exc)
             loaded = None
@@ -199,7 +212,13 @@ class _RegionDB:
         self._raid_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
 
     @classmethod
-    def load(cls, retail_root: Path, token: str) -> _RegionDB | None:
+    def load(
+        cls,
+        retail_root: Path,
+        token: str,
+        *,
+        payload_cache_dir: Path | None = None,
+    ) -> _RegionDB | None:
         db_root = retail_root / "Interface" / "AddOns" / "RaiderIO" / "db"
         mplus_characters_path = db_root / f"db_mythicplus_{token}_characters.lua"
         mplus_lookup_path = db_root / f"db_mythicplus_{token}_lookup.lua"
@@ -224,7 +243,11 @@ class _RegionDB:
             mplus_meta = _parse_provider_meta(lookup_text)
             dungeons = _parse_dungeon_names(dungeons_path.read_text(encoding="utf-8"))
             _validate_encoding_plan(mplus_meta, len(dungeons))
-            mplus_lookup_payload = _parse_lookup_payload(lookup_text)
+            mplus_lookup_payload = _parse_lookup_payload(
+                lookup_text,
+                source_path=mplus_lookup_path,
+                payload_cache_dir=payload_cache_dir,
+            )
         raid_meta: _ProviderMeta | None = None
         raid_lookup_payload: bytes | None = None
         current_raids: list[_RaidInfo] = []
@@ -240,7 +263,11 @@ class _RegionDB:
                     raid_lookup_text, "previousRaids"
                 )
                 _validate_raid_encoding_plan(raid_meta, current_raids, previous_raids)
-                raid_lookup_payload = _parse_lookup_payload(raid_lookup_text)
+                raid_lookup_payload = _parse_lookup_payload(
+                    raid_lookup_text,
+                    source_path=raid_lookup_path,
+                    payload_cache_dir=payload_cache_dir,
+                )
             except (OSError, ValueError) as exc:
                 _log.warning(
                     "could not load RaiderIO local raid DB for %s: %s", token, exc
@@ -567,13 +594,88 @@ def _validate_raid_encoding_plan(
         )
 
 
-def _parse_lookup_payload(text: str) -> bytes:
+def _parse_lookup_payload(
+    text: str,
+    *,
+    source_path: Path | None = None,
+    payload_cache_dir: Path | None = None,
+) -> bytes:
     match = re.search(r"provider\.lookup\[1\]\s*=\s*\"", text)
     if not match:
         raise ValueError("RaiderIO lookup payload missing")
+    cache_path = (
+        _lookup_payload_cache_path(payload_cache_dir, source_path)
+        if payload_cache_dir is not None and source_path is not None
+        else None
+    )
+    if cache_path is not None:
+        try:
+            return cache_path.read_bytes()
+        except OSError:
+            pass
     start = match.end()
     end = _find_lua_string_end(text, start)
-    return _decode_lua_string_bytes(text[start:end])
+    payload = _decode_lua_string_bytes(text[start:end])
+    if cache_path is not None:
+        try:
+            _write_lookup_payload_cache(cache_path, payload)
+        except OSError:
+            pass
+    return payload
+
+
+def _lookup_payload_cache_path(cache_dir: Path, source_path: Path) -> Path | None:
+    _name, exists, mtime_ns, size = _file_fingerprint(source_path)
+    if not exists:
+        return None
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_path.stem)
+    return cache_dir / f"{safe_stem}.{mtime_ns}.{size}{_LOOKUP_PAYLOAD_CACHE_SUFFIX}"
+
+
+def _write_lookup_payload_cache(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = -1
+    temp_path: Path | None = None
+    try:
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        temp_path = Path(temp_name)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+        _prune_old_lookup_payload_caches(path)
+    except BaseException:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _prune_old_lookup_payload_caches(current_path: Path) -> None:
+    prefix = current_path.name.split(".", 1)[0]
+    for candidate in current_path.parent.glob(
+        f"{prefix}.*{_LOOKUP_PAYLOAD_CACHE_SUFFIX}"
+    ):
+        if candidate == current_path:
+            continue
+        try:
+            candidate.unlink()
+        except OSError:
+            pass
 
 
 def _find_lua_string_end(text: str, start: int) -> int:

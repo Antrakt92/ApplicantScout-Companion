@@ -1723,9 +1723,20 @@ class CharacterCache:
     TTL_SECONDS = 12 * 60 * 60
     NOT_FOUND_TTL_SECONDS = 30 * 60
 
-    def __init__(self, cache_dir: Path, ttl_seconds: int | None = None):
+    def __init__(
+        self,
+        cache_dir: Path,
+        ttl_seconds: int | None = None,
+        *,
+        defer_saves: bool = False,
+        save_debounce_seconds: float = 1.0,
+    ):
         self._path = cache_dir / "character-cache.json"
         self._ttl_seconds = ttl_seconds if ttl_seconds is not None else self.TTL_SECONDS
+        self._defer_saves = defer_saves
+        self._save_debounce_seconds = max(0.0, save_debounce_seconds)
+        self._save_timer: threading.Timer | None = None
+        self._dirty = False
         if self._path.exists():
             apply_private_file_mode(self._path)
         self._data: dict[str, _CacheEntry] = self._load()
@@ -1803,6 +1814,7 @@ class CharacterCache:
         # ~25-quota refetch for EVERY applicant on next session. Granular skip
         # keeps the rest of the cache intact.
         result: dict[str, _CacheEntry] = {}
+        now = time.time()
         for k, v in entries.items():
             if not isinstance(v, dict):
                 continue
@@ -1818,11 +1830,37 @@ class CharacterCache:
             ):
                 _log.debug("Discarding corrupt cache entry for key=%s", k)
                 continue
+            if not self._entry_is_fresh(k, entry, now=now):
+                continue
             result[k] = entry
         return result
 
+    def _entry_is_fresh(
+        self,
+        key: str,
+        entry: _CacheEntry,
+        *,
+        now: float,
+    ) -> bool:
+        age = now - entry.fetched_at
+        if age < 0:
+            return False
+        ttl = (
+            self._not_found_ttl_seconds()
+            if key.startswith("nf:")
+            else self._ttl_seconds
+        )
+        return age <= ttl
+
+    def _prune_expired_locked(self, now: float) -> None:
+        # Caller must hold self._lock.
+        for key, entry in list(self._data.items()):
+            if not self._entry_is_fresh(key, entry, now=now):
+                self._data.pop(key, None)
+
     def _save_locked(self) -> None:
         # Caller must hold self._lock.
+        self._prune_expired_locked(time.time())
         try:
             atomic_write_text(
                 self._path,
@@ -1837,9 +1875,37 @@ class CharacterCache:
         except OSError:
             pass
 
+    def _schedule_save_locked(self) -> None:
+        # Caller must hold self._lock.
+        if not self._defer_saves:
+            self._save_locked()
+            return
+        self._dirty = True
+        if self._save_timer is not None and self._save_timer.is_alive():
+            return
+        self._save_timer = threading.Timer(self._save_debounce_seconds, self.flush)
+        self._save_timer.daemon = True
+        self._save_timer.start()
+
+    def flush(self) -> None:
+        timer: threading.Timer | None = None
+        with self._lock:
+            timer = self._save_timer
+            self._save_timer = None
+            if not self._dirty:
+                return
+            self._dirty = False
+            self._save_locked()
+        if timer is not None and timer.is_alive() and timer is not threading.current_thread():
+            timer.cancel()
+
     def clear(self) -> None:
         """Drop both in-memory and persisted character-rank cache."""
         with self._lock:
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+                self._save_timer = None
+            self._dirty = False
             self._generation += 1
             self._data.clear()
             try:
@@ -1987,5 +2053,5 @@ class CharacterCache:
                 self._data[key] = _CacheEntry(
                     fetched_at=time.time(), ranks=asdict(ranks)
                 )
-            self._save_locked()
-        return True
+            self._schedule_save_locked()
+            return True

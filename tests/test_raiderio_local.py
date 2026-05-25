@@ -319,6 +319,59 @@ def test_lookup_profile_reloads_positive_cache_when_fingerprint_changes(tmp_path
     assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
 
 
+def test_reader_reuses_decoded_lookup_payload_cache_across_instances(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    cache_dir = tmp_path / "cache"
+    first_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    first = first_reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    def fail_decode(*_args: object) -> bytes:
+        raise AssertionError("lookup payload should load from the decoded cache")
+
+    monkeypatch.setattr(raiderio_local_mod, "_decode_lua_string_bytes", fail_decode)
+    second_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    second = second_reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert second is not None
+    assert second.current_score == 3074
+
+
+def test_reader_invalidates_decoded_lookup_payload_cache_when_lookup_file_changes(
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    first_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    first = first_reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+    )
+    _mark_test_db_changed(tmp_path)
+    second_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    refreshed = second_reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert refreshed is not None
+    assert refreshed.current_score == 3333
+    assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+
+
 def test_preload_region_async_reloads_positive_cache_when_fingerprint_changes(
     tmp_path: Path,
 ):
@@ -391,7 +444,7 @@ def test_failed_concurrent_positive_reload_does_not_overwrite_newer_good_cache(
     new_db = raiderio_local_mod._RegionDB.load(tmp_path, "eu")
     assert new_db is not None
 
-    def fail_after_another_refresh(*_args: object) -> object:
+    def fail_after_another_refresh(*_args: object, **_kwargs: object) -> object:
         fingerprint = raiderio_local_mod._region_db_fingerprint(tmp_path, "eu")
         with reader._lock:
             reader._cache["eu"] = raiderio_local_mod._RegionCacheEntry(
@@ -434,7 +487,7 @@ def test_failed_positive_reload_does_not_overwrite_newer_fingerprint_cache(
 
     load_region_db = raiderio_local_mod._RegionDB.load
 
-    def fail_after_newer_refresh(*_args: object) -> object:
+    def fail_after_newer_refresh(*_args: object, **_kwargs: object) -> object:
         _write_test_db(
             tmp_path,
             _record(3200, 15, 14, 1, 0) + _record(3444, 0, 17, 0, 1),

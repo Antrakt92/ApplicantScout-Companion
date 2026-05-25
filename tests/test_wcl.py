@@ -2047,6 +2047,97 @@ def test_character_cache_private_mode_failure_does_not_break_save(
     assert any(path == cache._path for path in calls)
 
 
+def test_character_cache_load_prunes_expired_positive_and_not_found_entries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    now = 1_000_000.0
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    fresh_key = CharacterCache._key("Fresh", "ravencrest", "EU", 71, "DAMAGER")
+    expired_key = CharacterCache._key("Expired", "ravencrest", "EU", 71, "DAMAGER")
+    fresh_not_found_key = CharacterCache._not_found_key("Missing", "ravencrest", "EU")
+    expired_not_found_key = CharacterCache._not_found_key("Gone", "ravencrest", "EU")
+    cache_file = tmp_path / "character-cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "__version__": _CACHE_VERSION,
+                "entries": {
+                    fresh_key: {
+                        "fetched_at": now - 60,
+                        "ranks": _ranks().__dict__,
+                    },
+                    expired_key: {
+                        "fetched_at": now - CharacterCache.TTL_SECONDS - 1,
+                        "ranks": _ranks().__dict__,
+                    },
+                    fresh_not_found_key: {
+                        "fetched_at": now - 60,
+                        "ranks": CharacterRanks.empty(not_found=True).__dict__,
+                    },
+                    expired_not_found_key: {
+                        "fetched_at": now - CharacterCache.NOT_FOUND_TTL_SECONDS - 1,
+                        "ranks": CharacterRanks.empty(not_found=True).__dict__,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = CharacterCache(tmp_path)
+
+    assert fresh_key in loaded._data
+    assert fresh_not_found_key in loaded._data
+    assert expired_key not in loaded._data
+    assert expired_not_found_key not in loaded._data
+
+
+def test_character_cache_save_prunes_expired_entries_before_persisting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    now = 1_000_000.0
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    cache = CharacterCache(tmp_path)
+    cache.put("Old", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    old_key = CharacterCache._key("Old", "ravencrest", "EU", 71, "DAMAGER")
+    cache._data[old_key].fetched_at = now - CharacterCache.TTL_SECONDS - 1
+
+    cache.put("Fresh", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+    fresh_key = CharacterCache._key("Fresh", "ravencrest", "EU", 71, "DAMAGER")
+    assert old_key not in raw["entries"]
+    assert fresh_key in raw["entries"]
+
+
+def test_character_cache_deferred_save_batches_puts_until_flush(tmp_path):
+    cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=60.0)
+
+    cache.put("One", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    cache.put("Two", "ravencrest", "EU", 72, _ranks(), role="DAMAGER")
+
+    assert not cache._path.exists()
+    assert cache.get("One", "ravencrest", "EU", 71, "DAMAGER") is not None
+    assert cache.get("Two", "ravencrest", "EU", 72, "DAMAGER") is not None
+
+    cache.flush()
+
+    loaded = CharacterCache(tmp_path)
+    assert loaded.get("One", "ravencrest", "EU", 71, "DAMAGER") is not None
+    assert loaded.get("Two", "ravencrest", "EU", 72, "DAMAGER") is not None
+
+
+def test_character_cache_clear_cancels_deferred_save(tmp_path):
+    cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=60.0)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+
+    cache.clear()
+    cache.flush()
+
+    assert not cache._path.exists()
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
 def test_character_cache_ttl_override_is_instance_local(tmp_path):
     short_cache = CharacterCache(tmp_path / "short", ttl_seconds=1)
     default_cache = CharacterCache(tmp_path / "default")

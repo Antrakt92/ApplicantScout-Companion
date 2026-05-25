@@ -54,10 +54,11 @@ class _UiThreadCacheProbe:
 
     def __init__(self) -> None:
         self.get_called = False
+        self.result: CharacterRanks | None = None
 
     def get(self, *_args, **_kwargs):
         self.get_called = True
-        raise AssertionError("cache lookup must stay off the UI launch path")
+        return self.result
 
 
 class _GenerationChangingCache:
@@ -230,7 +231,7 @@ def test_applicant_burst_coalesces_overlay_refresh(qtbot, tmp_path):
         client.close()
 
 
-def test_cache_hit_applies_from_worker_without_network_fetch(qtbot, tmp_path):
+def test_cache_hit_applies_without_queueing_worker(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")
     app = _app(fetch_status="pending")
@@ -251,9 +252,7 @@ def test_cache_hit_applies_from_worker_without_network_fetch(qtbot, tmp_path):
     try:
         window._launch_fetch(app)
 
-        assert len(queued_pool.tasks) == 1
-        queued_pool.tasks[0].run()
-
+        assert queued_pool.tasks == []
         assert app.fetch_status == "ready"
         assert app.raid_heroic == 22.0
         assert app.mplus_dps == 77.0
@@ -1105,7 +1104,7 @@ def test_fetch_task_started_before_clear_does_not_repopulate_not_found_cache(
         client.close()
 
 
-def test_launch_fetch_queues_without_ui_thread_cache_lookup(qtbot, tmp_path):
+def test_launch_fetch_checks_cache_before_queueing_worker(qtbot, tmp_path):
     state = AppState()
     state.player = WoWPlayer(full_name="Host-RealmA")
     app = _app(fetch_status="pending")
@@ -1113,15 +1112,17 @@ def test_launch_fetch_queues_without_ui_thread_cache_lookup(qtbot, tmp_path):
     window, client = _window(qtbot, tmp_path, state)
     queued_pool = _QueuedPool()
     cache_probe = _UiThreadCacheProbe()
+    cache_probe.result = _ranks()
     window._pool = queued_pool
     window._cache = cache_probe  # type: ignore[assignment]
 
     try:
         window._launch_fetch(app)
 
-        assert len(queued_pool.tasks) == 1
-        assert app.fetch_status == "loading"
-        assert not cache_probe.get_called
+        assert queued_pool.tasks == []
+        assert app.fetch_status == "ready"
+        assert app.raid_heroic == 22.0
+        assert cache_probe.get_called
     finally:
         client.close()
 

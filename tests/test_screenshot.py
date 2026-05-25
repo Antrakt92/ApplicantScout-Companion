@@ -8,6 +8,7 @@ every member from a grouped application snapshot.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import struct
 import zlib
@@ -1098,6 +1099,57 @@ def test_decode_screenshot_accepts_legacy_hex_qr(monkeypatch, tmp_path: Path):
     assert marker is True
     assert snap is not None
     assert snap.applicants == []
+
+
+def test_decode_log_includes_roster_count(monkeypatch, tmp_path: Path, caplog):
+    image_path = tmp_path / "hex_qr.png"
+    _write_blank_image(image_path)
+    raw_payload = _wrap_payload(
+        _build_body_v6(
+            [],
+            [
+                _build_roster_block(
+                    unit_index=1,
+                    flags=1,
+                    subgroup=1,
+                    class_id=10,
+                    spec_id=269,
+                    ilvl=700,
+                    score=3200,
+                    main_score=0,
+                    role=2,
+                    name="Host-Realm",
+                ),
+                _build_roster_block(
+                    unit_index=2,
+                    flags=0,
+                    subgroup=1,
+                    class_id=2,
+                    spec_id=65,
+                    ilvl=701,
+                    score=3100,
+                    main_score=0,
+                    role=1,
+                    name="Healer-Realm",
+                ),
+            ],
+        ),
+        wire_ver=0x06,
+    )
+    hex_payload = raw_payload.hex().upper().encode("ascii")
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [SimpleNamespace(data=hex_payload)],
+    )
+    caplog.set_level(logging.INFO, logger="applicant_scout.screenshot")
+
+    snap, marker = decode_screenshot(image_path)
+
+    assert marker is True
+    assert snap is not None
+    assert len(snap.roster) == 2
+    assert "apps=0 roster=2" in caplog.text
 
 
 def test_decode_screenshot_accepts_lua_generated_golden_as_legacy_hex(
