@@ -3883,6 +3883,38 @@ def test_role_filter_shows_whole_group_when_one_member_matches(qtbot, tmp_path):
         client.close()
 
 
+def test_refresh_table_builds_group_markers_once(qtbot, tmp_path, monkeypatch):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.add_or_update(_app(applicant_id="10:1", name="Tank-Realm", role="TANK"))
+    state.add_or_update(_app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER"))
+    state.add_or_update(_app(applicant_id="20:1", name="Healer-Realm", role="HEALER"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    original = overlay_mod._build_group_markers
+    calls = 0
+
+    def counted_build_group_markers(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(overlay_mod, "_build_group_markers", counted_build_group_markers)
+
+    try:
+        window._refresh_table()
+
+        assert calls == 1
+        assert set(window._delegate._group_marker_by_row) == {
+            window._row_for_id["10:1"],
+            window._row_for_id["10:2"],
+        }
+    finally:
+        client.close()
+
+
 def test_role_filter_preserves_pin_when_pinned_group_stays_visible(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)

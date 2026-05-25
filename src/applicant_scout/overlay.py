@@ -3549,14 +3549,6 @@ class OverlayWindow(QMainWindow):
         self._maybe_grow_name_column(sorted_applicants)
         self._auto_size_metric_columns()
 
-        if self._active_tab == "applicants":
-            self._delegate.set_group_markers(
-                _build_group_markers(
-                    (row_idx, a.applicant_id)
-                    for row_idx, a in enumerate(sorted_applicants)
-                )
-            )
-
         # Preserve hover/pin BY ID; cursor fallback only when prev id is gone.
         if prev_hover not in active_rows:
             self._hover_id = self._resolve_hover_from_cursor()
@@ -3566,8 +3558,8 @@ class OverlayWindow(QMainWindow):
 
         # Apply current role filter to the freshly-rebuilt rows so newly-
         # arrived applicants in a filtered-out role come in pre-hidden.
-        # Also re-feeds visible-only group markers — must run AFTER the
-        # set_group_markers call above so it's the final word on markers.
+        # This also owns group markers: when unfiltered, every row is visible;
+        # when filtered, marker caps align to the visible group slice.
         self._apply_role_filter()
         # Re-apply correct stripe rows + refresh panel content (single point).
         self._sync_delegate_and_panel()
