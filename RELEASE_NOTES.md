@@ -2,10 +2,10 @@
 
 ## 0.7.1 - 26-May-2026
 
-Reliability and startup-polish release paired with ApplicantScout addon `0.4.2`.
-This release keeps the current QR wire format while making bursty applicant
-loads, duplicate Warcraft Logs lookups, and release-train validation more
-predictable.
+Reliability, updater, and startup-polish release paired with ApplicantScout
+addon `0.4.2`. This release keeps the current QR wire format while making
+bursty applicant loads, duplicate Warcraft Logs lookups, update handoffs,
+screenshot scanning, and release-train validation more predictable.
 
 ### Improved
 
@@ -15,13 +15,28 @@ predictable.
   share a character receive cached or completed results consistently.
 - Preserved full grouped-applicant visibility while avoiding duplicate group
   marker rebuild work.
+- Hardened local RaiderIO recovery paths so invalid or partially written cache
+  files are handled cleanly instead of blocking startup.
 - Refreshed setup, trust, updater, and Warcraft Logs OAuth copy for the current
   addon/companion install flow.
 
 ### Fixed
 
+- Fixed stalled self-update handoffs so the installed companion can recover when
+  an installer launch, process handoff, or relaunch marker does not complete as
+  expected.
+- Fixed stale screenshot watcher snapshots being processed after startup, which
+  could replay old QR payloads before the current WoW session produced fresh
+  screenshots.
+- Fixed lazy raid-detail Warcraft Logs failures showing weak feedback or getting
+  stuck too long; transient failures now show clearer row state and retry after a
+  cooldown.
+- Hardened private config/cache writes on Windows by applying stricter ACL
+  handling to sensitive local files.
 - Fixed stale Warcraft Logs fetch waiters that could leave later duplicate
   requests waiting on work that had already failed or completed.
+- Hardened paired release gates so companion releases validate the required
+  addon version, release assets, and release notes before publishing.
 - Fixed release-check coverage around deterministic raid-detail retry expiry.
 
 ### Release Assets
