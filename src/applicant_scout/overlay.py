@@ -4012,6 +4012,7 @@ class OverlayWindow(QMainWindow):
             None,
         )
         if waiters is not None:
+            waiters.setdefault(fetched_identity.storage_key, fetched_identity)
             for waiter_identity in list(waiters.values()):
                 self._on_fetch_done(waiter_identity, ranks)
             return

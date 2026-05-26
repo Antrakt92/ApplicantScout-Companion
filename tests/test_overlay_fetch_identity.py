@@ -300,6 +300,48 @@ def test_same_character_party_and_applicant_fetch_coalesce_before_cache_write(
         client.close()
 
 
+def test_cache_hit_while_target_fetch_pending_applies_to_new_row(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    applicant = _app(applicant_id="42:1", name="Scout-RealmA", fetch_status="pending")
+    member = _member(
+        applicant_id="scout-realma",
+        name="Scout-RealmA",
+        fetch_status="pending",
+    )
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(applicant)
+        assert len(queued_pool.tasks) == 1
+        identity = queued_pool.tasks[0]._identity
+        window._cache.put(
+            "Scout",
+            identity.server_slug,
+            identity.region,
+            identity.spec_id,
+            _ranks(),
+            identity.metric_role,
+            identity.metric_preferences,
+        )
+
+        window._launch_fetch(member)
+
+        assert applicant.fetch_status == "ready"
+        assert member.fetch_status == "ready"
+        assert applicant.mplus_dps == 77.0
+        assert member.mplus_dps == 77.0
+        assert window._fetches_in_flight == {}
+        assert window._fetch_waiters_by_target == {}
+        assert len(queued_pool.tasks) == 1
+    finally:
+        client.close()
+
+
 def test_disabling_metrics_clears_coalesced_fetch_waiters(qtbot, tmp_path):
     disabled = MetricPreferences(
         mplus=False,
