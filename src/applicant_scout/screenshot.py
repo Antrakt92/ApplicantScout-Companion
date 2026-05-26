@@ -243,12 +243,6 @@ def _iter_qr_symbol_data_batches(image_path: Path) -> Iterator[list[bytes]]:
         _log.debug("Image.open failed %s: %s", image_path.name, e)
 
 
-def _decode_qr_symbol_data(image_path: Path) -> list[bytes]:
-    for payloads in _iter_qr_symbol_data_batches(image_path):
-        return payloads
-    return []
-
-
 def _decode_legacy_hex_qr(data: bytes) -> Optional[bytes]:
     try:
         decoded = bytes.fromhex(data.decode("ascii"))

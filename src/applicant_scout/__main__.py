@@ -1612,11 +1612,6 @@ class _WatcherSignalGate:
         if self._pending_generation == generation:
             self._pending_generation = None
 
-    def activate_next(self) -> int:
-        generation = self.prepare_next()
-        self.commit(generation)
-        return generation
-
     def restore(self, generation: int) -> None:
         self._generation = generation
         self._pending_generation = None

@@ -857,6 +857,62 @@ class WCLClient:
             if auth_generation == self._auth_generation:
                 self._network_retry_until = time.time() + WCL_NETWORK_RETRY_SECONDS
 
+    def _post_graphql_with_auth_retry(
+        self,
+        auth: WCLAuth,
+        auth_generation: int,
+        body: dict[str, object],
+    ) -> httpx.Response:
+        for attempt in range(2):
+            try:
+                token = auth.get_token()
+            except (httpx.TimeoutException, httpx.RequestError):
+                self._set_network_retry_if_current(auth_generation)
+                raise
+            try:
+                resp = self._http.post(
+                    WCL_API_URL,
+                    json=body,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            except (httpx.TimeoutException, httpx.RequestError):
+                self._set_network_retry_if_current(auth_generation)
+                raise
+            if resp.status_code == 401 and attempt == 0:
+                with self._quota_lock:
+                    is_current_auth = auth_generation == self._auth_generation
+                if is_current_auth:
+                    auth.invalidate()
+                continue
+            if resp.status_code in (401, 403):
+                raise WCLApiError(
+                    f"Authentication failed (HTTP {resp.status_code})",
+                    error_kind=WCL_ERROR_AUTH,
+                )
+            if resp.status_code == 429:
+                with self._quota_lock:
+                    if auth_generation == self._auth_generation:
+                        self._rate_limited_until = time.time() + 300
+                raise WCLApiError(
+                    "Rate limited (HTTP 429) — cooldown 5min",
+                    error_kind=WCL_ERROR_RATE_LIMITED,
+                )
+            if resp.status_code >= 500:
+                with self._quota_lock:
+                    if auth_generation == self._auth_generation:
+                        self._server_retry_until = time.time() + WCL_SERVER_RETRY_SECONDS
+                raise WCLApiError(
+                    f"Server error (HTTP {resp.status_code})",
+                    error_kind=WCL_ERROR_SERVER,
+                )
+            if resp.status_code != 200:
+                raise WCLApiError(
+                    f"Unexpected HTTP {resp.status_code}: {resp.text[:200]}",
+                    error_kind=WCL_ERROR_HTTP,
+                )
+            return resp
+        raise WCLApiError("Authentication failed (HTTP 401)", error_kind=WCL_ERROR_AUTH)
+
     def fetch_character_ranks(
         self,
         name: str,
@@ -964,55 +1020,7 @@ class WCLClient:
                 variables["raidMetric"] = raid_metric
             body = {"query": query, "variables": variables}
 
-            for attempt in range(2):
-                try:
-                    token = auth.get_token()
-                except (httpx.TimeoutException, httpx.RequestError):
-                    self._set_network_retry_if_current(auth_generation)
-                    raise
-                try:
-                    resp = self._http.post(
-                        WCL_API_URL,
-                        json=body,
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                except (httpx.TimeoutException, httpx.RequestError):
-                    self._set_network_retry_if_current(auth_generation)
-                    raise
-                if resp.status_code == 401 and attempt == 0:
-                    with self._quota_lock:
-                        is_current_auth = auth_generation == self._auth_generation
-                    if is_current_auth:
-                        auth.invalidate()
-                    continue
-                if resp.status_code in (401, 403):
-                    raise WCLApiError(
-                        f"Authentication failed (HTTP {resp.status_code})",
-                        error_kind=WCL_ERROR_AUTH,
-                    )
-                if resp.status_code == 429:
-                    with self._quota_lock:
-                        if auth_generation == self._auth_generation:
-                            self._rate_limited_until = time.time() + 300
-                    raise WCLApiError(
-                        "Rate limited (HTTP 429) — cooldown 5min",
-                        error_kind=WCL_ERROR_RATE_LIMITED,
-                    )
-                if resp.status_code >= 500:
-                    with self._quota_lock:
-                        if auth_generation == self._auth_generation:
-                            self._server_retry_until = time.time() + WCL_SERVER_RETRY_SECONDS
-                    raise WCLApiError(
-                        f"Server error (HTTP {resp.status_code})",
-                        error_kind=WCL_ERROR_SERVER,
-                    )
-                if resp.status_code != 200:
-                    raise WCLApiError(
-                        f"Unexpected HTTP {resp.status_code}: {resp.text[:200]}",
-                        error_kind=WCL_ERROR_HTTP,
-                    )
-                break
-
+            resp = self._post_graphql_with_auth_retry(auth, auth_generation, body)
             data = _json_object_response(resp, WCLApiError, "WCL response")
             graphql_errors = _graphql_errors(data.get("errors"))
             # Update quota snapshot regardless of errors — rateLimitData is at
@@ -1170,56 +1178,7 @@ class WCLClient:
                     "specName": spec_name,
                 },
             }
-            for attempt in range(2):
-                try:
-                    token = auth.get_token()
-                except (httpx.TimeoutException, httpx.RequestError):
-                    self._set_network_retry_if_current(auth_generation)
-                    raise
-                try:
-                    resp = self._http.post(
-                        WCL_API_URL,
-                        json=body,
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                except (httpx.TimeoutException, httpx.RequestError):
-                    self._set_network_retry_if_current(auth_generation)
-                    raise
-                if resp.status_code == 401 and attempt == 0:
-                    with self._quota_lock:
-                        is_current_auth = auth_generation == self._auth_generation
-                    if is_current_auth:
-                        auth.invalidate()
-                    continue
-                if resp.status_code in (401, 403):
-                    raise WCLApiError(
-                        f"Authentication failed (HTTP {resp.status_code})",
-                        error_kind=WCL_ERROR_AUTH,
-                    )
-                if resp.status_code == 429:
-                    with self._quota_lock:
-                        if auth_generation == self._auth_generation:
-                            self._rate_limited_until = time.time() + 300
-                    raise WCLApiError(
-                        "Rate limited (HTTP 429) — cooldown 5min",
-                        error_kind=WCL_ERROR_RATE_LIMITED,
-                    )
-                if resp.status_code >= 500:
-                    with self._quota_lock:
-                        if auth_generation == self._auth_generation:
-                            self._server_retry_until = (
-                                time.time() + WCL_SERVER_RETRY_SECONDS
-                            )
-                    raise WCLApiError(
-                        f"Server error (HTTP {resp.status_code})",
-                        error_kind=WCL_ERROR_SERVER,
-                    )
-                if resp.status_code != 200:
-                    raise WCLApiError(
-                        f"Unexpected HTTP {resp.status_code}: {resp.text[:200]}",
-                        error_kind=WCL_ERROR_HTTP,
-                    )
-                break
+            resp = self._post_graphql_with_auth_retry(auth, auth_generation, body)
             data = _json_object_response(resp, WCLApiError, "WCL response")
             data_root = data.get("data")
             if not isinstance(data_root, dict):

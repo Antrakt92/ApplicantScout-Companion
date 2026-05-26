@@ -61,10 +61,6 @@ def companion_launch_spec() -> LaunchSpec:
     return LaunchSpec(Path(sys.executable), ("-m", "applicant_scout"))
 
 
-def companion_executable_path() -> Path:
-    return companion_launch_spec().executable
-
-
 def is_wow_running(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
     """Return True when a retail/classic WoW process is visible to this user."""
     try:

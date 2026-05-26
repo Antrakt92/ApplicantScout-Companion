@@ -217,9 +217,6 @@ class AppState:
     def remove_party_member(self, member_id: str) -> None:
         self.party_members.pop(member_id, None)
 
-    def clear_party(self) -> None:
-        self.party_members.clear()
-
     def count(self) -> int:
         return len(self.applicants)
 
