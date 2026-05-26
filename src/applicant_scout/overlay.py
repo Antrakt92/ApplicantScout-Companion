@@ -3728,7 +3728,7 @@ class OverlayWindow(QMainWindow):
                 else f"{row_source}:{applicant.applicant_id}"
             )
             if not metric_preferences.any_enabled:
-                self._fetches_in_flight.pop(storage_key, None)
+                self._discard_fetch_by_storage_key(storage_key)
                 applicant.clear_wcl_data(fetch_status="ready")
                 continue
             effective_preferences = effective_wcl_preferences_for_spec(
@@ -3736,7 +3736,7 @@ class OverlayWindow(QMainWindow):
                 metric_preferences,
             )
             if not effective_preferences.any_enabled:
-                self._fetches_in_flight.pop(storage_key, None)
+                self._discard_fetch_by_storage_key(storage_key)
                 applicant.clear_wcl_data(fetch_status="ready")
                 continue
             applicant.project_wcl_data_to_preferences(effective_preferences)
@@ -3769,11 +3769,23 @@ class OverlayWindow(QMainWindow):
         return self._fetches_in_flight.get(applicant_id)
 
     def _mark_fetch_in_flight(self, identity: _FetchIdentity) -> None:
+        self._discard_fetch_by_storage_key(identity.storage_key)
         self._fetches_in_flight[identity.storage_key] = identity
 
     def _discard_fetch_if_current(self, identity: _FetchIdentity) -> None:
         if self._fetches_in_flight.get(identity.storage_key) == identity:
-            self._fetches_in_flight.pop(identity.storage_key, None)
+            self._discard_fetch_by_storage_key(identity.storage_key)
+
+    def _discard_fetch_by_storage_key(self, storage_key: str) -> None:
+        identity = self._fetches_in_flight.pop(storage_key, None)
+        if identity is None:
+            return
+        waiters = self._fetch_waiters_by_target.get(identity.network_key)
+        if waiters is None:
+            return
+        waiters.pop(storage_key, None)
+        if not waiters:
+            self._fetch_waiters_by_target.pop(identity.network_key, None)
 
     def _mark_fetch_waiting_on_target(self, identity: _FetchIdentity) -> None:
         self._fetch_waiters_by_target.setdefault(identity.network_key, {})[

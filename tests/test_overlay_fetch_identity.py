@@ -300,6 +300,47 @@ def test_same_character_party_and_applicant_fetch_coalesce_before_cache_write(
         client.close()
 
 
+def test_disabling_metrics_clears_coalesced_fetch_waiters(qtbot, tmp_path):
+    disabled = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    applicant = _app(applicant_id="42:1", name="Scout-RealmA", fetch_status="pending")
+    member = _member(
+        applicant_id="scout-realma",
+        name="Scout-RealmA",
+        fetch_status="pending",
+    )
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(applicant)
+        window._launch_fetch(member)
+        assert len(queued_pool.tasks) == 1
+        assert window._fetch_waiters_by_target
+
+        window.apply_metric_preferences(disabled)
+
+        assert window._fetches_in_flight == {}
+        assert window._fetch_waiters_by_target == {}
+        window._on_fetch_done(
+            queued_pool.tasks[0]._identity,
+            CharacterRanks.empty(error="WCL server error", error_kind=WCL_ERROR_SERVER),
+        )
+        assert applicant.fetch_status == "ready"
+        assert member.fetch_status == "ready"
+    finally:
+        client.close()
+
+
 def test_fetch_task_refetches_when_cache_generation_changes_after_hit():
     identity = _FetchIdentity(
         applicant_id="42:1",
@@ -1459,6 +1500,8 @@ def test_metric_broadening_allows_broader_fetch_when_narrow_fetch_in_flight(
         assert broad_identity is not None
         assert broad_identity != narrow_identity
         assert broad_identity.metric_preferences == ALL_METRIC_PREFERENCES
+        assert narrow_identity.network_key not in window._fetch_waiters_by_target
+        assert broad_identity.network_key in window._fetch_waiters_by_target
     finally:
         client.close()
 
@@ -1741,6 +1784,11 @@ def test_wcl_runtime_generation_bump_refetches_party_members(qtbot, tmp_path):
     window, client = _window(qtbot, tmp_path, state)
 
     try:
+        window._launch_fetch(member)
+        old_identity = window._fetches_in_flight.get(f"party:{member.applicant_id}")
+        assert old_identity is not None
+        assert old_identity.network_key in window._fetch_waiters_by_target
+
         window.bump_wcl_runtime_generation()
         identity = window._current_fetch_identity_for(member)
 
@@ -1751,6 +1799,8 @@ def test_wcl_runtime_generation_bump_refetches_party_members(qtbot, tmp_path):
         assert identity.row_source == "party"
         assert identity.runtime_generation == 1
         assert identity.storage_key in window._fetches_in_flight
+        assert old_identity.network_key not in window._fetch_waiters_by_target
+        assert identity.network_key in window._fetch_waiters_by_target
     finally:
         client.close()
 
