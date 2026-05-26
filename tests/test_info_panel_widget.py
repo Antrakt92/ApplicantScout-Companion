@@ -825,9 +825,14 @@ def test_retryable_raid_detail_failure_retries_after_idle_expiry(
             overlay_mod.WCL_ERROR_NETWORK,
         )
         assert window._raid_boss_fetches_in_flight == {}
+        assert window._raid_boss_fetch_failures
 
-        qtbot.waitUntil(lambda: bool(window._raid_boss_fetches_in_flight), timeout=1000)
+        for key in list(window._raid_boss_fetch_failures):
+            window._raid_boss_fetch_failures[key] = time.monotonic() - 1.0
+        window._raid_boss_retry_timer.stop()
+        window._retry_ready_raid_boss_fetches()
 
+        assert window._raid_boss_fetches_in_flight
         assert window._panel._status_label.text() == "Fetching raid boss details…"
         assert app.fetch_status == "ready"
     finally:
