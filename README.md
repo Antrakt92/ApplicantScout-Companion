@@ -1,14 +1,14 @@
-# Applicant Scout Companion
+# ApplicantScout Companion
 
 > [!IMPORTANT]
-> Applicant Scout Companion is the **required second half** of ApplicantScout.
+> ApplicantScout Companion is the **required second half** of ApplicantScout.
 > The WoW addon captures applicant data; this companion decodes the screenshots
 > and shows the Warcraft Logs / RaiderIO parse overlay. Install the
 > [latest ApplicantScout addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest)
 > too.
 
-Personal-tool overlay showing Warcraft Logs raid and Mythic+ percentiles for
-players who apply to your WoW Mythic+ listing.
+Windows companion overlay showing Warcraft Logs, RaiderIO, raid-fit, and
+Mythic+ fit context for players who apply to your WoW Group Finder listing.
 
 Pairs with the [ApplicantScout](https://github.com/Antrakt92/ApplicantScout-Addon)
 WoW addon. The addon renders a QR code in-game and triggers screenshots while
@@ -18,14 +18,17 @@ the overlay.
 
 ## Quick Start
 
-1. Install the WoW addon side: download the packaged `ApplicantScout-*.zip`
-   from [the latest addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest),
-   then extract it so the TOC is at
+1. Install the WoW addon through CurseForge, or download the packaged
+   `ApplicantScout-*.zip` from
+   [the latest addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest)
+   and extract it so the TOC is at
    `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`. Do not use
    GitHub's automatic source-code ZIP for normal installs; it extracts to the
-   wrong folder name for WoW. Reload WoW after installing or updating the addon.
+   wrong folder name for WoW.
 2. Install ApplicantScout Companion from
    [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest).
+   Use the Windows installer asset named `ApplicantScoutCompanionSetup-*.exe`;
+   the portable ZIP is mainly for manual/dev use.
 3. Get Warcraft Logs API credentials:
    1. Open https://www.warcraftlogs.com/api/clients/.
    2. Click **Create Client**.
@@ -40,8 +43,20 @@ the overlay.
    ![Warcraft Logs Create Client form](docs/images/wcl-create-client.jpg)
 4. Launch ApplicantScout Companion from the Start Menu. First-run setup asks
    for your WCL Client ID/Secret and the active WoW `Screenshots` folder.
-5. In WoW, enable ApplicantScout and host an M+ listing. The overlay updates
-   when applicant snapshots arrive.
+5. Reload WoW, enable ApplicantScout, and host a Mythic+ or raid listing. The
+   overlay updates when applicant snapshots arrive.
+
+## Trust Notes
+
+- ApplicantScout Companion does not ask for Blizzard credentials or account
+  access.
+- It reads only the configured WoW `Screenshots` folder for ApplicantScout QR
+  payloads.
+- It stores Warcraft Logs API credentials locally under your Windows user
+  profile.
+- It is source-available in this public repository.
+- Current Windows builds are unsigned, so SmartScreen can warn on first install;
+  the release also publishes a `.sha256` sidecar for file integrity.
 
 ## Configuration
 
@@ -135,7 +150,7 @@ and ApplicantScout wire payloads through v7.
 
 ## Updates
 
-ApplicantScout checks for updates hourly. When an installable stable GitHub
+ApplicantScout Companion checks for updates hourly. When an installable stable GitHub
 Release is available, Settings shows a blue download button. Clicking it
 downloads the installer, verifies its `.sha256` checksum, and launches the
 silent installer from inside the app. If the companion is running, the installer

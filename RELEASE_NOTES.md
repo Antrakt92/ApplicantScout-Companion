@@ -1,5 +1,36 @@
 # ApplicantScout Companion Release Notes
 
+## 0.7.1 - 26-May-2026
+
+Reliability and startup-polish release paired with ApplicantScout addon `0.4.2`.
+This release keeps the current QR wire format while making bursty applicant
+loads, duplicate Warcraft Logs lookups, and release-train validation more
+predictable.
+
+### Improved
+
+- Reduced startup and applicant-burst stutter by deferring character-cache
+  writes and reusing decoded RaiderIO lookup payloads.
+- Coalesced duplicate Warcraft Logs post-fetch work so party/applicant rows that
+  share a character receive cached or completed results consistently.
+- Preserved full grouped-applicant visibility while avoiding duplicate group
+  marker rebuild work.
+- Refreshed setup, trust, updater, and Warcraft Logs OAuth copy for the current
+  addon/companion install flow.
+
+### Fixed
+
+- Fixed stale Warcraft Logs fetch waiters that could leave later duplicate
+  requests waiting on work that had already failed or completed.
+- Fixed release-check coverage around deterministic raid-detail retry expiry.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.4.2`.
+- Installer: `ApplicantScoutCompanionSetup-0.7.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.7.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.7.1-portable.zip`
+
 ## 0.7.0 - 24-May-2026
 
 Raid-fit and Party-focus release paired with ApplicantScout addon `0.4.1`.
