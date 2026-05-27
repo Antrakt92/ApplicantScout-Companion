@@ -618,7 +618,7 @@ def _ranks_for_graphql_errors(
     )
 
 
-def _mplus_alias_payload(char: dict, alias: str) -> dict:
+def _ranking_alias_payload(char: dict, alias: str) -> dict:
     if alias not in char:
         raise WCLApiError(
             f"Malformed WCL response: {alias} is missing",
@@ -646,6 +646,30 @@ def _mplus_alias_payload(char: dict, alias: str) -> dict:
             error_kind=WCL_ERROR_MALFORMED,
         )
     return enc_data
+
+
+def _mplus_alias_payload(char: dict, alias: str) -> dict:
+    return _ranking_alias_payload(char, alias)
+
+
+def _raid_zone_alias_payload(char: dict, alias: str) -> dict:
+    if alias not in char:
+        raise WCLApiError(
+            f"Malformed WCL response: {alias} is missing",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    zone_data = char.get(alias)
+    if zone_data is None:
+        raise WCLApiError(
+            f"Malformed WCL response: {alias} is null",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    if not isinstance(zone_data, dict):
+        raise WCLApiError(
+            f"Malformed WCL response: {alias} is not an object",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    return zone_data
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -1090,31 +1114,35 @@ class WCLClient:
             dps_breakdown = [] if is_healer else breakdown
             hps_breakdown = breakdown if is_healer else []
 
+            raid_normal_data = (
+                _raid_zone_alias_payload(char, "raidNormal")
+                if metric_preferences.raid_normal
+                else None
+            )
+            raid_heroic_data = (
+                _raid_zone_alias_payload(char, "raidHeroic")
+                if metric_preferences.raid_heroic
+                else None
+            )
+            raid_mythic_data = (
+                _raid_zone_alias_payload(char, "raidMythic")
+                if metric_preferences.raid_mythic
+                else None
+            )
+
             return CharacterRanks(
-                raid_normal=_zone_avg(char.get("raidNormal"))
-                if metric_preferences.raid_normal
-                else None,
-                raid_heroic=_zone_avg(char.get("raidHeroic"))
-                if metric_preferences.raid_heroic
-                else None,
-                raid_mythic=_zone_avg(char.get("raidMythic"))
-                if metric_preferences.raid_mythic
-                else None,
+                raid_normal=_zone_avg(raid_normal_data),
+                raid_heroic=_zone_avg(raid_heroic_data),
+                raid_mythic=_zone_avg(raid_mythic_data),
                 raid_normal_median=_zone_avg(
-                    char.get("raidNormal"), "medianPerformanceAverage"
-                )
-                if metric_preferences.raid_normal
-                else None,
+                    raid_normal_data, "medianPerformanceAverage"
+                ),
                 raid_heroic_median=_zone_avg(
-                    char.get("raidHeroic"), "medianPerformanceAverage"
-                )
-                if metric_preferences.raid_heroic
-                else None,
+                    raid_heroic_data, "medianPerformanceAverage"
+                ),
                 raid_mythic_median=_zone_avg(
-                    char.get("raidMythic"), "medianPerformanceAverage"
-                )
-                if metric_preferences.raid_mythic
-                else None,
+                    raid_mythic_data, "medianPerformanceAverage"
+                ),
                 mplus_dps=mplus_dps,
                 mplus_hps=mplus_hps,
                 mplus_dps_median=mplus_dps_med,
@@ -1180,8 +1208,12 @@ class WCLClient:
             }
             resp = self._post_graphql_with_auth_retry(auth, auth_generation, body)
             data = _json_object_response(resp, WCLApiError, "WCL response")
+            graphql_errors = _graphql_errors(data.get("errors"))
             data_root = data.get("data")
             if not isinstance(data_root, dict):
+                graphql_result = _ranks_for_graphql_errors(graphql_errors)
+                if graphql_result is not None and graphql_result.not_found:
+                    return {}
                 raise WCLApiError(
                     "Malformed WCL response: data is not an object",
                     error_kind=WCL_ERROR_MALFORMED,
@@ -1189,9 +1221,7 @@ class WCLClient:
             quota = _rate_limit_info_from_dict(data_root.get("rateLimitData"))
             if quota is not None:
                 self._record_quota_snapshot(quota, auth_generation=auth_generation)
-            graphql_result = _ranks_for_graphql_errors(
-                _graphql_errors(data.get("errors"))
-            )
+            graphql_result = _ranks_for_graphql_errors(graphql_errors)
             if graphql_result is not None:
                 if graphql_result.not_found:
                     return {}
@@ -1220,6 +1250,9 @@ class WCLClient:
             ):
                 if not getattr(metric_preferences, pref_name):
                     continue
+                _validate_raid_boss_detail_aliases(
+                    char, difficulty, CURRENT_RAID_ENCOUNTERS
+                )
                 parsed = _raid_boss_rows_from_character(
                     char, difficulty, CURRENT_RAID_ENCOUNTERS, spec_name
                 )
@@ -1355,6 +1388,21 @@ def _spec_norm(s: str) -> str:
     if not isinstance(s, str):
         return ""
     return s.lower().replace(" ", "")
+
+
+def _validate_raid_boss_detail_aliases(
+    char: dict,
+    difficulty_key: str,
+    encounters: list[tuple[str, int, str]] = CURRENT_RAID_ENCOUNTERS,
+) -> None:
+    alias_info = _RAID_DETAIL_DIFFICULTIES.get(difficulty_key)
+    if not alias_info:
+        return
+    alias_prefix, _wcl_difficulty, _pref_name = alias_info
+    for encounter_alias, _encounter_id, _name in encounters:
+        base = f"{alias_prefix}_{encounter_alias}"
+        _ranking_alias_payload(char, f"{base}_overall")
+        _ranking_alias_payload(char, f"{base}_ilvl")
 
 
 def _raid_boss_rows_from_character(
@@ -1669,7 +1717,9 @@ class _CacheEntry:
 # v4 = DungeonPerf carries per-key bracket summaries, not only the top key.
 # v5 = spec 1480 maps to Devourer instead of empty placeholder; pre-v5 entries
 # for that spec could contain intentionally blank M+ data.
-_CACHE_VERSION = 5
+# v6 = enabled raid aliases are strict; pre-v6 entries may contain cached empty
+# raid evidence from partial WCL responses.
+_CACHE_VERSION = 6
 
 
 class CharacterCache:

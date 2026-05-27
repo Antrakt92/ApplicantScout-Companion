@@ -308,7 +308,7 @@ def _ranks() -> CharacterRanks:
     )
 
 
-def _character(**encounters: dict) -> dict:
+def _character(**encounters: object) -> dict:
     return {
         "raidNormal": {"bestPerformanceAverage": 71.0},
         "raidHeroic": {"bestPerformanceAverage": 81.0},
@@ -317,9 +317,24 @@ def _character(**encounters: dict) -> dict:
     }
 
 
-def _character_with_empty_mplus(**encounters: dict) -> dict:
-    payload = {alias: {"ranks": []} for alias, _eid, _name in MPLUS_ENCOUNTERS}
+def _character_with_empty_mplus(**encounters: object) -> dict:
+    payload: dict[str, object] = {
+        alias: {"ranks": []} for alias, _eid, _name in MPLUS_ENCOUNTERS
+    }
     payload.update(encounters)
+    return _character(**payload)
+
+
+def _character_with_empty_raid_boss_details(
+    difficulty: str = "M", **aliases: dict
+) -> dict:
+    prefix = {"N": "raid_n", "H": "raid_h", "M": "raid_m"}[difficulty]
+    payload: dict[str, dict] = {}
+    for encounter_alias, _eid, _name in CURRENT_RAID_ENCOUNTERS:
+        base = f"{prefix}_{encounter_alias}"
+        payload[f"{base}_overall"] = {"ranks": []}
+        payload[f"{base}_ilvl"] = {"ranks": []}
+    payload.update(aliases)
     return _character(**payload)
 
 
@@ -584,7 +599,8 @@ def test_raid_boss_rows_parse_overall_and_ilvl_percentiles_by_spec():
 def test_fetch_character_raid_boss_details_returns_enabled_difficulty_rows():
     client, http = _client_for_payload(
         _wcl_payload(
-            _character(
+            _character_with_empty_raid_boss_details(
+                "M",
                 raid_m_ia_overall={"ranks": [{"spec": "Arms", "rankPercent": 46.2}]},
                 raid_m_ia_ilvl={"ranks": [{"spec": "Arms", "rankPercent": 68.4}]},
             )
@@ -632,7 +648,12 @@ def test_fetch_character_raid_boss_details_503_sets_server_retry_block(
             "Scout",
             "ravencrest",
             spec_id=71,
-            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=False,
+                raid_mythic=True,
+            ),
         )
 
     assert len(http.calls) == 1
@@ -644,7 +665,12 @@ def test_fetch_character_raid_boss_details_503_sets_server_retry_block(
             "Scout",
             "ravencrest",
             spec_id=71,
-            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=False,
+                raid_mythic=True,
+            ),
         )
 
     assert excinfo.value.error_kind == WCL_ERROR_SERVER
@@ -666,7 +692,12 @@ def test_fetch_character_raid_boss_details_network_timeout_sets_short_retry_bloc
             "Scout",
             "ravencrest",
             spec_id=71,
-            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=False,
+                raid_mythic=True,
+            ),
         )
 
     assert len(http.calls) == 1
@@ -678,7 +709,12 @@ def test_fetch_character_raid_boss_details_network_timeout_sets_short_retry_bloc
             "Scout",
             "ravencrest",
             spec_id=71,
-            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=False,
+                raid_mythic=True,
+            ),
         )
 
     assert excinfo.value.error_kind == WCL_ERROR_NETWORK
@@ -1950,11 +1986,12 @@ def test_character_cache_ignores_malformed_scope_key_entries(tmp_path):
     assert result is None
 
 
-def test_character_cache_discards_v4_entries_after_devourer_mapping_change(tmp_path):
+def test_character_cache_discards_previous_version_entries(tmp_path):
     cache = CharacterCache(tmp_path)
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
     raw = json.loads(cache._path.read_text(encoding="utf-8"))
-    raw["__version__"] = 4
+    assert raw["__version__"] == _CACHE_VERSION
+    raw["__version__"] = _CACHE_VERSION - 1
     cache._path.write_text(json.dumps(raw), encoding="utf-8")
 
     loaded = CharacterCache(tmp_path)
@@ -2528,6 +2565,282 @@ def test_fetch_character_ranks_ignores_malformed_quota():
 
     assert result.not_found is False
     assert client.last_quota is None
+
+
+def test_fetch_character_ranks_rejects_missing_enabled_raid_alias():
+    character = _character_with_empty_mplus()
+    del character["raidHeroic"]
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    with pytest.raises(WCLApiError, match="raidHeroic is missing") as exc:
+        client.fetch_character_ranks(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=True,
+                raid_mythic=False,
+            ),
+        )
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+@pytest.mark.parametrize(
+    ("alias_value", "expected_message"),
+    [
+        (None, "raidHeroic is null"),
+        ("bad", "raidHeroic is not an object"),
+        ([], "raidHeroic is not an object"),
+    ],
+)
+def test_fetch_character_ranks_rejects_malformed_enabled_raid_alias(
+    alias_value,
+    expected_message,
+):
+    character = _character_with_empty_mplus()
+    character["raidHeroic"] = alias_value
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    with pytest.raises(WCLApiError, match=expected_message) as exc:
+        client.fetch_character_ranks(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=True,
+                raid_mythic=False,
+            ),
+        )
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_fetch_character_ranks_allows_empty_enabled_raid_alias_object():
+    character = _character_with_empty_mplus()
+    character["raidHeroic"] = {}
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    result = client.fetch_character_ranks(
+        "Scout",
+        "ravencrest",
+        spec_id=71,
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+    )
+
+    assert result.error == ""
+    assert result.raid_heroic is None
+    assert result.raid_heroic_median is None
+
+
+def test_fetch_character_ranks_allows_missing_disabled_raid_alias():
+    character = _character_with_empty_mplus()
+    del character["raidNormal"]
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    result = client.fetch_character_ranks(
+        "Scout",
+        "ravencrest",
+        spec_id=71,
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+    )
+
+    assert result.error == ""
+    assert result.raid_normal is None
+    assert result.raid_heroic == pytest.approx(81.0)
+
+
+def test_fetch_character_ranks_graphql_error_precedes_malformed_raid_alias():
+    payload = _wcl_payload(
+        _character_with_empty_mplus(raidHeroic=None),
+        errors=[{"message": "Encounter not found"}],
+    )
+    client, _http = _client_for_payload(payload)
+
+    with pytest.raises(WCLApiError, match="GraphQL error: Encounter not found") as exc:
+        client.fetch_character_ranks(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=True,
+                raid_mythic=False,
+            ),
+        )
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
+
+
+def test_fetch_character_ranks_character_not_found_precedes_malformed_raid_alias():
+    payload = _wcl_payload(
+        _character_with_empty_mplus(raidHeroic=None),
+        errors=[{"message": "Could not find character"}],
+    )
+    client, _http = _client_for_payload(payload)
+
+    result = client.fetch_character_ranks(
+        "Scout",
+        "ravencrest",
+        spec_id=71,
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+    )
+
+    assert result.not_found is True
+    assert result.error == "Could not find character"
+
+
+def test_fetch_character_raid_boss_details_graphql_error_without_data_raises_graphql():
+    client, _http = _client_for_payload(
+        {"data": None, "errors": [{"message": "Encounter not found"}]}
+    )
+
+    with pytest.raises(WCLApiError, match="GraphQL error: Encounter not found") as exc:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
+
+
+def test_fetch_character_raid_boss_details_character_not_found_without_data_returns_empty():
+    client, _http = _client_for_payload(
+        {"errors": [{"message": "Could not find character"}]}
+    )
+
+    result = client.fetch_character_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        spec_id=71,
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+
+    assert result == {}
+
+
+def test_fetch_character_raid_boss_details_rejects_missing_enabled_alias():
+    character = _character_with_empty_raid_boss_details("M")
+    del character["raid_m_ia_overall"]
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    with pytest.raises(WCLApiError, match="raid_m_ia_overall is missing") as exc:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=False,
+                raid_mythic=True,
+            ),
+        )
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+@pytest.mark.parametrize(
+    ("alias_value", "expected_message"),
+    [
+        (None, "raid_m_ia_ilvl is null"),
+        ("bad", "raid_m_ia_ilvl is not an object"),
+        ({"ranks": None}, "raid_m_ia_ilvl.ranks is not a list"),
+        ({"ranks": "bad"}, "raid_m_ia_ilvl.ranks is not a list"),
+    ],
+)
+def test_fetch_character_raid_boss_details_rejects_malformed_enabled_alias(
+    alias_value,
+    expected_message,
+):
+    character = _character_with_empty_raid_boss_details(
+        "M", raid_m_ia_ilvl=alias_value
+    )
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    with pytest.raises(WCLApiError, match=expected_message) as exc:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=False,
+                raid_mythic=True,
+            ),
+        )
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_fetch_character_raid_boss_details_allows_empty_enabled_boss_detail_ranks():
+    client, _http = _client_for_payload(
+        _wcl_payload(_character_with_empty_raid_boss_details("M"))
+    )
+
+    rows = client.fetch_character_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        spec_id=71,
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+
+    assert rows == {}
+
+
+def test_fetch_character_raid_boss_details_graphql_error_precedes_missing_detail_alias():
+    character = _character_with_empty_raid_boss_details("M")
+    del character["raid_m_ia_overall"]
+    payload = _wcl_payload(character, errors=[{"message": "Encounter not found"}])
+    client, _http = _client_for_payload(payload)
+
+    with pytest.raises(WCLApiError, match="GraphQL error: Encounter not found") as exc:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(
+                mplus=False,
+                raid_normal=False,
+                raid_heroic=False,
+                raid_mythic=True,
+            ),
+        )
+
+    assert exc.value.error_kind == WCL_ERROR_GRAPHQL
 
 
 @pytest.mark.parametrize(
