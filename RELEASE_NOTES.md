@@ -2,11 +2,40 @@
 
 ## Unreleased
 
-### Fixed
+### Changed
 
 - Added APS1 v8 QR decoding flags so temporary LFG-read lockdown snapshots can
   refresh roster/version state without clearing active listing/applicant rows,
   while explicit terminal clears remain authoritative.
+- Made unsigned companion updates manual-install only until a trusted signed
+  installer path is configured; checksum sidecars remain integrity checks, not
+  publisher identity.
+
+### Improved
+
+- Improved raid listing display by keeping target raid evidence distinct from
+  supporting M+ context and showing per-boss raid parse segments more clearly.
+- Improved tray/settings restore behavior so tray-opened overlay windows can
+  return to focus without requiring WoW to be the foreground window.
+- Improved Settings accessibility and tooltips for support, update, and close
+  controls.
+- Hardened release preparation and publishing gates with explicit visual smoke
+  mode, existing-release refusal, tag ancestry checks, portable ZIP validation,
+  paired tag-push guidance, and paired asset checks.
+
+### Fixed
+
+- Fixed addon-side GitHub checks using the companion wrapper so they pass the
+  explicit smoke visual-fixture mode instead of accidentally running strict
+  overlay baseline comparisons after intentional UI changes.
+- Fixed WoW lifecycle shutdown handling so the companion does not quit until the
+  startup watcher has been re-armed successfully.
+- Fixed preserved applicant and Warcraft Logs state being reused across LFG
+  region/default-realm identity changes.
+- Hardened local RaiderIO fallback handling so temporary lookup/cache failures
+  preserve existing character evidence when the applicant identity is unchanged.
+- Fixed malformed or incomplete Warcraft Logs raid alias responses being treated
+  as valid empty raid evidence.
 
 ## 0.7.1 - 26-May-2026
 

@@ -1,35 +1,57 @@
 # ApplicantScout Companion
 
+<p>
+  <a href="https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest"><img alt="Latest companion release" src="https://img.shields.io/github/v/release/Antrakt92/ApplicantScout-Companion?style=for-the-badge"></a>
+  <a href="https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest"><img alt="WoW addon required" src="https://img.shields.io/badge/WoW%20addon-required-ff5e7a?style=for-the-badge"></a>
+  <img alt="Windows overlay" src="https://img.shields.io/badge/Windows-overlay-00b8ff?style=for-the-badge">
+  <img alt="Warcraft Logs plus RaiderIO" src="https://img.shields.io/badge/WCL%20%2B%20RaiderIO-context-7c5cff?style=for-the-badge">
+</p>
+
+> The Windows overlay that turns ApplicantScout QR screenshots into Warcraft
+> Logs, RaiderIO, raid-fit, Mythic+ fit, and current-roster context.
+
+ApplicantScout Companion is the required second half of
+[ApplicantScout](https://github.com/Antrakt92/ApplicantScout-Addon). The WoW
+addon captures Group Finder applicants and current party/raid rosters through
+normal screenshots; the companion decodes those screenshots, fetches Warcraft
+Logs data, reads optional local RaiderIO context, and renders the overlay.
+
+<p align="center">
+  <img src="docs/visual/overlay-polish-fixture.png" alt="ApplicantScout Companion applicant overlay with key fit and grouped applicant context" width="45%">
+  <img src="docs/visual/overlay-polish-fixture-party-manual-key.png" alt="ApplicantScout Companion Party view with roster context and manual key calibration" width="45%">
+</p>
+
 > [!IMPORTANT]
-> ApplicantScout Companion is the **required second half** of ApplicantScout.
-> The WoW addon captures applicant data; this companion decodes the screenshots
-> and shows the Warcraft Logs / RaiderIO parse overlay. Install the
-> [latest ApplicantScout addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest)
-> too.
+> Install both pieces:
+>
+> 1. [ApplicantScout WoW addon](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest)
+> 2. [ApplicantScout Companion for Windows](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest)
 
-Windows companion overlay showing Warcraft Logs, RaiderIO, raid-fit, and
-Mythic+ fit context for players who apply to your WoW Group Finder listing.
+## What You Get
 
-Pairs with the [ApplicantScout](https://github.com/Antrakt92/ApplicantScout-Addon)
-WoW addon. The addon renders a QR code in-game and triggers screenshots while
-you are hosting a listing. This companion watches the WoW `Screenshots` folder,
-decodes ApplicantScout `APS1` QR payloads, queries Warcraft Logs, and renders
-the overlay.
+- **Applicant overlay:** WCL, RaiderIO, role, item level, raid/M+ context, and
+  fit cells while your listing fills.
+- **Party view:** current party/raid roster context a few moments after invites
+  or after you join someone else's group.
+- **Grouped-applicant handling:** package-level fit without hiding each
+  character's own evidence.
+- **Raid and M+ aware scoring:** raid listings keep raid evidence primary; M+
+  listings focus on target-key fit and dungeon history.
+- **Missing-evidence states:** no logs and single-run medians stay visible
+  instead of pretending to be stable signal.
+- **Local-first setup:** WCL credentials, cache, logs, and settings stay under
+  your Windows user profile.
 
 ## Quick Start
 
-1. Install the WoW addon through CurseForge, or download the packaged
-   `ApplicantScout-*.zip` from
-   [the latest addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest)
-   and extract it so the TOC is at
-   `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`. Do not use
-   GitHub's automatic source-code ZIP for normal installs; it extracts to the
-   wrong folder name for WoW.
+1. Install the WoW addon through CurseForge, or download `ApplicantScout-*.zip`
+   from [the latest addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest).
+   Do not use GitHub's automatic source-code ZIP for normal WoW installs.
 2. Install ApplicantScout Companion from
    [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest).
-   Use the Windows installer asset named `ApplicantScoutCompanionSetup-*.exe`;
-   the portable ZIP is mainly for manual/dev use.
-3. Get Warcraft Logs API credentials:
+   Use `ApplicantScoutCompanionSetup-*.exe`; the portable ZIP is mainly for
+   manual/dev use.
+3. Create Warcraft Logs API credentials:
    1. Open https://www.warcraftlogs.com/api/clients/.
    2. Click **Create Client**.
    3. Name: anything clear, for example `ApplicantScoutPersonal`.
@@ -41,34 +63,78 @@ the overlay.
    Before you click **Create**, the form should look like this:
 
    ![Warcraft Logs Create Client form](docs/images/wcl-create-client.jpg)
-4. Launch ApplicantScout Companion from the Start Menu. First-run setup asks
-   for your WCL Client ID/Secret and the active WoW `Screenshots` folder.
-5. Reload WoW, enable ApplicantScout, and host a Mythic+ or raid listing. The
-   overlay updates when applicant snapshots arrive.
+4. Launch ApplicantScout Companion from the Start Menu. First-run setup asks for
+   your WCL Client ID/Secret and the active WoW `_retail_\Screenshots` folder.
+5. Reload WoW, enable ApplicantScout, then host a Mythic+ or raid listing or
+   join a group. The overlay updates when applicant or roster snapshots arrive.
 
-## Trust Notes
+## How The Companion Fits
 
-- ApplicantScout Companion does not ask for Blizzard credentials or account
-  access.
-- It reads only the configured WoW `Screenshots` folder for ApplicantScout QR
-  payloads.
-- It stores Warcraft Logs API credentials locally under your Windows user
-  profile.
-- It is source-available in this public repository.
-- Current Windows builds are unsigned, so SmartScreen can warn on first install;
-  the release also publishes a `.sha256` sidecar. The `.sha256` sidecar verifies
-  file integrity, not publisher identity.
+WoW addons cannot query Warcraft Logs directly from inside the game client, so
+ApplicantScout is split intentionally:
 
-## Configuration
+- The addon watches Blizzard UI state and emits compact `APS1` QR snapshots.
+- WoW writes normal screenshots.
+- The companion watches only the configured Screenshots folder, decodes
+  ApplicantScout QR payloads, fetches WCL data, reads optional local RaiderIO
+  data, and updates the overlay.
+
+The QR frame appears only during the screenshot capture window so it stays out
+of the way between snapshots.
+
+## Overlay Data
+
+The overlay shows a context-aware numeric fit score for the hosted key or raid,
+coloured with the Warcraft Logs percentile palette, package ratings for grouped
+applicants, and raw WCL raid/M+ percentiles as supporting evidence. Raid
+listings place the fit signal in the matching Normal/Heroic/Mythic column,
+while M+ listings focus on the target key and dungeon history.
+
+The RIO column shows the applying character's current score. If the RaiderIO
+addon is installed in WoW and exposes a higher current-season main score for an
+alt, the overlay can display `current [main]` and use the stronger context for
+sorting fallback support. RaiderIO dungeon summaries and highest timed keys
+also feed the M+ scorecard and hover/detail context when local RaiderIO data is
+available.
+
+Party view can use the current group leader's keystone as the automatic Mythic+
+target key. A manual Party key override still takes priority, raid contexts
+ignore leader-key calibration, and manually clicking Party keeps the overlay
+there while you review the group.
+
+## Trust And Local Data
+
+ApplicantScout Companion does not ask for Blizzard credentials or account
+access. It does not read WoW memory, inject code, automate gameplay, or send
+chat messages for transport.
+
+Local files:
+
+- Config and WCL Client ID/Secret:
+  `%LOCALAPPDATA%\applicant-scout\config\config.env`
+- OAuth token cache and WCL character cache:
+  `%LOCALAPPDATA%\applicant-scout\cache\`
+- Logs:
+  `%LOCALAPPDATA%\applicant-scout\logs\`
+
+Do not include `config.env`, `token.json`, or full logs in public bug reports
+unless you have removed credentials, access tokens, character names, and realm
+details you consider private.
+
+Current Windows builds are unsigned, so SmartScreen can warn on first install.
+The release also publishes a `.sha256` sidecar for file integrity, not publisher
+identity.
+
+## Settings
 
 Use the Settings button in the companion title bar to edit WCL credentials,
 region fallback, screenshots path, WCL data scope, WoW lifecycle sync, cache,
-or logs. Settings save automatically as you change them. When the system tray is
-available, closing the settings window hides it back to the tray; use the tray
-menu's **Quit ApplicantScout** action to close the companion completely. If the
-system tray is unavailable, closing Settings quits the companion so it cannot
-keep running without a visible control surface. Settings are stored locally
-under `%LOCALAPPDATA%\applicant-scout\config\config.env`.
+or logs. Settings save automatically as you change them.
+
+When the system tray is available, closing the settings window hides it back to
+the tray; use the tray menu's **Quit ApplicantScout** action to close the
+companion completely. If the system tray is unavailable, closing Settings quits
+the companion so it cannot keep running without a visible control surface.
 
 Developer/source runs may still use a repo-local `.env` when the local config
 file does not exist. Environment variables override both files.
@@ -87,108 +153,39 @@ APSCOUT_SYNC_WITH_WOW=0
 ```
 
 `APSCOUT_SCREENSHOTS_PATH` must point at the active WoW retail
-`_retail_\Screenshots` folder; arbitrary folders are rejected because the addon
-can only transport snapshots through WoW screenshots. `APSCOUT_REGION` is a
-startup fallback; the addon sends the live region in its version snapshot when
-available. `APSCOUT_CACHE_TTL_SECONDS` overrides the 12-hour WCL character cache
-for debugging or support sessions; leave it unset for normal use. The
-`APSCOUT_FETCH_*` flags are the same WCL data checkboxes from Settings.
-`APSCOUT_SYNC_WITH_WOW` matches the WoW lifecycle sync checkbox. First run
-defaults to M+ only and lifecycle sync off; disabled metrics are not included in
-Warcraft Logs API requests. Accepted boolean tokens are `1/0`, `true/false`,
-`yes/no`, and `on/off`; invalid boolean values stop startup instead of silently
-changing WCL quota scope or lifecycle behavior. If startup reports an invalid
-saved value, edit `%LOCALAPPDATA%\applicant-scout\config\config.env` or unset
-the overriding environment variable.
+`_retail_\Screenshots` folder. `APSCOUT_FETCH_*` flags match the WCL data
+checkboxes from Settings. Disabled metrics are not included in Warcraft Logs
+API requests.
+
+## Updates
+
+ApplicantScout Companion checks for updates hourly. When an installable stable
+GitHub Release is available, Settings shows a blue download button. Clicking it
+downloads the installer and verifies its `.sha256` checksum.
+
+In-app launch also requires a trusted signed installer; unsigned builds must be
+installed manually from the GitHub Release page. If the companion is running,
+the installer closes it and relaunches it after the update. Portable ZIP
+artifacts are published for manual/dev use but are not launched by the in-app
+updater.
+
+Normal installs use the per-user directory
+`%LOCALAPPDATA%\Programs\ApplicantScout Companion`, so routine installs and
+updates should not require UAC elevation.
 
 ## In-Game Commands
 
 ```text
 /apscout on | off       enable or disable capture
-/apscout toggle         flip enabled state
 /apscout config         open or close the settings panel
 /apscout status         show current state and QR diagnostics
 /apscout playstyle [off|learning|relaxed|competitive|carry] set M+ default playstyle
 /apscout reset          clear transport cache and queue a fresh snapshot
 /apscout shotnow        force a snapshot now while enabled
-/apscout qrvisible      keep the QR frame visible for debugging
 /apscout qrmove         toggle QR move mode; Alt+drag the QR frame
 /apscout qrreset        reset QR frame position to top-left
-/apscout taintcheck     inspect LFG field secret-tagging diagnostics
 /apscout debug [on|off] toggle debug logging
-/apscout competitive [on|off] legacy alias for Competitive / Off
 ```
-
-## Overlay Data
-
-The overlay shows a context-aware numeric fit score for the hosted key or raid,
-coloured with the Warcraft Logs percentile palette, package ratings for grouped
-applicants who are accepted together, and raw WCL raid/M+ percentiles as
-supporting evidence. Raid listings place the fit signal in the matching
-Normal/Heroic/Mythic column, while the M+ column stays a neutral support signal.
-Healer M+ rows use HPS; tank and damage rows use DPS. `N=1` marks a single logged
-run at that key, so there is no median signal.
-
-The RIO column shows the applying character's current score. If the RaiderIO
-addon is installed in WoW and exposes a higher current-season main score for an
-alt, the overlay displays `current [main]` and uses the higher score for
-sorting fallback support. Starting with ApplicantScout addon wire v5, RaiderIO's
-per-dungeon completed-key summary and highest timed keys feed the M+ scorecard
-and hover panel so missing logs stay unknown, weak relevant logs count against
-the applicant, and strong near-target logs can beat dry key completion.
-If RaiderIO is missing or has no profile for that character, the overlay falls
-back to the applying character's score and available logs.
-
-Starting with ApplicantScout addon wire v7, the Party view can use the current
-group leader's keystone as the automatic Mythic+ target key. A manual Party key
-override still takes priority, raid contexts ignore leader-key calibration, and
-manually clicking Party keeps the overlay there while you review the group.
-
-## Version Compatibility
-
-ApplicantScout Companion supports the latest published ApplicantScout WoW addon
-release. This source tree also supports ApplicantScout wire payloads through v8.
-
-## Updates
-
-ApplicantScout Companion checks for updates hourly. When an installable stable GitHub
-Release is available, Settings shows a blue download button. Clicking it
-downloads the installer and verifies its `.sha256` checksum. In-app launch also
-requires a trusted signed installer; unsigned builds must be installed manually
-from the GitHub Release page. If the companion is running, the installer closes
-it and relaunches it after the update. Portable ZIP artifacts are published for
-manual/dev use but are not launched by the in-app updater.
-
-Normal installs use the per-user directory
-`%LOCALAPPDATA%\Programs\ApplicantScout Companion`, so routine installs and
-updates should not require UAC elevation. Current unsigned builds can still
-trigger Windows SmartScreen or antivirus warnings until a code-signing path is
-chosen.
-
-## Support
-
-Use GitHub Issues in `Antrakt92/ApplicantScout-Companion` for companion
-setup, installer, WCL, or overlay issues and `Antrakt92/ApplicantScout-Addon` for
-in-game addon issues. Keep support links out of the in-game addon UI.
-
-## Local Data And Security
-
-ApplicantScout does not read WoW memory, inject code, automate gameplay, or send
-chat messages for transport. The addon renders QR snapshots and triggers normal
-WoW screenshots; the companion reads only files in the configured Screenshots
-folder.
-
-Local files:
-
-- Config and WCL Client ID/Secret:
-  `%LOCALAPPDATA%\applicant-scout\config\config.env`
-- OAuth token cache and WCL character cache:
-  `%LOCALAPPDATA%\applicant-scout\cache\`
-- Logs: `%LOCALAPPDATA%\applicant-scout\logs\`
-
-Do not include `config.env`, `token.json`, or full logs in public bug reports
-unless you have removed credentials, access tokens, character names, and realm
-details you consider private.
 
 ## Troubleshooting
 
@@ -196,23 +193,23 @@ details you consider private.
   confirm the `Screenshots:` line points at the active `_retail_\Screenshots`
   folder.
 - Want the companion to follow your game session: enable
-  `Start and stop with WoW` in Settings. This starts a watcher for the current
-  Windows session, applies immediately, and also adds a per-user Startup
-  shortcut for future sign-ins.
+  `Start and stop with WoW` in Settings.
 - Companion reports a screenshot setup error: open Settings and set the active
   `_retail_\Screenshots` folder. If `APSCOUT_SCREENSHOTS_PATH` is set as a
-  process environment variable, correct or remove that override first; saved
-  Settings cannot override the process environment.
+  process environment variable, correct or remove that override first.
 - WoW side looks idle: run `/apscout status` and check that ApplicantScout is
-  enabled while you are hosting a listing.
+  enabled while you are hosting a listing or reviewing Party view.
 - Need a manual sync: keep ApplicantScout enabled and run `/apscout shotnow`;
   if applicant state looks stale, run `/apscout reset` while transport is active.
 - WCL cells stay empty: open Settings and use Test WCL.
 - Screenshot cleanup is marker-safe: the watcher deletes only screenshots that
   decode to an ApplicantScout `APS1` payload. Manual screenshots and unrelated
   QR screenshots are left alone.
-- QR transport uses hex encoding first and falls back to raw byte-mode QR when
-  large snapshots would otherwise exceed QR capacity.
+
+## Version Compatibility
+
+ApplicantScout Companion supports the latest published ApplicantScout WoW addon
+release. This source tree also supports ApplicantScout wire payloads through v8.
 
 ## Development
 
@@ -233,15 +230,17 @@ build emits `dist\ApplicantScoutCompanionSetup-<version>.exe`, its matching
 the portable ZIP. Use `.\scripts\build-windows.ps1 -SkipInstaller` for a
 portable ZIP-only smoke build.
 
-The WoW addon is packaged from the `Antrakt92/ApplicantScout-Addon` repo with
-`.\scripts\package-addon.ps1`; that artifact is named
-`ApplicantScout-<version>.zip` and is separate from the companion portable ZIP.
-
 Decode a saved screenshot manually:
 
 ```powershell
 .venv\Scripts\python -m applicant_scout.screenshot C:\path\to\WoWScrnShot.jpg
 ```
+
+## Support
+
+Use GitHub Issues in `Antrakt92/ApplicantScout-Companion` for companion setup,
+installer, WCL, or overlay issues and `Antrakt92/ApplicantScout-Addon` for
+in-game addon issues. Keep support links out of the in-game addon UI.
 
 ## License
 
