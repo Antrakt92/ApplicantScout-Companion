@@ -35,8 +35,8 @@ from applicant_scout.screenshot import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-LUA_GOLDEN_HEX = FIXTURES / "aps1_v6_lua_golden.hex"
-LUA_GOLDEN_EXPECTED = FIXTURES / "aps1_v6_lua_golden.expected.json"
+LUA_GOLDEN_HEX = FIXTURES / "aps1_v8_lua_golden.hex"
+LUA_GOLDEN_EXPECTED = FIXTURES / "aps1_v8_lua_golden.expected.json"
 
 
 def _load_lua_golden_payload() -> bytes:
@@ -214,9 +214,21 @@ def _build_listing_body(*, version: int) -> bytes:
     return body
 
 
-def _wrap_payload(body: bytes, *, wire_ver: int = 0x04) -> bytes:
+def _wrap_payload(
+    body: bytes,
+    *,
+    wire_ver: int = 0x04,
+    flags: int = 0,
+    reserved2: int = 0,
+) -> bytes:
     total_len = 9 + len(body) + 4
-    framed = MAGIC + bytes([wire_ver]) + struct.pack(">H", total_len) + b"\0\0" + body
+    framed = (
+        MAGIC
+        + bytes([wire_ver])
+        + struct.pack(">H", total_len)
+        + bytes([flags, reserved2])
+        + body
+    )
     crc = zlib.crc32(framed) & 0xFFFFFFFF
     return framed + struct.pack(">I", crc)
 
@@ -439,16 +451,78 @@ def test_wire_versions_supported_pin():
     assert 0x05 in WIRE_VERSIONS_SUPPORTED
     assert 0x06 in WIRE_VERSIONS_SUPPORTED
     assert 0x07 in WIRE_VERSIONS_SUPPORTED
+    assert 0x08 in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
-def test_v8_payload_is_rejected_instead_of_parsed_as_known_version():
-    raw = _wrap_payload(_build_body([]), wire_ver=0x08)
+def test_v9_payload_is_rejected_instead_of_parsed_as_known_version():
+    raw = _wrap_payload(_build_body([]), wire_ver=0x09)
 
     snap, error = _try_parse_appscout_payload(raw)
 
     assert snap is None
-    assert error == "unsupported wire version 0x08"
+    assert error == "unsupported wire version 0x09"
+
+
+def test_v8_payload_parses_lfg_unavailable_flag():
+    body = _build_body_v7([], [])
+    raw = _wrap_payload(body, wire_ver=0x08)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert error is None
+    assert snap is not None
+    assert snap.terminal_clear is False
+    assert snap.lfg_unavailable is False
+
+    raw = _wrap_payload(body, wire_ver=0x08, flags=0x02)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert error is None
+    assert snap is not None
+    assert snap.terminal_clear is False
+    assert snap.lfg_unavailable is True
+
+
+def test_v8_payload_parses_terminal_clear_flag():
+    raw = _wrap_payload(_build_body_v7([], []), wire_ver=0x08, flags=0x01)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert error is None
+    assert snap is not None
+    assert snap.terminal_clear is True
+    assert snap.lfg_unavailable is False
+
+
+def test_v8_payload_rejects_unknown_or_conflicting_flags():
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(_build_body_v7([], []), wire_ver=0x08, flags=0x04)
+    )
+    assert snap is None
+    assert error == "unsupported APS1 v8 flags 0x04"
+
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(_build_body_v7([], []), wire_ver=0x08, flags=0x03)
+    )
+    assert snap is None
+    assert error == "terminal and LFG-unavailable flags are mutually exclusive"
+
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(_build_body_v7([], []), wire_ver=0x08, reserved2=1)
+    )
+    assert snap is None
+    assert error == "unsupported APS1 v8 reserved byte 0x01"
+
+
+def test_pre_v8_reserved_bytes_do_not_become_v8_flags():
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(_build_body_v7([], []), wire_ver=0x07, flags=0x02)
+    )
+
+    assert snap is None
+    assert error == "unsupported APS1 pre-v8 reserved bytes 0x02 0x00"
 
 
 def test_v6_roster_block_parses_current_party_members():
@@ -1056,7 +1130,7 @@ def test_decode_screenshot_accepts_raw_byte_qr_with_embedded_nul(
     assert snap.applicants == []
 
 
-def test_decode_screenshot_accepts_lua_generated_aps1_v6_golden(
+def test_decode_screenshot_accepts_lua_generated_aps1_v8_golden(
     monkeypatch, tmp_path: Path
 ):
     image_path = tmp_path / "lua_golden_qr.png"

@@ -32,8 +32,8 @@ from applicant_scout.state import AppState, WoWPlayer
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-LUA_GOLDEN_HEX = FIXTURES / "aps1_v6_lua_golden.hex"
-LUA_GOLDEN_EXPECTED = FIXTURES / "aps1_v6_lua_golden.expected.json"
+LUA_GOLDEN_HEX = FIXTURES / "aps1_v8_lua_golden.hex"
+LUA_GOLDEN_EXPECTED = FIXTURES / "aps1_v8_lua_golden.expected.json"
 
 
 def _load_lua_golden_snapshot() -> tuple[Snapshot, dict]:
@@ -399,7 +399,7 @@ def test_new_applicant_maps_rio_completion_summary():
     assert applicant.rio_summary_target_key == 14
 
 
-def test_state_machine_applies_lua_generated_aps1_v6_golden_snapshot():
+def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot():
     snap, expected = _load_lua_golden_snapshot()
     state = AppState()
     sm = StateMachine(state)
@@ -1419,6 +1419,135 @@ def test_no_listing_version_snapshot_clears_without_pending_refetch_state():
 
     assert state.listing is None
     assert state.applicants == {}
+
+
+def test_lfg_unavailable_snapshot_preserves_listing_applicants_and_applies_roster():
+    state = AppState()
+    sm = StateMachine(state)
+    cleared: list[bool] = []
+    removed: list[str] = []
+    roster_updates: list[bool] = []
+    listing_updates: list[bool] = []
+    sm.cleared.connect(lambda: cleared.append(True))
+    sm.applicantRemoved.connect(removed.append)
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+    sm.listingChanged.connect(lambda: listing_updates.append(True))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=14),
+            version=_version("Host-RealmA"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout-RealmA")],
+        )
+    )
+    state.applicants["42:1"].fetch_status = "ready"
+    state.applicants["42:1"].mplus_dps = 88.0
+    listing_updates.clear()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-RealmA"),
+            applicants=[],
+            roster=[_roster_decoded("Host-RealmA", flags=1)],
+            lfg_unavailable=True,
+        )
+    )
+
+    assert state.listing is not None
+    assert state.listing.key_level == 14
+    assert set(state.applicants) == {"42:1"}
+    assert state.applicants["42:1"].fetch_status == "ready"
+    assert state.applicants["42:1"].mplus_dps == 88.0
+    assert set(state.party_members) == {"host-realma"}
+    assert cleared == []
+    assert removed == []
+    assert listing_updates == []
+    assert roster_updates == [True]
+
+
+def test_explicit_terminal_clear_snapshot_clears_listing_applicants_and_roster():
+    state = AppState()
+    sm = StateMachine(state)
+    cleared: list[bool] = []
+    removed: list[str] = []
+    roster_updates: list[bool] = []
+    listing_updates: list[bool] = []
+    sm.cleared.connect(lambda: cleared.append(True))
+    sm.applicantRemoved.connect(removed.append)
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+    sm.listingChanged.connect(lambda: listing_updates.append(True))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=14),
+            version=_version("Host-RealmA"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout-RealmA")],
+            roster=[_roster_decoded("Host-RealmA", flags=1)],
+        )
+    )
+    listing_updates.clear()
+    roster_updates.clear()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=17),
+            version=_version("Host-RealmA"),
+            applicants=[_decoded(aid=99, member_idx=1, name="Late-RealmA")],
+            roster=[_roster_decoded("Late-RealmA", flags=0)],
+            terminal_clear=True,
+        )
+    )
+
+    assert state.listing is None
+    assert state.applicants == {}
+    assert state.party_members == {}
+    assert cleared == [True]
+    assert removed == []
+    assert listing_updates == [True]
+    assert roster_updates == [True]
+
+
+def test_explicit_terminal_clear_snapshot_clears_leader_key():
+    state = AppState()
+    sm = StateMachine(state)
+    listing_updates: list[bool] = []
+    sm.listingChanged.connect(lambda: listing_updates.append(True))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-RealmA"),
+            leader_key=DecodedLeaderKey(
+                key_level=17,
+                challenge_map_id=503,
+                player_name="Host-RealmA",
+            ),
+            roster=[_roster_decoded("Host-RealmA", flags=1)],
+        )
+    )
+    assert state.leader_key is not None
+    listing_updates.clear()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-RealmA"),
+            leader_key=DecodedLeaderKey(
+                key_level=17,
+                challenge_map_id=503,
+                player_name="Host-RealmA",
+            ),
+            applicants=[],
+            roster=[],
+            terminal_clear=True,
+        )
+    )
+
+    assert state.leader_key is None
+    assert state.listing is None
+    assert state.party_members == {}
+    assert listing_updates == [True]
 
 
 def test_member_leaves_group_remove_emitted():

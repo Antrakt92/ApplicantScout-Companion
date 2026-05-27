@@ -1,5 +1,13 @@
 # ApplicantScout Companion Release Notes
 
+## Unreleased
+
+### Fixed
+
+- Added APS1 v8 QR decoding flags so temporary LFG-read lockdown snapshots can
+  refresh roster/version state without clearing active listing/applicant rows,
+  while explicit terminal clears remain authoritative.
+
 ## 0.7.1 - 26-May-2026
 
 Reliability, updater, and startup-polish release paired with ApplicantScout

@@ -146,8 +146,8 @@ manually clicking Party keeps the overlay there while you review the group.
 
 ## Version Compatibility
 
-ApplicantScout Companion supports the latest ApplicantScout WoW addon release
-and ApplicantScout wire payloads through v7.
+ApplicantScout Companion supports the latest published ApplicantScout WoW addon
+release. This source tree also supports ApplicantScout wire payloads through v8.
 
 ## Updates
 

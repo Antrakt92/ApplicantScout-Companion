@@ -856,12 +856,16 @@ class StateMachine(QObject):
         # ─── Leader keystone ───
         old_leader_key = self._state.leader_key
         new_leader_key: LeaderKey | None = None
-        if snap.leader_key is not None and snap.leader_key.key_level > 0:
+        if snap.terminal_clear:
+            new_leader_key = None
+        elif snap.leader_key is not None and snap.leader_key.key_level > 0:
             new_leader_key = LeaderKey(
                 key_level=snap.leader_key.key_level,
                 challenge_map_id=snap.leader_key.challenge_map_id,
                 player_name=snap.leader_key.player_name,
             )
+        elif snap.lfg_unavailable and not snap.terminal_clear:
+            new_leader_key = old_leader_key
         leader_key_changed = new_leader_key != old_leader_key
         self._state.leader_key = new_leader_key
 
@@ -879,6 +883,54 @@ class StateMachine(QObject):
             )
 
         old_listing = self._state.listing
+        had_applicants = bool(self._state.applicants)
+
+        # Explicit v8 terminal clear is authoritative even if a malformed or
+        # future producer accidentally includes listing/applicant/roster blocks.
+        if snap.terminal_clear:
+            self._state.listing = None
+            self._state.clear_all()
+            roster_changed = self._apply_roster_snapshot(
+                [],
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+                rio_summary_target_key=0,
+                emit_signal=False,
+            )
+            if old_listing is not None or leader_key_changed:
+                self.listingChanged.emit()
+            if old_listing is not None or had_applicants:
+                self.cleared.emit()
+            if roster_changed:
+                self.rosterChanged.emit()
+            return
+
+        # Partial v8 snapshot: chat/LFG lockdown kept roster transport alive, but
+        # listing and applicant reads were not authoritative. Preserve LFG state
+        # and apply only version/leader/roster data from this snapshot.
+        if snap.lfg_unavailable and not snap.terminal_clear:
+            listing_changed = False
+            effective_listing = old_listing
+            if effective_listing is None and new_listing is not None:
+                self._state.listing = new_listing
+                effective_listing = new_listing
+                listing_changed = True
+
+            rio_summary_target_key = 0
+            if new_leader_key is not None:
+                rio_summary_target_key = new_leader_key.key_level
+            elif effective_listing is not None and effective_listing.key_level > 0:
+                rio_summary_target_key = effective_listing.key_level
+
+            self._apply_roster_snapshot(
+                snap.roster,
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+                rio_summary_target_key=rio_summary_target_key,
+            )
+            if listing_changed or leader_key_changed:
+                self.listingChanged.emit()
+            return
 
         # NOLISTING-equivalent: snap arrived with has_listing=0 AND we had one.
         # Clear all applicants + emit cleared signal so overlay hides.

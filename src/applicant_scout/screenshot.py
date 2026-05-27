@@ -9,8 +9,9 @@ failed for our 30-applicant payloads), parse bytes through the binary format
 defined below, and emit a Snapshot via Qt signal.
 
 Wire format mirrors `ApplicantScout.lua::BuildPayload` byte-for-byte:
-header "APS1" + version + uint16 length + listing block + version block +
-applicant array + CRC32 trailer. Pure binary, big-endian, see addon for spec.
+header "APS1" + version + uint16 length + flags/reserved bytes, then listing
+block + version block + applicant array + CRC32 trailer. Pure binary,
+big-endian, see addon for spec.
 QR is purely a transport layer over those bytes — Reed-Solomon ECC built into
 QR handles JPG quantization noise, partial occlusion, and rotation. Current
 addon builds prefer legacy hex text for already-fitting payloads and only fall
@@ -55,7 +56,10 @@ MAGIC = b"APS1"
 # v0x05 = adds compact target-relative RaiderIO completion summary.
 # Set, not a min/max range — future versions may be incompatible with v1 but compatible
 # with v2; explicit allow-list is the cleanest contract.
-WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}
+WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+APS1_FLAG_TERMINAL_CLEAR = 0x01
+APS1_FLAG_LFG_UNAVAILABLE = 0x02
+APS1_KNOWN_V8_FLAGS = APS1_FLAG_TERMINAL_CLEAR | APS1_FLAG_LFG_UNAVAILABLE
 
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
 STABLE_SIZE_POLL = 0.05  # poll interval
@@ -164,13 +168,15 @@ class SnapshotSource:
 
 @dataclass
 class Snapshot:
-    """Result of decoding one screenshot. listing=None means session ended."""
+    """Result of decoding one screenshot."""
 
     listing: Optional[DecodedListing]
     version: Optional[DecodedVersion]
     leader_key: Optional[DecodedLeaderKey] = None
     applicants: list[DecodedApplicant] = field(default_factory=list)
     roster: list[DecodedRosterMember] = field(default_factory=list)
+    terminal_clear: bool = False
+    lfg_unavailable: bool = False
     source: SnapshotSource | None = field(default=None, compare=False, repr=False)
 
 
@@ -282,6 +288,18 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
     wire_ver = raw[4]
     if wire_ver not in WIRE_VERSIONS_SUPPORTED:
         return None, f"unsupported wire version 0x{wire_ver:02x}"
+    flags = raw[7]
+    reserved2 = raw[8]
+    if wire_ver >= 0x08:
+        unknown_flags = flags & ~APS1_KNOWN_V8_FLAGS
+        if unknown_flags:
+            return None, f"unsupported APS1 v8 flags 0x{unknown_flags:02x}"
+        if flags & APS1_FLAG_TERMINAL_CLEAR and flags & APS1_FLAG_LFG_UNAVAILABLE:
+            return None, "terminal and LFG-unavailable flags are mutually exclusive"
+        if reserved2:
+            return None, f"unsupported APS1 v8 reserved byte 0x{reserved2:02x}"
+    elif flags or reserved2:
+        return None, f"unsupported APS1 pre-v8 reserved bytes 0x{flags:02x} 0x{reserved2:02x}"
 
     total_len = struct.unpack(">H", raw[5:7])[0]
     # Sanity: 13 = minimum valid body (9 header + 1 has_listing=0 + 1
@@ -305,7 +323,12 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
         )
 
     try:
-        snap = _parse_payload(body[9:], wire_ver)  # skip 9-byte header
+        snap = _parse_payload(
+            body[9:],
+            wire_ver,
+            terminal_clear=bool(flags & APS1_FLAG_TERMINAL_CLEAR),
+            lfg_unavailable=bool(flags & APS1_FLAG_LFG_UNAVAILABLE),
+        )  # skip 9-byte header
         _validate_snapshot_identities(snap)
     except (IndexError, UnicodeDecodeError, struct.error, ValueError) as e:
         return None, f"parse error: {e}"
@@ -366,7 +389,13 @@ def _read_len_str(
         raise ValueError(f"{field} contains invalid {encoding}") from exc
 
 
-def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
+def _parse_payload(
+    buf: bytes,
+    wire_ver: int = 0x01,
+    *,
+    terminal_clear: bool = False,
+    lfg_unavailable: bool = False,
+) -> Snapshot:
     """Cursor-based parse of body (already past 9-byte header). Returns Snapshot.
     Raises IndexError if buf truncated (caught by caller as decode failure).
 
@@ -378,6 +407,7 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
       * v0x05: adds compact RaiderIO completion summary after main_score.
       * v0x06: adds current party/raid roster after applicants.
       * v0x07: adds optional leader keystone context after version block.
+      * v0x08: adds header flags for terminal clear and partial LFG snapshots.
     """
     cursor = 0
     listing: Optional[DecodedListing] = None
@@ -619,6 +649,8 @@ def _parse_payload(buf: bytes, wire_ver: int = 0x01) -> Snapshot:
         leader_key=leader_key,
         applicants=applicants,
         roster=roster,
+        terminal_clear=terminal_clear,
+        lfg_unavailable=lfg_unavailable,
     )
 
 
