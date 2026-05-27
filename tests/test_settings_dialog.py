@@ -846,6 +846,65 @@ def test_settings_dialog_does_not_emit_handoff_signal_without_installer_handoff(
     assert handoffs == []
 
 
+def test_settings_dialog_opens_manual_update_url_without_handoff(
+    monkeypatch: pytest.MonkeyPatch, qtbot, tmp_path: Path
+):
+    opened: list[str] = []
+    monkeypatch.setattr(
+        settings_mod.QDesktopServices,
+        "openUrl",
+        lambda url: opened.append(url.toString()) or True,
+    )
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: SettingsUpdateResult(
+            "Manual install required.",
+            open_url="https://github.com/example/release",
+        ),
+    )
+    qtbot.addWidget(dialog)
+    finished: list[bool] = []
+    handoffs: list[tuple[str, object]] = []
+    dialog.updateFinished.connect(lambda error: finished.append(error))
+    dialog.updateHandoffStarted.connect(
+        lambda message, installer_launch: handoffs.append((message, installer_launch))
+    )
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    qtbot.waitUntil(lambda: bool(finished), timeout=1000)
+    assert finished == [False]
+    assert handoffs == []
+    assert opened == ["https://github.com/example/release"]
+
+
+def test_settings_dialog_treats_untrusted_installer_as_update_failure(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: (_ for _ in ()).throw(
+            RuntimeError("Update installer is not trusted")
+        ),
+    )
+    qtbot.addWidget(dialog)
+    finished: list[bool] = []
+    handoffs: list[tuple[str, object]] = []
+    dialog.updateFinished.connect(lambda error: finished.append(error))
+    dialog.updateHandoffStarted.connect(
+        lambda message, installer_launch: handoffs.append((message, installer_launch))
+    )
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    qtbot.waitUntil(lambda: bool(finished), timeout=1000)
+    assert finished == [True]
+    assert handoffs == []
+    assert dialog.update_button.isEnabled()
+
+
 def test_settings_dialog_finishes_update_when_no_installer_handoff(
     qtbot, tmp_path: Path
 ):

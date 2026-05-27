@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import re
 import hashlib
+import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,8 @@ _INSTALLER_ARGS = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
 _SELF_UPDATE_FLAG = "/APSCOUT_SELFUPDATE=1"
 _MAX_INSTALLER_DOWNLOAD_BYTES = 256 * 1024 * 1024
 _MAX_CHECKSUM_DOWNLOAD_BYTES = 8 * 1024
+_AUTHENTICODE_TIMEOUT_SECONDS = 15
+_TRUSTED_SIGNER_CERT_SHA256: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,16 @@ class InstallerLaunch:
 
     def poll(self) -> int | None:
         return self._process.poll()
+
+
+@dataclass(frozen=True)
+class InstallerAuthenticity:
+    status: str
+    status_message: str
+    subject: str | None
+    issuer: str | None
+    cert_sha256: str | None
+    thumbprint: str | None
 
 
 def _semver_key(version: str) -> tuple[int, int, int] | None:
@@ -471,6 +484,7 @@ def download_update_installer(
 def launch_update_installer(installer_path: Path) -> InstallerLaunch:
     if not installer_path.is_file():
         raise RuntimeError(f"Update installer was not downloaded: {installer_path}")
+    verify_update_installer_authenticity(installer_path)
     process = subprocess.Popen(
         [
             str(installer_path),
@@ -482,6 +496,107 @@ def launch_update_installer(installer_path: Path) -> InstallerLaunch:
         cwd=str(installer_path.parent),
     )
     return InstallerLaunch(installer_path=installer_path, _process=process)
+
+
+def verify_update_installer_authenticity(installer_path: Path) -> None:
+    authenticity = _read_installer_authenticity(installer_path)
+    if authenticity.status.lower() != "valid":
+        raise RuntimeError(
+            "Update installer is not trusted: Authenticode status is "
+            f"{authenticity.status or 'unknown'}."
+        )
+    cert_sha256 = (authenticity.cert_sha256 or "").lower()
+    trusted = {fingerprint.lower() for fingerprint in _TRUSTED_SIGNER_CERT_SHA256}
+    if not cert_sha256 or cert_sha256 not in trusted:
+        raise RuntimeError(
+            "Update installer is not trusted: signer certificate is not pinned."
+        )
+
+
+def can_launch_update_installers() -> bool:
+    return bool(_TRUSTED_SIGNER_CERT_SHA256)
+
+
+def _read_installer_authenticity(installer_path: Path) -> InstallerAuthenticity:
+    command = r"""
+$ErrorActionPreference = 'Stop'
+$sig = Get-AuthenticodeSignature -LiteralPath $env:APSCOUT_INSTALLER_PATH
+$cert = $sig.SignerCertificate
+$certSha256 = $null
+if ($null -ne $cert) {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha256.ComputeHash($cert.RawData)
+        $certSha256 = (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+[pscustomobject]@{
+    Status = [string]$sig.Status
+    StatusMessage = [string]$sig.StatusMessage
+    Subject = if ($null -ne $cert) { [string]$cert.Subject } else { $null }
+    Issuer = if ($null -ne $cert) { [string]$cert.Issuer } else { $null }
+    CertSha256 = $certSha256
+    Thumbprint = if ($null -ne $cert) { [string]$cert.Thumbprint } else { $null }
+} | ConvertTo-Json -Compress
+"""
+    env = os.environ.copy()
+    env["APSCOUT_INSTALLER_PATH"] = str(installer_path)
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=_AUTHENTICODE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "Update installer is not trusted: Authenticode verification timed out."
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            "Update installer is not trusted: Authenticode verification is unavailable."
+        ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        suffix = f" {detail}" if detail else ""
+        raise RuntimeError(
+            "Update installer is not trusted: Authenticode verification failed."
+            f"{suffix}"
+        )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Update installer is not trusted: Authenticode verification returned malformed JSON."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "Update installer is not trusted: Authenticode verification returned malformed JSON."
+        )
+    return InstallerAuthenticity(
+        status=str(payload.get("Status") or ""),
+        status_message=str(payload.get("StatusMessage") or ""),
+        subject=_optional_json_text(payload.get("Subject")),
+        issuer=_optional_json_text(payload.get("Issuer")),
+        cert_sha256=_optional_json_text(payload.get("CertSha256")),
+        thumbprint=_optional_json_text(payload.get("Thumbprint")),
+    )
+
+
+def _optional_json_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _installer_self_update_args() -> list[str]:

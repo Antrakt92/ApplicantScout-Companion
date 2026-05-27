@@ -56,7 +56,8 @@ the overlay.
   profile.
 - It is source-available in this public repository.
 - Current Windows builds are unsigned, so SmartScreen can warn on first install;
-  the release also publishes a `.sha256` sidecar for file integrity.
+  the release also publishes a `.sha256` sidecar. The `.sha256` sidecar verifies
+  file integrity, not publisher identity.
 
 ## Configuration
 
@@ -152,15 +153,17 @@ and ApplicantScout wire payloads through v7.
 
 ApplicantScout Companion checks for updates hourly. When an installable stable GitHub
 Release is available, Settings shows a blue download button. Clicking it
-downloads the installer, verifies its `.sha256` checksum, and launches the
-silent installer from inside the app. If the companion is running, the installer
-closes it and relaunches it after the update. Portable ZIP artifacts are
-published for manual/dev use but are not launched by the in-app updater.
+downloads the installer and verifies its `.sha256` checksum. In-app launch also
+requires a trusted signed installer; unsigned builds must be installed manually
+from the GitHub Release page. If the companion is running, the installer closes
+it and relaunches it after the update. Portable ZIP artifacts are published for
+manual/dev use but are not launched by the in-app updater.
 
 Normal installs use the per-user directory
 `%LOCALAPPDATA%\Programs\ApplicantScout Companion`, so routine installs and
-updates should not require UAC elevation. Unsigned test builds can still trigger
-Windows SmartScreen or antivirus warnings until a code-signing path is chosen.
+updates should not require UAC elevation. Current unsigned builds can still
+trigger Windows SmartScreen or antivirus warnings until a code-signing path is
+chosen.
 
 ## Support
 

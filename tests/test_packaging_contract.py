@@ -492,7 +492,8 @@ def test_release_version_metadata_is_ready_for_current_version():
 
     assert _runtime_version() == project_version
     assert _top_release_notes_entry().startswith(f"## {project_version} - ")
-    assert f"ApplicantScout addon `{paired_addon_version}`" in checklist
+    assert f"ApplicantScout addon `{paired_addon_version}`" not in checklist
+    assert "<paired addon version>" in checklist
     assert f"ApplicantScout Companion `{project_version}`" not in readme
     assert "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest" in readme
     assert "ApplicantScout-0.1.0.zip" not in readme
@@ -509,7 +510,6 @@ def test_release_readiness_test_name_is_not_tied_to_current_version():
 def test_release_version_check_script_documents_asset_contract():
     script = _read_repo_text("scripts/check-release-version.ps1")
     checklist = _read_repo_text("RELEASE_CHECKLIST.md")
-    project_version = _project_version()
 
     assert "ApplicantScoutCompanionSetup-$TagVersion.exe" in script
     assert "$InstallerName.sha256" in script
@@ -517,10 +517,7 @@ def test_release_version_check_script_documents_asset_contract():
     assert "RequireAssets" in script
     assert "constraints-release.txt" in script
     assert "Release constraints header" in script
-    assert (
-        f".\\scripts\\check-release-version.ps1 -Tag v{project_version} -RequireAssets"
-        in checklist
-    )
+    assert ".\\scripts\\check-release-version.ps1 -Tag v<companion version> -RequireAssets" in checklist
 
 
 def test_release_workflow_runs_existing_gates_before_publishing():
@@ -551,7 +548,7 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag", check_idx)
     build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
     assets_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets")
-    published_addon_idx = workflow.index("-RequirePublishedPairedAddonAssets")
+    assert "-RequirePublishedPairedAddonAssets" not in workflow
     release_idx = workflow.index("gh release create")
     publish_idx = workflow.index("gh release edit")
 
@@ -561,10 +558,23 @@ def test_release_workflow_runs_existing_gates_before_publishing():
         < version_idx
         < build_idx
         < assets_idx
-        < published_addon_idx
         < release_idx
         < publish_idx
     )
+
+
+def test_release_workflow_refuses_existing_release_before_build_or_create():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+
+    refuse_idx = workflow.index("Refuse existing release")
+    build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
+    release_idx = workflow.index("gh release create")
+    publish_idx = workflow.index("gh release edit")
+
+    assert "gh release view $env:GITHUB_REF_NAME" in workflow
+    assert "--repo $env:GITHUB_REPOSITORY" in workflow
+    assert "already exists; refusing" in workflow
+    assert refuse_idx < build_idx < release_idx < publish_idx
 
 
 def test_release_workflow_pins_external_actions_to_commit_shas():
@@ -1288,10 +1298,28 @@ def test_readme_documents_verified_self_update_flow():
     assert "checks for updates hourly" in readme
     assert "blue download button" in readme
     assert ".exe.sha256" in readme
+    assert re.search(
+        r"The `\.sha256` sidecar verifies\s+file integrity, not publisher identity",
+        readme,
+    )
+    assert "trusted signed installer" in readme
     assert "%LOCALAPPDATA%\\Programs\\ApplicantScout Companion" in readme
-    assert "downloads the installer, verifies its `.sha256` checksum" in readme
-    assert "relaunches it after the update" in readme
+    assert "downloads the installer, verifies its `.sha256` checksum" not in readme
     assert "Start and stop with WoW" in readme
+
+
+def test_release_checklist_uses_policy_placeholders_not_stale_versions():
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+
+    assert "<companion version>" in checklist
+    assert "<paired addon version>" in checklist
+    assert "previous stable or explicitly chosen baseline" in checklist
+    assert "trusted signed installer" in checklist
+    assert not re.search(
+        r"Smoke-test from an installed `\d+\.\d+\.\d+` companion:.*relaunch `\d+\.\d+\.\d+`",
+        checklist,
+        re.S,
+    )
 
 
 def test_readme_points_to_packaged_addon_zip_not_source_archive():

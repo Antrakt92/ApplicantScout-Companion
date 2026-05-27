@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -921,6 +923,11 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
         def __init__(self, args, **_kwargs) -> None:
             calls.append(args)
 
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        lambda _path: None,
+        raising=False,
+    )
     monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
 
     launch = launch_update_installer(installer)
@@ -951,6 +958,11 @@ def test_launch_update_installer_returns_pollable_launch(monkeypatch, tmp_path):
         def poll(self) -> int:
             return 7
 
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        lambda _path: None,
+        raising=False,
+    )
     monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
 
     launch = launch_update_installer(installer)
@@ -975,6 +987,11 @@ def test_launch_update_installer_preserves_frozen_install_directory(
 
     monkeypatch.setattr("applicant_scout.updater.sys.frozen", True, raising=False)
     monkeypatch.setattr("applicant_scout.updater.sys.executable", current_exe)
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        lambda _path: None,
+        raising=False,
+    )
     monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
 
     launch_update_installer(installer)
@@ -998,8 +1015,146 @@ def test_launch_update_installer_does_not_install_into_portable_directory(
 
     monkeypatch.setattr("applicant_scout.updater.sys.frozen", True, raising=False)
     monkeypatch.setattr("applicant_scout.updater.sys.executable", current_exe)
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        lambda _path: None,
+        raising=False,
+    )
     monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
 
     launch_update_installer(installer)
 
     assert all(not arg.startswith("/DIR=") for arg in calls[0])
+
+
+def test_launch_update_installer_rejects_untrusted_installer_before_popen(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, args, **_kwargs) -> None:
+            calls.append(args)
+
+    def reject(_path: Path) -> None:
+        raise RuntimeError("Update installer is not trusted")
+
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        reject,
+        raising=False,
+    )
+    monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
+
+    with pytest.raises(RuntimeError, match="not trusted"):
+        launch_update_installer(installer)
+
+    assert calls == []
+
+
+def test_verify_update_installer_authenticity_accepts_trusted_signed_installer(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "applicant_scout.updater._TRUSTED_SIGNER_CERT_SHA256",
+        frozenset({"abc123"}),
+    )
+    monkeypatch.setattr(
+        "applicant_scout.updater.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                '{"Status":"Valid","StatusMessage":"","Subject":"CN=Antrakt",'
+                '"Issuer":"CN=Test CA","CertSha256":"ABC123","Thumbprint":"00"}'
+            ),
+            stderr="",
+        ),
+    )
+
+    updater_mod.verify_update_installer_authenticity(installer)
+
+
+def test_verify_update_installer_authenticity_rejects_unpinned_valid_signature(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "applicant_scout.updater._TRUSTED_SIGNER_CERT_SHA256",
+        frozenset({"different"}),
+    )
+    monkeypatch.setattr(
+        "applicant_scout.updater.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                '{"Status":"Valid","StatusMessage":"","Subject":"CN=Antrakt",'
+                '"Issuer":"CN=Test CA","CertSha256":"ABC123","Thumbprint":"00"}'
+            ),
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="not pinned"):
+        updater_mod.verify_update_installer_authenticity(installer)
+
+
+def test_verify_update_installer_authenticity_fails_closed_on_powershell_error(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "applicant_scout.updater.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Get-AuthenticodeSignature failed",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="verification failed"):
+        updater_mod.verify_update_installer_authenticity(installer)
+
+
+def test_verify_update_installer_authenticity_fails_closed_on_timeout(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="powershell", timeout=15)
+
+    monkeypatch.setattr("applicant_scout.updater.subprocess.run", timeout)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        updater_mod.verify_update_installer_authenticity(installer)
+
+
+def test_verify_update_installer_authenticity_fails_closed_on_malformed_json(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "applicant_scout.updater.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="{bad json",
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="malformed JSON"):
+        updater_mod.verify_update_installer_authenticity(installer)

@@ -850,6 +850,8 @@ class SettingsDialog(QDialog):
                 self.updateFinished.emit(False)
                 self.set_update_available(None)
                 self.updateCompleted.emit()
+                if raw.open_url:
+                    QDesktopServices.openUrl(QUrl(raw.open_url))
             return
         raw.button.setEnabled(True)
         if not raw.error and raw.open_url:

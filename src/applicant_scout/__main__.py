@@ -51,6 +51,7 @@ from .settings_dialog import (
 )
 from .state import Applicant, AppState, LeaderKey, Listing, RosterMember, WoWPlayer
 from .updater import (
+    can_launch_update_installers,
     check_for_update,
     download_update_installer,
     launch_update_installer,
@@ -1396,6 +1397,18 @@ def _check_updates() -> SettingsUpdateResult | tuple[str, str | None]:
             return str(message), None
         if not _update_result_has_installable_asset(result):
             raise RuntimeError(str(message))
+        if not can_launch_update_installers():
+            manual_url = getattr(result, "release_url", None) or getattr(
+                result, "open_url", None
+            )
+            return SettingsUpdateResult(
+                message=(
+                    f"ApplicantScout Companion {getattr(result, 'latest_version', 'update')} "
+                    "is available. Manual install is required until signed update "
+                    "installers are configured."
+                ),
+                open_url=manual_url if isinstance(manual_url, str) else None,
+            )
         installer = download_update_installer(result)
         installer_launch = launch_update_installer(installer)
         return SettingsUpdateResult(
