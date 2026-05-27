@@ -143,6 +143,7 @@ RAID_METRIC_WIDTH = 168
 RAID_SINGLE_KILL_WIDTH = 42
 RAID_SINGLE_METRIC_WIDTH = 72
 METRIC_COLUMN_TEXT_PADDING = 22
+RAID_CONTEXT_EVIDENCE_FG = "#b8b8c8"
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
 RAID_COL_BY_TARGET = {"N": COL_N, "H": COL_H, "M": COL_M}
 WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
@@ -2066,6 +2067,7 @@ class ApplicantInfoPanel(QFrame):
                     "background-color: #202028; color: #f1f1f4; "
                     "border-radius: 2px; padding: 0 4px; font-weight: bold;"
                 )
+                value_label.setTextFormat(Qt.TextFormat.PlainText)
                 value_label.setText(wcl_text)
                 bg = str(wcl_row.get("colour") or "#2a2a33")
                 fg = _text_colour_for_bg(bg)
@@ -2146,15 +2148,23 @@ class ApplicantInfoPanel(QFrame):
             if value_text:
                 wcl_key_label.setText("")
                 wcl_key_label.setStyleSheet("")
-                value_label.setText(value_text)
-                bg = str(row.get("colour") or "#2a2a33")
-                value_label.setStyleSheet(
-                    f"background-color: {bg}; color: {_text_colour_for_bg(bg)}; "
-                    "border-radius: 2px; padding: 0 4px; font-weight: bold;"
-                )
+                segments = row.get("segments")
+                if isinstance(segments, list) and len(segments) > 1:
+                    value_label.setTextFormat(Qt.TextFormat.RichText)
+                    value_label.setText(_raid_parse_segments_html(segments))
+                    value_label.setStyleSheet("")
+                else:
+                    value_label.setTextFormat(Qt.TextFormat.PlainText)
+                    value_label.setText(value_text)
+                    bg = str(row.get("colour") or "#2a2a33")
+                    value_label.setStyleSheet(
+                        f"background-color: {bg}; color: {_text_colour_for_bg(bg)}; "
+                        "border-radius: 2px; padding: 0 4px; font-weight: bold;"
+                    )
             else:
                 wcl_key_label.setText("")
                 wcl_key_label.setStyleSheet("")
+                value_label.setTextFormat(Qt.TextFormat.PlainText)
                 value_label.setText("")
                 value_label.setStyleSheet("")
             for label in labels:
@@ -3469,7 +3479,12 @@ class OverlayWindow(QMainWindow):
                     else _raid_fit_cell(applicant, listing, raid_key)
                 )
             else:
-                item = _raid_dual_cell(best, median, applicant.fetch_status)
+                item = _raid_dual_cell(
+                    best,
+                    median,
+                    applicant.fetch_status,
+                    neutral=listing_context == CONTEXT_RAID,
+                )
             self._table.setItem(
                 row,
                 col,
@@ -4568,6 +4583,8 @@ def _raid_dual_cell(
     best: float | None,
     median: float | None,
     fetch_status: str,
+    *,
+    neutral: bool = False,
 ) -> QTableWidgetItem:
     """Raid difficulty cell — shows "best/median" pair (WCL UI's "Best Perf.
     Avg." vs "Median Perf. Avg."). Best is the headline (skill ceiling);
@@ -4577,6 +4594,9 @@ def _raid_dual_cell(
 
     Per-cell tooltip removed: full context now lives in the row-hover panel."""
     text, fg, bg = _raid_cell_visuals(best, median, fetch_status)
+    if neutral and bg is not None:
+        fg = RAID_CONTEXT_EVIDENCE_FG
+        bg = None
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     if fg is not None:
@@ -4858,6 +4878,7 @@ def _raid_boss_rows_for_display(
     for idx, (_alias, encounter_id, name) in enumerate(CURRENT_RAID_ENCOUNTERS):
         kill_parts: list[str] = []
         parse_parts: list[str] = []
+        parse_segments: list[dict[str, str]] = []
         colour_overalls: list[float] = []
         for difficulty in difficulty_keys:
             parse_rows = parse_rows_by_difficulty[difficulty]
@@ -4872,7 +4893,18 @@ def _raid_boss_rows_for_display(
             if kills > 0:
                 kill_parts.append(f"{difficulty}{kills}")
             if value:
-                parse_parts.append(f"{difficulty} {value}")
+                text = f"{difficulty} {value}"
+                parse_parts.append(text)
+                parse_segments.append(
+                    {
+                        "text": text,
+                        "colour": (
+                            percentile_colour(overall)
+                            if overall is not None
+                            else "#2a2a33"
+                        ),
+                    }
+                )
                 if overall is not None:
                     colour_overalls.append(overall)
         colour = percentile_colour(max(colour_overalls)) if colour_overalls else ""
@@ -4883,6 +4915,7 @@ def _raid_boss_rows_for_display(
                 "wcl_text": "WCL" if parse_parts else "",
                 "value": " · ".join(parse_parts),
                 "colour": colour,
+                "segments": parse_segments,
             }
         )
     return rows
@@ -4911,6 +4944,25 @@ def _raid_parse_pair_text(overall: float | None, ilvl: float | None) -> str:
     left = str(int(round(overall))) if overall is not None else "-"
     right = str(int(round(ilvl))) if ilvl is not None else "-"
     return f"{left}-{right}"
+
+
+def _raid_parse_segments_html(segments: list[object]) -> str:
+    parts: list[str] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        text = str(segment.get("text") or "").strip()
+        colour = str(segment.get("colour") or "#2a2a33")
+        if not text:
+            continue
+        parts.append(
+            "<span "
+            f'style="background-color: {html.escape(colour, quote=True)}; '
+            f"color: {_text_colour_for_bg(colour)}; "
+            'font-size: 11px; font-weight: bold;">'
+            f"{html.escape(text)}</span>"
+        )
+    return "&nbsp;".join(parts)
 
 
 def _highest_mplus_key_level(breakdown: Iterable[object]) -> int:

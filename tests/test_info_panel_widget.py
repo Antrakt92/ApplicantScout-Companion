@@ -312,13 +312,60 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     assert panel._dungeon_rows[0][0].text() == "Imperator Averzian"
     assert panel._dungeon_rows[0][1].text() == "H1 · M2"
     assert panel._dungeon_rows[0][2].text() == ""
-    assert panel._dungeon_rows[0][3].text() == "H 83-63 · M 46-68"
+    assert panel._dungeon_rows[0][3].textFormat() == Qt.TextFormat.RichText
+    assert "H 83-63" in panel._dungeon_rows[0][3].text()
+    assert "M 46-68" in panel._dungeon_rows[0][3].text()
     assert panel._dungeon_rows[0][1].width() == RAID_KILL_WIDTH
     assert panel._dungeon_rows[0][3].width() == RAID_METRIC_WIDTH
     assert panel._dungeon_rows[1][0].text() == "Vorasius"
     assert panel._dungeon_rows[1][1].text() == ""
     assert panel._visible_detail_rows == 9
     assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
+
+
+def test_raid_panel_colours_each_difficulty_parse_segment(qtbot):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=True,
+        ),
+    )
+    qtbot.addWidget(panel)
+    app = _app(
+        rio_raid_progress={
+            "H": {"boss_kills": [1]},
+            "M": {"boss_kills": [1]},
+        },
+        raid_boss_parses={
+            "H": [
+                {
+                    "encounter_id": 3176,
+                    "overall": 83.0,
+                    "ilvl": 63.0,
+                }
+            ],
+            "M": [
+                {
+                    "encounter_id": 3176,
+                    "overall": 46.0,
+                    "ilvl": 68.0,
+                }
+            ],
+        },
+    )
+
+    panel.setApplicantData(app, _raid_listing())
+
+    value_label = panel._dungeon_rows[0][3]
+    assert value_label.textFormat() == Qt.TextFormat.RichText
+    assert "H 83-63" in value_label.text()
+    assert "M 46-68" in value_label.text()
+    assert percentile_colour(83.0) in value_label.text()
+    assert percentile_colour(46.0) in value_label.text()
+    assert percentile_colour(83.0) not in value_label.styleSheet()
 
 
 def test_raid_listing_panel_remembers_manual_mplus_detail_tab(qtbot):
@@ -353,7 +400,10 @@ def test_mplus_detail_widths_restore_after_raid_detail(qtbot):
 
     panel.setApplicantData(app, _raid_listing())
     assert panel._dungeon_rows[0][1].text() == "N5 · H3 · M1"
-    assert panel._dungeon_rows[0][3].text() == "N 91-78 · H 83-63 · M 46-68"
+    assert panel._dungeon_rows[0][3].textFormat() == Qt.TextFormat.RichText
+    assert "N 91-78" in panel._dungeon_rows[0][3].text()
+    assert "H 83-63" in panel._dungeon_rows[0][3].text()
+    assert "M 46-68" in panel._dungeon_rows[0][3].text()
     assert panel._dungeon_rows[0][3].width() > DUNGEON_METRIC_WIDTH
 
     panel._on_detail_mode_clicked("mplus")
@@ -3941,6 +3991,48 @@ def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
 
         assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == "?"
         assert item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
+    finally:
+        client.close()
+
+
+def test_raid_listing_table_keeps_non_target_difficulty_evidence_neutral(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _raid_listing(difficulty_id=16)
+    app = _app(
+        applicant_id="20:1",
+        raid_normal=None,
+        raid_normal_median=None,
+        raid_heroic=70.0,
+        raid_heroic_median=64.0,
+        raid_mythic=None,
+        raid_mythic_median=None,
+    )
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._refresh_table()
+        row = window._row_for_id[app.applicant_id]
+        heroic_item = window._table.item(row, COL_H)
+        mythic_item = window._table.item(row, COL_M)
+
+        assert heroic_item.text() == "70/64"
+        assert heroic_item.background().style() == Qt.BrushStyle.NoBrush
+        assert heroic_item.foreground().color().name() == QColor("#b8b8c8").name()
+        assert mythic_item.text().startswith("EST ")
+        assert mythic_item.background().style() != Qt.BrushStyle.NoBrush
     finally:
         client.close()
 
