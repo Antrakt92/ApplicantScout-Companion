@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QColor, QImage
@@ -49,6 +47,7 @@ def test_render_overlay_fixture_cli_defaults_to_single_default_scenario():
 
     assert args.scenario == DEFAULT_VISUAL_FIXTURE_SCENARIO
     assert not args.all
+    assert args.visual_mode == "strict"
 
 
 def test_render_overlay_fixture_cli_accepts_all_scenarios():
@@ -56,6 +55,20 @@ def test_render_overlay_fixture_cli_accepts_all_scenarios():
 
     assert args.check
     assert args.all
+
+
+def test_render_overlay_fixture_cli_accepts_explicit_smoke_check_mode():
+    args = render_overlay_fixture.parse_args(
+        ["--check", "--all", "--visual-mode", "smoke"]
+    )
+
+    assert args.check
+    assert args.visual_mode == "smoke"
+
+
+def test_render_overlay_fixture_cli_rejects_smoke_without_check():
+    with pytest.raises(SystemExit):
+        render_overlay_fixture.parse_args(["--visual-mode", "smoke"])
 
 
 def test_render_overlay_fixture_cli_rejects_output_with_all():
@@ -100,9 +113,8 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
         assert OVERLAY_VISUAL_BASELINE_PATH.stat().st_size > 0
         baseline = QImage(str(OVERLAY_VISUAL_BASELINE_PATH))
         assert not baseline.isNull()
-        if os.environ.get("APPLICANT_SCOUT_VISUAL_BASELINE") != "smoke":
-            diff = compare_overlay_visual_images(baseline, image)
-            assert diff.passed, diff.message
+        diff = compare_overlay_visual_images(baseline, image)
+        assert diff.passed, diff.message
 
         assert window._table.rowCount() == len(state.applicants)
         assert window._pinned_id == VISUAL_FIXTURE_PINNED_ID
@@ -289,6 +301,74 @@ def _solid_image(width: int, height: int, color: QColor) -> QImage:
     image = QImage(width, height, QImage.Format.Format_ARGB32)
     image.fill(color)
     return image
+
+
+class _FakePixmap:
+    def __init__(self, image: QImage) -> None:
+        self._image = image
+
+    def toImage(self) -> QImage:
+        return self._image
+
+
+class _FakeScenario:
+    baseline_path = "baseline.png"
+
+
+def test_render_overlay_fixture_strict_check_uses_pixel_baseline(monkeypatch):
+    baseline = _solid_image(4, 4, QColor(10, 20, 30, 255))
+    actual = _solid_image(4, 4, QColor(10, 20, 30, 255))
+    calls: list[tuple[QImage, QImage]] = []
+
+    def fake_compare(expected: QImage, rendered: QImage):
+        calls.append((expected, rendered))
+        return compare_overlay_visual_images(expected, rendered)
+
+    monkeypatch.setattr(render_overlay_fixture, "QImage", lambda _path: baseline)
+    monkeypatch.setattr(
+        render_overlay_fixture, "compare_overlay_visual_images", fake_compare
+    )
+
+    passed, message = render_overlay_fixture._check_rendered_pixmap(
+        "sample", _FakeScenario(), _FakePixmap(actual), "strict"
+    )
+
+    assert passed
+    assert "matched committed baseline" in message
+    assert calls == [(baseline, actual)]
+
+
+def test_render_overlay_fixture_smoke_check_skips_pixel_baseline(monkeypatch):
+    actual = _solid_image(6, 6, QColor(10, 20, 30, 255))
+    actual.setPixelColor(0, 0, QColor(240, 240, 240, 255))
+
+    def fail_if_called(*_args):
+        raise AssertionError("smoke mode must not compare against pixel baselines")
+
+    monkeypatch.setattr(render_overlay_fixture, "QImage", fail_if_called)
+    monkeypatch.setattr(
+        render_overlay_fixture,
+        "compare_overlay_visual_images",
+        fail_if_called,
+    )
+
+    passed, message = render_overlay_fixture._check_rendered_pixmap(
+        "sample", _FakeScenario(), _FakePixmap(actual), "smoke"
+    )
+
+    assert passed
+    assert "smoke check passed" in message
+
+
+def test_render_overlay_fixture_smoke_check_rejects_blank_render():
+    actual = _solid_image(6, 6, QColor(10, 20, 30, 255))
+
+    passed, message = render_overlay_fixture._check_rendered_pixmap(
+        "sample", _FakeScenario(), _FakePixmap(actual), "smoke"
+    )
+
+    assert not passed
+    assert "blank or uniform" in message
 
 
 def test_visual_fixture_diff_accepts_identical_images():

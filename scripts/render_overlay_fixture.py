@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import tempfile
-import argparse
 from pathlib import Path
 
 if "QT_QPA_PLATFORM" not in os.environ:
@@ -54,11 +54,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Render or check every committed visual fixture scenario.",
     )
+    parser.add_argument(
+        "--visual-mode",
+        choices=("strict", "smoke"),
+        default="strict",
+        help=(
+            "Check mode: strict compares committed baselines; smoke validates "
+            "that each scenario renders nonblank output without pixel comparison."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.check and args.output is not None:
         parser.error("--check cannot be combined with --output")
     if args.all and args.output is not None:
         parser.error("--all cannot be combined with --output")
+    if args.visual_mode == "smoke" and not args.check:
+        parser.error("--visual-mode smoke requires --check")
     return args
 
 
@@ -108,6 +119,51 @@ def _save_pixmap_atomic(pixmap, output: Path) -> None:
                 pass
 
 
+def _sampled_colours(image: QImage) -> set[int]:
+    x_step = max(1, image.width() // 10)
+    y_step = max(1, image.height() // 10)
+    colours: set[int] = set()
+    for x in range(0, image.width(), x_step):
+        for y in range(0, image.height(), y_step):
+            colours.add(image.pixelColor(x, y).rgba())
+    return colours
+
+
+def _validate_smoke_image(image: QImage) -> str | None:
+    if image.isNull():
+        return "overlay visual fixture smoke check rendered a null image"
+    if image.width() <= 0 or image.height() <= 0:
+        return (
+            "overlay visual fixture smoke check rendered invalid dimensions: "
+            f"{image.width()}x{image.height()}"
+        )
+    if len(_sampled_colours(image)) <= 1:
+        return "overlay visual fixture smoke check rendered blank or uniform output"
+    return None
+
+
+def _check_rendered_pixmap(
+    _scenario_name: str,
+    scenario,
+    pixmap,
+    visual_mode: str,
+) -> tuple[bool, str]:
+    image = pixmap.toImage()
+    if visual_mode == "smoke":
+        error = _validate_smoke_image(image)
+        if error is not None:
+            return False, error
+        return (
+            True,
+            "overlay visual fixture smoke check passed "
+            f"({image.width()}x{image.height()} nonblank render)",
+        )
+
+    baseline = QImage(str(scenario.baseline_path))
+    diff = compare_overlay_visual_images(baseline, image)
+    return diff.passed, diff.message
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     existing_app = QApplication.instance()
@@ -121,14 +177,18 @@ def main(argv: list[str] | None = None) -> int:
         scenario = OVERLAY_VISUAL_SCENARIOS[scenario_name]
         pixmap = _render_fixture_pixmap(app, scenario_name)
         if args.check:
-            baseline = QImage(str(scenario.baseline_path))
-            diff = compare_overlay_visual_images(baseline, pixmap.toImage())
+            passed, message = _check_rendered_pixmap(
+                scenario_name,
+                scenario,
+                pixmap,
+                args.visual_mode,
+            )
             prefix = f"{scenario_name}: "
             print(
-                prefix + diff.message,
-                file=sys.stderr if not diff.passed else sys.stdout,
+                prefix + message,
+                file=sys.stderr if not passed else sys.stdout,
             )
-            failed = failed or not diff.passed
+            failed = failed or not passed
             continue
 
         output = args.output or scenario.baseline_path

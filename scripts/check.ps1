@@ -1,5 +1,7 @@
 param(
-    [string]$AddonRoot = ""
+    [string]$AddonRoot = "",
+    [ValidateSet("Strict", "Smoke")]
+    [string]$VisualMode = "Strict"
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,7 +77,8 @@ Invoke-NativeChecked -Label "Python tests" -Command {
 
 Write-Host "== Overlay visual baselines =="
 Invoke-NativeChecked -Label "Overlay visual baselines" -Command {
-    & $Python scripts\render_overlay_fixture.py --check --all
+    $VisualModeArg = $VisualMode.ToLowerInvariant()
+    & $Python scripts\render_overlay_fixture.py --check --all --visual-mode $VisualModeArg
 }
 
 Write-Host "== Ruff =="

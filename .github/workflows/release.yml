@@ -9,8 +9,6 @@ jobs:
   release:
     if: ${{ github.event.created == true && github.event.forced == false && github.event.deleted == false }}
     runs-on: windows-2022
-    env:
-      APPLICANT_SCOUT_VISUAL_BASELINE: smoke
     permissions:
       contents: write
     steps:
@@ -108,7 +106,7 @@ jobs:
         shell: pwsh
         working-directory: ApplicantScout-Companion
         run: |
-          .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon
+          .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon -VisualMode Smoke
           .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME
 
       - name: Build Windows artifacts

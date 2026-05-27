@@ -12,8 +12,6 @@ permissions:
 jobs:
   check:
     runs-on: windows-2022
-    env:
-      APPLICANT_SCOUT_VISUAL_BASELINE: smoke
     steps:
       - name: Checkout companion
         # actions/checkout v6 pinned to the upstream tag commit.
@@ -52,4 +50,4 @@ jobs:
       - name: Check companion and addon contracts
         shell: pwsh
         working-directory: ApplicantScout-Companion
-        run: .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon
+        run: .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon -VisualMode Smoke
