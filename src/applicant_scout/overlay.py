@@ -2541,12 +2541,14 @@ class OverlayWindow(QMainWindow):
             self._launcher.hide()
 
     def restore_from_launcher(self) -> None:
-        self._restore_from_launcher(activate=False)
+        self._restore_from_launcher(activate=False, require_game_foreground=True)
 
     def restore_from_tray(self) -> None:
-        self._restore_from_launcher(activate=True)
+        self._restore_from_launcher(activate=True, require_game_foreground=False)
 
-    def _restore_from_launcher(self, *, activate: bool) -> None:
+    def _restore_from_launcher(
+        self, *, activate: bool, require_game_foreground: bool
+    ) -> None:
         if self._closed:
             return
         launcher_interaction_foreground = (
@@ -2559,13 +2561,22 @@ class OverlayWindow(QMainWindow):
                 or self._launcher.is_click_emitting()
             )
         )
-        if not launcher_interaction_foreground and not self._is_game_foreground():
+        if (
+            require_game_foreground
+            and not launcher_interaction_foreground
+            and not self._is_game_foreground()
+        ):
             self._game_foreground = False
             self._collapsed_to_launcher = True
             self._launcher_visible_after_non_game_foreground = False
             self._launcher.hide()
             return
         self._game_foreground = True
+        self._launcher_foreground_grace_until = (
+            time.monotonic() + LAUNCHER_FOREGROUND_GRACE_S
+            if launcher_interaction_foreground
+            else 0.0
+        )
         self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
         self._launcher.hide()
@@ -2610,6 +2621,13 @@ class OverlayWindow(QMainWindow):
         )
         if not foreground and launcher_interaction_foreground:
             self._launcher_visible_after_non_game_foreground = True
+            return
+        if (
+            not foreground
+            and self.isVisible()
+            and not self._collapsed_to_launcher
+            and time.monotonic() < self._launcher_foreground_grace_until
+        ):
             return
         if foreground == self._game_foreground:
             if not foreground and self._collapsed_to_launcher and self._launcher.isVisible():
