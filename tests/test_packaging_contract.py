@@ -284,6 +284,15 @@ def test_check_script_does_not_accept_generic_luac_for_wow_syntax():
     assert "Get-Command luac " not in script
 
 
+def test_check_script_requires_lua51_interpreter_for_addon_golden_generation():
+    script = _read_repo_text("scripts/check.ps1")
+
+    assert "Get-Command lua5.1" in script
+    assert "Get-Command lua " not in script
+    assert "$Lua51" in script
+    assert "Missing lua 5.1" in script
+
+
 def test_artifact_name_contract_stays_aligned():
     build_script = _read_repo_text("scripts/build-windows.ps1")
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
@@ -616,7 +625,13 @@ def test_check_wrapper_runs_addon_contract_tests_after_lua_syntax():
 
     assert lua_idx < addon_pytest_idx
     assert "Push-Location $AddonRoot" in addon_pytest_block
-    assert "& $Python -m pytest -q tests" in addon_pytest_block
+    assert "Select-String" in addon_pytest_block
+    assert "$AddonContractArgs" in addon_pytest_block
+    assert "& $Python -m pytest -q tests @AddonContractArgs" in addon_pytest_block
+    assert "--companion-root" in addon_pytest_block
+    assert "$RepoRoot" in addon_pytest_block
+    assert "--lua51" in addon_pytest_block
+    assert "$Lua51" in addon_pytest_block
     assert "finally" in addon_pytest_block
     assert "Pop-Location" in addon_pytest_block
 

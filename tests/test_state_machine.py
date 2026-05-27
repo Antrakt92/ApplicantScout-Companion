@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from applicant_scout.__main__ import StateMachine
 from applicant_scout.screenshot import (
     DecodedApplicant,
@@ -32,13 +34,13 @@ from applicant_scout.state import AppState, WoWPlayer
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-LUA_GOLDEN_HEX = FIXTURES / "aps1_v8_lua_golden.hex"
-LUA_GOLDEN_EXPECTED = FIXTURES / "aps1_v8_lua_golden.expected.json"
+LUA_GOLDEN_STEM = "aps1_v8_lua_golden"
+LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v8_lua_leader_key_golden"
 
 
-def _load_lua_golden_snapshot() -> tuple[Snapshot, dict]:
-    payload = bytes.fromhex(LUA_GOLDEN_HEX.read_text(encoding="ascii"))
-    expected = json.loads(LUA_GOLDEN_EXPECTED.read_text(encoding="utf-8"))
+def _load_lua_golden_snapshot(stem: str = LUA_GOLDEN_STEM) -> tuple[Snapshot, dict]:
+    payload = bytes.fromhex((FIXTURES / f"{stem}.hex").read_text(encoding="ascii"))
+    expected = json.loads((FIXTURES / f"{stem}.expected.json").read_text(encoding="utf-8"))
     snap, error = _try_parse_appscout_payload(payload)
     assert error is None
     assert snap is not None
@@ -419,8 +421,13 @@ def test_new_applicant_maps_rio_completion_summary():
     assert applicant.rio_summary_target_key == 14
 
 
-def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot():
-    snap, expected = _load_lua_golden_snapshot()
+@pytest.mark.parametrize(
+    "fixture_stem",
+    [LUA_GOLDEN_STEM, LUA_LEADER_KEY_GOLDEN_STEM],
+    ids=["base", "leader-key"],
+)
+def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot(fixture_stem: str):
+    snap, expected = _load_lua_golden_snapshot(fixture_stem)
     state = AppState()
     sm = StateMachine(state)
 
@@ -438,6 +445,16 @@ def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot():
     assert state.listing.key_level == expected["listing"]["key_level"]
     assert state.listing.category_id == expected["listing"]["category_id"]
     assert state.listing.difficulty_id == expected["listing"]["difficulty_id"]
+    if expected.get("leader_key") is None:
+        assert state.leader_key is None
+    else:
+        assert state.leader_key is not None
+        assert state.leader_key.key_level == expected["leader_key"]["key_level"]
+        assert (
+            state.leader_key.challenge_map_id
+            == expected["leader_key"]["challenge_map_id"]
+        )
+        assert state.leader_key.player_name == expected["leader_key"]["player_name"]
 
     assert set(state.applicants) == {
         f'{a["applicant_id"]}:{a["member_idx"]}' for a in expected["applicants"]
@@ -463,7 +480,12 @@ def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot():
         "rio_completed_at_or_above_minus1"
     ]
     assert applicant.rio_dungeon_count == applicant_expected["rio_dungeon_count"]
-    assert applicant.rio_summary_target_key == expected["listing"]["key_level"]
+    expected_target_key = (
+        expected["leader_key"]["key_level"]
+        if expected.get("leader_key") is not None
+        else expected["listing"]["key_level"]
+    )
+    assert applicant.rio_summary_target_key == expected_target_key
 
     assert set(state.party_members) == {
         m["name"].strip().lower() for m in expected["roster"]
@@ -482,7 +504,7 @@ def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot():
     assert member.rio_profile == roster_expected["rio_profile"]
     assert member.rio_best_key == roster_expected["rio_best_key"]
     assert member.rio_best_dungeon_key == roster_expected["rio_best_dungeon_key"]
-    assert member.rio_summary_target_key == expected["listing"]["key_level"]
+    assert member.rio_summary_target_key == expected_target_key
 
 
 def test_new_applicant_maps_rio_dungeon_rows():

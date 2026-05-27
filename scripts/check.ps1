@@ -58,6 +58,16 @@ if (-not $Luac) {
     throw "Missing luac 5.1. Install with: choco install lua51 -y"
 }
 
+$Lua51Candidates = @(
+    (Get-Command lua5.1 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
+    "C:\ProgramData\chocolatey\lib\lua51\tools\lua5.1.exe"
+) | Where-Object { $_ -and (Test-Path $_) }
+
+$Lua51 = $Lua51Candidates | Select-Object -First 1
+if (-not $Lua51) {
+    throw "Missing lua 5.1. Install with: choco install lua51 -y"
+}
+
 Write-Host "== Python tests =="
 Invoke-NativeChecked -Label "Python tests" -Command {
     & $Python -m pytest
@@ -92,8 +102,14 @@ finally {
 Write-Host "== Addon Python contract tests =="
 Push-Location $AddonRoot
 try {
+    $AddonContractArgs = @()
+    $AddonPytestConfig = Join-Path $AddonRoot "tests\conftest.py"
+    if ((Test-Path $AddonPytestConfig) -and
+        (Select-String -LiteralPath $AddonPytestConfig -Pattern "--companion-root" -SimpleMatch -Quiet)) {
+        $AddonContractArgs = @("--companion-root", $RepoRoot, "--lua51", $Lua51)
+    }
     Invoke-NativeChecked -Label "Addon Python contract tests" -Command {
-        & $Python -m pytest -q tests
+        & $Python -m pytest -q tests @AddonContractArgs
     }
 }
 finally {

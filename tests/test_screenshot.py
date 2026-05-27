@@ -15,6 +15,7 @@ import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 import applicant_scout.screenshot as screenshot_mod
@@ -35,16 +36,24 @@ from applicant_scout.screenshot import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-LUA_GOLDEN_HEX = FIXTURES / "aps1_v8_lua_golden.hex"
-LUA_GOLDEN_EXPECTED = FIXTURES / "aps1_v8_lua_golden.expected.json"
+LUA_GOLDEN_STEM = "aps1_v8_lua_golden"
+LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v8_lua_leader_key_golden"
 
 
-def _load_lua_golden_payload() -> bytes:
-    return bytes.fromhex(LUA_GOLDEN_HEX.read_text(encoding="ascii"))
+def _lua_golden_hex_path(stem: str = LUA_GOLDEN_STEM) -> Path:
+    return FIXTURES / f"{stem}.hex"
 
 
-def _load_lua_golden_expected() -> dict:
-    return json.loads(LUA_GOLDEN_EXPECTED.read_text(encoding="utf-8"))
+def _lua_golden_expected_path(stem: str = LUA_GOLDEN_STEM) -> Path:
+    return FIXTURES / f"{stem}.expected.json"
+
+
+def _load_lua_golden_payload(stem: str = LUA_GOLDEN_STEM) -> bytes:
+    return bytes.fromhex(_lua_golden_hex_path(stem).read_text(encoding="ascii"))
+
+
+def _load_lua_golden_expected(stem: str = LUA_GOLDEN_STEM) -> dict:
+    return json.loads(_lua_golden_expected_path(stem).read_text(encoding="utf-8"))
 
 
 # ─── Helpers (mirror addon's _PackLenStr / per-applicant block layout) ──────
@@ -1130,13 +1139,18 @@ def test_decode_screenshot_accepts_raw_byte_qr_with_embedded_nul(
     assert snap.applicants == []
 
 
+@pytest.mark.parametrize(
+    "fixture_stem",
+    [LUA_GOLDEN_STEM, LUA_LEADER_KEY_GOLDEN_STEM],
+    ids=["base", "leader-key"],
+)
 def test_decode_screenshot_accepts_lua_generated_aps1_v8_golden(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, fixture_stem: str
 ):
     image_path = tmp_path / "lua_golden_qr.png"
     _write_blank_image(image_path)
-    raw_payload = _load_lua_golden_payload()
-    expected = _load_lua_golden_expected()
+    raw_payload = _load_lua_golden_payload(fixture_stem)
+    expected = _load_lua_golden_expected(fixture_stem)
 
     monkeypatch.setattr(
         screenshot_mod,
@@ -1152,6 +1166,9 @@ def test_decode_screenshot_accepts_lua_generated_aps1_v8_golden(
     assert snap.version is not None
     assert snap.listing.__dict__ == expected["listing"]
     assert snap.version.__dict__ == expected["version"]
+    assert (
+        snap.leader_key.__dict__ if snap.leader_key is not None else None
+    ) == expected.get("leader_key")
     assert [a.__dict__ for a in snap.applicants] == expected["applicants"]
     assert [m.__dict__ for m in snap.roster] == expected["roster"]
 
