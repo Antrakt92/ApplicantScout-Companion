@@ -731,12 +731,64 @@ class StateMachine(QObject):
             if target.ilvl <= 0 < source.ilvl:
                 target.ilvl = source.ilvl
 
+    @staticmethod
+    def _capture_local_rio_fields(
+        source: Applicant,
+    ) -> tuple[int, bool, list[dict], dict[str, dict]]:
+        score = source.score if isinstance(source.score, int) else 0
+        return (
+            score,
+            bool(source.rio_profile),
+            [dict(row) for row in source.rio_dungeons],
+            {
+                str(difficulty): dict(data)
+                for difficulty, data in source.rio_raid_progress.items()
+                if isinstance(data, dict)
+            },
+        )
+
+    @staticmethod
+    def _preserve_local_rio_fields(
+        fields: tuple[int, bool, list[dict], dict[str, dict]],
+        target: Applicant,
+    ) -> None:
+        score, rio_profile, rio_dungeons, rio_raid_progress = fields
+        target_score = target.score if isinstance(target.score, int) else 0
+        if score > target_score:
+            target.score = score
+        if rio_profile:
+            target.rio_profile = True
+        if rio_dungeons:
+            target.rio_dungeons = [dict(row) for row in rio_dungeons]
+        if rio_raid_progress:
+            target.rio_raid_progress = {
+                str(difficulty): dict(data)
+                for difficulty, data in rio_raid_progress.items()
+            }
+
+    @staticmethod
+    def _local_rio_identity_stable(
+        source_name: str,
+        target_name: str,
+        *,
+        region_identity_changed: bool,
+        default_realm_changed: bool,
+    ) -> bool:
+        if source_name != target_name or region_identity_changed:
+            return False
+        return not (
+            default_realm_changed and not applicant_has_explicit_realm(target_name)
+        )
+
     def _roster_member_from_decoded(
-        self, decoded: DecodedRosterMember, *, rio_summary_target_key: int = 0
+        self,
+        decoded: DecodedRosterMember,
+        *,
+        rio_summary_target_key: int = 0,
+        rio_profile=None,
     ) -> RosterMember:
         cls_name = CLASS_ID_TO_NAME.get(decoded.class_id, "?")
         role_name = ROLE_BYTE_TO_NAME.get(decoded.role, "DAMAGER")
-        rio_profile = self._rio_profile_for(decoded.name)
         return RosterMember(
             applicant_id=self._roster_key(decoded.name),
             name=decoded.name,
@@ -790,11 +842,20 @@ class StateMachine(QObject):
 
         for member_id, decoded in new_by_id.items():
             existing = self._state.party_members.get(member_id)
+            rio_profile = self._rio_profile_for(decoded.name)
             member = self._roster_member_from_decoded(
                 decoded,
                 rio_summary_target_key=rio_summary_target_key,
+                rio_profile=rio_profile,
             )
             if existing is not None:
+                previous_local_rio = self._capture_local_rio_fields(existing)
+                local_rio_identity_stable = self._local_rio_identity_stable(
+                    existing.name,
+                    member.name,
+                    region_identity_changed=region_identity_changed,
+                    default_realm_changed=default_realm_changed,
+                )
                 self._preserve_known_transport_fields(existing, member)
                 needs_refetch = (
                     existing.spec_id != member.spec_id
@@ -808,6 +869,8 @@ class StateMachine(QObject):
                 )
                 if not needs_refetch:
                     self._copy_wcl_data(existing, member)
+                if rio_profile is _RIO_LOOKUP_FAILED and local_rio_identity_stable:
+                    self._preserve_local_rio_fields(previous_local_rio, member)
                 changed = changed or member != existing
             else:
                 changed = True
@@ -1071,6 +1134,13 @@ class StateMachine(QObject):
                 )
                 self.applicantAdded.emit(applicant)
             else:
+                previous_local_rio = self._capture_local_rio_fields(existing)
+                local_rio_identity_stable = self._local_rio_identity_stable(
+                    existing.name,
+                    da.name,
+                    region_identity_changed=region_identity_changed,
+                    default_realm_changed=default_realm_changed,
+                )
                 # Preserve WCL percentiles only while the WCL result shape stays
                 # valid for this row. Gear/score changes are safe; character,
                 # spec, and DPS-vs-HEALER metric-role changes are not.
@@ -1114,6 +1184,8 @@ class StateMachine(QObject):
                 existing.rio_raid_progress = self._rio_raid_progress_from_profile(
                     rio_profile
                 )
+                if rio_profile is _RIO_LOOKUP_FAILED and local_rio_identity_stable:
+                    self._preserve_local_rio_fields(previous_local_rio, existing)
                 if needs_refetch:
                     existing.clear_wcl_data()
                 self.applicantUpdated.emit(existing)

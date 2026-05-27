@@ -138,6 +138,26 @@ class _ScoreOnlyRioReader:
         )()
 
 
+class _FullRioReader:
+    def lookup_profile(self, *_args: object, **_kwargs: object) -> object:
+        return type(
+            "Profile",
+            (),
+            {
+                "current_score": 2861,
+                "dungeons": [{"name": "Pit of Saron", "key_level": 12}],
+                "raid_progress": {
+                    "M": {
+                        "killed": 4,
+                        "total": 8,
+                        "bosses": {"Plexus Sentinel": True},
+                    }
+                },
+                "has_mplus_profile": True,
+            },
+        )()
+
+
 class _ColdRioReader:
     def __init__(self, rows: list[dict] | None = None, current_score: int = 0) -> None:
         self.loaded = False
@@ -707,6 +727,191 @@ def test_local_rio_lookup_oserror_does_not_abort_snapshot():
     )
 
     assert state.applicants["42:1"].rio_dungeons == decoded_rows
+
+
+def test_existing_applicant_preserves_local_rio_fields_when_lookup_fails():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_FullRioReader())
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    score=0,
+                    rio_profile=False,
+                    rio_dungeons=[],
+                )
+            ],
+        )
+    )
+    applicant = state.applicants["42:1"]
+    assert applicant.score == 2861
+    assert applicant.rio_profile is True
+    assert applicant.rio_dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+    assert applicant.rio_raid_progress == {
+        "M": {
+            "killed": 4,
+            "total": 8,
+            "bosses": {"Plexus Sentinel": True},
+        }
+    }
+
+    sm._rio_reader = _OSErrorRioReader()
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    score=0,
+                    rio_profile=False,
+                    rio_dungeons=[],
+                )
+            ],
+        )
+    )
+
+    assert applicant.score == 2861
+    assert applicant.rio_profile is True
+    assert applicant.rio_dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+    assert applicant.rio_raid_progress == {
+        "M": {
+            "killed": 4,
+            "total": 8,
+            "bosses": {"Plexus Sentinel": True},
+        }
+    }
+
+
+def test_existing_roster_member_preserves_local_rio_fields_when_lookup_fails():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_FullRioReader())
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            roster=[_roster_decoded("Chinie", score=0, rio_profile=False)],
+        )
+    )
+    member = state.party_members["chinie"]
+    assert member.score == 2861
+    assert member.rio_profile is True
+    assert member.rio_dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+    assert member.rio_raid_progress == {
+        "M": {
+            "killed": 4,
+            "total": 8,
+            "bosses": {"Plexus Sentinel": True},
+        }
+    }
+
+    sm._rio_reader = _OSErrorRioReader()
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            roster=[_roster_decoded("Chinie", score=0, rio_profile=False)],
+        )
+    )
+
+    assert state.party_members["chinie"].score == 2861
+    assert state.party_members["chinie"].rio_profile is True
+    assert state.party_members["chinie"].rio_dungeons == [
+        {"name": "Pit of Saron", "key_level": 12}
+    ]
+    assert state.party_members["chinie"].rio_raid_progress == {
+        "M": {
+            "killed": 4,
+            "total": 8,
+            "bosses": {"Plexus Sentinel": True},
+        }
+    }
+
+
+def test_existing_applicant_does_not_preserve_local_rio_after_name_change_lookup_fails():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_FullRioReader())
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Old-Realm",
+                    score=0,
+                    rio_profile=False,
+                    rio_dungeons=[],
+                )
+            ],
+        )
+    )
+    assert state.applicants["42:1"].rio_dungeons == [
+        {"name": "Pit of Saron", "key_level": 12}
+    ]
+
+    sm._rio_reader = _OSErrorRioReader()
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="New-Realm",
+                    score=0,
+                    rio_profile=False,
+                    rio_dungeons=[],
+                )
+            ],
+        )
+    )
+
+    applicant = state.applicants["42:1"]
+    assert applicant.name == "New-Realm"
+    assert applicant.score == 0
+    assert applicant.rio_profile is False
+    assert applicant.rio_dungeons == []
+    assert applicant.rio_raid_progress == {}
+
+
+def test_existing_roster_member_does_not_preserve_local_rio_after_region_change_lookup_fails():
+    state = AppState()
+    sm = StateMachine(state, rio_reader=_FullRioReader())
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros", region_id=3),
+            roster=[_roster_decoded("Chinie", score=0, rio_profile=False)],
+        )
+    )
+    assert state.party_members["chinie"].rio_dungeons == [
+        {"name": "Pit of Saron", "key_level": 12}
+    ]
+
+    sm._rio_reader = _OSErrorRioReader()
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros", region_id=1),
+            roster=[_roster_decoded("Chinie", score=0, rio_profile=False)],
+        )
+    )
+
+    member = state.party_members["chinie"]
+    assert member.score == 0
+    assert member.rio_profile is False
+    assert member.rio_dungeons == []
+    assert member.rio_raid_progress == {}
 
 
 def test_local_rio_reenrich_error_preserves_existing_raid_progress():

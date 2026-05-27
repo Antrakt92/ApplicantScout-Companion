@@ -237,17 +237,30 @@ class _RegionDB:
         mplus_meta: _ProviderMeta | None = None
         mplus_lookup_payload: bytes | None = None
         if has_mplus:
-            lookup_text = mplus_lookup_path.read_text(
-                encoding="utf-8", errors="replace"
-            )
-            mplus_meta = _parse_provider_meta(lookup_text)
-            dungeons = _parse_dungeon_names(dungeons_path.read_text(encoding="utf-8"))
-            _validate_encoding_plan(mplus_meta, len(dungeons))
-            mplus_lookup_payload = _parse_lookup_payload(
-                lookup_text,
-                source_path=mplus_lookup_path,
-                payload_cache_dir=payload_cache_dir,
-            )
+            try:
+                lookup_text = mplus_lookup_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                mplus_meta = _parse_provider_meta(lookup_text)
+                dungeons = _parse_dungeon_names(
+                    dungeons_path.read_text(encoding="utf-8")
+                )
+                _validate_encoding_plan(mplus_meta, len(dungeons))
+                mplus_lookup_payload = _parse_lookup_payload_for_character_layout(
+                    lookup_text,
+                    source_path=mplus_lookup_path,
+                    payload_cache_dir=payload_cache_dir,
+                    characters_path=mplus_characters_path,
+                    meta=mplus_meta,
+                )
+            except (OSError, ValueError) as exc:
+                _log.warning(
+                    "could not load RaiderIO local M+ DB for %s: %s", token, exc
+                )
+                dungeons = []
+                mplus_meta = None
+                mplus_lookup_payload = None
+                has_mplus = False
         raid_meta: _ProviderMeta | None = None
         raid_lookup_payload: bytes | None = None
         current_raids: list[_RaidInfo] = []
@@ -263,10 +276,12 @@ class _RegionDB:
                     raid_lookup_text, "previousRaids"
                 )
                 _validate_raid_encoding_plan(raid_meta, current_raids, previous_raids)
-                raid_lookup_payload = _parse_lookup_payload(
+                raid_lookup_payload = _parse_lookup_payload_for_character_layout(
                     raid_lookup_text,
                     source_path=raid_lookup_path,
                     payload_cache_dir=payload_cache_dir,
+                    characters_path=raid_characters_path,
+                    meta=raid_meta,
                 )
             except (OSError, ValueError) as exc:
                 _log.warning(
@@ -599,6 +614,7 @@ def _parse_lookup_payload(
     *,
     source_path: Path | None = None,
     payload_cache_dir: Path | None = None,
+    use_cache: bool = True,
 ) -> bytes:
     match = re.search(r"provider\.lookup\[1\]\s*=\s*\"", text)
     if not match:
@@ -608,7 +624,7 @@ def _parse_lookup_payload(
         if payload_cache_dir is not None and source_path is not None
         else None
     )
-    if cache_path is not None:
+    if cache_path is not None and use_cache:
         try:
             return cache_path.read_bytes()
         except OSError:
@@ -622,6 +638,62 @@ def _parse_lookup_payload(
         except OSError:
             pass
     return payload
+
+
+def _parse_lookup_payload_for_character_layout(
+    text: str,
+    *,
+    source_path: Path,
+    payload_cache_dir: Path | None,
+    characters_path: Path,
+    meta: _ProviderMeta,
+) -> bytes:
+    payload = _parse_lookup_payload(
+        text,
+        source_path=source_path,
+        payload_cache_dir=payload_cache_dir,
+    )
+    if payload_cache_dir is None:
+        return payload
+    characters_text = characters_path.read_text(encoding="utf-8", errors="replace")
+    if _lookup_payload_covers_character_layout(
+        payload, characters_text, meta.record_size
+    ):
+        return payload
+    payload = _parse_lookup_payload(
+        text,
+        source_path=source_path,
+        payload_cache_dir=payload_cache_dir,
+        use_cache=False,
+    )
+    if _lookup_payload_covers_character_layout(
+        payload, characters_text, meta.record_size
+    ):
+        return payload
+    raise ValueError("RaiderIO lookup payload shorter than character layout")
+
+
+def _lookup_payload_covers_character_layout(
+    payload: bytes, characters_text: str, record_size: int
+) -> bool:
+    if record_size <= 0:
+        return False
+    required_size = 0
+    pattern = re.compile(r'provider\.db\["([^"]+)"\]\s*=\s*\{')
+    for match in pattern.finditer(characters_text):
+        start = match.end()
+        end = characters_text.find("}", start)
+        if end < 0:
+            return False
+        body = characters_text[start:end]
+        offset_match = re.match(r"\s*(\d+)", body)
+        if not offset_match:
+            return False
+        names = re.findall(r'"([^"]*)"', body[offset_match.end() :])
+        required_size = max(
+            required_size, int(offset_match.group(1)) + len(names) * record_size
+        )
+    return len(payload) >= required_size
 
 
 def _lookup_payload_cache_path(cache_dir: Path, source_path: Path) -> Path | None:

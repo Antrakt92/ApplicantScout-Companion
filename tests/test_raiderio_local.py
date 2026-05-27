@@ -213,6 +213,41 @@ def test_reader_keeps_mplus_available_when_raid_db_is_invalid(tmp_path: Path):
     assert profile.raid_progress == {}
 
 
+def test_reader_keeps_raid_available_when_mplus_db_is_invalid(tmp_path: Path):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+        encoding_order=(1, 99, 10),
+    )
+    _write_test_raid_db(
+        tmp_path,
+        _raid_record((1, (0, 0, 0)), (0, (0, 0, 0)))
+        + _raid_record((3, (2, 0, 1)), (2, (1, 1, 1))),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 0
+    assert profile.dungeons == []
+    assert profile.has_mplus_profile is False
+    assert profile.raid_progress == {
+        "M": {
+            "killed": 2,
+            "total": 3,
+            "boss_kills": [2, 0, 1],
+            "raid_name": "Test Raid",
+        },
+        "H": {
+            "killed": 3,
+            "total": 3,
+            "boss_kills": [1, 1, 1],
+            "raid_name": "Test Raid",
+        },
+    }
+
+
 def test_reader_matches_display_realm_against_raiderio_normalized_realm_key(
     tmp_path: Path,
 ):
@@ -370,6 +405,34 @@ def test_reader_invalidates_decoded_lookup_payload_cache_when_lookup_file_change
     assert refreshed is not None
     assert refreshed.current_score == 3333
     assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+
+
+def test_reader_redecodes_lookup_payload_when_decoded_cache_is_too_short_for_character_layout(
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    first_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    first = first_reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    cache_files = list(cache_dir.rglob("*.payload.bin"))
+    assert len(cache_files) == 1
+    cache_files[0].write_bytes(_record(3200, 15, 14, 1, 0))
+    second_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    repaired = second_reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert repaired is not None
+    assert repaired.current_score == 3074
+    assert repaired.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+    assert cache_files[0].read_bytes() == (
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2)
+    )
 
 
 def test_preload_region_async_reloads_positive_cache_when_fingerprint_changes(
