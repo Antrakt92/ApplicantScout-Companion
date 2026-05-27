@@ -49,6 +49,12 @@ def _assert_order(container: str, *needles: str) -> None:
     assert positions == sorted(positions), f"Workflow order is wrong for {needles}"
 
 
+def _assert_copy_contains(text: str, phrase: str) -> None:
+    normalized_text = re.sub(r"\s+", " ", text)
+    normalized_phrase = re.sub(r"\s+", " ", phrase)
+    assert normalized_phrase in normalized_text
+
+
 def _workflow_action_refs(workflow: str) -> list[tuple[str, str]]:
     refs: list[tuple[str, str]] = []
     for uses_target in _ACTION_USES_RE.findall(workflow):
@@ -1267,9 +1273,46 @@ def test_readme_documents_current_wire_support():
 def test_readme_documents_shotnow_requires_enabled_addon():
     readme = _read_repo_text("README.md")
 
-    assert "/apscout shotnow        force a snapshot now while enabled" in readme
+    assert (
+        "/apscout shotnow        force snapshot now while enabled (debug / manual sync)"
+        in readme
+    )
     assert "keep ApplicantScout enabled and run `/apscout shotnow`" in readme
-    assert "/apscout shotnow        force a snapshot now\n" not in readme
+    assert "/apscout shotnow        force snapshot now\n" not in readme
+
+
+def test_readme_discloses_optional_raiderio_local_reads_and_cache():
+    readme = _read_repo_text("README.md")
+
+    _assert_copy_contains(readme, "_retail_\\Interface\\AddOns\\RaiderIO\\db")
+    _assert_copy_contains(readme, "%LOCALAPPDATA%\\applicant-scout\\cache\\raiderio-local")
+    _assert_copy_contains(readme, "reads optional local RaiderIO data")
+
+
+def test_readme_documents_support_output_redaction():
+    readme = _read_repo_text("README.md")
+
+    for sensitive_surface in (
+        "/apscout status",
+        "/apscout taintcheck",
+        "companion logs",
+        "QR screenshots",
+        "manual decode output",
+        "config.env",
+        "token.json",
+        "character-cache.json",
+    ):
+        _assert_copy_contains(readme, sensitive_surface)
+
+    for private_detail in (
+        "WCL Client ID/Secret",
+        "OAuth access token",
+        "character names",
+        "realm names",
+        "listing titles/comments",
+        "screenshots folder paths",
+    ):
+        _assert_copy_contains(readme, private_detail)
 
 
 def test_release_version_check_rejects_stale_constraints_header(tmp_path):

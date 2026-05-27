@@ -46,7 +46,11 @@ Logs data, reads optional local RaiderIO context, and renders the overlay.
 
 1. Install the WoW addon through CurseForge, or download `ApplicantScout-*.zip`
    from [the latest addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest).
-   Do not use GitHub's automatic source-code ZIP for normal WoW installs.
+   Do not use GitHub's automatic source-code ZIP for normal WoW installs; it
+   extracts to the wrong folder name for WoW.
+   The packaged addon ZIP should look like `ApplicantScout-<version>.zip`,
+   separate from the companion portable ZIP, and extract so the TOC is at
+   `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`.
 2. Install ApplicantScout Companion from
    [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest).
    Use `ApplicantScoutCompanionSetup-*.exe`; the portable ZIP is mainly for
@@ -114,16 +118,24 @@ Local files:
   `%LOCALAPPDATA%\applicant-scout\config\config.env`
 - OAuth token cache and WCL character cache:
   `%LOCALAPPDATA%\applicant-scout\cache\`
+- Decoded local RaiderIO lookup payload cache:
+  `%LOCALAPPDATA%\applicant-scout\cache\raiderio-local`
 - Logs:
   `%LOCALAPPDATA%\applicant-scout\logs\`
 
-Do not include `config.env`, `token.json`, or full logs in public bug reports
-unless you have removed credentials, access tokens, character names, and realm
-details you consider private.
+If the RaiderIO addon is installed, the companion can read local RaiderIO addon
+database files under `_retail_\Interface\AddOns\RaiderIO\db` to enrich
+score/progress context.
+
+Before sharing support material publicly, redact `/apscout status` output,
+`/apscout taintcheck` output, companion logs, QR screenshots, manual decode
+output, `config.env`, `token.json`, and `character-cache.json`. These can
+include WCL Client ID/Secret, OAuth access token, character names, realm names,
+listing titles/comments, screenshots folder paths, keystone/listing metadata,
+and WCL/RaiderIO evidence.
 
 Current Windows builds are unsigned, so SmartScreen can warn on first install.
-The release also publishes a `.sha256` sidecar for file integrity, not publisher
-identity.
+The `.sha256` sidecar verifies file integrity, not publisher identity.
 
 ## Settings
 
@@ -176,15 +188,19 @@ updates should not require UAC elevation.
 ## In-Game Commands
 
 ```text
-/apscout on | off       enable or disable capture
-/apscout config         open or close the settings panel
-/apscout status         show current state and QR diagnostics
+/apscout on | off       enable/disable capture
+/apscout toggle         flip enabled state
+/apscout config         open/close settings panel
+/apscout status         show current state + QR diagnostics
 /apscout playstyle [off|learning|relaxed|competitive|carry] set M+ default playstyle
-/apscout reset          clear transport cache and queue a fresh snapshot
-/apscout shotnow        force a snapshot now while enabled
-/apscout qrmove         toggle QR move mode; Alt+drag the QR frame
+/apscout reset          clear transport cache, queue fresh snapshot
+/apscout shotnow        force snapshot now while enabled (debug / manual sync)
+/apscout qrvisible      toggle QR frame always-visible (debug aid)
+/apscout qrmove         toggle QR move mode (Alt+drag QR frame)
 /apscout qrreset        reset QR frame position to top-left
+/apscout taintcheck     probe C_LFGList field secret-tagging
 /apscout debug [on|off] toggle debug logging
+/apscout competitive [on|off] legacy alias for Competitive / Off
 ```
 
 ## Troubleshooting
