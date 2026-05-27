@@ -19,6 +19,32 @@ jobs:
           fetch-depth: 0
           path: ApplicantScout-Companion
 
+      - name: Verify release tag is reachable from origin/main
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not verify release tag ancestry: failed to fetch origin/main."
+          }
+          $ReleaseCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $ReleaseCommit) {
+            throw "Could not verify release tag ancestry: failed to resolve release commit."
+          }
+          $MainCommit = (git rev-parse refs/remotes/origin/main).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $MainCommit) {
+            throw "Could not verify release tag ancestry: failed to resolve origin/main."
+          }
+          git merge-base --is-ancestor $ReleaseCommit $MainCommit
+          $ExitCode = $LASTEXITCODE
+          if ($ExitCode -eq 1) {
+            throw "Release tag commit $ReleaseCommit is not reachable from origin/main ($MainCommit)."
+          }
+          if ($ExitCode -ne 0) {
+            throw "Could not verify release tag ancestry: git merge-base exited $ExitCode."
+          }
+          Write-Host "Release tag commit $ReleaseCommit is reachable from origin/main ($MainCommit)."
+
       - name: Resolve paired addon tag
         id: paired-addon
         shell: pwsh
@@ -75,6 +101,32 @@ jobs:
           ref: ${{ steps.paired-addon.outputs.ref }}
           fetch-depth: 0
           path: ApplicantScout-Addon
+
+      - name: Verify paired addon tag is reachable from origin/main
+        shell: pwsh
+        working-directory: ApplicantScout-Addon
+        run: |
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not verify paired addon tag ancestry: failed to fetch addon origin/main."
+          }
+          $ReleaseCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $ReleaseCommit) {
+            throw "Could not verify paired addon tag ancestry: failed to resolve paired addon tag commit."
+          }
+          $MainCommit = (git rev-parse refs/remotes/origin/main).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $MainCommit) {
+            throw "Could not verify paired addon tag ancestry: failed to resolve addon origin/main."
+          }
+          git merge-base --is-ancestor $ReleaseCommit $MainCommit
+          $ExitCode = $LASTEXITCODE
+          if ($ExitCode -eq 1) {
+            throw "Paired addon tag commit $ReleaseCommit is not reachable from addon origin/main ($MainCommit)."
+          }
+          if ($ExitCode -ne 0) {
+            throw "Could not verify paired addon tag ancestry: git merge-base exited $ExitCode."
+          }
+          Write-Host "Paired addon tag commit $ReleaseCommit is reachable from addon origin/main ($MainCommit)."
 
       - name: Validate paired addon metadata
         shell: pwsh

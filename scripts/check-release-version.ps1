@@ -184,6 +184,95 @@ function Test-InstallerChecksum {
     return $null
 }
 
+function Test-PortableZipContract {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PortablePath,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedRoot,
+        [Parameter(Mandatory = $true)]
+        [string[]]$RequiredEntries
+    )
+
+    $ContractErrors = @()
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $Zip = [System.IO.Compression.ZipFile]::OpenRead($PortablePath)
+    }
+    catch {
+        return @("Portable ZIP could not be opened: dist\$(Split-Path -Leaf $PortablePath). $($_.Exception.Message)")
+    }
+
+    try {
+        $SeenEntries = @{}
+        $FileEntries = @{}
+        $HasLicensePayload = $false
+        foreach ($Entry in $Zip.Entries) {
+            $EntryName = $Entry.FullName -replace '\\', '/'
+            if ([string]::IsNullOrWhiteSpace($EntryName)) {
+                $ContractErrors += "Unsafe portable ZIP entry: empty name."
+                continue
+            }
+            if ($EntryName.StartsWith("/") -or $EntryName -match "^[A-Za-z]:") {
+                $ContractErrors += "Unsafe portable ZIP entry: $EntryName"
+                continue
+            }
+
+            $NormalizedName = $EntryName.TrimEnd("/")
+            if ([string]::IsNullOrWhiteSpace($NormalizedName)) {
+                $ContractErrors += "Unsafe portable ZIP entry: $EntryName"
+                continue
+            }
+
+            $Segments = @($NormalizedName -split "/")
+            if ($Segments | Where-Object { $_ -eq "" -or $_ -eq "." -or $_ -eq ".." }) {
+                $ContractErrors += "Unsafe portable ZIP entry: $EntryName"
+                continue
+            }
+            if ($Segments[0] -ne $ExpectedRoot) {
+                $ContractErrors += "Portable ZIP entry is outside ${ExpectedRoot}/: $EntryName"
+                continue
+            }
+
+            $EntryKey = $NormalizedName.ToLowerInvariant()
+            if ($SeenEntries.ContainsKey($EntryKey)) {
+                $ContractErrors += "Portable ZIP has duplicate entry after normalization: $NormalizedName"
+                continue
+            }
+            $SeenEntries[$EntryKey] = $true
+
+            $IsDirectory = $EntryName.EndsWith("/")
+            if (-not $IsDirectory) {
+                $FileEntries[$NormalizedName] = $Entry
+                if ($NormalizedName.StartsWith("$ExpectedRoot/licenses/")) {
+                    $HasLicensePayload = $true
+                }
+            }
+        }
+
+        if ($FileEntries.Count -eq 0) {
+            $ContractErrors += "Portable ZIP contains no files."
+        }
+        foreach ($RequiredEntry in $RequiredEntries) {
+            if (-not $FileEntries.ContainsKey($RequiredEntry)) {
+                $ContractErrors += "Portable ZIP is missing required entry: $RequiredEntry"
+                continue
+            }
+            if ($FileEntries[$RequiredEntry].Length -le 0) {
+                $ContractErrors += "Portable ZIP required entry is empty: $RequiredEntry"
+            }
+        }
+        if (-not $HasLicensePayload) {
+            $ContractErrors += "Portable ZIP is missing dependency license payload under $ExpectedRoot/licenses/."
+        }
+    }
+    finally {
+        $Zip.Dispose()
+    }
+
+    return $ContractErrors
+}
+
 function Invoke-GitHubReleaseView {
     param(
         [string]$CliPath,
@@ -394,6 +483,7 @@ if ($RequireAssets) {
     }
     $InstallerPath = Join-Path $RepoRoot "dist\$InstallerName"
     $ChecksumPath = Join-Path $RepoRoot "dist\$ChecksumName"
+    $PortablePath = Join-Path $RepoRoot "dist\$PortableName"
     if (
         (Test-Path -LiteralPath $InstallerPath) -and
         (Test-Path -LiteralPath $ChecksumPath)
@@ -405,6 +495,17 @@ if ($RequireAssets) {
         if ($ChecksumError) {
             $Errors += $ChecksumError
         }
+    }
+    if (Test-Path -LiteralPath $PortablePath) {
+        $Errors += Test-PortableZipContract `
+            -PortablePath $PortablePath `
+            -ExpectedRoot "ApplicantScout" `
+            -RequiredEntries @(
+                "ApplicantScout/ApplicantScout.exe",
+                "ApplicantScout/LICENSE",
+                "ApplicantScout/THIRD-PARTY-NOTICES.md",
+                "ApplicantScout/RELEASE_NOTES.md"
+            )
     }
 }
 

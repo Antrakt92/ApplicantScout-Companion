@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 
@@ -32,6 +33,20 @@ def _job_block(workflow: str, job_name: str) -> str:
     )
     assert match is not None, f"Missing workflow job: {job_name}"
     return match.group(0)
+
+
+def _step_block(container: str, step_name: str) -> str:
+    match = re.search(
+        rf"(?ms)^      - name: {re.escape(step_name)}\n(?P<body>.*?)(?=^      - name:|\Z)",
+        container,
+    )
+    assert match is not None, f"Missing workflow step: {step_name}"
+    return match.group(0)
+
+
+def _assert_order(container: str, *needles: str) -> None:
+    positions = [container.index(needle) for needle in needles]
+    assert positions == sorted(positions), f"Workflow order is wrong for {needles}"
 
 
 def _workflow_action_refs(workflow: str) -> list[tuple[str, str]]:
@@ -154,6 +169,55 @@ def _run_release_check(repo: Path, *args: str) -> subprocess.CompletedProcess[st
         text=True,
         capture_output=True,
     )
+
+
+def _release_input_paths(build_script: str) -> set[str]:
+    match = re.search(
+        r'(?ms)\$ReleaseInputPaths\s*=\s*@\(\n(?P<body>.*?)\n\s*\)',
+        build_script,
+    )
+    assert match is not None, "Missing $ReleaseInputPaths block"
+    return set(re.findall(r'"([^"]+)"', match.group("body")))
+
+
+def _write_valid_portable_zip(
+    archive: Path,
+    *,
+    root: str = "ApplicantScout",
+    omit: set[str] | None = None,
+    extra_entries: dict[str, bytes] | None = None,
+) -> None:
+    entries = {
+        f"{root}/ApplicantScout.exe": b"exe-bytes",
+        f"{root}/LICENSE": b"license text",
+        f"{root}/THIRD-PARTY-NOTICES.md": b"third-party notices",
+        f"{root}/RELEASE_NOTES.md": b"release notes",
+        f"{root}/licenses/PyQt6/LICENSE.txt": b"dependency license",
+    }
+    for name in omit or set():
+        entries.pop(name, None)
+    entries.update(extra_entries or {})
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+
+
+def _write_release_assets(repo: Path) -> tuple[str, str, str]:
+    project_version = _project_version()
+    dist = repo / "dist"
+    dist.mkdir()
+    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    installer = dist / installer_name
+    installer.write_bytes(b"setup-bytes")
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    (dist / checksum_name).write_text(
+        f"{digest}  {installer_name}\n",
+        encoding="ascii",
+    )
+    _write_valid_portable_zip(dist / portable_name)
+    return installer_name, checksum_name, portable_name
 
 
 def _fake_gh_release_view(
@@ -490,12 +554,25 @@ def test_release_constraints_header_matches_project_version():
 
 def test_release_build_refuses_dirty_release_inputs_by_default():
     build_script = _read_repo_text("scripts/build-windows.ps1")
+    release_inputs = _release_input_paths(build_script)
 
     assert "Assert-CleanReleaseInputs" in build_script
     assert "AllowDirtyReleaseInputs" in build_script
     assert "Refusing to build release artifacts from dirty release inputs" in build_script
-    assert "RELEASE_NOTES.md" in build_script
-    assert "pyproject.toml" in build_script
+    assert {
+        "pyproject.toml",
+        "constraints-release.txt",
+        "LICENSE",
+        "THIRD-PARTY-NOTICES.md",
+        "RELEASE_NOTES.md",
+        "src",
+        "packaging",
+        "scripts\\build-windows.ps1",
+        "scripts\\check.ps1",
+        "scripts\\check-release-version.ps1",
+        "scripts\\collect_dependency_licenses.py",
+    }.issubset(release_inputs)
+    assert "--untracked-files=all" in build_script
 
 
 def test_release_version_metadata_is_ready_for_current_version():
@@ -525,6 +602,7 @@ def test_release_version_check_script_documents_asset_contract():
     script = _read_repo_text("scripts/check-release-version.ps1")
     checklist = _read_repo_text("RELEASE_CHECKLIST.md")
 
+    assert "Test-PortableZipContract" in script
     assert "ApplicantScoutCompanionSetup-$TagVersion.exe" in script
     assert "$InstallerName.sha256" in script
     assert "ApplicantScoutCompanion-$TagVersion-portable.zip" in script
@@ -532,6 +610,47 @@ def test_release_version_check_script_documents_asset_contract():
     assert "constraints-release.txt" in script
     assert "Release constraints header" in script
     assert ".\\scripts\\check-release-version.ps1 -Tag v<companion version> -RequireAssets" in checklist
+    assert "portable ZIP integrity" in checklist
+    assert "presence and checksum consistency only" not in checklist
+
+
+def test_release_checklist_documents_last_tag_reconciliation():
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+
+    assert "git log --oneline <last companion tag>..HEAD" in checklist
+    assert "git log --oneline <last addon tag>..HEAD" in checklist
+    assert "RELEASE_NOTES.md::Unreleased" in checklist
+    assert "CHANGELOG.md::Unreleased" in checklist
+    assert "top versioned" in checklist
+
+
+def test_release_checklist_keeps_release_notes_reconciliation_manual_not_script_gate():
+    script = _read_repo_text("scripts/check-release-version.ps1")
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+
+    assert "commit subject" not in script.lower()
+    assert "git log --oneline" not in script
+    assert "manual reconciliation" in checklist.lower()
+
+
+def test_release_checklist_documents_paired_tag_push_sequence():
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+
+    companion_push = "git push origin v<companion version>"
+    addon_push = "git push origin v<paired addon version>"
+    assert companion_push in checklist
+    assert addon_push in checklist
+    assert checklist.index(companion_push) < checklist.index(addon_push)
+    assert "120-second" in checklist
+    assert "Do not wait for the companion workflow to finish" in checklist
+
+
+def test_release_checklist_documents_asset_wait_rerun_path():
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+
+    assert "180-second" in checklist
+    assert "rerun the failed addon workflow" in checklist
+    assert "Do not delete/recreate or force-push release tags" in checklist
 
 
 def test_release_workflow_runs_existing_gates_before_publishing():
@@ -575,6 +694,58 @@ def test_release_workflow_runs_existing_gates_before_publishing():
         < assets_idx
         < release_idx
         < publish_idx
+    )
+
+
+def test_release_workflow_requires_tag_commit_reachable_from_origin_main():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    release = _job_block(workflow, "release")
+    gate = _step_block(release, "Verify release tag is reachable from origin/main")
+
+    assert "working-directory: ApplicantScout-Companion" in gate
+    assert "git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main" in gate
+    assert "git rev-parse HEAD" in gate
+    assert "git rev-parse refs/remotes/origin/main" in gate
+    assert "git merge-base --is-ancestor" in gate
+    assert "$LASTEXITCODE" in gate
+    assert "not reachable from origin/main" in gate
+    assert "Could not verify release tag ancestry" in gate
+    _assert_order(
+        release,
+        "Checkout companion",
+        "Verify release tag is reachable from origin/main",
+        "Resolve paired addon tag",
+        "Refuse existing release",
+        "Wait for paired addon tag",
+        "Build Windows artifacts",
+        "Create draft release with assets",
+        "Publish release",
+    )
+
+
+def test_release_workflow_requires_paired_addon_tag_reachable_from_origin_main():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    release = _job_block(workflow, "release")
+    gate = _step_block(
+        release,
+        "Verify paired addon tag is reachable from origin/main",
+    )
+
+    assert "working-directory: ApplicantScout-Addon" in gate
+    assert "git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main" in gate
+    assert "git rev-parse HEAD" in gate
+    assert "git rev-parse refs/remotes/origin/main" in gate
+    assert "git merge-base --is-ancestor" in gate
+    assert "$LASTEXITCODE" in gate
+    assert "not reachable from addon origin/main" in gate
+    assert "Could not verify paired addon tag ancestry" in gate
+    _assert_order(
+        release,
+        "Checkout addon",
+        "Verify paired addon tag is reachable from origin/main",
+        "Validate paired addon metadata",
+        "Build Windows artifacts",
+        "Create draft release with assets",
     )
 
 
@@ -1222,18 +1393,8 @@ def test_release_version_check_require_assets_validates_checksum_digest(tmp_path
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
     dist = repo / "dist"
-    dist.mkdir()
-    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    installer_name, _, _ = _write_release_assets(repo)
     checksum_name = f"{installer_name}.sha256"
-    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
-    installer = dist / installer_name
-    installer.write_bytes(b"setup-bytes")
-    digest = hashlib.sha256(b"setup-bytes").hexdigest()
-    (dist / checksum_name).write_text(
-        f"{digest}  {installer_name}\n",
-        encoding="ascii",
-    )
-    (dist / portable_name).write_bytes(b"zip")
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
@@ -1253,18 +1414,13 @@ def test_release_version_check_require_assets_rejects_checksum_wrong_filename(tm
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
     dist = repo / "dist"
-    dist.mkdir()
-    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    installer_name, _, _ = _write_release_assets(repo)
     checksum_name = f"{installer_name}.sha256"
-    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
-    installer = dist / installer_name
-    installer.write_bytes(b"setup-bytes")
     digest = hashlib.sha256(b"setup-bytes").hexdigest()
     (dist / checksum_name).write_text(
         f"{digest}  Other.exe\n",
         encoding="ascii",
     )
-    (dist / portable_name).write_bytes(b"zip")
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
@@ -1276,21 +1432,122 @@ def test_release_version_check_require_assets_rejects_malformed_checksum(tmp_pat
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
     dist = repo / "dist"
-    dist.mkdir()
-    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    installer_name, _, _ = _write_release_assets(repo)
     checksum_name = f"{installer_name}.sha256"
-    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
-    (dist / installer_name).write_bytes(b"setup-bytes")
     (dist / checksum_name).write_text(
         f"not-a-sha  {installer_name}\n",
         encoding="ascii",
     )
-    (dist / portable_name).write_bytes(b"zip")
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
     assert result.returncode != 0
     assert "malformed checksum" in (result.stdout + result.stderr).lower()
+
+
+def test_release_version_check_require_assets_validates_portable_zip_contract(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _write_release_assets(repo)
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_release_version_check_require_assets_rejects_corrupt_portable_zip(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    (repo / "dist" / portable_name).write_bytes(b"not a zip")
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    output = (result.stdout + result.stderr).lower()
+    assert "portable zip" in output
+    assert "open" in output or "invalid" in output
+
+
+def test_release_version_check_require_assets_rejects_wrong_portable_root(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(repo / "dist" / portable_name, root="Other")
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    output = (result.stdout + result.stderr).lower()
+    assert "applicantscout/" in output
+    assert "other/" in output
+
+
+def test_release_version_check_require_assets_rejects_content_only_portable_zip(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    with zipfile.ZipFile(repo / "dist" / portable_name, "w") as zf:
+        zf.writestr("ApplicantScout.exe", b"exe")
+        zf.writestr("LICENSE", b"license")
+        zf.writestr("THIRD-PARTY-NOTICES.md", b"notices")
+        zf.writestr("RELEASE_NOTES.md", b"notes")
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "applicantscout/" in (result.stdout + result.stderr).lower()
+
+
+def test_release_version_check_require_assets_rejects_missing_portable_required_entry(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(
+        repo / "dist" / portable_name,
+        omit={"ApplicantScout/RELEASE_NOTES.md"},
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "ApplicantScout/RELEASE_NOTES.md" in result.stdout + result.stderr
+
+
+def test_release_version_check_require_assets_rejects_portable_zip_traversal_entry(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(
+        repo / "dist" / portable_name,
+        extra_entries={"ApplicantScout/../evil.txt": b"bad"},
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "unsafe portable zip entry" in (result.stdout + result.stderr).lower()
+
+
+def test_release_version_check_require_assets_rejects_portable_zip_without_license_payload(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(
+        repo / "dist" / portable_name,
+        omit={"ApplicantScout/licenses/PyQt6/LICENSE.txt"},
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "ApplicantScout/licenses/" in result.stdout + result.stderr
 
 
 def test_start_batch_explains_missing_local_environment():

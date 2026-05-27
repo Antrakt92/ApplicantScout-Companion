@@ -125,7 +125,10 @@ function Assert-CleanReleaseInputs {
         "RELEASE_NOTES.md",
         "src",
         "packaging",
-        "scripts\build-windows.ps1"
+        "scripts\build-windows.ps1",
+        "scripts\check.ps1",
+        "scripts\check-release-version.ps1",
+        "scripts\collect_dependency_licenses.py"
     )
 
     $Git = Get-Command "git" -ErrorAction SilentlyContinue
