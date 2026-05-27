@@ -275,7 +275,7 @@ class TrayController:
         )
 
     def _show_overlay(self, window: OverlayWindow) -> None:
-        window.restore_from_launcher()
+        window.restore_from_tray()
 
     def _open_logs(self, open_logs: Callable[[], str]) -> None:
         try:

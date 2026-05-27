@@ -447,9 +447,17 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert more_button is not None
     assert title_label.text() == dialog.windowTitle()
     assert close_button.text() == "×"
+    assert close_button.accessibleName() == "Hide settings to tray"
+    assert close_button.accessibleDescription() == (
+        "Hide ApplicantScout settings to tray."
+    )
     assert test_button.text() == "Test WCL"
     assert update_button.text() == ""
     assert not update_button.icon().isNull()
+    assert update_button.accessibleName() == "Install ApplicantScout update"
+    assert update_button.accessibleDescription() == (
+        "Install available ApplicantScout update."
+    )
     assert update_button.isHidden()
     assert update_button.width() == 30
     assert update_button.height() == 26
@@ -457,6 +465,8 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert "#4da3ff" in update_button.styleSheet()
     assert "#74baff" in update_button.styleSheet()
     assert support_button.text() == "♡"
+    assert support_button.accessibleName() == "Support ApplicantScout"
+    assert "Ko-fi" in support_button.accessibleDescription()
     assert "ko-fi" in support_button.toolTip().lower()
     assert support_button.width() == 26
     assert support_button.height() == 24
@@ -597,11 +607,15 @@ def test_settings_dialog_shows_blue_update_icon_only_when_update_available(
 
     assert not update_button.isHidden()
     assert "v0.2.0" in update_button.toolTip()
+    assert "v0.2.0" in update_button.accessibleDescription()
     assert "#4da3ff" in update_button.styleSheet()
 
     dialog.set_update_available(None)
 
     assert update_button.isHidden()
+    assert update_button.accessibleDescription() == (
+        "Install available ApplicantScout update."
+    )
 
 
 def test_settings_dialog_keeps_update_icon_visible_after_update_failure(
@@ -633,6 +647,9 @@ def test_settings_dialog_disables_editable_settings_during_update(qtbot, tmp_pat
     assert not dialog.region_combo.isEnabled()
     assert not dialog.screenshots_edit.isEnabled()
     assert not dialog.test_button.isEnabled()
+    assert dialog.update_button.accessibleDescription() == (
+        "Installing ApplicantScout update..."
+    )
 
 
 def test_settings_dialog_suppresses_pending_values_while_update_in_progress(
@@ -822,6 +839,9 @@ def test_settings_dialog_keeps_update_blocked_after_installer_handoff(
     assert handoffs == [("Installing update.", launch)]
     assert not dialog.update_button.isHidden()
     assert not dialog.update_button.isEnabled()
+    assert dialog.update_button.accessibleDescription() == (
+        "Installing ApplicantScout update..."
+    )
 
 
 def test_settings_dialog_does_not_emit_handoff_signal_without_installer_handoff(
@@ -988,6 +1008,8 @@ def test_custom_titlebar_close_respects_no_tray_quit_policy(qtbot, tmp_path: Pat
     assert not dialog.isVisible()
     assert hidden == []
     assert quit_requested == [True]
+    assert dialog.close_button.accessibleName() == "Quit ApplicantScout"
+    assert dialog.close_button.accessibleDescription() == "Quit ApplicantScout."
 
 
 def test_no_tray_close_flushes_pending_text_values_before_quit(qtbot, tmp_path: Path):
@@ -1031,6 +1053,8 @@ def test_first_run_titlebar_close_button_uses_setup_copy(qtbot, tmp_path: Path):
     qtbot.addWidget(dialog)
 
     assert dialog.close_button.toolTip() == "Close ApplicantScout setup."
+    assert dialog.close_button.accessibleName() == "Close setup"
+    assert dialog.close_button.accessibleDescription() == "Close ApplicantScout setup."
 
 
 def test_settings_dialog_emits_values_changed_after_text_debounce(qtbot, tmp_path: Path):

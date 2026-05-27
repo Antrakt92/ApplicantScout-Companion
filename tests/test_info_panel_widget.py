@@ -2270,6 +2270,39 @@ def test_launcher_click_during_foreground_grace_does_not_show_overlay_outside_ga
         client.close()
 
 
+def test_launcher_restore_does_not_activate_overlay_window(qtbot, tmp_path, monkeypatch):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: True,
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+    activated: list[bool] = []
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        monkeypatch.setattr(
+            window,
+            "activateWindow",
+            lambda: activated.append(True),
+        )
+
+        window.restore_from_launcher()
+
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+        assert activated == []
+    finally:
+        client.close()
+
+
 def test_launcher_mouse_click_restores_overlay_when_probe_sees_launcher(
     qtbot, tmp_path, monkeypatch
 ):

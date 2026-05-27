@@ -4962,6 +4962,10 @@ def test_tray_controller_exposes_running_status_and_controls(
         def restore_from_launcher(self) -> None:
             self.show_called = True
             self.raise_called = True
+
+        def restore_from_tray(self) -> None:
+            self.show_called = True
+            self.raise_called = True
             self.activate_called = True
 
         def raise_(self) -> None:

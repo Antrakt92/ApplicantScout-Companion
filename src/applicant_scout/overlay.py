@@ -2541,6 +2541,12 @@ class OverlayWindow(QMainWindow):
             self._launcher.hide()
 
     def restore_from_launcher(self) -> None:
+        self._restore_from_launcher(activate=False)
+
+    def restore_from_tray(self) -> None:
+        self._restore_from_launcher(activate=True)
+
+    def _restore_from_launcher(self, *, activate: bool) -> None:
         if self._closed:
             return
         launcher_interaction_foreground = (
@@ -2565,7 +2571,8 @@ class OverlayWindow(QMainWindow):
         self._launcher.hide()
         self.show()
         self.raise_()
-        self.activateWindow()
+        if activate:
+            self.activateWindow()
 
     def _is_game_foreground(self) -> bool:
         try:

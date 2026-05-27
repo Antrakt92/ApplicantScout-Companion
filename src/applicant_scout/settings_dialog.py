@@ -64,6 +64,13 @@ WCL_CREATE_CLIENT_APP_NAME = "ApplicantScout"
 WCL_CREATE_CLIENT_REDIRECT_URL = "http://localhost"
 SUPPORT_URL = "https://ko-fi.com/antrakt92"
 APP_ICON_PATH = Path(__file__).with_name("assets") / "app_icon.ico"
+SUPPORT_TOOLTIP = "Support ApplicantScout on Ko-fi."
+UPDATE_ACCESSIBLE_NAME = "Install ApplicantScout update"
+UPDATE_DEFAULT_TOOLTIP = "Install available ApplicantScout update."
+UPDATE_INSTALLING_TOOLTIP = "Installing ApplicantScout update..."
+CLOSE_SETUP_TOOLTIP = "Close ApplicantScout setup."
+CLOSE_TRAY_TOOLTIP = "Hide ApplicantScout settings to tray."
+CLOSE_QUIT_TOOLTIP = "Quit ApplicantScout."
 
 
 def _settings_window_title(*, first_run: bool) -> str:
@@ -90,6 +97,26 @@ def _download_icon(color: str = "#4da3ff") -> QIcon:
     painter.drawLine(15, 13, 15, 16)
     painter.end()
     return QIcon(pixmap)
+
+
+def _set_tooltip_and_accessibility(
+    button: QAbstractButton,
+    *,
+    tooltip: str,
+    accessible_name: str,
+    accessible_description: str | None = None,
+) -> None:
+    button.setToolTip(tooltip)
+    button.setAccessibleName(accessible_name)
+    button.setAccessibleDescription(accessible_description or tooltip)
+
+
+def _close_button_copy(*, first_run: bool, hide_to_tray: bool) -> tuple[str, str]:
+    if first_run:
+        return CLOSE_SETUP_TOOLTIP, "Close setup"
+    if hide_to_tray:
+        return CLOSE_TRAY_TOOLTIP, "Hide settings to tray"
+    return CLOSE_QUIT_TOOLTIP, "Quit ApplicantScout"
 
 
 @dataclass(frozen=True)
@@ -374,7 +401,12 @@ class SettingsDialog(QDialog):
         self.support_button = QToolButton(footer)
         self.support_button.setObjectName("supportApplicantScout")
         self.support_button.setText("♡")
-        self.support_button.setToolTip("Support ApplicantScout on Ko-fi.")
+        _set_tooltip_and_accessibility(
+            self.support_button,
+            tooltip=SUPPORT_TOOLTIP,
+            accessible_name="Support ApplicantScout",
+            accessible_description="Open Ko-fi support for ApplicantScout.",
+        )
         self.support_button.setFixedSize(26, 24)
         self.support_button.setStyleSheet(
             "QToolButton {"
@@ -456,7 +488,11 @@ class SettingsDialog(QDialog):
         self.update_button.setObjectName("installUpdate")
         self.update_button.setText("")
         self.update_button.setIcon(_download_icon())
-        self.update_button.setToolTip("Install available ApplicantScout update.")
+        _set_tooltip_and_accessibility(
+            self.update_button,
+            tooltip=UPDATE_DEFAULT_TOOLTIP,
+            accessible_name=UPDATE_ACCESSIBLE_NAME,
+        )
         self.update_button.setFixedSize(30, 26)
         self.update_button.setStyleSheet(
             "QToolButton {"
@@ -487,14 +523,14 @@ class SettingsDialog(QDialog):
         self.close_button = QToolButton(title_bar)
         self.close_button.setObjectName("settingsClose")
         self.close_button.setText("×")
-        self.close_button.setToolTip(
-            "Close ApplicantScout setup."
-            if self._first_run
-            else (
-                "Hide ApplicantScout settings to tray."
-                if self._hide_to_tray_on_close
-                else "Quit ApplicantScout."
-            )
+        close_tooltip, close_accessible_name = _close_button_copy(
+            first_run=self._first_run,
+            hide_to_tray=self._hide_to_tray_on_close,
+        )
+        _set_tooltip_and_accessibility(
+            self.close_button,
+            tooltip=close_tooltip,
+            accessible_name=close_accessible_name,
         )
         self.close_button.setFixedSize(30, 26)
         self.close_button.setStyleSheet(
@@ -601,13 +637,19 @@ class SettingsDialog(QDialog):
     def set_update_available(self, latest_version: str | None) -> None:
         self._latest_update_version = latest_version
         if latest_version:
-            self.update_button.setToolTip(
-                f"Install ApplicantScout Companion {latest_version}."
+            _set_tooltip_and_accessibility(
+                self.update_button,
+                tooltip=f"Install ApplicantScout Companion {latest_version}.",
+                accessible_name=UPDATE_ACCESSIBLE_NAME,
             )
             self.update_button.show()
             return
         self.update_button.hide()
-        self.update_button.setToolTip("Install available ApplicantScout update.")
+        _set_tooltip_and_accessibility(
+            self.update_button,
+            tooltip=UPDATE_DEFAULT_TOOLTIP,
+            accessible_name=UPDATE_ACCESSIBLE_NAME,
+        )
 
     def set_update_in_progress(self, in_progress: bool) -> None:
         self._update_in_progress = in_progress
@@ -617,9 +659,17 @@ class SettingsDialog(QDialog):
         self._set_settings_controls_enabled(not in_progress)
         if in_progress:
             self.update_button.show()
-            self.update_button.setToolTip("Installing ApplicantScout update...")
+            _set_tooltip_and_accessibility(
+                self.update_button,
+                tooltip=UPDATE_INSTALLING_TOOLTIP,
+                accessible_name=UPDATE_ACCESSIBLE_NAME,
+            )
         elif self.update_button.isHidden():
-            self.update_button.setToolTip("Install available ApplicantScout update.")
+            _set_tooltip_and_accessibility(
+                self.update_button,
+                tooltip=UPDATE_DEFAULT_TOOLTIP,
+                accessible_name=UPDATE_ACCESSIBLE_NAME,
+            )
         else:
             self.set_update_available(self._latest_update_version)
 
@@ -843,7 +893,11 @@ class SettingsDialog(QDialog):
             elif raw.keep_disabled:
                 raw.button.setEnabled(False)
                 self.update_button.show()
-                raw.button.setToolTip("Installing ApplicantScout update...")
+                _set_tooltip_and_accessibility(
+                    self.update_button,
+                    tooltip=UPDATE_INSTALLING_TOOLTIP,
+                    accessible_name=UPDATE_ACCESSIBLE_NAME,
+                )
                 self.updateHandoffStarted.emit(raw.message, raw.installer_launch)
             else:
                 raw.button.setEnabled(True)
