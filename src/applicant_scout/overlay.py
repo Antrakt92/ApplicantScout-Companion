@@ -1900,43 +1900,34 @@ class ApplicantInfoPanel(QFrame):
         self, applicant: Applicant, listing: Listing | None = None
     ) -> int:
         shown = 0
-        fit = candidate_fit(applicant, listing)
+        target_raid = _raid_target_key_for_listing(listing)
         raid_sources = [
             (
                 "N",
-                applicant.raid_normal,
-                applicant.raid_normal_median,
                 self._metric_preferences.raid_normal,
             ),
             (
                 "H",
-                applicant.raid_heroic,
-                applicant.raid_heroic_median,
                 self._metric_preferences.raid_heroic,
             ),
             (
                 "M",
-                applicant.raid_mythic,
-                applicant.raid_mythic_median,
                 self._metric_preferences.raid_mythic,
             ),
         ]
-        for key, best, median, enabled in raid_sources:
-            if not enabled:
+        for key, enabled in raid_sources:
+            if not enabled and key != target_raid:
                 self._metric_labels[key].setVisible(False)
                 continue
-            text, _fg, bg = _raid_cell_visuals(best, median, applicant.fetch_status)
+            text, fg, bg = _raid_fit_visuals(applicant, listing, key)
             if bg is None:
                 self._metric_labels[key].setVisible(False)
                 continue
-            prefix = f"{key} "
-            if fit.context == CONTEXT_RAID and fit.target_raid == key:
-                prefix = f"{key} {fit.label} "
             self._set_badge(
                 self._metric_labels[key],
-                f"{prefix}{text}",
+                f"{key} {text}",
                 bg,
-                _text_colour_for_bg(bg),
+                fg or _text_colour_for_bg(bg),
             )
             shown += 1
 
@@ -4255,7 +4246,17 @@ class OverlayWindow(QMainWindow):
         else:
             count_str = f"({n})"
         if listing is not None:
-            level = f" +{listing.key_level}" if listing.key_level > 0 else ""
+            listing_context = detect_listing_context(listing)
+            title_prefix = (
+                "Raid Applicants"
+                if listing_context == CONTEXT_RAID
+                else "M+ Applicants"
+            )
+            level = (
+                f" +{listing.key_level}"
+                if listing_context == CONTEXT_MPLUS and listing.key_level > 0
+                else ""
+            )
             # Skip the dungeon-name segment when it's just the generic LFG
             # activity name "Mythic+" (host listed "any keystone" rather than a
             # specific dungeon). "M+ Applicants — Mythic+ (12)" is redundant —
@@ -4263,9 +4264,9 @@ class OverlayWindow(QMainWindow):
             dn = listing.dungeon_name
             generic = (not dn) or dn == "?" or dn.lower() in ("mythic+", "mythic plus")
             if generic:
-                self._title_bar.setTitleText(f"M+ Applicants{level} {count_str}")
+                self._title_bar.setTitleText(f"{title_prefix}{level} {count_str}")
             else:
-                self._title_bar.setTitleText(f"M+ Applicants — {dn}{level} {count_str}")
+                self._title_bar.setTitleText(f"{title_prefix} — {dn}{level} {count_str}")
         else:
             self._title_bar.setTitleText(f"M+ Applicants {count_str}")
         # Listing tooltip — host's listing_name + comment from in-game LFG UI.
@@ -4562,32 +4563,34 @@ def _raid_dual_cell(
 
 
 def _raid_cell_visuals(
-    best: float | None,
-    median: float | None,
+    best: object,
+    median: object,
     fetch_status: str,
 ) -> tuple[str, str | None, str | None]:
     """Returns (text, foreground_hex|None, background_hex|None).
     Pure function — no Qt dependency — keeps cell-rendering logic testable
     and deterministic. None on fg/bg means "leave at default"."""
-    if fetch_status == "loading":
+    if fetch_status in {"pending", "loading"}:
         return "…", "#888", None
     if fetch_status == "error":
         return "?", "#ff5555", None
     if fetch_status == "not_found":
         return "—", "#5d5d5d", None
-    if best is None and median is None:
+    best_pct = safe_percent(best)
+    median_pct = safe_percent(median)
+    if best_pct is None and median_pct is None:
         return "—", "#5d5d5d", None
 
-    best_str = f"{int(round(best))}" if best is not None else "—"
+    best_str = f"{int(round(best_pct))}" if best_pct is not None else "—"
     # When median is missing (single-run, or only one encounter logged at this
     # difficulty), the literal "/—" added visual noise without information
     # ("89/—" reads like a broken value). Suppress the slash and second value
     # entirely; row-hover panel carries the explanation.
-    if median is None:
-        text = best_str if best is not None else "—"
+    if median_pct is None:
+        text = best_str if best_pct is not None else "—"
     else:
-        text = f"{best_str}/{int(round(median))}"
-    bg = percentile_colour(best) if best is not None else None
+        text = f"{best_str}/{int(round(median_pct))}"
+    bg = percentile_colour(best_pct) if best_pct is not None else None
     fg = _text_colour_for_bg(bg) if bg is not None else None
     return text, fg, bg
 
@@ -4638,14 +4641,27 @@ def _raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> s
 def _raid_fit_cell(
     applicant: Applicant, listing: Listing | None, target: str
 ) -> QTableWidgetItem:
+    text, fg, bg = _raid_fit_visuals(applicant, listing, target)
+    item = QTableWidgetItem(text)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    if bg is not None:
+        item.setBackground(QColor(bg))
+        item.setForeground(QColor(fg or _text_colour_for_bg(bg)))
+        item.setFont(_bold_cell_font(item.font()))
+    return item
+
+
+def _raid_fit_visuals(
+    applicant: Applicant, listing: Listing | None, target: str
+) -> tuple[str, str | None, str | None]:
     if applicant.fetch_status != "ready":
         best, median = _raid_values_for_key(applicant, target)
-        return _raid_dual_cell(best, median, applicant.fetch_status)
+        return _raid_cell_visuals(best, median, applicant.fetch_status)
 
     fit = candidate_fit(applicant, listing)
     if fit.context != CONTEXT_RAID or fit.target_raid != target or not fit.display:
         best, median = _raid_values_for_key(applicant, target)
-        return _raid_dual_cell(best, median, applicant.fetch_status)
+        return _raid_cell_visuals(best, median, applicant.fetch_status)
 
     if fit.source == "raid_exact":
         prefix = fit.label
@@ -4659,14 +4675,9 @@ def _raid_fit_cell(
     if evidence:
         text = f"{text} · {evidence}"
 
-    item = QTableWidgetItem(text)
-    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     bg = fit.colour
-    if bg is not None:
-        item.setBackground(QColor(bg))
-        item.setForeground(QColor(_text_colour_for_bg(bg)))
-        item.setFont(_bold_cell_font(item.font()))
-    return item
+    fg = _text_colour_for_bg(bg) if bg is not None else None
+    return text, fg, bg
 
 
 def _raid_package_cell(package: PackageFit) -> QTableWidgetItem:

@@ -6,6 +6,7 @@ keeps only helper contracts that are shared by the table and panel.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 import pytest
@@ -173,6 +174,38 @@ def test_raid_cell_visuals_use_percentile_background_and_contrast():
     bg = percentile_colour(91.0)
     assert _raid_cell_visuals(91.0, 78.0, "ready") == (
         "91/78",
+        _text_colour_for_bg(bg),
+        bg,
+    )
+
+
+@pytest.mark.parametrize("fetch_status", ["pending", "loading"])
+def test_raid_cell_visuals_hide_stale_values_for_provisional_status(fetch_status):
+    assert _raid_cell_visuals(91.0, 78.0, fetch_status) == ("…", "#888", None)
+
+
+@pytest.mark.parametrize(
+    "best",
+    [math.nan, math.inf, True, "bad", -1.0, 101.0],
+)
+def test_raid_cell_visuals_ignores_malformed_best_percentiles(best):
+    text, fg, bg = _raid_cell_visuals(best, 50.0, "ready")
+
+    assert bg is None
+    assert fg is None
+    assert "nan" not in text.lower()
+    assert "inf" not in text.lower()
+
+
+@pytest.mark.parametrize(
+    "median",
+    [math.nan, math.inf, False, "bad", -1.0, 101.0],
+)
+def test_raid_cell_visuals_treats_malformed_median_as_missing(median):
+    bg = percentile_colour(80.0)
+
+    assert _raid_cell_visuals(80.0, median, "ready") == (
+        "80",
         _text_colour_for_bg(bg),
         bg,
     )

@@ -269,6 +269,9 @@ def test_check_script_checks_native_command_exit_codes():
 
     assert "Invoke-NativeChecked" in script
     assert 'Invoke-NativeChecked -Label "Python tests"' in script
+    assert 'Invoke-NativeChecked -Label "Overlay visual baselines"' in script
+    assert "render_overlay_fixture.py" in script
+    assert "--check --all" in script
     assert 'Invoke-NativeChecked -Label "Ruff"' in script
     assert 'Invoke-NativeChecked -Label "Pyright"' in script
     assert 'Invoke-NativeChecked -Label "Lua syntax"' in script

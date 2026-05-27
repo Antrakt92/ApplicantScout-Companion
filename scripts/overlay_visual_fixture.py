@@ -238,6 +238,139 @@ def build_overlay_visual_state() -> AppState:
     return state
 
 
+def _raid_boss_parses() -> dict[str, list[dict]]:
+    return {
+        "H": [
+            {
+                "encounter_id": 3176,
+                "name": "Imperator Averzian",
+                "overall": 83.0,
+                "ilvl": 63.0,
+            },
+            {
+                "encounter_id": 3131,
+                "name": "Vorasius",
+                "overall": 72.0,
+                "ilvl": 58.0,
+            },
+        ],
+        "M": [
+            {
+                "encounter_id": 3176,
+                "name": "Imperator Averzian",
+                "overall": 46.0,
+                "ilvl": 68.0,
+            },
+            {
+                "encounter_id": 3131,
+                "name": "Vorasius",
+                "overall": 39.0,
+                "ilvl": 52.0,
+            },
+        ],
+    }
+
+
+def _raid_progress() -> dict[str, dict]:
+    return {
+        "H": {
+            "killed": 4,
+            "total": 9,
+            "boss_kills": [2, 1, 1, 0, 0, 0, 0, 0, 0],
+        },
+        "M": {
+            "killed": 1,
+            "total": 9,
+            "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
+        },
+    }
+
+
+def build_raid_listing_visual_state() -> AppState:
+    state = AppState()
+    state.listing = Listing(
+        activity_id=0,
+        dungeon_name="Manaforge Omega",
+        listing_name="Heroic Manaforge Omega - visual QA",
+        comment="Raid-context overlay fixture for table and detail panel review.",
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+    )
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    applicants = [
+        _app(
+            applicant_id="10:1",
+            name="Stonewall-Area 52",
+            cls="PALADIN",
+            spec_id=66,
+            ilvl=662,
+            score=2794,
+            main_score=3468,
+            role="TANK",
+            raid_heroic=74.0,
+            raid_heroic_median=67.0,
+            raid_mythic=41.0,
+            raid_mythic_median=36.0,
+            mplus_dps=78.0,
+            mplus_dps_median=66.0,
+            raid_boss_parses=_raid_boss_parses(),
+            rio_raid_progress=_raid_progress(),
+            wcl_metric_preferences=prefs,
+        ),
+        _app(
+            applicant_id=VISUAL_FIXTURE_PINNED_ID,
+            name="Bloomwell-Area 52",
+            cls="DRUID",
+            spec_id=105,
+            ilvl=660,
+            score=2740,
+            role="HEALER",
+            raid_normal=None,
+            raid_normal_median=None,
+            raid_heroic=86.0,
+            raid_heroic_median=77.0,
+            raid_mythic=42.0,
+            raid_mythic_median=38.0,
+            mplus_dps=None,
+            mplus_dps_median=None,
+            mplus_dps_breakdown=[],
+            mplus_hps=92.0,
+            mplus_hps_median=84.0,
+            mplus_hps_breakdown=_healer_breakdown(),
+            raid_boss_parses=_raid_boss_parses(),
+            rio_raid_progress=_raid_progress(),
+            wcl_metric_preferences=prefs,
+        ),
+        _app(
+            applicant_id="10:3",
+            name="Cinderbolt-Area 52",
+            cls="MAGE",
+            spec_id=63,
+            ilvl=658,
+            score=2685,
+            role="DAMAGER",
+            raid_heroic=61.0,
+            raid_heroic_median=57.0,
+            raid_mythic=73.0,
+            raid_mythic_median=65.0,
+            mplus_dps=88.0,
+            mplus_dps_median=75.0,
+            raid_boss_parses=_raid_boss_parses(),
+            rio_raid_progress=_raid_progress(),
+            wcl_metric_preferences=prefs,
+        ),
+    ]
+    for applicant in applicants:
+        state.add_or_update(applicant)
+    return state
+
+
 def _party_member(unit_index: int, **overrides) -> RosterMember:
     base = _app(**overrides)
     values = base.__dict__.copy()
@@ -387,6 +520,17 @@ OVERLAY_VISUAL_SCENARIOS: dict[str, VisualFixtureScenario] = {
             raid_mythic=True,
         ),
         prepare_window=_prepare_metrics_raid_only_window,
+    ),
+    "raid-listing": VisualFixtureScenario(
+        name="raid-listing",
+        baseline_path=_baseline_path("raid-listing"),
+        build_state=build_raid_listing_visual_state,
+        metric_preferences=MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=True,
+        ),
     ),
 }
 

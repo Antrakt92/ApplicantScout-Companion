@@ -178,6 +178,38 @@ def test_ready_panel_renders_identity_metrics_and_dungeons(qtbot):
     assert value_label.width() == DUNGEON_METRIC_WIDTH
 
 
+def test_raid_listing_panel_shows_disabled_target_badge_with_estimated_fit(qtbot):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+    qtbot.addWidget(panel)
+
+    panel.setApplicantData(
+        _app(
+            raid_normal=None,
+            raid_normal_median=None,
+            raid_heroic=None,
+            raid_heroic_median=None,
+            raid_mythic=70.0,
+            raid_mythic_median=60.0,
+        ),
+        _raid_listing(difficulty_id=15),
+    )
+
+    assert panel._metric_labels["N"].isHidden()
+    assert not panel._metric_labels["H"].isHidden()
+    assert panel._metric_labels["H"].text().startswith("H EST ")
+    assert "M 70/60" in panel._metric_labels["H"].text()
+    assert not panel._metric_labels["M"].isHidden()
+    assert panel._status_label.text() != "No Warcraft Logs data"
+
+
 def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
     panel = ApplicantInfoPanel(
         None,

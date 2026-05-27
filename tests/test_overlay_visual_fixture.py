@@ -33,6 +33,7 @@ def test_visual_fixture_scenarios_are_small_and_unique():
         "party-manual-key",
         "party-no-listing-manual-key",
         "metrics-raid-only",
+        "raid-listing",
     }
     assert (
         OVERLAY_VISUAL_SCENARIOS[DEFAULT_VISUAL_FIXTURE_SCENARIO].baseline_path
@@ -210,6 +211,40 @@ def test_metrics_raid_only_visual_scenario_hides_disabled_columns(qtbot, tmp_pat
         assert window._panel._metric_labels["H"].isHidden()
         assert not window._panel._metric_labels["M"].isHidden()
         assert window._panel._metric_labels["M+"].isHidden()
+    finally:
+        client.close()
+
+
+def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
+    state, window, client = create_overlay_visual_window(tmp_path, "raid-listing")
+    qtbot.addWidget(window)
+
+    try:
+        show_overlay_visual_window(
+            window,
+            "raid-listing",
+            process_events=QApplication.processEvents,
+        )
+
+        listing = window._effective_listing()
+        assert listing is not None
+        assert listing.category_id == 3
+        assert listing.difficulty_id == 15
+        assert listing.key_level == 0
+        assert window._title_bar.title_label.text() == (
+            "Raid Applicants — Manaforge Omega (3)"
+        )
+        assert len(state.applicants) == window._table.rowCount()
+        assert not window._table.isColumnHidden(COL_H)
+        assert not window._table.isColumnHidden(COL_MPLUS)
+        assert window._panel._detail_mode == "raid"
+        assert not window._panel._detail_buttons["raid"].isHidden()
+        assert not window._panel._detail_buttons["mplus"].isHidden()
+        assert window._panel._dungeon_rows[0][0].text()
+        assert window._panel._dungeon_rows[0][1].text()
+        assert window._panel._dungeon_rows[0][3].text()
+        assert window._panel.height() == window._panel.target_height()
+        assert window._raid_boss_fetches_in_flight == {}
     finally:
         client.close()
 

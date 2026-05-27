@@ -63,6 +63,11 @@ Invoke-NativeChecked -Label "Python tests" -Command {
     & $Python -m pytest
 }
 
+Write-Host "== Overlay visual baselines =="
+Invoke-NativeChecked -Label "Overlay visual baselines" -Command {
+    & $Python scripts\render_overlay_fixture.py --check --all
+}
+
 Write-Host "== Ruff =="
 Invoke-NativeChecked -Label "Ruff" -Command {
     & $Ruff check .
