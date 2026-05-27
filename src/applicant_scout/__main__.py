@@ -1642,7 +1642,7 @@ def _start_wow_lifecycle_timer(
     can_quit_callback = can_quit or (lambda: True)
     check_wow_running = running_checker or is_wow_running
     signals = _WowLifecycleSignals()
-    state = {"checking": False, "active": True}
+    state = {"checking": False, "active": True, "rearm_failed": False}
     run_async = async_runner or (
         lambda worker: threading.Thread(
             target=worker,
@@ -1658,15 +1658,20 @@ def _start_wow_lifecycle_timer(
             return
         if running:
             observed_wow = True
+            state["rearm_failed"] = False
             return
         if observed_wow:
             if not can_quit_callback():
                 return
-            log.info("WoW is no longer running; quitting companion.")
             try:
                 start_wow_sync_watcher()
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                log.warning("Could not re-arm WoW lifecycle watcher: %s", exc)
+                if not state["rearm_failed"]:
+                    log.warning("Could not re-arm WoW lifecycle watcher: %s", exc)
+                state["rearm_failed"] = True
+                return
+            state["rearm_failed"] = False
+            log.info("WoW is no longer running; quitting companion.")
             quit_callback()
 
     def _handle_wow_check_failed() -> None:

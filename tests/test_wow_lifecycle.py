@@ -43,6 +43,20 @@ def test_is_wow_running_rejects_near_match_process_name(
     assert not wow_lifecycle.is_wow_running()
 
 
+def test_is_wow_running_rejects_classic_process_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        wow_lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Completed(
+            stdout='"WowClassic.exe","10","Console","1","120,000 K"\n'
+        ),
+    )
+
+    assert not wow_lifecycle.is_wow_running()
+
+
 def test_is_wow_running_ignores_wow_token_outside_image_column(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -78,6 +92,19 @@ def test_is_wow_foreground_accepts_wow_process(monkeypatch: pytest.MonkeyPatch):
     )
 
     assert wow_lifecycle.is_wow_foreground()
+
+
+def test_is_wow_foreground_rejects_classic_process_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda: 123)
+    monkeypatch.setattr(
+        wow_lifecycle,
+        "process_name_for_pid",
+        lambda pid: "WowClassic.exe" if pid == 123 else None,
+    )
+
+    assert not wow_lifecycle.is_wow_foreground()
 
 
 def test_is_wow_foreground_rejects_current_companion_process(

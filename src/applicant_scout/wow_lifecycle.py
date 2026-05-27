@@ -15,7 +15,7 @@ import sys
 
 STARTUP_SHORTCUT_NAME = "ApplicantScout Companion.lnk"
 WATCH_WOW_ARG = "--watch-wow"
-WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe", "WowClassic.exe", "WowClassicT.exe")
+WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _ARGUMENT_LIST_SEPARATOR = "\x1f"
@@ -62,7 +62,7 @@ def companion_launch_spec() -> LaunchSpec:
 
 
 def is_wow_running(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
-    """Return True when a retail/classic WoW process is visible to this user."""
+    """Return True when a Retail WoW process is visible to this user."""
     try:
         completed = subprocess.run(
             ["tasklist", "/FO", "CSV", "/NH"],

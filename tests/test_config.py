@@ -3359,6 +3359,50 @@ def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
     assert calls == ["watcher", "quit"]
 
 
+def test_wow_lifecycle_timer_retries_rearm_failure_before_quitting(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks = []
+    calls: list[str] = []
+    watcher_results = iter([RuntimeError("watcher failed"), None])
+
+    class FakeTimer:
+        def __init__(self, _parent) -> None:
+            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
+
+        def setInterval(self, _interval: int) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    class FakeApp:
+        def quit(self) -> None:
+            calls.append("quit")
+
+    def start_watcher() -> None:
+        calls.append("watcher")
+        result = next(watcher_results)
+        if isinstance(result, Exception):
+            raise result
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(main_mod, "start_wow_sync_watcher", start_watcher)
+
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        async_runner=lambda worker: worker(),
+    )
+
+    callbacks[0]()
+    assert calls == ["watcher"]
+
+    callbacks[0]()
+    assert calls == ["watcher", "watcher", "quit"]
+
+
 def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
     monkeypatch: pytest.MonkeyPatch,
 ):
