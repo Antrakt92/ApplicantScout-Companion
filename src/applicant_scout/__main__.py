@@ -991,6 +991,14 @@ class StateMachine(QObject):
                 default_realm_changed=default_realm_changed,
                 rio_summary_target_key=rio_summary_target_key,
             )
+            for applicant in list(self._state.applicants.values()):
+                wcl_identity_changed = region_identity_changed or (
+                    default_realm_changed
+                    and not applicant_has_explicit_realm(applicant.name)
+                )
+                if wcl_identity_changed:
+                    applicant.clear_wcl_data()
+                    self.applicantUpdated.emit(applicant)
             if listing_changed or leader_key_changed:
                 self.listingChanged.emit()
             return

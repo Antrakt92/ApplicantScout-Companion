@@ -1693,6 +1693,133 @@ def test_lfg_unavailable_snapshot_preserves_listing_applicants_and_applies_roste
     assert roster_updates == [True]
 
 
+def test_lfg_unavailable_region_change_invalidates_preserved_applicant_wcl():
+    state = AppState()
+    state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
+    sm = StateMachine(state)
+    updated: list[str] = []
+    sm.applicantUpdated.connect(
+        lambda applicant: updated.append(applicant.applicant_id)
+    )
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=14),
+            version=_version("Host-RealmA", region_id=3),
+            applicants=[
+                _decoded(aid=42, member_idx=1, name="Scout-RealmX", spec_id=71),
+            ],
+        )
+    )
+    applicant = state.applicants["42:1"]
+    applicant.fetch_status = "ready"
+    applicant.raid_heroic = 92.0
+    applicant.mplus_dps = 88.0
+    updated.clear()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-RealmA", region_id=1),
+            applicants=[],
+            roster=[_roster_decoded("Host-RealmA", flags=1)],
+            lfg_unavailable=True,
+        )
+    )
+
+    applicant = state.applicants["42:1"]
+    assert applicant.fetch_status == "pending"
+    assert applicant.raid_heroic is None
+    assert applicant.mplus_dps is None
+    assert updated == ["42:1"]
+
+
+def test_lfg_unavailable_default_realm_change_invalidates_same_realm_applicant_wcl():
+    state = AppState()
+    state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
+    sm = StateMachine(state)
+    updated: list[str] = []
+    sm.applicantUpdated.connect(
+        lambda applicant: updated.append(applicant.applicant_id)
+    )
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=14),
+            version=_version("Host-RealmA", region_id=3),
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout", spec_id=71)],
+        )
+    )
+    applicant = state.applicants["42:1"]
+    applicant.fetch_status = "ready"
+    applicant.raid_heroic = 92.0
+    applicant.mplus_dps_breakdown = [
+        {
+            "name": "Pit of Saron",
+            "parse_percent": 88.0,
+            "median_percent": 80.0,
+            "key_level": 14,
+            "run_count": 4,
+        }
+    ]
+    updated.clear()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-RealmB", region_id=3),
+            applicants=[],
+            roster=[_roster_decoded("Host-RealmB", flags=1)],
+            lfg_unavailable=True,
+        )
+    )
+
+    applicant = state.applicants["42:1"]
+    assert applicant.fetch_status == "pending"
+    assert applicant.raid_heroic is None
+    assert applicant.mplus_dps_breakdown == []
+    assert updated == ["42:1"]
+
+
+def test_lfg_unavailable_default_realm_change_preserves_explicit_realm_wcl():
+    state = AppState()
+    state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
+    sm = StateMachine(state)
+    updated: list[str] = []
+    sm.applicantUpdated.connect(
+        lambda applicant: updated.append(applicant.applicant_id)
+    )
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=14),
+            version=_version("Host-RealmA", region_id=3),
+            applicants=[
+                _decoded(aid=42, member_idx=1, name="Scout-RealmX", spec_id=71),
+            ],
+        )
+    )
+    applicant = state.applicants["42:1"]
+    applicant.fetch_status = "ready"
+    applicant.raid_heroic = 92.0
+    updated.clear()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-RealmB", region_id=3),
+            applicants=[],
+            roster=[_roster_decoded("Host-RealmB", flags=1)],
+            lfg_unavailable=True,
+        )
+    )
+
+    applicant = state.applicants["42:1"]
+    assert applicant.fetch_status == "ready"
+    assert applicant.raid_heroic == 92.0
+    assert updated == []
+
+
 def test_explicit_terminal_clear_snapshot_clears_listing_applicants_and_roster():
     state = AppState()
     sm = StateMachine(state)
