@@ -248,7 +248,7 @@ def _raid_boss_parses() -> dict[str, list[dict]]:
                 "ilvl": 63.0,
             },
             {
-                "encounter_id": 3131,
+                "encounter_id": 3177,
                 "name": "Vorasius",
                 "overall": 72.0,
                 "ilvl": 58.0,
@@ -262,7 +262,7 @@ def _raid_boss_parses() -> dict[str, list[dict]]:
                 "ilvl": 68.0,
             },
             {
-                "encounter_id": 3131,
+                "encounter_id": 3177,
                 "name": "Vorasius",
                 "overall": 39.0,
                 "ilvl": 52.0,
