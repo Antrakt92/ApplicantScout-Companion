@@ -803,6 +803,132 @@ def test_crc_valid_payload_with_duplicate_roster_identity_is_rejected():
     assert "duplicate roster identity warrior-realm" in error
 
 
+def test_crc_valid_payload_skips_placeholder_roster_identities_before_duplicate_validation():
+    body = _build_body_v6(
+        [],
+        [
+            _build_roster_block(
+                unit_index=1,
+                flags=2,
+                subgroup=1,
+                class_id=1,
+                spec_id=71,
+                ilvl=701,
+                score=3000,
+                main_score=0,
+                role=2,
+                name="Unknown-Realm",
+            ),
+            _build_roster_block(
+                unit_index=2,
+                flags=2,
+                subgroup=1,
+                class_id=2,
+                spec_id=72,
+                ilvl=702,
+                score=3100,
+                main_score=0,
+                role=2,
+                name=" unknown-realm ",
+            ),
+            _build_roster_block(
+                unit_index=3,
+                flags=2,
+                subgroup=1,
+                class_id=5,
+                spec_id=256,
+                ilvl=703,
+                score=3200,
+                main_score=0,
+                role=1,
+                name="Host-Realm",
+            ),
+        ],
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x06))
+
+    assert error is None
+    assert snap is not None
+    assert [member.name for member in snap.roster] == ["Host-Realm"]
+
+
+def test_crc_valid_payload_skips_unqualified_placeholder_roster_identity():
+    body = _build_body_v6(
+        [],
+        [
+            _build_roster_block(
+                unit_index=1,
+                flags=2,
+                subgroup=1,
+                class_id=1,
+                spec_id=71,
+                ilvl=701,
+                score=3000,
+                main_score=0,
+                role=2,
+                name="?",
+            ),
+            _build_roster_block(
+                unit_index=2,
+                flags=2,
+                subgroup=1,
+                class_id=2,
+                spec_id=72,
+                ilvl=702,
+                score=3100,
+                main_score=0,
+                role=2,
+                name="UNKNOWNOBJECT",
+            ),
+            _build_roster_block(
+                unit_index=3,
+                flags=2,
+                subgroup=1,
+                class_id=5,
+                spec_id=256,
+                ilvl=703,
+                score=3200,
+                main_score=0,
+                role=1,
+                name="Host-Realm",
+            ),
+        ],
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x06))
+
+    assert error is None
+    assert snap is not None
+    assert [member.name for member in snap.roster] == ["Host-Realm"]
+
+
+def test_crc_valid_payload_preserves_non_placeholder_unknown_prefix_roster_identity():
+    body = _build_body_v6(
+        [],
+        [
+            _build_roster_block(
+                unit_index=1,
+                flags=2,
+                subgroup=1,
+                class_id=1,
+                spec_id=71,
+                ilvl=701,
+                score=3000,
+                main_score=0,
+                role=2,
+                name="Unknownhero-Realm",
+            )
+        ],
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x06))
+
+    assert error is None
+    assert snap is not None
+    assert [member.name for member in snap.roster] == ["Unknownhero-Realm"]
+
+
 def test_crc_valid_payload_with_blank_roster_name_is_rejected():
     body = _build_body_v6(
         [],

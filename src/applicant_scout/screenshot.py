@@ -329,10 +329,31 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
             terminal_clear=bool(flags & APS1_FLAG_TERMINAL_CLEAR),
             lfg_unavailable=bool(flags & APS1_FLAG_LFG_UNAVAILABLE),
         )  # skip 9-byte header
+        snap = _without_placeholder_roster_identities(snap)
         _validate_snapshot_identities(snap)
     except (IndexError, UnicodeDecodeError, struct.error, ValueError) as e:
         return None, f"parse error: {e}"
     return snap, None
+
+
+def _is_placeholder_roster_identity(name: str) -> bool:
+    identity = name.strip()
+    if not identity:
+        return False
+    base = identity.split("-", 1)[0].strip().lower()
+    return base in {"?", "unknown", "unknownobject"}
+
+
+def _without_placeholder_roster_identities(snap: Snapshot) -> Snapshot:
+    if not snap.roster:
+        return snap
+    roster = [
+        member for member in snap.roster
+        if not _is_placeholder_roster_identity(member.name)
+    ]
+    if len(roster) == len(snap.roster):
+        return snap
+    return replace(snap, roster=roster)
 
 
 def _validate_snapshot_identities(snap: Snapshot) -> None:
