@@ -519,6 +519,39 @@ def test_settings_dialog_more_quit_action_requests_full_quit(qtbot, tmp_path: Pa
     assert quit_requested == [True]
 
 
+def test_settings_dialog_more_quit_action_flushes_pending_values_before_quit(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    seen: list[tuple[str, str]] = []
+    dialog.valuesChanged.connect(lambda values: seen.append(("saved", values.wcl_client_id)))
+    dialog.quitRequested.connect(lambda: seen.append(("quit", "")))
+
+    dialog.client_id_edit.setText("new-client")
+    assert dialog._autosave_timer.isActive()
+    dialog.quit_action.trigger()
+
+    assert seen == [("saved", "new-client"), ("quit", "")]
+
+
+def test_settings_dialog_more_quit_action_blocks_when_pending_values_are_invalid(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    quit_requested: list[bool] = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+
+    dialog.client_id_edit.setText("")
+    assert dialog._autosave_timer.isActive()
+    dialog.quit_action.trigger()
+
+    assert quit_requested == []
+    assert "client id" in dialog.status_label.text().lower()
+    assert "#ff6666" in dialog.status_label.styleSheet()
+
+
 def test_settings_dialog_more_quit_action_blocks_during_update(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
@@ -1027,6 +1060,51 @@ def test_no_tray_close_flushes_pending_text_values_before_quit(qtbot, tmp_path: 
 
     assert closed
     assert seen == [("saved", "new-client"), ("quit", "")]
+
+
+def test_no_tray_close_blocks_quit_when_pending_values_are_invalid(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
+    qtbot.addWidget(dialog)
+    quit_requested: list[bool] = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.show()
+
+    dialog.client_id_edit.setText("")
+    assert dialog._autosave_timer.isActive()
+    closed = dialog.close()
+
+    assert not closed
+    assert dialog.isVisible()
+    assert quit_requested == []
+    assert "client id" in dialog.status_label.text().lower()
+    assert "#ff6666" in dialog.status_label.styleSheet()
+
+
+def test_no_tray_close_blocks_quit_when_pending_apply_fails(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
+    qtbot.addWidget(dialog)
+    seen: list[str] = []
+
+    def reject_apply(_values) -> None:
+        seen.append("saved")
+        dialog.report_values_apply_result(False)
+        dialog.set_status("Could not save/apply settings: boom", error=True)
+
+    dialog.valuesChanged.connect(reject_apply)
+    dialog.quitRequested.connect(lambda: seen.append("quit"))
+    dialog.show()
+
+    dialog.client_id_edit.setText("new-client")
+    assert dialog._autosave_timer.isActive()
+    closed = dialog.close()
+
+    assert not closed
+    assert dialog.isVisible()
+    assert seen == ["saved"]
+    assert "boom" in dialog.status_label.text()
+    assert "#ff6666" in dialog.status_label.styleSheet()
 
 
 def test_settings_close_ignored_while_update_in_progress(qtbot, tmp_path: Path):

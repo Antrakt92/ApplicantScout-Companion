@@ -1979,6 +1979,149 @@ def test_control_quit_command_reports_blocked_without_quitting(
     ]
 
 
+def test_control_quit_command_prepares_quit_before_ack(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeSocket:
+        def readAll(self):
+            return SimpleNamespace(data=lambda: b"quit\n")
+
+        def write(self, value: bytes) -> None:
+            calls.append(f"write:{value.decode().strip()}")
+
+        def flush(self) -> None:
+            calls.append("flush")
+
+        def waitForBytesWritten(self, _timeout: int) -> None:
+            calls.append("wait")
+
+        def disconnectFromServer(self) -> None:
+            calls.append("disconnect")
+
+    class FakeTimer:
+        @staticmethod
+        def singleShot(_interval: int, callback) -> None:
+            calls.append("singleShot")
+            callback()
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+
+    main_mod._handle_control_command(
+        FakeSocket(),
+        lambda: calls.append("quit"),
+        can_quit=lambda: calls.append("can") or True,
+        prepare_quit=lambda: calls.append("prepare") or True,
+    )
+
+    assert calls == [
+        "can",
+        "prepare",
+        "write:ok",
+        "flush",
+        "wait",
+        "disconnect",
+        "singleShot",
+        "quit",
+    ]
+
+
+def test_control_quit_command_reports_blocked_when_prepare_quit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeSocket:
+        def readAll(self):
+            return SimpleNamespace(data=lambda: b"quit\n")
+
+        def write(self, value: bytes) -> None:
+            calls.append(f"write:{value.decode().strip()}")
+
+        def flush(self) -> None:
+            calls.append("flush")
+
+        def waitForBytesWritten(self, _timeout: int) -> None:
+            calls.append("wait")
+
+        def disconnectFromServer(self) -> None:
+            calls.append("disconnect")
+
+    class FakeTimer:
+        @staticmethod
+        def singleShot(_interval: int, callback) -> None:
+            calls.append("singleShot")
+            callback()
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+
+    main_mod._handle_control_command(
+        FakeSocket(),
+        lambda: calls.append("quit"),
+        can_quit=lambda: calls.append("can") or True,
+        prepare_quit=lambda: calls.append("prepare") or False,
+        quit_blocked=lambda: calls.append("update-blocked"),
+    )
+
+    assert calls == [
+        "can",
+        "prepare",
+        "write:blocked",
+        "flush",
+        "wait",
+        "disconnect",
+    ]
+
+
+def test_control_quit_command_skips_prepare_when_can_quit_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeSocket:
+        def readAll(self):
+            return SimpleNamespace(data=lambda: b"quit\n")
+
+        def write(self, value: bytes) -> None:
+            calls.append(f"write:{value.decode().strip()}")
+
+        def flush(self) -> None:
+            calls.append("flush")
+
+        def waitForBytesWritten(self, _timeout: int) -> None:
+            calls.append("wait")
+
+        def disconnectFromServer(self) -> None:
+            calls.append("disconnect")
+
+    class FakeTimer:
+        @staticmethod
+        def singleShot(_interval: int, callback) -> None:
+            calls.append("singleShot")
+            callback()
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+
+    main_mod._handle_control_command(
+        FakeSocket(),
+        lambda: calls.append("quit"),
+        can_quit=lambda: calls.append("can") or False,
+        prepare_quit=lambda: calls.append("prepare") or True,
+        quit_blocked=lambda: calls.append("blocked"),
+    )
+
+    assert calls == [
+        "can",
+        "write:blocked",
+        "flush",
+        "wait",
+        "disconnect",
+        "singleShot",
+        "blocked",
+    ]
+
+
 def test_control_show_settings_command_uses_show_settings_callback(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -2470,8 +2613,9 @@ def test_main_control_server_uses_guarded_quit_callback(
     monkeypatch.setattr(main_mod, "_load_startup_config", lambda: None)
 
     assert main_mod.main([]) == 1
-    assert captured["quit_app"].__name__ == "_request_quit_application"
+    assert captured["quit_app"].__name__ == "_quit_application"
     assert captured["can_quit"].__name__ == "_can_quit_application"
+    assert captured["prepare_quit"].__name__ == "_prepare_quit_application"
     assert captured["quit_blocked"].__name__ == "_show_update_quit_blocked"
 
 
@@ -3244,7 +3388,7 @@ def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
     monkeypatch.setattr(
         main_mod,
         "_start_wow_lifecycle_timer",
-        lambda _app, *, has_seen_wow, quit_app=None: calls.append(
+        lambda _app, *, has_seen_wow, quit_app=None, **_kwargs: calls.append(
             f"timer-start:{has_seen_wow}:{quit_app is None}"
         )
         or timer,
@@ -3544,6 +3688,91 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
     assert calls == ["watcher", "quit"]
 
 
+def test_wow_lifecycle_timer_defers_rearm_and_quit_when_prepare_quit_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks = []
+    calls: list[str] = []
+    prepare_values = iter([False, True])
+
+    class FakeTimer:
+        def __init__(self, _parent) -> None:
+            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
+
+        def setInterval(self, _interval: int) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(
+        main_mod,
+        "start_wow_sync_watcher",
+        lambda: calls.append("watcher"),
+    )
+
+    main_mod._start_wow_lifecycle_timer(
+        object(),
+        has_seen_wow=True,
+        quit_app=lambda: calls.append("quit"),
+        can_quit=lambda: calls.append("can") or True,
+        prepare_quit=lambda: calls.append("prepare") or next(prepare_values),
+        async_runner=lambda worker: worker(),
+    )
+
+    callbacks[0]()
+    assert calls == ["can", "prepare"]
+
+    callbacks[0]()
+    assert calls == ["can", "prepare", "can", "prepare", "watcher", "quit"]
+
+
+def test_wow_lifecycle_timer_skips_rearm_when_prepare_quit_deactivates_timer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks = []
+    calls: list[str] = []
+    timer_box: dict[str, object] = {}
+
+    class FakeTimer:
+        def __init__(self, _parent) -> None:
+            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
+
+        def setInterval(self, _interval: int) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    def prepare_quit() -> bool:
+        calls.append("prepare")
+        state = getattr(timer_box["timer"], "_applicant_scout_wow_lifecycle_state")
+        state["active"] = False
+        return True
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(
+        main_mod,
+        "start_wow_sync_watcher",
+        lambda: calls.append("watcher"),
+    )
+
+    timer_box["timer"] = main_mod._start_wow_lifecycle_timer(
+        object(),
+        has_seen_wow=True,
+        quit_app=lambda: calls.append("quit"),
+        prepare_quit=prepare_quit,
+        async_runner=lambda worker: worker(),
+    )
+
+    callbacks[0]()
+
+    assert calls == ["prepare"]
+
+
 def test_wow_sync_runtime_apply_starts_lifecycle_timer_even_when_wow_is_closed(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -3564,7 +3793,7 @@ def test_wow_sync_runtime_apply_starts_lifecycle_timer_even_when_wow_is_closed(
     monkeypatch.setattr(
         main_mod,
         "_start_wow_lifecycle_timer",
-        lambda _app, *, has_seen_wow, quit_app=None: calls.append(
+        lambda _app, *, has_seen_wow, quit_app=None, **_kwargs: calls.append(
             f"timer-start:{has_seen_wow}:{quit_app is None}"
         )
         or timer,

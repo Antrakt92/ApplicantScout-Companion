@@ -71,6 +71,9 @@ UPDATE_INSTALLING_TOOLTIP = "Installing ApplicantScout update..."
 CLOSE_SETUP_TOOLTIP = "Close ApplicantScout setup."
 CLOSE_TRAY_TOOLTIP = "Hide ApplicantScout settings to tray."
 CLOSE_QUIT_TOOLTIP = "Quit ApplicantScout."
+SETTINGS_QUIT_BLOCKED_MESSAGE = (
+    "Settings were not saved. Fix or revert the pending settings change before quitting."
+)
 
 
 def _settings_window_title(*, first_run: bool) -> str:
@@ -708,7 +711,9 @@ class SettingsDialog(QDialog):
             self._set_status("Update is installing. Wait for it to finish before closing.", error=True)
             return
         if not self._hide_to_tray_on_close:
-            self.flush_pending_values()
+            if not self.prepare_quit():
+                event.ignore()
+                return
             super().closeEvent(event)
             self.quitRequested.emit()
             return
@@ -724,6 +729,8 @@ class SettingsDialog(QDialog):
             return
         if self._first_run:
             self.reject()
+            return
+        if not self.prepare_quit():
             return
         self.quitRequested.emit()
 
@@ -744,6 +751,15 @@ class SettingsDialog(QDialog):
             return self._last_values_apply_succeeded
         self._autosave_timer.stop()
         return self._emit_values_changed_if_valid()
+
+    def prepare_quit(self) -> bool:
+        status_before = self.status_label.text()
+        if self.flush_pending_values():
+            return True
+        status_after = self.status_label.text()
+        if not status_after or status_after == status_before:
+            self._set_status(SETTINGS_QUIT_BLOCKED_MESSAGE, error=True)
+        return False
 
     def report_values_apply_result(self, success: bool) -> None:
         self._last_values_apply_succeeded = success

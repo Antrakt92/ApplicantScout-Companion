@@ -45,6 +45,7 @@ from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_pa
 from .screenshot import DecodedRosterMember, ScreenshotWatcher, Snapshot
 from .settings_dialog import (
     ReleaseNotesDialog,
+    SETTINGS_QUIT_BLOCKED_MESSAGE,
     SettingsDialog,
     SettingsUpdateResult,
     open_folder,
@@ -384,6 +385,7 @@ def _create_control_server(
     quit_app: Callable[[], None],
     show_settings: Callable[[], None],
     can_quit: Callable[[], bool] | None = None,
+    prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
 ) -> QLocalServer | None:
     server = QLocalServer(app)
@@ -408,6 +410,7 @@ def _create_control_server(
             quit_app,
             show_settings,
             can_quit=can_quit,
+            prepare_quit=prepare_quit,
             quit_blocked=quit_blocked,
         )
     )
@@ -420,6 +423,7 @@ def _drain_control_connections(
     show_settings: Callable[[], None],
     *,
     can_quit: Callable[[], bool] | None = None,
+    prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
 ) -> None:
     while server.hasPendingConnections():
@@ -432,6 +436,7 @@ def _drain_control_connections(
                 quit_app,
                 show_settings,
                 can_quit=can_quit,
+                prepare_quit=prepare_quit,
                 quit_blocked=quit_blocked,
             )
         )
@@ -442,6 +447,7 @@ def _drain_control_connections(
                 quit_app,
                 show_settings,
                 can_quit=can_quit,
+                prepare_quit=prepare_quit,
                 quit_blocked=quit_blocked,
             )
 
@@ -452,6 +458,7 @@ def _handle_control_command(
     show_settings: Callable[[], None] | None = None,
     *,
     can_quit: Callable[[], bool] | None = None,
+    prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
 ) -> None:
     command = socket.readAll().data().strip().lower()
@@ -463,6 +470,12 @@ def _handle_control_command(
             socket.disconnectFromServer()
             if quit_blocked is not None:
                 QTimer.singleShot(0, quit_blocked)
+            return
+        if prepare_quit is not None and not prepare_quit():
+            socket.write(b"blocked\n")
+            socket.flush()
+            socket.waitForBytesWritten(100)
+            socket.disconnectFromServer()
             return
         socket.write(b"ok\n")
         socket.flush()
@@ -1596,6 +1609,18 @@ def _flush_settings_before_update(settings_dialog: object | None) -> bool:
     return bool(flush())
 
 
+def _prepare_settings_before_quit(settings_dialog: object | None) -> bool:
+    if settings_dialog is None:
+        return True
+    prepare = getattr(settings_dialog, "prepare_quit", None)
+    if callable(prepare):
+        return bool(prepare())
+    flush = getattr(settings_dialog, "flush_pending_values", None)
+    if not callable(flush):
+        return True
+    return bool(flush())
+
+
 def _prepare_wow_watch_mode(args: list[str]) -> tuple[list[str], bool, int | None]:
     if WATCH_WOW_ARG not in args:
         return args, False, None
@@ -1632,6 +1657,7 @@ def _start_wow_lifecycle_timer(
     has_seen_wow: bool,
     quit_app: Callable[[], None] | None = None,
     can_quit: Callable[[], bool] | None = None,
+    prepare_quit: Callable[[], bool] | None = None,
     running_checker: Callable[[], bool] | None = None,
     async_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> QTimer:
@@ -1640,6 +1666,7 @@ def _start_wow_lifecycle_timer(
     observed_wow = has_seen_wow
     quit_callback = quit_app or app.quit
     can_quit_callback = can_quit or (lambda: True)
+    prepare_quit_callback = prepare_quit or (lambda: True)
     check_wow_running = running_checker or is_wow_running
     signals = _WowLifecycleSignals()
     state = {"checking": False, "active": True, "rearm_failed": False}
@@ -1662,6 +1689,10 @@ def _start_wow_lifecycle_timer(
             return
         if observed_wow:
             if not can_quit_callback():
+                return
+            if not prepare_quit_callback():
+                return
+            if not state["active"]:
                 return
             try:
                 start_wow_sync_watcher()
@@ -1710,23 +1741,19 @@ def _apply_wow_sync_runtime(
     *,
     quit_app: Callable[[], None] | None = None,
     can_quit: Callable[[], bool] | None = None,
+    prepare_quit: Callable[[], bool] | None = None,
 ) -> QTimer | None:
     configure_wow_sync_startup(enabled)
     if enabled:
         try:
             start_wow_sync_watcher()
             if current_timer is None:
-                if can_quit is not None:
-                    return _start_wow_lifecycle_timer(
-                        app,
-                        has_seen_wow=is_wow_running(),
-                        quit_app=quit_app,
-                        can_quit=can_quit,
-                    )
                 return _start_wow_lifecycle_timer(
                     app,
                     has_seen_wow=is_wow_running(),
                     quit_app=quit_app,
+                    can_quit=can_quit,
+                    prepare_quit=prepare_quit,
                 )
             return current_timer
         except Exception:
@@ -2348,6 +2375,7 @@ def _apply_settings_change(
     wow_exit_timer,
     quit_app: Callable[[], None],
     can_quit: Callable[[], bool],
+    prepare_quit: Callable[[], bool] | None = None,
 ) -> _SettingsApplyResult:
     old_cfg = cfg
     new_cfg = _settings_values_to_config(
@@ -2373,6 +2401,7 @@ def _apply_settings_change(
                 wow_exit_timer,
                 quit_app=quit_app,
                 can_quit=can_quit,
+                prepare_quit=prepare_quit,
             )
         if new_screenshots_dir != current_screenshots_dir:
             new_watcher = _replace_screenshots_runtime(
@@ -2393,6 +2422,7 @@ def _apply_settings_change(
                     new_wow_exit_timer,
                     quit_app=quit_app,
                     can_quit=can_quit,
+                    prepare_quit=prepare_quit,
                 )
             except Exception as rollback_exc:  # noqa: BLE001
                 log.warning("Could not roll back WoW sync runtime: %s", rollback_exc)
@@ -2641,9 +2671,25 @@ def main(argv: list[str] | None = None) -> int:
             return
         log.info(UPDATE_QUIT_BLOCKED_MESSAGE)
 
-    def _request_quit_application() -> None:
+    def _show_settings_quit_blocked() -> None:
+        if settings_dialog is not None:
+            settings_dialog.show()
+            settings_dialog.raise_()
+            settings_dialog.activateWindow()
+            return
+        log.info(SETTINGS_QUIT_BLOCKED_MESSAGE)
+
+    def _prepare_quit_application() -> bool:
         if not _can_quit_application():
             _show_update_quit_blocked()
+            return False
+        if not _prepare_settings_before_quit(settings_dialog):
+            _show_settings_quit_blocked()
+            return False
+        return True
+
+    def _request_quit_application() -> None:
+        if not _prepare_quit_application():
             return
         _quit_application()
 
@@ -2654,9 +2700,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         control_server = _create_control_server(
             app,
-            quit_app=_request_quit_application,
+            quit_app=_quit_application,
             show_settings=show_settings_action.request,
             can_quit=_can_quit_application,
+            prepare_quit=_prepare_quit_application,
             quit_blocked=_show_update_quit_blocked,
         )
     except _DuplicateInstanceFound:
@@ -2823,6 +2870,7 @@ def main(argv: list[str] | None = None) -> int:
                     wow_exit_timer=wow_exit_timer,
                     quit_app=_request_quit_application,
                     can_quit=_can_quit_application,
+                    prepare_quit=_prepare_quit_application,
                 )
             except (ConfigError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 log.warning("Could not apply settings change: %s", exc)
@@ -3028,6 +3076,7 @@ def main(argv: list[str] | None = None) -> int:
             has_seen_wow=wow_watch_mode or is_wow_running(),
             quit_app=_request_quit_application,
             can_quit=_can_quit_application,
+            prepare_quit=_prepare_quit_application,
         )
         setattr(app, "_applicant_scout_wow_exit_timer", wow_exit_timer)
     update_timer = QTimer(app)
