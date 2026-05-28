@@ -128,7 +128,13 @@ function Assert-CleanReleaseInputs {
         "scripts\build-windows.ps1",
         "scripts\check.ps1",
         "scripts\check-release-version.ps1",
-        "scripts\collect_dependency_licenses.py"
+        "scripts\collect_dependency_licenses.py",
+        "scripts\overlay_visual_fixture.py",
+        "scripts\render_overlay_fixture.py",
+        "scripts\settings_dialog_visual_fixture.py",
+        "scripts\render_settings_dialog_fixture.py",
+        "scripts\visual_fixture_checks.py",
+        "docs\visual"
     )
 
     $Git = Get-Command "git" -ErrorAction SilentlyContinue

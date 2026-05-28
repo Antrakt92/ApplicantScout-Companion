@@ -340,7 +340,9 @@ def test_check_script_checks_native_command_exit_codes():
     assert "Invoke-NativeChecked" in script
     assert 'Invoke-NativeChecked -Label "Python tests"' in script
     assert 'Invoke-NativeChecked -Label "Overlay visual baselines"' in script
+    assert 'Invoke-NativeChecked -Label "Settings dialog visual baselines"' in script
     assert "render_overlay_fixture.py" in script
+    assert "render_settings_dialog_fixture.py" in script
     assert "--check --all" in script
     assert '[ValidateSet("Strict", "Smoke")]' in script
     assert "--visual-mode $VisualModeArg" in script
@@ -577,6 +579,12 @@ def test_release_build_refuses_dirty_release_inputs_by_default():
         "scripts\\check.ps1",
         "scripts\\check-release-version.ps1",
         "scripts\\collect_dependency_licenses.py",
+        "scripts\\overlay_visual_fixture.py",
+        "scripts\\render_overlay_fixture.py",
+        "scripts\\settings_dialog_visual_fixture.py",
+        "scripts\\render_settings_dialog_fixture.py",
+        "scripts\\visual_fixture_checks.py",
+        "docs\\visual",
     }.issubset(release_inputs)
     assert "--untracked-files=all" in build_script
 

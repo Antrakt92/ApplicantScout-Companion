@@ -7,8 +7,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt
-
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from applicant_scout.state import (
     DEFAULT_WINDOW_HEIGHT,
@@ -17,6 +15,7 @@ from applicant_scout.state import (
     Listing,
     RosterMember,
 )
+from scripts.visual_fixture_checks import VisualFixtureDiff, compare_visual_images
 
 if TYPE_CHECKING:
     from PyQt6.QtGui import QImage, QPixmap
@@ -38,15 +37,6 @@ VISUAL_DIFF_CHANNEL_TOLERANCE = 12
 VISUAL_DIFF_MAX_PIXEL_RATIO = 0.005
 VISUAL_DIFF_SCALE_RATIO_TOLERANCE = 0.01
 DEFAULT_VISUAL_FIXTURE_SCENARIO = "applicants-default"
-
-
-@dataclass(frozen=True)
-class VisualFixtureDiff:
-    passed: bool
-    message: str
-    changed_pixels: int
-    total_pixels: int
-    max_channel_delta: int
 
 
 @dataclass(frozen=True)
@@ -593,99 +583,16 @@ def grab_overlay_visual_image(window: "OverlayWindow") -> "QPixmap":
     return window.grab()
 
 
-def _channel_delta(expected: "QImage", actual: "QImage", x: int, y: int) -> int:
-    expected_color = expected.pixelColor(x, y)
-    actual_color = actual.pixelColor(x, y)
-    return max(
-        abs(expected_color.red() - actual_color.red()),
-        abs(expected_color.green() - actual_color.green()),
-        abs(expected_color.blue() - actual_color.blue()),
-        abs(expected_color.alpha() - actual_color.alpha()),
-    )
-
-
 def compare_overlay_visual_images(
     expected: "QImage",
     actual: "QImage",
 ) -> VisualFixtureDiff:
-    if expected.isNull() or actual.isNull():
-        return VisualFixtureDiff(
-            passed=False,
-            message=(
-                "overlay visual fixture comparison received a null image; "
-                f"regenerate with {VISUAL_FIXTURE_REGEN_COMMAND}"
-            ),
-            changed_pixels=0,
-            total_pixels=0,
-            max_channel_delta=0,
-        )
-    if expected.size() != actual.size():
-        expected_width = expected.width()
-        expected_height = expected.height()
-        actual_width = actual.width()
-        actual_height = actual.height()
-        scale_x = expected_width / actual_width if actual_width else 0.0
-        scale_y = expected_height / actual_height if actual_height else 0.0
-        if (
-            expected_width > 0
-            and expected_height > 0
-            and actual_width > 0
-            and actual_height > 0
-            and abs(scale_x - scale_y) <= VISUAL_DIFF_SCALE_RATIO_TOLERANCE
-        ):
-            actual = actual.scaled(
-                expected.size(),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        else:
-            return VisualFixtureDiff(
-                passed=False,
-                message=(
-                    "overlay visual fixture dimension mismatch: "
-                    f"expected {expected_width}x{expected_height}, "
-                    f"got {actual_width}x{actual_height}; regenerate with "
-                    f"{VISUAL_FIXTURE_REGEN_COMMAND} after intentional UI changes"
-                ),
-                changed_pixels=0,
-                total_pixels=max(actual_width * actual_height, 0),
-                max_channel_delta=0,
-            )
-
-    changed_pixels = 0
-    max_channel_delta = 0
-    total_pixels = expected.width() * expected.height()
-    for x in range(expected.width()):
-        for y in range(expected.height()):
-            delta = _channel_delta(expected, actual, x, y)
-            max_channel_delta = max(max_channel_delta, delta)
-            if delta > VISUAL_DIFF_CHANNEL_TOLERANCE:
-                changed_pixels += 1
-
-    changed_ratio = changed_pixels / total_pixels if total_pixels else 0.0
-    passed = changed_ratio <= VISUAL_DIFF_MAX_PIXEL_RATIO
-    if passed:
-        return VisualFixtureDiff(
-            passed=True,
-            message=(
-                "overlay visual fixture matched committed baseline "
-                f"({changed_pixels}/{total_pixels} changed pixels over tolerance)"
-            ),
-            changed_pixels=changed_pixels,
-            total_pixels=total_pixels,
-            max_channel_delta=max_channel_delta,
-        )
-    return VisualFixtureDiff(
-        passed=False,
-        message=(
-            "overlay visual fixture drift exceeded tolerance: "
-            f"{changed_pixels}/{total_pixels} changed pixels "
-            f"({changed_ratio:.2%}) over channel delta "
-            f"{VISUAL_DIFF_CHANNEL_TOLERANCE}, max channel delta "
-            f"{max_channel_delta}; regenerate with "
-            f"{VISUAL_FIXTURE_REGEN_COMMAND} after intentional UI changes"
-        ),
-        changed_pixels=changed_pixels,
-        total_pixels=total_pixels,
-        max_channel_delta=max_channel_delta,
+    return compare_visual_images(
+        expected,
+        actual,
+        label="overlay visual fixture",
+        regen_command=VISUAL_FIXTURE_REGEN_COMMAND,
+        channel_tolerance=VISUAL_DIFF_CHANNEL_TOLERANCE,
+        max_pixel_ratio=VISUAL_DIFF_MAX_PIXEL_RATIO,
+        scale_ratio_tolerance=VISUAL_DIFF_SCALE_RATIO_TOLERANCE,
     )

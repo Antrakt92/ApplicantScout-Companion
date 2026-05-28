@@ -81,6 +81,12 @@ Invoke-NativeChecked -Label "Overlay visual baselines" -Command {
     & $Python scripts\render_overlay_fixture.py --check --all --visual-mode $VisualModeArg
 }
 
+Write-Host "== Settings dialog visual baselines =="
+Invoke-NativeChecked -Label "Settings dialog visual baselines" -Command {
+    $VisualModeArg = $VisualMode.ToLowerInvariant()
+    & $Python scripts\render_settings_dialog_fixture.py --check --all --visual-mode $VisualModeArg
+}
+
 Write-Host "== Ruff =="
 Invoke-NativeChecked -Label "Ruff" -Command {
     & $Ruff check .

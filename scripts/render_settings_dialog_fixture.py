@@ -1,11 +1,10 @@
-"""Render the representative overlay visual QA fixture."""
+"""Render the representative Settings dialog visual QA fixture."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 if "QT_QPA_PLATFORM" not in os.environ:
@@ -19,13 +18,13 @@ from PyQt6.QtCore import QCoreApplication  # noqa: E402
 from PyQt6.QtGui import QImage  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from scripts.overlay_visual_fixture import (  # noqa: E402
-    DEFAULT_VISUAL_FIXTURE_SCENARIO,
-    OVERLAY_VISUAL_SCENARIOS,
-    compare_overlay_visual_images,
-    create_overlay_visual_window,
-    grab_overlay_visual_image,
-    show_overlay_visual_window,
+from scripts.settings_dialog_visual_fixture import (  # noqa: E402
+    DEFAULT_SETTINGS_VISUAL_SCENARIO,
+    SETTINGS_DIALOG_VISUAL_SCENARIOS,
+    compare_settings_visual_images,
+    create_settings_visual_dialog,
+    grab_settings_visual_image,
+    show_settings_visual_dialog,
 )
 from scripts.visual_fixture_checks import (  # noqa: E402
     save_pixmap_atomic,
@@ -35,7 +34,7 @@ from scripts.visual_fixture_checks import (  # noqa: E402
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Render or check the representative overlay visual QA fixture."
+        description="Render or check the representative Settings dialog visual QA fixture."
     )
     parser.add_argument(
         "--output",
@@ -49,14 +48,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        choices=sorted(OVERLAY_VISUAL_SCENARIOS),
-        default=DEFAULT_VISUAL_FIXTURE_SCENARIO,
-        help="Visual fixture scenario to render.",
+        choices=sorted(SETTINGS_DIALOG_VISUAL_SCENARIOS),
+        default=DEFAULT_SETTINGS_VISUAL_SCENARIO,
+        help="Settings dialog visual fixture scenario to render.",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Render or check every committed visual fixture scenario.",
+        help="Render or check every committed Settings dialog visual fixture scenario.",
     )
     parser.add_argument(
         "--visual-mode",
@@ -78,22 +77,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _render_fixture_pixmap(app: QCoreApplication, scenario_name: str):
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        _state, window, client = create_overlay_visual_window(tmp_path, scenario_name)
-        try:
-            show_overlay_visual_window(
-                window,
-                scenario_name,
-                process_events=app.processEvents,
-            )
-            pixmap = grab_overlay_visual_image(window)
-            if pixmap.isNull():
-                raise RuntimeError("Rendered overlay visual fixture is null")
-            return pixmap
-        finally:
-            window.close()
-            client.close()
+    dialog = create_settings_visual_dialog(scenario_name)
+    try:
+        show_settings_visual_dialog(
+            dialog,
+            process_events=app.processEvents,
+        )
+        pixmap = grab_settings_visual_image(dialog)
+        if pixmap.isNull():
+            raise RuntimeError("Rendered Settings dialog visual fixture is null")
+        return pixmap
+    finally:
+        dialog.close()
 
 
 def _check_rendered_pixmap(
@@ -104,17 +99,17 @@ def _check_rendered_pixmap(
 ) -> tuple[bool, str]:
     image = pixmap.toImage()
     if visual_mode == "smoke":
-        error = validate_smoke_image(image, label="overlay visual fixture")
+        error = validate_smoke_image(image, label="settings dialog visual fixture")
         if error is not None:
             return False, error
         return (
             True,
-            "overlay visual fixture smoke check passed "
+            "settings dialog visual fixture smoke check passed "
             f"({image.width()}x{image.height()} nonblank render)",
         )
 
     baseline = QImage(str(scenario.baseline_path))
-    diff = compare_overlay_visual_images(baseline, image)
+    diff = compare_settings_visual_images(baseline, image)
     return diff.passed, diff.message
 
 
@@ -124,11 +119,11 @@ def main(argv: list[str] | None = None) -> int:
     app = existing_app if isinstance(existing_app, QApplication) else QApplication(sys.argv)
 
     scenario_names = (
-        sorted(OVERLAY_VISUAL_SCENARIOS) if args.all else [args.scenario]
+        sorted(SETTINGS_DIALOG_VISUAL_SCENARIOS) if args.all else [args.scenario]
     )
     failed = False
     for scenario_name in scenario_names:
-        scenario = OVERLAY_VISUAL_SCENARIOS[scenario_name]
+        scenario = SETTINGS_DIALOG_VISUAL_SCENARIOS[scenario_name]
         pixmap = _render_fixture_pixmap(app, scenario_name)
         if args.check:
             passed, message = _check_rendered_pixmap(
@@ -146,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         output = args.output or scenario.baseline_path
-        save_pixmap_atomic(pixmap, output, label="overlay visual fixture")
+        save_pixmap_atomic(pixmap, output, label="settings dialog visual fixture")
         print(output)
     return 1 if failed else 0
 
