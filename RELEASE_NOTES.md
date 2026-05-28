@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.8.0 - 28-May-2026
+
+APS1 v8, screenshot cleanup, and local reliability release paired with
+ApplicantScout addon `0.4.3`. This release keeps ApplicantScout's QR/screenshot
+transport as the public API bridge, adds safer handling for temporary
+LFG-read lockdown snapshots, and improves local cleanup, settings, updater,
+and Warcraft Logs resilience.
+
 ### Changed
 
 - Added APS1 v8 QR decoding flags so temporary LFG-read lockdown snapshots can
@@ -17,6 +25,8 @@
   supporting M+ context and showing per-boss raid parse segments more clearly.
 - Added an explicit screenshot cleanup support command so leftover ApplicantScout
   QR screenshots can be checked or removed without starting the overlay.
+- Hardened Screenshots path validation plus local config/cache privacy
+  boundaries, reducing accidental bad-folder setup and private artifact leaks.
 - Improved tray/settings restore behavior so tray-opened overlay windows can
   return to focus without requiring WoW to be the foreground window.
 - Improved Settings accessibility and tooltips for support, update, and close
@@ -30,14 +40,27 @@
 - Fixed addon-side GitHub checks using the companion wrapper so they pass the
   explicit smoke visual-fixture mode instead of accidentally running strict
   overlay baseline comparisons after intentional UI changes.
+- Fixed updater handoff edge cases so unsigned or incomplete update paths stay
+  visible as manual installs instead of silently losing the pending update.
 - Fixed WoW lifecycle shutdown handling so the companion does not quit until the
   startup watcher has been re-armed successfully.
 - Fixed preserved applicant and Warcraft Logs state being reused across LFG
   region/default-realm identity changes.
+- Fixed placeholder roster identities being accepted from snapshots, preventing
+  duplicate `UNKNOWN` rows from poisoning Party state.
 - Hardened local RaiderIO fallback handling so temporary lookup/cache failures
   preserve existing character evidence when the applicant identity is unchanged.
+- Fixed settings close/quit paths so failed config writes block shutdown instead
+  of discarding user changes, and made cache reset failures report cleanly.
 - Fixed malformed or incomplete Warcraft Logs raid alias responses being treated
   as valid empty raid evidence.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.4.3`.
+- Installer: `ApplicantScoutCompanionSetup-0.8.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.8.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.8.0-portable.zip`
 
 ## 0.7.1 - 26-May-2026
 
