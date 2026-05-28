@@ -27,6 +27,10 @@ from applicant_scout.settings_dialog import (
 )
 
 
+ASYNC_TEST_BLOCK_TIMEOUT = 10.0
+ASYNC_TEST_FALLBACK_RELEASE_DELAY = 5.0
+
+
 def _cfg(tmp_path: Path, *, client_id: str = "client", secret: str = "secret") -> Config:
     retail_root = tmp_path / "World of Warcraft" / "_retail_"
     (retail_root / "Interface" / "AddOns").mkdir(parents=True, exist_ok=True)
@@ -40,6 +44,16 @@ def _cfg(tmp_path: Path, *, client_id: str = "client", secret: str = "secret") -
         screenshots_path=retail_root / "Screenshots",
         log_dir=tmp_path / "logs",
     )
+
+
+def _fallback_release(
+    event: threading.Event,
+    *,
+    delay: float = ASYNC_TEST_FALLBACK_RELEASE_DELAY,
+) -> threading.Timer:
+    timer = threading.Timer(delay, event.set)
+    timer.start()
+    return timer
 
 
 def test_settings_dialog_exposes_config_values(qtbot, tmp_path: Path):
@@ -280,6 +294,16 @@ def test_wcl_setup_example_exposes_copyable_create_client_values(
     assert not public_client.isEnabled()
     assert copy_app_name is not None
     assert copy_redirect is not None
+    assert app_name.accessibleName() == "WCL application name"
+    assert "Application name" in app_name.accessibleDescription()
+    assert redirect_url.accessibleName() == "WCL redirect URL"
+    assert "Redirect URL" in redirect_url.accessibleDescription()
+    assert public_client.accessibleName() == "WCL Public Client checkbox"
+    assert "unchecked" in public_client.accessibleDescription().lower()
+    assert copy_app_name.accessibleName() == "Copy WCL application name"
+    assert "Application name" in copy_app_name.accessibleDescription()
+    assert copy_redirect.accessibleName() == "Copy WCL redirect URL"
+    assert "Redirect URL" in copy_redirect.accessibleDescription()
 
     copy_app_name.click()
     assert clipboard_text == "ApplicantScout"
@@ -416,6 +440,7 @@ def test_settings_dialog_runs_action_callbacks(qtbot, tmp_path: Path):
     assert dialog.status_label.text() == "credentials ok"
     dialog.logs_action.trigger()
     dialog.cache_action.trigger()
+    qtbot.waitUntil(lambda: dialog.status_label.text() == "cache cleared")
     dialog.set_update_available("v0.2.0")
     dialog.update_button.click()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "up to date")
@@ -474,6 +499,8 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert "#ff6b7a" in support_button.styleSheet()
     assert "#ff8a95" in support_button.styleSheet()
     assert more_button.text() == "More"
+    assert more_button.accessibleName() == "More settings actions"
+    assert "Open logs" in more_button.accessibleDescription()
     assert update_button.parent() is title_bar
     assert footer.layout().itemAt(0).widget() is support_button
     assert test_button.parent() is footer
@@ -491,10 +518,35 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
         for action in more_button.menu().actions()
         if isinstance(action, QAction) and not action.isSeparator()
     ] == ["Open logs", "View changelog", "Reset cached data", "Quit ApplicantScout"]
+    action_help = {
+        action.objectName(): (action.toolTip(), action.statusTip(), action.whatsThis())
+        for action in more_button.menu().actions()
+        if isinstance(action, QAction) and not action.isSeparator()
+    }
+    assert "log" in action_help["openLogs"][0].lower()
+    assert "changelog" in action_help["viewChangelog"][1].lower()
+    assert "cache" in action_help["clearCache"][2].lower()
+    assert "quit" in action_help["quitApplicantScout"][0].lower()
     assert any(action.isSeparator() for action in more_button.menu().actions())
     assert dialog.findChild(QPushButton, "hideToTray") is None
     assert dialog.findChild(QPushButton, "quitApplicantScout") is None
     assert dialog.findChild(QDialogButtonBox) is None
+
+
+def test_settings_dialog_form_controls_have_accessibility_metadata(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.screenshots_edit.accessibleName() == "WoW Screenshots folder"
+    assert "_retail_" in dialog.screenshots_edit.accessibleDescription()
+    assert dialog.browse_button.accessibleName() == "Browse WoW Screenshots folder"
+    assert "Screenshots" in dialog.browse_button.accessibleDescription()
+    assert dialog.test_button.accessibleName() == "Test Warcraft Logs credentials"
+    assert "Validate" in dialog.test_button.accessibleDescription()
+    assert dialog.more_actions_button.accessibleName() == "More settings actions"
+    assert "reset cached data" in dialog.more_actions_button.accessibleDescription().lower()
+    assert dialog.wcl_example_button.accessibleName() == "Show WCL setup example"
+    assert "Create Client" in dialog.wcl_example_button.accessibleDescription()
 
 
 def test_settings_dialog_changelog_action_emits_request(qtbot, tmp_path: Path):
@@ -680,9 +732,182 @@ def test_settings_dialog_disables_editable_settings_during_update(qtbot, tmp_pat
     assert not dialog.region_combo.isEnabled()
     assert not dialog.screenshots_edit.isEnabled()
     assert not dialog.test_button.isEnabled()
+    assert not dialog.more_actions_button.isEnabled()
+    assert not dialog.cache_action.isEnabled()
     assert dialog.update_button.accessibleDescription() == (
         "Installing ApplicantScout update..."
     )
+
+
+def test_settings_dialog_cache_reset_flushes_pending_values_before_starting(
+    qtbot, tmp_path: Path
+):
+    calls: list[str] = []
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        clear_cache=lambda: calls.append("cache") or "Cache cleared.",
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.client_id_edit.setText("")
+    assert dialog._autosave_timer.isActive()
+    dialog.cache_action.trigger()
+
+    assert calls == []
+    assert "client id" in dialog.status_label.text().lower()
+    assert dialog.cache_action.isEnabled()
+
+
+def test_settings_dialog_cache_reset_waits_for_wcl_test_to_finish(
+    qtbot, tmp_path: Path
+):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+    cache_calls: list[str] = []
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        if not release_tester.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("credential test timed out")
+        return "credentials ok"
+
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        credential_tester=tester,
+        clear_cache=lambda: cache_calls.append("cache") or "Cache cleared.",
+    )
+    qtbot.addWidget(dialog)
+    fallback = _fallback_release(release_tester)
+
+    try:
+        dialog.test_button.click()
+        assert tester_entered.wait(1)
+
+        dialog.cache_action.trigger()
+
+        assert cache_calls == []
+        assert "settings action" in dialog.status_label.text().lower()
+
+        release_tester.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
+    finally:
+        release_tester.set()
+        fallback.cancel()
+
+
+def test_settings_dialog_cache_reset_runs_async_and_blocks_settings_until_finished(
+    qtbot, tmp_path: Path
+):
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def clear_cache() -> str:
+        calls.append("cache")
+        entered.set()
+        if not release.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("cache test timed out")
+        return "Cache cleared."
+
+    dialog = SettingsDialog(_cfg(tmp_path), clear_cache=clear_cache)
+    qtbot.addWidget(dialog)
+    fallback = _fallback_release(release)
+
+    try:
+        dialog.cache_action.trigger()
+        assert entered.wait(1)
+        assert calls == ["cache"]
+        assert dialog.status_label.text() == "Resetting cached data..."
+        assert not dialog.cache_action.isEnabled()
+        assert not dialog.client_id_edit.isEnabled()
+        assert not dialog.more_actions_button.isEnabled()
+        assert not dialog.update_button.isEnabled()
+
+        dialog.cache_action.trigger()
+        qtbot.wait(50)
+        assert calls == ["cache"]
+
+        release.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "Cache cleared.")
+        assert dialog.cache_action.isEnabled()
+        assert dialog.client_id_edit.isEnabled()
+        assert dialog.more_actions_button.isEnabled()
+        assert dialog.update_button.isEnabled()
+    finally:
+        release.set()
+        fallback.cancel()
+
+
+def test_settings_dialog_cache_reset_surfaces_async_error_and_restores_controls(
+    qtbot, tmp_path: Path
+):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def clear_cache() -> str:
+        entered.set()
+        if not release.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("cache test timed out")
+        raise RuntimeError("locked")
+
+    dialog = SettingsDialog(_cfg(tmp_path), clear_cache=clear_cache)
+    qtbot.addWidget(dialog)
+    fallback = _fallback_release(release)
+
+    try:
+        dialog.cache_action.trigger()
+        assert entered.wait(1)
+        assert dialog.status_label.text() == "Resetting cached data..."
+        assert not dialog.cache_action.isEnabled()
+
+        release.set()
+        qtbot.waitUntil(lambda: "locked" in dialog.status_label.text())
+        assert dialog.status_label.text() == "Could not clear cache: locked"
+        assert "#ff6666" in dialog.status_label.styleSheet()
+        assert dialog.cache_action.isEnabled()
+        assert dialog.client_id_edit.isEnabled()
+    finally:
+        release.set()
+        fallback.cancel()
+
+
+def test_settings_dialog_cache_reset_update_overlap_keeps_action_state_consistent(
+    qtbot, tmp_path: Path
+):
+    entered = threading.Event()
+    release = threading.Event()
+    returned = threading.Event()
+
+    def clear_cache() -> str:
+        entered.set()
+        if not release.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("cache test timed out")
+        returned.set()
+        return "Cache cleared."
+
+    dialog = SettingsDialog(_cfg(tmp_path), clear_cache=clear_cache)
+    qtbot.addWidget(dialog)
+    fallback = _fallback_release(release)
+
+    try:
+        dialog.cache_action.trigger()
+        assert entered.wait(1)
+        dialog.set_update_in_progress(True)
+        assert not dialog.cache_action.isEnabled()
+        assert not dialog.more_actions_button.isEnabled()
+
+        release.set()
+        assert returned.wait(1)
+        qtbot.wait(100)
+        assert not dialog.cache_action.isEnabled()
+        assert "Cache cleared" not in dialog.status_label.text()
+
+        dialog.set_update_in_progress(False)
+        qtbot.waitUntil(lambda: dialog.cache_action.isEnabled())
+        assert dialog.more_actions_button.isEnabled()
+    finally:
+        release.set()
+        fallback.cancel()
 
 
 def test_settings_dialog_suppresses_pending_values_while_update_in_progress(
@@ -1123,6 +1348,166 @@ def test_settings_close_ignored_while_update_in_progress(qtbot, tmp_path: Path):
     assert dialog.isVisible()
     assert hidden == []
     assert quit_requested == []
+    assert "update" in dialog.status_label.text().lower()
+
+
+def test_settings_close_ignored_while_cache_reset_in_progress(qtbot, tmp_path: Path):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def clear_cache() -> str:
+        entered.set()
+        if not release.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("cache test timed out")
+        return "Cache cleared."
+
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        clear_cache=clear_cache,
+        hide_to_tray_on_close=False,
+    )
+    qtbot.addWidget(dialog)
+    hidden: list[bool] = []
+    quit_requested: list[bool] = []
+    dialog.hideRequested.connect(lambda: hidden.append(True))
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.show()
+    fallback = _fallback_release(release)
+
+    try:
+        dialog.cache_action.trigger()
+        assert entered.wait(1)
+
+        closed = dialog.close()
+
+        assert not closed
+        assert dialog.isVisible()
+        assert hidden == []
+        assert quit_requested == []
+        assert "cache reset" in dialog.status_label.text().lower()
+
+        release.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "Cache cleared.")
+    finally:
+        release.set()
+        fallback.cancel()
+
+
+def test_settings_dialog_more_quit_action_blocks_during_cache_reset(
+    qtbot, tmp_path: Path
+):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def clear_cache() -> str:
+        entered.set()
+        if not release.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("cache test timed out")
+        return "Cache cleared."
+
+    dialog = SettingsDialog(_cfg(tmp_path), clear_cache=clear_cache)
+    qtbot.addWidget(dialog)
+    quit_requested: list[bool] = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    fallback = _fallback_release(release)
+
+    try:
+        dialog.cache_action.trigger()
+        assert entered.wait(1)
+
+        dialog.quit_action.trigger()
+
+        assert quit_requested == []
+        assert "cache reset" in dialog.status_label.text().lower()
+        assert "#ff6666" in dialog.status_label.styleSheet()
+
+        release.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "Cache cleared.")
+    finally:
+        release.set()
+        fallback.cancel()
+
+
+def test_first_run_setup_actions_blocked_while_cache_reset_in_progress(
+    qtbot, tmp_path: Path
+):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def clear_cache() -> str:
+        entered.set()
+        if not release.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("cache test timed out")
+        return "Cache cleared."
+
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        first_run=True,
+        clear_cache=clear_cache,
+    )
+    qtbot.addWidget(dialog)
+    start_button = dialog.findChild(QPushButton, "startCompanion")
+    setup_quit_button = dialog.findChild(QPushButton, "quitApplicantScout")
+    assert start_button is not None
+    assert setup_quit_button is not None
+    dialog.show()
+    fallback = _fallback_release(release)
+
+    try:
+        dialog.cache_action.trigger()
+        assert entered.wait(1)
+
+        assert not start_button.isEnabled()
+        assert not setup_quit_button.isEnabled()
+
+        dialog.accept()
+        assert not dialog.result()
+        assert dialog.isVisible()
+        assert "cache reset" in dialog.status_label.text().lower()
+
+        dialog.reject()
+        assert not dialog.result()
+        assert dialog.isVisible()
+        assert "cache reset" in dialog.status_label.text().lower()
+
+        release.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "Cache cleared.")
+        assert start_button.isEnabled()
+        assert setup_quit_button.isEnabled()
+    finally:
+        release.set()
+        fallback.cancel()
+
+
+def test_first_run_setup_actions_blocked_while_update_in_progress(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+    start_button = dialog.findChild(QPushButton, "startCompanion")
+    setup_quit_button = dialog.findChild(QPushButton, "quitApplicantScout")
+    assert start_button is not None
+    assert setup_quit_button is not None
+    dialog.show()
+
+    dialog.set_update_in_progress(True)
+
+    assert not start_button.isEnabled()
+    assert not setup_quit_button.isEnabled()
+
+    dialog.accept()
+    assert not dialog.result()
+    assert dialog.isVisible()
+    assert "update" in dialog.status_label.text().lower()
+
+    dialog.reject()
+    assert not dialog.result()
+    assert dialog.isVisible()
+    assert "update" in dialog.status_label.text().lower()
+
+    closed = dialog.close()
+    assert not closed
+    assert dialog.isVisible()
     assert "update" in dialog.status_label.text().lower()
 
 

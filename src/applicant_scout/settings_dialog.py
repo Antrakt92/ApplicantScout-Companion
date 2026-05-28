@@ -74,6 +74,13 @@ CLOSE_QUIT_TOOLTIP = "Quit ApplicantScout."
 SETTINGS_QUIT_BLOCKED_MESSAGE = (
     "Settings were not saved. Fix or revert the pending settings change before quitting."
 )
+UPDATE_BUSY_CLOSE_MESSAGE = "Update is installing. Wait for it to finish before closing."
+CACHE_RESET_BUSY_MESSAGE = (
+    "Cache reset is running. Wait for it to finish before closing."
+)
+CACHE_RESET_ACTION_BLOCKED_MESSAGE = (
+    "Another settings action is still running. Wait for it to finish before resetting cache."
+)
 
 
 def _settings_window_title(*, first_run: bool) -> str:
@@ -112,6 +119,18 @@ def _set_tooltip_and_accessibility(
     button.setToolTip(tooltip)
     button.setAccessibleName(accessible_name)
     button.setAccessibleDescription(accessible_description or tooltip)
+
+
+def _set_action_help(
+    action: QAction,
+    *,
+    tooltip: str,
+    status_tip: str | None = None,
+    whats_this: str | None = None,
+) -> None:
+    action.setToolTip(tooltip)
+    action.setStatusTip(status_tip or tooltip)
+    action.setWhatsThis(whats_this or status_tip or tooltip)
 
 
 def _close_button_copy(*, first_run: bool, hide_to_tray: bool) -> tuple[str, str]:
@@ -233,6 +252,9 @@ class SettingsDialog(QDialog):
         self._first_run = first_run
         self._hide_to_tray_on_close = hide_to_tray_on_close
         self._update_in_progress = False
+        self._cache_action_in_progress = False
+        self.start_button: QPushButton | None = None
+        self.setup_quit_button: QPushButton | None = None
         self._credential_tester = credential_tester
         self._open_logs = open_logs
         self._clear_cache = clear_cache
@@ -290,8 +312,13 @@ class SettingsDialog(QDialog):
         wcl_link_layout.addWidget(self.wcl_example_arrow)
         self.wcl_example_button = QPushButton("Show example")
         self.wcl_example_button.setObjectName("showWclSetupExample")
-        self.wcl_example_button.setToolTip(
-            "Show the Warcraft Logs Create Client form values to copy."
+        _set_tooltip_and_accessibility(
+            self.wcl_example_button,
+            tooltip="Show the Warcraft Logs Create Client form values to copy.",
+            accessible_name="Show WCL setup example",
+            accessible_description=(
+                "Show the Warcraft Logs Create Client form values to copy."
+            ),
         )
         self.wcl_example_button.clicked.connect(self._show_wcl_setup_example)
         wcl_link_layout.addWidget(self.wcl_example_button)
@@ -343,11 +370,19 @@ class SettingsDialog(QDialog):
         self.screenshots_edit.setToolTip(
             r"Select WoW's in-game Screenshots folder under _retail_\Screenshots."
         )
+        self.screenshots_edit.setAccessibleName("WoW Screenshots folder")
+        self.screenshots_edit.setAccessibleDescription(
+            r"Path to WoW's _retail_\Screenshots folder."
+        )
         self.screenshots_edit.textChanged.connect(self._handle_screenshots_text_changed)
         path_layout.addWidget(self.screenshots_edit, stretch=1)
         self.browse_button = QPushButton("Browse")
         self.browse_button.setObjectName("browseScreenshots")
-        self.browse_button.setToolTip("Browse to WoW's in-game Screenshots folder.")
+        _set_tooltip_and_accessibility(
+            self.browse_button,
+            tooltip="Browse to WoW's in-game Screenshots folder.",
+            accessible_name="Browse WoW Screenshots folder",
+        )
         self.browse_button.clicked.connect(self._browse_screenshots)
         path_layout.addWidget(self.browse_button)
         form.addRow("WoW Screenshots folder", path_row)
@@ -435,7 +470,11 @@ class SettingsDialog(QDialog):
         footer_layout.addWidget(self.status_label, stretch=1)
         self.test_button = QPushButton("Test WCL", footer)
         self.test_button.setObjectName("testWcl")
-        self.test_button.setToolTip("Validate the current Warcraft Logs credentials.")
+        _set_tooltip_and_accessibility(
+            self.test_button,
+            tooltip="Validate the current Warcraft Logs credentials.",
+            accessible_name="Test Warcraft Logs credentials",
+        )
         self.test_button.clicked.connect(self._test_credentials)
         footer_layout.addWidget(self.test_button)
         footer_layout.addWidget(self._build_more_actions_button(footer))
@@ -445,14 +484,14 @@ class SettingsDialog(QDialog):
             buttons = QHBoxLayout()
             buttons.setSpacing(8)
             buttons.addStretch(1)
-            start_button = QPushButton("Start companion")
-            start_button.setObjectName("startCompanion")
-            start_button.clicked.connect(self.accept)
-            buttons.addWidget(start_button)
-            quit_button = QPushButton("Quit setup")
-            quit_button.setObjectName("quitApplicantScout")
-            quit_button.clicked.connect(self.reject)
-            buttons.addWidget(quit_button)
+            self.start_button = QPushButton("Start companion")
+            self.start_button.setObjectName("startCompanion")
+            self.start_button.clicked.connect(self.accept)
+            buttons.addWidget(self.start_button)
+            self.setup_quit_button = QPushButton("Quit setup")
+            self.setup_quit_button.setObjectName("quitApplicantScout")
+            self.setup_quit_button.clicked.connect(self.reject)
+            buttons.addWidget(self.setup_quit_button)
             root.addLayout(buttons)
         outer.addWidget(body)
         self._connect_value_change_signals()
@@ -565,8 +604,12 @@ class SettingsDialog(QDialog):
         self.more_actions_button = QToolButton(parent)
         self.more_actions_button.setObjectName("settingsMoreActions")
         self.more_actions_button.setText("More")
-        self.more_actions_button.setToolTip(
-            "Open logs, view the changelog, reset cached data, or quit ApplicantScout."
+        _set_tooltip_and_accessibility(
+            self.more_actions_button,
+            tooltip=(
+                "Open logs, view the changelog, reset cached data, or quit ApplicantScout."
+            ),
+            accessible_name="More settings actions",
         )
         self.more_actions_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup
@@ -574,21 +617,45 @@ class SettingsDialog(QDialog):
         actions_menu = QMenu(self.more_actions_button)
         self.logs_action = QAction("Open logs", self.more_actions_button)
         self.logs_action.setObjectName("openLogs")
+        _set_action_help(
+            self.logs_action,
+            tooltip="Open ApplicantScout logs.",
+            status_tip="Open the ApplicantScout log folder.",
+            whats_this="Open the folder containing companion logs.",
+        )
         self.logs_action.triggered.connect(self._open_log_folder)
         actions_menu.addAction(self.logs_action)
         self.changelog_action = QAction("View changelog", self.more_actions_button)
         self.changelog_action.setObjectName("viewChangelog")
+        _set_action_help(
+            self.changelog_action,
+            tooltip="View the ApplicantScout changelog.",
+            status_tip="Open the ApplicantScout changelog.",
+            whats_this="Open recent companion release notes and changelog entries.",
+        )
         self.changelog_action.triggered.connect(
             lambda *_args: self.changelogRequested.emit()
         )
         actions_menu.addAction(self.changelog_action)
         self.cache_action = QAction("Reset cached data", self.more_actions_button)
         self.cache_action.setObjectName("clearCache")
+        _set_action_help(
+            self.cache_action,
+            tooltip="Reset cached Warcraft Logs and RaiderIO data.",
+            status_tip="Reset cached companion data.",
+            whats_this="Clear cached Warcraft Logs, OAuth, and RaiderIO local data.",
+        )
         self.cache_action.triggered.connect(self._clear_cache_dir)
         actions_menu.addAction(self.cache_action)
         actions_menu.addSeparator()
         self.quit_action = QAction("Quit ApplicantScout", self.more_actions_button)
         self.quit_action.setObjectName("quitApplicantScout")
+        _set_action_help(
+            self.quit_action,
+            tooltip="Quit ApplicantScout.",
+            status_tip="Quit ApplicantScout.",
+            whats_this="Quit the companion instead of hiding settings to the tray.",
+        )
         self.quit_action.triggered.connect(self._request_full_quit)
         actions_menu.addAction(self.quit_action)
         self.more_actions_button.setMenu(actions_menu)
@@ -658,8 +725,7 @@ class SettingsDialog(QDialog):
         self._update_in_progress = in_progress
         if in_progress:
             self._autosave_timer.stop()
-        self.update_button.setEnabled(not in_progress)
-        self._set_settings_controls_enabled(not in_progress)
+        self._refresh_settings_interaction_state()
         if in_progress:
             self.update_button.show()
             _set_tooltip_and_accessibility(
@@ -675,6 +741,15 @@ class SettingsDialog(QDialog):
             )
         else:
             self.set_update_available(self._latest_update_version)
+            self._refresh_settings_interaction_state()
+
+    def _settings_interactions_enabled(self) -> bool:
+        return not self._update_in_progress and not self._cache_action_in_progress
+
+    def _refresh_settings_interaction_state(self) -> None:
+        enabled = self._settings_interactions_enabled()
+        self.update_button.setEnabled(enabled)
+        self._set_settings_controls_enabled(enabled)
 
     def _set_settings_controls_enabled(self, enabled: bool) -> None:
         for widget in (
@@ -693,8 +768,20 @@ class SettingsDialog(QDialog):
             self.more_actions_button,
         ):
             widget.setEnabled(enabled)
+        for widget in (self.start_button, self.setup_quit_button):
+            if widget is not None:
+                widget.setEnabled(enabled)
+        self.logs_action.setEnabled(enabled)
+        self.changelog_action.setEnabled(enabled)
+        self.cache_action.setEnabled(enabled and not self._cache_action_in_progress)
 
     def accept(self) -> None:  # type: ignore[override]
+        if self._cache_action_in_progress:
+            self._set_status(CACHE_RESET_BUSY_MESSAGE, error=True)
+            return
+        if self._update_in_progress:
+            self._set_status(UPDATE_BUSY_CLOSE_MESSAGE, error=True)
+            return
         values = self.values()
         error = self._hard_validation_error(values)
         if error is not None:
@@ -702,13 +789,26 @@ class SettingsDialog(QDialog):
             return
         super().accept()
 
+    def reject(self) -> None:  # type: ignore[override]
+        if self._cache_action_in_progress:
+            self._set_status(CACHE_RESET_BUSY_MESSAGE, error=True)
+            return
+        if self._update_in_progress:
+            self._set_status(UPDATE_BUSY_CLOSE_MESSAGE, error=True)
+            return
+        super().reject()
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        if self._first_run:
-            super().closeEvent(event)
+        if self._cache_action_in_progress:
+            event.ignore()
+            self._set_status(CACHE_RESET_BUSY_MESSAGE, error=True)
             return
         if self._update_in_progress:
             event.ignore()
-            self._set_status("Update is installing. Wait for it to finish before closing.", error=True)
+            self._set_status(UPDATE_BUSY_CLOSE_MESSAGE, error=True)
+            return
+        if self._first_run:
+            super().closeEvent(event)
             return
         if not self._hide_to_tray_on_close:
             if not self.prepare_quit():
@@ -721,11 +821,11 @@ class SettingsDialog(QDialog):
         self._hide_to_tray()
 
     def _request_full_quit(self) -> None:
+        if self._cache_action_in_progress:
+            self._set_status(CACHE_RESET_BUSY_MESSAGE, error=True)
+            return
         if self._update_in_progress:
-            self._set_status(
-                "Update is installing. Wait for it to finish before closing.",
-                error=True,
-            )
+            self._set_status(UPDATE_BUSY_CLOSE_MESSAGE, error=True)
             return
         if self._first_run:
             self.reject()
@@ -746,6 +846,10 @@ class SettingsDialog(QDialog):
     def flush_pending_values(self) -> bool:
         if self._update_in_progress:
             self._autosave_timer.stop()
+            return False
+        if self._cache_action_in_progress:
+            self._autosave_timer.stop()
+            self._set_status(CACHE_RESET_BUSY_MESSAGE, error=True)
             return False
         if not self._autosave_timer.isActive():
             return self._last_values_apply_succeeded
@@ -899,6 +1003,15 @@ class SettingsDialog(QDialog):
     def _finish_async_action(self, raw: object) -> None:
         if not isinstance(raw, _AsyncActionResult):
             return
+        if raw.button is self.cache_action:
+            self._cache_action_in_progress = False
+            self._refresh_settings_interaction_state()
+            if self._update_in_progress:
+                return
+            self._set_status(raw.message, error=raw.error)
+            if not raw.error and raw.open_url:
+                QDesktopServices.openUrl(QUrl(raw.open_url))
+            return
         if self._update_in_progress and raw.button is not self.update_button:
             return
         self._set_status(raw.message, error=raw.error)
@@ -975,6 +1088,10 @@ class SettingsDialog(QDialog):
         app_name_edit.setObjectName("wclExampleApplicationName")
         app_name_edit.setReadOnly(True)
         app_name_edit.setToolTip("Copy this into the Warcraft Logs application name field.")
+        app_name_edit.setAccessibleName("WCL application name")
+        app_name_edit.setAccessibleDescription(
+            "Application name to enter on the Warcraft Logs Create Client form."
+        )
         values_form.addRow(
             "Application name",
             self._copyable_value_row(
@@ -990,6 +1107,10 @@ class SettingsDialog(QDialog):
         redirect_url_edit.setObjectName("wclExampleRedirectUrl")
         redirect_url_edit.setReadOnly(True)
         redirect_url_edit.setToolTip("Copy this into the Warcraft Logs redirect URL field.")
+        redirect_url_edit.setAccessibleName("WCL redirect URL")
+        redirect_url_edit.setAccessibleDescription(
+            "Redirect URL to enter on the Warcraft Logs Create Client form."
+        )
         values_form.addRow(
             "Redirect URL",
             self._copyable_value_row(
@@ -1006,6 +1127,10 @@ class SettingsDialog(QDialog):
         public_client.setChecked(False)
         public_client.setEnabled(False)
         public_client.setToolTip("Leave Public Client unchecked on Warcraft Logs.")
+        public_client.setAccessibleName("WCL Public Client checkbox")
+        public_client.setAccessibleDescription(
+            "Leave Public Client unchecked on the Warcraft Logs Create Client form."
+        )
         values_form.addRow("Public Client", public_client)
         layout.addWidget(copy_status)
 
@@ -1052,7 +1177,12 @@ class SettingsDialog(QDialog):
         row_layout.addWidget(value_edit, stretch=1)
         copy_button = QPushButton("Copy")
         copy_button.setObjectName(button_name)
-        copy_button.setToolTip(f"Copy {label}.")
+        accessible_label = "redirect URL" if label == "Redirect URL" else label.lower()
+        _set_tooltip_and_accessibility(
+            copy_button,
+            tooltip=f"Copy {label}.",
+            accessible_name=f"Copy WCL {accessible_label}",
+        )
         copy_button.clicked.connect(
             lambda: self._copy_wcl_example_value(value, label, status)
         )
@@ -1110,10 +1240,27 @@ class SettingsDialog(QDialog):
         if self._clear_cache is None:
             self._set_status("Cache action is unavailable.", error=True)
             return
-        try:
-            self._set_status(self._clear_cache())
-        except Exception as exc:  # noqa: BLE001
-            self._set_status(f"Could not clear cache: {exc}", error=True)
+        if self._cache_action_in_progress:
+            return
+        if self._update_in_progress:
+            self._set_status(
+                "Update is installing. Wait for it to finish before resetting cache.",
+                error=True,
+            )
+            return
+        if not self.test_button.isEnabled():
+            self._set_status(CACHE_RESET_ACTION_BLOCKED_MESSAGE, error=True)
+            return
+        if not self.flush_pending_values():
+            return
+        self._cache_action_in_progress = True
+        self._refresh_settings_interaction_state()
+        self._start_async_action(
+            button=self.cache_action,
+            busy_text="Resetting cached data...",
+            error_prefix="Could not clear cache",
+            action=self._clear_cache,
+        )
 
     def _check_for_updates(self) -> None:
         if self._check_updates is None:

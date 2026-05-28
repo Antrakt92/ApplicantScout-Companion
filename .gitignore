@@ -2,13 +2,35 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-.env
 *.egg-info/
 build/
 dist/
 
-# user data
-cache/
-window.json
-token.json
-*.log
+# local/private companion data
+/.env
+/.env.*
+!/.env.example
+!/.env.sample
+/config.env
+/config.env.*
+!/config.env.example
+/config/config.env
+/cache/
+/logs/
+/Screenshots/
+/screenshots/
+/window.json
+/config/window.json
+/token.json
+/character-cache.json
+/*.log
+/*.log.*
+
+# dev-internal docs
+/AUDIT.md
+/PLAN.md
+/NOTES.md
+/TODO.md
+/CLAUDE.md
+/*.private.md
+/*.private/

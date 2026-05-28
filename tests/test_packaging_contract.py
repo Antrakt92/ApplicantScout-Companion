@@ -1271,6 +1271,93 @@ def test_public_docs_do_not_reference_private_audit_backlog():
     assert "AUDIT.md T2-" not in screenshot_tests
 
 
+def _git_check_ignore(path: str) -> bool:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPO_ROOT),
+            "check-ignore",
+            "--no-index",
+            "--quiet",
+            "--",
+            path,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    debug = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPO_ROOT),
+            "check-ignore",
+            "--no-index",
+            "-nv",
+            "--",
+            path,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    raise AssertionError(
+        f"git check-ignore failed for {path!r}: {result.stderr or debug.stderr or debug.stdout}"
+    )
+
+
+def test_companion_gitignore_covers_private_local_artifacts():
+    for path in (
+        ".env",
+        ".env.local",
+        ".env.production",
+        "config.env",
+        "config/config.env",
+        "window.json",
+        "config/window.json",
+        "token.json",
+        "character-cache.json",
+        "cache/token.json",
+        "cache/character-cache.json",
+        "cache/raiderio-local/foo.payload.bin",
+        "logs/applicant-scout.log",
+        "logs/applicant-scout.log.1",
+        "Screenshots/WoWScrnShot_052826_123456.jpg",
+        "screenshots/manual-decode.png",
+        "AUDIT.md",
+        "PLAN.md",
+        "NOTES.md",
+        "TODO.md",
+        "CLAUDE.md",
+        "research.private.md",
+        "research.private/file.txt",
+    ):
+        assert _git_check_ignore(path), f"{path} should be ignored"
+
+
+def test_companion_gitignore_does_not_hide_public_release_or_doc_inputs():
+    for path in (
+        ".env.example",
+        ".env.sample",
+        "config.env.example",
+        "README.md",
+        "RELEASE_CHECKLIST.md",
+        "RELEASE_NOTES.md",
+        "constraints-release.txt",
+        "docs/README.md",
+        "docs/visual/future-public-screenshot.jpg",
+        "src/applicant_scout/cache/new_module.py",
+        "tests/fixtures/token.json",
+        "packaging/inno/ApplicantScoutCompanion.iss",
+    ):
+        assert not _git_check_ignore(path), f"{path} should not be ignored"
+
+
 def test_readme_documents_current_wire_support():
     readme = _read_repo_text("README.md")
 
