@@ -56,6 +56,19 @@ def _clean_load_config_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.delenv("APSCOUT_SYNC_WITH_WOW", raising=False)
 
 
+def _fake_config_source_checkout(monkeypatch: pytest.MonkeyPatch, root: Path) -> Path:
+    module_dir = root / "src" / "applicant_scout"
+    module_dir.mkdir(parents=True, exist_ok=True)
+    config_file = module_dir / "config.py"
+    config_file.write_text("# source marker\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "applicant-scout-companion"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_mod, "__file__", str(config_file))
+    return root
+
+
 def _retail_root(tmp_path: Path) -> Path:
     return tmp_path / "World of Warcraft" / "_retail_"
 
@@ -1622,11 +1635,14 @@ def test_settings_change_rejects_explicit_suspicious_screenshots_before_persist_
 def test_load_config_uses_legacy_env_only_when_user_config_is_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    monkeypatch.chdir(tmp_path)
+    source_root = _fake_config_source_checkout(monkeypatch, tmp_path / "source")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
     monkeypatch.delenv("WCL_CLIENT_ID", raising=False)
     monkeypatch.delenv("WCL_CLIENT_SECRET", raising=False)
-    legacy_env = tmp_path / ".env"
+    legacy_env = source_root / ".env"
     legacy_env.write_text(
         "WCL_CLIENT_ID=legacy-client\nWCL_CLIENT_SECRET=legacy-secret\n",
         encoding="utf-8",
@@ -1637,6 +1653,87 @@ def test_load_config_uses_legacy_env_only_when_user_config_is_absent(
     assert cfg.wcl_client_id == "legacy-client"
     assert cfg.wcl_client_secret == "legacy-secret"
     assert not user_config_path().exists()
+
+
+def test_load_config_ignores_malformed_cwd_env_without_source_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _fake_config_source_checkout(monkeypatch, tmp_path / "source")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.delenv("WCL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("WCL_CLIENT_SECRET", raising=False)
+    (cwd / ".env").write_text('WCL_CLIENT_ID="unterminated\n', encoding="utf-8")
+
+    cfg = load_config()
+
+    assert cfg.wcl_client_id == ""
+    assert cfg.wcl_client_secret == ""
+
+
+def test_read_user_config_values_ignores_cwd_legacy_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _fake_config_source_checkout(monkeypatch, tmp_path / "source")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    (cwd / ".env").write_text("WCL_CLIENT_ID=wrong\n", encoding="utf-8")
+
+    values = config_mod.read_user_config_values()
+
+    assert values == {}
+
+
+def test_load_config_ignores_source_env_when_frozen(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    source_root = _fake_config_source_checkout(monkeypatch, tmp_path / "source")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.delenv("WCL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("WCL_CLIENT_SECRET", raising=False)
+    monkeypatch.setattr(config_mod.sys, "frozen", True, raising=False)
+    (source_root / ".env").write_text(
+        "WCL_CLIENT_ID=legacy-client\nWCL_CLIENT_SECRET=legacy-secret\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config()
+
+    assert cfg.wcl_client_id == ""
+    assert cfg.wcl_client_secret == ""
+
+
+def test_load_config_ignores_parent_env_for_non_source_installed_layout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    install_root = tmp_path / "venv" / "Lib" / "site-packages"
+    module_dir = install_root / "applicant_scout"
+    module_dir.mkdir(parents=True)
+    config_file = module_dir / "config.py"
+    config_file.write_text("# installed marker\n", encoding="utf-8")
+    monkeypatch.setattr(config_mod, "__file__", str(config_file))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.delenv("WCL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("WCL_CLIENT_SECRET", raising=False)
+    (tmp_path / "venv" / "Lib" / ".env").write_text(
+        "WCL_CLIENT_ID=wrong\nWCL_CLIENT_SECRET=wrong\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config()
+
+    assert cfg.wcl_client_id == ""
+    assert cfg.wcl_client_secret == ""
 
 
 def test_load_config_wraps_unreadable_user_config_as_config_error(

@@ -184,6 +184,25 @@ def user_config_path() -> Path:
     return user_config_dir() / CONFIG_ENV_FILENAME
 
 
+def _source_checkout_root() -> Path | None:
+    try:
+        module_path = Path(__file__).resolve()
+        candidate = module_path.parents[2]
+    except (IndexError, OSError):
+        return None
+    if not (candidate / "pyproject.toml").is_file():
+        return None
+    expected_module = candidate / "src" / "applicant_scout" / "config.py"
+    if not expected_module.is_file():
+        return None
+    try:
+        if expected_module.resolve() != module_path:
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
 def _legacy_env_path() -> Path | None:
     """Developer/backcompat .env path.
 
@@ -192,7 +211,10 @@ def _legacy_env_path() -> Path | None:
     """
     if getattr(sys, "frozen", False):
         return None
-    candidate = Path.cwd() / ".env"
+    source_root = _source_checkout_root()
+    if source_root is None:
+        return None
+    candidate = source_root / ".env"
     return candidate if candidate.exists() else None
 
 

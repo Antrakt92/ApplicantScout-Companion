@@ -12,6 +12,8 @@ import time
 import tempfile
 from pathlib import Path
 
+from .atomic_io import apply_private_directory_mode, apply_private_file_mode
+
 
 _log = logging.getLogger("applicant_scout.raiderio_local")
 
@@ -626,9 +628,12 @@ def _parse_lookup_payload(
     )
     if cache_path is not None and use_cache:
         try:
-            return cache_path.read_bytes()
+            payload = cache_path.read_bytes()
         except OSError:
             pass
+        else:
+            _harden_existing_lookup_payload_cache(cache_path)
+            return payload
     start = match.end()
     end = _find_lua_string_end(text, start)
     payload = _decode_lua_string_bytes(text[start:end])
@@ -704,8 +709,20 @@ def _lookup_payload_cache_path(cache_dir: Path, source_path: Path) -> Path | Non
     return cache_dir / f"{safe_stem}.{mtime_ns}.{size}{_LOOKUP_PAYLOAD_CACHE_SUFFIX}"
 
 
+def _harden_existing_lookup_payload_cache(path: Path) -> None:
+    try:
+        apply_private_directory_mode(path.parent)
+    except OSError:
+        pass
+    try:
+        apply_private_file_mode(path)
+    except OSError:
+        pass
+
+
 def _write_lookup_payload_cache(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    apply_private_directory_mode(path.parent)
     fd = -1
     temp_path: Path | None = None
     try:
@@ -715,6 +732,7 @@ def _write_lookup_payload_cache(path: Path, payload: bytes) -> None:
             dir=path.parent,
         )
         temp_path = Path(temp_name)
+        apply_private_file_mode(temp_path)
         with os.fdopen(fd, "wb") as handle:
             fd = -1
             handle.write(payload)
@@ -722,6 +740,7 @@ def _write_lookup_payload_cache(path: Path, payload: bytes) -> None:
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
         temp_path = None
+        apply_private_file_mode(path)
         _prune_old_lookup_payload_caches(path)
     except BaseException:
         if fd != -1:

@@ -380,6 +380,124 @@ def test_reader_reuses_decoded_lookup_payload_cache_across_instances(
     assert second.current_score == 3074
 
 
+def test_reader_hardens_decoded_lookup_payload_cache_parent_temp_and_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    cache_dir = tmp_path / "cache"
+    calls: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "apply_private_directory_mode",
+        lambda path: calls.append(("dir", Path(path))),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "apply_private_file_mode",
+        lambda path: calls.append(("file", Path(path))),
+        raising=False,
+    )
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    cache_file = next(cache_dir.rglob("*.payload.bin"))
+    cache_parent = cache_dir / "raiderio-local"
+    dir_index = calls.index(("dir", cache_parent))
+    temp_index = next(
+        idx
+        for idx, (kind, path) in enumerate(calls)
+        if kind == "file" and path.name.endswith(".tmp")
+    )
+    target_index = calls.index(("file", cache_file))
+    assert dir_index < temp_index < target_index
+
+
+def test_reader_hardens_existing_decoded_lookup_payload_cache_on_read_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    cache_dir = tmp_path / "cache"
+    first_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    assert first_reader.lookup_profile("Chinie", "Ragnaros", "EU") is not None
+    cache_file = next(cache_dir.rglob("*.payload.bin"))
+    calls: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "apply_private_directory_mode",
+        lambda path: calls.append(("dir", Path(path))),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "apply_private_file_mode",
+        lambda path: calls.append(("file", Path(path))),
+        raising=False,
+    )
+
+    def fail_decode(*_args: object) -> bytes:
+        raise AssertionError("lookup payload should load from the decoded cache")
+
+    monkeypatch.setattr(raiderio_local_mod, "_decode_lua_string_bytes", fail_decode)
+    second_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    profile = second_reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert ("dir", cache_file.parent) in calls
+    assert ("file", cache_file) in calls
+
+
+def test_lookup_payload_cache_private_mode_failure_does_not_block_profile_load_and_cleans_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    cache_dir = tmp_path / "cache"
+    file_calls: list[Path] = []
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "apply_private_directory_mode",
+        lambda _path: None,
+        raising=False,
+    )
+
+    def fail_temp_mode(path: Path) -> None:
+        path = Path(path)
+        file_calls.append(path)
+        if path.name.endswith(".tmp"):
+            raise PermissionError("private mode rejected")
+
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "apply_private_file_mode",
+        fail_temp_mode,
+        raising=False,
+    )
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3074
+    assert file_calls
+    assert list(cache_dir.rglob("*.tmp")) == []
+    assert list(cache_dir.rglob("*.payload.bin")) == []
+
+
 def test_reader_invalidates_decoded_lookup_payload_cache_when_lookup_file_changes(
     tmp_path: Path,
 ):

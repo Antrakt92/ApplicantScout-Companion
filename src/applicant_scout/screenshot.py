@@ -675,7 +675,19 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
             continue
         has_marker = True
         for kind, raw in candidates:
-            snap, err = _try_parse_appscout_payload(raw)
+            try:
+                snap, err = _try_parse_appscout_payload(raw)
+            except Exception as exc:  # noqa: BLE001
+                err = (
+                    f"unexpected parser error: {type(exc).__name__}: "
+                    f"{str(exc)[:200]}"
+                )
+                if first_error is None:
+                    first_error = f"{kind}: {err}"
+                _log.exception(
+                    "candidate parser error in %s (%s)", image_path.name, kind
+                )
+                continue
             if snap is not None:
                 wire_ver = raw[4]
                 # Diagnostic: confirms which wire version we just parsed. v0x01 =
@@ -1047,7 +1059,12 @@ class ScreenshotWatcher(QObject):
             try:
                 result = _decode_screenshot_result(path)
             except Exception as e:
-                self._emit_decode_failed(path, repr(e), source)
+                _log.debug(
+                    "decode error before APS1 ownership for %s: %r",
+                    path.name,
+                    e,
+                    exc_info=True,
+                )
                 result = DecodeResult(None, False)
             if self._stopped.is_set():
                 return
@@ -1077,7 +1094,12 @@ class ScreenshotWatcher(QObject):
         try:
             result = _decode_screenshot_result(path)
         except Exception as e:
-            self._emit_decode_failed(path, repr(e), source)
+            _log.debug(
+                "decode error before APS1 ownership for %s: %r",
+                path.name,
+                e,
+                exc_info=True,
+            )
             result = DecodeResult(None, False)
         if self._stopped.is_set():
             return

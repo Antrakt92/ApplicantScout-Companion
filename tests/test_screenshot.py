@@ -1561,6 +1561,83 @@ def test_decode_result_reports_duplicate_identity_as_marker_parse_failure(
     assert "duplicate applicant identity 42:1" in result.error_reason
 
 
+def test_decode_result_records_unexpected_appscout_candidate_exception_as_marker_failure(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "unexpected_parser_error.png"
+    _write_blank_image(image_path)
+    raw_payload = _wrap_payload(_build_body([]))
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [SimpleNamespace(data=raw_payload)],
+    )
+
+    def raise_unexpected(_raw: bytes):
+        raise RuntimeError("parser exploded")
+
+    monkeypatch.setattr(screenshot_mod, "_try_parse_appscout_payload", raise_unexpected)
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.snapshot is None
+    assert result.has_marker is True
+    assert result.error_reason is not None
+    assert "unexpected parser error: RuntimeError: parser exploded" in result.error_reason
+
+
+def test_decode_result_continues_after_unexpected_candidate_exception_to_valid_candidate(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "unexpected_then_valid.png"
+    _write_blank_image(image_path)
+    broken_raw = _wrap_payload(_build_body([]))
+    valid_payload = _wrap_payload(
+        _build_body(
+            [
+                _build_applicant_block(
+                    aid=11,
+                    class_id=1,
+                    spec_id=71,
+                    ilvl=480,
+                    score=2443,
+                    role=2,
+                    name="Fallback-Realm",
+                    version=1,
+                )
+            ]
+        ),
+        wire_ver=0x01,
+    )
+    valid_hex = valid_payload.hex().upper().encode("ascii")
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [
+            SimpleNamespace(data=broken_raw),
+            SimpleNamespace(data=valid_hex),
+        ],
+    )
+    original_parse = screenshot_mod._try_parse_appscout_payload
+
+    def parse_or_raise(raw: bytes):
+        if raw == broken_raw:
+            raise RuntimeError("parser exploded")
+        return original_parse(raw)
+
+    monkeypatch.setattr(screenshot_mod, "_try_parse_appscout_payload", parse_or_raise)
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.has_marker is True
+    assert result.snapshot is not None
+    assert [applicant.name for applicant in result.snapshot.applicants] == [
+        "Fallback-Realm"
+    ]
+
+
 def test_decode_screenshot_ignores_foreign_qr_without_marker(
     monkeypatch, tmp_path: Path
 ):
@@ -1687,6 +1764,56 @@ def test_watcher_stable_timeout_preserves_manual_screenshot_without_failure(
         "_decode_screenshot_result",
         lambda _path: screenshot_mod.DecodeResult(None, False),
     )
+
+    watcher._on_new_file(image_path)
+
+    assert snapshots == []
+    assert failures == []
+    assert image_path.exists()
+
+
+def test_watcher_preserves_manual_screenshot_when_decode_raises(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"manual")
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+
+    def raise_decode(_path: Path):
+        raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", raise_decode)
+
+    watcher._on_new_file(image_path)
+
+    assert snapshots == []
+    assert failures == []
+    assert image_path.exists()
+
+
+def test_watcher_stable_timeout_preserves_manual_screenshot_when_decode_raises(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"manual")
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: False)
+
+    def raise_decode(_path: Path):
+        raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", raise_decode)
 
     watcher._on_new_file(image_path)
 
@@ -1894,6 +2021,67 @@ def test_backlog_does_not_apply_older_snapshot_after_newest_marker_decode_failur
 
     assert snapshots == []
     assert failures == [(str(newest), "CRC mismatch")]
+    assert not newest.exists()
+    assert not older.exists()
+
+
+def test_backlog_marker_parser_exception_suppresses_older_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    newest = tmp_path / "WoWScrnShot_0001.jpg"
+    older = tmp_path / "WoWScrnShot_9999.jpg"
+    _write_blank_image(newest)
+    _write_blank_image(older)
+    os.utime(newest, (now, now))
+    os.utime(older, (now - 5.0, now - 5.0))
+    newest_payload = _wrap_payload(_build_body([]))
+    older_payload = _wrap_payload(
+        _build_body(
+            [
+                _build_applicant_block(
+                    aid=11,
+                    class_id=1,
+                    spec_id=71,
+                    ilvl=480,
+                    score=2443,
+                    role=2,
+                    name="Older-Realm",
+                    version=1,
+                )
+            ]
+        ),
+        wire_ver=0x01,
+    )
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+
+    def fake_decode(img, symbols=None):
+        filename = Path(getattr(img, "filename", "")).name
+        payload = newest_payload if filename == newest.name else older_payload
+        return [SimpleNamespace(data=payload)]
+
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", fake_decode)
+    original_parse = screenshot_mod._try_parse_appscout_payload
+
+    def parse_or_raise(raw: bytes):
+        if raw == newest_payload:
+            raise RuntimeError("parser exploded")
+        return original_parse(raw)
+
+    monkeypatch.setattr(screenshot_mod, "_try_parse_appscout_payload", parse_or_raise)
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == []
+    assert len(failures) == 1
+    assert failures[0][0] == str(newest)
+    assert "unexpected parser error: RuntimeError: parser exploded" in failures[0][1]
     assert not newest.exists()
     assert not older.exists()
 
