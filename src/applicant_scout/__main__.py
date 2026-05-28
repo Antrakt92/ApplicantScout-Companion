@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable
 import ctypes
 from dataclasses import dataclass, replace
@@ -42,7 +43,14 @@ from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .overlay import OverlayWindow
 from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_path
-from .screenshot import DecodedRosterMember, ScreenshotWatcher, Snapshot
+from .screenshot import (
+    DecodedRosterMember,
+    ScreenshotWatcher,
+    Snapshot,
+    cleanup_appscout_screenshots,
+    format_screenshot_cleanup_summary,
+    screenshot_cleanup_exit_code,
+)
 from .settings_dialog import (
     ReleaseNotesDialog,
     SETTINGS_QUIT_BLOCKED_MESSAGE,
@@ -2597,9 +2605,57 @@ def _load_startup_config() -> tuple[Config, Path, bool] | None:
                 return None
 
 
+def _positive_cleanup_limit(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
+def _system_exit_code(code: object) -> int:
+    return code if isinstance(code, int) else 1
+
+
+def _run_cleanup_screenshots_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="applicant-scout cleanup-screenshots")
+    parser.add_argument("screenshots_dir", nargs="?")
+    parser.add_argument("--delete", action="store_true")
+    parser.add_argument("--limit", type=_positive_cleanup_limit)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return _system_exit_code(exc.code)
+
+    if args.screenshots_dir:
+        screenshots_dir = Path(args.screenshots_dir)
+    else:
+        try:
+            screenshots_dir = resolve_screenshots_path(load_config())
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+    try:
+        summary = cleanup_appscout_screenshots(
+            screenshots_dir,
+            delete=args.delete,
+            limit=args.limit,
+        )
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(format_screenshot_cleanup_summary(summary, delete=args.delete))
+    return screenshot_cleanup_exit_code(summary)
+
+
 def main(argv: list[str] | None = None) -> int:
     _setup_logging()
     args = sys.argv[1:] if argv is None else argv
+    if args and args[0] == "cleanup-screenshots":
+        return _run_cleanup_screenshots_command(args[1:])
     if CONTROL_SHUTDOWN_ARG in args:
         return _shutdown_running_instance()
     args, wow_watch_mode, early_exit = _prepare_wow_watch_mode(args)

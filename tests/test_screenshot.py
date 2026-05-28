@@ -1829,6 +1829,196 @@ def test_handler_should_process_uses_supported_suffix_policy(tmp_path: Path):
     assert not handler._should_process(supported)
 
 
+def test_cleanup_dry_run_reports_marker_files_without_deleting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    marker = tmp_path / "WoWScrnShot_0001.jpg"
+    manual = tmp_path / "WoWScrnShot_0002.jpg"
+    _write_blank_image(marker)
+    _write_blank_image(manual)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+
+    def fake_decode(path: Path) -> screenshot_mod.DecodeResult:
+        if path == marker:
+            return screenshot_mod.DecodeResult(None, True, "CRC mismatch")
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", fake_decode)
+
+    summary = screenshot_mod.cleanup_appscout_screenshots(tmp_path, delete=False)
+
+    assert summary.scanned == 2
+    assert summary.markers_found == 1
+    assert summary.deleted == 0
+    assert summary.preserved == 2
+    assert marker.exists()
+    assert manual.exists()
+
+
+def test_cleanup_delete_removes_marker_and_preserves_manual_screenshots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    marker = tmp_path / "WoWScrnShot_0001.jpg"
+    manual = tmp_path / "WoWScrnShot_0002.jpg"
+    _write_blank_image(marker)
+    _write_blank_image(manual)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: screenshot_mod.DecodeResult(None, path == marker),
+    )
+
+    summary = screenshot_mod.cleanup_appscout_screenshots(tmp_path, delete=True)
+
+    assert summary.markers_found == 1
+    assert summary.deleted == 1
+    assert summary.preserved == 1
+    assert not marker.exists()
+    assert manual.exists()
+
+
+def test_cleanup_delete_removes_parse_failed_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    _write_blank_image(image_path)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, True, "CRC mismatch"),
+    )
+
+    summary = screenshot_mod.cleanup_appscout_screenshots(tmp_path, delete=True)
+
+    assert summary.markers_found == 1
+    assert summary.deleted == 1
+    assert summary.decode_errors == 0
+    assert not image_path.exists()
+
+
+def test_cleanup_preserves_unreadable_file_when_ownership_not_proven(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    _write_blank_image(image_path)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+
+    def raise_decode(_path: Path) -> screenshot_mod.DecodeResult:
+        raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", raise_decode)
+
+    summary = screenshot_mod.cleanup_appscout_screenshots(tmp_path, delete=True)
+
+    assert summary.decode_errors == 1
+    assert summary.deleted == 0
+    assert summary.preserved == 1
+    assert image_path.exists()
+
+
+def test_cleanup_skips_unstable_candidate_without_decoding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    _write_blank_image(image_path)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: False)
+
+    def fail_if_decoded(_path: Path) -> screenshot_mod.DecodeResult:
+        raise AssertionError("unstable files must not be decoded or deleted")
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", fail_if_decoded)
+
+    summary = screenshot_mod.cleanup_appscout_screenshots(tmp_path, delete=True)
+
+    assert summary.unstable == 1
+    assert summary.preserved == 1
+    assert image_path.exists()
+
+
+def test_cleanup_limit_scans_newest_candidates_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    older = tmp_path / "WoWScrnShot_0001.jpg"
+    newer = tmp_path / "WoWScrnShot_0002.jpg"
+    _write_blank_image(older)
+    _write_blank_image(newer)
+    os.utime(older, (100, 100))
+    os.utime(newer, (200, 200))
+    seen: list[str] = []
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+
+    def fake_decode(path: Path) -> screenshot_mod.DecodeResult:
+        seen.append(path.name)
+        return screenshot_mod.DecodeResult(None, True)
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", fake_decode)
+
+    summary = screenshot_mod.cleanup_appscout_screenshots(tmp_path, limit=1)
+
+    assert seen == ["WoWScrnShot_0002.jpg"]
+    assert summary.scanned == 1
+    assert summary.limited is True
+
+
+def test_screenshot_module_cli_preserves_legacy_single_file_decode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    _write_blank_image(image_path)
+    snapshot = Snapshot(listing=None, version=None)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(snapshot, True),
+    )
+
+    assert screenshot_mod._main([str(image_path)]) == 0
+
+    captured = capsys.readouterr()
+    assert "DECODED OK:" in captured.out
+    assert "applicants (0)" in captured.out
+
+
+def test_screenshot_module_cli_cleanup_is_dry_run_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    _write_blank_image(image_path)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, True),
+    )
+
+    assert screenshot_mod._main(["cleanup", str(tmp_path)]) == 0
+
+    captured = capsys.readouterr()
+    assert "dry run" in captured.out
+    assert "--delete" in captured.out
+    assert image_path.exists()
+
+
+def test_screenshot_module_cli_with_explicit_argv_does_not_configure_root_logging(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    _write_blank_image(image_path)
+    snapshot = Snapshot(listing=None, version=None)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(snapshot, True),
+    )
+    monkeypatch.setattr(logging, "basicConfig", lambda **_kwargs: calls.append("basic"))
+
+    assert screenshot_mod._main([str(image_path)]) == 0
+    assert calls == []
+
+
 def test_watcher_stop_suppresses_direct_file_signals(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     image_path.write_bytes(b"x")
@@ -1840,8 +2030,10 @@ def test_watcher_stop_suppresses_direct_file_signals(monkeypatch, tmp_path: Path
     monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
     monkeypatch.setattr(
         screenshot_mod,
-        "decode_screenshot",
-        lambda _path: (Snapshot(listing=None, version=None), True),
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None), True
+        ),
     )
 
     watcher.stop()
@@ -2423,8 +2615,10 @@ def test_watcher_stop_suppresses_backlog_signals(monkeypatch, tmp_path: Path):
     )
     monkeypatch.setattr(
         screenshot_mod,
-        "decode_screenshot",
-        lambda _path: (Snapshot(listing=None, version=None), True),
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None), True
+        ),
     )
 
     watcher.stop()

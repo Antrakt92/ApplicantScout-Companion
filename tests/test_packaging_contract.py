@@ -1410,6 +1410,19 @@ def test_readme_documents_support_output_redaction():
         _assert_copy_contains(readme, private_detail)
 
 
+def test_readme_documents_residual_qr_screenshot_cleanup_path():
+    readme = _read_repo_text("README.md")
+
+    for phrase in (
+        "QR screenshots may remain",
+        "companion is absent, interrupted",
+        "synced/shared before cleanup",
+        "applicant-scout cleanup-screenshots",
+        "--delete",
+    ):
+        _assert_copy_contains(readme, phrase)
+
+
 def test_release_version_check_rejects_stale_constraints_header(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()

@@ -24,9 +24,11 @@ are preserved.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import struct
+import sys
 import threading
 import time
 import zlib
@@ -185,6 +187,19 @@ class DecodeResult:
     snapshot: Optional[Snapshot]
     has_marker: bool
     error_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ScreenshotCleanupSummary:
+    scanned: int
+    markers_found: int
+    deleted: int
+    preserved: int
+    unstable: int
+    scan_errors: int
+    decode_errors: int
+    delete_failed: int
+    limited: bool
 
 
 # ─── QR detection + payload extraction ──────────────────────────────────────
@@ -790,6 +805,131 @@ def _iter_screenshot_candidates(directory: Path) -> Iterator[Path]:
             yield path
 
 
+def cleanup_appscout_screenshots(
+    directory: Path,
+    *,
+    delete: bool = False,
+    limit: int | None = None,
+) -> ScreenshotCleanupSummary:
+    """Find ApplicantScout-owned screenshots and optionally remove them.
+
+    This is an explicit support/privacy cleanup path. It deliberately does not
+    reuse ScreenshotWatcher backlog logic because the watcher emits snapshots,
+    has startup recency rules, and is capped for background work.
+    """
+    if limit is not None and limit <= 0:
+        raise ValueError("limit must be a positive integer")
+    directory = Path(directory)
+    if not directory.exists():
+        raise FileNotFoundError(f"Screenshots folder does not exist: {directory}")
+    if not directory.is_dir():
+        raise NotADirectoryError(f"Screenshots path is not a folder: {directory}")
+
+    candidates: list[tuple[Path, os.stat_result]] = []
+    scan_errors = 0
+    for path in _iter_screenshot_candidates(directory):
+        try:
+            candidates.append((path, path.stat()))
+        except OSError as exc:
+            scan_errors += 1
+            _log.warning("could not stat screenshot candidate %s: %s", path.name, exc)
+
+    candidates.sort(key=lambda t: t[1].st_mtime_ns, reverse=True)
+    limited = limit is not None and len(candidates) > limit
+    if limit is not None:
+        candidates = candidates[:limit]
+
+    scanned = 0
+    markers_found = 0
+    deleted = 0
+    preserved = 0
+    unstable = 0
+    decode_errors = 0
+    delete_failed = 0
+
+    for path, _stat_result in candidates:
+        scanned += 1
+        if not _wait_for_stable_size(path):
+            unstable += 1
+            preserved += 1
+            continue
+        try:
+            result = _decode_screenshot_result(path)
+        except Exception as exc:  # noqa: BLE001
+            decode_errors += 1
+            preserved += 1
+            _log.warning(
+                "cleanup decode error before APS1 ownership for %s: %s",
+                path.name,
+                exc,
+                exc_info=True,
+            )
+            continue
+
+        if not result.has_marker:
+            preserved += 1
+            continue
+
+        markers_found += 1
+        if not delete:
+            preserved += 1
+            continue
+
+        try:
+            path.unlink()
+            deleted += 1
+        except FileNotFoundError:
+            deleted += 1
+        except OSError as exc:
+            delete_failed += 1
+            preserved += 1
+            _log.warning("cleanup could not delete %s: %s", path.name, exc)
+
+    return ScreenshotCleanupSummary(
+        scanned=scanned,
+        markers_found=markers_found,
+        deleted=deleted,
+        preserved=preserved,
+        unstable=unstable,
+        scan_errors=scan_errors,
+        decode_errors=decode_errors,
+        delete_failed=delete_failed,
+        limited=limited,
+    )
+
+
+def format_screenshot_cleanup_summary(
+    summary: ScreenshotCleanupSummary,
+    *,
+    delete: bool,
+) -> str:
+    mode = "removed" if delete else "dry run"
+    lines = [
+        f"ApplicantScout screenshot cleanup {mode}: scanned {summary.scanned} "
+        f"candidate(s), found {summary.markers_found} ApplicantScout marker file(s), "
+        f"removed {summary.deleted}, preserved {summary.preserved}."
+    ]
+    if not delete and summary.markers_found:
+        lines.append("Pass --delete to remove the marker-bearing screenshots.")
+    if summary.limited:
+        lines.append("Scan was limited to the newest requested candidate count.")
+    if summary.unstable:
+        lines.append(f"Preserved {summary.unstable} unstable file(s).")
+    if summary.scan_errors or summary.decode_errors or summary.delete_failed:
+        lines.append(
+            "Errors: "
+            f"scan={summary.scan_errors}, decode={summary.decode_errors}, "
+            f"delete={summary.delete_failed}."
+        )
+    return "\n".join(lines)
+
+
+def screenshot_cleanup_exit_code(summary: ScreenshotCleanupSummary) -> int:
+    return 1 if (
+        summary.scan_errors or summary.decode_errors or summary.delete_failed
+    ) else 0
+
+
 class _Handler(FileSystemEventHandler):
     """Filters JPG/TGA file events, dedups across on_created/on_modified/on_moved
     and dispatches to callback. Listening to all three event types because:
@@ -1166,23 +1306,32 @@ class ScreenshotWatcher(QObject):
             )
 
 
-# ─── CLI for standalone testing ─────────────────────────────────────────────
-if __name__ == "__main__":
-    import sys
+def _positive_int_arg(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
 
-    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(message)s")
-    if len(sys.argv) < 2:
-        print("usage: python -m applicant_scout.screenshot <path-to-screenshot>")
-        sys.exit(1)
-    result = _decode_screenshot_result(Path(sys.argv[1]))
+
+def _system_exit_code(code: object) -> int:
+    return code if isinstance(code, int) else 1
+
+
+def _decode_file_cli(path: Path) -> int:
+    result = _decode_screenshot_result(path)
     if result.snapshot is None:
         if result.has_marker:
             reason = result.error_reason or "parse error / CRC mismatch"
             print(f"DECODE FAILED — APS1 marker found but {reason}")
         else:
             print("DECODE FAILED — no QR / wrong magic")
-        sys.exit(2)
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        return 2
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="replace")
     snap = result.snapshot
     print("DECODED OK:")
     print(f"  listing: {snap.listing}")
@@ -1194,3 +1343,52 @@ if __name__ == "__main__":
             f"ilvl={a.ilvl} score={a.score} main={a.main_score} "
             f"role={a.role} name={a.name!r}"
         )
+    return 0
+
+
+def _cleanup_cli(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m applicant_scout.screenshot cleanup"
+    )
+    parser.add_argument("screenshots_dir")
+    parser.add_argument("--delete", action="store_true")
+    parser.add_argument("--limit", type=_positive_int_arg)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return _system_exit_code(exc.code)
+    try:
+        summary = cleanup_appscout_screenshots(
+            Path(args.screenshots_dir),
+            delete=args.delete,
+            limit=args.limit,
+        )
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(format_screenshot_cleanup_summary(summary, delete=args.delete))
+    return screenshot_cleanup_exit_code(summary)
+
+
+def _main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(message)s")
+    args = sys.argv[1:] if argv is None else list(argv)
+    if not args:
+        print("usage: python -m applicant_scout.screenshot <path-to-screenshot>")
+        print(
+            "       python -m applicant_scout.screenshot cleanup "
+            "<ScreenshotsDir> [--delete] [--limit N]"
+        )
+        return 1
+    if args[0] == "cleanup":
+        return _cleanup_cli(args[1:])
+    if len(args) != 1:
+        print("usage: python -m applicant_scout.screenshot <path-to-screenshot>")
+        return 1
+    return _decode_file_cli(Path(args[0]))
+
+
+# ─── CLI for standalone testing ─────────────────────────────────────────────
+if __name__ == "__main__":
+    raise SystemExit(_main())

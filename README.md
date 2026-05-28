@@ -134,6 +134,9 @@ include WCL Client ID/Secret, OAuth access token, character names, realm names,
 listing titles/comments, screenshots folder paths, keystone/listing metadata,
 and WCL/RaiderIO evidence.
 
+QR screenshots may remain if the companion is absent, interrupted, pointed at
+the wrong folder, or the Screenshots folder is synced/shared before cleanup.
+
 Current Windows builds are unsigned, so SmartScreen can warn on first install.
 The `.sha256` sidecar verifies file integrity, not publisher identity.
 
@@ -220,7 +223,9 @@ updates should not require UAC elevation.
 - WCL cells stay empty: open Settings and use Test WCL.
 - Screenshot cleanup is marker-safe: the watcher deletes only screenshots that
   decode to an ApplicantScout `APS1` payload. Manual screenshots and unrelated
-  QR screenshots are left alone.
+  QR screenshots are left alone. QR screenshots may remain if the companion is
+  absent, interrupted, pointed at the wrong folder, or the Screenshots folder is
+  synced/shared before cleanup.
 
 ## Version Compatibility
 
@@ -250,6 +255,13 @@ Decode a saved screenshot manually:
 
 ```powershell
 .venv\Scripts\python -m applicant_scout.screenshot C:\path\to\WoWScrnShot.jpg
+```
+
+Check or remove saved ApplicantScout QR screenshots:
+
+```powershell
+applicant-scout cleanup-screenshots
+applicant-scout cleanup-screenshots --delete
 ```
 
 ## Support

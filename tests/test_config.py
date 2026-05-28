@@ -73,6 +73,14 @@ def _retail_root(tmp_path: Path) -> Path:
     return tmp_path / "World of Warcraft" / "_retail_"
 
 
+def _valid_screenshots_dir(tmp_path: Path) -> Path:
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    screenshots = root / "Screenshots"
+    screenshots.mkdir()
+    return screenshots
+
+
 def _without_root_logging_handlers() -> tuple[logging.Logger, list[logging.Handler]]:
     root = logging.getLogger()
     old_handlers = list(root.handlers)
@@ -1899,6 +1907,94 @@ def test_main_shutdown_arg_exits_before_qapplication(monkeypatch: pytest.MonkeyP
 
     assert main_mod.main(["--shutdown-running-instance"]) == 0
     assert calls == ["logging", "shutdown"]
+
+
+def test_main_cleanup_screenshots_uses_configured_path_before_qapplication(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    screenshots = _valid_screenshots_dir(tmp_path)
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    calls: list[tuple[Path, bool, int | None]] = []
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        main_mod,
+        "cleanup_appscout_screenshots",
+        lambda path, *, delete=False, limit=None: calls.append((path, delete, limit))
+        or SimpleNamespace(
+            scanned=3,
+            markers_found=2,
+            deleted=2,
+            preserved=1,
+            unstable=0,
+            scan_errors=0,
+            decode_errors=0,
+            delete_failed=0,
+            limited=False,
+        ),
+    )
+
+    def fail_qapplication(*_args, **_kwargs):
+        raise AssertionError("cleanup command should not start the GUI")
+
+    monkeypatch.setattr(main_mod, "QApplication", fail_qapplication)
+
+    assert main_mod.main(["cleanup-screenshots", "--delete", "--limit", "7"]) == 0
+    assert calls == [(screenshots, True, 7)]
+
+
+def test_main_cleanup_screenshots_accepts_explicit_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    screenshots = tmp_path / "Screenshots"
+    screenshots.mkdir()
+    calls: list[tuple[Path, bool, int | None]] = []
+
+    def fail_load_config():
+        raise AssertionError("explicit cleanup path should not load saved config")
+
+    monkeypatch.setattr(main_mod, "load_config", fail_load_config)
+    monkeypatch.setattr(
+        main_mod,
+        "cleanup_appscout_screenshots",
+        lambda path, *, delete=False, limit=None: calls.append((path, delete, limit))
+        or SimpleNamespace(
+            scanned=1,
+            markers_found=1,
+            deleted=0,
+            preserved=1,
+            unstable=0,
+            scan_errors=0,
+            decode_errors=0,
+            delete_failed=0,
+            limited=False,
+        ),
+    )
+
+    def fail_qapplication(*_args, **_kwargs):
+        raise AssertionError("cleanup command should not start the GUI")
+
+    monkeypatch.setattr(main_mod, "QApplication", fail_qapplication)
+
+    assert main_mod.main(["cleanup-screenshots", str(screenshots)]) == 0
+    assert calls == [(screenshots, False, None)]
+
+
+def test_main_cleanup_screenshots_reports_config_error_without_startup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setattr(
+        main_mod,
+        "load_config",
+        lambda: (_ for _ in ()).throw(ConfigError("Screenshots folder warning")),
+    )
+
+    def fail_qapplication(*_args, **_kwargs):
+        raise AssertionError("cleanup command should not start the GUI")
+
+    monkeypatch.setattr(main_mod, "QApplication", fail_qapplication)
+
+    assert main_mod.main(["cleanup-screenshots"]) == 1
+    assert "Screenshots folder warning" in capsys.readouterr().err
 
 
 def test_control_quit_command_uses_quit_callback(monkeypatch: pytest.MonkeyPatch):

@@ -15,6 +15,8 @@
 
 - Improved raid listing display by keeping target raid evidence distinct from
   supporting M+ context and showing per-boss raid parse segments more clearly.
+- Added an explicit screenshot cleanup support command so leftover ApplicantScout
+  QR screenshots can be checked or removed without starting the overlay.
 - Improved tray/settings restore behavior so tray-opened overlay windows can
   return to focus without requiring WoW to be the foreground window.
 - Improved Settings accessibility and tooltips for support, update, and close
