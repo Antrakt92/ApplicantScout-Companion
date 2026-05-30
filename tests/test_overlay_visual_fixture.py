@@ -81,6 +81,23 @@ def test_visual_fixture_regen_command_refreshes_all_scenarios():
     assert "--all" in VISUAL_FIXTURE_REGEN_COMMAND
 
 
+def test_overlay_visual_fixture_disables_background_fetch_launchers(qtbot, tmp_path):
+    _state, window, client = create_overlay_visual_window(tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        applicant = next(iter(window._state.applicants.values()))
+
+        window._launch_fetch(applicant)
+        assert window._launch_raid_boss_fetch_if_needed(applicant) is False
+
+        assert window._fetches_in_flight == {}
+        assert window._raid_boss_fetches_in_flight == {}
+    finally:
+        client.close()
+
+
 def _sampled_colours(image: QImage) -> set[int]:
     x_step = max(1, image.width() // 10)
     y_step = max(1, image.height() // 10)
@@ -152,6 +169,8 @@ def test_overlay_visual_fixture_scenarios_render_nonblank(
         assert not pixmap.isNull()
         image = pixmap.toImage()
         assert len(_sampled_colours(image)) > 1
+        assert window._fetches_in_flight == {}
+        assert window._raid_boss_fetches_in_flight == {}
     finally:
         client.close()
 

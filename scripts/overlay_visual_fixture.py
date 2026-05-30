@@ -572,6 +572,10 @@ def create_overlay_visual_window(
         work_dir,
         metric_preferences=resolved.metric_preferences,
     )
+    # WHY: visual fixtures are static snapshots; they must not enqueue real WCL
+    # workers during pytest or standalone screenshot rendering.
+    window._launch_fetch = lambda applicant: None
+    window._launch_raid_boss_fetch_if_needed = lambda applicant: False
     return state, window, client
 
 

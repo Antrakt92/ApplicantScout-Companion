@@ -138,6 +138,11 @@ def _member(applicant_id: str = "host-realm", name: str = "Host-Realm") -> Roste
     )
 
 
+def _disable_background_fetches(window: OverlayWindow) -> None:
+    window._launch_fetch = lambda _applicant: None
+    window._launch_raid_boss_fetch_if_needed = lambda _applicant: False
+
+
 def test_panel_reuses_child_labels_across_hover_updates(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
@@ -2695,6 +2700,7 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
     qtbot.addWidget(window._launcher)
 
     try:
+        _disable_background_fetches(window)
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
         window.restore_from_launcher()
         qtbot.waitUntil(window.isVisible, timeout=1000)
@@ -2712,6 +2718,8 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
 
         assert window.isVisible()
         assert not window._launcher.isVisible()
+        assert window._fetches_in_flight == {}
+        assert window._raid_boss_fetches_in_flight == {}
 
         monkeypatch.setattr(window, "isActiveWindow", lambda: False)
         window._sync_game_foreground_visibility()
@@ -2739,6 +2747,7 @@ def test_background_updates_do_not_show_overlay_outside_game(qtbot, tmp_path):
     qtbot.addWidget(window._launcher)
 
     try:
+        _disable_background_fetches(window)
         state.add_or_update(_app(applicant_id="1"))
         window.on_applicant_added(state.applicants["1"])
         window._flush_overlay_refresh()
@@ -2746,6 +2755,8 @@ def test_background_updates_do_not_show_overlay_outside_game(qtbot, tmp_path):
         assert window._collapsed_to_launcher
         assert not window.isVisible()
         assert not window._launcher.isVisible()
+        assert window._fetches_in_flight == {}
+        assert window._raid_boss_fetches_in_flight == {}
 
         foreground["active"] = True
         window._sync_game_foreground_visibility()
@@ -3510,6 +3521,7 @@ def test_launcher_drag_survives_applicant_refresh(qtbot, tmp_path):
     qtbot.addWidget(window._launcher)
 
     try:
+        _disable_background_fetches(window)
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
         qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
         qtbot.mouseMove(window._launcher, pos=QPoint(28, 20))
@@ -3525,6 +3537,8 @@ def test_launcher_drag_survives_applicant_refresh(qtbot, tmp_path):
         assert window._launcher.isVisible()
         assert not window.isVisible()
         assert window._launcher.pos() == dragged_pos
+        assert window._fetches_in_flight == {}
+        assert window._raid_boss_fetches_in_flight == {}
     finally:
         if QWidget.mouseGrabber() is window._launcher:
             window._launcher.releaseMouse()
@@ -4163,6 +4177,7 @@ def test_raid_listing_table_keeps_non_target_difficulty_evidence_neutral(
     qtbot.addWidget(window)
 
     try:
+        _disable_background_fetches(window)
         window._refresh_table()
         row = window._row_for_id[app.applicant_id]
         heroic_item = window._table.item(row, COL_H)
@@ -4173,6 +4188,8 @@ def test_raid_listing_table_keeps_non_target_difficulty_evidence_neutral(
         assert heroic_item.foreground().color().name() == QColor("#b8b8c8").name()
         assert mythic_item.text().startswith("EST ")
         assert mythic_item.background().style() != Qt.BrushStyle.NoBrush
+        assert window._fetches_in_flight == {}
+        assert window._raid_boss_fetches_in_flight == {}
     finally:
         client.close()
 

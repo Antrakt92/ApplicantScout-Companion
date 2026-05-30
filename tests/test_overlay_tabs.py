@@ -162,9 +162,38 @@ def _decoded_roster(name: str) -> DecodedRosterMember:
 
 def _window(tmp_path, qtbot, state: AppState) -> OverlayWindow:
     win = OverlayWindow(state, _FakeWCLClient(), _FakeCache(), tmp_path)
+    win._launch_fetch = lambda _applicant: None
+    win._launch_raid_boss_fetch_if_needed = lambda _applicant: False
     qtbot.addWidget(win)
     qtbot.addWidget(win._launcher)
     return win
+
+
+def test_window_helper_disables_background_raid_detail_fetch(qtbot, tmp_path):
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    applicant = _app("7:1", "Applicant-Realm")
+    applicant.fetch_status = "ready"
+    state.applicants["7:1"] = applicant
+    win = _window(tmp_path, qtbot, state)
+    win.apply_metric_preferences(
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+        refetch_missing=False,
+    )
+
+    assert win._launch_raid_boss_fetch_if_needed(applicant) is False
+    assert win._raid_boss_fetches_in_flight == {}
 
 
 def test_info_panel_defaults_to_first_visible_party_row(qtbot, tmp_path):

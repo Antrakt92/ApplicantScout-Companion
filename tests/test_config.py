@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,27 +83,71 @@ def _valid_screenshots_dir(tmp_path: Path) -> Path:
     return screenshots
 
 
-def _without_root_logging_handlers() -> tuple[logging.Logger, list[logging.Handler]]:
+@contextmanager
+def _isolated_root_logging() -> Iterator[logging.Logger]:
     root = logging.getLogger()
-    old_handlers = list(root.handlers)
-    for handler in old_handlers:
+    original_handlers = list(root.handlers)
+    original_level = root.level
+    original_disabled = root.disabled
+    original_filters = list(root.filters)
+    original_handler_ids = {id(handler) for handler in original_handlers}
+    for handler in original_handlers:
         root.removeHandler(handler)
-    return root, old_handlers
+    try:
+        yield root
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            if id(handler) not in original_handler_ids:
+                handler.close()
+        for handler in original_handlers:
+            root.addHandler(handler)
+        root.setLevel(original_level)
+        root.disabled = original_disabled
+        root.filters[:] = original_filters
 
 
-def _restore_root_logging_handlers(
-    root: logging.Logger,
-    old_handlers: list[logging.Handler],
+def _stub_setup_logging(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str] | None = None,
 ) -> None:
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-        handler.close()
-    for handler in old_handlers:
-        root.addHandler(handler)
+    def fake_setup_logging() -> None:
+        if calls is not None:
+            calls.append("logging")
+
+    monkeypatch.setattr(main_mod, "_setup_logging", fake_setup_logging)
 
 
 def _log_record(message: str) -> logging.LogRecord:
     return logging.LogRecord("test", logging.INFO, __file__, 1, message, (), None)
+
+
+def test_isolated_root_logging_restores_root_state() -> None:
+    root = logging.getLogger()
+    original_handlers = list(root.handlers)
+    original_level = root.level
+    original_disabled = root.disabled
+    original_filters = list(root.filters)
+    sentinel_filter = logging.Filter("sentinel")
+
+    root.setLevel(logging.ERROR)
+    root.disabled = True
+    root.addFilter(sentinel_filter)
+    try:
+        with _isolated_root_logging():
+            root.setLevel(logging.INFO)
+            root.disabled = False
+            root.filters.clear()
+
+        assert list(root.handlers) == original_handlers
+        assert root.level == logging.ERROR
+        assert root.disabled is True
+        assert list(root.filters) == original_filters + [sentinel_filter]
+    finally:
+        root.handlers[:] = original_handlers
+        root.setLevel(original_level)
+        root.disabled = original_disabled
+        root.filters[:] = original_filters
 
 
 def _assert_emit_survives_locked_rollover(
@@ -212,11 +258,8 @@ def test_setup_logging_applies_private_mode_to_log_file(
         "apply_private_file_mode",
         lambda path: calls.append(Path(path)),
     )
-    root, old_handlers = _without_root_logging_handlers()
-    try:
+    with _isolated_root_logging():
         main_mod._setup_logging(tmp_path)
-    finally:
-        _restore_root_logging_handlers(root, old_handlers)
 
     assert tmp_path / "applicant-scout.log" in calls
 
@@ -230,11 +273,8 @@ def test_setup_logging_applies_private_mode_to_log_dir(
         "apply_private_directory_mode",
         lambda path: calls.append(Path(path)),
     )
-    root, old_handlers = _without_root_logging_handlers()
-    try:
+    with _isolated_root_logging():
         main_mod._setup_logging(tmp_path)
-    finally:
-        _restore_root_logging_handlers(root, old_handlers)
 
     assert tmp_path in calls
 
@@ -464,13 +504,10 @@ def test_setup_logging_closes_replaced_handlers(tmp_path: Path):
             self.closed_by_setup = True
             super().close()
 
-    root, old_handlers = _without_root_logging_handlers()
-    dummy = DummyHandler()
-    root.addHandler(dummy)
-    try:
+    with _isolated_root_logging() as root:
+        dummy = DummyHandler()
+        root.addHandler(dummy)
         main_mod._setup_logging(tmp_path)
-    finally:
-        _restore_root_logging_handlers(root, old_handlers)
 
     assert dummy.closed_by_setup is True
 
@@ -1811,6 +1848,7 @@ def test_malformed_legacy_path_outside_retail_logs_raises(tmp_path: Path):
 def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    _stub_setup_logging(monkeypatch)
     root = _retail_root(tmp_path)
     cfg = _cfg(tmp_path, chatlog_path=root / "Logs" / "WoWChatLog.txt")
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
@@ -1853,6 +1891,8 @@ def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
 def test_main_returns_before_startup_when_cache_ttl_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    _stub_setup_logging(monkeypatch)
+
     def raise_config_error():
         raise ConfigError("APSCOUT_CACHE_TTL_SECONDS must be a positive integer")
 
@@ -1893,7 +1933,7 @@ def test_main_returns_before_startup_when_cache_ttl_is_invalid(
 def test_main_shutdown_arg_exits_before_qapplication(monkeypatch: pytest.MonkeyPatch):
     calls: list[str] = []
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: calls.append("logging"))
+    _stub_setup_logging(monkeypatch, calls)
     monkeypatch.setattr(
         main_mod,
         "_shutdown_running_instance",
@@ -1912,6 +1952,7 @@ def test_main_shutdown_arg_exits_before_qapplication(monkeypatch: pytest.MonkeyP
 def test_main_cleanup_screenshots_uses_configured_path_before_qapplication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    _stub_setup_logging(monkeypatch)
     screenshots = _valid_screenshots_dir(tmp_path)
     cfg = _cfg(tmp_path, screenshots_path=screenshots)
     calls: list[tuple[Path, bool, int | None]] = []
@@ -1945,6 +1986,7 @@ def test_main_cleanup_screenshots_uses_configured_path_before_qapplication(
 def test_main_cleanup_screenshots_accepts_explicit_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    _stub_setup_logging(monkeypatch)
     screenshots = tmp_path / "Screenshots"
     screenshots.mkdir()
     calls: list[tuple[Path, bool, int | None]] = []
@@ -1982,6 +2024,7 @@ def test_main_cleanup_screenshots_accepts_explicit_path(
 def test_main_cleanup_screenshots_reports_config_error_without_startup(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
+    _stub_setup_logging(monkeypatch)
     monkeypatch.setattr(
         main_mod,
         "load_config",
@@ -2441,7 +2484,7 @@ def test_main_duplicate_launch_exits_before_startup_when_instance_acknowledges(
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("duplicate launch should exit before startup side effects")
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    _stub_setup_logging(monkeypatch)
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
@@ -2467,7 +2510,7 @@ def test_main_duplicate_manual_launch_without_response_fails_before_startup(
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("unacknowledged duplicate response should stop startup")
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    _stub_setup_logging(monkeypatch)
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
@@ -2489,7 +2532,7 @@ def test_main_duplicate_manual_launch_unknown_response_fails_before_startup(
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("unknown duplicate response should stop startup")
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    _stub_setup_logging(monkeypatch)
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
@@ -2510,7 +2553,7 @@ def test_main_duplicate_manual_launch_requests_settings_before_qapplication(
 ):
     calls: list[str] = []
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: calls.append("logging"))
+    _stub_setup_logging(monkeypatch, calls)
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
@@ -2532,7 +2575,7 @@ def test_main_duplicate_show_settings_arg_requests_settings_before_qapplication(
 ):
     calls: list[str] = []
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: calls.append("logging"))
+    _stub_setup_logging(monkeypatch, calls)
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
@@ -2566,7 +2609,7 @@ def test_main_manual_launch_continues_when_no_control_server_exists(
         def quit(self) -> None:
             pass
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: calls.append("logging"))
+    _stub_setup_logging(monkeypatch, calls)
     monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
     monkeypatch.setattr(
         main_mod,
@@ -2644,7 +2687,7 @@ def test_main_claims_control_server_before_loading_startup_config(
         def quit(self) -> None:
             pass
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    _stub_setup_logging(monkeypatch)
     monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
     monkeypatch.setattr(
         main_mod,
@@ -2688,7 +2731,7 @@ def test_main_control_server_uses_guarded_quit_callback(
         def quit(self) -> None:
             pass
 
-    monkeypatch.setattr(main_mod, "_setup_logging", lambda: None)
+    _stub_setup_logging(monkeypatch)
     monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
     monkeypatch.setattr(
         main_mod,
