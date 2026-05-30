@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Made temporary Warcraft Logs OAuth outages reuse the normal rate-limit/server retry blocks, and added a scoped Retry WCL action for malformed or GraphQL row/detail failures.
+
 ## 0.8.0 - 28-May-2026
 
 APS1 v8, screenshot cleanup, and local reliability release paired with

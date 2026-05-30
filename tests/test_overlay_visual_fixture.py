@@ -32,6 +32,7 @@ def test_visual_fixture_scenarios_are_small_and_unique():
         "party-no-listing-manual-key",
         "metrics-raid-only",
         "raid-listing",
+        "wcl-retry",
     }
     assert (
         OVERLAY_VISUAL_SCENARIOS[DEFAULT_VISUAL_FIXTURE_SCENARIO].baseline_path
@@ -259,6 +260,25 @@ def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
         assert "M 39-52" in window._panel._dungeon_rows[1][3].text()
         assert window._panel.height() == window._panel.target_height()
         assert window._raid_boss_fetches_in_flight == {}
+    finally:
+        client.close()
+
+
+def test_wcl_retry_visual_scenario_surfaces_retry_button(qtbot, tmp_path):
+    _state, window, client = create_overlay_visual_window(tmp_path, "wcl-retry")
+    qtbot.addWidget(window)
+
+    try:
+        show_overlay_visual_window(
+            window,
+            "wcl-retry",
+            process_events=QApplication.processEvents,
+        )
+
+        assert window._pinned_id == "40:1"
+        assert window._panel._name_label.text() == "Apiwobble"
+        assert "GraphQL error" in window._panel._status_label.text()
+        assert not window._panel._wcl_retry_button.isHidden()
     finally:
         client.close()
 

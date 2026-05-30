@@ -255,6 +255,24 @@ class _SequenceHTTP:
         pass
 
 
+class _OAuthHTTP:
+    def __init__(self, *responses: _FakeResponse) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url: str, *, data: dict, auth: tuple[str, str]) -> _FakeResponse:
+        self.calls.append({"url": url, "data": data, "auth": auth})
+        if not self._responses:
+            raise AssertionError("unexpected OAuth HTTP call")
+        return self._responses.pop(0)
+
+
 class _ReentrantHTTP:
     def __init__(self, body: object, callback):
         self._body = body
@@ -764,6 +782,54 @@ def test_fetch_character_raid_boss_details_oauth_timeout_sets_short_retry_block(
         )
 
     assert excinfo.value.error_kind == WCL_ERROR_NETWORK
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+
+
+def test_fetch_character_raid_boss_details_oauth_503_uses_retryable_server_kind(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class ServerFailingAuth(_FakeAuth):
+        calls = 0
+
+        def get_token(self) -> str:
+            self.calls += 1
+            raise WCLAuthError(
+                "OAuth failed (HTTP 503): unavailable",
+                error_kind=WCL_ERROR_SERVER,
+            )
+
+    auth = ServerFailingAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP(_wcl_payload(_character()))
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLAuthError):
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+    current[0] += 1.0
+
+    with pytest.raises(WCLApiError) as excinfo:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert excinfo.value.error_kind == WCL_ERROR_SERVER
     assert auth.calls == 1
     assert len(http.calls) == 0
 
@@ -1460,6 +1526,120 @@ def test_second_oauth_refresh_network_error_sets_short_retry_after_401(
     assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
 
 
+def test_fetch_character_ranks_oauth_429_sets_rate_limit_block_and_short_circuits_until_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class RateLimitedAuth(_FakeAuth):
+        calls = 0
+
+        def get_token(self) -> str:
+            self.calls += 1
+            raise WCLAuthError(
+                "OAuth failed (HTTP 429): slow down",
+                error_kind=WCL_ERROR_RATE_LIMITED,
+            )
+
+    auth = RateLimitedAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP(_wcl_payload(_character_with_empty_mplus()))
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLAuthError):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+    assert client.rate_limit_retry_remaining_seconds(now=current[0]) == pytest.approx(
+        300.0
+    )
+    current[0] += 1.0
+
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.error == "WCL rate-limited; retrying in 299s"
+    assert result.error_kind == WCL_ERROR_RATE_LIMITED
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+
+
+def test_fetch_character_ranks_oauth_503_sets_server_retry_block_and_short_circuits_until_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class ServerFailingAuth(_FakeAuth):
+        calls = 0
+
+        def get_token(self) -> str:
+            self.calls += 1
+            raise WCLAuthError(
+                "OAuth failed (HTTP 503): unavailable",
+                error_kind=WCL_ERROR_SERVER,
+            )
+
+    auth = ServerFailingAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP(_wcl_payload(_character_with_empty_mplus()))
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLAuthError):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+    current[0] += 1.0
+
+    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert result.error == "WCL server error; retrying in 29s"
+    assert result.error_kind == WCL_ERROR_SERVER
+    assert auth.calls == 1
+    assert len(http.calls) == 0
+
+
+def test_second_oauth_refresh_503_sets_short_retry_after_401(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class ServerErrorAfterInvalidateAuth(_FakeAuth):
+        calls = 0
+        invalidated = False
+
+        def get_token(self) -> str:
+            self.calls += 1
+            if self.invalidated:
+                raise WCLAuthError(
+                    "OAuth failed (HTTP 503): unavailable",
+                    error_kind=WCL_ERROR_SERVER,
+                )
+            return "stale-token"
+
+        def invalidate(self) -> None:
+            self.invalidated = True
+
+    auth = ServerErrorAfterInvalidateAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    http = _FakeHTTP({"error": "unauthorized"}, status_code=401)
+    client._http = http  # type: ignore[assignment]
+
+    with pytest.raises(WCLAuthError):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert auth.calls == 2
+    assert len(http.calls) == 1
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(30.0)
+
+
 def test_stale_oauth_refresh_network_error_does_not_set_retry_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1476,6 +1656,30 @@ def test_stale_oauth_refresh_network_error_does_not_set_retry_block(
     client._http = _FakeHTTP(_wcl_payload(_character()))  # type: ignore[assignment]
 
     with pytest.raises(httpx.TimeoutException):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert client.retry_block_remaining_seconds(now=current[0]) == 0.0
+
+
+def test_stale_oauth_503_after_reconfigure_does_not_set_retry_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current = [1_000.0]
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+
+    class ReconfiguredServerErrorAuth(_FakeAuth):
+        def get_token(self) -> str:
+            client.reconfigure_auth(_FakeAuth())
+            raise WCLAuthError(
+                "old oauth failed",
+                error_kind=WCL_ERROR_SERVER,
+            )
+
+    client = WCLClient(ReconfiguredServerErrorAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    client._http = _FakeHTTP(_wcl_payload(_character()))  # type: ignore[assignment]
+
+    with pytest.raises(WCLAuthError):
         client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
 
     assert client.retry_block_remaining_seconds(now=current[0]) == 0.0
@@ -2932,6 +3136,90 @@ def test_oauth_refresh_malformed_json_raises_wcl_auth_error(monkeypatch, tmp_pat
 
     with pytest.raises(WCLAuthError, match="Malformed OAuth response"):
         auth.get_token()
+
+
+def test_oauth_refresh_429_raises_retryable_rate_limited_auth_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    oauth_http = _OAuthHTTP(_FakeResponse({"error": "slow down"}, status_code=429))
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    with pytest.raises(WCLAuthError, match="OAuth failed \\(HTTP 429\\)") as excinfo:
+        auth.get_token()
+
+    assert excinfo.value.error_kind == WCL_ERROR_RATE_LIMITED
+    assert len(oauth_http.calls) == 1
+
+
+def test_oauth_refresh_503_raises_retryable_server_auth_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    oauth_http = _OAuthHTTP(_FakeResponse({"error": "unavailable"}, status_code=503))
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    with pytest.raises(WCLAuthError, match="OAuth failed \\(HTTP 503\\)") as excinfo:
+        auth.get_token()
+
+    assert excinfo.value.error_kind == WCL_ERROR_SERVER
+    assert len(oauth_http.calls) == 1
+
+
+def test_oauth_http_400_remains_non_retryable_auth_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    oauth_http = _OAuthHTTP(_FakeResponse({"error": "bad client"}, status_code=400))
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    with pytest.raises(WCLAuthError, match="OAuth failed \\(HTTP 400\\)") as excinfo:
+        auth.get_token()
+
+    assert excinfo.value.error_kind == WCL_ERROR_AUTH
+
+
+def test_oauth_malformed_200_remains_non_retryable_auth_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    oauth_http = _OAuthHTTP(_FakeResponse({}, json_error=ValueError("bad json")))
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    with pytest.raises(WCLAuthError, match="Malformed OAuth response") as excinfo:
+        auth.get_token()
+
+    assert excinfo.value.error_kind == ""
+
+
+def test_oauth_http_503_preserves_existing_token_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    token_path = tmp_path / "token.json"
+    token_path.write_text("old-token", encoding="utf-8")
+    oauth_http = _OAuthHTTP(_FakeResponse({"error": "unavailable"}, status_code=503))
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    with pytest.raises(WCLAuthError):
+        auth.get_token()
+
+    assert token_path.read_text(encoding="utf-8") == "old-token"
+
+
+def test_oauth_http_503_status_wins_over_malformed_body(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({}, status_code=503, json_error=ValueError("bad json"))
+    )
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    with pytest.raises(WCLAuthError, match="OAuth failed \\(HTTP 503\\)") as excinfo:
+        auth.get_token()
+
+    assert excinfo.value.error_kind == WCL_ERROR_SERVER
 
 
 def test_oauth_token_save_failure_preserves_previous_token_file(

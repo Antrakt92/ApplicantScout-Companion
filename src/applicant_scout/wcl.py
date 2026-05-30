@@ -53,6 +53,7 @@ WCL_ERROR_MALFORMED = "malformed"
 WCL_ERROR_GRAPHQL = "graphql"
 WCL_ERROR_NETWORK = "network"
 WCL_ERROR_HTTP = "http"
+WCL_RATE_LIMIT_RETRY_SECONDS = 300.0
 WCL_SERVER_RETRY_SECONDS = 30.0
 WCL_NETWORK_RETRY_SECONDS = 30.0
 
@@ -458,8 +459,14 @@ class WCLAuth:
                 auth=(self._client_id, self._client_secret),
             )
         if resp.status_code != 200:
+            error_kind = WCL_ERROR_AUTH
+            if resp.status_code == 429:
+                error_kind = WCL_ERROR_RATE_LIMITED
+            elif resp.status_code >= 500:
+                error_kind = WCL_ERROR_SERVER
             raise WCLAuthError(
-                f"OAuth failed (HTTP {resp.status_code}): {resp.text[:200]}"
+                f"OAuth failed (HTTP {resp.status_code}): {resp.text[:200]}",
+                error_kind=error_kind,
             )
         body = _json_object_response(resp, WCLAuthError, "OAuth response")
         access_token = body.get("access_token")
@@ -501,7 +508,9 @@ class WCLAuth:
 
 
 class WCLAuthError(Exception):
-    pass
+    def __init__(self, message: str, *, error_kind: str = ""):
+        super().__init__(message)
+        self.error_kind = error_kind
 
 
 class WCLApiError(Exception):
@@ -877,8 +886,19 @@ class WCLClient:
         return None
 
     def _set_network_retry_if_current(self, auth_generation: int) -> None:
+        self._set_retry_block_if_current(auth_generation, WCL_ERROR_NETWORK)
+
+    def _set_retry_block_if_current(
+        self, auth_generation: int, error_kind: str
+    ) -> None:
         with self._quota_lock:
-            if auth_generation == self._auth_generation:
+            if auth_generation != self._auth_generation:
+                return
+            if error_kind == WCL_ERROR_RATE_LIMITED:
+                self._rate_limited_until = time.time() + WCL_RATE_LIMIT_RETRY_SECONDS
+            elif error_kind == WCL_ERROR_SERVER:
+                self._server_retry_until = time.time() + WCL_SERVER_RETRY_SECONDS
+            elif error_kind == WCL_ERROR_NETWORK:
                 self._network_retry_until = time.time() + WCL_NETWORK_RETRY_SECONDS
 
     def _post_graphql_with_auth_retry(
@@ -890,6 +910,9 @@ class WCLClient:
         for attempt in range(2):
             try:
                 token = auth.get_token()
+            except WCLAuthError as exc:
+                self._set_retry_block_if_current(auth_generation, exc.error_kind)
+                raise
             except (httpx.TimeoutException, httpx.RequestError):
                 self._set_network_retry_if_current(auth_generation)
                 raise
@@ -914,17 +937,15 @@ class WCLClient:
                     error_kind=WCL_ERROR_AUTH,
                 )
             if resp.status_code == 429:
-                with self._quota_lock:
-                    if auth_generation == self._auth_generation:
-                        self._rate_limited_until = time.time() + 300
+                self._set_retry_block_if_current(
+                    auth_generation, WCL_ERROR_RATE_LIMITED
+                )
                 raise WCLApiError(
                     "Rate limited (HTTP 429) — cooldown 5min",
                     error_kind=WCL_ERROR_RATE_LIMITED,
                 )
             if resp.status_code >= 500:
-                with self._quota_lock:
-                    if auth_generation == self._auth_generation:
-                        self._server_retry_until = time.time() + WCL_SERVER_RETRY_SECONDS
+                self._set_retry_block_if_current(auth_generation, WCL_ERROR_SERVER)
                 raise WCLApiError(
                     f"Server error (HTTP {resp.status_code})",
                     error_kind=WCL_ERROR_SERVER,

@@ -958,10 +958,24 @@ def test_retry_failed_wcl_fetches_skips_permanent_failures(qtbot, tmp_path):
         error_message="Unexpected HTTP 400",
         wcl_error_kind=wcl_mod.WCL_ERROR_HTTP,
     )
+    malformed = _app(
+        applicant_id="malformed:1",
+        fetch_status="error",
+        error_message="Malformed WCL response",
+        wcl_error_kind=wcl_mod.WCL_ERROR_MALFORMED,
+    )
+    graphql = _app(
+        applicant_id="graphql:1",
+        fetch_status="error",
+        error_message="GraphQL error",
+        wcl_error_kind=wcl_mod.WCL_ERROR_GRAPHQL,
+    )
     not_found = _app(applicant_id="nf:1", fetch_status="not_found")
     state.add_or_update(missing)
     state.add_or_update(auth)
     state.add_or_update(http)
+    state.add_or_update(malformed)
+    state.add_or_update(graphql)
     state.add_or_update(not_found)
 
     try:
@@ -969,6 +983,8 @@ def test_retry_failed_wcl_fetches_skips_permanent_failures(qtbot, tmp_path):
         assert missing.fetch_status == "error"
         assert auth.fetch_status == "error"
         assert http.fetch_status == "error"
+        assert malformed.fetch_status == "error"
+        assert graphql.fetch_status == "error"
         assert not_found.fetch_status == "not_found"
         assert window._fetches_in_flight == {}
     finally:
@@ -1022,6 +1038,149 @@ def test_retry_path_with_fake_pool_completes_and_clears_in_flight(qtbot, tmp_pat
         assert app.error_message == ""
         assert app.wcl_error_kind == ""
         assert app.applicant_id not in window._fetches_in_flight
+    finally:
+        client.close()
+
+
+def test_manual_wcl_retry_relaunches_visible_malformed_error_only(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    visible = _app(
+        fetch_status="error",
+        error_message="Malformed WCL response: data is not an object",
+        wcl_error_kind=wcl_mod.WCL_ERROR_MALFORMED,
+    )
+    other = _app(
+        applicant_id="43:1",
+        name="Other-RealmA",
+        fetch_status="error",
+        error_message="Malformed WCL response: characterData is not an object",
+        wcl_error_kind=wcl_mod.WCL_ERROR_MALFORMED,
+    )
+    state.add_or_update(visible)
+    state.add_or_update(other)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window._refresh_table()
+        window._pinned_id = visible.applicant_id
+        window._pinned_by_tab["applicants"] = visible.applicant_id
+
+        window._retry_visible_wcl_error()
+        identity = window._current_fetch_identity_for(visible)
+
+        assert identity is not None
+        assert visible.fetch_status == "loading"
+        assert visible.error_message == ""
+        assert visible.wcl_error_kind == ""
+        assert identity.storage_key in window._fetches_in_flight
+        assert other.fetch_status == "error"
+        assert other.wcl_error_kind == wcl_mod.WCL_ERROR_MALFORMED
+    finally:
+        client.close()
+
+
+def test_manual_wcl_retry_uses_party_storage_key_for_visible_graphql_error(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    member = _member(
+        fetch_status="error",
+        error_message="GraphQL error: proxy exploded",
+        wcl_error_kind=wcl_mod.WCL_ERROR_GRAPHQL,
+    )
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window._active_tab = "party"
+        window._tab_bar.set_active("party", emit=False)
+        window._refresh_table()
+        window._pinned_id = member.applicant_id
+        window._pinned_by_tab["party"] = member.applicant_id
+
+        window._retry_visible_wcl_error()
+        identity = window._current_fetch_identity_for(member)
+
+        assert identity is not None
+        assert identity.row_source == "party"
+        assert identity.storage_key == f"party:{member.applicant_id}"
+        assert member.fetch_status == "loading"
+        assert identity.storage_key in window._fetches_in_flight
+    finally:
+        client.close()
+
+
+def test_manual_wcl_retry_skips_non_manual_and_inflight_errors(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(
+        fetch_status="error",
+        error_message="Authentication failed",
+        wcl_error_kind=WCL_ERROR_AUTH,
+    )
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        window._refresh_table()
+        window._pinned_id = app.applicant_id
+        window._pinned_by_tab["applicants"] = app.applicant_id
+
+        window._retry_visible_wcl_error()
+
+        assert app.fetch_status == "error"
+        assert window._fetches_in_flight == {}
+
+        app.wcl_error_kind = wcl_mod.WCL_ERROR_GRAPHQL
+        identity = window._current_fetch_identity_for(app)
+        assert identity is not None
+        window._mark_fetch_in_flight(identity)
+
+        window._retry_visible_wcl_error()
+
+        assert app.fetch_status == "error"
+        assert len(window._fetches_in_flight) == 1
+    finally:
+        client.close()
+
+
+def test_manual_wcl_retry_hidden_when_all_wcl_metrics_are_disabled(qtbot, tmp_path):
+    disabled = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(
+        fetch_status="error",
+        error_message="GraphQL error: proxy exploded",
+        wcl_error_kind=wcl_mod.WCL_ERROR_GRAPHQL,
+    )
+    state.add_or_update(app)
+    window, client = _window(
+        qtbot,
+        tmp_path,
+        state,
+        metric_preferences=disabled,
+    )
+
+    try:
+        window._refresh_table()
+        window._pinned_id = app.applicant_id
+        window._pinned_by_tab["applicants"] = app.applicant_id
+        window._sync_delegate_and_panel()
+
+        assert window._panel._wcl_retry_button.isHidden()
+
+        window._retry_visible_wcl_error()
+
+        assert app.fetch_status == "error"
+        assert app.wcl_error_kind == wcl_mod.WCL_ERROR_GRAPHQL
+        assert window._fetches_in_flight == {}
     finally:
         client.close()
 

@@ -833,6 +833,106 @@ def test_raid_detail_permanent_failure_shows_unavailable_without_requeue(
         window.close()
 
 
+def test_raid_detail_graphql_failure_shows_manual_retry_and_requeues_without_clearing_main_data(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(
+        name="Scout-Ravencrest",
+        raid_boss_parses={},
+        fetch_status="ready",
+        raid_mythic=74.0,
+        mplus_dps=81.0,
+    )
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
+
+        window._on_raid_boss_fetch_done(
+            failed_detail_identity,
+            {},
+            "GraphQL error: Encounter not found",
+            overlay_mod.WCL_ERROR_GRAPHQL,
+        )
+
+        assert window._panel._status_label.text() == "Raid boss details unavailable"
+        assert not window._panel._wcl_retry_button.isHidden()
+        assert app.fetch_status == "ready"
+        assert app.raid_mythic == 74.0
+        assert app.mplus_dps == 81.0
+        assert window._raid_boss_fetches_in_flight == {}
+
+        window._retry_visible_wcl_error()
+
+        assert app.fetch_status == "ready"
+        assert app.raid_mythic == 74.0
+        assert app.mplus_dps == 81.0
+        assert window._raid_boss_fetches_in_flight
+        assert window._panel._status_label.text() == "Fetching raid boss details…"
+    finally:
+        window.close()
+
+
+def test_raid_detail_auth_failure_hides_manual_retry(qtbot, tmp_path):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = None
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+        failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
+
+        window._on_raid_boss_fetch_done(
+            failed_detail_identity,
+            {},
+            "Authentication failed",
+            overlay_mod.WCL_ERROR_AUTH,
+        )
+
+        assert window._panel._status_label.text() == "Raid boss details unavailable"
+        assert window._panel._wcl_retry_button.isHidden()
+
+        window._retry_visible_wcl_error()
+
+        assert window._raid_boss_fetches_in_flight == {}
+    finally:
+        window.close()
+
+
 def test_raid_detail_status_restored_when_returning_to_raid_tab_with_inflight_fetch(
     qtbot, tmp_path
 ):
@@ -910,7 +1010,11 @@ def test_retryable_raid_detail_failure_retries_after_idle_expiry(
         assert window._raid_boss_fetch_failures
 
         for key in list(window._raid_boss_fetch_failures):
-            window._raid_boss_fetch_failures[key] = time.monotonic() - 1.0
+            window._raid_boss_fetch_failures[key] = overlay_mod._RaidBossFetchFailure(
+                expires_at=time.monotonic() - 1.0,
+                error_kind=overlay_mod.WCL_ERROR_NETWORK,
+                message="network",
+            )
         window._raid_boss_retry_timer.stop()
         window._retry_ready_raid_boss_fetches()
 
@@ -1355,6 +1459,42 @@ def test_status_states_hide_metrics_and_dungeons(qtbot):
 
     panel.setApplicantData(_app(fetch_status="not_found"))
     assert panel._status_label.text() == "Not found on Warcraft Logs"
+
+
+def test_wcl_retry_button_visibility_is_explicitly_gated(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    clicks: list[str] = []
+    panel.wclRetryRequested.connect(lambda: clicks.append("retry"))
+
+    panel.setApplicantData(
+        _app(
+            fetch_status="error",
+            error_message="GraphQL error: proxy exploded",
+            wcl_error_kind=overlay_mod.WCL_ERROR_GRAPHQL,
+        ),
+        wcl_retry_available=True,
+    )
+
+    assert not panel._wcl_retry_button.isHidden()
+    panel._wcl_retry_button.click()
+    assert clicks == ["retry"]
+
+    panel.setApplicantData(
+        _app(
+            fetch_status="error",
+            error_message="Authentication failed",
+            wcl_error_kind=overlay_mod.WCL_ERROR_AUTH,
+        ),
+        wcl_retry_available=False,
+    )
+    assert panel._wcl_retry_button.isHidden()
+
+    panel.setApplicantData(_app(fetch_status="loading"), wcl_retry_available=True)
+    assert panel._wcl_retry_button.isHidden()
+
+    panel.setPlaceholder()
+    assert panel._wcl_retry_button.isHidden()
 
 
 def test_panel_explains_error_mplus_fit_uses_raiderio_only(qtbot):

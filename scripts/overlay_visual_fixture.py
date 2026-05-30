@@ -475,6 +475,16 @@ def _prepare_metrics_raid_only_window(window: OverlayWindow) -> None:
     _pin_visual_row(window, VISUAL_FIXTURE_PINNED_ID)
 
 
+def _prepare_wcl_retry_window(window: OverlayWindow) -> None:
+    from applicant_scout.wcl import WCL_ERROR_GRAPHQL
+
+    applicant = window._state.applicants.get("40:1")
+    if applicant is not None:
+        applicant.error_message = "GraphQL error: proxy unavailable"
+        applicant.wcl_error_kind = WCL_ERROR_GRAPHQL
+    _pin_visual_row(window, "40:1")
+
+
 def _baseline_path(name: str) -> Path:
     if name == DEFAULT_VISUAL_FIXTURE_SCENARIO:
         return OVERLAY_VISUAL_BASELINE_PATH
@@ -521,6 +531,12 @@ OVERLAY_VISUAL_SCENARIOS: dict[str, VisualFixtureScenario] = {
             raid_heroic=True,
             raid_mythic=True,
         ),
+    ),
+    "wcl-retry": VisualFixtureScenario(
+        name="wcl-retry",
+        baseline_path=_baseline_path("wcl-retry"),
+        build_state=build_overlay_visual_state,
+        prepare_window=_prepare_wcl_retry_window,
     ),
 }
 

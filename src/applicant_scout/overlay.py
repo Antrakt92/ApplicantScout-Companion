@@ -112,6 +112,8 @@ from .wcl import (
     WCLApiError,
     WCLAuthError,
     WCL_ERROR_AUTH,
+    WCL_ERROR_GRAPHQL,
+    WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_RATE_LIMITED,
@@ -177,6 +179,7 @@ LEGACY_COMPACT_WINDOW_WIDTH = 526
 _RETRYABLE_WCL_ERROR_KINDS = frozenset(
     {WCL_ERROR_QUOTA_GUARD, WCL_ERROR_RATE_LIMITED, WCL_ERROR_SERVER, WCL_ERROR_NETWORK}
 )
+_MANUAL_WCL_RETRY_ERROR_KINDS = frozenset({WCL_ERROR_GRAPHQL, WCL_ERROR_MALFORMED})
 ROLE_ICON_SIZE = QSize(16, 16)
 ROLE_ICON_FILES = {
     "TANK": "role_tank.png",
@@ -314,6 +317,13 @@ class _FetchIdentity:
 
 
 @dataclass(frozen=True)
+class _RaidBossFetchFailure:
+    expires_at: float | None
+    error_kind: str
+    message: str = ""
+
+
+@dataclass(frozen=True)
 class _GroupMarker:
     colour: str
     first_visible: bool
@@ -431,7 +441,8 @@ class _FetchTask(QRunnable):
         except WCLApiError as e:
             ranks = CharacterRanks.empty(error=str(e), error_kind=e.error_kind)
         except WCLAuthError as e:
-            ranks = CharacterRanks.empty(error=str(e), error_kind=WCL_ERROR_AUTH)
+            error_kind = getattr(e, "error_kind", "") or WCL_ERROR_AUTH
+            ranks = CharacterRanks.empty(error=str(e), error_kind=error_kind)
         except (httpx.TimeoutException, httpx.RequestError) as e:
             ranks = CharacterRanks.empty(error=str(e), error_kind=WCL_ERROR_NETWORK)
         except Exception as e:  # noqa: BLE001 — pass error string to UI for surfacing
@@ -498,7 +509,8 @@ class _RaidBossFetchTask(QRunnable):
             self.signals.done.emit(self._identity, {}, str(exc), exc.error_kind)
             return
         except WCLAuthError as exc:
-            self.signals.done.emit(self._identity, {}, str(exc), WCL_ERROR_AUTH)
+            error_kind = getattr(exc, "error_kind", "") or WCL_ERROR_AUTH
+            self.signals.done.emit(self._identity, {}, str(exc), error_kind)
             return
         except (httpx.TimeoutException, httpx.RequestError) as exc:
             self.signals.done.emit(self._identity, {}, str(exc), WCL_ERROR_NETWORK)
@@ -1455,6 +1467,7 @@ class ApplicantInfoPanel(QFrame):
 
     pinCleared = pyqtSignal()
     detailChanged = pyqtSignal()
+    wclRetryRequested = pyqtSignal()
 
     def __init__(
         self,
@@ -1489,6 +1502,13 @@ class ApplicantInfoPanel(QFrame):
         header_layout.addWidget(self._name_label)
         header_layout.addWidget(self._realm_label)
         header_layout.addStretch(1)
+        self._wcl_retry_button = QPushButton("Retry WCL")
+        self._wcl_retry_button.setObjectName("infoWclRetryButton")
+        self._wcl_retry_button.setFixedHeight(22)
+        self._wcl_retry_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._wcl_retry_button.setToolTip("Retry Warcraft Logs for this row")
+        self._wcl_retry_button.clicked.connect(self.wclRetryRequested.emit)
+        header_layout.addWidget(self._wcl_retry_button)
         self._unpin_button = QPushButton("×")
         self._unpin_button.setObjectName("infoUnpinButton")
         self._unpin_button.setFixedSize(22, 22)
@@ -1613,6 +1633,9 @@ class ApplicantInfoPanel(QFrame):
 
         self.setPlaceholder()
 
+    def tooltip_widgets(self) -> tuple[QWidget, ...]:
+        return (self._wcl_retry_button, self._unpin_button)
+
     def set_metric_preferences(self, metric_preferences: MetricPreferences) -> None:
         self._metric_preferences = metric_preferences
         if self._current_applicant is not None:
@@ -1651,6 +1674,8 @@ class ApplicantInfoPanel(QFrame):
         pinned: bool = False,
         raid_detail_status: str = "",
         raid_detail_status_error: bool = False,
+        raid_detail_retry_available: bool = False,
+        wcl_retry_available: bool = False,
     ) -> None:
         """Show full applicant scout data in the fixed widget layout."""
         self._current_applicant = applicant
@@ -1663,6 +1688,8 @@ class ApplicantInfoPanel(QFrame):
             listing,
             raid_detail_status=raid_detail_status,
             raid_detail_status_error=raid_detail_status_error,
+            raid_detail_retry_available=raid_detail_retry_available,
+            wcl_retry_available=wcl_retry_available,
         )
 
     def _hide_data_widgets(self) -> None:
@@ -1677,6 +1704,7 @@ class ApplicantInfoPanel(QFrame):
             label.setText("")
             label.setVisible(False)
         self._unpin_button.hide()
+        self._wcl_retry_button.hide()
         for label in self._metric_labels.values():
             label.setText("")
             label.setVisible(False)
@@ -1774,11 +1802,14 @@ class ApplicantInfoPanel(QFrame):
         *,
         raid_detail_status: str = "",
         raid_detail_status_error: bool = False,
+        raid_detail_retry_available: bool = False,
+        wcl_retry_available: bool = False,
     ) -> None:
         status = applicant.fetch_status
         self._clear_metrics_and_dungeons()
         self._sync_detail_controls(listing)
         self._status_label.setVisible(False)
+        self._wcl_retry_button.hide()
         if status in ("loading", "pending"):
             self._show_status("Fetching from Warcraft Logs…")
             self._set_detail_rows(applicant, listing)
@@ -1791,7 +1822,11 @@ class ApplicantInfoPanel(QFrame):
                 if fit.context == CONTEXT_MPLUS and fit.score > 0.0
                 else ""
             )
-            self._show_status(f"WCL error: {msg}{source_note}", error=True)
+            self._show_status(
+                f"WCL error: {msg}{source_note}",
+                error=True,
+                retry_available=wcl_retry_available,
+            )
             self._set_metric_badges(applicant, listing)
             self._set_detail_rows(applicant, listing)
             return
@@ -1814,17 +1849,28 @@ class ApplicantInfoPanel(QFrame):
         visible_rows = self._set_detail_rows(applicant, listing)
         fit_status = self._mplus_fit_status_text(applicant, listing)
         if self._active_detail_mode() == "raid" and raid_detail_status:
-            self._show_status(raid_detail_status, error=raid_detail_status_error)
+            self._show_status(
+                raid_detail_status,
+                error=raid_detail_status_error,
+                retry_available=raid_detail_retry_available,
+            )
         elif fit_status:
             self._show_status(fit_status)
         elif not visible_metrics and not visible_rows:
             self._show_status("No Warcraft Logs data")
 
-    def _show_status(self, text: str, *, error: bool = False) -> None:
+    def _show_status(
+        self,
+        text: str,
+        *,
+        error: bool = False,
+        retry_available: bool = False,
+    ) -> None:
         self._status_label.setText(text)
         color = "#ff6666" if error else "#8d8d98"
         self._status_label.setStyleSheet(f"color: {color};")
         self._status_label.setVisible(bool(text))
+        self._wcl_retry_button.setVisible(bool(text and retry_available))
 
     def _clear_metrics_and_dungeons(self) -> None:
         for label in self._metric_labels.values():
@@ -2290,6 +2336,14 @@ class OverlayWindow(QMainWindow):
         self._panel = ApplicantInfoPanel(container, metric_preferences)
         self._panel.pinCleared.connect(self._clear_pin)
         self._panel.detailChanged.connect(self._on_panel_detail_changed)
+        self._panel.wclRetryRequested.connect(self._retry_visible_wcl_error)
+        panel_tooltip_widgets = self._panel.tooltip_widgets()
+        self._action_tooltip_widgets = (
+            *self._action_tooltip_widgets,
+            *panel_tooltip_widgets,
+        )
+        for action_widget in panel_tooltip_widgets:
+            action_widget.installEventFilter(self)
         layout.addWidget(self._panel)
 
         # Table — _TooltipTableWidget overrides viewportEvent to render tooltips
@@ -2429,7 +2483,7 @@ class OverlayWindow(QMainWindow):
         self._fetch_waiters_by_target: dict[str, dict[str, _FetchIdentity]] = {}
         self._raid_boss_fetches_in_flight: dict[str, _FetchIdentity] = {}
         self._raid_boss_fetch_failures: dict[
-            tuple[str, str, str, str, int, str, str, int, int], float | None
+            tuple[str, str, str, str, int, str, str, int, int], _RaidBossFetchFailure
         ] = {}
         self._wcl_runtime_generation = 0
         self._listing_session_generation = 0
@@ -3068,6 +3122,42 @@ class OverlayWindow(QMainWindow):
             self._schedule_wcl_retry(WCL_RETRY_BATCH_DELAY_MS)
         return launched
 
+    def _manual_wcl_retry_available(self, applicant: Applicant) -> bool:
+        if not self._metric_preferences.any_enabled:
+            return False
+        if (
+            applicant.fetch_status != "error"
+            or applicant.wcl_error_kind not in _MANUAL_WCL_RETRY_ERROR_KINDS
+        ):
+            return False
+        identity = self._current_fetch_identity_for(applicant)
+        return identity is not None and not self._is_fetch_in_flight_for(identity)
+
+    def _retry_visible_wcl_error(self) -> None:
+        visible_id = self._resolve_visible_id()
+        if visible_id is None:
+            return
+        applicant = self._active_row_map().get(visible_id)
+        if applicant is None:
+            return
+        if self._manual_wcl_retry_available(applicant):
+            applicant.clear_wcl_data()
+            self._launch_fetch(applicant)
+            self._schedule_overlay_refresh(update_title=False)
+            return
+        resolved = self._current_raid_boss_fetch_for(applicant)
+        if resolved is None:
+            return
+        identity, _charname = resolved
+        if not self._raid_boss_manual_retry_available(identity):
+            return
+        if self._is_fetch_in_flight_for_raid_details(identity):
+            self._sync_delegate_and_panel()
+            return
+        self._raid_boss_fetch_failures.pop(_raid_boss_fetch_failure_key(identity), None)
+        self._launch_raid_boss_fetch_if_needed(applicant)
+        self._sync_delegate_and_panel()
+
     # ─── hover/pin panel orchestration ─────
 
     def _active_row_map(self) -> Mapping[str, Applicant]:
@@ -3184,6 +3274,10 @@ class OverlayWindow(QMainWindow):
             pinned=visible_id == self._pinned_id,
             raid_detail_status=raid_detail_status[0] if raid_detail_status else "",
             raid_detail_status_error=raid_detail_status[1] if raid_detail_status else False,
+            raid_detail_retry_available=raid_detail_status[2]
+            if raid_detail_status
+            else False,
+            wcl_retry_available=self._manual_wcl_retry_available(applicant),
         )
         if self._launch_raid_boss_fetch_if_needed(applicant):
             raid_detail_status = self._raid_detail_status_for(applicant)
@@ -3198,6 +3292,10 @@ class OverlayWindow(QMainWindow):
                 raid_detail_status_error=raid_detail_status[1]
                 if raid_detail_status
                 else False,
+                raid_detail_retry_available=raid_detail_status[2]
+                if raid_detail_status
+                else False,
+                wcl_retry_available=self._manual_wcl_retry_available(applicant),
             )
 
     def _apply_panel_height_above_table(self) -> None:
@@ -3858,21 +3956,9 @@ class OverlayWindow(QMainWindow):
                 return True
         return False
 
-    def _raid_boss_fetch_failure_state(
-        self, identity: _FetchIdentity
-    ) -> str | None:
-        key = _raid_boss_fetch_failure_key(identity)
-        if key not in self._raid_boss_fetch_failures:
-            return None
-        expires_at = self._raid_boss_fetch_failures[key]
-        if expires_at is None:
-            return "unavailable"
-        if time.monotonic() < expires_at:
-            return "retrying"
-        self._raid_boss_fetch_failures.pop(key, None)
-        return None
-
-    def _raid_detail_status_for(self, applicant: Applicant) -> tuple[str, bool] | None:
+    def _current_raid_boss_fetch_for(
+        self, applicant: Applicant
+    ) -> tuple[_FetchIdentity, str] | None:
         listing = self._effective_listing()
         if detect_listing_context(listing) != CONTEXT_RAID:
             return None
@@ -3882,7 +3968,7 @@ class OverlayWindow(QMainWindow):
             applicant
         ):
             return None
-        resolved = _fetch_identity_for_applicant(
+        return _fetch_identity_for_applicant(
             applicant,
             self._state.player.full_name,
             self._wcl_client.region,
@@ -3891,16 +3977,47 @@ class OverlayWindow(QMainWindow):
             self._listing_session_generation,
             row_source=self._row_source_for(applicant),
         )
+
+    def _raid_boss_fetch_failure_state(
+        self, identity: _FetchIdentity
+    ) -> str | None:
+        key = _raid_boss_fetch_failure_key(identity)
+        if key not in self._raid_boss_fetch_failures:
+            return None
+        failure = self._raid_boss_fetch_failures[key]
+        if failure.expires_at is None:
+            return "unavailable"
+        if time.monotonic() < failure.expires_at:
+            return "retrying"
+        self._raid_boss_fetch_failures.pop(key, None)
+        return None
+
+    def _raid_boss_manual_retry_available(self, identity: _FetchIdentity) -> bool:
+        failure = self._raid_boss_fetch_failures.get(
+            _raid_boss_fetch_failure_key(identity)
+        )
+        if failure is None:
+            return False
+        return failure.error_kind in _MANUAL_WCL_RETRY_ERROR_KINDS
+
+    def _raid_detail_status_for(
+        self, applicant: Applicant
+    ) -> tuple[str, bool, bool] | None:
+        resolved = self._current_raid_boss_fetch_for(applicant)
         if resolved is None:
             return None
         identity, _ = resolved
         if self._is_fetch_in_flight_for_raid_details(identity):
-            return "Fetching raid boss details…", False
+            return "Fetching raid boss details…", False, False
         failure_state = self._raid_boss_fetch_failure_state(identity)
         if failure_state == "retrying":
-            return "Raid boss details retrying soon…", False
+            return "Raid boss details retrying soon…", False, False
         if failure_state == "unavailable":
-            return "Raid boss details unavailable", True
+            return (
+                "Raid boss details unavailable",
+                True,
+                self._raid_boss_manual_retry_available(identity),
+            )
         return None
 
     def _schedule_raid_boss_retry(self, delay_ms: int) -> None:
@@ -3914,23 +4031,7 @@ class OverlayWindow(QMainWindow):
         self._sync_delegate_and_panel()
 
     def _launch_raid_boss_fetch_if_needed(self, applicant: Applicant) -> bool:
-        listing = self._effective_listing()
-        if detect_listing_context(listing) != CONTEXT_RAID:
-            return False
-        if self._panel._active_detail_mode() != "raid":
-            return False
-        if applicant.fetch_status != "ready" or not self._missing_raid_boss_details(applicant):
-            return False
-        prefs = self._raid_detail_preferences()
-        resolved = _fetch_identity_for_applicant(
-            applicant,
-            self._state.player.full_name,
-            self._wcl_client.region,
-            prefs,
-            self._wcl_runtime_generation,
-            self._listing_session_generation,
-            row_source=self._row_source_for(applicant),
-        )
+        resolved = self._current_raid_boss_fetch_for(applicant)
         if resolved is None:
             return False
         identity, charname = resolved
@@ -4190,7 +4291,7 @@ class OverlayWindow(QMainWindow):
             self._sync_delegate_and_panel()
             return
         if error:
-            self._record_raid_boss_fetch_failure(fetched_identity, error_kind)
+            self._record_raid_boss_fetch_failure(fetched_identity, error_kind, error)
             _log.info(
                 "WCL raid boss detail fetch failed: %s kind=%s",
                 error,
@@ -4222,7 +4323,7 @@ class OverlayWindow(QMainWindow):
         return self._raid_boss_fetch_failure_state(identity) is not None
 
     def _record_raid_boss_fetch_failure(
-        self, identity: _FetchIdentity, error_kind: str
+        self, identity: _FetchIdentity, error_kind: str, error: str = ""
     ) -> None:
         key = _raid_boss_fetch_failure_key(identity)
         if error_kind in _RETRYABLE_WCL_ERROR_KINDS:
@@ -4232,10 +4333,18 @@ class OverlayWindow(QMainWindow):
                 + WCL_RETRY_CUSHION_MS,
             )
             retry_after = retry_delay_ms / 1000.0
-            self._raid_boss_fetch_failures[key] = time.monotonic() + retry_after
+            self._raid_boss_fetch_failures[key] = _RaidBossFetchFailure(
+                expires_at=time.monotonic() + retry_after,
+                error_kind=error_kind,
+                message=error,
+            )
             self._schedule_raid_boss_retry(retry_delay_ms)
             return
-        self._raid_boss_fetch_failures[key] = None
+        self._raid_boss_fetch_failures[key] = _RaidBossFetchFailure(
+            expires_at=None,
+            error_kind=error_kind,
+            message=error,
+        )
 
     def _update_title(self) -> None:
         self._tab_bar.set_counts(
@@ -4339,9 +4448,9 @@ class OverlayWindow(QMainWindow):
         hover-bookkeeping events on the table viewport + WindowDeactivate on self.
 
         Branches A/B/E handle ToolTip rendering (header column legends, title-
-        bar listing tooltip, role-filter buttons) — kept after refactor since
-        Qt's standard tooltip path silently fails on this overlay's translucent
-        flag combo. Tooltip branches return True to consume the event.
+        bar listing tooltip, action buttons) — kept after refactor since Qt's
+        standard tooltip path silently fails on this overlay's translucent flag
+        combo. Tooltip branches return True to consume the event.
 
         Branches C/D handle row-hover panel state:
         - C: viewport Leave → clear hover; viewport MouseMove over empty area
@@ -5265,6 +5374,18 @@ _STYLESHEET = """
 }
 #infoUnpinButton:hover {
     background-color: rgba(74, 74, 96, 230);
+}
+#infoWclRetryButton {
+    color: #ffe6d6;
+    background-color: rgba(82, 45, 38, 210);
+    border: 1px solid rgba(210, 118, 88, 215);
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 1px 7px;
+}
+#infoWclRetryButton:hover {
+    background-color: rgba(118, 62, 48, 230);
 }
 #infoDetailTabs QPushButton {
     color: #c9c9d4;
