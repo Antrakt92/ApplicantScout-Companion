@@ -51,7 +51,7 @@ class VisualFixtureScenario:
 def _app(**overrides) -> Applicant:
     base = Applicant(
         applicant_id="20:1",
-        name="Verylongapplicantname-Twisting Nether",
+        name="ScoutDps-Example",
         cls="WARRIOR",
         spec_id=71,
         ilvl=664,
@@ -123,7 +123,7 @@ def build_overlay_visual_state() -> AppState:
     applicants = [
         _app(
             applicant_id="10:1",
-            name="Stonewall-Area 52",
+            name="ScoutTank-Example",
             cls="PALADIN",
             spec_id=66,
             ilvl=662,
@@ -137,7 +137,7 @@ def build_overlay_visual_state() -> AppState:
         ),
         _app(
             applicant_id="10:2",
-            name="Bloomwell-Area 52",
+            name="ScoutHealer-Example",
             cls="DRUID",
             spec_id=105,
             ilvl=660,
@@ -158,7 +158,7 @@ def build_overlay_visual_state() -> AppState:
         ),
         _app(
             applicant_id="10:3",
-            name="Cinderbolt-Area 52",
+            name="ScoutMage-Example",
             cls="MAGE",
             spec_id=63,
             ilvl=658,
@@ -172,7 +172,7 @@ def build_overlay_visual_state() -> AppState:
         _app(),
         _app(
             applicant_id="30:1",
-            name="Queueingtank-Illidan",
+            name="ScoutQueued-Example",
             cls="DEATHKNIGHT",
             spec_id=250,
             ilvl=651,
@@ -182,7 +182,7 @@ def build_overlay_visual_state() -> AppState:
         ),
         _app(
             applicant_id="40:1",
-            name="Apiwobble-Tichondrius",
+            name="ScoutRetry-Example",
             cls="PRIEST",
             spec_id=257,
             ilvl=648,
@@ -193,7 +193,7 @@ def build_overlay_visual_state() -> AppState:
         ),
         _app(
             applicant_id="50:1",
-            name="Freshalt-Stormrage",
+            name="ScoutNoLogs-Example",
             cls="ROGUE",
             spec_id=261,
             ilvl=642,
@@ -203,7 +203,7 @@ def build_overlay_visual_state() -> AppState:
         ),
         _app(
             applicant_id="60:1",
-            name="Nodatahealer-Dalaran",
+            name="ScoutEmpty-Example",
             cls="SHAMAN",
             spec_id=264,
             ilvl=646,
@@ -296,7 +296,7 @@ def build_raid_listing_visual_state() -> AppState:
     applicants = [
         _app(
             applicant_id="10:1",
-            name="Stonewall-Area 52",
+            name="ScoutTank-Example",
             cls="PALADIN",
             spec_id=66,
             ilvl=662,
@@ -315,7 +315,7 @@ def build_raid_listing_visual_state() -> AppState:
         ),
         _app(
             applicant_id=VISUAL_FIXTURE_PINNED_ID,
-            name="Bloomwell-Area 52",
+            name="ScoutHealer-Example",
             cls="DRUID",
             spec_id=105,
             ilvl=660,
@@ -339,7 +339,7 @@ def build_raid_listing_visual_state() -> AppState:
         ),
         _app(
             applicant_id="10:3",
-            name="Cinderbolt-Area 52",
+            name="ScoutMage-Example",
             cls="MAGE",
             spec_id=63,
             ilvl=658,
@@ -384,7 +384,7 @@ def build_party_visual_state(*, include_listing: bool) -> AppState:
         _party_member(
             1,
             applicant_id="party:tank",
-            name="Shieldwake-Area 52",
+            name="PartyTank-Example",
             cls="PALADIN",
             spec_id=66,
             role="TANK",
@@ -398,7 +398,7 @@ def build_party_visual_state(*, include_listing: bool) -> AppState:
         _party_member(
             2,
             applicant_id="party:healer",
-            name="Bloomwell-Area 52",
+            name="ScoutHealer-Example",
             cls="DRUID",
             spec_id=105,
             role="HEALER",
@@ -413,7 +413,7 @@ def build_party_visual_state(*, include_listing: bool) -> AppState:
         _party_member(
             3,
             applicant_id="party:dps",
-            name="Cinderbolt-Area 52",
+            name="ScoutMage-Example",
             cls="MAGE",
             spec_id=63,
             role="DAMAGER",

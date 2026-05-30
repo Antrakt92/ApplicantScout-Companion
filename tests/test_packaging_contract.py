@@ -339,11 +339,17 @@ def test_check_script_checks_native_command_exit_codes():
     script = _read_repo_text("scripts/check.ps1")
 
     assert "Invoke-NativeChecked" in script
+    assert '[string]$VisualMode = "Strict"' in script
     assert 'Invoke-NativeChecked -Label "Python tests"' in script
     assert 'Invoke-NativeChecked -Label "Overlay visual baselines"' in script
     assert 'Invoke-NativeChecked -Label "Settings dialog visual baselines"' in script
+    assert 'Invoke-NativeChecked -Label "Public visual assets"' in script
     assert "render_overlay_fixture.py" in script
     assert "render_settings_dialog_fixture.py" in script
+    assert "export_public_visual_assets.py" in script
+    assert "--addon-root $AddonRoot --check" in script
+    assert 'if ($VisualMode -eq "Strict")' in script
+    assert "Public visual assets skipped in Smoke mode" in script
     assert "--check --all" in script
     assert '[ValidateSet("Strict", "Smoke")]' in script
     assert "--visual-mode $VisualModeArg" in script
@@ -580,6 +586,7 @@ def test_release_build_refuses_dirty_release_inputs_by_default():
         "scripts\\check.ps1",
         "scripts\\check-release-version.ps1",
         "scripts\\collect_dependency_licenses.py",
+        "scripts\\export_public_visual_assets.py",
         "scripts\\overlay_visual_fixture.py",
         "scripts\\render_overlay_fixture.py",
         "scripts\\settings_dialog_visual_fixture.py",
@@ -699,6 +706,30 @@ def test_release_checklist_documents_asset_wait_rerun_path():
     assert "180-second" in checklist
     assert "rerun the failed addon workflow" in checklist
     assert "Do not delete/recreate or force-push release tags" in checklist
+
+
+def test_release_checklist_requires_local_strict_visual_and_media_export_gate():
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+
+    assert "local strict visual baselines" in checklist.lower()
+    assert "Do not use `-VisualMode Smoke` for this local release gate" in checklist
+    assert "CI/release smoke" in checklist
+    assert ".\\scripts\\check.ps1" in checklist
+    assert (
+        ".\\.venv\\Scripts\\python scripts\\export_public_visual_assets.py "
+        "--addon-root ..\\ApplicantScout-Addon --check"
+    ) in checklist
+
+
+def test_docs_readme_explains_public_media_export_and_strict_gate():
+    docs_index = _read_repo_text("docs/README.md")
+
+    assert "Strict local baseline checks" in docs_index
+    assert "CI/release smoke" in docs_index
+    assert (
+        ".\\.venv\\Scripts\\python scripts\\export_public_visual_assets.py "
+        "--addon-root ..\\ApplicantScout-Addon --check"
+    ) in docs_index
 
 
 def test_release_workflow_runs_existing_gates_before_publishing():

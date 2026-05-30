@@ -87,6 +87,16 @@ Invoke-NativeChecked -Label "Settings dialog visual baselines" -Command {
     & $Python scripts\render_settings_dialog_fixture.py --check --all --visual-mode $VisualModeArg
 }
 
+if ($VisualMode -eq "Strict") {
+    Write-Host "== Public visual assets =="
+    Invoke-NativeChecked -Label "Public visual assets" -Command {
+        & $Python scripts\export_public_visual_assets.py --addon-root $AddonRoot --check
+    }
+}
+else {
+    Write-Host "== Public visual assets skipped in Smoke mode =="
+}
+
 Write-Host "== Ruff =="
 Invoke-NativeChecked -Label "Ruff" -Command {
     & $Ruff check .

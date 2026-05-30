@@ -129,6 +129,7 @@ function Assert-CleanReleaseInputs {
         "scripts\check.ps1",
         "scripts\check-release-version.ps1",
         "scripts\collect_dependency_licenses.py",
+        "scripts\export_public_visual_assets.py",
         "scripts\overlay_visual_fixture.py",
         "scripts\render_overlay_fixture.py",
         "scripts\settings_dialog_visual_fixture.py",

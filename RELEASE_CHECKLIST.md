@@ -30,8 +30,15 @@ the matching installer assets only after all release checks pass.
    ```powershell
    .\.venv\Scripts\python -m pytest
    .\scripts\check.ps1
+   .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
    .\scripts\check-release-version.ps1 -Tag v<companion version>
    ```
+
+   The local `.\scripts\check.ps1` release gate must keep local strict visual
+   baselines enabled; this local strict visual baselines check is the approval
+   gate for committed media. Do not use `-VisualMode Smoke` for this local release gate;
+   CI/release smoke is only a render-health check and does not approve committed
+   baseline or public-media updates.
 
 ## Build
 

@@ -23,6 +23,35 @@ from scripts.overlay_visual_fixture import (
     show_overlay_visual_window,
 )
 
+PUBLIC_VISUAL_FIXTURE_IDENTITIES = {
+    "ScoutTank-Example",
+    "ScoutHealer-Example",
+    "ScoutMage-Example",
+    "ScoutDps-Example",
+    "ScoutQueued-Example",
+    "ScoutRetry-Example",
+    "ScoutNoLogs-Example",
+    "ScoutEmpty-Example",
+    "PartyTank-Example",
+}
+PUBLIC_VISUAL_FIXTURE_BANNED_TOKENS = (
+    "Area 52",
+    "Illidan",
+    "Tichondrius",
+    "Stormrage",
+    "Dalaran",
+    "Twisting Nether",
+    "Stonewall",
+    "Bloomwell",
+    "Cinderbolt",
+    "Apiwobble",
+    "Queueingtank",
+    "Freshalt",
+    "Nodatahealer",
+    "Shieldwake",
+    "Verylongapplicantname",
+)
+
 
 def test_visual_fixture_scenarios_are_small_and_unique():
     assert DEFAULT_VISUAL_FIXTURE_SCENARIO == "applicants-default"
@@ -81,6 +110,38 @@ def test_visual_fixture_regen_command_refreshes_all_scenarios():
     assert "--all" in VISUAL_FIXTURE_REGEN_COMMAND
 
 
+def test_overlay_visual_fixture_public_scenarios_use_anonymized_identities():
+    observed: set[str] = set()
+    searchable_text: list[str] = []
+    for scenario in OVERLAY_VISUAL_SCENARIOS.values():
+        state = scenario.build_state()
+        observed.update(applicant.name for applicant in state.applicants.values())
+        observed.update(member.name for member in state.party_members.values())
+        if state.listing is not None:
+            searchable_text.extend(
+                [
+                    state.listing.dungeon_name,
+                    state.listing.listing_name,
+                    state.listing.comment,
+                ]
+            )
+
+    assert observed <= PUBLIC_VISUAL_FIXTURE_IDENTITIES
+    combined = "\n".join([*observed, *searchable_text])
+    for banned_token in PUBLIC_VISUAL_FIXTURE_BANNED_TOKENS:
+        assert banned_token not in combined
+
+
+def test_overlay_visual_fixture_committed_baselines_exist_for_all_scenarios():
+    for scenario in OVERLAY_VISUAL_SCENARIOS.values():
+        assert scenario.baseline_path.is_file()
+        assert scenario.baseline_path.stat().st_size > 0
+        baseline = QImage(str(scenario.baseline_path))
+        assert not baseline.isNull()
+        assert baseline.width() > 0
+        assert baseline.height() > 0
+
+
 def test_overlay_visual_fixture_disables_background_fetch_launchers(qtbot, tmp_path):
     _state, window, client = create_overlay_visual_window(tmp_path)
     qtbot.addWidget(window)
@@ -135,7 +196,7 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
         assert window._table.rowCount() == len(state.applicants)
         assert window._pinned_id == VISUAL_FIXTURE_PINNED_ID
         assert window._hover_id is None
-        assert window._panel._name_label.text() == "Bloomwell"
+        assert window._panel._name_label.text() == "ScoutHealer"
         assert window._panel.height() == window._panel.target_height()
         assert window._panel.minimumHeight() == window._panel.target_height()
         screen = window.screen()
@@ -295,7 +356,7 @@ def test_wcl_retry_visual_scenario_surfaces_retry_button(qtbot, tmp_path):
         )
 
         assert window._pinned_id == "40:1"
-        assert window._panel._name_label.text() == "Apiwobble"
+        assert window._panel._name_label.text() == "ScoutRetry"
         assert "GraphQL error" in window._panel._status_label.text()
         assert not window._panel._wcl_retry_button.isHidden()
     finally:
@@ -329,7 +390,7 @@ def test_visual_fixture_disabled_tracking_blocks_cursor_hover(
 
         assert window._hover_id is None
         assert window._pinned_id == VISUAL_FIXTURE_PINNED_ID
-        assert window._panel._name_label.text() == "Bloomwell"
+        assert window._panel._name_label.text() == "ScoutHealer"
     finally:
         client.close()
 

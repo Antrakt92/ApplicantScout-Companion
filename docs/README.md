@@ -17,9 +17,15 @@ fixtures.
   `.\.venv\Scripts\python scripts\render_settings_dialog_fixture.py --all`
   only after an intentional settings/setup UI layout change and a visual
   inspection.
-  CI/release uses `.\scripts\check.ps1 -VisualMode Smoke` to render every
-  scenario without treating GitHub-hosted Windows raster drift as a committed
-  baseline update.
+- Strict local baseline checks are required before release prep or public media
+  refreshes. CI/release smoke uses `.\scripts\check.ps1 -VisualMode Smoke` to
+  render every scenario without treating GitHub-hosted Windows raster drift as a
+  committed baseline update.
+- Public addon media exports are generated from anonymized overlay baselines.
+  Check them with
+  `.\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check`;
+  refresh them with the same command without `--check` after intentional
+  baseline changes and visual inspection.
 - Manual WCL fetch helper: `../scripts/manual_wcl_fetch.py`.
 - Seasonal WCL encounter helper:
   `../scripts/seasonal/get_mplus_encounter_ids.py`.
