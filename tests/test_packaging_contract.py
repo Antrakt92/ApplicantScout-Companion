@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import pytest
 import re
 import shutil
 import subprocess
@@ -262,7 +263,7 @@ def _fake_gh_release_view(
                     else ""
                 ),
                 f"if ({exit_code} -ne 0) {{",
-                f"    [Console]::Error.WriteLine({stderr!r})",
+                f"    if ({stderr!r}) {{ [Console]::Error.WriteLine({stderr!r}); Write-Error {stderr!r} }}",
                 f"    exit {exit_code}",
                 "}",
                 f"Write-Output {stdout!r}",
@@ -606,6 +607,39 @@ def test_release_version_metadata_is_ready_for_current_version():
     assert "releases/tag/v0.1.2" not in readme
 
 
+@pytest.mark.parametrize(
+    "bad_install_copy",
+    [
+        "https://github.com/Antrakt92/ApplicantScout-Addon/releases/download/v0.4.3/ApplicantScout-v0.4.3.zip",
+        "https://github.com/Antrakt92/ApplicantScout-Companion/releases/download/v0.8.0/ApplicantScoutCompanionSetup-0.8.0.exe",
+        "https://github.com/Antrakt92/ApplicantScout-Addon/releases",
+        "https://github.com/Antrakt92/ApplicantScout-Companion/releases",
+        "https://github.com/Antrakt92/ApplicantScout-Addon/archive/refs/tags/v0.4.3.zip",
+        "https://github.com/Antrakt92/ApplicantScout-Addon/zipball/v0.4.3",
+        "https://github.com/Antrakt92/ApplicantScout-Companion/tarball/v0.8.0",
+        "ApplicantScout WoW addon `0.4.3`",
+        "ApplicantScout Companion `0.8.0`",
+        "Install `ApplicantScout-0.4.3.zip` from GitHub.",
+        "Install `ApplicantScoutCompanionSetup-0.8.0.exe` from GitHub.",
+    ],
+)
+def test_release_check_rejects_pinned_public_install_links(
+    tmp_path,
+    bad_install_copy,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    readme_path = repo / "README.md"
+    readme_path.write_text(
+        readme_path.read_text(encoding="utf-8") + f"\n{bad_install_copy}\n",
+        encoding="utf-8",
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{_project_version()}")
+
+    assert result.returncode != 0
+    assert "use releases/latest" in (result.stdout + result.stderr)
+
+
 def test_release_readiness_test_name_is_not_tied_to_current_version():
     source = _read_repo_text("tests/test_packaging_contract.py")
 
@@ -765,16 +799,163 @@ def test_release_workflow_requires_paired_addon_tag_reachable_from_origin_main()
 
 def test_release_workflow_refuses_existing_release_before_build_or_create():
     workflow = _read_repo_text(".github/workflows/release.yml")
+    script = _read_repo_text("scripts/check-release-version.ps1")
+    release = _job_block(workflow, "release")
+    refuse_step = _step_block(release, "Refuse existing release")
 
     refuse_idx = workflow.index("Refuse existing release")
     build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
     release_idx = workflow.index("gh release create")
     publish_idx = workflow.index("gh release edit")
 
-    assert "gh release view $env:GITHUB_REF_NAME" in workflow
-    assert "--repo $env:GITHUB_REPOSITORY" in workflow
-    assert "already exists; refusing" in workflow
+    assert "-RefuseExistingRelease" in refuse_step
+    assert "-GitHubRepository $env:GITHUB_REPOSITORY" in refuse_step
+    assert "working-directory: ApplicantScout-Companion" in refuse_step
+    assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in refuse_step
+    assert "gh release view $env:GITHUB_REF_NAME" not in refuse_step
+    assert "already exists; refusing" in script
     assert refuse_idx < build_idx < release_idx < publish_idx
+
+
+def test_release_version_check_accepts_missing_own_release(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        expected_json="tagName,isDraft,isPrerelease",
+        exit_code=1,
+        stderr="release not found",
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RefuseExistingRelease",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_release_version_check_refuses_existing_own_release(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        expected_json="tagName,isDraft,isPrerelease",
+        release_json={
+            "tagName": f"v{project_version}",
+            "isDraft": True,
+            "isPrerelease": False,
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RefuseExistingRelease",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    assert "already exists; refusing" in (result.stdout + result.stderr)
+
+
+def test_release_version_check_rejects_empty_stderr_own_release_lookup(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        expected_json="tagName,isDraft,isPrerelease",
+        exit_code=2,
+        stderr="",
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RefuseExistingRelease",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "Could not determine whether release" in output
+    assert "exit code 2" in output
+
+
+def test_release_version_check_rejects_generic_not_found_own_release_lookup(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        expected_json="tagName,isDraft,isPrerelease",
+        exit_code=1,
+        stderr="HTTP 404: Not Found",
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RefuseExistingRelease",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "Could not determine whether release" in output
+    assert "HTTP 404: Not Found" in output
+
+
+def test_release_version_check_refuse_existing_release_requires_repository(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        expected_json="tagName,isDraft,isPrerelease",
+        exit_code=1,
+        stderr="release not found",
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RefuseExistingRelease",
+        "-GitHubRepository",
+        "",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    assert "Missing GitHub repository" in (result.stdout + result.stderr)
 
 
 def test_release_workflow_pins_external_actions_to_commit_shas():

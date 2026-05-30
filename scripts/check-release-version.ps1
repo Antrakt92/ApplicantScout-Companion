@@ -1,10 +1,12 @@
 param(
     [string]$Tag = $env:GITHUB_REF_NAME,
     [switch]$RequireAssets,
+    [switch]$RefuseExistingRelease,
     [switch]$RequirePublishedPairedAddonAssets,
     [string]$PairedAddonRefOutputPath,
     [string]$PairedAddonRoot,
     [string]$GitHubCliPath = "gh",
+    [string]$GitHubRepository = $env:GITHUB_REPOSITORY,
     [int]$PublishedReleaseWaitSeconds = 120,
     [int]$PublishedReleasePollSeconds = 10
 )
@@ -76,6 +78,38 @@ function Get-TopChangelogSection {
         throw "Missing top paired addon changelog section in $Path"
     }
     return $Match
+}
+
+function Assert-PublicInstallLinksUseLatest {
+    param(
+        [string]$Name,
+        [string]$Text,
+        [string[]]$RequiredLatestUrls
+    )
+
+    $LinkErrors = @()
+    foreach ($Url in $RequiredLatestUrls) {
+        if (-not $Text.Contains($Url)) {
+            $LinkErrors += "$Name does not point installs at $Url."
+        }
+    }
+
+    $PinnedPatterns = @(
+        'https://github\.com/Antrakt92/(ApplicantScout-Addon|ApplicantScout-Companion)/(releases(?!/latest)(?:[/?#\s\)\]\}]|$)|archive(/|$)|archive/refs/tags/|zipball/|tarball/)',
+        '\bApplicantScout\s+WoW\s+addon\s+`?\d+\.\d+\.\d+`?',
+        '\bApplicantScout\s+Companion\s+`?\d+\.\d+\.\d+`?',
+        '\bApplicantScout-v?\d+\.\d+\.\d+\.zip\b',
+        '\bApplicantScoutCompanionSetup-\d+\.\d+\.\d+\.exe(?:\.sha256)?\b',
+        '\bApplicantScoutCompanion-\d+\.\d+\.\d+-portable\.zip\b'
+    )
+    foreach ($Pattern in $PinnedPatterns) {
+        if ([regex]::IsMatch($Text, $Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            $LinkErrors += "$Name pins install/version copy; use releases/latest for cross-component docs."
+            break
+        }
+    }
+
+    return $LinkErrors
 }
 
 function Get-PairedAddonMetadata {
@@ -282,8 +316,15 @@ function Invoke-GitHubReleaseView {
 
     $ErrorPath = [System.IO.Path]::GetTempFileName()
     try {
-        $JsonLines = & $CliPath release view $ReleaseTag --repo $Repo --json "tagName,isDraft,isPrerelease,assets" 2> $ErrorPath
-        $ExitCode = $LASTEXITCODE
+        $PreviousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $JsonLines = & $CliPath release view $ReleaseTag --repo $Repo --json "tagName,isDraft,isPrerelease,assets" 2> $ErrorPath
+            $ExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+        }
         $ErrorRaw = Get-Content -LiteralPath $ErrorPath -Raw -ErrorAction SilentlyContinue
         $ErrorText = if ($null -eq $ErrorRaw) { "" } else { $ErrorRaw.Trim() }
         if ($ExitCode -ne 0) {
@@ -310,6 +351,50 @@ function Invoke-GitHubReleaseView {
             Remove-Item -LiteralPath $ErrorPath -Force
         }
     }
+}
+
+function Assert-GitHubReleaseDoesNotExist {
+    param(
+        [string]$CliPath,
+        [string]$Repo,
+        [string]$ReleaseTag
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Repo)) {
+        throw "Missing GitHub repository for release existence check."
+    }
+    if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
+        throw "Missing release tag for release existence check."
+    }
+
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $OutputLines = @(
+            & $CliPath release view $ReleaseTag --repo $Repo --json "tagName,isDraft,isPrerelease" 2>&1
+        )
+        $ExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    $OutputText = (
+        $OutputLines | ForEach-Object { $_.ToString() }
+    ) -join "`n"
+    $OutputText = $OutputText.Trim()
+    if ($ExitCode -eq 0) {
+        throw "Release $ReleaseTag already exists; refusing to rebuild or republish companion assets."
+    }
+    if ($OutputText -match "(?i)\b(release not found|no release found)\b") {
+        $global:LASTEXITCODE = 0
+        return
+    }
+
+    $Message = "Could not determine whether release $ReleaseTag already exists in $Repo; gh release view exited with exit code $ExitCode."
+    if ($OutputText) {
+        $Message = "$Message $OutputText"
+    }
+    throw $Message
 }
 
 function Test-GitHubReleaseAssets {
@@ -464,15 +549,14 @@ else {
 }
 $CompanionMarkdown = "ApplicantScout Companion ``$TagVersion``"
 $AddonLatestUrl = "https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest"
+$CompanionLatestUrl = "https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest"
 if ($Readme.Contains($CompanionMarkdown)) {
     $Errors += "README.md should not pin the current companion version; RELEASE_NOTES.md owns release-specific version copy."
 }
-if (-not $Readme.Contains($AddonLatestUrl)) {
-    $Errors += "README.md does not point addon installs at releases/latest."
-}
-if ($Readme -match "ApplicantScout-v?\d+\.\d+\.\d+\.zip|ApplicantScout WoW addon\s*`?\d+\.\d+\.\d+`?|releases/tag/v\d+\.\d+\.\d+") {
-    $Errors += "README.md pins addon install/version copy; use releases/latest for cross-component docs."
-}
+$Errors += Assert-PublicInstallLinksUseLatest `
+    -Name "README.md" `
+    -Text $Readme `
+    -RequiredLatestUrls @($AddonLatestUrl, $CompanionLatestUrl)
 
 if ($RequireAssets) {
     foreach ($AssetName in @($InstallerName, $ChecksumName, $PortableName)) {
@@ -514,6 +598,13 @@ if ($Errors.Count -gt 0) {
         Write-Host "ERROR: $ErrorMessage" -ForegroundColor Red
     }
     throw "Release version check failed."
+}
+
+if ($RefuseExistingRelease) {
+    Assert-GitHubReleaseDoesNotExist `
+        -CliPath $GitHubCliPath `
+        -Repo $GitHubRepository `
+        -ReleaseTag $TagName
 }
 
 if ($PairedAddonRoot) {

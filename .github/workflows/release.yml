@@ -53,25 +53,10 @@ jobs:
 
       - name: Refuse existing release
         shell: pwsh
+        working-directory: ApplicantScout-Companion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $ErrorPath = [System.IO.Path]::GetTempFileName()
-          try {
-            gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --json "tagName,isDraft,isPrerelease" 2> $ErrorPath
-            $ExitCode = $LASTEXITCODE
-            $ErrorRaw = Get-Content -LiteralPath $ErrorPath -Raw -ErrorAction SilentlyContinue
-            $ErrorText = if ($null -eq $ErrorRaw) { "" } else { $ErrorRaw.Trim() }
-            if ($ExitCode -eq 0) {
-              throw "Release $env:GITHUB_REF_NAME already exists; refusing to rebuild or republish companion assets."
-            }
-            if ($ErrorText -and $ErrorText -notmatch "(?i)(not found|no release found)") {
-              throw "Could not determine whether release $env:GITHUB_REF_NAME already exists. $ErrorText"
-            }
-          }
-          finally {
-            Remove-Item -LiteralPath $ErrorPath -Force -ErrorAction SilentlyContinue
-          }
+        run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RefuseExistingRelease -GitHubRepository $env:GITHUB_REPOSITORY
 
       - name: Wait for paired addon tag
         shell: pwsh
