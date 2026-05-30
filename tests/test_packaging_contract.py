@@ -1943,9 +1943,13 @@ def test_readme_documents_verified_self_update_flow():
         r"The `\.sha256` sidecar verifies\s+file integrity, not publisher identity",
         readme,
     )
-    assert "trusted signed installer" in readme
+    _assert_copy_contains(readme, "does not prove publisher identity")
     assert "%LOCALAPPDATA%\\Programs\\ApplicantScout Companion" in readme
-    assert "downloads the installer, verifies its `.sha256` checksum" not in readme
+    _assert_copy_contains(
+        readme,
+        "downloads the installer and verifies its `.sha256` checksum",
+    )
+    assert "unsigned builds must be installed manually" not in readme
     assert "Start and stop with WoW" in readme
 
 
@@ -1955,7 +1959,7 @@ def test_release_checklist_uses_policy_placeholders_not_stale_versions():
     assert "<companion version>" in checklist
     assert "<paired addon version>" in checklist
     assert "previous stable or explicitly chosen baseline" in checklist
-    assert "trusted signed installer" in checklist
+    assert "checksum-gated in-app updater" in checklist
     assert not re.search(
         r"Smoke-test from an installed `\d+\.\d+\.\d+` companion:.*relaunch `\d+\.\d+\.\d+`",
         checklist,

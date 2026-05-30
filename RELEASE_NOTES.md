@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Restored one-click in-app updates for unsigned installer releases after
+  `.sha256` verification; checksums verify file integrity, not publisher
+  identity.
+
 ## 0.8.1 - 30-May-2026
 
 WCL retry and release-media hardening patch paired with ApplicantScout addon

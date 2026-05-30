@@ -178,11 +178,11 @@ ApplicantScout Companion checks for updates hourly. When an installable stable
 GitHub Release is available, Settings shows a blue download button. Clicking it
 downloads the installer and verifies its `.sha256` checksum.
 
-In-app launch also requires a trusted signed installer; unsigned builds must be
-installed manually from the GitHub Release page. If the companion is running,
-the installer closes it and relaunches it after the update. Portable ZIP
-artifacts are published for manual/dev use but are not launched by the in-app
-updater.
+Current unsigned builds can still launch from the in-app updater after checksum
+verification. The `.sha256` sidecar verifies file integrity; it does not prove
+publisher identity. If the companion is running, the installer closes it and
+relaunches it after the update. Portable ZIP artifacts are published for
+manual/dev use but are not launched by the in-app updater.
 
 Normal installs use the per-user directory
 `%LOCALAPPDATA%\Programs\ApplicantScout Companion`, so routine installs and

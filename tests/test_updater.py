@@ -1054,6 +1054,35 @@ def test_launch_update_installer_rejects_untrusted_installer_before_popen(
     assert calls == []
 
 
+def test_launch_update_installer_can_skip_signature_gate_for_checksum_verified_release(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+    verified_paths: list[Path] = []
+    calls: list[list[str]] = []
+
+    class FakePopen:
+        pid = 4343
+
+        def __init__(self, args, **_kwargs) -> None:
+            calls.append(args)
+
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        lambda path: verified_paths.append(path),
+        raising=False,
+    )
+    monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
+
+    launch = launch_update_installer(installer, require_trusted_signature=False)
+
+    assert verified_paths == []
+    assert calls and calls[0][0] == str(installer)
+    assert launch.installer_path == installer
+    assert launch.pid == 4343
+
+
 def test_verify_update_installer_authenticity_accepts_trusted_signed_installer(
     monkeypatch, tmp_path
 ):

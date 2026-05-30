@@ -5221,7 +5221,6 @@ def test_check_updates_downloads_and_launches_installable_release(
     launch = object()
     calls: list[object] = []
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
-    monkeypatch.setattr(main_mod, "can_launch_update_installers", lambda: True)
     monkeypatch.setattr(
         main_mod,
         "download_update_installer",
@@ -5230,12 +5229,15 @@ def test_check_updates_downloads_and_launches_installable_release(
     monkeypatch.setattr(
         main_mod,
         "launch_update_installer",
-        lambda path: calls.append(path) or launch,
+        lambda path, *, require_trusted_signature=True: calls.append(
+            (path, require_trusted_signature)
+        )
+        or launch,
     )
 
     update_result = main_mod._check_updates()
 
-    assert calls == [result, installer]
+    assert calls == [result, (installer, False)]
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
     assert update_result.open_url is None
     assert update_result.installer_handoff is True
@@ -5243,8 +5245,9 @@ def test_check_updates_downloads_and_launches_installable_release(
     assert "Installing ApplicantScout Companion v0.2.0" in update_result.message
 
 
-def test_check_updates_opens_manual_release_when_no_trusted_signer_is_pinned(
+def test_check_updates_launches_checksum_verified_installer_without_pinned_signer(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
     result = SimpleNamespace(
         status="available",
@@ -5256,22 +5259,32 @@ def test_check_updates_opens_manual_release_when_no_trusted_signer_is_pinned(
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
         checksum_url="https://example.test/setup.exe.sha256",
     )
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    launch = object()
     calls: list[object] = []
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
-    monkeypatch.setattr(main_mod, "can_launch_update_installers", lambda: False)
     monkeypatch.setattr(
         main_mod,
         "download_update_installer",
-        lambda update_result: calls.append(update_result),
+        lambda update_result: calls.append(update_result) or installer,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "launch_update_installer",
+        lambda path, *, require_trusted_signature=True: calls.append(
+            (path, require_trusted_signature)
+        )
+        or launch,
     )
 
     update_result = main_mod._check_updates()
 
-    assert calls == []
+    assert calls == [result, (installer, False)]
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
-    assert update_result.open_url == "https://github.com/example/release"
-    assert update_result.installer_handoff is False
-    assert "manual install" in update_result.message.lower()
+    assert update_result.open_url is None
+    assert update_result.installer_handoff is True
+    assert update_result.installer_launch is launch
+    assert "Installing ApplicantScout Companion v0.2.0" in update_result.message
 
 
 def test_check_updates_reports_untrusted_installer_without_handoff(
@@ -5290,15 +5303,16 @@ def test_check_updates_reports_untrusted_installer_without_handoff(
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     calls: list[object] = []
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
-    monkeypatch.setattr(main_mod, "can_launch_update_installers", lambda: True)
     monkeypatch.setattr(
         main_mod,
         "download_update_installer",
         lambda update_result: calls.append(update_result) or installer,
     )
 
-    def reject_launch(path: Path) -> object:
-        calls.append(path)
+    def reject_launch(
+        path: Path, *, require_trusted_signature: bool = True
+    ) -> object:
+        calls.append((path, require_trusted_signature))
         raise RuntimeError("Update installer is not trusted")
 
     monkeypatch.setattr(main_mod, "launch_update_installer", reject_launch)
@@ -5306,7 +5320,7 @@ def test_check_updates_reports_untrusted_installer_without_handoff(
     with pytest.raises(RuntimeError, match="not trusted"):
         main_mod._check_updates()
 
-    assert calls == [result, installer]
+    assert calls == [result, (installer, False)]
 
 
 def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(

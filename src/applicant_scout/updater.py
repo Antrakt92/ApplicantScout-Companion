@@ -481,10 +481,15 @@ def download_update_installer(
             http.close()
 
 
-def launch_update_installer(installer_path: Path) -> InstallerLaunch:
+def launch_update_installer(
+    installer_path: Path,
+    *,
+    require_trusted_signature: bool = True,
+) -> InstallerLaunch:
     if not installer_path.is_file():
         raise RuntimeError(f"Update installer was not downloaded: {installer_path}")
-    verify_update_installer_authenticity(installer_path)
+    if require_trusted_signature:
+        verify_update_installer_authenticity(installer_path)
     process = subprocess.Popen(
         [
             str(installer_path),
@@ -511,10 +516,6 @@ def verify_update_installer_authenticity(installer_path: Path) -> None:
         raise RuntimeError(
             "Update installer is not trusted: signer certificate is not pinned."
         )
-
-
-def can_launch_update_installers() -> bool:
-    return bool(_TRUSTED_SIGNER_CERT_SHA256)
 
 
 def _read_installer_authenticity(installer_path: Path) -> InstallerAuthenticity:

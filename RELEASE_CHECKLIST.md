@@ -91,5 +91,6 @@ the matching installer assets only after all release checks pass.
    users cannot install a companion that requires an unavailable addon.
 8. Smoke-test from a previous stable or explicitly chosen baseline companion.
    Record the chosen baseline in release notes or release-prep notes. In-app
-   installer smoke requires a trusted signed installer; unsigned builds should
-   use manual installer smoke from the GitHub Release page.
+   installer smoke should use the checksum-gated in-app updater when the
+   release includes the `.exe` and `.exe.sha256` pair; signing remains the
+   future publisher-identity path for broader distribution.
