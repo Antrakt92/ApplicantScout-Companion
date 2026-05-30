@@ -30,6 +30,7 @@ the matching installer assets only after all release checks pass.
    ```powershell
    .\.venv\Scripts\python -m pytest
    .\scripts\check.ps1
+   ..\WOW\scripts\check-applicantscout-copy.ps1 -AddonRoot ..\ApplicantScout-Addon -CompanionRoot .
    .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
    .\scripts\check-release-version.ps1 -Tag v<companion version>
    ```

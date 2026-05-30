@@ -2,11 +2,25 @@
 
 ## Unreleased
 
-### Changed
+## 0.8.2 - 30-May-2026
+
+Self-update restoration patch paired with ApplicantScout addon `0.4.5`. This
+release keeps the current APS1 v8 QR wire format and addon runtime unchanged
+while restoring checksum-gated in-app installer launches for unsigned Windows
+builds.
+
+### Fixed
 
 - Restored one-click in-app updates for unsigned installer releases after
   `.sha256` verification; checksums verify file integrity, not publisher
   identity.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.4.5`.
+- Installer: `ApplicantScoutCompanionSetup-0.8.2.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.8.2.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.8.2-portable.zip`
 
 ## 0.8.1 - 30-May-2026
 
