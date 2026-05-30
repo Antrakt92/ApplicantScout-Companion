@@ -2,9 +2,32 @@
 
 ## Unreleased
 
+## 0.8.1 - 30-May-2026
+
+WCL retry and release-media hardening patch paired with ApplicantScout addon
+`0.4.4`. This release keeps the current APS1 v8 QR wire format while improving
+Warcraft Logs retry handling and refreshing anonymized public visual assets.
+
+### Improved
+
+- Refreshed anonymized public overlay media and added a release-prep check so
+  the addon README and public screenshots stay aligned with committed visual
+  baselines.
+- Hardened release preparation checks so existing companion releases are refused
+  by the shared release-version script before Windows artifacts are rebuilt.
+
 ### Fixed
 
-- Made temporary Warcraft Logs OAuth outages reuse the normal rate-limit/server retry blocks, and added a scoped Retry WCL action for malformed or GraphQL row/detail failures.
+- Made temporary Warcraft Logs OAuth outages reuse the normal rate-limit/server
+  retry blocks, and added a scoped Retry WCL action for malformed or GraphQL
+  row/detail failures.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.4.4`.
+- Installer: `ApplicantScoutCompanionSetup-0.8.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.8.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.8.1-portable.zip`
 
 ## 0.8.0 - 28-May-2026
 
