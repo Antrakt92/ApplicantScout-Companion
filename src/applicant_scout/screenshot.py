@@ -434,6 +434,22 @@ def _read_len_str(
         raise ValueError(f"{field} contains invalid {encoding}") from exc
 
 
+def _read_wire_bool(buf: bytes, cursor: int, *, field: str) -> tuple[bool, int]:
+    value = buf[cursor]
+    cursor += 1
+    if value not in (0, 1):
+        raise ValueError(f"{field} must be 0 or 1, got {value}")
+    return value == 1, cursor
+
+
+def _read_wire_role(buf: bytes, cursor: int, *, field: str) -> tuple[int, int]:
+    value = buf[cursor]
+    cursor += 1
+    if value not in (0, 1, 2, 3):
+        raise ValueError(f"{field} must be one of 0, 1, 2, 3, got {value}")
+    return value, cursor
+
+
 def _parse_payload(
     buf: bytes,
     wire_ver: int = 0x01,
@@ -461,8 +477,7 @@ def _parse_payload(
     applicants: list[DecodedApplicant] = []
 
     # Listing block
-    has_listing = buf[cursor]
-    cursor += 1
+    has_listing, cursor = _read_wire_bool(buf, cursor, field="has_listing")
     if has_listing:
         activity_id = struct.unpack(">I", buf[cursor : cursor + 4])[0]
         cursor += 4
@@ -495,8 +510,7 @@ def _parse_payload(
         )
 
     # Version block
-    has_version = buf[cursor]
-    cursor += 1
+    has_version, cursor = _read_wire_bool(buf, cursor, field="has_version")
     if has_version:
         addon_version, cursor = _read_len_str(
             buf, cursor, encoding="ascii", field="version.addon_version"
@@ -517,8 +531,11 @@ def _parse_payload(
         )
 
     if wire_ver >= 0x07:
-        has_leader_key = buf[cursor]
-        cursor += 1
+        has_leader_key, cursor = _read_wire_bool(
+            buf,
+            cursor,
+            field="has_leader_key",
+        )
         if has_leader_key:
             key_level = buf[cursor]
             cursor += 1
@@ -562,8 +579,11 @@ def _parse_payload(
         else:
             main_score = 0
         if wire_ver >= 0x05:
-            rio_profile = buf[cursor] > 0
-            cursor += 1
+            rio_profile, cursor = _read_wire_bool(
+                buf,
+                cursor,
+                field="applicant.rio_profile",
+            )
             rio_best_key = buf[cursor]
             cursor += 1
             rio_best_dungeon_key = buf[cursor]
@@ -587,8 +607,7 @@ def _parse_payload(
             rio_timed_at_or_above_minus2 = 0
             rio_completed_at_or_above_minus1 = 0
             rio_dungeon_count = 0
-        role = buf[cursor]
-        cursor += 1
+        role, cursor = _read_wire_role(buf, cursor, field="applicant.role")
         name, cursor = _read_len_str(
             buf, cursor, encoding="utf-8", field="applicant.name"
         )
@@ -638,8 +657,11 @@ def _parse_payload(
             cursor += 2
             main_score = struct.unpack(">H", buf[cursor : cursor + 2])[0]
             cursor += 2
-            rio_profile = buf[cursor] > 0
-            cursor += 1
+            rio_profile, cursor = _read_wire_bool(
+                buf,
+                cursor,
+                field="roster.rio_profile",
+            )
             rio_best_key = buf[cursor]
             cursor += 1
             rio_best_dungeon_key = buf[cursor]
@@ -654,8 +676,7 @@ def _parse_payload(
             cursor += 1
             rio_dungeon_count = buf[cursor]
             cursor += 1
-            role = buf[cursor]
-            cursor += 1
+            role, cursor = _read_wire_role(buf, cursor, field="roster.role")
             name, cursor = _read_len_str(
                 buf, cursor, encoding="utf-8", field="roster.name"
             )
@@ -1037,23 +1058,47 @@ class ScreenshotWatcher(QObject):
         # _Handler prevent double-processing if observer + backlog race on
         # the same path.
         observer = Observer()
-        observer.schedule(_Handler(self._on_new_file), str(self._dir), recursive=False)
-        observer.start()
-        self._observer = observer
-        _log.info("watching %s", self._dir)
-        # Backlog scan on a background thread — for users with hundreds of
-        # historical WoWScrnShot JPG/TGA files, the synchronous scan was the
-        # dominant startup-latency contributor (~30-80 ms per file × 500 file
-        # cap = up to ~30s). Overlay now appears immediately. snapshotReceived
-        # is a Qt pyqtSignal — emits cross thread are queued safely to the GUI
-        # thread by Qt's signal/slot machinery.
-        t = threading.Thread(
-            target=self._scan_recent_backlog,
-            name="ApplicantScoutBacklogScan",
-            daemon=True,
-        )
-        t.start()
-        self._backlog_thread = t
+        try:
+            observer.schedule(
+                _Handler(self._on_new_file),
+                str(self._dir),
+                recursive=False,
+            )
+            observer.start()
+            self._observer = observer
+            _log.info("watching %s", self._dir)
+            # Backlog scan on a background thread — for users with hundreds of
+            # historical WoWScrnShot JPG/TGA files, the synchronous scan was the
+            # dominant startup-latency contributor (~30-80 ms per file × 500 file
+            # cap = up to ~30s). Overlay now appears immediately. snapshotReceived
+            # is a Qt pyqtSignal — emits cross thread are queued safely to the GUI
+            # thread by Qt's signal/slot machinery.
+            t = threading.Thread(
+                target=self._scan_recent_backlog,
+                name="ApplicantScoutBacklogScan",
+                daemon=True,
+            )
+            t.start()
+            self._backlog_thread = t
+        except Exception:
+            self._stopped.set()
+            self._observer = None
+            self._backlog_thread = None
+            try:
+                is_alive = getattr(observer, "is_alive", None)
+                was_alive = not callable(is_alive) or is_alive()
+            except Exception:  # noqa: BLE001
+                was_alive = True
+            try:
+                observer.stop()
+            except Exception as cleanup_exc:  # noqa: BLE001
+                _log.debug("observer cleanup stop failed: %s", cleanup_exc)
+            try:
+                if was_alive:
+                    observer.join(timeout=2)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                _log.debug("observer cleanup join failed: %s", cleanup_exc)
+            raise
 
     def stop(self) -> None:
         self._stopped.set()

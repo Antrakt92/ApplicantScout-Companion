@@ -223,6 +223,43 @@ def _build_listing_body(*, version: int) -> bytes:
     return body
 
 
+def _build_v8_listing_body(*, has_listing: int = 1) -> bytes:
+    body = bytes([has_listing])
+    body += struct.pack(">I", 401)
+    body += struct.pack(">H", 2)
+    body += struct.pack(">H", 8)
+    body += bytes([16])
+    body += _pack_len_str(b"Skyreach")
+    body += _pack_len_str(b"+16 Skyreach")
+    body += _pack_len_str(b"push")
+    body += bytes([0, 0])  # has_version=0, has_leader_key=0
+    body += struct.pack(">H", 0)  # applicant_count
+    body += struct.pack(">H", 0)  # roster_count
+    return body
+
+
+def _build_v8_version_body(*, has_version: int = 1) -> bytes:
+    body = bytes([0, has_version])  # has_listing=0
+    body += _pack_len_str(b"0.8.2")
+    body += _pack_len_str(b"12.0.7")
+    body += bytes([3])
+    body += _pack_len_str("Player-Realm".encode("utf-8"))
+    body += bytes([0])  # has_leader_key=0
+    body += struct.pack(">H", 0)  # applicant_count
+    body += struct.pack(">H", 0)  # roster_count
+    return body
+
+
+def _build_v8_leader_key_body(*, has_leader_key: int = 1) -> bytes:
+    body = bytes([0, 0, has_leader_key])  # no listing/version
+    body += bytes([17])
+    body += struct.pack(">H", 503)
+    body += _pack_len_str("Leader-Realm".encode("utf-8"))
+    body += struct.pack(">H", 0)  # applicant_count
+    body += struct.pack(">H", 0)  # roster_count
+    return body
+
+
 def _wrap_payload(
     body: bytes,
     *,
@@ -532,6 +569,173 @@ def test_pre_v8_reserved_bytes_do_not_become_v8_flags():
 
     assert snap is None
     assert error == "unsupported APS1 pre-v8 reserved bytes 0x02 0x00"
+
+
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        (_build_v8_listing_body(has_listing=2), "has_listing"),
+        (_build_v8_version_body(has_version=2), "has_version"),
+        (_build_v8_leader_key_body(has_leader_key=2), "has_leader_key"),
+    ],
+)
+def test_crc_valid_payload_rejects_noncanonical_presence_byte(
+    body: bytes,
+    field: str,
+):
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x08))
+
+    assert snap is None
+    assert error is not None
+    assert f"{field} must be 0 or 1, got 2" in error
+
+
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        (
+            _build_body_v7(
+                [
+                    _build_applicant_block(
+                        42,
+                        1,
+                        71,
+                        480,
+                        2000,
+                        2,
+                        "Applicant-Realm",
+                        rio_profile=2,
+                        version=5,
+                    )
+                ],
+                [],
+            ),
+            "applicant.rio_profile",
+        ),
+        (
+            _build_body_v7(
+                [],
+                [
+                    _build_roster_block(
+                        unit_index=1,
+                        flags=1,
+                        subgroup=1,
+                        class_id=1,
+                        spec_id=71,
+                        ilvl=480,
+                        score=2000,
+                        main_score=2100,
+                        role=2,
+                        name="Roster-Realm",
+                        rio_profile=2,
+                    )
+                ],
+            ),
+            "roster.rio_profile",
+        ),
+    ],
+)
+def test_crc_valid_payload_rejects_noncanonical_rio_profile_byte(
+    body: bytes,
+    field: str,
+):
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x08))
+
+    assert snap is None
+    assert error is not None
+    assert f"{field} must be 0 or 1, got 2" in error
+
+
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        (
+            _build_body_v7(
+                [
+                    _build_applicant_block(
+                        42,
+                        1,
+                        71,
+                        480,
+                        2000,
+                        4,
+                        "Applicant-Realm",
+                        version=5,
+                    )
+                ],
+                [],
+            ),
+            "applicant.role",
+        ),
+        (
+            _build_body_v7(
+                [],
+                [
+                    _build_roster_block(
+                        unit_index=1,
+                        flags=1,
+                        subgroup=1,
+                        class_id=1,
+                        spec_id=71,
+                        ilvl=480,
+                        score=2000,
+                        main_score=2100,
+                        role=4,
+                        name="Roster-Realm",
+                    )
+                ],
+            ),
+            "roster.role",
+        ),
+    ],
+)
+def test_crc_valid_payload_rejects_role_byte_outside_wire_enum(
+    body: bytes,
+    field: str,
+):
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x08))
+
+    assert snap is None
+    assert error is not None
+    assert f"{field} must be one of 0, 1, 2, 3, got 4" in error
+
+
+def test_crc_valid_payload_accepts_unknown_role_byte_three():
+    body = _build_body_v7(
+        [
+            _build_applicant_block(
+                42,
+                1,
+                71,
+                480,
+                2000,
+                3,
+                "Applicant-Realm",
+                version=5,
+            )
+        ],
+        [
+            _build_roster_block(
+                unit_index=1,
+                flags=1,
+                subgroup=1,
+                class_id=1,
+                spec_id=71,
+                ilvl=480,
+                score=2000,
+                main_score=2100,
+                role=3,
+                name="Roster-Realm",
+            )
+        ],
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x08))
+
+    assert error is None
+    assert snap is not None
+    assert snap.applicants[0].role == 3
+    assert snap.roster[0].role == 3
 
 
 def test_v6_roster_block_parses_current_party_members():
@@ -2071,6 +2275,94 @@ def test_screenshot_module_cli_with_explicit_argv_does_not_configure_root_loggin
 
     assert screenshot_mod._main([str(image_path)]) == 0
     assert calls == []
+
+
+def test_watcher_start_cleans_observer_when_observer_start_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeObserver:
+        def __init__(self) -> None:
+            self.scheduled: list[tuple[object, str, bool]] = []
+            self.stopped = False
+            self.joined: list[float | None] = []
+            self.alive = False
+
+        def schedule(self, handler: object, path: str, *, recursive: bool) -> None:
+            self.scheduled.append((handler, path, recursive))
+
+        def start(self) -> None:
+            self.alive = True
+            raise RuntimeError("observer start failed")
+
+        def stop(self) -> None:
+            self.stopped = True
+            self.alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            self.joined.append(timeout)
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+    observer = FakeObserver()
+    monkeypatch.setattr(screenshot_mod, "Observer", lambda: observer)
+    watcher = ScreenshotWatcher(tmp_path)
+
+    with pytest.raises(RuntimeError, match="observer start failed"):
+        watcher.start()
+
+    assert observer.scheduled
+    assert observer.stopped
+    assert observer.joined == [2]
+    assert watcher._observer is None
+
+
+def test_watcher_start_cleans_observer_when_backlog_thread_start_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeObserver:
+        def __init__(self) -> None:
+            self.stopped = False
+            self.joined: list[float | None] = []
+            self.alive = False
+
+        def schedule(self, *_args, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            self.alive = True
+
+        def stop(self) -> None:
+            self.stopped = True
+            self.alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            self.joined.append(timeout)
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+    class FailingThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+    observer = FakeObserver()
+    monkeypatch.setattr(screenshot_mod, "Observer", lambda: observer)
+    monkeypatch.setattr(screenshot_mod.threading, "Thread", FailingThread)
+    watcher = ScreenshotWatcher(tmp_path)
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        watcher.start()
+
+    assert observer.stopped
+    assert observer.joined == [2]
+    assert watcher._observer is None
+    assert watcher._backlog_thread is None
 
 
 def test_watcher_stop_suppresses_direct_file_signals(monkeypatch, tmp_path: Path):

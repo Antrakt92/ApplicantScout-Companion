@@ -3978,7 +3978,7 @@ def test_replace_screenshot_watcher_keeps_old_watcher_when_new_start_fails(
             signal_gate=main_mod._WatcherSignalGate(),
         )
 
-    assert calls == ["start:new"]
+    assert calls == ["start:new", "stop:new"]
 
 
 def test_replace_screenshot_watcher_starts_new_before_stopping_old(
@@ -4339,6 +4339,149 @@ def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails
     assert machine.snapshots == ["old-after-failed-replace"]
 
 
+def test_replace_screenshot_watcher_stops_new_and_restores_old_generation_when_old_stop_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            calls.append(f"start:{self.path.name}")
+
+        def stop(self) -> None:
+            calls.append(f"stop:{self.path.name}")
+            if self.path.name == "old":
+                raise RuntimeError("old stop failed")
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    calls: list[str] = []
+    created: list[FakeWatcher] = []
+
+    def create_watcher(path: Path) -> FakeWatcher:
+        watcher = FakeWatcher(path)
+        created.append(watcher)
+        return watcher
+
+    machine = FakeMachine()
+    gate = main_mod._WatcherSignalGate()
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", create_watcher)
+
+    old = main_mod._replace_screenshot_watcher(
+        None,
+        tmp_path / "old",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+    )
+
+    with pytest.raises(RuntimeError, match="old stop failed"):
+        main_mod._replace_screenshot_watcher(
+            old,
+            tmp_path / "new",
+            machine,
+            object(),
+            lambda *_args: None,
+            signal_gate=gate,
+        )
+
+    new = created[-1]
+    old.snapshotReceived.emit("old-after-failed-replace")
+    new.snapshotReceived.emit("new-after-failed-replace")
+
+    assert calls == ["start:old", "start:new", "stop:old", "stop:new"]
+    assert machine.snapshots == ["old-after-failed-replace"]
+
+
+def test_replace_screenshot_watcher_ignores_old_signal_emitted_during_old_stop_after_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            if self.path.name == "old":
+                self.snapshotReceived.emit("old-during-stop")
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    created: list[FakeWatcher] = []
+
+    def create_watcher(path: Path) -> FakeWatcher:
+        watcher = FakeWatcher(path)
+        created.append(watcher)
+        return watcher
+
+    machine = FakeMachine()
+    gate = main_mod._WatcherSignalGate()
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", create_watcher)
+
+    old = main_mod._replace_screenshot_watcher(
+        None,
+        tmp_path / "old",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+    )
+    new = main_mod._replace_screenshot_watcher(
+        old,
+        tmp_path / "new",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+    )
+    new.snapshotReceived.emit("new-after-replace")
+
+    assert created == [old, new]
+    assert machine.snapshots == ["new-after-replace"]
+
+
 def test_replace_screenshot_watcher_keeps_old_signals_current_until_new_start_succeeds(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -4601,6 +4744,70 @@ def test_screenshot_runtime_restores_rio_reader_when_watcher_start_fails(
         )
 
     assert machine.reader == "old-reader"
+
+
+def test_screenshot_runtime_restores_rio_reader_when_old_watcher_stop_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            pass
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            stops.append(self.path.parent.name)
+            if self.path.parent.name == "old":
+                raise RuntimeError("old stop failed")
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self._rio_reader = "old-reader"
+            self.reader = "old-reader"
+
+        def set_rio_reader(self, reader: object) -> None:
+            self._rio_reader = reader
+            self.reader = reader
+
+    def reader_for_path(path: Path) -> str:
+        return f"{path.parent.name}-reader"
+
+    stops: list[str] = []
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(main_mod, "_raiderio_reader_for_screenshots_path", reader_for_path)
+    machine = FakeMachine()
+    gate = main_mod._WatcherSignalGate()
+
+    old_watcher = main_mod._replace_screenshots_runtime(
+        None,
+        tmp_path / "old" / "Screenshots",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+    )
+    assert machine.reader == "old-reader"
+
+    with pytest.raises(RuntimeError, match="old stop failed"):
+        main_mod._replace_screenshots_runtime(
+            old_watcher,
+            tmp_path / "new" / "Screenshots",
+            machine,
+            object(),
+            lambda *_args: None,
+            signal_gate=gate,
+        )
+
+    assert machine.reader == "old-reader"
+    assert stops == ["old", "new"]
 
 
 def test_raiderio_reader_for_screenshots_path_passes_cache_dir(

@@ -1909,6 +1909,7 @@ def _replace_screenshot_watcher(
     *,
     signal_gate: _WatcherSignalGate,
 ) -> ScreenshotWatcher:
+    previous_generation = signal_gate.generation
     new_watcher = ScreenshotWatcher(screenshots_dir)
     generation = signal_gate.prepare_next()
     source_gate = _SnapshotSourceGate()
@@ -1924,11 +1925,26 @@ def _replace_screenshot_watcher(
     try:
         new_watcher.start()
     except Exception:
-        signal_gate.cancel(generation)
+        signal_gate.restore(previous_generation)
+        try:
+            new_watcher.stop()
+        except Exception as cleanup_exc:  # noqa: BLE001
+            log.warning("Could not clean up failed screenshot watcher: %s", cleanup_exc)
         raise
     signal_gate.commit(generation)
     if current_watcher is not None:
-        current_watcher.stop()
+        try:
+            current_watcher.stop()
+        except Exception:
+            signal_gate.restore(previous_generation)
+            try:
+                new_watcher.stop()
+            except Exception as cleanup_exc:  # noqa: BLE001
+                log.warning(
+                    "Could not clean up replacement screenshot watcher: %s",
+                    cleanup_exc,
+                )
+            raise
     return new_watcher
 
 
