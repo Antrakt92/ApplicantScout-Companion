@@ -195,30 +195,4 @@ jobs:
         working-directory: ApplicantScout-Companion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $TagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
-          $ExpectedAssets = @(
-            "ApplicantScoutCompanionSetup-$TagVersion.exe",
-            "ApplicantScoutCompanionSetup-$TagVersion.exe.sha256",
-            "ApplicantScoutCompanion-$TagVersion-portable.zip"
-          )
-          $Release = gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease,assets | ConvertFrom-Json
-          if (-not $Release.isDraft) {
-            throw "Release $env:GITHUB_REF_NAME was not created as a draft."
-          }
-          if ($Release.isPrerelease) {
-            throw "Release $env:GITHUB_REF_NAME should not be marked prerelease."
-          }
-          $AssetNames = @($Release.assets | ForEach-Object { $_.name })
-          foreach ($AssetName in $ExpectedAssets) {
-            if ($AssetNames -notcontains $AssetName) {
-              throw "Draft release is missing asset: $AssetName"
-            }
-          }
-
-      - name: Publish release
-        shell: pwsh
-        working-directory: ApplicantScout-Companion
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false
+        run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireDraftReleaseAssets -GitHubRepository $env:GITHUB_REPOSITORY

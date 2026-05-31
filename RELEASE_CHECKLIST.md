@@ -1,8 +1,10 @@
 # ApplicantScout Companion Release Checklist
 
 Use this checklist for public companion releases. The tag push starts the gated
-GitHub Actions workflow; the workflow builds, validates, uploads, and publishes
-the matching installer assets only after all release checks pass.
+GitHub Actions workflow; the workflow builds, validates, uploads, and leaves a
+verified draft GitHub Release with the matching installer assets. The separate
+manual `Publish release` workflow makes that draft public only after the
+checksum-gated updater smoke has been attested.
 
 ## Prepare
 
@@ -56,7 +58,7 @@ the matching installer assets only after all release checks pass.
    `-RequireAssets` validates artifact presence, installer checksum
    consistency, and portable ZIP integrity/root/files. It confirms the static
    asset contract for checksum-gated in-app updater eligibility, but does not
-   smoke-test the previous stable in-app updater path.
+   exercise the normal GitHub latest-release feed while the release is still draft.
 
 3. Expected assets:
    - `dist\ApplicantScoutCompanionSetup-<companion version>.exe`
@@ -77,22 +79,33 @@ the matching installer assets only after all release checks pass.
    tag. The companion and addon workflows first wait for the opposite tag; the
    addon workflow later has a separate 180-second wait for published companion
    assets before BigWigs publishes marketplace files.
-2. Confirm the companion `Build and release` GitHub Actions workflow completed.
-3. Confirm the companion GitHub Release contains all expected assets before the
-   paired addon `Package and release` workflow reaches marketplace publishing.
-4. Confirm the paired addon GitHub Release is public with its ZIP and
+2. Confirm the companion `Build and release` GitHub Actions workflow completed
+   with a verified draft release. The draft should contain:
+   - `ApplicantScoutCompanionSetup-<companion version>.exe`
+   - `ApplicantScoutCompanionSetup-<companion version>.exe.sha256`
+   - `ApplicantScoutCompanion-<companion version>-portable.zip`
+3. Smoke-test from a previous stable or explicitly chosen baseline companion.
+   Record the chosen baseline in release notes or release-prep notes. Normal
+   stable updater feed ignores draft releases, so this pre-public gate confirms
+   the checksum-gated installer candidate and release asset contract; a future
+   private/canary update feed would be required for full GitHub-feed smoke while
+   still draft.
+4. Run the manual `Publish release` GitHub Actions workflow with:
+   - `tag`: `v<companion version>`
+   - `smoke_tested_from_version`: the older baseline companion version
+   - `confirm_checksum_gated_update_smoke`: checked
+5. Confirm the companion GitHub Release is public with all expected assets
+   before the paired addon `Package and release` workflow reaches marketplace
+   publishing.
+6. Confirm the paired addon GitHub Release is public with its ZIP and
    `release.json`.
-5. If the addon workflow fails only because companion assets were not public
+7. If the addon workflow fails only because companion assets were not public
    inside the 180-second wait, rerun the failed addon workflow after the
    companion assets exist. Do not delete/recreate or force-push release tags for
    that timeout path.
-6. Do not publish an update release without the `.exe` and `.exe.sha256` pair;
+8. Do not publish an update release without the `.exe` and `.exe.sha256` pair;
    in-app updates intentionally refuse incomplete releases.
-7. For wire-breaking changes, do not rely on companion-first ordering alone:
+9. For wire-breaking changes, do not rely on companion-first ordering alone:
    stop at draft/manual publish or use an explicit orchestrated release gate so
    users cannot install a companion that requires an unavailable addon.
-8. Smoke-test from a previous stable or explicitly chosen baseline companion.
-   Record the chosen baseline in release notes or release-prep notes. In-app
-   installer smoke should use the checksum-gated in-app updater when the
-   release includes the `.exe` and `.exe.sha256` pair; signing remains the
-   future publisher-identity path for broader distribution.
+10. Signing remains the future publisher-identity path for broader distribution.

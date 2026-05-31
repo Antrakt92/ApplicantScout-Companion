@@ -752,7 +752,7 @@ def test_docs_readme_explains_public_media_export_and_strict_gate():
     ) in docs_index
 
 
-def test_release_workflow_runs_existing_gates_before_publishing():
+def test_release_workflow_runs_existing_gates_before_verified_draft():
     workflow = _read_repo_text(".github/workflows/release.yml")
     release = _job_block(workflow, "release")
 
@@ -783,7 +783,7 @@ def test_release_workflow_runs_existing_gates_before_publishing():
     assets_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets")
     assert "-RequirePublishedPairedAddonAssets" not in workflow
     release_idx = workflow.index("gh release create")
-    publish_idx = workflow.index("gh release edit")
+    draft_check_idx = workflow.index("-RequireDraftReleaseAssets")
 
     assert (
         paired_version_idx
@@ -792,8 +792,10 @@ def test_release_workflow_runs_existing_gates_before_publishing():
         < build_idx
         < assets_idx
         < release_idx
-        < publish_idx
+        < draft_check_idx
     )
+    assert "gh release edit" not in workflow
+    assert "draft=false" not in workflow
 
 
 def test_release_workflow_requires_tag_commit_reachable_from_origin_main():
@@ -818,7 +820,7 @@ def test_release_workflow_requires_tag_commit_reachable_from_origin_main():
         "Wait for paired addon tag",
         "Build Windows artifacts",
         "Create draft release with assets",
-        "Publish release",
+        "Verify draft release assets",
     )
 
 
@@ -857,7 +859,6 @@ def test_release_workflow_refuses_existing_release_before_build_or_create():
     refuse_idx = workflow.index("Refuse existing release")
     build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
     release_idx = workflow.index("gh release create")
-    publish_idx = workflow.index("gh release edit")
 
     assert "-RefuseExistingRelease" in refuse_step
     assert "-GitHubRepository $env:GITHUB_REPOSITORY" in refuse_step
@@ -865,7 +866,7 @@ def test_release_workflow_refuses_existing_release_before_build_or_create():
     assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in refuse_step
     assert "gh release view $env:GITHUB_REF_NAME" not in refuse_step
     assert "already exists; refusing" in script
-    assert refuse_idx < build_idx < release_idx < publish_idx
+    assert refuse_idx < build_idx < release_idx
 
 
 def test_release_version_check_accepts_missing_own_release(tmp_path):
@@ -892,6 +893,9 @@ def test_release_version_check_accepts_missing_own_release(tmp_path):
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+    gh_args = (tmp_path / "fake-gh-args.txt").read_text(encoding="utf-8")
+    assert "Antrakt92/ApplicantScout-Companion" in gh_args
+    assert f"v{project_version}" in gh_args
 
 
 def test_release_version_check_refuses_existing_own_release(tmp_path):
@@ -1009,6 +1013,197 @@ def test_release_version_check_refuse_existing_release_requires_repository(tmp_p
     assert "Missing GitHub repository" in (result.stdout + result.stderr)
 
 
+def test_release_version_check_accepts_own_draft_release_assets(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        release_json={
+            "tagName": f"v{project_version}",
+            "isDraft": True,
+            "isPrerelease": False,
+            "assets": [
+                {"name": installer_name},
+                {"name": checksum_name},
+                {"name": portable_name},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequireDraftReleaseAssets",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    gh_args = (tmp_path / "fake-gh-args.txt").read_text(encoding="utf-8")
+    assert "Antrakt92/ApplicantScout-Companion" in gh_args
+    assert f"v{project_version}" in gh_args
+
+
+def test_release_version_check_rejects_own_draft_when_already_public(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        release_json={
+            "tagName": f"v{project_version}",
+            "isDraft": False,
+            "isPrerelease": False,
+            "assets": [],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequireDraftReleaseAssets",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    assert "expected draft" in (result.stdout + result.stderr).lower()
+
+
+def test_release_version_check_rejects_missing_own_draft_asset(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        release_json={
+            "tagName": f"v{project_version}",
+            "isDraft": True,
+            "isPrerelease": False,
+            "assets": [
+                {"name": f"ApplicantScoutCompanionSetup-{project_version}.exe"},
+                {"name": f"ApplicantScoutCompanion-{project_version}-portable.zip"},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequireDraftReleaseAssets",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    output = re.sub(r"\s+", "", result.stdout + result.stderr)
+    assert f"missingasset:ApplicantScoutCompanionSetup-{project_version}.exe.sha256" in output
+
+
+def test_release_version_check_rejects_prerelease_own_draft(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        release_json={
+            "tagName": f"v{project_version}",
+            "isDraft": True,
+            "isPrerelease": True,
+            "assets": [],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequireDraftReleaseAssets",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    assert "marked prerelease" in (result.stdout + result.stderr)
+
+
+def test_release_version_check_accepts_own_published_release_assets(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        release_json={
+            "tagName": f"v{project_version}",
+            "isDraft": False,
+            "isPrerelease": False,
+            "assets": [
+                {"name": installer_name},
+                {"name": checksum_name},
+                {"name": portable_name},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedReleaseAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    gh_args = (tmp_path / "fake-gh-args.txt").read_text(encoding="utf-8")
+    assert "Antrakt92/ApplicantScout-Companion" in gh_args
+    assert f"v{project_version}" in gh_args
+
+
+def test_release_version_check_own_release_assets_require_repository(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequireDraftReleaseAssets",
+        "-GitHubRepository",
+        "",
+    )
+
+    assert result.returncode != 0
+    assert "Missing GitHub repository" in (result.stdout + result.stderr)
+
+
 def test_release_workflow_pins_external_actions_to_commit_shas():
     workflow = _read_repo_text(".github/workflows/release.yml")
     action_refs = _workflow_action_refs(workflow)
@@ -1018,6 +1213,63 @@ def test_release_workflow_pins_external_actions_to_commit_shas():
             "actions/checkout": 2,
             "actions/setup-python": 1,
         }
+    )
+    for action, ref in action_refs:
+        assert _SHA_REF_RE.fullmatch(ref), f"{action} must be pinned to a full commit SHA"
+
+
+def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets():
+    workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    publish = _job_block(workflow, "publish")
+
+    assert "workflow_dispatch:" in workflow
+    assert "tag:" in workflow
+    assert "smoke_tested_from_version:" in workflow
+    assert "confirm_checksum_gated_update_smoke:" in workflow
+    assert "type: boolean" in workflow
+    assert (
+        "CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE: "
+        "${{ inputs.confirm_checksum_gated_update_smoke }}"
+    ) in workflow
+    assert re.search(r"(?m)^    runs-on: windows-2022\s*$", publish)
+    assert "contents: write" in workflow
+
+    checkout = _step_block(publish, "Checkout companion")
+    ancestry = _step_block(publish, "Verify release tag is reachable from origin/main")
+    attestation = _step_block(publish, "Validate smoke attestation")
+    draft_check = _step_block(publish, "Verify draft release assets")
+    publish_step = _step_block(publish, "Publish release")
+    published_check = _step_block(publish, "Verify published release assets")
+
+    assert "ref: ${{ inputs.tag }}" in checkout
+    assert '"$env:RELEASE_TAG^{commit}"' in ancestry
+    assert "does not match release tag" in ancestry
+    assert "Checksum-gated updater smoke confirmation is required" in attestation
+    assert "CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE" in attestation
+    assert "SMOKE_TESTED_FROM_VERSION" in attestation
+    assert "-RequireDraftReleaseAssets" in draft_check
+    assert "gh release edit $env:RELEASE_TAG" in publish_step
+    assert "--draft=false" in publish_step
+    assert "--prerelease=false" in publish_step
+    assert "-RequirePublishedReleaseAssets" in published_check
+    assert "-PublishedReleaseWaitSeconds 120" in published_check
+    _assert_order(
+        publish,
+        "Checkout companion",
+        "Verify release tag is reachable from origin/main",
+        "Validate smoke attestation",
+        "Verify draft release assets",
+        "Publish release",
+        "Verify published release assets",
+    )
+
+
+def test_publish_release_workflow_pins_external_actions_to_commit_shas():
+    workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    action_refs = _workflow_action_refs(workflow)
+
+    assert Counter(action for action, _ in action_refs) == Counter(
+        {"actions/checkout": 1}
     )
     for action, ref in action_refs:
         assert _SHA_REF_RE.fullmatch(ref), f"{action} must be pinned to a full commit SHA"
@@ -1480,10 +1732,9 @@ def test_release_workflow_uploads_exact_updater_assets_as_draft_first():
     assert "ApplicantScoutCompanion-$TagVersion-portable.zip" in workflow
     assert "--draft" in workflow
     assert "--verify-tag" in workflow
-    assert "isDraft" in workflow
-    assert "isPrerelease" in workflow
-    assert "assets" in workflow
-    assert "draft=false" in workflow
+    assert "-RequireDraftReleaseAssets" in workflow
+    assert "draft=false" not in workflow
+    assert "gh release edit" not in workflow
 
 
 def test_release_workflow_extracts_top_release_notes_entry_only():
@@ -1980,10 +2231,16 @@ def test_release_checklist_uses_policy_placeholders_not_stale_versions():
     assert "<paired addon version>" in checklist
     assert "previous stable or explicitly chosen baseline" in checklist
     assert "checksum-gated in-app updater" in checklist
+    assert "Publish release" in checklist
+    assert "verified draft" in checklist.lower()
+    _assert_copy_contains(
+        checklist.lower(),
+        "normal stable updater feed ignores draft releases",
+    )
     assert "does not make an unsigned installer self-update capable" not in checklist
     _assert_copy_contains(
         checklist,
-        "does not smoke-test the previous stable in-app updater path",
+        "does not exercise the normal GitHub latest-release feed while the release is still draft",
     )
     assert not re.search(
         r"Smoke-test from an installed `\d+\.\d+\.\d+` companion:.*relaunch `\d+\.\d+\.\d+`",

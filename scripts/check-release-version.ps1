@@ -1,6 +1,8 @@
 param(
     [string]$Tag = $env:GITHUB_REF_NAME,
     [switch]$RequireAssets,
+    [switch]$RequireDraftReleaseAssets,
+    [switch]$RequirePublishedReleaseAssets,
     [switch]$RefuseExistingRelease,
     [switch]$RequirePublishedPairedAddonAssets,
     [string]$PairedAddonRefOutputPath,
@@ -397,22 +399,44 @@ function Assert-GitHubReleaseDoesNotExist {
     throw $Message
 }
 
+function Assert-GitHubReleaseLookupParameters {
+    param(
+        [string]$Repo,
+        [string]$ReleaseTag,
+        [string]$Description
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Repo)) {
+        throw "Missing GitHub repository for $Description."
+    }
+    if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
+        throw "Missing release tag for $Description."
+    }
+}
+
 function Test-GitHubReleaseAssets {
     param(
         [object]$Release,
         [string]$Repo,
         [string]$ReleaseTag,
-        [string[]]$ExpectedAssets
+        [string[]]$ExpectedAssets,
+        [ValidateSet("Draft", "Published")]
+        [string]$ExpectedState = "Published"
     )
 
     if ($null -eq $Release) {
         throw "GitHub Release $ReleaseTag in $Repo was not returned by gh."
     }
-    if ($Release.isDraft) {
-        throw "GitHub Release $ReleaseTag in $Repo is still draft; publish the paired release before releasing ApplicantScout Companion."
+    if ($ExpectedState -eq "Draft") {
+        if (-not $Release.isDraft) {
+            throw "GitHub Release $ReleaseTag in $Repo was expected draft but is already public."
+        }
+    }
+    elseif ($Release.isDraft) {
+        throw "GitHub Release $ReleaseTag in $Repo is still draft; publish the release before continuing."
     }
     if ($Release.isPrerelease) {
-        throw "GitHub Release $ReleaseTag in $Repo is marked prerelease; publish the paired stable release before releasing ApplicantScout Companion."
+        throw "GitHub Release $ReleaseTag in $Repo is marked prerelease; publish a stable release before continuing."
     }
 
     $Assets = if ($null -eq $Release.assets) { @() } else { @($Release.assets) }
@@ -430,6 +454,8 @@ function Wait-GitHubReleaseAssets {
         [string]$Repo,
         [string]$ReleaseTag,
         [string[]]$ExpectedAssets,
+        [ValidateSet("Draft", "Published")]
+        [string]$ExpectedState = "Published",
         [int]$WaitSeconds,
         [int]$PollSeconds
     )
@@ -450,7 +476,8 @@ function Wait-GitHubReleaseAssets {
                 -Release $Release `
                 -Repo $Repo `
                 -ReleaseTag $ReleaseTag `
-                -ExpectedAssets $ExpectedAssets
+                -ExpectedAssets $ExpectedAssets `
+                -ExpectedState $ExpectedState
             return
         }
         catch {
@@ -520,6 +547,7 @@ $Errors = @()
 $InstallerName = "ApplicantScoutCompanionSetup-$TagVersion.exe"
 $ChecksumName = "$InstallerName.sha256"
 $PortableName = "ApplicantScoutCompanion-$TagVersion-portable.zip"
+$ExpectedCompanionAssets = @($InstallerName, $ChecksumName, $PortableName)
 if ($PyprojectVersion -ne $TagVersion) {
     $Errors += "pyproject.toml version is $PyprojectVersion, expected $TagVersion from tag $TagName."
 }
@@ -559,7 +587,7 @@ $Errors += Assert-PublicInstallLinksUseLatest `
     -RequiredLatestUrls @($AddonLatestUrl, $CompanionLatestUrl)
 
 if ($RequireAssets) {
-    foreach ($AssetName in @($InstallerName, $ChecksumName, $PortableName)) {
+    foreach ($AssetName in $ExpectedCompanionAssets) {
         $AssetPath = Join-Path $RepoRoot "dist\$AssetName"
         if (-not (Test-Path -LiteralPath $AssetPath)) {
             $Errors += "Missing release asset: dist\$AssetName"
@@ -605,6 +633,38 @@ if ($RefuseExistingRelease) {
         -CliPath $GitHubCliPath `
         -Repo $GitHubRepository `
         -ReleaseTag $TagName
+}
+
+if ($RequireDraftReleaseAssets) {
+    Assert-GitHubReleaseLookupParameters `
+        -Repo $GitHubRepository `
+        -ReleaseTag $TagName `
+        -Description "release asset check"
+    $Release = Invoke-GitHubReleaseView `
+        -CliPath $GitHubCliPath `
+        -Repo $GitHubRepository `
+        -ReleaseTag $TagName
+    Test-GitHubReleaseAssets `
+        -Release $Release `
+        -Repo $GitHubRepository `
+        -ReleaseTag $TagName `
+        -ExpectedAssets $ExpectedCompanionAssets `
+        -ExpectedState "Draft"
+}
+
+if ($RequirePublishedReleaseAssets) {
+    Assert-GitHubReleaseLookupParameters `
+        -Repo $GitHubRepository `
+        -ReleaseTag $TagName `
+        -Description "release asset check"
+    Wait-GitHubReleaseAssets `
+        -CliPath $GitHubCliPath `
+        -Repo $GitHubRepository `
+        -ReleaseTag $TagName `
+        -ExpectedAssets $ExpectedCompanionAssets `
+        -ExpectedState "Published" `
+        -WaitSeconds $PublishedReleaseWaitSeconds `
+        -PollSeconds $PublishedReleasePollSeconds
 }
 
 if ($PairedAddonRoot) {

@@ -1,0 +1,129 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Companion release tag to publish, e.g. v0.8.2'
+        required: true
+        type: string
+      smoke_tested_from_version:
+        description: 'Installed baseline companion version used for checksum-gated update smoke'
+        required: true
+        type: string
+      confirm_checksum_gated_update_smoke:
+        description: 'Confirm checksum-gated updater smoke was completed before publication'
+        required: true
+        type: boolean
+
+jobs:
+  publish:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      SMOKE_TESTED_FROM_VERSION: ${{ inputs.smoke_tested_from_version }}
+      CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE: ${{ inputs.confirm_checksum_gated_update_smoke }}
+    steps:
+      - name: Checkout companion
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          path: ApplicantScout-Companion
+
+      - name: Verify release tag is reachable from origin/main
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not verify release tag ancestry: failed to fetch origin/main."
+          }
+          $ReleaseCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $ReleaseCommit) {
+            throw "Could not verify release tag ancestry: failed to resolve release commit."
+          }
+          $TagCommit = (git rev-parse "$env:RELEASE_TAG^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $TagCommit) {
+            throw "Could not verify release tag ancestry: failed to resolve $env:RELEASE_TAG."
+          }
+          if ($ReleaseCommit -ne $TagCommit) {
+            throw "Checked out commit $ReleaseCommit does not match release tag $env:RELEASE_TAG ($TagCommit)."
+          }
+          $MainCommit = (git rev-parse refs/remotes/origin/main).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $MainCommit) {
+            throw "Could not verify release tag ancestry: failed to resolve origin/main."
+          }
+          git merge-base --is-ancestor $ReleaseCommit $MainCommit
+          $ExitCode = $LASTEXITCODE
+          if ($ExitCode -eq 1) {
+            throw "Release tag commit $ReleaseCommit is not reachable from origin/main ($MainCommit)."
+          }
+          if ($ExitCode -ne 0) {
+            throw "Could not verify release tag ancestry: git merge-base exited $ExitCode."
+          }
+          Write-Host "Release tag commit $ReleaseCommit is reachable from origin/main ($MainCommit)."
+
+      - name: Validate smoke attestation
+        shell: pwsh
+        run: |
+          $ReleaseTag = $env:RELEASE_TAG.Trim()
+          if ($ReleaseTag -notmatch '^v(\d+)\.(\d+)\.(\d+)$') {
+            throw "Release tag must use vX.Y.Z format."
+          }
+          $TargetVersion = $ReleaseTag.Substring(1)
+          $BaselineVersion = $env:SMOKE_TESTED_FROM_VERSION.Trim()
+          if ($BaselineVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Smoke-tested baseline must use X.Y.Z format."
+          }
+          if ($env:CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE -ne 'true') {
+            throw "Checksum-gated updater smoke confirmation is required before publishing $ReleaseTag."
+          }
+
+          function Compare-SemVer {
+            param(
+              [string]$Left,
+              [string]$Right
+            )
+
+            $LeftParts = @($Left.Split(".") | ForEach-Object { [int]$_ })
+            $RightParts = @($Right.Split(".") | ForEach-Object { [int]$_ })
+            for ($Index = 0; $Index -lt 3; $Index++) {
+              if ($LeftParts[$Index] -lt $RightParts[$Index]) {
+                return -1
+              }
+              if ($LeftParts[$Index] -gt $RightParts[$Index]) {
+                return 1
+              }
+            }
+            return 0
+          }
+
+          if ((Compare-SemVer -Left $BaselineVersion -Right $TargetVersion) -ge 0) {
+            throw "Smoke-tested baseline $BaselineVersion must be older than target $TargetVersion."
+          }
+          Write-Host "Publishing $ReleaseTag after checksum-gated updater smoke from $BaselineVersion."
+
+      - name: Verify draft release assets
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\scripts\check-release-version.ps1 -Tag $env:RELEASE_TAG -RequireDraftReleaseAssets -GitHubRepository $env:GITHUB_REPOSITORY
+
+      - name: Publish release
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false
+
+      - name: Verify published release assets
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\scripts\check-release-version.ps1 -Tag $env:RELEASE_TAG -RequirePublishedReleaseAssets -PublishedReleaseWaitSeconds 120 -GitHubRepository $env:GITHUB_REPOSITORY
