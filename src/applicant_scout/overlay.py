@@ -2482,6 +2482,9 @@ class OverlayWindow(QMainWindow):
         self._fetches_in_flight: dict[str, _FetchIdentity] = {}
         self._fetch_waiters_by_target: dict[str, dict[str, _FetchIdentity]] = {}
         self._raid_boss_fetches_in_flight: dict[str, _FetchIdentity] = {}
+        self._raid_boss_fetch_waiters_by_target: dict[
+            str, dict[str, _FetchIdentity]
+        ] = {}
         self._raid_boss_fetch_failures: dict[
             tuple[str, str, str, str, int, str, str, int, int], _RaidBossFetchFailure
         ] = {}
@@ -2902,6 +2905,7 @@ class OverlayWindow(QMainWindow):
         self._fetches_in_flight.clear()
         self._fetch_waiters_by_target.clear()
         self._raid_boss_fetches_in_flight.clear()
+        self._raid_boss_fetch_waiters_by_target.clear()
         self._raid_boss_fetch_failures.clear()
         self._clear_role_filter()
         self._refresh_flush_pending = False
@@ -3929,6 +3933,42 @@ class OverlayWindow(QMainWindow):
         waiters[identity.storage_key] = identity
         return True
 
+    def _mark_raid_boss_fetch_in_flight(self, identity: _FetchIdentity) -> None:
+        self._discard_raid_boss_fetch_by_storage_key(identity.storage_key)
+        self._raid_boss_fetches_in_flight[identity.storage_key] = identity
+
+    def _discard_raid_boss_fetch_if_current(self, identity: _FetchIdentity) -> None:
+        if self._raid_boss_fetches_in_flight.get(identity.storage_key) == identity:
+            self._discard_raid_boss_fetch_by_storage_key(identity.storage_key)
+
+    def _discard_raid_boss_fetch_by_storage_key(self, storage_key: str) -> None:
+        identity = self._raid_boss_fetches_in_flight.pop(storage_key, None)
+        if identity is None:
+            return
+        waiters = self._raid_boss_fetch_waiters_by_target.get(identity.network_key)
+        if waiters is None:
+            return
+        waiters.pop(storage_key, None)
+        if not waiters:
+            self._raid_boss_fetch_waiters_by_target.pop(identity.network_key, None)
+
+    def _mark_raid_boss_fetch_waiting_on_target(
+        self, identity: _FetchIdentity
+    ) -> None:
+        self._raid_boss_fetch_waiters_by_target.setdefault(identity.network_key, {})[
+            identity.storage_key
+        ] = identity
+
+    def _coalesce_raid_boss_fetch_if_target_in_flight(
+        self, identity: _FetchIdentity
+    ) -> bool:
+        waiters = self._raid_boss_fetch_waiters_by_target.get(identity.network_key)
+        if not waiters:
+            return False
+        self._mark_raid_boss_fetch_in_flight(identity)
+        waiters[identity.storage_key] = identity
+        return True
+
     def _is_fetch_in_flight_for(self, identity: _FetchIdentity) -> bool:
         current = self._fetches_in_flight.get(identity.storage_key)
         return (
@@ -4037,9 +4077,13 @@ class OverlayWindow(QMainWindow):
         identity, charname = resolved
         if self._raid_boss_fetch_blocked_by_failure(identity):
             return False
-        if identity.storage_key in self._raid_boss_fetches_in_flight:
+        if self._is_fetch_in_flight_for_raid_details(identity):
             return False
-        self._raid_boss_fetches_in_flight[identity.storage_key] = identity
+        if self._coalesce_raid_boss_fetch_if_target_in_flight(identity):
+            self._refresh_quota_label()
+            return True
+        self._mark_raid_boss_fetch_in_flight(identity)
+        self._mark_raid_boss_fetch_waiting_on_target(identity)
         task = _RaidBossFetchTask(identity, charname, self._wcl_client)
         task.signals.done.connect(self._on_raid_boss_fetch_done)
         if self._pool is not None:
@@ -4139,6 +4183,10 @@ class OverlayWindow(QMainWindow):
         fetched_identity: _FetchIdentity,
         ranks: CharacterRanks,
     ) -> None:
+        was_current = (
+            self._fetches_in_flight.get(fetched_identity.storage_key)
+            == fetched_identity
+        )
         waiters = self._fetch_waiters_by_target.pop(
             fetched_identity.network_key,
             None,
@@ -4148,7 +4196,8 @@ class OverlayWindow(QMainWindow):
             for waiter_identity in list(waiters.values()):
                 self._on_fetch_done(waiter_identity, ranks)
             return
-        self._discard_fetch_if_current(fetched_identity)
+        if was_current:
+            self._discard_fetch_by_storage_key(fetched_identity.storage_key)
         self._refresh_quota_label()
         applicant = self._row_for_fetch_identity(fetched_identity)
         if applicant is None:
@@ -4176,6 +4225,19 @@ class OverlayWindow(QMainWindow):
         if not current_identity.metric_preferences.any_enabled:
             applicant.clear_wcl_data(fetch_status="ready")
             self._sync_delegate_and_panel()
+            return
+        if (
+            not was_current
+            and applicant.fetch_status == "ready"
+            and applicant.wcl_data_covers(current_identity.metric_preferences)
+            and _same_fetch_target_except_preferences(
+                current_identity,
+                fetched_identity,
+            )
+            and fetched_identity.metric_preferences.covers(
+                current_identity.metric_preferences
+            )
+        ):
             return
         if not _same_fetch_target_except_preferences(
             current_identity, fetched_identity
@@ -4257,10 +4319,21 @@ class OverlayWindow(QMainWindow):
         error: str,
         error_kind: str = "",
     ) -> None:
-        if self._raid_boss_fetches_in_flight.get(
-            fetched_identity.storage_key
-        ) == fetched_identity:
-            self._raid_boss_fetches_in_flight.pop(fetched_identity.storage_key, None)
+        waiters = self._raid_boss_fetch_waiters_by_target.pop(
+            fetched_identity.network_key,
+            None,
+        )
+        if waiters is not None:
+            waiters.setdefault(fetched_identity.storage_key, fetched_identity)
+            for waiter_identity in list(waiters.values()):
+                self._on_raid_boss_fetch_done(
+                    waiter_identity,
+                    rows,
+                    error,
+                    error_kind,
+                )
+            return
+        self._discard_raid_boss_fetch_if_current(fetched_identity)
         self._refresh_quota_label()
         applicant = self._row_for_fetch_identity(fetched_identity)
         if applicant is None:

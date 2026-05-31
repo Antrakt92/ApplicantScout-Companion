@@ -60,6 +60,14 @@ from applicant_scout.state import (
 from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
 
 
+class _QueuedPool:
+    def __init__(self) -> None:
+        self.tasks = []
+
+    def start(self, task) -> None:
+        self.tasks.append(task)
+
+
 def _app(**overrides) -> Applicant:
     base = Applicant(
         applicant_id="42",
@@ -503,6 +511,132 @@ def test_raid_boss_fetch_done_preserves_existing_mplus_data(qtbot, tmp_path):
         assert app.mplus_dps == 80.0
         assert app.mplus_dps_median == 62.0
         assert app.mplus_dps_breakdown
+    finally:
+        window.close()
+
+
+def test_raid_boss_fetch_coalesces_same_target_applicant_and_party_member(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    applicant = _app(
+        applicant_id="42",
+        name="Scout-Ravencrest",
+        raid_boss_parses={},
+    )
+    member = _member(
+        applicant_id="scout-ravencrest",
+        name="Scout-Ravencrest",
+    )
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+    window._panel._set_detail_mode("raid")
+
+    try:
+        assert window._launch_raid_boss_fetch_if_needed(applicant) is True
+        assert window._launch_raid_boss_fetch_if_needed(member) is True
+
+        assert len(queued_pool.tasks) == 1
+        assert applicant.applicant_id in window._raid_boss_fetches_in_flight
+        assert f"party:{member.applicant_id}" in window._raid_boss_fetches_in_flight
+
+        window._on_raid_boss_fetch_done(
+            queued_pool.tasks[0]._identity,
+            {
+                "M": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 46.0,
+                        "ilvl": 68.0,
+                    }
+                ]
+            },
+            "",
+        )
+
+        assert applicant.raid_boss_parses["M"][0]["overall"] == 46.0
+        assert member.raid_boss_parses["M"][0]["overall"] == 46.0
+        assert window._raid_boss_fetches_in_flight == {}
+        assert window._raid_boss_fetch_waiters_by_target == {}
+    finally:
+        window.close()
+
+
+def test_raid_boss_fetch_coalesced_failure_records_each_waiter(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    applicant = _app(
+        applicant_id="42",
+        name="Scout-Ravencrest",
+        raid_boss_parses={},
+    )
+    member = _member(
+        applicant_id="scout-ravencrest",
+        name="Scout-Ravencrest",
+    )
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+    window._panel._set_detail_mode("raid")
+
+    try:
+        assert window._launch_raid_boss_fetch_if_needed(applicant) is True
+        assert window._launch_raid_boss_fetch_if_needed(member) is True
+        assert len(queued_pool.tasks) == 1
+
+        window._on_raid_boss_fetch_done(
+            queued_pool.tasks[0]._identity,
+            {},
+            "network",
+            overlay_mod.WCL_ERROR_NETWORK,
+        )
+
+        assert len(window._raid_boss_fetch_failures) == 2
+        assert window._raid_detail_status_for(applicant) == (
+            "Raid boss details retrying soon…",
+            False,
+            False,
+        )
+        assert window._raid_detail_status_for(member) == (
+            "Raid boss details retrying soon…",
+            False,
+            False,
+        )
+        assert window._raid_boss_fetches_in_flight == {}
+        assert window._raid_boss_fetch_waiters_by_target == {}
+
+        assert window._launch_raid_boss_fetch_if_needed(applicant) is False
+        assert window._launch_raid_boss_fetch_if_needed(member) is False
+        assert len(queued_pool.tasks) == 1
     finally:
         window.close()
 

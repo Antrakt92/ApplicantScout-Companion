@@ -343,6 +343,112 @@ def test_cache_hit_while_target_fetch_pending_applies_to_new_row(qtbot, tmp_path
         client.close()
 
 
+def test_cache_hit_after_applicant_fetch_ignores_late_original_error(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    applicant = _app(applicant_id="42:1", name="Scout-RealmA", fetch_status="pending")
+    member = _member(
+        applicant_id="scout-realma",
+        name="Scout-RealmA",
+        fetch_status="pending",
+    )
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(applicant)
+        assert len(queued_pool.tasks) == 1
+        original_identity = queued_pool.tasks[0]._identity
+        window._cache.put(
+            "Scout",
+            original_identity.server_slug,
+            original_identity.region,
+            original_identity.spec_id,
+            _ranks(),
+            original_identity.metric_role,
+            original_identity.metric_preferences,
+        )
+
+        window._launch_fetch(member)
+        assert applicant.fetch_status == "ready"
+        assert member.fetch_status == "ready"
+        assert applicant.mplus_dps == 77.0
+        assert member.mplus_dps == 77.0
+
+        window._on_fetch_done(
+            original_identity,
+            CharacterRanks.empty(
+                error="WCL server error",
+                error_kind=WCL_ERROR_SERVER,
+            ),
+        )
+
+        assert applicant.fetch_status == "ready"
+        assert applicant.error_message == ""
+        assert applicant.wcl_error_kind == ""
+        assert applicant.mplus_dps == 77.0
+        assert applicant.raid_heroic == 22.0
+        assert member.fetch_status == "ready"
+        assert member.mplus_dps == 77.0
+        assert window._fetches_in_flight == {}
+        assert window._fetch_waiters_by_target == {}
+    finally:
+        client.close()
+
+
+def test_cache_hit_after_party_fetch_ignores_late_original_not_found(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    applicant = _app(applicant_id="42:1", name="Scout-RealmA", fetch_status="pending")
+    member = _member(
+        applicant_id="scout-realma",
+        name="Scout-RealmA",
+        fetch_status="pending",
+    )
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(member)
+        assert len(queued_pool.tasks) == 1
+        original_identity = queued_pool.tasks[0]._identity
+        window._cache.put(
+            "Scout",
+            original_identity.server_slug,
+            original_identity.region,
+            original_identity.spec_id,
+            _ranks(),
+            original_identity.metric_role,
+            original_identity.metric_preferences,
+        )
+
+        window._launch_fetch(applicant)
+        assert applicant.fetch_status == "ready"
+        assert member.fetch_status == "ready"
+        assert applicant.mplus_dps == 77.0
+        assert member.mplus_dps == 77.0
+
+        window._on_fetch_done(original_identity, CharacterRanks.empty(not_found=True))
+
+        assert member.fetch_status == "ready"
+        assert member.error_message == ""
+        assert member.wcl_error_kind == ""
+        assert member.mplus_dps == 77.0
+        assert member.raid_heroic == 22.0
+        assert applicant.fetch_status == "ready"
+        assert applicant.mplus_dps == 77.0
+        assert window._fetches_in_flight == {}
+        assert window._fetch_waiters_by_target == {}
+    finally:
+        client.close()
+
+
 def test_disabling_metrics_clears_coalesced_fetch_waiters(qtbot, tmp_path):
     disabled = MetricPreferences(
         mplus=False,
