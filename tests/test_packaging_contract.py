@@ -480,6 +480,26 @@ def test_installer_accepts_self_update_context_for_portable_or_legacy_paths():
     assert "CompanionWasRunning or SelfUpdateWasRequested" in inno_script
 
 
+def test_installer_self_update_uses_control_shutdown_before_cim_fallback():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    match = re.search(
+        r"(?ms)^procedure CloseSelfUpdateSource\(\);\n(?P<body>.*?)(?=^procedure CloseRunningCompanion\(\);)",
+        inno_script,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "SelfUpdateSourcePath()" in body
+    assert "'--shutdown-running-instance'" in body
+    assert re.search(r"for\s+\w+\s*:=\s*1\s+to\s+\d+\s+do", body, re.I)
+
+    graceful_idx = body.index("'--shutdown-running-instance'")
+    probe_idx = body.index("SelfUpdateProcessScript(False)", graceful_idx)
+    fallback_idx = body.index("SelfUpdateProcessScript(True)", probe_idx)
+
+    assert graceful_idx < probe_idx < fallback_idx
+
+
 def test_interactive_and_silent_update_relaunch_open_settings():
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
     postinstall_launch = re.search(
@@ -1960,6 +1980,11 @@ def test_release_checklist_uses_policy_placeholders_not_stale_versions():
     assert "<paired addon version>" in checklist
     assert "previous stable or explicitly chosen baseline" in checklist
     assert "checksum-gated in-app updater" in checklist
+    assert "does not make an unsigned installer self-update capable" not in checklist
+    _assert_copy_contains(
+        checklist,
+        "does not smoke-test the previous stable in-app updater path",
+    )
     assert not re.search(
         r"Smoke-test from an installed `\d+\.\d+\.\d+` companion:.*relaunch `\d+\.\d+\.\d+`",
         checklist,

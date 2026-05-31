@@ -141,6 +141,7 @@ end;
 procedure CloseSelfUpdateSource();
 var
   ResultCode: Integer;
+  Attempt: Integer;
 begin
   if not SelfUpdateRequested() then begin
     Exit;
@@ -151,6 +152,33 @@ begin
   if SelfUpdateSourcePath() = '' then begin
     Exit;
   end;
+
+  { WHY: Self-update may come from a portable or legacy path. Ask that exact
+     source process to quit, then poll the original PID/path before fallback. }
+  Exec(
+    SelfUpdateSourcePath(),
+    '--shutdown-running-instance',
+    '',
+    SW_HIDE,
+    ewNoWait,
+    ResultCode
+  );
+
+  for Attempt := 1 to 10 do begin
+    Sleep(500);
+    Exec(
+      ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      SelfUpdateProcessScript(False),
+      '',
+      SW_HIDE,
+      ewWaitUntilTerminated,
+      ResultCode
+    );
+    if ResultCode <> 0 then begin
+      Exit;
+    end;
+  end;
+
   Exec(
     ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     SelfUpdateProcessScript(True),

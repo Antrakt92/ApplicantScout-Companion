@@ -2754,8 +2754,8 @@ def test_main_control_server_uses_guarded_quit_callback(
 
     assert main_mod.main([]) == 1
     assert captured["quit_app"].__name__ == "_quit_application"
-    assert captured["can_quit"].__name__ == "_can_quit_application"
-    assert captured["prepare_quit"].__name__ == "_prepare_quit_application"
+    assert captured["can_quit"].__name__ == "_can_control_quit_application"
+    assert captured["prepare_quit"].__name__ == "_prepare_control_quit_application"
     assert captured["quit_blocked"].__name__ == "_show_update_quit_blocked"
 
 
@@ -4841,6 +4841,47 @@ def _handoff_controller(monotonic_values: list[float], callbacks: list[tuple[str
         timeout_ms=1000,
         poll_interval_ms=50,
     )
+
+
+def test_update_quit_gate_blocks_user_and_control_quit_during_update():
+    gate = main_mod._UpdateQuitGate()
+
+    gate.set_update_in_progress(True)
+
+    assert not gate.can_user_quit()
+    assert not gate.can_control_quit()
+
+
+def test_update_quit_gate_allows_only_control_quit_after_installer_handoff():
+    gate = main_mod._UpdateQuitGate()
+    prepare_calls: list[str] = []
+
+    gate.set_update_in_progress(True)
+    gate.mark_installer_handoff_started()
+
+    assert not gate.can_user_quit()
+    assert gate.can_control_quit()
+    assert gate.prepare_control_quit(lambda: prepare_calls.append("normal") or False)
+    assert prepare_calls == []
+
+
+def test_update_quit_gate_clears_handoff_when_update_finishes_or_recovers():
+    gate = main_mod._UpdateQuitGate()
+    prepare_calls: list[str] = []
+
+    gate.set_update_in_progress(True)
+    gate.mark_installer_handoff_started()
+    gate.set_update_in_progress(False)
+    gate.set_update_in_progress(True)
+
+    assert not gate.can_control_quit()
+
+    gate.set_update_in_progress(False)
+
+    assert gate.can_user_quit()
+    assert gate.can_control_quit()
+    assert gate.prepare_control_quit(lambda: prepare_calls.append("normal") or True)
+    assert prepare_calls == ["normal"]
 
 
 def test_update_handoff_recovery_waits_while_installer_is_running():

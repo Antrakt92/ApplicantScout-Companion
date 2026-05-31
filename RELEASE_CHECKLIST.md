@@ -54,8 +54,9 @@ the matching installer assets only after all release checks pass.
    ```
 
    `-RequireAssets` validates artifact presence, installer checksum
-   consistency, and portable ZIP integrity/root/files. It does not make an
-   unsigned installer self-update capable.
+   consistency, and portable ZIP integrity/root/files. It confirms the static
+   asset contract for checksum-gated in-app updater eligibility, but does not
+   smoke-test the previous stable in-app updater path.
 
 3. Expected assets:
    - `dist\ApplicantScoutCompanionSetup-<companion version>.exe`

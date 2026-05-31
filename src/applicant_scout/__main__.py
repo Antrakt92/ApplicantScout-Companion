@@ -1245,6 +1245,36 @@ class _UpdateCompletion:
     installer_launch: object | None = None
 
 
+class _UpdateQuitGate:
+    def __init__(self) -> None:
+        self._update_in_progress = False
+        self._installer_handoff_started = False
+
+    @property
+    def update_in_progress(self) -> bool:
+        return self._update_in_progress
+
+    def set_update_in_progress(self, in_progress: bool) -> None:
+        self._update_in_progress = in_progress
+        if not in_progress:
+            self._installer_handoff_started = False
+
+    def mark_installer_handoff_started(self) -> None:
+        if self._update_in_progress:
+            self._installer_handoff_started = True
+
+    def can_user_quit(self) -> bool:
+        return not self._update_in_progress
+
+    def can_control_quit(self) -> bool:
+        return not self._update_in_progress or self._installer_handoff_started
+
+    def prepare_control_quit(self, normal_prepare: Callable[[], bool]) -> bool:
+        if self._update_in_progress and self._installer_handoff_started:
+            return True
+        return normal_prepare()
+
+
 class _UpdateHandoffRecoveryController:
     def __init__(
         self,
@@ -2699,7 +2729,7 @@ def main(argv: list[str] | None = None) -> int:
     pending_update_version: str | None = None
     startup_update_prompt_pending = wow_watch_mode
     tray_controller: TrayController | None = None
-    update_in_progress = False
+    update_quit_gate = _UpdateQuitGate()
     update_handoff_recovery: _UpdateHandoffRecoveryController | None = None
 
     def _flush_before_quit() -> None:
@@ -2715,7 +2745,10 @@ def main(argv: list[str] | None = None) -> int:
         app.quit()
 
     def _can_quit_application() -> bool:
-        return not update_in_progress
+        return update_quit_gate.can_user_quit()
+
+    def _can_control_quit_application() -> bool:
+        return update_quit_gate.can_control_quit()
 
     def _show_update_quit_blocked() -> None:
         if tray_controller is not None:
@@ -2743,6 +2776,12 @@ def main(argv: list[str] | None = None) -> int:
             return False
         return True
 
+    def _prepare_control_quit_application() -> bool:
+        if not _can_control_quit_application():
+            _show_update_quit_blocked()
+            return False
+        return update_quit_gate.prepare_control_quit(_prepare_quit_application)
+
     def _request_quit_application() -> None:
         if not _prepare_quit_application():
             return
@@ -2757,8 +2796,8 @@ def main(argv: list[str] | None = None) -> int:
             app,
             quit_app=_quit_application,
             show_settings=show_settings_action.request,
-            can_quit=_can_quit_application,
-            prepare_quit=_prepare_quit_application,
+            can_quit=_can_control_quit_application,
+            prepare_quit=_prepare_control_quit_application,
             quit_blocked=_show_update_quit_blocked,
         )
     except _DuplicateInstanceFound:
@@ -2823,8 +2862,7 @@ def main(argv: list[str] | None = None) -> int:
     wow_exit_timer: QTimer | None = None
 
     def _set_update_in_progress(in_progress: bool) -> None:
-        nonlocal update_in_progress
-        update_in_progress = in_progress
+        update_quit_gate.set_update_in_progress(in_progress)
         if tray_controller is not None:
             tray_controller.set_update_available(pending_update_version)
             tray_controller.set_update_in_progress(in_progress)
@@ -2833,7 +2871,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def _recover_update_handoff(message: str, retry_available: bool) -> None:
         nonlocal pending_update_version
-        if not update_in_progress:
+        if not update_quit_gate.update_in_progress:
             return
         if not retry_available:
             pending_update_version = None
@@ -2853,6 +2891,7 @@ def main(argv: list[str] | None = None) -> int:
     def _handle_update_handoff_started(
         message: str, installer_launch: object | None
     ) -> None:
+        update_quit_gate.mark_installer_handoff_started()
         if update_handoff_recovery is not None:
             update_handoff_recovery.arm(installer_launch, message)
         if tray_controller is not None:
@@ -2980,7 +3019,7 @@ def main(argv: list[str] | None = None) -> int:
         dialog.hideRequested.connect(lambda: None)
         dialog.quitRequested.connect(_request_quit_application)
         dialog.destroyed.connect(lambda *_args: _forget_dialog())
-        dialog.set_update_in_progress(update_in_progress)
+        dialog.set_update_in_progress(update_quit_gate.update_in_progress)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -3005,7 +3044,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def _run_update() -> None:
-        if update_in_progress:
+        if update_quit_gate.update_in_progress:
             return
         if not _flush_settings_before_update(settings_dialog):
             return
@@ -3093,9 +3132,9 @@ def main(argv: list[str] | None = None) -> int:
             tray_controller.set_update_available(pending_update_version)
         if settings_dialog is not None:
             settings_dialog.set_update_available(pending_update_version)
-            if update_in_progress:
+            if update_quit_gate.update_in_progress:
                 settings_dialog.set_update_in_progress(True)
-        if update_in_progress:
+        if update_quit_gate.update_in_progress:
             startup_update_prompt_pending = False
             return
         if _should_show_wow_start_update_prompt(
