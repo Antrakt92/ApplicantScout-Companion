@@ -53,6 +53,7 @@ from .screenshot import (
     Snapshot,
     cleanup_appscout_screenshots,
     format_screenshot_cleanup_summary,
+    is_placeholder_transport_identity,
     screenshot_cleanup_exit_code,
 )
 from .settings_dialog import (
@@ -1089,7 +1090,8 @@ class StateMachine(QObject):
         # apps + legacy v0x01 payloads decode with member_idx=1, producing
         # keys like "42:1" — same shape, no special-casing needed.
         valid_applicants = [
-            a for a in snap.applicants if (name := a.name.strip()) and name != "?"
+            a for a in snap.applicants
+            if (name := a.name.strip()) and not is_placeholder_transport_identity(name)
         ]
         new_by_id = {f"{a.applicant_id}:{a.member_idx}": a for a in valid_applicants}
         # Diagnostic: per-applicant_id member-count distribution. Helps verify

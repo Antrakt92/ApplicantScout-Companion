@@ -348,6 +348,8 @@ def test_placeholder_applicant_name_is_skipped():
         version=None,
         applicants=[
             _decoded(aid=42, member_idx=1, name="?"),
+            _decoded(aid=77, member_idx=1, name="Unknown-Realm"),
+            _decoded(aid=88, member_idx=1, name="UNKNOWNOBJECT"),
             _decoded(aid=99, member_idx=1, name="Solo-Realm"),
         ],
     )

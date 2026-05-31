@@ -733,6 +733,44 @@ def test_duplicate_validation_allows_same_applicant_id_with_distinct_member_idx(
     assert [(a.applicant_id, a.member_idx) for a in snap.applicants] == [(42, 1), (42, 2)]
 
 
+def test_crc_valid_payload_skips_placeholder_applicants_before_duplicate_validation():
+    body = _build_body(
+        [
+            _build_applicant_block(
+                42, 1, 71, 480, 2000, 2, "Unknown-Realm", member_idx=1, version=2
+            ),
+            _build_applicant_block(
+                42, 8, 267, 481, 2100, 2, " unknown-realm ", member_idx=1, version=2
+            ),
+            _build_applicant_block(
+                99, 8, 63, 482, 2200, 2, "Solo-Realm", member_idx=1, version=2
+            ),
+        ]
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x02))
+
+    assert error is None
+    assert snap is not None
+    assert [applicant.name for applicant in snap.applicants] == ["Solo-Realm"]
+
+
+def test_crc_valid_payload_preserves_non_placeholder_unknown_prefix_applicant():
+    body = _build_body(
+        [
+            _build_applicant_block(
+                42, 1, 71, 480, 2000, 2, "Unknownhero-Realm", member_idx=1, version=2
+            )
+        ]
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x02))
+
+    assert error is None
+    assert snap is not None
+    assert [applicant.name for applicant in snap.applicants] == ["Unknownhero-Realm"]
+
+
 def test_crc_valid_payload_with_blank_applicant_name_is_rejected():
     body = _build_body(
         [
@@ -754,6 +792,22 @@ def test_crc_valid_payload_with_invalid_applicant_member_index_is_rejected():
         [
             _build_applicant_block(
                 42, 1, 71, 480, 2000, 2, "Tank-Realm", member_idx=0, version=2
+            )
+        ]
+    )
+
+    snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x02))
+
+    assert snap is None
+    assert error is not None
+    assert "invalid applicant member_idx 42:0" in error
+
+
+def test_crc_valid_payload_rejects_invalid_placeholder_applicant_member_index():
+    body = _build_body(
+        [
+            _build_applicant_block(
+                42, 1, 71, 480, 2000, 2, "Unknown-Realm", member_idx=0, version=2
             )
         ]
     )

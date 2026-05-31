@@ -344,14 +344,15 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
             terminal_clear=bool(flags & APS1_FLAG_TERMINAL_CLEAR),
             lfg_unavailable=bool(flags & APS1_FLAG_LFG_UNAVAILABLE),
         )  # skip 9-byte header
-        snap = _without_placeholder_roster_identities(snap)
-        _validate_snapshot_identities(snap)
+        _validate_snapshot_applicant_shapes(snap)
+        snap = _without_placeholder_transport_identities(snap)
+        _validate_snapshot_unique_identities(snap)
     except (IndexError, UnicodeDecodeError, struct.error, ValueError) as e:
         return None, f"parse error: {e}"
     return snap, None
 
 
-def _is_placeholder_roster_identity(name: str) -> bool:
+def is_placeholder_transport_identity(name: str) -> bool:
     identity = name.strip()
     if not identity:
         return False
@@ -359,22 +360,24 @@ def _is_placeholder_roster_identity(name: str) -> bool:
     return base in {"?", "unknown", "unknownobject"}
 
 
-def _without_placeholder_roster_identities(snap: Snapshot) -> Snapshot:
-    if not snap.roster:
+def _without_placeholder_transport_identities(snap: Snapshot) -> Snapshot:
+    if not snap.applicants and not snap.roster:
         return snap
+    applicants = [
+        applicant for applicant in snap.applicants
+        if not is_placeholder_transport_identity(applicant.name)
+    ]
     roster = [
         member for member in snap.roster
-        if not _is_placeholder_roster_identity(member.name)
+        if not is_placeholder_transport_identity(member.name)
     ]
-    if len(roster) == len(snap.roster):
+    if len(applicants) == len(snap.applicants) and len(roster) == len(snap.roster):
         return snap
-    return replace(snap, roster=roster)
+    return replace(snap, applicants=applicants, roster=roster)
 
 
-def _validate_snapshot_identities(snap: Snapshot) -> None:
-    seen_applicants: set[tuple[int, int]] = set()
+def _validate_snapshot_applicant_shapes(snap: Snapshot) -> None:
     for applicant in snap.applicants:
-        identity = (applicant.applicant_id, applicant.member_idx)
         if not 1 <= applicant.member_idx <= 5:
             raise ValueError(
                 f"invalid applicant member_idx {applicant.applicant_id}:"
@@ -385,6 +388,12 @@ def _validate_snapshot_identities(snap: Snapshot) -> None:
                 f"blank applicant identity {applicant.applicant_id}:"
                 f"{applicant.member_idx}"
             )
+
+
+def _validate_snapshot_unique_identities(snap: Snapshot) -> None:
+    seen_applicants: set[tuple[int, int]] = set()
+    for applicant in snap.applicants:
+        identity = (applicant.applicant_id, applicant.member_idx)
         if identity in seen_applicants:
             raise ValueError(
                 f"duplicate applicant identity {applicant.applicant_id}:"
