@@ -81,6 +81,9 @@ CACHE_RESET_BUSY_MESSAGE = (
 CACHE_RESET_ACTION_BLOCKED_MESSAGE = (
     "Another settings action is still running. Wait for it to finish before resetting cache."
 )
+WCL_CREDENTIAL_TEST_BUSY_MESSAGE = (
+    "WCL credential test is running. Wait for it to finish before continuing."
+)
 
 
 def _settings_window_title(*, first_run: bool) -> str:
@@ -253,6 +256,7 @@ class SettingsDialog(QDialog):
         self._hide_to_tray_on_close = hide_to_tray_on_close
         self._update_in_progress = False
         self._cache_action_in_progress = False
+        self._credential_test_in_progress = False
         self.start_button: QPushButton | None = None
         self.setup_quit_button: QPushButton | None = None
         self._credential_tester = credential_tester
@@ -782,6 +786,8 @@ class SettingsDialog(QDialog):
         if self._update_in_progress:
             self._set_status(UPDATE_BUSY_CLOSE_MESSAGE, error=True)
             return
+        if self._block_credential_test_in_progress():
+            return
         values = self.values()
         error = self._hard_validation_error(values)
         if error is not None:
@@ -796,6 +802,8 @@ class SettingsDialog(QDialog):
         if self._update_in_progress:
             self._set_status(UPDATE_BUSY_CLOSE_MESSAGE, error=True)
             return
+        if self._block_credential_test_in_progress():
+            return
         super().reject()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
@@ -808,6 +816,9 @@ class SettingsDialog(QDialog):
             self._set_status(UPDATE_BUSY_CLOSE_MESSAGE, error=True)
             return
         if self._first_run:
+            if self._block_credential_test_in_progress():
+                event.ignore()
+                return
             super().closeEvent(event)
             return
         if not self._hide_to_tray_on_close:
@@ -826,6 +837,8 @@ class SettingsDialog(QDialog):
             return
         if self._update_in_progress:
             self._set_status(UPDATE_BUSY_CLOSE_MESSAGE, error=True)
+            return
+        if self._block_credential_test_in_progress():
             return
         if self._first_run:
             self.reject()
@@ -851,6 +864,10 @@ class SettingsDialog(QDialog):
             self._autosave_timer.stop()
             self._set_status(CACHE_RESET_BUSY_MESSAGE, error=True)
             return False
+        if self._credential_test_in_progress:
+            self._autosave_timer.stop()
+            self._set_status(WCL_CREDENTIAL_TEST_BUSY_MESSAGE, error=True)
+            return False
         if not self._autosave_timer.isActive():
             return self._last_values_apply_succeeded
         self._autosave_timer.stop()
@@ -867,6 +884,12 @@ class SettingsDialog(QDialog):
 
     def report_values_apply_result(self, success: bool) -> None:
         self._last_values_apply_succeeded = success
+
+    def _block_credential_test_in_progress(self) -> bool:
+        if not self._credential_test_in_progress:
+            return False
+        self._set_status(WCL_CREDENTIAL_TEST_BUSY_MESSAGE, error=True)
+        return True
 
     def _hard_validation_error(self, values: SettingsValues) -> str | None:
         if not values.wcl_client_id or not values.wcl_client_secret:
@@ -1003,6 +1026,8 @@ class SettingsDialog(QDialog):
     def _finish_async_action(self, raw: object) -> None:
         if not isinstance(raw, _AsyncActionResult):
             return
+        if raw.button is self.test_button:
+            self._credential_test_in_progress = False
         if raw.button is self.cache_action:
             self._cache_action_in_progress = False
             self._refresh_settings_interaction_state()
@@ -1215,6 +1240,7 @@ class SettingsDialog(QDialog):
         if not values.wcl_client_id or not values.wcl_client_secret:
             self._set_status("Enter WCL Client ID and Secret first.", error=True)
             return
+        self._credential_test_in_progress = True
         self._start_async_action(
             button=self.test_button,
             busy_text="Testing WCL credentials...",

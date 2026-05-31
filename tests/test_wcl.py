@@ -2368,6 +2368,50 @@ def test_character_cache_deferred_save_batches_puts_until_flush(tmp_path):
     assert loaded.get("Two", "ravencrest", "EU", 72, "DAMAGER") is not None
 
 
+def test_character_cache_deferred_flush_keeps_dirty_after_save_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=60.0)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+
+    def fail_replace(_src, _dst) -> None:
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(atomic_io.os, "replace", fail_replace)
+
+    cache.flush()
+
+    assert cache._dirty is True
+    assert not cache._path.exists()
+    assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is not None
+
+
+def test_character_cache_deferred_flush_retries_after_transient_save_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=60.0)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    original_replace = atomic_io.os.replace
+    calls = 0
+
+    def fail_once(src, dst) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("locked")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(atomic_io.os, "replace", fail_once)
+
+    cache.flush()
+    cache.flush()
+
+    assert calls == 2
+    assert cache._dirty is False
+    loaded = CharacterCache(tmp_path)
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is not None
+
+
 def test_character_cache_clear_cancels_deferred_save(tmp_path):
     cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=60.0)
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")

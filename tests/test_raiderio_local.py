@@ -553,6 +553,76 @@ def test_reader_redecodes_lookup_payload_when_decoded_cache_is_too_short_for_cha
     )
 
 
+def test_reader_does_not_recreate_decoded_lookup_payload_cache_after_clear_during_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    cache_dir = tmp_path / "cache"
+    original_decode = raiderio_local_mod._decode_lua_string_bytes
+    cleared = False
+
+    def clear_during_decode(value: str) -> bytes:
+        nonlocal cleared
+        payload = original_decode(value)
+        if not cleared:
+            cleared = True
+            raiderio_local_mod.clear_lookup_payload_cache(cache_dir)
+        return payload
+
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_decode_lua_string_bytes",
+        clear_during_decode,
+    )
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3074
+    assert list(cache_dir.rglob("*.payload.bin")) == []
+
+
+def test_clear_lookup_payload_cache_only_suppresses_matching_cache_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    blocked_cache_dir = tmp_path / "blocked-cache"
+    active_cache_dir = tmp_path / "active-cache"
+    original_decode = raiderio_local_mod._decode_lua_string_bytes
+    cleared = False
+
+    def clear_other_cache_during_decode(value: str) -> bytes:
+        nonlocal cleared
+        payload = original_decode(value)
+        if not cleared:
+            cleared = True
+            raiderio_local_mod.clear_lookup_payload_cache(blocked_cache_dir)
+        return payload
+
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_decode_lua_string_bytes",
+        clear_other_cache_during_decode,
+    )
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=active_cache_dir)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3074
+    assert list(active_cache_dir.rglob("*.payload.bin"))
+    assert list(blocked_cache_dir.rglob("*.payload.bin")) == []
+
+
 def test_preload_region_async_reloads_positive_cache_when_fingerprint_changes(
     tmp_path: Path,
 ):

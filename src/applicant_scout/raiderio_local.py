@@ -7,9 +7,10 @@ from dataclasses import dataclass
 import logging
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
-import tempfile
 from pathlib import Path
 
 from .atomic_io import apply_private_directory_mode, apply_private_file_mode
@@ -29,7 +30,48 @@ _DUNGEON_LEVELS_FIELD = 10
 _NEGATIVE_CACHE_TTL_SECONDS = 30.0
 _LOOKUP_PAYLOAD_CACHE_DIR = "raiderio-local"
 _LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
+_LOOKUP_PAYLOAD_CACHE_LOCK = threading.Lock()
+_LOOKUP_PAYLOAD_CACHE_GENERATIONS: dict[Path, int] = {}
 _RegionDBFingerprint = tuple[tuple[str, bool, int, int], ...]
+
+
+def _lookup_payload_cache_key(cache_dir: Path) -> Path:
+    return Path(cache_dir).resolve(strict=False)
+
+
+def _lookup_payload_cache_root(cache_dir: Path) -> Path:
+    return Path(cache_dir) / _LOOKUP_PAYLOAD_CACHE_DIR
+
+
+def _lookup_payload_cache_generation(cache_dir: Path | None) -> int | None:
+    if cache_dir is None:
+        return None
+    key = _lookup_payload_cache_key(cache_dir)
+    with _LOOKUP_PAYLOAD_CACHE_LOCK:
+        return _LOOKUP_PAYLOAD_CACHE_GENERATIONS.get(key, 0)
+
+
+def _lookup_payload_cache_generation_matches_locked(
+    cache_dir: Path | None,
+    expected_generation: int | None,
+) -> bool:
+    if cache_dir is None or expected_generation is None:
+        return True
+    key = _lookup_payload_cache_key(cache_dir)
+    return _LOOKUP_PAYLOAD_CACHE_GENERATIONS.get(key, 0) == expected_generation
+
+
+def clear_lookup_payload_cache(cache_dir: Path) -> None:
+    payload_cache_dir = _lookup_payload_cache_root(cache_dir)
+    key = _lookup_payload_cache_key(payload_cache_dir)
+    with _LOOKUP_PAYLOAD_CACHE_LOCK:
+        _LOOKUP_PAYLOAD_CACHE_GENERATIONS[key] = (
+            _LOOKUP_PAYLOAD_CACHE_GENERATIONS.get(key, 0) + 1
+        )
+        try:
+            shutil.rmtree(payload_cache_dir)
+        except FileNotFoundError:
+            pass
 
 
 @dataclass(frozen=True)
@@ -221,6 +263,7 @@ class _RegionDB:
         *,
         payload_cache_dir: Path | None = None,
     ) -> _RegionDB | None:
+        payload_cache_generation = _lookup_payload_cache_generation(payload_cache_dir)
         db_root = retail_root / "Interface" / "AddOns" / "RaiderIO" / "db"
         mplus_characters_path = db_root / f"db_mythicplus_{token}_characters.lua"
         mplus_lookup_path = db_root / f"db_mythicplus_{token}_lookup.lua"
@@ -252,6 +295,7 @@ class _RegionDB:
                     lookup_text,
                     source_path=mplus_lookup_path,
                     payload_cache_dir=payload_cache_dir,
+                    payload_cache_generation=payload_cache_generation,
                     characters_path=mplus_characters_path,
                     meta=mplus_meta,
                 )
@@ -282,6 +326,7 @@ class _RegionDB:
                     raid_lookup_text,
                     source_path=raid_lookup_path,
                     payload_cache_dir=payload_cache_dir,
+                    payload_cache_generation=payload_cache_generation,
                     characters_path=raid_characters_path,
                     meta=raid_meta,
                 )
@@ -616,6 +661,7 @@ def _parse_lookup_payload(
     *,
     source_path: Path | None = None,
     payload_cache_dir: Path | None = None,
+    payload_cache_generation: int | None = None,
     use_cache: bool = True,
 ) -> bytes:
     match = re.search(r"provider\.lookup\[1\]\s*=\s*\"", text)
@@ -627,19 +673,30 @@ def _parse_lookup_payload(
         else None
     )
     if cache_path is not None and use_cache:
-        try:
-            payload = cache_path.read_bytes()
-        except OSError:
-            pass
-        else:
+        cached_payload: bytes | None = None
+        with _LOOKUP_PAYLOAD_CACHE_LOCK:
+            if _lookup_payload_cache_generation_matches_locked(
+                payload_cache_dir,
+                payload_cache_generation,
+            ):
+                try:
+                    cached_payload = cache_path.read_bytes()
+                except OSError:
+                    pass
+        if cached_payload is not None:
             _harden_existing_lookup_payload_cache(cache_path)
-            return payload
+            return cached_payload
     start = match.end()
     end = _find_lua_string_end(text, start)
     payload = _decode_lua_string_bytes(text[start:end])
     if cache_path is not None:
         try:
-            _write_lookup_payload_cache(cache_path, payload)
+            _write_lookup_payload_cache(
+                cache_path,
+                payload,
+                payload_cache_dir=payload_cache_dir,
+                payload_cache_generation=payload_cache_generation,
+            )
         except OSError:
             pass
     return payload
@@ -652,11 +709,13 @@ def _parse_lookup_payload_for_character_layout(
     payload_cache_dir: Path | None,
     characters_path: Path,
     meta: _ProviderMeta,
+    payload_cache_generation: int | None = None,
 ) -> bytes:
     payload = _parse_lookup_payload(
         text,
         source_path=source_path,
         payload_cache_dir=payload_cache_dir,
+        payload_cache_generation=payload_cache_generation,
     )
     if payload_cache_dir is None:
         return payload
@@ -669,6 +728,7 @@ def _parse_lookup_payload_for_character_layout(
         text,
         source_path=source_path,
         payload_cache_dir=payload_cache_dir,
+        payload_cache_generation=payload_cache_generation,
         use_cache=False,
     )
     if _lookup_payload_covers_character_layout(
@@ -720,7 +780,26 @@ def _harden_existing_lookup_payload_cache(path: Path) -> None:
         pass
 
 
-def _write_lookup_payload_cache(path: Path, payload: bytes) -> None:
+def _write_lookup_payload_cache(
+    path: Path,
+    payload: bytes,
+    *,
+    payload_cache_dir: Path | None = None,
+    payload_cache_generation: int | None = None,
+) -> None:
+    if payload_cache_dir is not None and payload_cache_generation is not None:
+        with _LOOKUP_PAYLOAD_CACHE_LOCK:
+            if not _lookup_payload_cache_generation_matches_locked(
+                payload_cache_dir,
+                payload_cache_generation,
+            ):
+                return
+            _write_lookup_payload_cache_unlocked(path, payload)
+        return
+    _write_lookup_payload_cache_unlocked(path, payload)
+
+
+def _write_lookup_payload_cache_unlocked(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     apply_private_directory_mode(path.parent)
     fd = -1

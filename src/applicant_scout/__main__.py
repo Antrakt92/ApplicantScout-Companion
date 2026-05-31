@@ -42,7 +42,11 @@ from .config import (
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .overlay import OverlayWindow
-from .raiderio_local import RaiderIOLocalReader, retail_root_from_screenshots_path
+from .raiderio_local import (
+    RaiderIOLocalReader,
+    clear_lookup_payload_cache,
+    retail_root_from_screenshots_path,
+)
 from .screenshot import (
     DecodedRosterMember,
     ScreenshotWatcher,
@@ -1438,12 +1442,13 @@ def _clear_cache_dir(
             character_cache.clear()
         cache_dir.mkdir(parents=True, exist_ok=True)
         for child in cache_dir.iterdir():
-            if child.name == UPDATE_DOWNLOADS_DIR_NAME:
+            if child.name in {UPDATE_DOWNLOADS_DIR_NAME, "raiderio-local"}:
                 continue
             if child.is_dir():
                 shutil.rmtree(child)
             else:
                 child.unlink()
+        clear_lookup_payload_cache(cache_dir)
     finally:
         if auth is not None:
             auth.invalidate()

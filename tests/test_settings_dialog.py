@@ -618,6 +618,41 @@ def test_settings_dialog_more_quit_action_blocks_during_update(qtbot, tmp_path: 
     assert "#ff6666" in dialog.status_label.styleSheet()
 
 
+def test_settings_dialog_more_quit_action_blocks_during_wcl_test(
+    qtbot, tmp_path: Path
+):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        if not release_tester.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("credential test timed out")
+        return "credentials ok"
+
+    dialog = SettingsDialog(_cfg(tmp_path), credential_tester=tester)
+    qtbot.addWidget(dialog)
+    quit_requested: list[bool] = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    fallback = _fallback_release(release_tester)
+
+    try:
+        dialog.test_button.click()
+        assert tester_entered.wait(1)
+
+        dialog.quit_action.trigger()
+
+        assert quit_requested == []
+        assert "credential test" in dialog.status_label.text().lower()
+        assert "#ff6666" in dialog.status_label.styleSheet()
+
+        release_tester.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
+    finally:
+        release_tester.set()
+        fallback.cancel()
+
+
 def test_settings_dialog_status_supports_warning_style(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
@@ -787,6 +822,45 @@ def test_settings_dialog_cache_reset_waits_for_wcl_test_to_finish(
 
         assert cache_calls == []
         assert "settings action" in dialog.status_label.text().lower()
+
+        release_tester.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
+    finally:
+        release_tester.set()
+        fallback.cancel()
+
+
+def test_settings_dialog_update_waits_for_wcl_test_to_finish(qtbot, tmp_path: Path):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+    update_calls: list[str] = []
+    started: list[bool] = []
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        if not release_tester.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("credential test timed out")
+        return "credentials ok"
+
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        credential_tester=tester,
+        check_updates=lambda: update_calls.append("update") or "up to date",
+    )
+    qtbot.addWidget(dialog)
+    dialog.updateStarted.connect(lambda: started.append(True))
+    dialog.set_update_available("v0.2.0")
+    fallback = _fallback_release(release_tester)
+
+    try:
+        dialog.test_button.click()
+        assert tester_entered.wait(1)
+
+        dialog.update_button.click()
+
+        assert update_calls == []
+        assert started == []
+        assert "credential test" in dialog.status_label.text().lower()
 
         release_tester.set()
         qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
@@ -1252,6 +1326,45 @@ def test_normal_settings_close_requests_quit_when_tray_hide_disabled(qtbot, tmp_
     assert quit_requested == [True]
 
 
+def test_no_tray_close_blocks_quit_during_wcl_test(qtbot, tmp_path: Path):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        if not release_tester.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("credential test timed out")
+        return "credentials ok"
+
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        credential_tester=tester,
+        hide_to_tray_on_close=False,
+    )
+    qtbot.addWidget(dialog)
+    quit_requested: list[bool] = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.show()
+    fallback = _fallback_release(release_tester)
+
+    try:
+        dialog.test_button.click()
+        assert tester_entered.wait(1)
+
+        closed = dialog.close()
+
+        assert not closed
+        assert dialog.isVisible()
+        assert quit_requested == []
+        assert "credential test" in dialog.status_label.text().lower()
+
+        release_tester.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
+    finally:
+        release_tester.set()
+        fallback.cancel()
+
+
 def test_custom_titlebar_close_respects_no_tray_quit_policy(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
     qtbot.addWidget(dialog)
@@ -1511,6 +1624,53 @@ def test_first_run_setup_actions_blocked_while_update_in_progress(
     assert "update" in dialog.status_label.text().lower()
 
 
+def test_first_run_setup_actions_blocked_while_wcl_test_in_progress(
+    qtbot, tmp_path: Path
+):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        if not release_tester.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("credential test timed out")
+        return "credentials ok"
+
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        first_run=True,
+        credential_tester=tester,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    fallback = _fallback_release(release_tester)
+
+    try:
+        dialog.test_button.click()
+        assert tester_entered.wait(1)
+
+        dialog.accept()
+        assert not dialog.result()
+        assert dialog.isVisible()
+        assert "credential test" in dialog.status_label.text().lower()
+
+        dialog.reject()
+        assert not dialog.result()
+        assert dialog.isVisible()
+        assert "credential test" in dialog.status_label.text().lower()
+
+        closed = dialog.close()
+        assert not closed
+        assert dialog.isVisible()
+        assert "credential test" in dialog.status_label.text().lower()
+
+        release_tester.set()
+        qtbot.waitUntil(lambda: dialog.status_label.text() == "credentials ok")
+    finally:
+        release_tester.set()
+        fallback.cancel()
+
+
 def test_first_run_titlebar_close_button_uses_setup_copy(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
     qtbot.addWidget(dialog)
@@ -1693,6 +1853,40 @@ def test_settings_dialog_ignores_credential_result_during_update(
     assert seen == []
     assert not dialog.test_button.isEnabled()
     assert "credentials ok" not in dialog.status_label.text().lower()
+
+
+def test_settings_dialog_clears_wcl_test_busy_when_result_ignored_during_update(
+    qtbot, tmp_path: Path
+):
+    tester_entered = threading.Event()
+    release_tester = threading.Event()
+    tester_returned = threading.Event()
+
+    def tester(*_args) -> str:
+        tester_entered.set()
+        assert release_tester.wait(2)
+        tester_returned.set()
+        return "credentials ok"
+
+    dialog = SettingsDialog(_cfg(tmp_path), credential_tester=tester)
+    qtbot.addWidget(dialog)
+    quit_requested: list[bool] = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+
+    dialog.test_button.click()
+    assert tester_entered.wait(2)
+    dialog.set_update_in_progress(True)
+    release_tester.set()
+
+    assert tester_returned.wait(2)
+    qtbot.wait(100)
+    assert not dialog.test_button.isEnabled()
+
+    dialog.set_update_in_progress(False)
+    qtbot.waitUntil(lambda: dialog.test_button.isEnabled())
+    dialog.quit_action.trigger()
+
+    assert quit_requested == [True]
 
 
 def test_settings_dialog_rejects_validated_credentials_when_current_values_invalid(

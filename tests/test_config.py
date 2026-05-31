@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import logging
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -5324,6 +5325,7 @@ def test_check_updates_reports_untrusted_installer_without_handoff(
 
 
 def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
     cache_dir = tmp_path / "cache"
@@ -5335,10 +5337,21 @@ def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(
     stale_dir = cache_dir / "stale"
     stale_dir.mkdir()
     (stale_dir / "old.txt").write_text("old", encoding="utf-8")
+    rio_cache_dir = cache_dir / "raiderio-local"
+    rio_cache_dir.mkdir()
+    (rio_cache_dir / "decoded.payload.bin").write_bytes(b"rio")
     character_cache = main_mod.CharacterCache(cache_dir)
     (cache_dir / "character-cache.json").write_text("{}", encoding="utf-8")
     generation = character_cache.generation
     invalidated: list[str] = []
+    rio_clears: list[Path] = []
+
+    def clear_rio_cache(path: Path) -> None:
+        rio_clears.append(path)
+        assert rio_cache_dir.exists()
+        shutil.rmtree(rio_cache_dir)
+
+    monkeypatch.setattr(main_mod, "clear_lookup_payload_cache", clear_rio_cache)
 
     class FakeAuth:
         def invalidate(self) -> None:
@@ -5353,7 +5366,9 @@ def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(
     assert not (cache_dir / "token.json").exists()
     assert not (cache_dir / "character-cache.json").exists()
     assert not stale_dir.exists()
+    assert not rio_cache_dir.exists()
     assert character_cache.generation > generation
+    assert rio_clears == [cache_dir]
     assert invalidated == ["auth"]
 
 

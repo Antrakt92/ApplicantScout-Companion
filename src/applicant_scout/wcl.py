@@ -1888,7 +1888,7 @@ class CharacterCache:
             if not self._entry_is_fresh(key, entry, now=now):
                 self._data.pop(key, None)
 
-    def _save_locked(self) -> None:
+    def _save_locked(self) -> bool:
         # Caller must hold self._lock.
         self._prune_expired_locked(time.time())
         try:
@@ -1903,7 +1903,14 @@ class CharacterCache:
                 private=True,
             )
         except OSError:
-            pass
+            return False
+        return True
+
+    def _start_save_timer_locked(self) -> None:
+        # Caller must hold self._lock.
+        self._save_timer = threading.Timer(self._save_debounce_seconds, self.flush)
+        self._save_timer.daemon = True
+        self._save_timer.start()
 
     def _schedule_save_locked(self) -> None:
         # Caller must hold self._lock.
@@ -1913,9 +1920,7 @@ class CharacterCache:
         self._dirty = True
         if self._save_timer is not None and self._save_timer.is_alive():
             return
-        self._save_timer = threading.Timer(self._save_debounce_seconds, self.flush)
-        self._save_timer.daemon = True
-        self._save_timer.start()
+        self._start_save_timer_locked()
 
     def flush(self) -> None:
         timer: threading.Timer | None = None
@@ -1925,7 +1930,10 @@ class CharacterCache:
             if not self._dirty:
                 return
             self._dirty = False
-            self._save_locked()
+            if not self._save_locked():
+                self._dirty = True
+                if self._defer_saves:
+                    self._start_save_timer_locked()
         if timer is not None and timer.is_alive() and timer is not threading.current_thread():
             timer.cancel()
 
