@@ -2235,6 +2235,7 @@ def test_character_cache_saves_private_file_mode(monkeypatch: pytest.MonkeyPatch
         calls.append((self, mode))
         original_chmod(self, mode)
 
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: False)
     monkeypatch.setattr(path_type, "chmod", record_chmod)
 
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
@@ -2280,6 +2281,7 @@ def test_character_cache_private_mode_failure_does_not_break_save(
         calls.append(self)
         raise PermissionError("policy")
 
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: False)
     monkeypatch.setattr(type(cache._path), "chmod", fail_chmod)
 
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
@@ -2366,6 +2368,106 @@ def test_character_cache_deferred_save_batches_puts_until_flush(tmp_path):
     loaded = CharacterCache(tmp_path)
     assert loaded.get("One", "ravencrest", "EU", 71, "DAMAGER") is not None
     assert loaded.get("Two", "ravencrest", "EU", 72, "DAMAGER") is not None
+
+
+def test_character_cache_get_is_not_blocked_by_slow_snapshot_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    write_started = threading.Event()
+    release_write = threading.Event()
+    writer_done = threading.Event()
+    getter_done = threading.Event()
+    getter_result: list[CharacterRanks | None] = []
+
+    def slow_atomic_write_text(*_args, **_kwargs) -> None:
+        write_started.set()
+        assert release_write.wait(2.0)
+
+    monkeypatch.setattr(wcl_mod, "atomic_write_text", slow_atomic_write_text)
+
+    def writer() -> None:
+        try:
+            cache.put("Other", "ravencrest", "EU", 72, _ranks(), role="DAMAGER")
+        finally:
+            writer_done.set()
+
+    def getter() -> None:
+        getter_result.append(cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER"))
+        getter_done.set()
+
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    assert write_started.wait(1.0)
+
+    getter_thread = threading.Thread(target=getter)
+    getter_thread.start()
+    try:
+        assert getter_done.wait(0.25), "cache get blocked behind slow disk write"
+    finally:
+        release_write.set()
+        writer_done.wait(1.0)
+        writer_thread.join(timeout=1.0)
+        getter_thread.join(timeout=1.0)
+
+    assert getter_result and getter_result[0] is not None
+
+
+def test_character_cache_stale_slow_snapshot_write_cannot_overwrite_newer_put(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    original_write = wcl_mod.atomic_write_text
+    first_write_started = threading.Event()
+    release_first_write = threading.Event()
+    call_lock = threading.Lock()
+    call_count = 0
+
+    def slow_first_write(path, text, *, private=False) -> None:
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+            is_first = call_count == 1
+        if is_first:
+            first_write_started.set()
+            assert release_first_write.wait(2.0)
+        original_write(path, text, private=private)
+
+    monkeypatch.setattr(wcl_mod, "atomic_write_text", slow_first_write)
+
+    first_done = threading.Event()
+    second_done = threading.Event()
+
+    def put_first() -> None:
+        try:
+            cache.put("One", "ravencrest", "EU", 72, _ranks(), role="DAMAGER")
+        finally:
+            first_done.set()
+
+    def put_second() -> None:
+        try:
+            cache.put("Two", "ravencrest", "EU", 73, _ranks(), role="DAMAGER")
+        finally:
+            second_done.set()
+
+    first_thread = threading.Thread(target=put_first)
+    first_thread.start()
+    assert first_write_started.wait(1.0)
+    second_thread = threading.Thread(target=put_second)
+    second_thread.start()
+    release_first_write.set()
+    assert first_done.wait(1.0)
+    assert second_done.wait(1.0)
+    first_thread.join(timeout=1.0)
+    second_thread.join(timeout=1.0)
+
+    loaded = CharacterCache(tmp_path)
+    assert loaded.get("One", "ravencrest", "EU", 72, "DAMAGER") is not None
+    assert loaded.get("Two", "ravencrest", "EU", 73, "DAMAGER") is not None
 
 
 def test_character_cache_deferred_flush_keeps_dirty_after_save_failure(

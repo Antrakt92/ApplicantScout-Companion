@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import replace
 
+import pytest
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import (
@@ -883,6 +884,49 @@ def test_raid_detail_loading_status_shows_without_changing_fetch_status(
         assert window._raid_boss_fetches_in_flight
         assert window._panel._status_label.text() == "Fetching raid boss details…"
         assert app.fetch_status == "ready"
+    finally:
+        window.close()
+
+
+def test_refresh_panel_renders_once_when_raid_detail_fetch_starts(
+    qtbot, tmp_path, monkeypatch
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+    calls: list[object] = []
+    original_set_data = window._panel.setApplicantData
+
+    def record_set_data(*args, **kwargs):
+        calls.append(args[0])
+        return original_set_data(*args, **kwargs)
+
+    monkeypatch.setattr(window._panel, "setApplicantData", record_set_data)
+    monkeypatch.setattr(window, "_resolve_visible_id", lambda: app.applicant_id)
+    monkeypatch.setattr(
+        window,
+        "_raid_detail_status_for",
+        lambda _app: ("Fetching raid boss details…", False, False),
+    )
+    monkeypatch.setattr(window, "_launch_raid_boss_fetch_if_needed", lambda _app: True)
+
+    try:
+        window._refresh_panel()
+
+        assert calls == [app]
+        assert window._panel._status_label.text() == "Fetching raid boss details…"
     finally:
         window.close()
 
@@ -1929,6 +1973,49 @@ def test_panel_height_change_batches_window_updates_to_avoid_hover_jitter(
         client.close()
 
 
+def test_sync_delegate_repaints_rows_after_batched_panel_updates(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="row", fetch_status="pending"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    events: list[object] = []
+    original_updates = window.setUpdatesEnabled
+
+    def record_updates(enabled: bool) -> None:
+        events.append(f"updates:{enabled}")
+        original_updates(enabled)
+
+    def record_row_repaint(rows: set[int]) -> None:
+        events.append(("rows", tuple(sorted(rows)), window.updatesEnabled()))
+
+    monkeypatch.setattr(window, "setUpdatesEnabled", record_updates)
+    monkeypatch.setattr(window, "_update_table_interaction_rows", record_row_repaint)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+        events.clear()
+
+        window._hover_id = "row"
+        window._sync_delegate_and_panel()
+
+        assert events[:3] == [
+            "updates:False",
+            "updates:True",
+            ("rows", (0,), True),
+        ]
+    finally:
+        client.close()
+
+
 def test_panel_content_swap_is_batched_with_height_change_to_avoid_one_frame_jump(
     qtbot, tmp_path, monkeypatch
 ):
@@ -2527,6 +2614,7 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
     foreground = {"active": True}
+    now = {"value": 50.0}
     window = OverlayWindow(
         AppState(),
         client,
@@ -2538,12 +2626,18 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
     qtbot.addWidget(window._launcher)
 
     try:
+        monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
         window.restore_from_launcher()
         qtbot.waitUntil(window.isVisible, timeout=1000)
 
         foreground["active"] = False
         monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        window._sync_game_foreground_visibility()
+
+        assert window.isVisible()
+
+        now["value"] += overlay_mod.OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S + 0.1
         window._sync_game_foreground_visibility()
 
         assert not window.isVisible()
@@ -2555,6 +2649,90 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
 
         assert window.isVisible()
         assert not window._launcher.isVisible()
+    finally:
+        client.close()
+
+
+def test_open_overlay_debounces_transient_foreground_loss(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    now = {"value": 100.0}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        foreground["active"] = False
+        monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        window._sync_game_foreground_visibility()
+
+        assert window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+
+        now["value"] += overlay_mod.LAUNCHER_FOREGROUND_GRACE_S + 0.1
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+    finally:
+        client.close()
+
+
+def test_open_overlay_foreground_loss_stays_visible_while_cursor_is_over_overlay(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    now = {"value": 200.0}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        monkeypatch.setattr(
+            overlay_mod.OverlayWindow,
+            "_cursor_over_open_overlay",
+            lambda _self: True,
+            raising=False,
+        )
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        foreground["active"] = False
+        monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        now["value"] += overlay_mod.LAUNCHER_FOREGROUND_GRACE_S + 10.0
+        window._sync_game_foreground_visibility()
+
+        assert window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
     finally:
         client.close()
 
@@ -2703,6 +2881,7 @@ def test_launcher_restore_survives_next_foreground_poll_during_grace(
         assert window.isVisible()
 
         window._launcher_foreground_grace_until = time.monotonic() - 1.0
+        window._open_overlay_foreground_loss_grace_until = time.monotonic() - 1.0
         window._sync_game_foreground_visibility()
 
         assert not window.isVisible()
@@ -2823,6 +3002,7 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
     foreground = {"active": True}
+    now = {"value": 300.0}
     window = OverlayWindow(
         AppState(),
         client,
@@ -2834,6 +3014,7 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
     qtbot.addWidget(window._launcher)
 
     try:
+        monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
         _disable_background_fetches(window)
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
         window.restore_from_launcher()
@@ -2845,6 +3026,9 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
 
         assert window.isVisible()
         assert not window._launcher.isVisible()
+        assert window._open_overlay_foreground_loss_grace_until == pytest.approx(
+            now["value"] + overlay_mod.OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S
+        )
 
         window._state.add_or_update(_app(applicant_id="active-window-update"))
         window.on_applicant_added(window._state.applicants["active-window-update"])
@@ -2856,6 +3040,10 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
         assert window._raid_boss_fetches_in_flight == {}
 
         monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+
+        now["value"] += overlay_mod.LAUNCHER_FOREGROUND_GRACE_S + 0.1
         window._sync_game_foreground_visibility()
 
         assert not window.isVisible()
@@ -4358,6 +4546,25 @@ def test_group_mplus_delegate_paints_full_cell_width(qtbot):
     ) != QColor("#000000")
 
 
+def test_delegate_set_rows_reports_only_changed_interaction_rows():
+    delegate = _HoverHighlightDelegate()
+
+    assert delegate.set_rows(2, -1) == {2}
+    assert delegate.set_rows(5, -1) == {2, 5}
+    assert delegate.set_rows(5, 7) == {7}
+    assert delegate.set_rows(5, 7) == set()
+    assert delegate.set_rows(-1, -1) == {5, 7}
+
+
+def test_delegate_set_rows_reports_changed_overlapping_hover_and_pin():
+    delegate = _HoverHighlightDelegate()
+
+    assert delegate.set_rows(2, 2) == {2}
+    assert delegate.set_rows(2, -1) == {2}
+    assert delegate.set_rows(3, 3) == {2, 3}
+    assert delegate.set_rows(-1, 3) == {3}
+
+
 def test_overlay_table_mplus_listing_status_precedes_stale_fit_for_solo_row(
     qtbot, tmp_path
 ):
@@ -4440,6 +4647,204 @@ def test_refresh_table_builds_group_markers_once(qtbot, tmp_path, monkeypatch):
             window._row_for_id["10:1"],
             window._row_for_id["10:2"],
         }
+    finally:
+        client.close()
+
+
+def test_refresh_table_reuses_package_fit_from_sort(qtbot, tmp_path, monkeypatch):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(applicant_id="10:1", name="Tank-Realm", role="TANK", score=2400)
+    )
+    state.add_or_update(
+        _app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER", score=2300)
+    )
+    state.add_or_update(
+        _app(applicant_id="20:1", name="Healer-Realm", role="HEALER", score=2200)
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    original = overlay_mod.package_fit
+    calls = 0
+
+    def counted_package_fit(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(overlay_mod, "package_fit", counted_package_fit)
+
+    try:
+        window._refresh_table()
+
+        assert calls == 2
+        assert set(window._package_fit_by_raw) == {"10"}
+    finally:
+        client.close()
+
+
+def test_refresh_table_noop_reuses_existing_rows_when_order_stable(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.add_or_update(_app(applicant_id="10:1", name="One-Realm", score=2400))
+    state.add_or_update(_app(applicant_id="20:1", name="Two-Realm", score=2300))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    rendered: list[str] = []
+    original_render = window._render_row
+
+    def counted_render(row, applicant):
+        rendered.append(applicant.applicant_id)
+        original_render(row, applicant)
+
+    try:
+        window._refresh_table()
+        monkeypatch.setattr(window, "_render_row", counted_render)
+
+        window._refresh_table()
+
+        assert rendered == []
+    finally:
+        client.close()
+
+
+def test_refresh_table_rerenders_only_changed_stable_order_row(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.add_or_update(_app(applicant_id="10:1", name="One-Realm", score=2400))
+    state.add_or_update(_app(applicant_id="20:1", name="Two-Realm", score=2300))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    rendered: list[str] = []
+    original_render = window._render_row
+
+    def counted_render(row, applicant):
+        rendered.append(applicant.applicant_id)
+        original_render(row, applicant)
+
+    try:
+        window._refresh_table()
+        monkeypatch.setattr(window, "_render_row", counted_render)
+        state.add_or_update(
+            _app(applicant_id="20:1", name="Two-Realm", score=2300, ilvl=489)
+        )
+
+        window._refresh_table()
+
+        assert rendered == ["20:1"]
+    finally:
+        client.close()
+
+
+def test_refresh_table_full_rebuilds_when_sorted_order_changes(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.add_or_update(_app(applicant_id="10:1", name="One-Realm", score=2400))
+    state.add_or_update(_app(applicant_id="20:1", name="Two-Realm", score=2300))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    rendered: list[str] = []
+    original_render = window._render_row
+
+    def counted_render(row, applicant):
+        rendered.append(applicant.applicant_id)
+        original_render(row, applicant)
+
+    try:
+        window._refresh_table()
+        monkeypatch.setattr(window, "_render_row", counted_render)
+        state.add_or_update(_app(applicant_id="20:1", name="Two-Realm", score=2600))
+
+        window._refresh_table()
+
+        assert rendered == ["20:1", "10:1"]
+        assert window._id_by_row == ["20:1", "10:1"]
+    finally:
+        client.close()
+
+
+def test_group_package_change_rerenders_all_members_in_package(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="10:1", name="Tank-Realm", role="TANK"))
+    state.add_or_update(_app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    rendered: list[str] = []
+    original_render = window._render_row
+
+    def counted_render(row, applicant):
+        rendered.append(applicant.applicant_id)
+        original_render(row, applicant)
+
+    try:
+        window._refresh_table()
+        monkeypatch.setattr(window, "_render_row", counted_render)
+        state.add_or_update(
+            _app(
+                applicant_id="10:2",
+                name="Damage-Realm",
+                role="DAMAGER",
+                fetch_status="error",
+            )
+        )
+
+        window._refresh_table()
+
+        assert set(rendered) == {"10:1", "10:2"}
+    finally:
+        client.close()
+
+
+def test_raid_boss_detail_data_does_not_invalidate_table_rows(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _raid_listing(difficulty_id=16)
+    state.add_or_update(_app(applicant_id="20:1", name="Raider-Realm", score=2400))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    rendered: list[str] = []
+    original_render = window._render_row
+
+    def counted_render(row, applicant):
+        rendered.append(applicant.applicant_id)
+        original_render(row, applicant)
+
+    try:
+        window._refresh_table()
+        monkeypatch.setattr(window, "_render_row", counted_render)
+        state.applicants["20:1"].raid_boss_parses = {
+            "M": [{"name": "Boss", "best": 90.0}]
+        }
+
+        window._refresh_table()
+
+        assert rendered == []
     finally:
         client.close()
 

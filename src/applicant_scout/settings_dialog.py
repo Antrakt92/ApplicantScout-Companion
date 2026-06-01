@@ -84,6 +84,7 @@ CACHE_RESET_ACTION_BLOCKED_MESSAGE = (
 WCL_CREDENTIAL_TEST_BUSY_MESSAGE = (
     "WCL credential test is running. Wait for it to finish before continuing."
 )
+SCREENSHOTS_WARNING_DEBOUNCE_MS = 250
 
 
 def _settings_window_title(*, first_run: bool) -> str:
@@ -272,6 +273,15 @@ class SettingsDialog(QDialog):
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(700)
         self._autosave_timer.timeout.connect(self._emit_values_changed_if_valid)
+        self._pending_screenshots_warning_path = ""
+        self._screenshots_warning_path = ""
+        self._screenshots_warning_text: str | None = None
+        self._screenshots_warning_timer = QTimer(self)
+        self._screenshots_warning_timer.setSingleShot(True)
+        self._screenshots_warning_timer.setInterval(SCREENSHOTS_WARNING_DEBOUNCE_MS)
+        self._screenshots_warning_timer.timeout.connect(
+            self._flush_screenshots_warning
+        )
 
         window_title = _settings_window_title(first_run=first_run)
         self.setWindowTitle(window_title)
@@ -499,7 +509,7 @@ class SettingsDialog(QDialog):
             root.addLayout(buttons)
         outer.addWidget(body)
         self._connect_value_change_signals()
-        self._update_screenshots_warning(self.screenshots_edit.text())
+        self._schedule_screenshots_warning(self.screenshots_edit.text())
 
     def _build_title_bar(self, title: str) -> QWidget:
         title_bar = QWidget(self)
@@ -856,6 +866,12 @@ class SettingsDialog(QDialog):
     ) -> None:
         self._set_status(text, error=error, warning=warning)
 
+    def current_screenshots_warning(self) -> str | None:
+        current_path = self.screenshots_edit.text().strip()
+        if current_path != self._screenshots_warning_path:
+            return None
+        return self._screenshots_warning_text
+
     def flush_pending_values(self) -> bool:
         if self._update_in_progress:
             self._autosave_timer.stop()
@@ -948,8 +964,19 @@ class SettingsDialog(QDialog):
         self._set_status("Select at least one WCL data type.", error=True)
 
     def _handle_screenshots_text_changed(self, raw_path: str) -> None:
-        self._update_screenshots_warning(raw_path)
+        self._schedule_screenshots_warning(raw_path)
         self._schedule_values_changed()
+
+    def _schedule_screenshots_warning(self, raw_path: str) -> None:
+        self._pending_screenshots_warning_path = raw_path
+        if raw_path.strip():
+            self._screenshots_warning_timer.start()
+        else:
+            self._screenshots_warning_timer.stop()
+            self._update_screenshots_warning(raw_path)
+
+    def _flush_screenshots_warning(self) -> None:
+        self._update_screenshots_warning(self._pending_screenshots_warning_path)
 
     def _hide_to_tray(self) -> None:
         self.hide()
@@ -958,10 +985,14 @@ class SettingsDialog(QDialog):
     def _update_screenshots_warning(self, raw_path: str) -> None:
         path = raw_path.strip()
         if not path:
+            self._screenshots_warning_path = ""
+            self._screenshots_warning_text = None
             if self.status_label.text().startswith("Screenshots folder warning:"):
                 self._set_status("")
             return
         warning = screenshots_path_health_warning(Path(path))
+        self._screenshots_warning_path = path
+        self._screenshots_warning_text = warning
         current = self.status_label.text()
         if warning:
             self._set_status(warning, error=True)

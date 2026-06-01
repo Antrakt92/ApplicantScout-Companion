@@ -39,13 +39,17 @@ from typing import Any, Optional
 
 from PIL import Image
 from PyQt6.QtCore import QObject, pyqtSignal
-from pyzbar.pyzbar import ZBarSymbol
-from pyzbar.pyzbar import decode as pyzbar_decode
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 
 _log = logging.getLogger("applicant_scout.screenshot")
+pyzbar_decode = None
+ZBarSymbol = None
+
+
+class QRDecoderUnavailable(RuntimeError):
+    """Raised when the native zbar/pyzbar decoder cannot be imported."""
 
 
 # ─── Wire format constants (must match addon's ApplicantScout.lua) ───────────
@@ -187,6 +191,7 @@ class DecodeResult:
     snapshot: Optional[Snapshot]
     has_marker: bool
     error_reason: Optional[str] = None
+    decoder_unavailable: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,7 +210,31 @@ class ScreenshotCleanupSummary:
 # ─── QR detection + payload extraction ──────────────────────────────────────
 def _decode_qr_symbols(img: Image.Image) -> list[bytes]:
     try:
-        results = pyzbar_decode(img, symbols=[ZBarSymbol.QRCODE])
+        global pyzbar_decode
+        global ZBarSymbol
+        # WHY: pyzbar loads the native zbar wrapper and can cost about a second
+        # on Windows. Keep it off the companion startup path; screenshot decode
+        # runs from the watcher/backlog worker after the UI can paint.
+        decoder = pyzbar_decode
+        symbol_type = ZBarSymbol
+        if decoder is None:
+            try:
+                from pyzbar.pyzbar import ZBarSymbol as imported_symbol_type
+                from pyzbar.pyzbar import decode as imported_decoder
+            except Exception as exc:  # noqa: BLE001
+                raise QRDecoderUnavailable(
+                    f"QR decoder unavailable: {exc}"
+                ) from exc
+
+            decoder = imported_decoder
+            symbol_type = imported_symbol_type
+            pyzbar_decode = imported_decoder
+            ZBarSymbol = imported_symbol_type
+
+        symbols = [symbol_type.QRCODE] if symbol_type is not None else None
+        results = decoder(img, symbols=symbols)
+    except QRDecoderUnavailable:
+        raise
     except Exception as e:
         _log.debug("pyzbar error: %s", e)
         return []
@@ -735,47 +764,61 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
     """
     first_error: Optional[str] = None
     has_marker = False
-    for symbol_payloads in _iter_qr_symbol_data_batches(image_path):
-        candidates = _collect_appscout_qr_candidates(symbol_payloads)
-        if not candidates:
-            continue
-        has_marker = True
-        for kind, raw in candidates:
-            try:
-                snap, err = _try_parse_appscout_payload(raw)
-            except Exception as exc:  # noqa: BLE001
-                err = (
-                    f"unexpected parser error: {type(exc).__name__}: "
-                    f"{str(exc)[:200]}"
-                )
-                if first_error is None:
-                    first_error = f"{kind}: {err}"
-                _log.exception(
-                    "candidate parser error in %s (%s)", image_path.name, kind
-                )
+    try:
+        batches = _iter_qr_symbol_data_batches(image_path)
+        for symbol_payloads in batches:
+            candidates = _collect_appscout_qr_candidates(symbol_payloads)
+            if not candidates:
                 continue
-            if snap is not None:
-                wire_ver = raw[4]
-                # Diagnostic: confirms which wire version we just parsed. v0x01 =
-                # leader-only (legacy); v0x02 = multi-member groups; v0x03 =
-                # listing context. If you reload the addon and still see an older
-                # wire version, you're likely processing a stale screenshot taken
-                # before the addon update.
-                _log.info(
-                    "decoded %s: mode=%s wire=0x%02x apps=%d roster=%d",
-                    image_path.name,
-                    kind,
-                    wire_ver,
-                    len(snap.applicants),
-                    len(snap.roster),
-                )
-                return DecodeResult(snap, True)
-            if err is not None:
-                if first_error is None:
-                    first_error = f"{kind}: {err}"
-                _log.debug(
-                    "candidate rejected in %s (%s): %s", image_path.name, kind, err
-                )
+            has_marker = True
+            for kind, raw in candidates:
+                try:
+                    snap, err = _try_parse_appscout_payload(raw)
+                except Exception as exc:  # noqa: BLE001
+                    err = (
+                        f"unexpected parser error: {type(exc).__name__}: "
+                        f"{str(exc)[:200]}"
+                    )
+                    if first_error is None:
+                        first_error = f"{kind}: {err}"
+                    _log.exception(
+                        "candidate parser error in %s (%s)", image_path.name, kind
+                    )
+                    continue
+                if snap is not None:
+                    wire_ver = raw[4]
+                    # Diagnostic: confirms which wire version we just parsed.
+                    # v0x01 = leader-only (legacy); v0x02 = multi-member groups;
+                    # v0x03 = listing context. If you reload the addon and still
+                    # see an older wire version, you're likely processing a stale
+                    # screenshot taken before the addon update.
+                    _log.info(
+                        "decoded %s: mode=%s wire=0x%02x apps=%d roster=%d",
+                        image_path.name,
+                        kind,
+                        wire_ver,
+                        len(snap.applicants),
+                        len(snap.roster),
+                    )
+                    return DecodeResult(snap, True)
+                if err is not None:
+                    if first_error is None:
+                        first_error = f"{kind}: {err}"
+                    _log.debug(
+                        "candidate rejected in %s (%s): %s",
+                        image_path.name,
+                        kind,
+                        err,
+                    )
+    except QRDecoderUnavailable as exc:
+        reason = str(exc) or "QR decoder unavailable"
+        _log.warning("%s", reason)
+        return DecodeResult(
+            None,
+            False,
+            reason,
+            decoder_unavailable=True,
+        )
 
     if not has_marker:
         return DecodeResult(None, False)  # no QR / unrelated QR
@@ -896,6 +939,11 @@ def cleanup_appscout_screenshots(
             )
             continue
 
+        if result.decoder_unavailable:
+            decode_errors += 1
+            preserved += 1
+            continue
+
         if not result.has_marker:
             preserved += 1
             continue
@@ -976,25 +1024,29 @@ class _Handler(FileSystemEventHandler):
     def __init__(self, callback):
         super().__init__()
         self._callback = callback
-        # Dedup keyed on (path, mtime) to coalesce on_created+on_modified+on_moved
-        # pairs for the SAME write while still re-processing a file that was
-        # deleted+recreated with the same filename (mtime changes → different key).
-        # Critical: WoW Screenshot() filenames have only HH:MM:SS resolution, so
-        # rapid shots in the same second collide on filename. If companion deletes
-        # shot 1's file and WoW writes shot 2 with the same filename, mtime jumps
-        # forward, key changes, dedup correctly admits the second event.
-        self._recent_keys: dict[tuple[str, float], float] = {}
+        # Dedup keyed on (path, mtime_ns, size) to coalesce on_created+
+        # on_modified+on_moved pairs for the SAME write while still re-processing
+        # a file that was deleted+recreated with the same filename. Critical:
+        # WoW Screenshot() filenames have only HH:MM:SS resolution, and float
+        # mtimes can collapse distinct rapid writes; nanosecond mtime plus size
+        # keeps burst screenshots moving through the pipeline.
+        self._recent_keys: dict[tuple[str, int, int], float] = {}
 
     def _should_process(self, path: Path) -> bool:
         if not _is_supported_screenshot_path(path):
             return False
         try:
-            mtime = path.stat().st_mtime
+            stat_result = path.stat()
         except OSError:
             # File vanished between event and stat (we just unlinked it). Don't
             # try to process — but also don't block future events for this path.
             return False
-        key = (str(path), mtime)
+        mtime_ns = getattr(
+            stat_result,
+            "st_mtime_ns",
+            int(float(stat_result.st_mtime) * 1_000_000_000),
+        )
+        key = (str(path), int(mtime_ns), int(stat_result.st_size))
         now = time.time()
         # Evict entries older than 3s
         self._recent_keys = {
@@ -1100,8 +1152,11 @@ class ScreenshotWatcher(QObject):
                 _log.debug("observer cleanup join failed: %s", cleanup_exc)
             raise
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
         self._stopped.set()
+
+    def stop(self) -> None:
+        self.request_stop()
         if self._observer:
             self._observer.stop()
             self._observer.join(timeout=2)
@@ -1218,6 +1273,18 @@ class ScreenshotWatcher(QObject):
                     return
                 _log.info("backlog: applied snapshot from %s", p.name)
                 apply_closed = True
+            elif (
+                result.decoder_unavailable
+                and not apply_closed
+                and mtime >= apply_cutoff
+            ):
+                if not self._emit_decode_failed(
+                    p,
+                    result.error_reason or "QR decoder unavailable",
+                    source,
+                ):
+                    return
+                apply_closed = True
             elif result.has_marker and not apply_closed and mtime >= apply_cutoff:
                 if not self._emit_decode_failed(
                     p,
@@ -1288,6 +1355,13 @@ class ScreenshotWatcher(QObject):
                     self._snapshot_with_source(result.snapshot, source)
                 ):
                     return
+            if result.decoder_unavailable:
+                self._emit_decode_failed(
+                    path,
+                    result.error_reason or "QR decoder unavailable",
+                    source,
+                )
+                return
             if result.has_marker:
                 reason = result.error_reason or "size never stabilized"
                 if result.snapshot is None and not self._emit_decode_failed(
@@ -1335,6 +1409,13 @@ class ScreenshotWatcher(QObject):
         if snap is not None:
             if not self._emit_snapshot(self._snapshot_with_source(snap, source)):
                 return
+        if result.decoder_unavailable:
+            self._emit_decode_failed(
+                path,
+                result.error_reason or "QR decoder unavailable",
+                source,
+            )
+            return
         if marker:
             if snap is None:
                 if not self._emit_decode_failed(
@@ -1377,7 +1458,10 @@ def _system_exit_code(code: object) -> int:
 def _decode_file_cli(path: Path) -> int:
     result = _decode_screenshot_result(path)
     if result.snapshot is None:
-        if result.has_marker:
+        if result.decoder_unavailable:
+            reason = result.error_reason or "QR decoder unavailable"
+            print(f"DECODE FAILED — {reason}")
+        elif result.has_marker:
             reason = result.error_reason or "parse error / CRC mismatch"
             print(f"DECODE FAILED — APS1 marker found but {reason}")
         else:

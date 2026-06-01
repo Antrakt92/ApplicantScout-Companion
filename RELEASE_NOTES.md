@@ -2,6 +2,94 @@
 
 ## Unreleased
 
+## 0.8.3 - 02-Jun-2026
+
+Performance and responsiveness patch paired with ApplicantScout addon `0.4.6`.
+This release keeps the current APS1 v8 QR wire format while reducing overlay
+hitches, startup blocking, screenshot watcher stalls, RaiderIO local cache work,
+Settings path probes, startup-shortcut work, and WCL/character-cache disk
+pauses.
+
+### Changed
+
+- Screenshot watcher replacement now starts the new watcher first, commits a
+  generation gate, marks the old watcher stopped immediately, and lets slow old
+  observer cleanup finish off-thread.
+- Snapshot and decode-failure signals from screenshot workers are coalesced onto
+  the Qt event loop, keeping bursts of screenshot events from repeatedly
+  interrupting overlay rendering.
+- Local RaiderIO preload now owns fingerprinting, decoded lookup cache loading,
+  and realm-block hydration instead of letting the first overlay lookup do that
+  work on the UI path.
+- WoW lifecycle startup no longer performs the expensive current-process check
+  on the normal startup/apply path; duplicate current-session watchers are
+  tracked directly.
+
+### Improved
+
+- Reduced overlay open/collapse, tab switching, button, and Alt-Tab hitches by
+  debouncing transient foreground changes, preserving interaction grace while
+  the cursor is over the overlay, and avoiding immediate hide/show flicker when
+  Windows briefly reports the companion or overlay as foreground.
+- Reduced table refresh cost during applicant bursts by keeping sort, grouping,
+  package-fit, and group-marker state current while rewriting only rows whose
+  rendered data actually changed when row IDs/order/count stay stable.
+- Reduced hover/pin repaint cost by repainting only the rows whose interaction
+  highlight changed instead of repainting the full table surface.
+- Reused grouped-applicant package-fit results from sorting during rendering,
+  avoiding duplicate package score computation for the same snapshot.
+- Reduced startup and Settings pauses by lazy-loading the QR decoder, deferring
+  Screenshots path health checks, and moving Windows startup shortcut updates
+  off the Qt UI thread.
+- Settings now reuses the already-computed Screenshots path warning during
+  autosave/test status updates, avoiding duplicate slow health probes.
+- Moved local RaiderIO fingerprinting, decoded payload loading, and realm
+  hydration work off the UI path and into the preload/cache flow.
+- Decoded local RaiderIO lookup payloads continue to use the configured cache
+  directory, so relaunches can reuse fingerprinted lookup data.
+- Kept WCL character-cache disk writes out of cache read locks so applicant
+  refreshes can continue while slow storage writes finish.
+- Cached Windows private ACL setup for config/cache paths, reducing repeated
+  `icacls` subprocess work during autosaves and cache writes.
+
+### Fixed
+
+- Replaced screenshot watchers without blocking the UI on old watcher cleanup,
+  while generation gates prevent stale watchers from applying fresh snapshots.
+- Prevented a stale watcher from decoding or deleting a fresh marker screenshot
+  after the user changes the Screenshots folder.
+- Reported lazy pyzbar/zbar load failures as decode health failures and kept
+  screenshots in place for support/debugging instead of silently treating them
+  as unrelated no-QR images.
+- Screenshot cleanup and manual decode now treat decoder-unavailable states as
+  explicit decode failures and preserve matching screenshots.
+- Distinguished rapid reused WoW screenshot filenames by precise stat metadata
+  instead of dropping same-second updates.
+- Prevented slow, stale character-cache writes from overwriting newer cache
+  entries and kept WCL same-target/cache-hit completion maps in sync.
+- Preserved dirty WCL cache state after failed writes so a later flush can retry
+  instead of losing the pending save.
+- Kept cache-hit rows updated even while a same-target WCL worker is still
+  pending, so a row does not stay in loading state just because an older waiter
+  owns the network request.
+- Kept WoW lifecycle watcher re-arm behavior explicit: startup can avoid the
+  expensive initial process scan, while re-arm still checks for an existing
+  watcher before launching another one.
+- Reported Windows startup shortcut update failures in Settings after the save,
+  without freezing the UI or rolling back the already-applied runtime setting.
+- Paired addon `0.4.6` chunks large QR painting across frames and preserves
+  dirty snapshots that arrive while a QR is painting or settling for capture.
+- Paired addon `0.4.6` cancels stale QR paint/capture jobs on session end,
+  guards screenshots by completed paint generation, and reuses addon-side
+  RaiderIO M+ summaries during large applicant payloads.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.4.6`.
+- Installer: `ApplicantScoutCompanionSetup-0.8.3.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.8.3.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.8.3-portable.zip`
+
 ## 0.8.2 - 30-May-2026
 
 Self-update restoration patch paired with ApplicantScout addon `0.4.5`. This

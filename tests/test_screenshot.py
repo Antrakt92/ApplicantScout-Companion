@@ -2087,6 +2087,49 @@ def test_handler_should_process_uses_supported_suffix_policy(tmp_path: Path):
     assert not handler._should_process(supported)
 
 
+def test_handler_should_process_distinguishes_reused_filename_by_precise_stat():
+    class FakePath:
+        suffix = ".jpg"
+
+        def __init__(self, *, mtime: float, mtime_ns: int, size: int) -> None:
+            self._stat = SimpleNamespace(
+                st_mtime=mtime,
+                st_mtime_ns=mtime_ns,
+                st_size=size,
+            )
+
+        def __str__(self) -> str:
+            return "C:/World of Warcraft/_retail_/Screenshots/WoWScrnShot_0001.jpg"
+
+        def stat(self) -> SimpleNamespace:
+            return self._stat
+
+    handler = _Handler(lambda _path: None)
+
+    assert handler._should_process(FakePath(mtime=1000.0, mtime_ns=1000, size=10))
+    assert not handler._should_process(
+        FakePath(mtime=1000.0, mtime_ns=1000, size=10)
+    )
+    assert handler._should_process(FakePath(mtime=1000.0, mtime_ns=1001, size=10))
+    assert handler._should_process(FakePath(mtime=1000.0, mtime_ns=1001, size=12))
+
+
+def test_decode_qr_symbols_surfaces_lazy_import_failure(monkeypatch: pytest.MonkeyPatch):
+    screenshot_mod.pyzbar_decode = None
+    screenshot_mod.ZBarSymbol = None
+    original_import = __import__
+
+    def fail_pyzbar_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pyzbar.pyzbar":
+            raise ImportError("zbar missing")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fail_pyzbar_import)
+
+    with pytest.raises(screenshot_mod.QRDecoderUnavailable, match="zbar missing"):
+        screenshot_mod._decode_qr_symbols(Image.new("RGB", (1, 1)))
+
+
 def test_cleanup_dry_run_reports_marker_files_without_deleting(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -2589,6 +2632,40 @@ def test_watcher_decode_failure_includes_snapshot_source(monkeypatch, tmp_path: 
     assert source.mtime_ns == expected_mtime_ns
     assert source.file_id == str(image_path)
     assert source.size == len(content)
+
+
+def test_watcher_surfaces_decoder_unavailable_without_deleting_screenshot(
+    monkeypatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    content = b"maybe-transport"
+    image_path.write_bytes(content)
+    watcher = ScreenshotWatcher(tmp_path)
+    failures: list[tuple[str, str, object]] = []
+    watcher.decodeFailed.connect(
+        lambda path, reason, source: failures.append((path, reason, source))
+    )
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(
+            None,
+            False,
+            "QR decoder unavailable: zbar missing",
+            decoder_unavailable=True,
+        ),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert len(failures) == 1
+    path, reason, source = failures[0]
+    assert path == str(image_path)
+    assert reason == "QR decoder unavailable: zbar missing"
+    assert source is not None
+    assert image_path.exists()
 
 
 def test_watcher_stop_mid_new_file_does_not_delete_unemitted_marker_snapshot(

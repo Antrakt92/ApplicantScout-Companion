@@ -140,16 +140,8 @@ class RaiderIOLocalReader:
         token = _REGION_FILE_TOKENS.get((region or "").upper())
         if not token:
             return
-        call_now = False
-        now = time.monotonic()
-        fingerprint = _region_db_fingerprint(self._retail_root, token)
         with self._lock:
-            entry = self._cache.get(token)
-            if entry is not None and not _cache_entry_is_stale(
-                entry, fingerprint, now
-            ):
-                call_now = on_loaded is not None
-            elif token in self._loading:
+            if token in self._loading:
                 if on_loaded is not None:
                     self._load_callbacks.setdefault(token, []).append(on_loaded)
                 return
@@ -157,12 +149,6 @@ class RaiderIOLocalReader:
                 if on_loaded is not None:
                     self._load_callbacks.setdefault(token, []).append(on_loaded)
                 self._loading.add(token)
-        if call_now and on_loaded is not None:
-            try:
-                on_loaded()
-            except Exception:  # noqa: BLE001
-                _log.exception("RaiderIO local preload callback failed for %s", token)
-            return
 
         def _worker() -> None:
             try:
@@ -242,6 +228,8 @@ class _RegionDB:
         raid_meta: _ProviderMeta | None,
         current_raids: list[_RaidInfo],
         previous_raids: list[_RaidInfo],
+        mplus_realm_cache: dict[str, tuple[int, list[str]] | None] | None = None,
+        raid_realm_cache: dict[str, tuple[int, list[str]] | None] | None = None,
     ):
         self._mplus_characters_path = mplus_characters_path
         self._mplus_lookup_payload = mplus_lookup_payload
@@ -252,8 +240,8 @@ class _RegionDB:
         self._raid_meta = raid_meta
         self._current_raids = current_raids
         self._previous_raids = previous_raids
-        self._mplus_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
-        self._raid_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
+        self._mplus_realm_cache = mplus_realm_cache or {}
+        self._raid_realm_cache = raid_realm_cache or {}
 
     @classmethod
     def load(
@@ -281,8 +269,12 @@ class _RegionDB:
         dungeons: list[str] = []
         mplus_meta: _ProviderMeta | None = None
         mplus_lookup_payload: bytes | None = None
+        mplus_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
         if has_mplus:
             try:
+                mplus_characters_text = mplus_characters_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
                 lookup_text = mplus_lookup_path.read_text(
                     encoding="utf-8", errors="replace"
                 )
@@ -297,8 +289,10 @@ class _RegionDB:
                     payload_cache_dir=payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
                     characters_path=mplus_characters_path,
+                    characters_text=mplus_characters_text,
                     meta=mplus_meta,
                 )
+                mplus_realm_cache = _parse_all_realm_data(mplus_characters_text)
             except (OSError, ValueError) as exc:
                 _log.warning(
                     "could not load RaiderIO local M+ DB for %s: %s", token, exc
@@ -306,13 +300,18 @@ class _RegionDB:
                 dungeons = []
                 mplus_meta = None
                 mplus_lookup_payload = None
+                mplus_realm_cache = {}
                 has_mplus = False
         raid_meta: _ProviderMeta | None = None
         raid_lookup_payload: bytes | None = None
         current_raids: list[_RaidInfo] = []
         previous_raids: list[_RaidInfo] = []
+        raid_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
         if has_raid:
             try:
+                raid_characters_text = raid_characters_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
                 raid_lookup_text = raid_lookup_path.read_text(
                     encoding="utf-8", errors="replace"
                 )
@@ -328,8 +327,10 @@ class _RegionDB:
                     payload_cache_dir=payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
                     characters_path=raid_characters_path,
+                    characters_text=raid_characters_text,
                     meta=raid_meta,
                 )
+                raid_realm_cache = _parse_all_realm_data(raid_characters_text)
             except (OSError, ValueError) as exc:
                 _log.warning(
                     "could not load RaiderIO local raid DB for %s: %s", token, exc
@@ -338,6 +339,7 @@ class _RegionDB:
                 raid_lookup_payload = None
                 current_raids = []
                 previous_raids = []
+                raid_realm_cache = {}
                 has_raid = False
         if not has_mplus and not has_raid:
             return None
@@ -351,6 +353,8 @@ class _RegionDB:
             raid_meta=raid_meta,
             current_raids=current_raids,
             previous_raids=previous_raids,
+            mplus_realm_cache=mplus_realm_cache,
+            raid_realm_cache=raid_realm_cache,
         )
 
     def lookup_profile(self, name: str, realm: str) -> RaiderIOLocalProfile | None:
@@ -462,10 +466,7 @@ class _RegionDB:
         realm: str,
     ) -> tuple[int, list[str]] | None:
         cache_key = _realm_lookup_key(realm)
-        if cache_key not in realm_cache:
-            text = characters_path.read_text(encoding="utf-8", errors="replace")
-            realm_cache[cache_key] = _parse_realm_data(text, realm)
-        return realm_cache[cache_key]
+        return realm_cache.get(cache_key)
 
 
 def _cache_entry_is_stale(
@@ -708,6 +709,7 @@ def _parse_lookup_payload_for_character_layout(
     source_path: Path,
     payload_cache_dir: Path | None,
     characters_path: Path,
+    characters_text: str | None = None,
     meta: _ProviderMeta,
     payload_cache_generation: int | None = None,
 ) -> bytes:
@@ -719,7 +721,8 @@ def _parse_lookup_payload_for_character_layout(
     )
     if payload_cache_dir is None:
         return payload
-    characters_text = characters_path.read_text(encoding="utf-8", errors="replace")
+    if characters_text is None:
+        characters_text = characters_path.read_text(encoding="utf-8", errors="replace")
     if _lookup_payload_covers_character_layout(
         payload, characters_text, meta.record_size
     ):
@@ -894,21 +897,27 @@ def _parse_dungeon_names(text: str) -> list[str]:
 
 def _parse_realm_data(text: str, realm: str) -> tuple[int, list[str]] | None:
     lookup_key = _realm_lookup_key(realm)
+    return _parse_all_realm_data(text).get(lookup_key)
+
+
+def _parse_all_realm_data(text: str) -> dict[str, tuple[int, list[str]] | None]:
+    realms: dict[str, tuple[int, list[str]] | None] = {}
     pattern = re.compile(r'provider\.db\["([^"]+)"\]\s*=\s*\{')
     for match in pattern.finditer(text):
-        if _realm_lookup_key(match.group(1)) != lookup_key:
+        lookup_key = _realm_lookup_key(match.group(1))
+        if not lookup_key:
             continue
         start = match.end()
         end = text.find("}", start)
         if end < 0:
-            return None
+            continue
         body = text[start:end]
         offset_match = re.match(r"\s*(\d+)", body)
         if not offset_match:
-            return None
+            continue
         names = re.findall(r'"([^"]*)"', body[offset_match.end() :])
-        return int(offset_match.group(1)), names
-    return None
+        realms[lookup_key] = (int(offset_match.group(1)), names)
+    return realms
 
 
 def _decode_profile(

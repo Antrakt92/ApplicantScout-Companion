@@ -1732,7 +1732,7 @@ def _start_wow_lifecycle_timer(
             if not state["active"]:
                 return
             try:
-                start_wow_sync_watcher()
+                start_wow_sync_watcher(check_existing=True)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 if not state["rearm_failed"]:
                     log.warning("Could not re-arm WoW lifecycle watcher: %s", exc)
@@ -1779,22 +1779,25 @@ def _apply_wow_sync_runtime(
     quit_app: Callable[[], None] | None = None,
     can_quit: Callable[[], bool] | None = None,
     prepare_quit: Callable[[], bool] | None = None,
+    configure_startup: bool = True,
 ) -> QTimer | None:
-    configure_wow_sync_startup(enabled)
+    if configure_startup:
+        configure_wow_sync_startup(enabled)
     if enabled:
         try:
-            start_wow_sync_watcher()
+            start_wow_sync_watcher(check_existing=False)
             if current_timer is None:
                 return _start_wow_lifecycle_timer(
                     app,
-                    has_seen_wow=is_wow_running(),
+                    has_seen_wow=False,
                     quit_app=quit_app,
                     can_quit=can_quit,
                     prepare_quit=prepare_quit,
-                )
+            )
             return current_timer
         except Exception:
-            configure_wow_sync_startup(False)
+            if configure_startup:
+                configure_wow_sync_startup(False)
             raise
     if current_timer is not None:
         state = getattr(current_timer, "_applicant_scout_wow_lifecycle_state", None)
@@ -1866,6 +1869,142 @@ class _SnapshotApplier(Protocol):
     def apply_snapshot(self, snap: Snapshot) -> None: ...
 
 
+def _schedule_snapshot_apply(callback: Callable[[], None]) -> None:
+    if QApplication.instance() is None:
+        callback()
+        return
+    QTimer.singleShot(0, callback)
+
+
+_WOW_SYNC_STARTUP_CONFIG_STATE_LOCK = threading.Lock()
+_WOW_SYNC_STARTUP_CONFIG_WORK_LOCK = threading.Lock()
+_WOW_SYNC_STARTUP_CONFIG_GENERATION = 0
+
+
+def _configure_wow_sync_startup_async(
+    enabled: bool,
+    *,
+    on_error: Callable[[Exception], None] | None = None,
+    runner: Callable[[Callable[[], None]], None] | None = None,
+    configure: Callable[[bool], object] = configure_wow_sync_startup,
+    notify: Callable[[Callable[[], None]], None] = _schedule_snapshot_apply,
+) -> int:
+    global _WOW_SYNC_STARTUP_CONFIG_GENERATION
+    with _WOW_SYNC_STARTUP_CONFIG_STATE_LOCK:
+        _WOW_SYNC_STARTUP_CONFIG_GENERATION += 1
+        generation = _WOW_SYNC_STARTUP_CONFIG_GENERATION
+
+    def _is_current() -> bool:
+        with _WOW_SYNC_STARTUP_CONFIG_STATE_LOCK:
+            return _WOW_SYNC_STARTUP_CONFIG_GENERATION == generation
+
+    def _worker() -> None:
+        with _WOW_SYNC_STARTUP_CONFIG_WORK_LOCK:
+            if not _is_current():
+                return
+            try:
+                configure(enabled)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                if not _is_current():
+                    return
+                log.warning("Could not configure WoW lifecycle startup shortcut: %s", exc)
+                if on_error is not None:
+                    callback = on_error
+                    error = exc
+                    notify(lambda: callback(error))
+
+    if runner is not None:
+        runner(_worker)
+    else:
+        threading.Thread(
+            target=_worker,
+            name="ApplicantScoutStartupShortcut",
+            daemon=True,
+        ).start()
+    return generation
+
+
+def _stop_screenshot_watcher_async(
+    watcher: ScreenshotWatcher,
+    *,
+    stop_runner: Callable[[Callable[[], None]], None] | None = None,
+) -> None:
+    request_stop = getattr(watcher, "request_stop", None)
+    if callable(request_stop):
+        request_stop()
+
+    def _worker() -> None:
+        try:
+            watcher.stop()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not stop previous screenshot watcher: %s", exc)
+
+    if stop_runner is not None:
+        stop_runner(_worker)
+        return
+    threading.Thread(
+        target=_worker,
+        name="ApplicantScoutWatcherStop",
+        daemon=True,
+    ).start()
+
+
+class _SnapshotApplyQueue:
+    def __init__(
+        self,
+        machine: _SnapshotApplier,
+        window: OverlayWindow,
+        decode_failed_callback: Callable[[str, str], None],
+        *,
+        signal_gate: _WatcherSignalGate,
+        generation: int,
+        scheduler: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
+        self._machine = machine
+        self._window = window
+        self._decode_failed_callback = decode_failed_callback
+        self._signal_gate = signal_gate
+        self._generation = generation
+        self._scheduler = scheduler or _schedule_snapshot_apply
+        self._pending: tuple[str, tuple[object, ...]] | None = None
+        self._flush_pending = False
+
+    def enqueue_snapshot(self, snap: object) -> None:
+        self._pending = ("snapshot", (snap,))
+        self._schedule_flush()
+
+    def enqueue_decode_failed(self, path: str, reason: str) -> None:
+        self._pending = ("decode_failed", (path, reason))
+        self._schedule_flush()
+
+    def _schedule_flush(self) -> None:
+        if self._flush_pending:
+            return
+        self._flush_pending = True
+        self._scheduler(self.flush)
+
+    def flush(self) -> None:
+        if self._pending is None:
+            self._flush_pending = False
+            return
+        kind, args = self._pending
+        self._pending = None
+        self._flush_pending = False
+        if not self._signal_gate.is_current(self._generation):
+            return
+        if kind == "snapshot":
+            snap = args[0]
+            getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
+            getattr(self._window, "note_decode", lambda *_args: None)(snap)
+            return
+        path, reason = args
+        self._decode_failed_callback(str(path), str(reason))
+        getattr(self._window, "note_decode_failed", lambda *_args: None)(
+            str(path),
+            str(reason),
+        )
+
+
 def _connect_screenshot_watcher(
     watcher: ScreenshotWatcher,
     machine: _SnapshotApplier,
@@ -1875,14 +2014,23 @@ def _connect_screenshot_watcher(
     signal_gate: _WatcherSignalGate,
     source_gate: _SnapshotSourceGate,
     generation: int,
+    scheduler: Callable[[Callable[[], None]], None] | None = None,
 ) -> None:
+    apply_queue = _SnapshotApplyQueue(
+        machine,
+        window,
+        decode_failed_callback,
+        signal_gate=signal_gate,
+        generation=generation,
+        scheduler=scheduler,
+    )
+
     def _snapshot_if_current(snap: object) -> None:
         if not signal_gate.is_current(generation):
             return
         if not source_gate.accept(getattr(snap, "source", None)):
             return
-        getattr(machine, "apply_snapshot", lambda *_args: None)(snap)
-        getattr(window, "note_decode", lambda *_args: None)(snap)
+        apply_queue.enqueue_snapshot(snap)
 
     def _decode_failed_if_current(
         path: str,
@@ -1893,8 +2041,7 @@ def _connect_screenshot_watcher(
             return
         if not source_gate.accept(source):
             return
-        decode_failed_callback(path, reason)
-        getattr(window, "note_decode_failed", lambda *_args: None)(path, reason)
+        apply_queue.enqueue_decode_failed(path, reason)
 
     watcher.snapshotReceived.connect(_snapshot_if_current)
     watcher.decodeFailed.connect(_decode_failed_if_current)
@@ -1908,6 +2055,7 @@ def _replace_screenshot_watcher(
     decode_failed_callback: Callable[[str, str], None],
     *,
     signal_gate: _WatcherSignalGate,
+    stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
     previous_generation = signal_gate.generation
     new_watcher = ScreenshotWatcher(screenshots_dir)
@@ -1933,18 +2081,9 @@ def _replace_screenshot_watcher(
         raise
     signal_gate.commit(generation)
     if current_watcher is not None:
-        try:
-            current_watcher.stop()
-        except Exception:
-            signal_gate.restore(previous_generation)
-            try:
-                new_watcher.stop()
-            except Exception as cleanup_exc:  # noqa: BLE001
-                log.warning(
-                    "Could not clean up replacement screenshot watcher: %s",
-                    cleanup_exc,
-                )
-            raise
+        # WHY: watchdog Observer.stop()+join can block for seconds on Windows
+        # storage paths. The generation gate above already ignores stale signals.
+        _stop_screenshot_watcher_async(current_watcher, stop_runner=stop_runner)
     return new_watcher
 
 
@@ -1957,6 +2096,7 @@ def _replace_screenshots_runtime(
     *,
     cache_dir: Path | None = None,
     signal_gate: _WatcherSignalGate,
+    stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
     previous_reader = getattr(machine, "_rio_reader", None)
     if cache_dir is None:
@@ -1974,6 +2114,7 @@ def _replace_screenshots_runtime(
             window,
             decode_failed_callback,
             signal_gate=signal_gate,
+            stop_runner=stop_runner,
         )
     except Exception:
         machine.set_rio_reader(previous_reader)
@@ -2165,22 +2306,35 @@ def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
     )
 
 
-def _settings_saved_status(values, override_keys: list[str]) -> tuple[str, bool]:
-    path_warning = (
-        screenshots_path_health_warning(Path(values.screenshots_path))
-        if values.screenshots_path
-        else None
-    )
+_PATH_WARNING_UNSET = object()
+
+
+def _settings_saved_status(
+    values,
+    override_keys: list[str],
+    *,
+    path_warning: str | None | object = _PATH_WARNING_UNSET,
+) -> tuple[str, bool]:
+    if path_warning is _PATH_WARNING_UNSET:
+        resolved_path_warning = (
+            screenshots_path_health_warning(Path(values.screenshots_path))
+            if values.screenshots_path
+            else None
+        )
+    elif isinstance(path_warning, str):
+        resolved_path_warning = path_warning
+    else:
+        resolved_path_warning = None
     if override_keys:
         message = (
             "Saved for this app session, but environment overrides are active: "
             + ", ".join(override_keys)
         )
-        if path_warning:
-            message = f"{message}. {path_warning}"
+        if resolved_path_warning:
+            message = f"{message}. {resolved_path_warning}"
         return message, True
-    if path_warning:
-        return path_warning, True
+    if resolved_path_warning:
+        return resolved_path_warning, True
     return "Saved.", False
 
 
@@ -2192,8 +2346,14 @@ def _settings_autosave_status(
     values,
     override_keys: list[str],
     cfg: Config,
+    *,
+    path_warning: str | None | object = _PATH_WARNING_UNSET,
 ) -> tuple[str, bool, bool]:
-    saved_text, saved_error = _settings_saved_status(values, override_keys)
+    saved_text, saved_error = _settings_saved_status(
+        values,
+        override_keys,
+        path_warning=path_warning,
+    )
     if not _has_pending_wcl_credentials(cfg):
         return saved_text, saved_error, False
     pending_text = (
@@ -2206,8 +2366,14 @@ def _settings_autosave_status(
 def _settings_wcl_test_success_status(
     values,
     override_keys: list[str],
+    *,
+    path_warning: str | None | object = _PATH_WARNING_UNSET,
 ) -> tuple[str, bool]:
-    saved_text, saved_error = _settings_saved_status(values, override_keys)
+    saved_text, saved_error = _settings_saved_status(
+        values,
+        override_keys,
+        path_warning=path_warning,
+    )
     if not saved_error:
         return "WCL credentials are valid.", False
     session_override_prefix = "Saved for this app session, but "
@@ -2455,6 +2621,7 @@ def _apply_settings_change(
                 quit_app=quit_app,
                 can_quit=can_quit,
                 prepare_quit=prepare_quit,
+                configure_startup=False,
             )
         if new_screenshots_dir != current_screenshots_dir:
             new_watcher = _replace_screenshots_runtime(
@@ -2476,6 +2643,7 @@ def _apply_settings_change(
                     quit_app=quit_app,
                     can_quit=can_quit,
                     prepare_quit=prepare_quit,
+                    configure_startup=False,
                 )
             except Exception as rollback_exc:  # noqa: BLE001
                 log.warning("Could not roll back WoW sync runtime: %s", rollback_exc)
@@ -2587,7 +2755,7 @@ def _run_first_run_settings(
         return False
     if values.sync_with_wow:
         try:
-            start_wow_sync_watcher()
+            start_wow_sync_watcher(check_existing=False)
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             log.warning("Could not start WoW lifecycle watcher: %s", exc)
             QMessageBox.warning(
@@ -2987,6 +3155,7 @@ def main(argv: list[str] | None = None) -> int:
                 dialog.report_values_apply_result(False)
                 dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
                 return
+            startup_shortcut_changed = cfg.sync_with_wow != result.cfg.sync_with_wow
             dialog.report_values_apply_result(True)
             cfg = result.cfg
             auth = result.auth
@@ -2994,16 +3163,35 @@ def main(argv: list[str] | None = None) -> int:
             current_screenshots_dir = result.current_screenshots_dir
             wow_exit_timer = result.wow_exit_timer
             overrides = result.overrides
+            path_warning = dialog.current_screenshots_warning()
+            if startup_shortcut_changed:
+                desired_sync_with_wow = cfg.sync_with_wow
+
+                def _report_startup_shortcut_error(exc: Exception) -> None:
+                    if settings_dialog is not dialog:
+                        return
+                    dialog.set_status(
+                        "Settings saved, but the WoW startup shortcut could "
+                        f"not be updated: {exc}",
+                        error=True,
+                    )
+
+                _configure_wow_sync_startup_async(
+                    desired_sync_with_wow,
+                    on_error=_report_startup_shortcut_error,
+                )
             if apply_credentials:
                 status_text, status_error = _settings_wcl_test_success_status(
                     values,
                     overrides,
+                    path_warning=path_warning,
                 )
             else:
                 status_text, status_error, status_warning = _settings_autosave_status(
                     values,
                     overrides,
                     cfg,
+                    path_warning=path_warning,
                 )
                 dialog.set_status(
                     status_text,
@@ -3183,7 +3371,7 @@ def main(argv: list[str] | None = None) -> int:
     if cfg.sync_with_wow:
         wow_exit_timer = _start_wow_lifecycle_timer(
             app,
-            has_seen_wow=wow_watch_mode or is_wow_running(),
+            has_seen_wow=wow_watch_mode,
             quit_app=_request_quit_application,
             can_quit=_can_quit_application,
             prepare_quit=_prepare_quit_application,

@@ -9,7 +9,7 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -161,6 +161,7 @@ GAME_FOREGROUND_POLL_MS = 500
 LAUNCHER_DRAG_POLL_MS = 16
 LAUNCHER_DRAG_RELEASE_GRACE_S = 1.0
 LAUNCHER_FOREGROUND_GRACE_S = 3.0
+OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S = 1.25
 VK_LBUTTON = 0x01
 MPLUS_GROUP_COLUMN_WIDTH = 188
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
@@ -171,6 +172,7 @@ MPLUS_INDIVIDUAL_BG_ROLE = Qt.ItemDataRole.UserRole + 24
 MPLUS_GROUP_LANE_MAX_WIDTH = 72
 MPLUS_GROUP_LANE_MIN_WIDTH = 42
 MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 56
+_TABLE_DETAIL_ONLY_APPLICANT_FIELDS = {"raid_boss_parses"}
 
 MAX_WCL_RETRY_BATCH = 3
 WCL_RETRY_CUSHION_MS = 250
@@ -612,9 +614,9 @@ def _mplus_fit_source_text(applicant: Applicant) -> str:
     return "score only"
 
 
-def sort_applicants_grouped(
+def _sort_applicants_grouped_with_package_fits(
     applicants: Iterable[Applicant], listing: Listing | None = None
-) -> list[Applicant]:
+) -> tuple[list[Applicant], dict[str, PackageFit]]:
     """Sort applicants with multi-member group adjacency.
 
     Unknown/no listing preserves the original max-RIO ordering. Known M+/raid
@@ -622,6 +624,7 @@ def sort_applicants_grouped(
     members adjacent and leader/member order stable.
     """
     apps = list(applicants)
+    package_fits: dict[str, PackageFit] = {}
     group_max: dict[str, int] = {}
     group_fit: dict[str, float] = {}
     group_confidence: dict[str, float] = {}
@@ -648,6 +651,7 @@ def sort_applicants_grouped(
     if use_fit:
         for raw_aid, members in group_members.items():
             fit = package_fit(members, listing)
+            package_fits[raw_aid] = fit
             group_fit[raw_aid] = fit.score
             group_confidence[raw_aid] = fit.confidence
     elif use_mplus_headline:
@@ -693,7 +697,17 @@ def sort_applicants_grouped(
             )
         return (gmax == 0, -gmax, all_sunk, raw_aid, member_idx, sunk)
 
-    return sorted(apps, key=_key)
+    return sorted(apps, key=_key), package_fits
+
+
+def sort_applicants_grouped(
+    applicants: Iterable[Applicant], listing: Listing | None = None
+) -> list[Applicant]:
+    sorted_apps, _package_fits = _sort_applicants_grouped_with_package_fits(
+        applicants,
+        listing,
+    )
+    return sorted_apps
 
 
 def sort_roster_members(members: Iterable[Applicant]) -> list[Applicant]:
@@ -706,6 +720,36 @@ def sort_roster_members(members: Iterable[Applicant]) -> list[Applicant]:
             member.name.lower(),
         ),
     )
+
+
+def _freeze_render_value(value):
+    if is_dataclass(value) and not isinstance(value, type):
+        return tuple(
+            (field.name, _freeze_render_value(getattr(value, field.name)))
+            for field in fields(value)
+        )
+    if isinstance(value, Mapping):
+        return tuple(
+            sorted(
+                (
+                    (
+                        _freeze_render_value(key),
+                        _freeze_render_value(item_value),
+                    )
+                    for key, item_value in value.items()
+                ),
+                key=repr,
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_render_value(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted((_freeze_render_value(item) for item in value), key=repr))
+    return value
+
+
+def _listing_render_key(listing: Listing | None) -> object:
+    return _freeze_render_value(listing)
 
 
 def _mplus_headline_sort_score(applicant: Applicant) -> tuple[int, float]:
@@ -794,9 +838,28 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         self._pinned_row = -1
         self._group_marker_by_row: dict[int, _GroupMarker] = {}
 
-    def set_rows(self, hover_row: int, pinned_row: int) -> None:
+    def set_rows(self, hover_row: int, pinned_row: int) -> set[int]:
+        old_hover_row = self._hover_row
+        old_pinned_row = self._pinned_row
+        changed = {
+            row
+            for row in (
+                old_hover_row,
+                old_pinned_row,
+                hover_row,
+                pinned_row,
+            )
+            if row >= 0
+        }
+        changed = {
+            row
+            for row in changed
+            if (row == old_hover_row, row == old_pinned_row)
+            != (row == hover_row, row == pinned_row)
+        }
         self._hover_row = hover_row
         self._pinned_row = pinned_row
+        return changed
 
     def set_group_markers(self, markers: dict[int, _GroupMarker]) -> None:
         """row index → group paint metadata; solo rows are absent."""
@@ -2262,6 +2325,7 @@ class OverlayWindow(QMainWindow):
         self._show_settings = show_settings
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
         self._game_foreground = self._is_game_foreground()
+        self._open_overlay_foreground_loss_grace_until = 0.0
         self._launcher_foreground_grace_until = 0.0
         self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
@@ -2464,6 +2528,7 @@ class OverlayWindow(QMainWindow):
         # Reverse lookup: row -> applicant_id. Rebuilt in _refresh_table.
         # Used by hover/click signal handlers to translate row index → id.
         self._id_by_row: list[str] = []
+        self._row_render_key_by_id: dict[str, tuple] = {}
         self._group_size_by_raw: dict[str, int] = {}
         self._package_fit_by_raw: dict[str, PackageFit] = {}
         # Hover & pin tracking. Display priority: hover > pin > hidden.
@@ -2639,11 +2704,13 @@ class OverlayWindow(QMainWindow):
             self._launcher.hide()
             return
         self._game_foreground = True
-        self._launcher_foreground_grace_until = (
+        foreground_grace_until = (
             time.monotonic() + LAUNCHER_FOREGROUND_GRACE_S
             if launcher_interaction_foreground
             else 0.0
         )
+        self._launcher_foreground_grace_until = foreground_grace_until
+        self._open_overlay_foreground_loss_grace_until = foreground_grace_until
         self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
         self._launcher.hide()
@@ -2658,6 +2725,9 @@ class OverlayWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             _log.warning("Game foreground probe failed: %s", exc)
             return True
+
+    def _cursor_over_open_overlay(self) -> bool:
+        return self.isVisible() and self.frameGeometry().contains(QCursor.pos())
 
     def _pause_foreground_polling_for_launcher_drag(self) -> None:
         if self._foreground_timer.isActive():
@@ -2678,12 +2748,34 @@ class OverlayWindow(QMainWindow):
         if self._launcher.is_dragging():
             return
         foreground = self._is_game_foreground()
+        now = time.monotonic()
+        open_overlay_visible = self.isVisible() and not self._collapsed_to_launcher
+        open_overlay_interaction_foreground = (
+            open_overlay_visible
+            and not foreground
+            and (self.isActiveWindow() or self._cursor_over_open_overlay())
+        )
+        if open_overlay_interaction_foreground:
+            self._open_overlay_foreground_loss_grace_until = (
+                now + OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S
+            )
+            return
+        if open_overlay_visible and not foreground:
+            if self._open_overlay_foreground_loss_grace_until <= 0.0:
+                self._open_overlay_foreground_loss_grace_until = (
+                    now + OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S
+                )
+                return
+            if now < self._open_overlay_foreground_loss_grace_until:
+                return
+        else:
+            self._open_overlay_foreground_loss_grace_until = 0.0
         launcher_interaction_foreground = (
             self._collapsed_to_launcher
             and self._launcher.isVisible()
             and (
                 self._launcher.isActiveWindow()
-                or time.monotonic() < self._launcher_foreground_grace_until
+                or now < self._launcher_foreground_grace_until
             )
         )
         if not foreground and launcher_interaction_foreground:
@@ -2748,7 +2840,6 @@ class OverlayWindow(QMainWindow):
         self._manual_target_key = new_key
         self._refresh_table()
         self._update_title()
-        self._sync_delegate_and_panel()
 
     def _clear_manual_target_key(self) -> None:
         if self._manual_target_key is None:
@@ -2914,6 +3005,7 @@ class OverlayWindow(QMainWindow):
         self._table.setRowCount(0)
         self._row_for_id.clear()
         self._id_by_row = []
+        self._row_render_key_by_id.clear()
         self._hover_id = None
         self._pinned_id = None
         self._hover_by_tab["applicants"] = None
@@ -3270,6 +3362,7 @@ class OverlayWindow(QMainWindow):
             self._panel.setPlaceholder()
             return
         raw_aid, _ = _split_composite(applicant.applicant_id)
+        self._launch_raid_boss_fetch_if_needed(applicant)
         raid_detail_status = self._raid_detail_status_for(applicant)
         self._panel.setApplicantData(
             applicant,
@@ -3283,24 +3376,6 @@ class OverlayWindow(QMainWindow):
             else False,
             wcl_retry_available=self._manual_wcl_retry_available(applicant),
         )
-        if self._launch_raid_boss_fetch_if_needed(applicant):
-            raid_detail_status = self._raid_detail_status_for(applicant)
-            self._panel.setApplicantData(
-                applicant,
-                self._effective_listing(),
-                self._package_fit_by_raw.get(raw_aid)
-                if self._active_tab == "applicants"
-                else None,
-                pinned=visible_id == self._pinned_id,
-                raid_detail_status=raid_detail_status[0] if raid_detail_status else "",
-                raid_detail_status_error=raid_detail_status[1]
-                if raid_detail_status
-                else False,
-                raid_detail_retry_available=raid_detail_status[2]
-                if raid_detail_status
-                else False,
-                wcl_retry_available=self._manual_wcl_retry_available(applicant),
-            )
 
     def _apply_panel_height_above_table(self) -> None:
         if not self.isVisible():
@@ -3348,6 +3423,23 @@ class OverlayWindow(QMainWindow):
                 self.setUpdatesEnabled(True)
                 self.update()
 
+    def _update_table_interaction_rows(self, rows: set[int]) -> None:
+        if not rows:
+            return
+        viewport = self._table.viewport()
+        model = self._table.model()
+        if viewport is None or model is None:
+            return
+        for row in rows:
+            if row < 0 or row >= self._table.rowCount():
+                continue
+            top_rect = self._table.visualRect(model.index(row, 0))
+            if not top_rect.isValid():
+                continue
+            viewport.update(
+                QRect(0, top_rect.top(), viewport.width(), top_rect.height())
+            )
+
     def _set_geometry_without_persist(self, x: int, y: int, w: int, h: int) -> None:
         self._suppress_geometry_persist = True
         try:
@@ -3365,10 +3457,7 @@ class OverlayWindow(QMainWindow):
         pinned_row = (
             self._row_for_id.get(self._pinned_id, -1) if self._pinned_id else -1
         )
-        self._delegate.set_rows(hover_row, pinned_row)
-        vp = self._table.viewport()
-        if vp is not None:
-            vp.update()
+        changed_rows = self._delegate.set_rows(hover_row, pinned_row)
         updates_enabled = self.updatesEnabled()
         batch_updates = updates_enabled and self.isVisible()
         if batch_updates:
@@ -3379,6 +3468,8 @@ class OverlayWindow(QMainWindow):
         finally:
             if batch_updates:
                 self.setUpdatesEnabled(True)
+            self._update_table_interaction_rows(changed_rows)
+            if batch_updates:
                 self.update()
 
     def _on_cell_entered(self, row: int, _col: int) -> None:
@@ -3505,6 +3596,24 @@ class OverlayWindow(QMainWindow):
             self.show()
             self.raise_()
 
+    def _row_render_key(self, applicant: Applicant, listing: Listing | None) -> tuple:
+        raw_aid, _ = _split_composite(applicant.applicant_id)
+        applicant_key = tuple(
+            (field.name, _freeze_render_value(getattr(applicant, field.name)))
+            for field in fields(applicant)
+            if field.name not in _TABLE_DETAIL_ONLY_APPLICANT_FIELDS
+        )
+        return (
+            self._active_tab,
+            applicant_key,
+            _listing_render_key(listing),
+            self._metric_preferences.cache_key(),
+            self._manual_target_key,
+            self._group_size_by_raw.get(raw_aid, 1),
+            self._group_ready_by_raw.get(raw_aid, False),
+            _freeze_render_value(self._package_fit_by_raw.get(raw_aid)),
+        )
+
     def _render_row(self, row: int, applicant: Applicant) -> None:
         """Write applicant data into an existing table row. Caller manages
         row creation / position — used by _refresh_table after sort.
@@ -3610,9 +3719,10 @@ class OverlayWindow(QMainWindow):
             self._table.setItem(row, COL_MPLUS, _mplus_dual_cell(applicant, listing))
 
     def _refresh_table(self) -> None:
-        """Rebuild table sorted by effective RIO score DESC.
-        Called on every state change — full rebuild is trivial at our applicant
-        counts (≤30) and avoids row-bookkeeping on insert/sort.
+        """Refresh the table sorted by effective RIO score DESC.
+        Full rebuild when row identity/order changes; otherwise only rows whose
+        render key changed are rewritten. This keeps burst snapshots from
+        recreating every QTableWidgetItem when the visible order is stable.
 
         Hover & pin preservation:
         - Capture prev_hover_id / prev_pinned_id BEFORE rebuild.
@@ -3639,15 +3749,18 @@ class OverlayWindow(QMainWindow):
             party=len(self._state.party_members),
         )
 
-        # Reset delegate to "no highlight anywhere" BEFORE we tear down items.
-        # Avoids a stripe / band paint at a row index that no longer maps if Qt
-        # issues an intermediate paint event between setRowCount and the post-
-        # rebuild marker reset. Symmetric with set_group_markers({}) below.
-        self._delegate.set_rows(-1, -1)
-        self._delegate.set_group_markers({})
-
-        sorted_applicants = self._active_sorted_rows()
         listing = self._effective_listing()
+        sorted_package_fit_by_raw: dict[str, PackageFit] = {}
+        if self._active_tab == "party":
+            sorted_applicants = sort_roster_members(self._state.party_members.values())
+        else:
+            (
+                sorted_applicants,
+                sorted_package_fit_by_raw,
+            ) = _sort_applicants_grouped_with_package_fits(
+                self._state.applicants.values(),
+                listing,
+            )
         self._group_size_by_raw = {}
         self._group_ready_by_raw = {}
         self._package_fit_by_raw = {}
@@ -3669,16 +3782,43 @@ class OverlayWindow(QMainWindow):
                     )
                     if len(members) < 2:
                         continue
-                    fit = package_fit(members, listing)
+                    fit = sorted_package_fit_by_raw.get(raw_aid)
+                    if fit is None:
+                        fit = package_fit(members, listing)
                     if fit.display:
                         self._package_fit_by_raw[raw_aid] = fit
 
-        self._table.setRowCount(len(sorted_applicants))
-        self._row_for_id.clear()
-        self._id_by_row = [a.applicant_id for a in sorted_applicants]
-        for row, applicant in enumerate(sorted_applicants):
-            self._row_for_id[applicant.applicant_id] = row
-            self._render_row(row, applicant)
+        new_id_by_row = [a.applicant_id for a in sorted_applicants]
+        same_rows = (
+            self._table.rowCount() == len(sorted_applicants)
+            and self._id_by_row == new_id_by_row
+        )
+        new_render_key_by_id: dict[str, tuple] = {}
+        if same_rows:
+            for row, applicant in enumerate(sorted_applicants):
+                self._row_for_id[applicant.applicant_id] = row
+                row_key = self._row_render_key(applicant, listing)
+                new_render_key_by_id[applicant.applicant_id] = row_key
+                if self._row_render_key_by_id.get(applicant.applicant_id) != row_key:
+                    self._render_row(row, applicant)
+        else:
+            # Reset delegate to "no highlight anywhere" BEFORE we tear down items.
+            # Avoids a stripe / band paint at a row index that no longer maps if Qt
+            # issues an intermediate paint event between setRowCount and the post-
+            # rebuild marker reset. Symmetric with set_group_markers({}) below.
+            self._delegate.set_rows(-1, -1)
+            self._delegate.set_group_markers({})
+            self._table.setRowCount(len(sorted_applicants))
+            self._row_for_id.clear()
+            self._id_by_row = new_id_by_row
+            for row, applicant in enumerate(sorted_applicants):
+                self._row_for_id[applicant.applicant_id] = row
+                self._render_row(row, applicant)
+                new_render_key_by_id[applicant.applicant_id] = self._row_render_key(
+                    applicant,
+                    listing,
+                )
+        self._row_render_key_by_id = new_render_key_by_id
         self._maybe_grow_name_column(sorted_applicants)
         self._auto_size_metric_columns()
 

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 
 STARTUP_SHORTCUT_NAME = "ApplicantScout Companion.lnk"
@@ -19,6 +20,8 @@ WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _ARGUMENT_LIST_SEPARATOR = "\x1f"
+_CURRENT_SESSION_WATCHER: subprocess.Popen | None = None
+_CURRENT_SESSION_WATCHER_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -277,6 +280,7 @@ def start_wow_sync_watcher(
     *,
     executable_path: Path | None = None,
     arguments: tuple[str, ...] | None = None,
+    check_existing: bool = True,
 ) -> subprocess.Popen | None:
     """Start the current-session watcher used by the Startup shortcut.
 
@@ -287,14 +291,23 @@ def start_wow_sync_watcher(
     spec = companion_launch_spec()
     executable = executable_path or spec.executable
     launch_arguments = arguments if arguments is not None else spec.arguments
-    if is_wow_sync_watcher_running(
+    global _CURRENT_SESSION_WATCHER
+    with _CURRENT_SESSION_WATCHER_LOCK:
+        current = _CURRENT_SESSION_WATCHER
+        if current is not None and current.poll() is None:
+            return None
+        _CURRENT_SESSION_WATCHER = None
+    if check_existing and is_wow_sync_watcher_running(
         executable_path=executable,
         arguments=launch_arguments,
     ):
         return None
-    return subprocess.Popen(
+    process = subprocess.Popen(
         [str(executable), *launch_arguments, WATCH_WOW_ARG],
         cwd=str(executable.parent),
         close_fds=True,
         creationflags=_CREATE_NO_WINDOW,
     )
+    with _CURRENT_SESSION_WATCHER_LOCK:
+        _CURRENT_SESSION_WATCHER = process
+    return process

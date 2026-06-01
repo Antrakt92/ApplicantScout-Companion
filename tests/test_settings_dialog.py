@@ -46,6 +46,13 @@ def _cfg(tmp_path: Path, *, client_id: str = "client", secret: str = "secret") -
     )
 
 
+def _wait_for_screenshots_warning(qtbot, dialog: SettingsDialog) -> None:
+    qtbot.waitUntil(
+        lambda: "Screenshots folder warning" in dialog.status_label.text(),
+        timeout=1000,
+    )
+
+
 def _fallback_release(
     event: threading.Event,
     *,
@@ -317,6 +324,7 @@ def test_settings_dialog_rejects_suspicious_screenshots_path(qtbot, tmp_path: Pa
 
     dialog.screenshots_edit.setText(str(tmp_path / "not-wow" / "Shots"))
 
+    _wait_for_screenshots_warning(qtbot, dialog)
     assert "Screenshots folder warning" in dialog.status_label.text()
     assert "#ff6666" in dialog.status_label.styleSheet()
 
@@ -340,6 +348,7 @@ def test_settings_dialog_rejects_nested_screenshots_path(qtbot, tmp_path: Path):
 
     dialog.screenshots_edit.setText(str(nested))
 
+    _wait_for_screenshots_warning(qtbot, dialog)
     assert "Screenshots folder warning" in dialog.status_label.text()
     assert "#ff6666" in dialog.status_label.styleSheet()
 
@@ -347,6 +356,48 @@ def test_settings_dialog_rejects_nested_screenshots_path(qtbot, tmp_path: Path):
 
     assert not dialog.result()
     assert "Screenshots folder warning" in dialog.status_label.text()
+
+
+def test_settings_dialog_defers_screenshots_health_check_on_text_change(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    calls: list[Path] = []
+
+    def fake_warning(path: Path) -> str:
+        calls.append(path)
+        return "Screenshots folder warning: slow path."
+
+    monkeypatch.setattr(settings_mod, "screenshots_path_health_warning", fake_warning)
+
+    dialog.screenshots_edit.setText(str(tmp_path / "sleeping-drive" / "Screenshots"))
+
+    assert calls == []
+    qtbot.waitUntil(lambda: bool(calls), timeout=1000)
+    assert dialog.status_label.text() == "Screenshots folder warning: slow path."
+
+
+def test_settings_dialog_defers_initial_screenshots_health_check(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    cfg.screenshots_path = tmp_path / "sleeping-drive" / "Screenshots"
+    calls: list[Path] = []
+
+    def fake_warning(path: Path) -> str:
+        calls.append(path)
+        return "Screenshots folder warning: slow path."
+
+    monkeypatch.setattr(settings_mod, "screenshots_path_health_warning", fake_warning)
+
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    assert calls == []
+    qtbot.waitUntil(lambda: bool(calls), timeout=1000)
+    assert calls == [cfg.screenshots_path]
+    assert dialog.status_label.text() == "Screenshots folder warning: slow path."
 
 
 def test_settings_dialog_does_not_emit_values_changed_for_suspicious_screenshots_path(
@@ -361,6 +412,7 @@ def test_settings_dialog_does_not_emit_values_changed_for_suspicious_screenshots
 
     assert not dialog.flush_pending_values()
     assert seen == []
+    _wait_for_screenshots_warning(qtbot, dialog)
     assert "Screenshots folder warning" in dialog.status_label.text()
 
 
@@ -384,6 +436,7 @@ def test_settings_dialog_does_not_emit_values_changed_for_nested_screenshots_pat
 
     assert not dialog.flush_pending_values()
     assert seen == []
+    _wait_for_screenshots_warning(qtbot, dialog)
     assert "Screenshots folder warning" in dialog.status_label.text()
 
 

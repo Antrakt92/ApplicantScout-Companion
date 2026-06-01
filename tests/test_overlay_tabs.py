@@ -870,7 +870,7 @@ def test_target_key_control_hides_for_raid_contexts(qtbot, tmp_path):
 
 
 def test_target_key_down_button_overrides_known_mplus_listing_without_collapsing(
-    qtbot, tmp_path
+    qtbot, tmp_path, monkeypatch
 ):
     state = AppState()
     state.listing = _listing(key_level=12)
@@ -878,12 +878,21 @@ def test_target_key_down_button_overrides_known_mplus_listing_without_collapsing
     win = _window(tmp_path, qtbot, state)
     win.restore_from_launcher()
     win._update_title()
+    sync_calls = []
+    original_sync = win._sync_delegate_and_panel
+
+    def record_sync() -> None:
+        sync_calls.append(True)
+        original_sync()
+
+    monkeypatch.setattr(win, "_sync_delegate_and_panel", record_sync)
 
     qtbot.mouseClick(win._tab_bar._key_down_button, Qt.MouseButton.LeftButton)
 
     assert win._manual_target_key == 11
     assert win._tab_bar._key_spin.value() == 11
     assert not win._collapsed_to_launcher
+    assert len(sync_calls) == 1
     listing = win._effective_listing()
     assert listing is not None
     assert listing.key_level == 11

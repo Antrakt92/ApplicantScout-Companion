@@ -12,6 +12,7 @@ import pytest
 import applicant_scout.__main__ as main_mod
 from applicant_scout import atomic_io
 import applicant_scout.config as config_mod
+import applicant_scout.wow_lifecycle as wow_lifecycle_mod
 from applicant_scout.config import (
     Config,
     ConfigError,
@@ -3005,12 +3006,12 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
         raising=False,
     )
 
     assert main_mod._run_first_run_settings(cfg)
-    assert calls == ["shortcut", "save", "watcher"]
+    assert calls == ["shortcut", "save", "watcher:False"]
 
 
 def test_persist_settings_values_preserves_process_env_overridden_saved_values(
@@ -3266,7 +3267,7 @@ def test_first_run_wow_sync_enable_save_failure_rolls_back_shortcut(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
         raising=False,
     )
     monkeypatch.setattr(
@@ -3326,7 +3327,7 @@ def test_first_run_wow_sync_disable_save_failure_restores_previous_enabled_short
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
         raising=False,
     )
     monkeypatch.setattr(
@@ -3494,6 +3495,135 @@ def test_first_run_wow_sync_disable_cleanup_failure_still_saves_settings(
     assert "shortcut cleanup failed" in warnings[0]
 
 
+def test_wow_sync_startup_config_async_defers_shortcut_mutation_off_caller():
+    workers = []
+    calls: list[bool] = []
+
+    main_mod._configure_wow_sync_startup_async(
+        True,
+        runner=workers.append,
+        configure=lambda enabled: calls.append(enabled),
+    )
+
+    assert calls == []
+    assert len(workers) == 1
+
+    workers[0]()
+
+    assert calls == [True]
+
+
+def test_wow_sync_startup_config_async_skips_stale_queued_shortcut_work():
+    workers = []
+    calls: list[bool] = []
+
+    main_mod._configure_wow_sync_startup_async(
+        True,
+        runner=workers.append,
+        configure=lambda enabled: calls.append(enabled),
+    )
+    main_mod._configure_wow_sync_startup_async(
+        False,
+        runner=workers.append,
+        configure=lambda enabled: calls.append(enabled),
+    )
+
+    workers[0]()
+    workers[1]()
+
+    assert calls == [False]
+
+
+def test_wow_sync_startup_config_async_reports_current_worker_failure():
+    workers = []
+    notifications = []
+    errors: list[Exception] = []
+
+    def configure(_enabled: bool) -> None:
+        raise RuntimeError("shortcut failed")
+
+    main_mod._configure_wow_sync_startup_async(
+        True,
+        runner=workers.append,
+        configure=configure,
+        notify=notifications.append,
+        on_error=errors.append,
+    )
+
+    workers[0]()
+
+    assert errors == []
+    assert len(notifications) == 1
+
+    notifications[0]()
+
+    assert len(errors) == 1
+    assert "shortcut failed" in str(errors[0])
+
+
+def test_settings_change_applies_wow_sync_runtime_without_startup_shortcut_on_caller_thread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    screenshots = _valid_screenshots_dir(tmp_path)
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    cfg.sync_with_wow = False
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(screenshots),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=True,
+    )
+    calls: list[str] = []
+    timer = object()
+
+    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda _enabled: (_ for _ in ()).throw(
+            AssertionError("startup shortcut mutation must be async")
+        ),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "start_wow_sync_watcher",
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_start_wow_lifecycle_timer",
+        lambda *_args, **_kwargs: calls.append("timer-start") or timer,
+    )
+
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=False,
+        auth=object(),
+        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda *_args, **_kwargs: None,
+            bump_wcl_runtime_generation=lambda: None,
+        ),
+        watcher=object(),
+        current_screenshots_dir=screenshots,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=None,
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert result.cfg.sync_with_wow is True
+    assert result.wow_exit_timer is timer
+    assert calls == ["watcher:False", "timer-start"]
+
+
 def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -3522,9 +3652,12 @@ def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
     )
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: True)
+    def fail_wow_scan() -> bool:
+        raise AssertionError("WoW process scan must not block settings apply")
+
+    monkeypatch.setattr(main_mod, "is_wow_running", fail_wow_scan)
     monkeypatch.setattr(
         main_mod,
         "_start_wow_lifecycle_timer",
@@ -3541,8 +3674,8 @@ def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
     assert stopped is None
     assert calls == [
         "shortcut:True",
-        "watcher",
-        "timer-start:True:True",
+        "watcher:False",
+        "timer-start:False:True",
         "shortcut:False",
         "timer-stop",
         "timer-delete",
@@ -3562,14 +3695,14 @@ def test_wow_sync_runtime_apply_rolls_back_startup_when_watcher_start_fails(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher")
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}")
         or (_ for _ in ()).throw(RuntimeError("watcher failed")),
     )
 
     with pytest.raises(RuntimeError, match="watcher failed"):
         main_mod._apply_wow_sync_runtime(object(), True, None)
 
-    assert calls == ["shortcut:True", "watcher", "shortcut:False"]
+    assert calls == ["shortcut:True", "watcher:False", "shortcut:False"]
 
 
 def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
@@ -3726,7 +3859,7 @@ def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
     )
 
     main_mod._start_wow_lifecycle_timer(
@@ -3737,7 +3870,7 @@ def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
 
     callbacks[0]()
 
-    assert calls == ["watcher", "quit"]
+    assert calls == ["watcher:True", "quit"]
 
 
 def test_wow_lifecycle_timer_retries_rearm_failure_before_quitting(
@@ -3761,8 +3894,8 @@ def test_wow_lifecycle_timer_retries_rearm_failure_before_quitting(
         def quit(self) -> None:
             calls.append("quit")
 
-    def start_watcher() -> None:
-        calls.append("watcher")
+    def start_watcher(**kwargs) -> None:
+        calls.append(f"watcher:{kwargs.get('check_existing')}")
         result = next(watcher_results)
         if isinstance(result, Exception):
             raise result
@@ -3778,10 +3911,10 @@ def test_wow_lifecycle_timer_retries_rearm_failure_before_quitting(
     )
 
     callbacks[0]()
-    assert calls == ["watcher"]
+    assert calls == ["watcher:True"]
 
     callbacks[0]()
-    assert calls == ["watcher", "watcher", "quit"]
+    assert calls == ["watcher:True", "watcher:True", "quit"]
 
 
 def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
@@ -3810,7 +3943,7 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
     )
 
     main_mod._start_wow_lifecycle_timer(
@@ -3825,7 +3958,7 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
     assert calls == []
 
     callbacks[0]()
-    assert calls == ["watcher", "quit"]
+    assert calls == ["watcher:True", "quit"]
 
 
 def test_wow_lifecycle_timer_defers_rearm_and_quit_when_prepare_quit_is_blocked(
@@ -3850,7 +3983,7 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_prepare_quit_is_blocked(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
     )
 
     main_mod._start_wow_lifecycle_timer(
@@ -3866,7 +3999,7 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_prepare_quit_is_blocked(
     assert calls == ["can", "prepare"]
 
     callbacks[0]()
-    assert calls == ["can", "prepare", "can", "prepare", "watcher", "quit"]
+    assert calls == ["can", "prepare", "can", "prepare", "watcher:True", "quit"]
 
 
 def test_wow_lifecycle_timer_skips_rearm_when_prepare_quit_deactivates_timer(
@@ -3897,7 +4030,7 @@ def test_wow_lifecycle_timer_skips_rearm_when_prepare_quit_deactivates_timer(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
     )
 
     timer_box["timer"] = main_mod._start_wow_lifecycle_timer(
@@ -3927,7 +4060,7 @@ def test_wow_sync_runtime_apply_starts_lifecycle_timer_even_when_wow_is_closed(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda: calls.append("watcher"),
+        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
     )
     monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
     monkeypatch.setattr(
@@ -3942,7 +4075,51 @@ def test_wow_sync_runtime_apply_starts_lifecycle_timer_even_when_wow_is_closed(
     started = main_mod._apply_wow_sync_runtime(object(), True, None)
 
     assert started is timer
-    assert calls == ["shortcut:True", "watcher", "timer-start:False:True"]
+    assert calls == ["shortcut:True", "watcher:False", "timer-start:False:True"]
+
+
+def test_start_wow_sync_watcher_reuses_live_current_session_helper(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    calls: list[list[str]] = []
+    executable = tmp_path / "ApplicantScout.exe"
+    executable.write_text("", encoding="utf-8")
+
+    class FakePopen:
+        def __init__(self, args, **_kwargs) -> None:
+            self.args = list(args)
+            self.returncode: int | None = None
+            calls.append(self.args)
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    monkeypatch.setattr(
+        wow_lifecycle_mod,
+        "companion_launch_spec",
+        lambda: wow_lifecycle_mod.LaunchSpec(executable, ("--minimized",)),
+    )
+    monkeypatch.setattr(wow_lifecycle_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(
+        wow_lifecycle_mod,
+        "_CURRENT_SESSION_WATCHER",
+        None,
+        raising=False,
+    )
+
+    first = wow_lifecycle_mod.start_wow_sync_watcher(check_existing=False)
+    second = wow_lifecycle_mod.start_wow_sync_watcher(check_existing=False)
+
+    assert isinstance(first, FakePopen)
+    assert second is None
+    assert calls == [[str(executable), "--minimized", "--watch-wow"]]
+
+    first.returncode = 0
+    third = wow_lifecycle_mod.start_wow_sync_watcher(check_existing=False)
+
+    assert isinstance(third, FakePopen)
+    assert len(calls) == 2
 
 
 def test_replace_screenshot_watcher_keeps_old_watcher_when_new_start_fails(
@@ -4013,10 +4190,111 @@ def test_replace_screenshot_watcher_starts_new_before_stopping_old(
         object(),
         lambda *_args: None,
         signal_gate=main_mod._WatcherSignalGate(),
+        stop_runner=lambda worker: worker(),
     )
 
     assert new.path == tmp_path / "new"
     assert calls == ["start:new", "stop:old"]
+
+
+def test_replace_screenshot_watcher_defers_old_stop_off_caller(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    calls: list[str] = []
+    workers = []
+
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            pass
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            calls.append(f"start:{self.path.name}")
+
+        def stop(self) -> None:
+            calls.append(f"stop:{self.path.name}")
+
+    old = FakeWatcher(tmp_path / "old")
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+
+    new = main_mod._replace_screenshot_watcher(
+        old,
+        tmp_path / "new",
+        object(),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        stop_runner=workers.append,
+    )
+
+    assert new.path == tmp_path / "new"
+    assert calls == ["start:new"]
+    assert len(workers) == 1
+
+    workers[0]()
+
+    assert calls == ["start:new", "stop:old"]
+
+
+def test_replace_screenshot_watcher_marks_old_stopped_before_deferred_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    calls: list[str] = []
+    workers = []
+
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            pass
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.stopped_requested = False
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def request_stop(self) -> None:
+            self.stopped_requested = True
+            calls.append(f"request-stop:{self.path.name}")
+
+        def start(self) -> None:
+            calls.append(f"start:{self.path.name}")
+
+        def stop(self) -> None:
+            calls.append(f"stop:{self.path.name}")
+
+        def simulate_file_event(self) -> None:
+            if not self.stopped_requested:
+                calls.append(f"decode:{self.path.name}")
+
+    old = FakeWatcher(tmp_path / "old")
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+
+    main_mod._replace_screenshot_watcher(
+        old,
+        tmp_path / "new",
+        object(),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        stop_runner=workers.append,
+    )
+
+    old.simulate_file_event()
+
+    assert calls == ["start:new", "request-stop:old"]
+    assert len(workers) == 1
+
+    workers[0]()
+
+    assert calls == ["start:new", "request-stop:old", "stop:old"]
 
 
 def test_replace_screenshot_watcher_ignores_old_queued_signals_after_replacement(
@@ -4270,6 +4548,152 @@ def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_sna
     assert window.failures == []
 
 
+def test_connect_screenshot_watcher_coalesces_snapshot_burst_to_latest():
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.decoded: list[object] = []
+
+        def note_decode(self, snap: object) -> None:
+            self.decoded.append(snap)
+
+    callbacks = []
+    watcher = FakeWatcher()
+    machine = FakeMachine()
+    window = FakeWindow()
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        machine,
+        window,
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    first = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=100, file_id="first.jpg", size=10)
+    )
+    second = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=200, file_id="second.jpg", size=10)
+    )
+    third = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=300, file_id="third.jpg", size=10)
+    )
+
+    watcher.snapshotReceived.emit(first)
+    watcher.snapshotReceived.emit(second)
+    watcher.snapshotReceived.emit(third)
+
+    assert machine.snapshots == []
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+
+    assert machine.snapshots == [third]
+    assert window.decoded == [third]
+
+
+def test_connect_screenshot_watcher_coalesces_terminal_clear_by_source_order():
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def note_decode(self, _snap: object) -> None:
+            pass
+
+    callbacks = []
+    watcher = FakeWatcher()
+    machine = FakeMachine()
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        machine,
+        FakeWindow(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    old_normal = SimpleNamespace(
+        terminal_clear=False,
+        source=SimpleNamespace(mtime_ns=100, file_id="normal-old.jpg", size=10),
+    )
+    terminal_clear = SimpleNamespace(
+        terminal_clear=True,
+        source=SimpleNamespace(mtime_ns=200, file_id="clear.jpg", size=10),
+    )
+    new_normal = SimpleNamespace(
+        terminal_clear=False,
+        source=SimpleNamespace(mtime_ns=300, file_id="normal-new.jpg", size=10),
+    )
+
+    watcher.snapshotReceived.emit(old_normal)
+    watcher.snapshotReceived.emit(terminal_clear)
+    watcher.snapshotReceived.emit(new_normal)
+    callbacks.pop(0)()
+
+    assert machine.snapshots == [new_normal]
+
+    callbacks.clear()
+    machine.snapshots.clear()
+    watcher.snapshotReceived.emit(
+        SimpleNamespace(
+            terminal_clear=False,
+            source=SimpleNamespace(mtime_ns=400, file_id="normal-next.jpg", size=10),
+        )
+    )
+    newest_clear = SimpleNamespace(
+        terminal_clear=True,
+        source=SimpleNamespace(mtime_ns=500, file_id="clear-newest.jpg", size=10),
+    )
+    watcher.snapshotReceived.emit(newest_clear)
+    callbacks.pop(0)()
+
+    assert machine.snapshots == [newest_clear]
+
+
 def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -4339,7 +4763,7 @@ def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails
     assert machine.snapshots == ["old-after-failed-replace"]
 
 
-def test_replace_screenshot_watcher_stops_new_and_restores_old_generation_when_old_stop_fails(
+def test_replace_screenshot_watcher_keeps_new_generation_when_old_stop_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -4396,22 +4820,22 @@ def test_replace_screenshot_watcher_stops_new_and_restores_old_generation_when_o
         signal_gate=gate,
     )
 
-    with pytest.raises(RuntimeError, match="old stop failed"):
-        main_mod._replace_screenshot_watcher(
-            old,
-            tmp_path / "new",
-            machine,
-            object(),
-            lambda *_args: None,
-            signal_gate=gate,
-        )
+    main_mod._replace_screenshot_watcher(
+        old,
+        tmp_path / "new",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+        stop_runner=lambda worker: worker(),
+    )
 
     new = created[-1]
-    old.snapshotReceived.emit("old-after-failed-replace")
-    new.snapshotReceived.emit("new-after-failed-replace")
+    old.snapshotReceived.emit("old-after-replace")
+    new.snapshotReceived.emit("new-after-replace")
 
-    assert calls == ["start:old", "start:new", "stop:old", "stop:new"]
-    assert machine.snapshots == ["old-after-failed-replace"]
+    assert calls == ["start:old", "start:new", "stop:old"]
+    assert machine.snapshots == ["new-after-replace"]
 
 
 def test_replace_screenshot_watcher_ignores_old_signal_emitted_during_old_stop_after_commit(
@@ -4746,7 +5170,7 @@ def test_screenshot_runtime_restores_rio_reader_when_watcher_start_fails(
     assert machine.reader == "old-reader"
 
 
-def test_screenshot_runtime_restores_rio_reader_when_old_watcher_stop_fails(
+def test_screenshot_runtime_keeps_new_reader_when_old_watcher_stop_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -4796,18 +5220,18 @@ def test_screenshot_runtime_restores_rio_reader_when_old_watcher_stop_fails(
     )
     assert machine.reader == "old-reader"
 
-    with pytest.raises(RuntimeError, match="old stop failed"):
-        main_mod._replace_screenshots_runtime(
-            old_watcher,
-            tmp_path / "new" / "Screenshots",
-            machine,
-            object(),
-            lambda *_args: None,
-            signal_gate=gate,
-        )
+    main_mod._replace_screenshots_runtime(
+        old_watcher,
+        tmp_path / "new" / "Screenshots",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+        stop_runner=lambda worker: worker(),
+    )
 
-    assert machine.reader == "old-reader"
-    assert stops == ["old", "new"]
+    assert machine.reader == "new-reader"
+    assert stops == ["old"]
 
 
 def test_raiderio_reader_for_screenshots_path_passes_cache_dir(
@@ -4908,6 +5332,30 @@ def test_settings_autosave_status_combines_pending_validation_with_screenshots_w
     assert not is_warning
     assert "Screenshots folder warning" in text
     assert "pending validation" in text
+
+
+def test_settings_autosave_status_accepts_cached_screenshots_warning_without_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    values = SimpleNamespace(screenshots_path=str(tmp_path / "sleeping-drive"))
+    cfg = _cfg(tmp_path)
+
+    def fail_health_check(_path: Path) -> str | None:
+        raise AssertionError("autosave status should not probe path health")
+
+    monkeypatch.setattr(main_mod, "screenshots_path_health_warning", fail_health_check)
+
+    text, is_error, is_warning = main_mod._settings_autosave_status(
+        values,
+        [],
+        cfg,
+        path_warning="Screenshots folder warning: cached slow path.",
+    )
+
+    assert is_error
+    assert not is_warning
+    assert text == "Screenshots folder warning: cached slow path."
 
 
 def test_settings_wcl_test_success_status_does_not_look_like_plain_autosave(

@@ -1729,6 +1729,13 @@ class _CacheEntry:
     ranks: dict  # asdict(CharacterRanks)
 
 
+@dataclass(frozen=True)
+class _CacheSaveSnapshot:
+    entries: tuple[tuple[str, _CacheEntry], ...]
+    epoch: int
+    generation: int
+
+
 # Bumped when CharacterRanks / DungeonPerf shape or aggregation logic changes —
 # old cached entries with stale schema or numbers get auto-discarded on load.
 # v2 = per-encounter top-key filtering with run_count (was: zoneRankings best/median).
@@ -1776,6 +1783,8 @@ class CharacterCache:
         # during iteration"). Not caught by `except OSError` → kills the
         # QRunnable, signal never fires, applicant row stuck on "loading".
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._save_epoch = 0
         self._generation = 0
 
     @property
@@ -1882,22 +1891,50 @@ class CharacterCache:
         )
         return age <= ttl
 
-    def _prune_expired_locked(self, now: float) -> None:
+    def _prune_expired_locked(self, now: float) -> bool:
         # Caller must hold self._lock.
+        changed = False
         for key, entry in list(self._data.items()):
             if not self._entry_is_fresh(key, entry, now=now):
                 self._data.pop(key, None)
+                changed = True
+        return changed
 
-    def _save_locked(self) -> bool:
+    def _snapshot_for_save_locked(self) -> _CacheSaveSnapshot:
         # Caller must hold self._lock.
-        self._prune_expired_locked(time.time())
+        if self._prune_expired_locked(time.time()):
+            self._save_epoch += 1
+        # Cache entries are replaced, not mutated in place. The shallow snapshot
+        # keeps GUI-thread cache reads from waiting on JSON serialization or disk
+        # replacement while preserving a consistent key->entry view for the save.
+        return _CacheSaveSnapshot(
+            entries=tuple(self._data.items()),
+            epoch=self._save_epoch,
+            generation=self._generation,
+        )
+
+    def _snapshot_is_current_locked(self, snapshot: _CacheSaveSnapshot) -> bool:
+        return (
+            snapshot.epoch == self._save_epoch
+            and snapshot.generation == self._generation
+        )
+
+    def _write_snapshot(self, snapshot: _CacheSaveSnapshot) -> bool:
+        with self._write_lock:
+            with self._lock:
+                if not self._snapshot_is_current_locked(snapshot):
+                    return True
+            return self._write_snapshot_with_write_lock(snapshot)
+
+    def _write_snapshot_with_write_lock(self, snapshot: _CacheSaveSnapshot) -> bool:
+        # Caller must hold self._write_lock.
         try:
             atomic_write_text(
                 self._path,
                 json.dumps(
                     {
                         "__version__": _CACHE_VERSION,
-                        "entries": {k: asdict(v) for k, v in self._data.items()},
+                        "entries": {k: asdict(v) for k, v in snapshot.entries},
                     }
                 ),
                 private=True,
@@ -1912,45 +1949,60 @@ class CharacterCache:
         self._save_timer.daemon = True
         self._save_timer.start()
 
-    def _schedule_save_locked(self) -> None:
+    def _schedule_save_locked(self) -> _CacheSaveSnapshot | None:
         # Caller must hold self._lock.
         if not self._defer_saves:
-            self._save_locked()
-            return
+            return self._snapshot_for_save_locked()
         self._dirty = True
         if self._save_timer is not None and self._save_timer.is_alive():
-            return
+            return None
         self._start_save_timer_locked()
+        return None
 
     def flush(self) -> None:
         timer: threading.Timer | None = None
+        snapshot: _CacheSaveSnapshot | None = None
         with self._lock:
             timer = self._save_timer
             self._save_timer = None
             if not self._dirty:
                 return
             self._dirty = False
-            if not self._save_locked():
-                self._dirty = True
-                if self._defer_saves:
-                    self._start_save_timer_locked()
+            snapshot = self._snapshot_for_save_locked()
         if timer is not None and timer.is_alive() and timer is not threading.current_thread():
             timer.cancel()
+        if snapshot is not None and not self._write_snapshot(snapshot):
+            with self._lock:
+                if not self._snapshot_is_current_locked(snapshot):
+                    return
+                self._dirty = True
+                if (
+                    self._defer_saves
+                    and (
+                        self._save_timer is None
+                        or not self._save_timer.is_alive()
+                    )
+                ):
+                    self._start_save_timer_locked()
 
     def clear(self) -> None:
         """Drop both in-memory and persisted character-rank cache."""
-        with self._lock:
-            if self._save_timer is not None:
-                self._save_timer.cancel()
-                self._save_timer = None
-            self._dirty = False
-            self._generation += 1
-            self._data.clear()
+        snapshot: _CacheSaveSnapshot | None = None
+        with self._write_lock:
+            with self._lock:
+                if self._save_timer is not None:
+                    self._save_timer.cancel()
+                    self._save_timer = None
+                self._dirty = False
+                self._generation += 1
+                self._save_epoch += 1
+                self._data.clear()
+                snapshot = self._snapshot_for_save_locked()
             try:
                 if self._path.exists():
                     self._path.unlink()
             except OSError:
-                self._save_locked()
+                self._write_snapshot_with_write_lock(snapshot)
 
     def _not_found_ttl_seconds(self) -> int:
         return min(self._ttl_seconds, self.NOT_FOUND_TTL_SECONDS)
@@ -2091,5 +2143,8 @@ class CharacterCache:
                 self._data[key] = _CacheEntry(
                     fetched_at=time.time(), ranks=asdict(ranks)
                 )
-            self._schedule_save_locked()
-            return True
+            self._save_epoch += 1
+            snapshot = self._schedule_save_locked()
+        if snapshot is not None:
+            self._write_snapshot(snapshot)
+        return True

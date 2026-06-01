@@ -50,6 +50,34 @@ ns.dungeons = {
     )
 
 
+def _write_multirealm_test_db(root: Path, lookup_payload: bytes) -> None:
+    db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
+    db.mkdir(parents=True, exist_ok=True)
+    (db / "db_dungeons.lua").write_text(
+        """
+local _, ns = ...
+ns.dungeons = {
+    [1] = { ["name"] = "Skyreach", ["shortName"] = "D1" },
+    [2] = { ["name"] = "Pit of Saron", ["shortName"] = "D2" },
+}
+""",
+        encoding="utf-8",
+    )
+    (db / "db_mythicplus_eu_characters.lua").write_text(
+        'local provider={name=...,data=1,region="eu",db={}}\n'
+        'provider.db["Ragnaros"]={0,"Alphapack"}\n'
+        'provider.db["Silvermoon"]={5,"Moonie"}\n',
+        encoding="utf-8",
+    )
+    encoded = "".join(f"\\{byte}" for byte in lookup_payload)
+    (db / "db_mythicplus_eu_lookup.lua").write_text(
+        "local provider={name=...,data=1,region=\"eu\",lookup={},"
+        "recordSizeInBytes=5,encodingOrder={1,2,10}}\n"
+        f'provider.lookup[1] = "{encoded}"\n',
+        encoding="utf-8",
+    )
+
+
 def _write_test_raid_db(
     root: Path,
     lookup_payload: bytes,
@@ -297,6 +325,112 @@ def test_preload_region_async_invokes_completion_after_cache_load(tmp_path: Path
     profile = reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False)
     assert profile is not None
     assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+
+
+def test_preload_region_async_does_not_fingerprint_on_caller_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    main_thread = threading.get_ident()
+    original_fingerprint = raiderio_local_mod._region_db_fingerprint
+
+    def fail_on_caller_thread(retail_root: Path, token: str):
+        if threading.get_ident() == main_thread:
+            raise AssertionError("fingerprint ran on caller thread")
+        return original_fingerprint(retail_root, token)
+
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_region_db_fingerprint",
+        fail_on_caller_thread,
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    completed = threading.Event()
+
+    reader.preload_region_async("EU", on_loaded=completed.set)
+
+    assert completed.wait(timeout=2.0)
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False)
+
+
+def test_preload_region_async_hot_cache_does_not_fingerprint_on_caller_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first_completed = threading.Event()
+
+    reader.preload_region_async("EU", on_loaded=first_completed.set)
+
+    assert first_completed.wait(timeout=2.0)
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False)
+
+    main_thread = threading.get_ident()
+    original_fingerprint = raiderio_local_mod._region_db_fingerprint
+
+    def fail_on_caller_thread(retail_root: Path, token: str):
+        if threading.get_ident() == main_thread:
+            raise AssertionError("fingerprint ran on caller thread")
+        return original_fingerprint(retail_root, token)
+
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_region_db_fingerprint",
+        fail_on_caller_thread,
+    )
+    second_completed = threading.Event()
+
+    reader.preload_region_async("EU", on_loaded=second_completed.set)
+
+    assert second_completed.wait(timeout=2.0)
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False)
+
+
+def test_preload_region_async_hydrates_distinct_realm_off_caller_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_multirealm_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    main_thread = threading.get_ident()
+    original_read_text = Path.read_text
+    original_realm_data = raiderio_local_mod._RegionDB._realm_data
+
+    def guard_read_text(self, *args, **kwargs):
+        if self.name.endswith("_characters.lua") and threading.get_ident() == main_thread:
+            raise AssertionError("character file read on caller thread")
+        return original_read_text(self, *args, **kwargs)
+
+    def guard_realm_data(self, characters_path, realm_cache, realm):
+        if (
+            raiderio_local_mod._realm_lookup_key(realm) not in realm_cache
+            and threading.get_ident() == main_thread
+        ):
+            raise AssertionError("realm block parsed on caller thread")
+        return original_realm_data(self, characters_path, realm_cache, realm)
+
+    monkeypatch.setattr(Path, "read_text", guard_read_text)
+    monkeypatch.setattr(raiderio_local_mod._RegionDB, "_realm_data", guard_realm_data)
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=tmp_path / "cache")
+    completed = threading.Event()
+
+    reader.preload_region_async("EU", on_loaded=completed.set)
+
+    assert completed.wait(timeout=2.0)
+    profile = reader.lookup_profile("Moonie", "Silvermoon", "EU", allow_load=False)
+
+    assert profile is not None
+    assert profile.current_score == 3074
 
 
 def test_preload_region_async_invokes_completion_for_missing_db(tmp_path: Path):

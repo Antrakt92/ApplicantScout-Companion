@@ -4,6 +4,8 @@ import os
 import stat
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -23,6 +25,15 @@ class _Completed:
 
 def _temp_files(path: Path) -> list[Path]:
     return list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_atomic_io_caches():
+    atomic_io._CURRENT_USER_SID_CACHE = None
+    atomic_io._PRIVATE_ACL_CACHE.clear()
+    yield
+    atomic_io._CURRENT_USER_SID_CACHE = None
+    atomic_io._PRIVATE_ACL_CACHE.clear()
 
 
 def test_atomic_write_text_replaces_file_contents(tmp_path: Path):
@@ -91,6 +102,7 @@ def test_atomic_write_text_private_mode_chmods_temp_and_target(
         calls.append((self, mode))
         original_chmod(self, mode)
 
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: False)
     monkeypatch.setattr(path_type, "chmod", record_chmod)
 
     atomic_write_text(target, "secret", private=True)
@@ -267,6 +279,146 @@ def test_atomic_write_text_private_mode_hardens_parent_before_temp_and_target(
     assert calls[-1] == ("file", target)
 
 
+def test_atomic_write_text_private_windows_reuses_parent_acl_for_children(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "config" / "config.env"
+    commands: list[list[str]] = []
+
+    if hasattr(atomic_io, "_PRIVATE_ACL_CACHE"):
+        atomic_io._PRIVATE_ACL_CACHE.clear()
+    if hasattr(atomic_io, "_CURRENT_USER_SID_CACHE"):
+        atomic_io._CURRENT_USER_SID_CACHE = None
+    monkeypatch.setattr(type(tmp_path), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda args, **_kwargs: commands.append(args) or _Completed(returncode=0),
+    )
+
+    atomic_write_text(target, "secret", private=True)
+
+    assert target.read_text(encoding="utf-8") == "secret"
+    assert commands == [
+        ["icacls", os.fspath(target.parent), "/inheritance:r", "/Q"],
+        [
+            "icacls",
+            os.fspath(target.parent),
+            "/remove:g",
+            "*S-1-1-0",
+            "*S-1-5-11",
+            "*S-1-5-32-545",
+            "/Q",
+        ],
+        [
+            "icacls",
+            os.fspath(target.parent),
+            "/remove:d",
+            "*S-1-1-0",
+            "*S-1-5-11",
+            "*S-1-5-32-545",
+            "*S-1-5-21-1-2-3-1007",
+            "/Q",
+        ],
+        [
+            "icacls",
+            os.fspath(target.parent),
+            "/grant:r",
+            "*S-1-5-21-1-2-3-1007:(OI)(CI)F",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+            "/Q",
+        ],
+    ]
+
+
+def test_atomic_write_text_private_windows_reuses_hardened_parent_between_writes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "config" / "config.env"
+    commands: list[list[str]] = []
+
+    if hasattr(atomic_io, "_PRIVATE_ACL_CACHE"):
+        atomic_io._PRIVATE_ACL_CACHE.clear()
+    if hasattr(atomic_io, "_CURRENT_USER_SID_CACHE"):
+        atomic_io._CURRENT_USER_SID_CACHE = None
+    monkeypatch.setattr(type(tmp_path), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda args, **_kwargs: commands.append(args) or _Completed(returncode=0),
+    )
+
+    atomic_write_text(target, "one", private=True)
+    atomic_write_text(target, "two", private=True)
+
+    assert target.read_text(encoding="utf-8") == "two"
+    assert [command[1] for command in commands] == [os.fspath(target.parent)] * 4
+
+
+def test_apply_private_directory_mode_rechecks_recreated_windows_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "config"
+    target.mkdir()
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(type(tmp_path), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda args, **_kwargs: commands.append(args) or _Completed(returncode=0),
+    )
+
+    assert atomic_io.apply_private_directory_mode(target)
+    target.rmdir()
+    target.mkdir()
+    assert atomic_io.apply_private_directory_mode(target)
+
+    assert [command[1] for command in commands] == [os.fspath(target)] * 8
+
+
+def test_private_acl_cache_key_prefers_inode_over_changing_ctime():
+    class FakePath:
+        def __init__(self, *, ctime_ns: int) -> None:
+            self._ctime_ns = ctime_ns
+
+        def __fspath__(self) -> str:
+            return "C:/Users/Dima/AppData/Local/ApplicantScout/config"
+
+        def stat(self) -> SimpleNamespace:
+            return SimpleNamespace(st_dev=10, st_ino=42, st_ctime_ns=self._ctime_ns)
+
+    first = atomic_io._private_acl_cache_key(
+        cast(Any, FakePath(ctime_ns=100)),
+        directory=True,
+    )
+    second = atomic_io._private_acl_cache_key(
+        cast(Any, FakePath(ctime_ns=200)),
+        directory=True,
+    )
+
+    assert first == second
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL integration test")
 def test_apply_private_file_mode_removes_inherited_everyone_acl(tmp_path: Path):
     parent = tmp_path / "public-parent"
@@ -308,6 +460,7 @@ def test_apply_private_file_mode_ignores_os_errors(
     def fail_chmod(_self: Path, _mode: int) -> None:
         raise PermissionError("policy")
 
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: False)
     monkeypatch.setattr(type(target), "chmod", fail_chmod)
 
     apply_private_file_mode(target)
