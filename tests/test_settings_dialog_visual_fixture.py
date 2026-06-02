@@ -106,7 +106,6 @@ def test_settings_visual_fixture_normal_state_uses_stable_fake_inputs(qtbot):
     assert dialog.client_secret_edit.text() == "fixture-client-secret"
     assert dialog.screenshots_edit.text() == ""
     assert dialog.status_label.text() == ""
-    assert "Dima" not in dialog.client_id_edit.text()
     assert "Users" not in dialog.screenshots_edit.text()
 
 

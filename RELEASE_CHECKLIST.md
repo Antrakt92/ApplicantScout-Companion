@@ -32,7 +32,6 @@ checksum-gated updater smoke has been attested.
    ```powershell
    .\.venv\Scripts\python -m pytest
    .\scripts\check.ps1
-   ..\WOW\scripts\check-applicantscout-copy.ps1 -AddonRoot ..\ApplicantScout-Addon -CompanionRoot .
    .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
    .\scripts\check-release-version.ps1 -Tag v<companion version>
    ```
@@ -109,3 +108,9 @@ checksum-gated updater smoke has been attested.
    stop at draft/manual publish or use an explicit orchestrated release gate so
    users cannot install a companion that requires an unavailable addon.
 10. Signing remains the future publisher-identity path for broader distribution.
+    The build has an optional `signtool` hook: set
+    `APSCOUT_SIGNING_CERT_SHA1` (and optionally
+    `APSCOUT_SIGNING_TIMESTAMP_URL` / `APSCOUT_SIGNTOOL_PATH`) so the installer
+    is signed after Inno Setup and before `.sha256` generation. Without a
+    configured certificate, release builds remain unsigned and the checksum
+    still proves integrity, not publisher identity.

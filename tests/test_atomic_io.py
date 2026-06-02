@@ -402,7 +402,7 @@ def test_private_acl_cache_key_prefers_inode_over_changing_ctime():
             self._ctime_ns = ctime_ns
 
         def __fspath__(self) -> str:
-            return "C:/Users/Dima/AppData/Local/ApplicantScout/config"
+            return "C:/Example/AppData/Local/ApplicantScout/config"
 
         def stat(self) -> SimpleNamespace:
             return SimpleNamespace(st_dev=10, st_ino=42, st_ctime_ns=self._ctime_ns)

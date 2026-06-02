@@ -27,6 +27,7 @@ dist/
 /*.log.*
 
 # dev-internal docs
+/AGENTS.md
 /AUDIT.md
 /PLAN.md
 /NOTES.md
