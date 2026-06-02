@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.8.3 - 02-Jun-2026
+## 0.8.4 - 02-Jun-2026
 
-Performance and responsiveness patch paired with ApplicantScout addon `0.4.6`.
+Performance and responsiveness patch paired with ApplicantScout addon `0.4.7`.
 This release keeps the current APS1 v8 QR wire format while reducing overlay
 hitches, startup blocking, screenshot watcher stalls, RaiderIO local cache work,
 Settings path probes, startup-shortcut work, and WCL/character-cache disk
@@ -77,18 +77,18 @@ pauses.
   watcher before launching another one.
 - Reported Windows startup shortcut update failures in Settings after the save,
   without freezing the UI or rolling back the already-applied runtime setting.
-- Paired addon `0.4.6` chunks large QR painting across frames and preserves
+- Paired addon `0.4.7` chunks large QR painting across frames and preserves
   dirty snapshots that arrive while a QR is painting or settling for capture.
-- Paired addon `0.4.6` cancels stale QR paint/capture jobs on session end,
+- Paired addon `0.4.7` cancels stale QR paint/capture jobs on session end,
   guards screenshots by completed paint generation, and reuses addon-side
   RaiderIO M+ summaries during large applicant payloads.
 
 ### Release Assets
 
-- Requires the ApplicantScout WoW addon `0.4.6`.
-- Installer: `ApplicantScoutCompanionSetup-0.8.3.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.8.3.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.8.3-portable.zip`
+- Requires the ApplicantScout WoW addon `0.4.7`.
+- Installer: `ApplicantScoutCompanionSetup-0.8.4.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.8.4.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.8.4-portable.zip`
 
 ## 0.8.2 - 30-May-2026
 

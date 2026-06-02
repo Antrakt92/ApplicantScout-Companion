@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "applicant-scout-companion"
-version = "0.8.3"
+version = "0.8.4"
 description = "Windows companion overlay showing WCL, RaiderIO, raid-fit, and M+ fit context for WoW LFG applicants"
 authors = [{ name = "Antrakt" }]
 requires-python = ">=3.13"

@@ -2002,6 +2002,9 @@ def test_sync_delegate_repaints_rows_after_batched_panel_updates(
         qtbot.waitUntil(window.isVisible, timeout=1000)
         window._refresh_table()
         QApplication.processEvents()
+        window._hover_id = None
+        window._hover_by_tab[window._active_tab] = None
+        window._delegate.set_rows(-1, -1)
         events.clear()
 
         window._hover_id = "row"
@@ -2627,6 +2630,7 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
 
     try:
         monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
         window.restore_from_launcher()
         qtbot.waitUntil(window.isVisible, timeout=1000)
@@ -2673,6 +2677,7 @@ def test_open_overlay_debounces_transient_foreground_loss(
 
     try:
         monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
         window.restore_from_launcher()
         qtbot.waitUntil(window.isVisible, timeout=1000)
@@ -2870,6 +2875,7 @@ def test_launcher_restore_survives_next_foreground_poll_during_grace(
             overlay_mod.OverlayLauncher, "isActiveWindow", lambda _self: False
         )
         monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
 
         qtbot.mouseClick(
             window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6)
@@ -3015,6 +3021,7 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
 
     try:
         monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
         _disable_background_fetches(window)
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
         window.restore_from_launcher()
