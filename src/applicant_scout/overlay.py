@@ -2590,6 +2590,9 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time: float | None = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._restored_snapshot_pending = False
+        self._restored_snapshot_saved_at: float | None = None
+        self._restored_snapshot_deadline: float | None = None
 
         # Bottom status-row poller — fires both quota and health refreshes on
         # the same 1s cadence. 1Hz keeps "shot Xs ago" smooth (vs 3s jumps);
@@ -2901,7 +2904,8 @@ class OverlayWindow(QMainWindow):
         # "loading" before _refresh_table reads it. Otherwise the cell briefly
         # renders the default "pending" state (which displays as "no data") for
         # the fetch duration (50-500ms), then flips to "loading" then "ready".
-        self._launch_fetch(applicant)
+        if not self._restored_snapshot_pending:
+            self._launch_fetch(applicant)
         self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_updated(self, applicant: Applicant) -> None:
@@ -2913,7 +2917,7 @@ class OverlayWindow(QMainWindow):
         # row-rebuild. Errors are NOT auto-retried here — they'd just re-error
         # under the same WCL state (rate limit, OAuth); manual `/apscout reset`
         # from addon side restarts the pipeline if user wants a retry cycle.
-        if applicant.fetch_status == "pending":
+        if applicant.fetch_status == "pending" and not self._restored_snapshot_pending:
             self._launch_fetch(applicant)
         # Edge case: if the very first event for an applicant arrives as APP=
         # (e.g., addon emits "=" because it cached state across /reload), the
@@ -3032,7 +3036,7 @@ class OverlayWindow(QMainWindow):
 
     def on_roster_changed(self) -> None:
         for member in self._state.party_members.values():
-            if member.fetch_status == "pending":
+            if member.fetch_status == "pending" and not self._restored_snapshot_pending:
                 self._launch_fetch(member)
         if self._manual_target_key is not None and not self._can_apply_manual_target_key():
             self._clear_manual_target_key()
@@ -3081,7 +3085,36 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._restored_snapshot_pending = False
+        self._restored_snapshot_saved_at = None
+        self._restored_snapshot_deadline = None
         self._health_label.setToolTip("")
+
+    def note_restored_snapshot(
+        self,
+        _snap: object,
+        saved_at: float,
+        grace_seconds: float,
+    ) -> None:
+        """Mark a persisted snapshot as provisional until a fresh QR arrives."""
+        now = time.time()
+        self._restored_snapshot_pending = True
+        self._restored_snapshot_saved_at = saved_at
+        self._restored_snapshot_deadline = now + max(0.0, grace_seconds)
+        self._last_decode_time = None
+        self._last_decode_failed_time = None
+        self._last_decode_failed_path = ""
+        self._last_decode_failed_reason = ""
+        self._refresh_health_label()
+
+    def restored_snapshot_pending(self) -> bool:
+        return self._restored_snapshot_pending
+
+    def note_restored_snapshot_expired(self) -> None:
+        self._restored_snapshot_pending = False
+        self._restored_snapshot_saved_at = None
+        self._restored_snapshot_deadline = None
+        self._refresh_health_label()
 
     def note_decode_failed(self, path: str, reason: str) -> None:
         """Slot for ScreenshotWatcher.decodeFailed. Keeps marker-bearing QR
@@ -3107,6 +3140,17 @@ class OverlayWindow(QMainWindow):
         legitimately have no decodes for minutes; coloring would false-alarm.
         Absolute "shot Xm ago" text is enough to spot a dead pipeline."""
         failed_at = self._last_decode_failed_time
+        if self._restored_snapshot_pending:
+            saved_at = self._restored_snapshot_saved_at
+            deadline = self._restored_snapshot_deadline
+            age = _format_duration(max(0.0, time.time() - saved_at)) if saved_at else "?"
+            wait = _format_duration(max(0.0, deadline - time.time())) if deadline else "?"
+            self._health_label.setText("shot restored")
+            self._health_label.setToolTip(
+                "Restored a recent live snapshot while waiting for a fresh QR.\n"
+                f"Snapshot age: {age}; clears in {wait} if no fresh QR arrives."
+            )
+            return
         if failed_at is not None and (
             self._last_decode_time is None or failed_at >= self._last_decode_time
         ):
@@ -3115,7 +3159,7 @@ class OverlayWindow(QMainWindow):
             self._health_label.setToolTip(
                 f"{self._last_decode_failed_path}\n"
                 f"{self._last_decode_failed_reason}\n"
-                f"{_format_age(delta)} ago"
+                f"{_format_age(delta)}"
             )
             return
         last = self._last_decode_time
@@ -5410,6 +5454,16 @@ def _format_age(delta_sec: float) -> str:
     if delta_sec >= 60.0:
         return f"{int(delta_sec // 60)}m ago"
     return f"{int(delta_sec)}s ago"
+
+
+def _format_duration(delta_sec: float) -> str:
+    if delta_sec >= 86400.0:
+        return "24h+"
+    if delta_sec >= 3600.0:
+        return f"{int(delta_sec // 3600)}h"
+    if delta_sec >= 60.0:
+        return f"{int(delta_sec // 60)}m"
+    return f"{int(delta_sec)}s"
 
 
 def _format_listing_tooltip(listing: Listing | None) -> str:

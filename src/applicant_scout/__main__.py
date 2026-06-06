@@ -40,6 +40,11 @@ from .config import (
     validate_metric_preferences,
 )
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
+from .live_snapshot_cache import (
+    LIVE_SNAPSHOT_RESTORE_GRACE_SECONDS,
+    load_live_snapshot,
+    save_live_snapshot,
+)
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .overlay import OverlayWindow
 from .raiderio_local import (
@@ -1958,6 +1963,7 @@ class _SnapshotApplyQueue:
         *,
         signal_gate: _WatcherSignalGate,
         generation: int,
+        live_snapshot_cache_dir: Path | None = None,
         scheduler: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         self._machine = machine
@@ -1965,6 +1971,7 @@ class _SnapshotApplyQueue:
         self._decode_failed_callback = decode_failed_callback
         self._signal_gate = signal_gate
         self._generation = generation
+        self._live_snapshot_cache_dir = live_snapshot_cache_dir
         self._scheduler = scheduler or _schedule_snapshot_apply
         self._pending: tuple[str, tuple[object, ...]] | None = None
         self._flush_pending = False
@@ -1994,8 +2001,10 @@ class _SnapshotApplyQueue:
             return
         if kind == "snapshot":
             snap = args[0]
-            getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
             getattr(self._window, "note_decode", lambda *_args: None)(snap)
+            getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
+            if self._live_snapshot_cache_dir is not None and isinstance(snap, Snapshot):
+                save_live_snapshot(self._live_snapshot_cache_dir, snap)
             return
         path, reason = args
         self._decode_failed_callback(str(path), str(reason))
@@ -2014,6 +2023,7 @@ def _connect_screenshot_watcher(
     signal_gate: _WatcherSignalGate,
     source_gate: _SnapshotSourceGate,
     generation: int,
+    live_snapshot_cache_dir: Path | None = None,
     scheduler: Callable[[Callable[[], None]], None] | None = None,
 ) -> None:
     apply_queue = _SnapshotApplyQueue(
@@ -2022,6 +2032,7 @@ def _connect_screenshot_watcher(
         decode_failed_callback,
         signal_gate=signal_gate,
         generation=generation,
+        live_snapshot_cache_dir=live_snapshot_cache_dir,
         scheduler=scheduler,
     )
 
@@ -2055,6 +2066,7 @@ def _replace_screenshot_watcher(
     decode_failed_callback: Callable[[str, str], None],
     *,
     signal_gate: _WatcherSignalGate,
+    live_snapshot_cache_dir: Path | None = None,
     stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
     previous_generation = signal_gate.generation
@@ -2069,6 +2081,7 @@ def _replace_screenshot_watcher(
         signal_gate=signal_gate,
         source_gate=source_gate,
         generation=generation,
+        live_snapshot_cache_dir=live_snapshot_cache_dir,
     )
     try:
         new_watcher.start()
@@ -2114,6 +2127,7 @@ def _replace_screenshots_runtime(
             window,
             decode_failed_callback,
             signal_gate=signal_gate,
+            live_snapshot_cache_dir=cache_dir,
             stop_runner=stop_runner,
         )
     except Exception:
@@ -2158,6 +2172,38 @@ def _preload_machine_rio_region(machine: StateMachine) -> None:
     preload = getattr(machine, "_preload_local_rio_region", None)
     if callable(preload):
         preload(region_token)
+
+
+def _restore_live_snapshot_cache(
+    cache_dir: Path,
+    machine: StateMachine,
+    window: OverlayWindow,
+    *,
+    grace_seconds: float = LIVE_SNAPSHOT_RESTORE_GRACE_SECONDS,
+) -> bool:
+    restored = load_live_snapshot(cache_dir)
+    if restored is None:
+        return False
+    getattr(window, "note_restored_snapshot", lambda *_args: None)(
+        restored.snapshot,
+        restored.saved_at,
+        grace_seconds,
+    )
+    machine.apply_snapshot(restored.snapshot)
+
+    def _expire_restored_snapshot() -> None:
+        still_pending = getattr(
+            window,
+            "restored_snapshot_pending",
+            lambda: False,
+        )
+        if not still_pending():
+            return
+        getattr(window, "note_restored_snapshot_expired", lambda: None)()
+        machine.apply_snapshot(Snapshot(listing=None, version=None))
+
+    QTimer.singleShot(max(0, int(grace_seconds * 1000)), _expire_restored_snapshot)
+    return True
 
 
 def _update_result_has_installable_asset(result: object) -> bool:
@@ -3414,6 +3460,9 @@ def main(argv: list[str] | None = None) -> int:
     def _log_decode_failed(path: str, reason: str) -> None:
         log.warning("decode failed for %s: %s", path, reason)
 
+    if _restore_live_snapshot_cache(cfg.cache_dir, machine, window):
+        log.info("Restored last live ApplicantScout snapshot; waiting for fresh QR.")
+
     # Start screenshot watcher: it scans recent backlog (last 60s of WoWScrnShot
     # files) on start and applies the most recent valid snapshot — handles the
     # "companion started mid-session" case. Then watches Screenshots/ folder
@@ -3425,6 +3474,7 @@ def main(argv: list[str] | None = None) -> int:
         window,
         _log_decode_failed,
         signal_gate=watcher_signal_gate,
+        live_snapshot_cache_dir=cfg.cache_dir,
     )
 
     log.info("Ready. Overlay will appear when applicants are present.")

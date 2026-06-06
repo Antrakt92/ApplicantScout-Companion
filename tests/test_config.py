@@ -4615,6 +4615,56 @@ def test_connect_screenshot_watcher_coalesces_snapshot_burst_to_latest():
     assert window.decoded == [third]
 
 
+def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+    events: list[str] = []
+
+    class FakeMachine:
+        def apply_snapshot(self, _snap: object) -> None:
+            events.append("apply")
+
+    class FakeWindow:
+        def note_decode(self, _snap: object) -> None:
+            events.append("note_decode")
+
+    callbacks = []
+    watcher = FakeWatcher()
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        FakeMachine(),
+        FakeWindow(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+
+    watcher.snapshotReceived.emit(
+        SimpleNamespace(
+            source=SimpleNamespace(mtime_ns=100, file_id="shot.jpg", size=10)
+        )
+    )
+    callbacks.pop(0)()
+
+    assert events == ["note_decode", "apply"]
+
+
 def test_connect_screenshot_watcher_coalesces_terminal_clear_by_source_order():
     class FakeSignal:
         def __init__(self) -> None:

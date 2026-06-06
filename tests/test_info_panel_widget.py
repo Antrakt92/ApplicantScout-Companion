@@ -2339,6 +2339,62 @@ def test_health_label_surfaces_latest_decode_failure(monkeypatch, qtbot, tmp_pat
         assert window._health_label.text() == "shot failed"
         assert "WoWScrnShot_0001.jpg" in window._health_label.toolTip()
         assert "CRC mismatch" in window._health_label.toolTip()
+        assert "ago ago" not in window._health_label.toolTip()
+    finally:
+        client.close()
+
+
+def test_restored_snapshot_health_label_is_provisional(monkeypatch, qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        now = {"value": 130.0}
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: now["value"])
+
+        window.note_restored_snapshot(object(), saved_at=100.0, grace_seconds=30.0)
+
+        assert window.restored_snapshot_pending()
+        assert window._health_label.text() == "shot restored"
+        assert "waiting for a fresh QR" in window._health_label.toolTip()
+        assert "Snapshot age: 30s" in window._health_label.toolTip()
+        assert "clears in 30s" in window._health_label.toolTip()
+
+        window.note_restored_snapshot_expired()
+
+        assert not window.restored_snapshot_pending()
+        assert window._health_label.text() == "shot —"
+        assert window._health_label.toolTip() == ""
+    finally:
+        client.close()
+
+
+def test_restored_snapshot_suppresses_wcl_fetch_until_fresh_decode(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        launched: list[str] = []
+        window._launch_fetch = lambda applicant: launched.append(applicant.applicant_id)
+        applicant = _app(fetch_status="pending")
+
+        window.note_restored_snapshot(object(), saved_at=100.0, grace_seconds=30.0)
+        window.on_applicant_added(applicant)
+
+        assert launched == []
+        assert applicant.fetch_status == "pending"
+
+        window.note_decode(object())
+        window.on_applicant_updated(applicant)
+
+        assert launched == [applicant.applicant_id]
     finally:
         client.close()
 
