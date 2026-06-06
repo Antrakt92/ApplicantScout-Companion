@@ -149,6 +149,10 @@ jobs:
       - name: Build Windows artifacts
         shell: pwsh
         working-directory: ApplicantScout-Companion
+        env:
+          APSCOUT_SIGNING_CERT_SHA1: ${{ secrets.APSCOUT_SIGNING_CERT_SHA1 }}
+          APSCOUT_SIGNING_TIMESTAMP_URL: ${{ secrets.APSCOUT_SIGNING_TIMESTAMP_URL }}
+          APSCOUT_SIGNTOOL_PATH: ${{ secrets.APSCOUT_SIGNTOOL_PATH }}
         run: .\scripts\build-windows.ps1 -SkipChecks
 
       - name: Validate release assets

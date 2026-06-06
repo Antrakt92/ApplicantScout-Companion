@@ -388,6 +388,35 @@ def test_artifact_name_contract_stays_aligned():
     assert "checksum_url" in updater
 
 
+def test_windows_build_supports_optional_installer_signing_before_checksum():
+    build_script = _read_repo_text("scripts/build-windows.ps1")
+
+    assert "Sign-Installer" in build_script
+    assert "Find-SignTool" in build_script
+    assert "APSCOUT_SIGNING_CERT_SHA1" in build_script
+    assert "APSCOUT_SIGNING_TIMESTAMP_URL" in build_script
+    assert "/fd SHA256" in build_script
+    assert "/td SHA256" in build_script
+    assert "RequireSigning" in build_script
+
+    inno_idx = build_script.index('Invoke-NativeChecked -Label "Inno Setup compiler"')
+    sign_idx = build_script.index("Sign-Installer -InstallerPath $Installer")
+    checksum_idx = build_script.index("Get-FileHash -Algorithm SHA256")
+
+    assert inno_idx < sign_idx < checksum_idx
+
+
+def test_release_workflow_exposes_optional_signing_environment_without_requiring_cert():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    build_step = _step_block(_job_block(workflow, "release"), "Build Windows artifacts")
+
+    assert "APSCOUT_SIGNING_CERT_SHA1" in build_step
+    assert "APSCOUT_SIGNING_TIMESTAMP_URL" in build_step
+    assert "secrets.APSCOUT_SIGNING_CERT_SHA1" in build_step
+    assert "secrets.APSCOUT_SIGNING_TIMESTAMP_URL" in build_step
+    assert "-RequireSigning" not in build_step
+
+
 def test_windows_build_uses_app_icon_for_exe_installer_and_runtime():
     icon = REPO_ROOT / "src" / "applicant_scout" / "assets" / "app_icon.ico"
     svg_source = REPO_ROOT / "src" / "applicant_scout" / "assets" / "app_icon.svg"
@@ -726,6 +755,23 @@ def test_release_checklist_documents_asset_wait_rerun_path():
     assert "180-second" in checklist
     assert "rerun the failed addon workflow" in checklist
     assert "Do not delete/recreate or force-push release tags" in checklist
+
+
+def test_release_checklist_documents_optional_signing_gate():
+    checklist = _read_repo_text("RELEASE_CHECKLIST.md")
+
+    assert "APSCOUT_SIGNING_CERT_SHA1" in checklist
+    assert "signtool" in checklist.lower()
+    assert "before `.sha256` generation" in checklist
+    assert "unsigned" in checklist.lower()
+
+
+def test_readme_explains_signing_ready_but_unsigned_until_certificate():
+    readme = _read_repo_text("README.md")
+
+    assert "signing-ready release pipeline" in readme
+    assert "APSCOUT_SIGNING_CERT_SHA1" in readme
+    assert "unsigned until a code-signing certificate is configured" in readme
 
 
 def test_release_checklist_requires_local_strict_visual_and_media_export_gate():

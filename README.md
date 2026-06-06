@@ -137,7 +137,9 @@ and WCL/RaiderIO evidence.
 QR screenshots may remain if the companion is absent, interrupted, pointed at
 the wrong folder, or the Screenshots folder is synced/shared before cleanup.
 
-Current Windows builds are unsigned, so SmartScreen can warn on first install.
+ApplicantScout has a signing-ready release pipeline, but public Windows builds
+remain unsigned until a code-signing certificate is configured with
+`APSCOUT_SIGNING_CERT_SHA1`. SmartScreen can still warn on first install.
 The `.sha256` sidecar verifies file integrity, not publisher identity.
 
 ## Settings
@@ -250,6 +252,11 @@ build emits `dist\ApplicantScoutCompanionSetup-<version>.exe`, its matching
 `dist\ApplicantScoutCompanionSetup-<version>.exe.sha256` checksum sidecar, and
 the portable ZIP. Use `.\scripts\build-windows.ps1 -SkipInstaller` for a
 portable ZIP-only smoke build.
+
+If a code-signing certificate is installed in the Windows certificate store,
+set `APSCOUT_SIGNING_CERT_SHA1` to its certificate thumbprint before running the
+build. The script signs the installer with `signtool` before `.sha256`
+generation; without that variable the installer is intentionally left unsigned.
 
 Decode a saved screenshot manually:
 

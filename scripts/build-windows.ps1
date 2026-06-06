@@ -2,7 +2,8 @@ param(
     [switch]$SkipChecks,
     [switch]$SkipInstaller,
     [switch]$SkipPortable,
-    [switch]$AllowDirtyReleaseInputs
+    [switch]$AllowDirtyReleaseInputs,
+    [switch]$RequireSigning
 )
 
 $ErrorActionPreference = "Stop"
@@ -233,6 +234,93 @@ function Find-InnoSetupCompiler {
     return $null
 }
 
+function Find-SignTool {
+    $Configured = ""
+    if ($null -ne $env:APSCOUT_SIGNTOOL_PATH) {
+        $Configured = $env:APSCOUT_SIGNTOOL_PATH.Trim()
+    }
+    if ($Configured) {
+        if (Test-Path -LiteralPath $Configured) {
+            return $Configured
+        }
+        throw "APSCOUT_SIGNTOOL_PATH is set but does not exist: $Configured"
+    }
+
+    $Command = Get-Command "signtool.exe" -ErrorAction SilentlyContinue
+    if ($null -ne $Command) {
+        return $Command.Source
+    }
+
+    $Candidates = @()
+    if (${env:ProgramFiles(x86)}) {
+        $KitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+        if (Test-Path -LiteralPath $KitsRoot) {
+            $Kits = Get-ChildItem -LiteralPath $KitsRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object -Property Name -Descending
+            foreach ($Kit in $Kits) {
+                $Candidates += Join-Path $Kit.FullName "x64\signtool.exe"
+                $Candidates += Join-Path $Kit.FullName "x86\signtool.exe"
+            }
+        }
+    }
+    if ($env:ProgramFiles) {
+        $KitsRoot = Join-Path $env:ProgramFiles "Windows Kits\10\bin"
+        if (Test-Path -LiteralPath $KitsRoot) {
+            $Kits = Get-ChildItem -LiteralPath $KitsRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object -Property Name -Descending
+            foreach ($Kit in $Kits) {
+                $Candidates += Join-Path $Kit.FullName "x64\signtool.exe"
+                $Candidates += Join-Path $Kit.FullName "x86\signtool.exe"
+            }
+        }
+    }
+
+    foreach ($Candidate in $Candidates) {
+        if (Test-Path -LiteralPath $Candidate) {
+            return $Candidate
+        }
+    }
+    return $null
+}
+
+function Sign-Installer {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallerPath
+    )
+
+    $CertSha1 = ""
+    if ($null -ne $env:APSCOUT_SIGNING_CERT_SHA1) {
+        $CertSha1 = $env:APSCOUT_SIGNING_CERT_SHA1.Trim()
+    }
+    if (-not $CertSha1) {
+        if ($RequireSigning) {
+            throw "Installer signing is required, but APSCOUT_SIGNING_CERT_SHA1 is not set."
+        }
+        Write-Host "Installer signing skipped: set APSCOUT_SIGNING_CERT_SHA1 to enable Authenticode signing."
+        return
+    }
+
+    $TimestampUrl = ""
+    if ($null -ne $env:APSCOUT_SIGNING_TIMESTAMP_URL) {
+        $TimestampUrl = $env:APSCOUT_SIGNING_TIMESTAMP_URL.Trim()
+    }
+    if (-not $TimestampUrl) {
+        $TimestampUrl = "http://timestamp.digicert.com"
+    }
+    $SignTool = Find-SignTool
+    if (-not $SignTool) {
+        throw "Missing signtool.exe. Install the Windows SDK or set APSCOUT_SIGNTOOL_PATH."
+    }
+
+    Invoke-NativeChecked -Label "Sign installer" -Command {
+        & $SignTool sign /sha1 $CertSha1 /fd SHA256 /tr $TimestampUrl /td SHA256 $InstallerPath
+    }
+    Invoke-NativeChecked -Label "Verify installer signature" -Command {
+        & $SignTool verify /pa /all $InstallerPath
+    }
+}
+
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "Missing venv Python: $Python"
 }
@@ -324,6 +412,7 @@ if (-not $SkipInstaller) {
         if (-not (Test-Path -LiteralPath $Installer)) {
             throw "Installer build did not produce expected artifact: $Installer"
         }
+        Sign-Installer -InstallerPath $Installer
         $InstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Installer).Hash.ToLowerInvariant()
         "$InstallerHash  $(Split-Path -Leaf $Installer)" | Set-Content -LiteralPath $InstallerChecksum -Encoding ASCII
     }
