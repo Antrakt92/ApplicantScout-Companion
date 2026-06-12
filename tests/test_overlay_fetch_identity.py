@@ -1544,6 +1544,35 @@ def test_launch_fetch_unknown_spec_mplus_only_marks_ready_without_queue(
         client.close()
 
 
+def test_launch_fetch_unmapped_positive_spec_mplus_only_marks_ready_without_queue(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(spec_id=999999, fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state, metric_preferences=prefs)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(app)
+
+        assert queued_pool.tasks == []
+        assert window._in_flight_identity(app.applicant_id) is None
+        assert app.fetch_status == "ready"
+        assert app.wcl_metric_preferences is None
+        assert app.mplus_dps is None
+    finally:
+        client.close()
+
+
 def test_unknown_spec_raid_fetch_uses_effective_preferences_without_loop(
     qtbot, tmp_path
 ):

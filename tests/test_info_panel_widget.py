@@ -43,6 +43,7 @@ from applicant_scout.overlay import (
     ApplicantInfoPanel,
     OverlayWindow,
     _HoverHighlightDelegate,
+    _RaidBossFetchTask,
     _mplus_group_cell,
 )
 from applicant_scout.metric_preferences import (
@@ -514,6 +515,117 @@ def test_raid_boss_fetch_done_preserves_existing_mplus_data(qtbot, tmp_path):
         assert app.mplus_dps_breakdown
     finally:
         window.close()
+
+
+def test_raid_boss_cache_hit_applies_without_queueing_worker(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    raid_rows = {
+        "M": [
+            {
+                "encounter_id": 3176,
+                "name": "Imperator Averzian",
+                "overall": 46.0,
+                "ilvl": 68.0,
+            }
+        ]
+    }
+    cache.put_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        raid_rows,
+        role="DPS",
+        metric_preferences=MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+    window._panel._set_detail_mode("raid")
+
+    try:
+        assert window._launch_raid_boss_fetch_if_needed(app) is True
+
+        assert queued_pool.tasks == []
+        assert app.raid_boss_parses == raid_rows
+        assert window._raid_boss_fetches_in_flight == {}
+        assert window._raid_boss_fetch_waiters_by_target == {}
+    finally:
+        window.close()
+
+
+def test_raid_boss_fetch_task_started_before_clear_does_not_repopulate_cache(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    cache = CharacterCache(tmp_path)
+    identity = overlay_mod._FetchIdentity(
+        applicant_id="42",
+        charname_key="scout",
+        server_slug="ravencrest",
+        region="EU",
+        spec_id=71,
+        metric_role="DPS",
+        metric_preferences=prefs,
+    )
+
+    class _Client:
+        def fetch_character_raid_boss_details(self, *_args, **_kwargs):
+            return {
+                "M": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 46.0,
+                        "ilvl": 68.0,
+                    }
+                ]
+            }
+
+    task = _RaidBossFetchTask(identity, "Scout", _Client(), cache)
+    cache.clear()
+    seen: list[tuple[object, object, object, object]] = []
+    task.signals.done.connect(lambda *args: seen.append(args))
+
+    task.run()
+
+    assert seen
+    assert seen[0][1]["M"][0]["overall"] == 46.0
+    assert (
+        cache.get_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            "DPS",
+            metric_preferences=prefs,
+        )
+        is None
+    )
 
 
 def test_raid_boss_fetch_coalesces_same_target_applicant_and_party_member(

@@ -326,6 +326,19 @@ def _ranks() -> CharacterRanks:
     )
 
 
+def _raid_boss_rows() -> dict[str, list[dict[str, object]]]:
+    return {
+        "M": [
+            {
+                "encounter_id": 3176,
+                "name": "Imperator Averzian",
+                "overall": 46.2,
+                "ilvl": 68.4,
+            }
+        ]
+    }
+
+
 def _character(**encounters: object) -> dict:
     return {
         "raidNormal": {"bestPerformanceAverage": 71.0},
@@ -1103,6 +1116,34 @@ def test_fetch_character_ranks_spec_zero_omits_mplus_but_keeps_raid_query():
     assert "raidNormal: zoneRankings" not in query
     assert "raidHeroic: zoneRankings" in query
     assert "raidMythic: zoneRankings" not in query
+    assert result.raid_heroic == pytest.approx(81.0)
+    assert result.mplus_dps is None
+    assert result.mplus_hps is None
+    assert result.mplus_dps_breakdown == []
+    assert result.mplus_hps_breakdown == []
+
+
+def test_fetch_character_ranks_unmapped_positive_spec_omits_mplus_but_keeps_raid_query():
+    client, http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+
+    result = client.fetch_character_ranks(
+        "Future",
+        "ravencrest",
+        spec_id=999999,
+        role="DAMAGER",
+        metric_preferences=prefs,
+    )
+
+    assert len(http.calls) == 1
+    query = http.calls[0]["json"]["query"]
+    assert "encounterRankings" not in query
+    assert "raidHeroic: zoneRankings" in query
     assert result.raid_heroic == pytest.approx(81.0)
     assert result.mplus_dps is None
     assert result.mplus_hps is None
@@ -1932,6 +1973,254 @@ def test_character_cache_not_found_evicts_stale_positive_identity_entries(tmp_pa
 
     assert cache.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
     assert cache.get("Scout", "ravencrest", "EU", 72, "HEALER") is None
+
+
+def test_character_cache_raid_boss_details_round_trips_enabled_empty_difficulty(
+    tmp_path,
+):
+    cache = CharacterCache(tmp_path)
+    prefs = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+
+    stored = cache.put_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _raid_boss_rows(),
+        role="DAMAGER",
+        metric_preferences=prefs,
+    )
+
+    loaded = CharacterCache(tmp_path)
+    result = loaded.get_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=prefs,
+    )
+
+    assert stored is True
+    assert result == {
+        "H": [],
+        "M": [
+            {
+                "encounter_id": 3176,
+                "name": "Imperator Averzian",
+                "overall": pytest.approx(46.2),
+                "ilvl": pytest.approx(68.4),
+            }
+        ],
+    }
+
+
+def test_character_cache_raid_boss_details_reuses_broader_scope_for_narrow_request(
+    tmp_path,
+):
+    cache = CharacterCache(tmp_path)
+    broad = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    cache.put_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _raid_boss_rows(),
+        role="DAMAGER",
+        metric_preferences=broad,
+    )
+
+    loaded = CharacterCache(tmp_path)
+    result = loaded.get_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=narrow,
+    )
+
+    assert result == _raid_boss_rows()
+
+
+def test_character_cache_not_found_evicts_raid_boss_detail_entries(tmp_path):
+    cache = CharacterCache(tmp_path)
+    prefs = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    cache.put_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _raid_boss_rows(),
+        role="DAMAGER",
+        metric_preferences=prefs,
+    )
+
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        CharacterRanks.empty(not_found=True),
+        role="DAMAGER",
+        metric_preferences=MetricPreferences(),
+    )
+
+    assert (
+        cache.get_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            "DAMAGER",
+            metric_preferences=prefs,
+        )
+        is None
+    )
+
+
+def test_character_cache_stale_generation_rejects_raid_boss_detail_put(tmp_path):
+    cache = CharacterCache(tmp_path)
+    old_generation = cache.generation
+    prefs = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+
+    cache.clear()
+    stored = cache.put_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _raid_boss_rows(),
+        role="DAMAGER",
+        metric_preferences=prefs,
+        expected_generation=old_generation,
+    )
+
+    assert stored is False
+    assert (
+        cache.get_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            "DAMAGER",
+            metric_preferences=prefs,
+        )
+        is None
+    )
+
+
+def test_character_cache_raid_boss_details_sanitizes_malformed_disk_rows(tmp_path):
+    cache = CharacterCache(tmp_path)
+    prefs = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    cache.put_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _raid_boss_rows(),
+        role="DAMAGER",
+        metric_preferences=prefs,
+    )
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+    raid_key = next(key for key in raw["entries"] if key.startswith("rb:"))
+    raw["entries"][raid_key]["raid_boss_details"] = {
+        "N": "not-a-list",
+        "H": [
+            "not-a-row",
+            {"encounter_id": 0, "name": "Skipped", "overall": 90, "ilvl": 90},
+            {
+                "encounter_id": 3177,
+                "name": " Vorasius ",
+                "overall": "93.5",
+                "ilvl": True,
+            },
+            {
+                "encounter_id": 3178,
+                "name": "No Percentile",
+                "overall": None,
+                "ilvl": None,
+            },
+        ],
+        "M": [
+            {
+                "encounter_id": 3176,
+                "name": "Imperator Averzian",
+                "overall": float("inf"),
+                "ilvl": "68.4",
+            }
+        ],
+        "LFR": [
+            {
+                "encounter_id": 9999,
+                "name": "Ignored Difficulty",
+                "overall": 100,
+                "ilvl": 100,
+            }
+        ],
+    }
+    cache._path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = CharacterCache(tmp_path)
+    result = loaded.get_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=prefs,
+    )
+
+    assert result == {
+        "N": [],
+        "H": [
+            {
+                "encounter_id": 3177,
+                "name": "Vorasius",
+                "overall": pytest.approx(93.5),
+                "ilvl": None,
+            }
+        ],
+        "M": [
+            {
+                "encounter_id": 3176,
+                "name": "Imperator Averzian",
+                "overall": None,
+                "ilvl": pytest.approx(68.4),
+            }
+        ],
+    }
 
 
 def test_character_cache_not_found_respects_ttl_override(tmp_path):
@@ -3707,6 +3996,30 @@ def test_oauth_refresh_invalid_expires_in_raises_wcl_auth_error(
 
     with pytest.raises(WCLAuthError, match="invalid expires_in"):
         auth.get_token()
+
+
+def test_oauth_refresh_huge_decimal_expires_in_raises_wcl_auth_error(
+    monkeypatch, tmp_path
+):
+    class _OAuthClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, *args, **kwargs):
+            return _FakeResponse({"access_token": "token", "expires_in": "9" * 500})
+
+    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    with pytest.raises(WCLAuthError, match="invalid expires_in"):
+        auth.get_token()
+    assert not (tmp_path / "token.json").exists()
 
 
 def test_dict_to_dungeon_perf_accepts_numeric_string_percentiles():

@@ -99,3 +99,19 @@ def test_effective_wcl_preferences_for_unknown_spec_disables_mplus_only():
         raid_heroic=True,
         raid_mythic=False,
     )
+
+
+def test_effective_wcl_preferences_for_unmapped_positive_spec_disables_mplus_only():
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=True,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+
+    assert effective_wcl_preferences_for_spec(999999, prefs) == MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=False,
+        raid_mythic=True,
+    )

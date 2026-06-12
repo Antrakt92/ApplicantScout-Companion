@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .constants import SPEC_ID_TO_WCL_NAME
+
 
 @dataclass(frozen=True)
 class MetricPreferences:
@@ -80,7 +82,11 @@ def effective_wcl_preferences_for_spec(
     metric_preferences: MetricPreferences,
 ) -> MetricPreferences:
     """Return the WCL scope that is useful for the current spec snapshot."""
-    if spec_id > 0 or not metric_preferences.mplus:
+    if (
+        not metric_preferences.mplus
+        or spec_id > 0
+        and spec_id in SPEC_ID_TO_WCL_NAME
+    ):
         return metric_preferences
     return MetricPreferences(
         mplus=False,

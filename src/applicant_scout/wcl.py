@@ -481,9 +481,15 @@ class WCLAuth:
             raise WCLAuthError("OAuth response has invalid expires_in") from None
         if expires_in <= 0:
             raise WCLAuthError("OAuth response has invalid expires_in")
+        try:
+            expires_at = time.time() + expires_in
+        except OverflowError:
+            raise WCLAuthError("OAuth response has invalid expires_in") from None
+        if not math.isfinite(expires_at):
+            raise WCLAuthError("OAuth response has invalid expires_in")
         token = _Token(
             access_token=access_token.strip(),
-            expires_at=time.time() + expires_in,
+            expires_at=expires_at,
             client_fingerprint=self._client_fingerprint,
         )
         with self._token_state_lock:
@@ -1038,14 +1044,18 @@ class WCLClient:
             # would query a different region than the caller passed to cache.get.
             region_used = region if region is not None else self.region
             raid_metric = ROLE_TO_RAID_METRIC.get(role, "dps")
-            spec_name = SPEC_ID_TO_WCL_NAME.get(spec_id, "")
+            spec_name = (
+                SPEC_ID_TO_WCL_NAME.get(spec_id, "")
+                if metric_preferences.mplus
+                else ""
+            )
             # Unknown / unmapped spec_id: SPEC_ID_TO_WCL_NAME returns "" so the
             # downstream spec filter would silently let all of the applicant's
             # OTHER specs into the result. Log loud — _process_encounter_ranks
             # short-circuits to None (M+ cell shows "—") rather than ship wrong-spec
             # numbers. Trips for unmapped retail spec_ids (future expansions, or
             # garbage values from a corrupted snapshot).
-            if spec_id != 0 and not spec_name:
+            if metric_preferences.mplus and spec_id != 0 and not spec_name:
                 _log.warning(
                     "Unmapped spec_id=%d (no SPEC_ID_TO_WCL_NAME entry) — M+ "
                     "breakdown for %s will be empty to avoid mixing other specs",
@@ -1719,6 +1729,54 @@ def applicant_has_explicit_realm(raw: str) -> bool:
     return "-" in raw
 
 
+def _raid_difficulty_keys_for_preferences(
+    metric_preferences: MetricPreferences,
+) -> tuple[str, ...]:
+    keys: list[str] = []
+    if metric_preferences.raid_normal:
+        keys.append("N")
+    if metric_preferences.raid_heroic:
+        keys.append("H")
+    if metric_preferences.raid_mythic:
+        keys.append("M")
+    return tuple(keys)
+
+
+def _sanitize_raid_boss_detail_rows(
+    rows: object,
+    metric_preferences: MetricPreferences,
+) -> dict[str, list[dict[str, object]]]:
+    if not isinstance(rows, dict):
+        rows = {}
+    sanitized: dict[str, list[dict[str, object]]] = {}
+    for difficulty in _raid_difficulty_keys_for_preferences(metric_preferences):
+        raw_rows = rows.get(difficulty, [])
+        if not isinstance(raw_rows, list):
+            raw_rows = []
+        clean_rows: list[dict[str, object]] = []
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict):
+                continue
+            encounter_id = _safe_nonnegative_cache_int(raw_row.get("encounter_id"))
+            name = raw_row.get("name")
+            if encounter_id <= 0 or not isinstance(name, str) or not name.strip():
+                continue
+            overall = _safe_cache_percent(raw_row.get("overall"))
+            ilvl = _safe_cache_percent(raw_row.get("ilvl"))
+            if overall is None and ilvl is None:
+                continue
+            clean_rows.append(
+                {
+                    "encounter_id": encounter_id,
+                    "name": name.strip(),
+                    "overall": overall,
+                    "ilvl": ilvl,
+                }
+            )
+        sanitized[difficulty] = clean_rows
+    return sanitized
+
+
 # ───────────────────────────────────────────────────────────────────
 # Cache (TTL + persistent)
 
@@ -1726,7 +1784,8 @@ def applicant_has_explicit_realm(raw: str) -> bool:
 @dataclass
 class _CacheEntry:
     fetched_at: float
-    ranks: dict  # asdict(CharacterRanks)
+    ranks: dict | None = None  # asdict(CharacterRanks)
+    raid_boss_details: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -1827,6 +1886,33 @@ class CharacterCache:
     ) -> str:
         return (
             f"{CharacterCache._key_prefix(name, server_slug, region, spec_id, role)}:"
+            f"{metric_preferences.cache_key()}"
+        )
+
+    @staticmethod
+    def _raid_boss_key_prefix(
+        name: str,
+        server_slug: str,
+        region: str,
+        spec_id: int = 0,
+        role: str = "DAMAGER",
+    ) -> str:
+        return (
+            "rb:"
+            f"{CharacterCache._key_prefix(name, server_slug, region, spec_id, role)}"
+        )
+
+    @staticmethod
+    def _raid_boss_key(
+        name: str,
+        server_slug: str,
+        region: str,
+        spec_id: int = 0,
+        role: str = "DAMAGER",
+        metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+    ) -> str:
+        return (
+            f"{CharacterCache._raid_boss_key_prefix(name, server_slug, region, spec_id, role)}:"
             f"{metric_preferences.cache_key()}"
         )
 
@@ -2071,6 +2157,66 @@ class CharacterCache:
                 return _project_ranks_to_metric_preferences(ranks, metric_preferences)
         return None
 
+    def get_raid_boss_details(
+        self,
+        name: str,
+        server_slug: str,
+        region: str,
+        spec_id: int = 0,
+        role: str = "DAMAGER",
+        metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+    ) -> dict[str, list[dict[str, object]]] | None:
+        prefix = self._raid_boss_key_prefix(name, server_slug, region, spec_id, role)
+        key = f"{prefix}:{metric_preferences.cache_key()}"
+        not_found_key = self._not_found_key(name, server_slug, region)
+        now = time.time()
+        with self._lock:
+            generation = self._generation
+            negative_candidate = None
+            negative_entry = self._data.get(not_found_key)
+            if negative_entry is not None:
+                negative_age = now - negative_entry.fetched_at
+                if 0 <= negative_age <= self._not_found_ttl_seconds():
+                    negative_candidate = negative_entry
+            candidates: list[tuple[int, float, int, int, _CacheEntry]] = []
+            exact_entry = self._data.get(key)
+            if exact_entry is not None:
+                exact_age = now - exact_entry.fetched_at
+                if 0 <= exact_age <= self._ttl_seconds:
+                    candidates.append((0, -exact_entry.fetched_at, 0, -1, exact_entry))
+            for index, (stored_key, entry) in enumerate(self._data.items()):
+                if stored_key == key or not stored_key.startswith(f"{prefix}:"):
+                    continue
+                stored_raw = stored_key[len(prefix) + 1 :]
+                stored_preferences = MetricPreferences.from_cache_key(stored_raw)
+                if stored_preferences is None:
+                    continue
+                if not stored_preferences.covers(metric_preferences):
+                    continue
+                age = now - entry.fetched_at
+                if age < 0 or age > self._ttl_seconds:
+                    continue
+                breadth = _metric_preference_breadth(stored_preferences)
+                candidates.append((1, -entry.fetched_at, breadth, index, entry))
+        if negative_candidate is not None:
+            ranks = self._ranks_from_entry(negative_candidate)
+            if ranks is not None and ranks.not_found:
+                with self._lock:
+                    if generation != self._generation:
+                        return None
+                return None
+        if not candidates:
+            return None
+        candidates.sort()
+        for _exact_rank, _fetched_at, _breadth, _index, entry in candidates:
+            rows = self._raid_boss_details_from_entry(entry, metric_preferences)
+            if rows is not None:
+                with self._lock:
+                    if generation != self._generation:
+                        return None
+                return rows
+        return None
+
     def _ranks_from_entry(self, entry: _CacheEntry) -> Optional[CharacterRanks]:
         # Rebuild DungeonPerf list from dicts — asdict flattens dataclass
         # fields recursively, so cached breakdown is list[dict]. Without this
@@ -2110,6 +2256,18 @@ class CharacterCache:
         except (TypeError, ValueError):
             return None
 
+    def _raid_boss_details_from_entry(
+        self,
+        entry: _CacheEntry,
+        metric_preferences: MetricPreferences,
+    ) -> dict[str, list[dict[str, object]]] | None:
+        if not isinstance(entry.raid_boss_details, dict):
+            return None
+        return _sanitize_raid_boss_detail_rows(
+            entry.raid_boss_details,
+            metric_preferences,
+        )
+
     def put(
         self,
         name: str,
@@ -2132,8 +2290,11 @@ class CharacterCache:
                 return False
             if ranks.not_found:
                 identity_prefix = f"{region}:{server_slug}:{name.lower()}:"
+                raid_boss_identity_prefix = f"rb:{identity_prefix}"
                 for stored_key in list(self._data):
-                    if stored_key.startswith(identity_prefix):
+                    if stored_key.startswith(
+                        identity_prefix
+                    ) or stored_key.startswith(raid_boss_identity_prefix):
                         self._data.pop(stored_key, None)
                 self._data[not_found_key] = _CacheEntry(
                     fetched_at=time.time(), ranks=asdict(ranks)
@@ -2143,6 +2304,43 @@ class CharacterCache:
                 self._data[key] = _CacheEntry(
                     fetched_at=time.time(), ranks=asdict(ranks)
                 )
+            self._save_epoch += 1
+            snapshot = self._schedule_save_locked()
+        if snapshot is not None:
+            self._write_snapshot(snapshot)
+        return True
+
+    def put_raid_boss_details(
+        self,
+        name: str,
+        server_slug: str,
+        region: str,
+        spec_id: int,
+        rows: dict[str, list[dict[str, object]]],
+        role: str = "DAMAGER",
+        metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+        *,
+        expected_generation: int | None = None,
+    ) -> bool:
+        key = self._raid_boss_key(
+            name,
+            server_slug,
+            region,
+            spec_id,
+            role,
+            metric_preferences,
+        )
+        sanitized = _sanitize_raid_boss_detail_rows(rows, metric_preferences)
+        with self._lock:
+            if (
+                expected_generation is not None
+                and expected_generation != self._generation
+            ):
+                return False
+            self._data[key] = _CacheEntry(
+                fetched_at=time.time(),
+                raid_boss_details=sanitized,
+            )
             self._save_epoch += 1
             snapshot = self._schedule_save_locked()
         if snapshot is not None:

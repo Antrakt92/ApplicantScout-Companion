@@ -490,14 +490,33 @@ class _FetchTask(QRunnable):
 
 
 class _RaidBossFetchTask(QRunnable):
-    def __init__(self, identity: _FetchIdentity, name: str, client: WCLClient):
+    def __init__(
+        self,
+        identity: _FetchIdentity,
+        name: str,
+        client: WCLClient,
+        cache: CharacterCache,
+    ):
         super().__init__()
         self.signals = _RaidBossFetchSignals()
         self._identity = identity
         self._name = name
         self._client = client
+        self._cache = cache
+        self._cache_generation = cache.generation
 
     def run(self) -> None:
+        cached = self._cache.get_raid_boss_details(
+            self._name,
+            self._identity.server_slug,
+            self._identity.region,
+            self._identity.spec_id,
+            self._identity.metric_role,
+            self._identity.metric_preferences,
+        )
+        if cached is not None and self._cache.generation == self._cache_generation:
+            self.signals.done.emit(self._identity, cached, "", "")
+            return
         try:
             rows = self._client.fetch_character_raid_boss_details(
                 self._name,
@@ -520,6 +539,16 @@ class _RaidBossFetchTask(QRunnable):
         except Exception as exc:  # noqa: BLE001
             self.signals.done.emit(self._identity, {}, str(exc), "")
             return
+        self._cache.put_raid_boss_details(
+            self._name,
+            self._identity.server_slug,
+            self._identity.region,
+            self._identity.spec_id,
+            rows,
+            self._identity.metric_role,
+            self._identity.metric_preferences,
+            expected_generation=self._cache_generation,
+        )
         self.signals.done.emit(self._identity, rows, "", "")
 
 
@@ -4259,6 +4288,17 @@ class OverlayWindow(QMainWindow):
         if resolved is None:
             return False
         identity, charname = resolved
+        cached = self._cache.get_raid_boss_details(
+            charname,
+            identity.server_slug,
+            identity.region,
+            identity.spec_id,
+            identity.metric_role,
+            identity.metric_preferences,
+        )
+        if cached is not None:
+            self._on_raid_boss_fetch_done(identity, cached, "")
+            return True
         if self._raid_boss_fetch_blocked_by_failure(identity):
             return False
         if self._is_fetch_in_flight_for_raid_details(identity):
@@ -4268,7 +4308,7 @@ class OverlayWindow(QMainWindow):
             return True
         self._mark_raid_boss_fetch_in_flight(identity)
         self._mark_raid_boss_fetch_waiting_on_target(identity)
-        task = _RaidBossFetchTask(identity, charname, self._wcl_client)
+        task = _RaidBossFetchTask(identity, charname, self._wcl_client, self._cache)
         task.signals.done.connect(self._on_raid_boss_fetch_done)
         if self._pool is not None:
             self._pool.start(task)
@@ -4556,6 +4596,10 @@ class OverlayWindow(QMainWindow):
             )
             self._sync_delegate_and_panel()
             return
+        self._raid_boss_fetch_failures.pop(
+            _raid_boss_fetch_failure_key(fetched_identity),
+            None,
+        )
         applicant.raid_boss_parses = {}
         for difficulty, enabled in (
             ("N", fetched_identity.metric_preferences.raid_normal),
