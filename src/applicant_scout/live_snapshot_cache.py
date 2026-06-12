@@ -128,6 +128,7 @@ class LiveSnapshotCacheWriter:
         self._pending: _PendingLiveSnapshotCacheOperation | None = None
         self._timer: threading.Timer | None = None
         self._closed = False
+        self._generation = 0
 
     def submit(self, snap: Snapshot, *, now: float | None = None) -> None:
         operation = _operation_for_snapshot(snap, now=now)
@@ -150,6 +151,7 @@ class LiveSnapshotCacheWriter:
             self._cancel_timer_locked()
             operation = self._pending
             self._pending = None
+            generation = self._generation
         if operation is None:
             return True
 
@@ -159,7 +161,11 @@ class LiveSnapshotCacheWriter:
             return True
 
         with self._lock:
-            if not self._closed and self._pending is None:
+            if (
+                not self._closed
+                and self._pending is None
+                and generation == self._generation
+            ):
                 self._pending = operation
                 if self._defer_saves:
                     self._schedule_locked()
@@ -167,8 +173,11 @@ class LiveSnapshotCacheWriter:
 
     def invalidate(self) -> None:
         with self._lock:
+            self._generation += 1
             self._cancel_timer_locked()
             self._pending = None
+        with self._write_lock:
+            pass
 
     def close(self) -> None:
         self.flush()

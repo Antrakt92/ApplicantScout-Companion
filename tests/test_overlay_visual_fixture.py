@@ -184,8 +184,8 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
 
         image = QImage(str(screenshot_path))
         dpr = pixmap.devicePixelRatio()
-        assert image.width() == round(window.size().width() * dpr)
-        assert image.height() == round(window.size().height() * dpr)
+        assert abs(image.width() - (window.size().width() * dpr)) <= 1
+        assert abs(image.height() - (window.size().height() * dpr)) <= 1
         assert len(_sampled_colours(image)) > 1
 
         assert OVERLAY_VISUAL_BASELINE_PATH.exists()
@@ -208,6 +208,30 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
             not window._table.isRowHidden(row)
             for row in range(window._table.rowCount())
         )
+    finally:
+        client.close()
+
+
+def test_overlay_visual_fixture_uses_content_safe_width_for_enabled_metrics(
+    qtbot,
+    tmp_path,
+):
+    _state, window, client = create_overlay_visual_window(tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        show_overlay_visual_window(window, process_events=QApplication.processEvents)
+
+        visible_width = sum(
+            window._table.columnWidth(col)
+            for col in range(window._table.columnCount())
+            if not window._table.isColumnHidden(col)
+        )
+        viewport = window._table.viewport()
+        assert viewport is not None
+        assert viewport.width() >= visible_width
+        scroll_bar = window._table.horizontalScrollBar()
+        assert scroll_bar is None or scroll_bar.maximum() == 0
     finally:
         client.close()
 

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import logging
 from pathlib import Path
 import shutil
+import threading
 import time
 from types import SimpleNamespace
 
@@ -13,8 +14,10 @@ import pytest
 import applicant_scout.__main__ as main_mod
 from applicant_scout import atomic_io
 import applicant_scout.config as config_mod
+import applicant_scout.live_snapshot_cache as live_snapshot_cache_mod
 from applicant_scout.live_snapshot_cache import (
     LIVE_SNAPSHOT_CACHE_FILENAME,
+    LiveSnapshotCacheWriter,
     load_live_snapshot,
     save_live_snapshot,
 )
@@ -6420,6 +6423,65 @@ def test_clear_cache_dir_invalidates_live_snapshot_writer_before_deleting_cache(
 
     assert calls == ["invalidate"]
     assert not live_path.exists()
+
+
+def test_clear_cache_dir_waits_for_in_flight_live_snapshot_writer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    started = threading.Event()
+    release = threading.Event()
+    clear_returned = threading.Event()
+    original_save = live_snapshot_cache_mod.save_live_snapshot
+
+    def slow_save(cache_path: Path, snap: Snapshot, *, now: float) -> bool:
+        started.set()
+        assert release.wait(timeout=2.0)
+        return original_save(cache_path, snap, now=now)
+
+    monkeypatch.setattr(live_snapshot_cache_mod, "save_live_snapshot", slow_save)
+    monkeypatch.setattr(main_mod, "clear_lookup_payload_cache", lambda _path: None)
+    writer = LiveSnapshotCacheWriter(
+        cache_dir,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(_live_snapshot(), now=100.0)
+
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    clear_thread = threading.Thread(
+        target=lambda: (
+            main_mod._clear_cache_dir(cache_dir, live_snapshot_writer=writer),
+            clear_returned.set(),
+        )
+    )
+    clear_thread.start()
+    assert not clear_returned.wait(timeout=0.05)
+
+    release.set()
+    flush_thread.join(timeout=2.0)
+    clear_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert not clear_thread.is_alive()
+    assert clear_returned.is_set()
+    assert not (cache_dir / LIVE_SNAPSHOT_CACHE_FILENAME).exists()
+
+    monkeypatch.setattr(
+        live_snapshot_cache_mod,
+        "save_live_snapshot",
+        save_live_snapshot,
+    )
+    writer.submit(_live_snapshot(), now=120.0)
+    assert writer.flush()
+    restored = load_live_snapshot(cache_dir, now=121.0)
+    assert restored is not None
+    assert restored.saved_at == 120.0
 
 
 def test_settings_dialog_gets_explicit_app_icon_before_exec(

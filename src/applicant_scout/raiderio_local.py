@@ -617,6 +617,18 @@ def _encoding_field_width(field: int, dungeon_count: int) -> int:
 
 
 def _validate_encoding_plan(meta: _ProviderMeta, dungeon_count: int) -> None:
+    if dungeon_count <= 0:
+        raise ValueError("RaiderIO M+ encoding plan has no dungeon names")
+    if not meta.encoding_order:
+        raise ValueError("RaiderIO M+ encoding plan has empty encoding order")
+    missing_fields = [
+        field
+        for field in (1, _DUNGEON_LEVELS_FIELD)
+        if field not in meta.encoding_order
+    ]
+    if missing_fields:
+        missing = ", ".join(str(field) for field in missing_fields)
+        raise ValueError(f"RaiderIO M+ encoding plan missing required fields: {missing}")
     bit_budget = sum(
         _encoding_field_width(field, dungeon_count) for field in meta.encoding_order
     )

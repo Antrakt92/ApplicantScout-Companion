@@ -1803,6 +1803,31 @@ def test_character_cache_reads_current_entry_without_error_kind(tmp_path):
     assert result.error_kind == ""
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("not_found", "yes"),
+        ("error", ["boom"]),
+        ("error_kind", {"kind": "network"}),
+    ),
+)
+def test_character_cache_discards_malformed_terminal_scalar_fields(
+    tmp_path,
+    field,
+    value,
+):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+    key = CharacterCache._key("Scout", "ravencrest", "EU", 71, "DAMAGER")
+    raw["entries"][key]["ranks"][field] = value
+    cache._path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = CharacterCache(tmp_path)
+
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
 def test_character_cache_reuses_broader_metric_scope_for_narrow_request(tmp_path):
     cache = CharacterCache(tmp_path)
     cache.put(

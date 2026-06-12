@@ -2501,7 +2501,7 @@ class OverlayWindow(QMainWindow):
         self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self._table.setShowGrid(False)
         self._table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
         for i, w in enumerate(COLUMN_WIDTHS):
             self._table.setColumnWidth(i, w)

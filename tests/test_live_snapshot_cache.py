@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import threading
 
 import pytest
 
@@ -385,6 +386,99 @@ def test_live_snapshot_writer_retries_failed_save_on_next_flush(
     assert calls == 2
     assert restored is not None
     assert restored.saved_at == 100.0
+
+
+def test_live_snapshot_writer_invalidate_waits_for_in_flight_save(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    started = threading.Event()
+    release = threading.Event()
+    invalidate_returned = threading.Event()
+    original_save = cache_mod.save_live_snapshot
+
+    def slow_save(cache_dir, snap, *, now):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return original_save(cache_dir, snap, now=now)
+
+    monkeypatch.setattr(cache_mod, "save_live_snapshot", slow_save)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(_live_snapshot(), now=100.0)
+
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    invalidate_thread = threading.Thread(
+        target=lambda: (writer.invalidate(), invalidate_returned.set())
+    )
+    invalidate_thread.start()
+    assert not invalidate_returned.wait(timeout=0.05)
+
+    release.set()
+    flush_thread.join(timeout=2.0)
+    invalidate_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert not invalidate_thread.is_alive()
+    assert invalidate_returned.is_set()
+
+
+def test_live_snapshot_writer_invalidate_drops_failed_in_flight_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    started = threading.Event()
+    release = threading.Event()
+    invalidate_returned = threading.Event()
+    calls = 0
+
+    def failing_save(_cache_dir, _snap, *, now):
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(timeout=2.0)
+        return False
+
+    monkeypatch.setattr(cache_mod, "save_live_snapshot", failing_save)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(_live_snapshot(), now=100.0)
+
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    invalidate_thread = threading.Thread(
+        target=lambda: (writer.invalidate(), invalidate_returned.set())
+    )
+    invalidate_thread.start()
+    assert not invalidate_returned.wait(timeout=0.05)
+
+    release.set()
+    flush_thread.join(timeout=2.0)
+    invalidate_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert not invalidate_thread.is_alive()
+    assert invalidate_returned.is_set()
+    assert writer.flush()
+    assert calls == 1
+
+    monkeypatch.setattr(cache_mod, "save_live_snapshot", save_live_snapshot)
+    writer.submit(_live_snapshot(), now=120.0)
+    assert writer.flush()
+    restored = load_live_snapshot(tmp_path, now=121.0)
+    assert restored is not None
+    assert restored.saved_at == 120.0
 
 
 def test_live_snapshot_writer_retries_failed_clear_on_next_flush(

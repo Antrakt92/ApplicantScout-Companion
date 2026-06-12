@@ -427,8 +427,17 @@ def build_party_visual_state(*, include_listing: bool) -> AppState:
 
 
 def _prepare_common_visual_window(window: OverlayWindow) -> None:
+    from applicant_scout.overlay import _minimum_window_width_for_metrics
+
     window.resize(window.minimumWidth(), DEFAULT_WINDOW_HEIGHT)
     window._refresh_table()
+    content_safe_width = _minimum_window_width_for_metrics(
+        window._metric_preferences,
+        name_width=getattr(window, "_max_name_width_px", 0),
+    )
+    if window.width() < content_safe_width:
+        window.resize(content_safe_width, DEFAULT_WINDOW_HEIGHT)
+        window._refresh_table()
     window._update_title()
     # Fixture stability: real overlay hover intentionally wins over pin, but
     # screenshot/tests should not depend on the OS cursor position.

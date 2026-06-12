@@ -2252,6 +2252,16 @@ class CharacterCache:
                 if not isinstance(raw, list):
                     raw = []
                 ranks_dict[fld] = [_dict_to_dungeon_perf(d) for d in raw]
+            terminal_scalar_defaults = {
+                "not_found": (False, bool),
+                "error": ("", str),
+                "error_kind": ("", str),
+            }
+            for fld, (default, expected_type) in terminal_scalar_defaults.items():
+                if fld not in ranks_dict:
+                    ranks_dict[fld] = default
+                elif not isinstance(ranks_dict[fld], expected_type):
+                    return None
             return CharacterRanks(**ranks_dict)
         except (TypeError, ValueError):
             return None

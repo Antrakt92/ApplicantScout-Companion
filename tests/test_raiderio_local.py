@@ -276,6 +276,32 @@ def test_reader_keeps_raid_available_when_mplus_db_is_invalid(tmp_path: Path):
     }
 
 
+@pytest.mark.parametrize("encoding_order", ((), (1,), (10,)))
+def test_reader_rejects_incomplete_mplus_encoding_order(
+    tmp_path: Path,
+    encoding_order: tuple[int, ...],
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0),
+        encoding_order=encoding_order,
+    )
+    _write_test_raid_db(
+        tmp_path,
+        _raid_record((1, (0, 0, 0)), (0, (0, 0, 0)))
+        + _raid_record((3, (2, 0, 1)), (2, (1, 1, 1))),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 0
+    assert profile.dungeons == []
+    assert profile.has_mplus_profile is False
+    assert profile.raid_progress["M"]["killed"] == 2
+
+
 def test_reader_matches_display_realm_against_raiderio_normalized_realm_key(
     tmp_path: Path,
 ):

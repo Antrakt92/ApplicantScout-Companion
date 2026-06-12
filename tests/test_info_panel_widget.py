@@ -1893,6 +1893,42 @@ def test_overlay_window_minimum_size_allows_user_compact_resize(qtbot, tmp_path)
         client.close()
 
 
+def test_compact_metric_table_exposes_horizontal_overflow_scrollbar(qtbot, tmp_path):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        metric_preferences=prefs,
+    )
+    qtbot.addWidget(window)
+
+    try:
+        window.resize(320, 240)
+        window.show()
+        qtbot.waitUntil(lambda: window._table.viewport().width() > 0, timeout=1000)
+        QApplication.processEvents()
+
+        assert (
+            window._table.horizontalScrollBarPolicy()
+            == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        scroll_bar = window._table.horizontalScrollBar()
+        assert scroll_bar is not None
+        assert scroll_bar.maximum() > 0
+    finally:
+        client.close()
+
+
 def test_overlay_table_position_stays_fixed_when_panel_dungeon_rows_change(
     qtbot, tmp_path
 ):
@@ -2232,8 +2268,12 @@ def test_geometry_leave_event_keeps_hover_when_cursor_still_over_row(
         QApplication.processEvents()
         viewport = window._table.viewport()
         assert viewport is not None
+        visible_row_y = min(
+            window._table.rowViewportPosition(0) + window._table.rowHeight(0) // 2,
+            viewport.rect().bottom(),
+        )
         cursor_pos = viewport.mapToGlobal(
-            QPoint(8, window._table.rowViewportPosition(0) + window._table.rowHeight(0) // 2)
+            QPoint(8, visible_row_y)
         )
         monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: cursor_pos)
 
