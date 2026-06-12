@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import os
 from pathlib import Path
 import sys
@@ -13,6 +14,15 @@ class _Completed:
     def __init__(self, stdout: str = "", returncode: int = 0) -> None:
         self.stdout = stdout
         self.returncode = returncode
+
+
+@pytest.fixture(autouse=True)
+def _reset_current_session_watcher() -> Iterator[None]:
+    with wow_lifecycle._CURRENT_SESSION_WATCHER_LOCK:
+        wow_lifecycle._CURRENT_SESSION_WATCHER = None
+    yield
+    with wow_lifecycle._CURRENT_SESSION_WATCHER_LOCK:
+        wow_lifecycle._CURRENT_SESSION_WATCHER = None
 
 
 def test_is_wow_running_detects_retail_process(monkeypatch: pytest.MonkeyPatch):
@@ -333,3 +343,89 @@ def test_start_wow_sync_watcher_uses_dev_module_command(
     )
 
     assert calls == [[str(python_exe), "-m", "applicant_scout", "--watch-wow"]]
+
+
+def test_stop_current_session_watcher_terminates_live_helper(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeProcess:
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def wait(self, timeout: float | None = None) -> int:
+            calls.append(f"wait:{timeout}")
+            return 0
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+    monkeypatch.setattr(
+        wow_lifecycle,
+        "_CURRENT_SESSION_WATCHER",
+        FakeProcess(),
+        raising=False,
+    )
+
+    assert wow_lifecycle.stop_current_session_watcher()
+
+    assert calls == ["terminate", "wait:2.0"]
+    assert wow_lifecycle._CURRENT_SESSION_WATCHER is None
+
+
+def test_stop_current_session_watcher_ignores_finished_helper(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeProcess:
+        def poll(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+    monkeypatch.setattr(
+        wow_lifecycle,
+        "_CURRENT_SESSION_WATCHER",
+        FakeProcess(),
+        raising=False,
+    )
+
+    assert wow_lifecycle.stop_current_session_watcher()
+
+    assert calls == []
+    assert wow_lifecycle._CURRENT_SESSION_WATCHER is None
+
+
+def test_stop_current_session_watcher_clears_reference_before_process_wait(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeProcess:
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert wow_lifecycle._CURRENT_SESSION_WATCHER is None
+            calls.append(f"wait:{timeout}")
+            return 0
+
+    monkeypatch.setattr(
+        wow_lifecycle,
+        "_CURRENT_SESSION_WATCHER",
+        FakeProcess(),
+        raising=False,
+    )
+
+    assert wow_lifecycle.stop_current_session_watcher()
+
+    assert calls == ["terminate", "wait:2.0"]

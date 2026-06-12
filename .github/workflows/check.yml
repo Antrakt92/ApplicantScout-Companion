@@ -39,7 +39,6 @@ jobs:
         working-directory: ApplicantScout-Companion
         run: |
           python -m venv .venv
-          .\.venv\Scripts\python -m pip install --upgrade pip
           .\.venv\Scripts\python -m pip install -r constraints-release.txt
           .\.venv\Scripts\python -m pip install -e '.[dev]' -c constraints-release.txt
 

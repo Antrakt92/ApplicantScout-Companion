@@ -339,13 +339,16 @@ def test_check_script_checks_native_command_exit_codes():
     script = _read_repo_text("scripts/check.ps1")
 
     assert "Invoke-NativeChecked" in script
+    assert "[switch]$SeasonalOnlineChecks" in script
     assert '[string]$VisualMode = "Strict"' in script
     assert 'Invoke-NativeChecked -Label "Python tests"' in script
+    assert 'Invoke-NativeChecked -Label "Seasonal online checks"' in script
     assert 'Invoke-NativeChecked -Label "Overlay visual baselines"' in script
     assert 'Invoke-NativeChecked -Label "Settings dialog visual baselines"' in script
     assert 'Invoke-NativeChecked -Label "Public visual assets"' in script
     assert "render_overlay_fixture.py" in script
     assert "render_settings_dialog_fixture.py" in script
+    assert "scripts\\seasonal\\get_mplus_activity_ids.py --check" in script
     assert "export_public_visual_assets.py" in script
     assert "--addon-root $AddonRoot --check" in script
     assert 'if ($VisualMode -eq "Strict")' in script
@@ -356,6 +359,12 @@ def test_check_script_checks_native_command_exit_codes():
     assert 'Invoke-NativeChecked -Label "Ruff"' in script
     assert 'Invoke-NativeChecked -Label "Pyright"' in script
     assert 'Invoke-NativeChecked -Label "Lua syntax"' in script
+    assert script.index('Write-Host "== Python tests =="') < script.index(
+        'Write-Host "== Seasonal online checks =="'
+    )
+    assert script.index('Write-Host "== Seasonal online checks =="') < script.index(
+        'Write-Host "== Overlay visual baselines =="'
+    )
 
 
 def test_check_script_does_not_accept_generic_luac_for_wow_syntax():
@@ -582,6 +591,18 @@ def test_release_build_uses_pinned_constraints():
     assert "constraints-release.txt" in build_script
     assert "Assert-ReleaseConstraints" in build_script
     assert "Malformed release constraint" in build_script
+    assert "APSCOUT_PYPROJECT_FILE" in build_script
+    assert "missing release constraint for pyproject dependency" in build_script
+    assert "missing_pyproject_constraints" in build_script
+
+
+def test_dependency_license_collection_validates_pyproject_constraint_coverage():
+    build_script = _read_repo_text("scripts/build-windows.ps1")
+    collector = _read_repo_text("scripts/collect_dependency_licenses.py")
+
+    assert "--pyproject $Pyproject" in build_script
+    assert "release_dependency_names_from_pyproject" in collector
+    assert "missing_pyproject_constraints" in collector
 
 
 def test_release_constraints_are_all_exact_pins():
@@ -778,6 +799,8 @@ def test_release_checklist_requires_local_strict_visual_and_media_export_gate():
     checklist = _read_repo_text("RELEASE_CHECKLIST.md")
 
     assert "local strict visual baselines" in checklist.lower()
+    assert ".\\scripts\\check.ps1 -SeasonalOnlineChecks" in checklist
+    assert "MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME" in checklist
     assert "Do not use `-VisualMode Smoke` for this local release gate" in checklist
     assert "CI/release smoke" in checklist
     assert ".\\scripts\\check.ps1" in checklist
@@ -785,6 +808,16 @@ def test_release_checklist_requires_local_strict_visual_and_media_export_gate():
         ".\\.venv\\Scripts\\python scripts\\export_public_visual_assets.py "
         "--addon-root ..\\ApplicantScout-Addon --check"
     ) in checklist
+
+
+def test_workflows_do_not_upgrade_bootstrap_pip():
+    for workflow_path in (
+        ".github/workflows/check.yml",
+        ".github/workflows/release.yml",
+    ):
+        workflow = _read_repo_text(workflow_path)
+
+        assert "--upgrade pip" not in workflow
 
 
 def test_docs_readme_explains_public_media_export_and_strict_gate():

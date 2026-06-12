@@ -311,3 +311,28 @@ def start_wow_sync_watcher(
     with _CURRENT_SESSION_WATCHER_LOCK:
         _CURRENT_SESSION_WATCHER = process
     return process
+
+
+def stop_current_session_watcher(*, timeout: float = 2.0) -> bool:
+    """Stop the helper launched for this settings session, if it is still live."""
+    global _CURRENT_SESSION_WATCHER
+    with _CURRENT_SESSION_WATCHER_LOCK:
+        process = _CURRENT_SESSION_WATCHER
+        _CURRENT_SESSION_WATCHER = None
+    if process is None:
+        return True
+    try:
+        if process.poll() is not None:
+            return True
+        process.terminate()
+        process.wait(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            process.wait(timeout=timeout)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
+    except (OSError, subprocess.SubprocessError):
+        return False

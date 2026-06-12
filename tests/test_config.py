@@ -3061,6 +3061,53 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
     assert calls == ["shortcut", "save", "watcher:False"]
 
 
+def test_first_run_wow_sync_disable_stops_current_session_watcher_after_save(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    cfg.sync_with_wow = True
+    calls: list[str] = []
+
+    class FakeDialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setWindowIcon(self, _icon) -> None:
+            pass
+
+        def exec(self):
+            return main_mod.QDialog.DialogCode.Accepted
+
+        def values(self):
+            class Values:
+                wcl_client_id = "client"
+                wcl_client_secret = "secret"
+                region = "EU"
+                screenshots_path = str(tmp_path / "Screenshots")
+                metric_preferences = cfg.metric_preferences
+                sync_with_wow = False
+
+            return Values()
+
+    monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
+    monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
+    monkeypatch.setattr(main_mod, "save_config_values", lambda **_kwargs: calls.append("save"))
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda enabled: calls.append(f"shortcut:{enabled}"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "stop_current_session_watcher",
+        lambda: calls.append("watcher-stop") or True,
+        raising=False,
+    )
+
+    assert main_mod._run_first_run_settings(cfg)
+    assert calls == ["shortcut:False", "save", "watcher-stop"]
+
+
 def test_persist_settings_values_preserves_process_env_overridden_saved_values(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -3671,6 +3718,76 @@ def test_settings_change_applies_wow_sync_runtime_without_startup_shortcut_on_ca
     assert calls == ["watcher:False", "timer-start"]
 
 
+def test_settings_change_disable_wow_sync_keeps_saved_config_when_helper_stop_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    screenshots = _valid_screenshots_dir(tmp_path)
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    cfg.sync_with_wow = True
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(screenshots),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=False,
+    )
+    calls: list[str] = []
+
+    class FakeTimer:
+        def stop(self) -> None:
+            calls.append("timer-stop")
+
+        def deleteLater(self) -> None:
+            calls.append("timer-delete")
+
+    def fail_stop() -> bool:
+        calls.append("watcher-stop")
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: calls.append("persist-new"))
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_config_snapshot",
+        lambda _cfg: calls.append("rollback-old"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "stop_current_session_watcher",
+        fail_stop,
+        raising=False,
+    )
+    caplog.set_level(logging.WARNING, logger="applicant_scout")
+
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=False,
+        auth=object(),
+        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda *_args, **_kwargs: None,
+            bump_wcl_runtime_generation=lambda: None,
+        ),
+        watcher=object(),
+        current_screenshots_dir=screenshots,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=FakeTimer(),
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert result.cfg.sync_with_wow is False
+    assert result.wow_exit_timer is None
+    assert calls == ["persist-new", "watcher-stop", "timer-stop", "timer-delete"]
+    assert "rollback-old" not in calls
+    assert "stop failed" in caplog.text
+
+
 def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -3701,6 +3818,12 @@ def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
         "start_wow_sync_watcher",
         lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
     )
+    monkeypatch.setattr(
+        main_mod,
+        "stop_current_session_watcher",
+        lambda: calls.append("watcher-stop") or True,
+        raising=False,
+    )
     def fail_wow_scan() -> bool:
         raise AssertionError("WoW process scan must not block settings apply")
 
@@ -3724,6 +3847,7 @@ def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
         "watcher:False",
         "timer-start:False:True",
         "shortcut:False",
+        "watcher-stop",
         "timer-stop",
         "timer-delete",
     ]

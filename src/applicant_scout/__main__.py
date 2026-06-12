@@ -92,6 +92,7 @@ from .wow_lifecycle import (
     is_wow_foreground,
     is_wow_running,
     start_wow_sync_watcher,
+    stop_current_session_watcher,
 )
 
 
@@ -1809,6 +1810,7 @@ def _apply_wow_sync_runtime(
             if configure_startup:
                 configure_wow_sync_startup(False)
             raise
+    _stop_current_session_watcher_best_effort()
     if current_timer is not None:
         state = getattr(current_timer, "_applicant_scout_wow_lifecycle_state", None)
         if isinstance(state, dict):
@@ -1816,6 +1818,16 @@ def _apply_wow_sync_runtime(
         current_timer.stop()
         current_timer.deleteLater()
     return None
+
+
+def _stop_current_session_watcher_best_effort() -> None:
+    try:
+        stopped = stop_current_session_watcher()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        log.warning("Could not stop current-session WoW lifecycle watcher: %s", exc)
+        return
+    if not stopped:
+        log.warning("Could not stop current-session WoW lifecycle watcher.")
 
 
 class _WatcherSignalGate:
@@ -2816,6 +2828,7 @@ def _run_first_run_settings(
                 f"updated: {exc}",
             )
             _persist_settings_values(cfg, values)
+            _stop_current_session_watcher_best_effort()
             return True
         QMessageBox.warning(
             None,
@@ -2858,6 +2871,8 @@ def _run_first_run_settings(
                 "Settings were saved, but the current-session WoW watcher "
                 f"could not be started: {exc}",
             )
+    else:
+        _stop_current_session_watcher_best_effort()
     return True
 
 

@@ -31,7 +31,7 @@ checksum-gated updater smoke has been attested.
 
    ```powershell
    .\.venv\Scripts\python -m pytest
-   .\scripts\check.ps1
+   .\scripts\check.ps1 -SeasonalOnlineChecks
    .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
    .\scripts\check-release-version.ps1 -Tag v<companion version>
    ```
@@ -40,7 +40,9 @@ checksum-gated updater smoke has been attested.
    baselines enabled; this local strict visual baselines check is the approval
    gate for committed media. Do not use `-VisualMode Smoke` for this local release gate;
    CI/release smoke is only a render-health check and does not approve committed
-   baseline or public-media updates.
+   baseline or public-media updates. `-SeasonalOnlineChecks` validates
+   `MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME` against Wago's GroupFinderActivity data
+   before seasonal release prep relies on the shipped localized-listing fallback.
 
 ## Build
 

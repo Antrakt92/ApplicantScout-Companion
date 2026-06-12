@@ -52,24 +52,31 @@ function Copy-DependencyLicenseArtifacts {
 
     $LicenseDir = Join-Path $TargetDir "licenses"
     $Constraints = Join-Path $RepoRoot "constraints-release.txt"
+    $Pyproject = Join-Path $RepoRoot "pyproject.toml"
     $Collector = Join-Path $RepoRoot "scripts\collect_dependency_licenses.py"
     if (-not (Test-Path -LiteralPath $Collector)) {
         throw "Missing dependency license collector: $Collector"
     }
     New-Item -ItemType Directory -Path $LicenseDir -Force | Out-Null
     Invoke-NativeChecked -Label "Collect dependency license files" -Command {
-        & $Python $Collector --constraints $Constraints --dest $LicenseDir
+        & $Python $Collector --constraints $Constraints --pyproject $Pyproject --dest $LicenseDir
     }
 }
 
 function Assert-ReleaseConstraints {
     $Constraints = Join-Path $RepoRoot "constraints-release.txt"
+    $Pyproject = Join-Path $RepoRoot "pyproject.toml"
     if (-not (Test-Path -LiteralPath $Constraints)) {
         throw "Missing release constraints file: $Constraints"
     }
+    if (-not (Test-Path -LiteralPath $Pyproject)) {
+        throw "Missing pyproject file: $Pyproject"
+    }
 
     $PreviousConstraintsFile = $env:APSCOUT_CONSTRAINTS_FILE
+    $PreviousPyprojectFile = $env:APSCOUT_PYPROJECT_FILE
     $env:APSCOUT_CONSTRAINTS_FILE = $Constraints
+    $env:APSCOUT_PYPROJECT_FILE = $Pyproject
     try {
         $PythonCode = @'
 from importlib import metadata
@@ -78,7 +85,10 @@ import re
 import sys
 from pathlib import Path
 
+from scripts.collect_dependency_licenses import missing_pyproject_constraints
+
 constraints = Path(os.environ["APSCOUT_CONSTRAINTS_FILE"])
+pyproject = Path(os.environ["APSCOUT_PYPROJECT_FILE"])
 missing = []
 mismatched = []
 malformed = []
@@ -99,13 +109,24 @@ for raw in constraints.read_text(encoding="utf-8").splitlines():
     if actual != expected:
         mismatched.append(f"{name}: installed {actual}, expected {expected}")
 
-if malformed or missing or mismatched:
+unconstrained_pyproject = []
+try:
+    unconstrained_pyproject = missing_pyproject_constraints(pyproject, constraints)
+except ValueError as exc:
+    malformed.append(str(exc))
+
+if malformed or missing or mismatched or unconstrained_pyproject:
     for item in malformed:
         print(f"Malformed release constraint: {item}", file=sys.stderr)
     for item in missing:
         print(f"missing package: {item}", file=sys.stderr)
     for item in mismatched:
         print(item, file=sys.stderr)
+    for item in unconstrained_pyproject:
+        print(
+            f"missing release constraint for pyproject dependency: {item}",
+            file=sys.stderr,
+        )
     sys.exit(1)
 '@
         Invoke-NativeChecked -Label "Validate release constraints" -Command {
@@ -114,6 +135,7 @@ if malformed or missing or mismatched:
     }
     finally {
         $env:APSCOUT_CONSTRAINTS_FILE = $PreviousConstraintsFile
+        $env:APSCOUT_PYPROJECT_FILE = $PreviousPyprojectFile
     }
 }
 

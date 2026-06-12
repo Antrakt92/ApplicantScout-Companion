@@ -1,7 +1,8 @@
 param(
     [string]$AddonRoot = "",
     [ValidateSet("Strict", "Smoke")]
-    [string]$VisualMode = "Strict"
+    [string]$VisualMode = "Strict",
+    [switch]$SeasonalOnlineChecks
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +74,16 @@ if (-not $Lua51) {
 Write-Host "== Python tests =="
 Invoke-NativeChecked -Label "Python tests" -Command {
     & $Python -m pytest
+}
+
+if ($SeasonalOnlineChecks) {
+    Write-Host "== Seasonal online checks =="
+    Invoke-NativeChecked -Label "Seasonal online checks" -Command {
+        & $Python scripts\seasonal\get_mplus_activity_ids.py --check
+    }
+}
+else {
+    Write-Host "== Seasonal online checks skipped =="
 }
 
 Write-Host "== Overlay visual baselines =="
