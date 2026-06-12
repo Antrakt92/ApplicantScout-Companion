@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import logging
 from pathlib import Path
 import shutil
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,17 @@ import pytest
 import applicant_scout.__main__ as main_mod
 from applicant_scout import atomic_io
 import applicant_scout.config as config_mod
+from applicant_scout.live_snapshot_cache import (
+    LIVE_SNAPSHOT_CACHE_FILENAME,
+    load_live_snapshot,
+    save_live_snapshot,
+)
+from applicant_scout.screenshot import (
+    DecodedApplicant,
+    DecodedListing,
+    DecodedVersion,
+    Snapshot,
+)
 import applicant_scout.wow_lifecycle as wow_lifecycle_mod
 from applicant_scout.config import (
     Config,
@@ -71,6 +83,38 @@ def _fake_config_source_checkout(monkeypatch: pytest.MonkeyPatch, root: Path) ->
     )
     monkeypatch.setattr(config_mod, "__file__", str(config_file))
     return root
+
+
+def _live_snapshot() -> Snapshot:
+    return Snapshot(
+        listing=DecodedListing(
+            activity_id=401,
+            key_level=14,
+            dungeon_name="Theater of Pain",
+            listing_name="+14 weekly",
+            comment="chill",
+            category_id=2,
+            difficulty_id=8,
+        ),
+        version=DecodedVersion(
+            addon_version="0.4.3",
+            game_version="12.0.5",
+            region_id=3,
+            player_name="Host-Realm",
+        ),
+        applicants=[
+            DecodedApplicant(
+                applicant_id=42,
+                member_idx=1,
+                class_id=10,
+                spec_id=270,
+                ilvl=685,
+                score=3100,
+                role=1,
+                name="Healer-Realm",
+            )
+        ],
+    )
 
 
 def _retail_root(tmp_path: Path) -> Path:
@@ -4665,6 +4709,123 @@ def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():
     assert events == ["note_decode", "apply"]
 
 
+def test_connect_screenshot_watcher_submits_cache_after_applying_snapshot():
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+    events: list[str] = []
+
+    class FakeMachine:
+        def apply_snapshot(self, _snap: object) -> None:
+            events.append("apply")
+
+    class FakeWindow:
+        def note_decode(self, _snap: object) -> None:
+            events.append("note_decode")
+
+    class FakeWriter:
+        def submit(self, _snap: object) -> None:
+            events.append("cache_submit")
+
+    callbacks = []
+    watcher = FakeWatcher()
+    snap = _live_snapshot()
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        FakeMachine(),
+        FakeWindow(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        live_snapshot_cache_writer=FakeWriter(),
+        scheduler=callbacks.append,
+    )
+
+    watcher.snapshotReceived.emit(snap)
+    callbacks.pop(0)()
+
+    assert events == ["note_decode", "apply", "cache_submit"]
+
+
+def test_connect_screenshot_watcher_invalidate_drops_queued_flush():
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.decoded: list[object] = []
+
+        def note_decode(self, snap: object) -> None:
+            self.decoded.append(snap)
+
+    class FakeWriter:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def submit(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    callbacks = []
+    gate = main_mod._WatcherSignalGate()
+    watcher = FakeWatcher()
+    machine = FakeMachine()
+    window = FakeWindow()
+    writer = FakeWriter()
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        machine,
+        window,
+        lambda *_args: None,
+        signal_gate=gate,
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        live_snapshot_cache_writer=writer,
+        scheduler=callbacks.append,
+    )
+
+    watcher.snapshotReceived.emit(_live_snapshot())
+    gate.invalidate()
+    callbacks.pop(0)()
+
+    assert machine.snapshots == []
+    assert window.decoded == []
+    assert writer.snapshots == []
+
+
 def test_connect_screenshot_watcher_coalesces_terminal_clear_by_source_order():
     class FakeSignal:
         def __init__(self) -> None:
@@ -4886,6 +5047,31 @@ def test_replace_screenshot_watcher_keeps_new_generation_when_old_stop_fails(
 
     assert calls == ["start:old", "start:new", "stop:old"]
     assert machine.snapshots == ["new-after-replace"]
+
+
+def test_quiesce_screenshot_ingestion_flushes_before_invalidate_then_closes_writer():
+    gate = main_mod._WatcherSignalGate()
+    events: list[str] = []
+
+    class FakeQueue:
+        def flush(self) -> None:
+            assert gate.is_current(0)
+            events.append("queue_flush")
+
+    class FakeWatcher:
+        _applicant_scout_apply_queue = FakeQueue()
+
+        def request_stop(self) -> None:
+            events.append("request_stop")
+
+    class FakeWriter:
+        def close(self) -> None:
+            assert not gate.is_current(0)
+            events.append("writer_close")
+
+    main_mod._quiesce_screenshot_ingestion(FakeWatcher(), gate, FakeWriter())
+
+    assert events == ["request_stop", "queue_flush", "writer_close"]
 
 
 def test_replace_screenshot_watcher_ignores_old_signal_emitted_during_old_stop_after_commit(
@@ -6070,6 +6256,95 @@ def test_check_updates_reports_untrusted_installer_without_handoff(
     assert calls == [result, (installer, False)]
 
 
+def test_restore_live_snapshot_expiry_clears_matching_disk_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    save_live_snapshot(cache_dir, _live_snapshot(), now=time.time())
+    callbacks = []
+    monkeypatch.setattr(
+        main_mod.QTimer,
+        "singleShot",
+        lambda milliseconds, callback: callbacks.append((milliseconds, callback)),
+    )
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[Snapshot] = []
+
+        def apply_snapshot(self, snap: Snapshot) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.expired = False
+
+        def note_restored_snapshot(self, *_args) -> None:
+            pass
+
+        def restored_snapshot_pending(self) -> bool:
+            return True
+
+        def note_restored_snapshot_expired(self) -> None:
+            self.expired = True
+
+    machine = FakeMachine()
+    window = FakeWindow()
+
+    assert main_mod._restore_live_snapshot_cache(
+        cache_dir,
+        machine,
+        window,
+        grace_seconds=0.25,
+    )
+    callbacks[0][1]()
+
+    assert window.expired
+    assert machine.snapshots[-1].listing is None
+    assert not (cache_dir / LIVE_SNAPSHOT_CACHE_FILENAME).exists()
+
+
+def test_restore_live_snapshot_expiry_preserves_newer_disk_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    saved_at = time.time()
+    save_live_snapshot(cache_dir, _live_snapshot(), now=saved_at)
+    callbacks = []
+    monkeypatch.setattr(
+        main_mod.QTimer,
+        "singleShot",
+        lambda _milliseconds, callback: callbacks.append(callback),
+    )
+
+    class FakeMachine:
+        def apply_snapshot(self, _snap: Snapshot) -> None:
+            pass
+
+    class FakeWindow:
+        def note_restored_snapshot(self, *_args) -> None:
+            pass
+
+        def restored_snapshot_pending(self) -> bool:
+            return True
+
+        def note_restored_snapshot_expired(self) -> None:
+            pass
+
+    assert main_mod._restore_live_snapshot_cache(cache_dir, FakeMachine(), FakeWindow())
+    newer_saved_at = saved_at + 0.5
+    save_live_snapshot(cache_dir, _live_snapshot(), now=newer_saved_at)
+    callbacks[0]()
+
+    restored = load_live_snapshot(cache_dir, now=newer_saved_at + 0.1)
+    assert restored is not None
+    assert restored.saved_at == newer_saved_at
+
+
 def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6116,6 +6391,35 @@ def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(
     assert character_cache.generation > generation
     assert rio_clears == [cache_dir]
     assert invalidated == ["auth"]
+
+
+def test_clear_cache_dir_invalidates_live_snapshot_writer_before_deleting_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    live_path = cache_dir / LIVE_SNAPSHOT_CACHE_FILENAME
+    live_path.write_text("old snapshot", encoding="utf-8")
+    calls: list[str] = []
+
+    class FakeWriter:
+        def invalidate(self) -> None:
+            assert live_path.exists()
+            calls.append("invalidate")
+
+    monkeypatch.setattr(main_mod, "clear_lookup_payload_cache", lambda _path: None)
+
+    assert (
+        main_mod._clear_cache_dir(
+            cache_dir,
+            live_snapshot_writer=FakeWriter(),
+        )
+        == "Cache cleared."
+    )
+
+    assert calls == ["invalidate"]
+    assert not live_path.exists()
 
 
 def test_settings_dialog_gets_explicit_app_icon_before_exec(

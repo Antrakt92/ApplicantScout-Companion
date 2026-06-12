@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
+import pytest
+
+import applicant_scout.live_snapshot_cache as cache_mod
 from applicant_scout.live_snapshot_cache import (
     LIVE_SNAPSHOT_CACHE_FILENAME,
     LIVE_SNAPSHOT_CACHE_TTL_SECONDS,
+    LiveSnapshotCacheWriter,
+    clear_live_snapshot_if_saved_at,
     load_live_snapshot,
     save_live_snapshot,
 )
@@ -72,6 +78,22 @@ def _live_snapshot() -> Snapshot:
             )
         ],
         source=SnapshotSource(mtime_ns=123, file_id="WoWScrnShot.jpg", size=456),
+    )
+
+
+def _cache_path(tmp_path):
+    return tmp_path / LIVE_SNAPSHOT_CACHE_FILENAME
+
+
+def _cache_payload(tmp_path, *, now: float = 100.0) -> dict:
+    save_live_snapshot(tmp_path, _live_snapshot(), now=now)
+    return json.loads(_cache_path(tmp_path).read_text(encoding="utf-8"))
+
+
+def _write_cache_payload(tmp_path, payload: dict) -> None:
+    _cache_path(tmp_path).write_text(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+        encoding="utf-8",
     )
 
 
@@ -163,3 +185,235 @@ def test_load_live_snapshot_rejects_malformed_or_non_live_payload(tmp_path):
 
     assert load_live_snapshot(tmp_path, now=101.0) is None
     assert not path.exists()
+
+
+def test_load_live_snapshot_rejects_wrong_scalar_types_from_disk(tmp_path):
+    payload = _cache_payload(tmp_path)
+    payload["snapshot"]["applicants"][0]["spec_id"] = "270"
+    _write_cache_payload(tmp_path, payload)
+
+    assert load_live_snapshot(tmp_path, now=101.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+    payload = _cache_payload(tmp_path)
+    payload["snapshot"]["applicants"][0]["rio_profile"] = "false"
+    _write_cache_payload(tmp_path, payload)
+
+    assert load_live_snapshot(tmp_path, now=101.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("saved_at", [float("nan"), float("inf"), 130.0])
+def test_load_live_snapshot_rejects_nonfinite_or_future_saved_at(tmp_path, saved_at):
+    payload = _cache_payload(tmp_path)
+    payload["saved_at"] = saved_at
+    _write_cache_payload(tmp_path, payload)
+
+    assert load_live_snapshot(tmp_path, now=100.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_load_live_snapshot_rejects_invalid_utf8_cache_file(tmp_path):
+    _cache_path(tmp_path).write_bytes(b"\xff\xfe\x00")
+
+    assert load_live_snapshot(tmp_path, now=100.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_load_live_snapshot_requires_explicit_applicant_and_roster_arrays(tmp_path):
+    payload = _cache_payload(tmp_path)
+    del payload["snapshot"]["applicants"]
+    _write_cache_payload(tmp_path, payload)
+
+    assert load_live_snapshot(tmp_path, now=101.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+    payload = _cache_payload(tmp_path)
+    del payload["snapshot"]["roster"]
+    _write_cache_payload(tmp_path, payload)
+
+    assert load_live_snapshot(tmp_path, now=101.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_load_live_snapshot_rejects_malformed_rio_dungeons_from_disk(tmp_path):
+    payload = _cache_payload(tmp_path)
+    payload["snapshot"]["applicants"][0]["rio_dungeons"] = ["Theater of Pain"]
+    _write_cache_payload(tmp_path, payload)
+
+    assert load_live_snapshot(tmp_path, now=101.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_load_live_snapshot_filters_placeholder_identities_before_restore(tmp_path):
+    snap = _live_snapshot()
+    placeholder_applicant = replace(
+        snap.applicants[0],
+        applicant_id=43,
+        member_idx=1,
+        name="UNKNOWNOBJECT",
+    )
+    placeholder_roster = replace(
+        snap.roster[0],
+        unit_index=2,
+        name="Unknown-Realm",
+    )
+    snap = replace(
+        snap,
+        applicants=[snap.applicants[0], placeholder_applicant],
+        roster=[snap.roster[0], placeholder_roster],
+    )
+
+    save_live_snapshot(tmp_path, snap, now=100.0)
+    restored = load_live_snapshot(tmp_path, now=101.0)
+
+    assert restored is not None
+    assert restored.snapshot.applicants == [snap.applicants[0]]
+    assert restored.snapshot.roster == [snap.roster[0]]
+
+
+def test_load_live_snapshot_rejects_duplicate_real_identities(tmp_path):
+    snap = _live_snapshot()
+    duplicate = replace(snap.applicants[0])
+    snap = replace(snap, applicants=[snap.applicants[0], duplicate])
+    save_live_snapshot(tmp_path, snap, now=100.0)
+
+    assert load_live_snapshot(tmp_path, now=101.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_clear_live_snapshot_if_saved_at_preserves_newer_snapshot(tmp_path):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    save_live_snapshot(tmp_path, _live_snapshot(), now=120.0)
+
+    assert not clear_live_snapshot_if_saved_at(tmp_path, 100.0)
+    restored = load_live_snapshot(tmp_path, now=121.0)
+
+    assert restored is not None
+    assert restored.saved_at == 120.0
+
+
+def test_clear_live_snapshot_if_saved_at_removes_matching_snapshot(tmp_path):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+
+    assert clear_live_snapshot_if_saved_at(tmp_path, 100.0)
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_live_snapshot_writer_partial_snapshot_does_not_cancel_pending_full_save(tmp_path):
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(_live_snapshot(), now=100.0)
+    writer.submit(
+        Snapshot(
+            listing=None,
+            version=DecodedVersion("0.4.3", "12.0.5", 3, "Host-Realm"),
+            lfg_unavailable=True,
+        ),
+        now=110.0,
+    )
+
+    writer.flush()
+    restored = load_live_snapshot(tmp_path, now=111.0)
+
+    assert restored is not None
+    assert restored.saved_at == 100.0
+
+
+def test_live_snapshot_writer_clear_wins_over_pending_save(tmp_path):
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(_live_snapshot(), now=100.0)
+    writer.submit(Snapshot(listing=None, version=None), now=101.0)
+
+    writer.flush()
+
+    assert load_live_snapshot(tmp_path, now=102.0) is None
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_live_snapshot_writer_save_after_clear_persists_newer_snapshot(tmp_path):
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(Snapshot(listing=None, version=None), now=100.0)
+    writer.submit(_live_snapshot(), now=120.0)
+
+    writer.flush()
+    restored = load_live_snapshot(tmp_path, now=121.0)
+
+    assert restored is not None
+    assert restored.saved_at == 120.0
+
+
+def test_live_snapshot_writer_retries_failed_save_on_next_flush(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    original_write = cache_mod.atomic_write_text
+    calls = 0
+
+    def flaky_write(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("locked")
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(cache_mod, "atomic_write_text", flaky_write)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(_live_snapshot(), now=100.0)
+
+    writer.flush()
+    assert not _cache_path(tmp_path).exists()
+
+    writer.flush()
+    restored = load_live_snapshot(tmp_path, now=101.0)
+
+    assert calls == 2
+    assert restored is not None
+    assert restored.saved_at == 100.0
+
+
+def test_live_snapshot_writer_retries_failed_clear_on_next_flush(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    original_clear = cache_mod.clear_live_snapshot
+    calls = 0
+
+    def flaky_clear(cache_dir):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return False
+        return original_clear(cache_dir)
+
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", flaky_clear)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(Snapshot(listing=None, version=None), now=101.0)
+
+    writer.flush()
+    assert _cache_path(tmp_path).exists()
+
+    writer.flush()
+
+    assert calls == 2
+    assert not _cache_path(tmp_path).exists()

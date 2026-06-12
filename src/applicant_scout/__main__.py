@@ -42,8 +42,9 @@ from .config import (
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
 from .live_snapshot_cache import (
     LIVE_SNAPSHOT_RESTORE_GRACE_SECONDS,
+    LiveSnapshotCacheWriter,
+    clear_live_snapshot_if_saved_at,
     load_live_snapshot,
-    save_live_snapshot,
 )
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .overlay import OverlayWindow
@@ -1473,8 +1474,12 @@ def _clear_cache_dir(
     cache_dir: Path,
     character_cache: CharacterCache | None = None,
     auth: WCLAuth | None = None,
+    *,
+    live_snapshot_writer: LiveSnapshotCacheWriter | None = None,
 ) -> str:
     try:
+        if live_snapshot_writer is not None:
+            live_snapshot_writer.invalidate()
         if character_cache is not None:
             character_cache.clear()
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1838,6 +1843,13 @@ class _WatcherSignalGate:
         self._generation = generation
         self._pending_generation = None
 
+    def invalidate(self) -> None:
+        self._generation = max(
+            self._generation,
+            self._pending_generation or self._generation,
+        ) + 1
+        self._pending_generation = None
+
     def is_current(self, generation: int) -> bool:
         return generation == self._generation or generation == self._pending_generation
 
@@ -1954,6 +1966,33 @@ def _stop_screenshot_watcher_async(
     ).start()
 
 
+def _quiesce_screenshot_ingestion(
+    watcher: ScreenshotWatcher | None,
+    signal_gate: _WatcherSignalGate,
+    live_snapshot_writer: LiveSnapshotCacheWriter | None,
+) -> None:
+    if watcher is not None:
+        request_stop = getattr(watcher, "request_stop", None)
+        if callable(request_stop):
+            try:
+                request_stop()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not request screenshot watcher stop: %s", exc)
+        apply_queue = getattr(watcher, "_applicant_scout_apply_queue", None)
+        flush = getattr(apply_queue, "flush", None)
+        if callable(flush):
+            try:
+                flush()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not flush pending screenshot snapshot: %s", exc)
+    signal_gate.invalidate()
+    if live_snapshot_writer is not None:
+        try:
+            live_snapshot_writer.close()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not close live snapshot cache writer: %s", exc)
+
+
 class _SnapshotApplyQueue:
     def __init__(
         self,
@@ -1963,7 +2002,7 @@ class _SnapshotApplyQueue:
         *,
         signal_gate: _WatcherSignalGate,
         generation: int,
-        live_snapshot_cache_dir: Path | None = None,
+        live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
         scheduler: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         self._machine = machine
@@ -1971,7 +2010,7 @@ class _SnapshotApplyQueue:
         self._decode_failed_callback = decode_failed_callback
         self._signal_gate = signal_gate
         self._generation = generation
-        self._live_snapshot_cache_dir = live_snapshot_cache_dir
+        self._live_snapshot_cache_writer = live_snapshot_cache_writer
         self._scheduler = scheduler or _schedule_snapshot_apply
         self._pending: tuple[str, tuple[object, ...]] | None = None
         self._flush_pending = False
@@ -2003,8 +2042,11 @@ class _SnapshotApplyQueue:
             snap = args[0]
             getattr(self._window, "note_decode", lambda *_args: None)(snap)
             getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
-            if self._live_snapshot_cache_dir is not None and isinstance(snap, Snapshot):
-                save_live_snapshot(self._live_snapshot_cache_dir, snap)
+            if (
+                self._live_snapshot_cache_writer is not None
+                and isinstance(snap, Snapshot)
+            ):
+                self._live_snapshot_cache_writer.submit(snap)
             return
         path, reason = args
         self._decode_failed_callback(str(path), str(reason))
@@ -2023,16 +2065,16 @@ def _connect_screenshot_watcher(
     signal_gate: _WatcherSignalGate,
     source_gate: _SnapshotSourceGate,
     generation: int,
-    live_snapshot_cache_dir: Path | None = None,
+    live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
     scheduler: Callable[[Callable[[], None]], None] | None = None,
-) -> None:
+) -> _SnapshotApplyQueue:
     apply_queue = _SnapshotApplyQueue(
         machine,
         window,
         decode_failed_callback,
         signal_gate=signal_gate,
         generation=generation,
-        live_snapshot_cache_dir=live_snapshot_cache_dir,
+        live_snapshot_cache_writer=live_snapshot_cache_writer,
         scheduler=scheduler,
     )
 
@@ -2056,6 +2098,7 @@ def _connect_screenshot_watcher(
 
     watcher.snapshotReceived.connect(_snapshot_if_current)
     watcher.decodeFailed.connect(_decode_failed_if_current)
+    return apply_queue
 
 
 def _replace_screenshot_watcher(
@@ -2066,14 +2109,14 @@ def _replace_screenshot_watcher(
     decode_failed_callback: Callable[[str, str], None],
     *,
     signal_gate: _WatcherSignalGate,
-    live_snapshot_cache_dir: Path | None = None,
+    live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
     stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
     previous_generation = signal_gate.generation
     new_watcher = ScreenshotWatcher(screenshots_dir)
     generation = signal_gate.prepare_next()
     source_gate = _SnapshotSourceGate()
-    _connect_screenshot_watcher(
+    apply_queue = _connect_screenshot_watcher(
         new_watcher,
         machine,
         window,
@@ -2081,8 +2124,9 @@ def _replace_screenshot_watcher(
         signal_gate=signal_gate,
         source_gate=source_gate,
         generation=generation,
-        live_snapshot_cache_dir=live_snapshot_cache_dir,
+        live_snapshot_cache_writer=live_snapshot_cache_writer,
     )
+    setattr(new_watcher, "_applicant_scout_apply_queue", apply_queue)
     try:
         new_watcher.start()
     except Exception:
@@ -2109,6 +2153,7 @@ def _replace_screenshots_runtime(
     *,
     cache_dir: Path | None = None,
     signal_gate: _WatcherSignalGate,
+    live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
     stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
     previous_reader = getattr(machine, "_rio_reader", None)
@@ -2127,7 +2172,7 @@ def _replace_screenshots_runtime(
             window,
             decode_failed_callback,
             signal_gate=signal_gate,
-            live_snapshot_cache_dir=cache_dir,
+            live_snapshot_cache_writer=live_snapshot_cache_writer,
             stop_runner=stop_runner,
         )
     except Exception:
@@ -2200,6 +2245,7 @@ def _restore_live_snapshot_cache(
         if not still_pending():
             return
         getattr(window, "note_restored_snapshot_expired", lambda: None)()
+        clear_live_snapshot_if_saved_at(cache_dir, restored.saved_at)
         machine.apply_snapshot(Snapshot(listing=None, version=None))
 
     QTimer.singleShot(max(0, int(grace_seconds * 1000)), _expire_restored_snapshot)
@@ -2641,6 +2687,7 @@ def _apply_settings_change(
     quit_app: Callable[[], None],
     can_quit: Callable[[], bool],
     prepare_quit: Callable[[], bool] | None = None,
+    live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
 ) -> _SettingsApplyResult:
     old_cfg = cfg
     new_cfg = _settings_values_to_config(
@@ -2678,6 +2725,7 @@ def _apply_settings_change(
                 decode_failed_callback,
                 cache_dir=new_cfg.cache_dir,
                 signal_gate=signal_gate,
+                live_snapshot_cache_writer=live_snapshot_cache_writer,
             )
     except Exception:
         if wow_sync_changed:
@@ -2961,8 +3009,16 @@ def main(argv: list[str] | None = None) -> int:
     tray_controller: TrayController | None = None
     update_quit_gate = _UpdateQuitGate()
     update_handoff_recovery: _UpdateHandoffRecoveryController | None = None
+    watcher: ScreenshotWatcher | None = None
+    watcher_signal_gate = _WatcherSignalGate()
+    live_snapshot_writer: LiveSnapshotCacheWriter | None = None
 
     def _flush_before_quit() -> None:
+        _quiesce_screenshot_ingestion(
+            watcher,
+            watcher_signal_gate,
+            live_snapshot_writer,
+        )
         if settings_dialog is not None:
             settings_dialog.flush_pending_values()
         if active_window := window_ref.get("window"):
@@ -3063,6 +3119,7 @@ def main(argv: list[str] | None = None) -> int:
         ttl_seconds=cfg.cache_ttl_seconds,
         defer_saves=True,
     )
+    live_snapshot_writer = LiveSnapshotCacheWriter(cfg.cache_dir, defer_saves=True)
     wcl_client = WCLClient(
         auth,
         region=region_runtime.effective_region,
@@ -3086,8 +3143,6 @@ def main(argv: list[str] | None = None) -> int:
             cache_dir=cfg.cache_dir,
         ),
     )
-    watcher: ScreenshotWatcher | None = None
-    watcher_signal_gate = _WatcherSignalGate()
     current_screenshots_dir = screenshots_dir
     wow_exit_timer: QTimer | None = None
 
@@ -3155,7 +3210,12 @@ def main(argv: list[str] | None = None) -> int:
                 region,
             ),
             open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
-            clear_cache=lambda: _clear_cache_dir(cfg.cache_dir, cache, auth),
+            clear_cache=lambda: _clear_cache_dir(
+                cfg.cache_dir,
+                cache,
+                auth,
+                live_snapshot_writer=live_snapshot_writer,
+            ),
             check_updates=_check_updates,
             hide_to_tray_on_close=tray_controller is not None,
             parent=window,
@@ -3195,6 +3255,7 @@ def main(argv: list[str] | None = None) -> int:
                     quit_app=_request_quit_application,
                     can_quit=_can_quit_application,
                     prepare_quit=_prepare_quit_application,
+                    live_snapshot_cache_writer=live_snapshot_writer,
                 )
             except (ConfigError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 log.warning("Could not apply settings change: %s", exc)
@@ -3474,7 +3535,7 @@ def main(argv: list[str] | None = None) -> int:
         window,
         _log_decode_failed,
         signal_gate=watcher_signal_gate,
-        live_snapshot_cache_dir=cfg.cache_dir,
+        live_snapshot_cache_writer=live_snapshot_writer,
     )
 
     log.info("Ready. Overlay will appear when applicants are present.")
@@ -3496,6 +3557,8 @@ def main(argv: list[str] | None = None) -> int:
     # Save the startup fetch burst once after workers drain instead of forcing a
     # full JSON rewrite on every applicant result.
     cache.flush()
+    if live_snapshot_writer is not None:
+        live_snapshot_writer.close()
     wcl_client.close()
     return rc
 

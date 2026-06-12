@@ -373,12 +373,17 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
             terminal_clear=bool(flags & APS1_FLAG_TERMINAL_CLEAR),
             lfg_unavailable=bool(flags & APS1_FLAG_LFG_UNAVAILABLE),
         )  # skip 9-byte header
-        _validate_snapshot_applicant_shapes(snap)
-        snap = _without_placeholder_transport_identities(snap)
-        _validate_snapshot_unique_identities(snap)
+        snap = validate_snapshot_for_application(snap)
     except (IndexError, UnicodeDecodeError, struct.error, ValueError) as e:
         return None, f"parse error: {e}"
     return snap, None
+
+
+def validate_snapshot_for_application(snap: Snapshot) -> Snapshot:
+    _validate_snapshot_applicant_shapes(snap)
+    snap = _without_placeholder_transport_identities(snap)
+    _validate_snapshot_unique_identities(snap)
+    return snap
 
 
 def is_placeholder_transport_identity(name: str) -> bool:
