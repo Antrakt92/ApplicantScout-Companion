@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+## 0.8.5 - 12-Jun-2026
+
+Reliability and release-gate patch paired with ApplicantScout addon `0.4.8`.
+This release keeps the current APS1 v8 QR wire format while improving live
+snapshot recovery, WCL cache/detail handling, local RaiderIO resilience,
+WoW lifecycle helpers, seasonal release checks, and the optional signing-ready
+Windows build path.
+
+### Added
+
+- The companion can restore the latest decoded ApplicantScout snapshot after a
+  restart, so recent applicant or Party context can reappear while the in-game
+  addon waits to emit the next QR snapshot.
+- Release tooling can optionally Authenticode-sign the Windows installer before
+  generating the `.sha256` checksum when a signing certificate is configured.
+- Seasonal release checks now validate both localized Mythic+ activity IDs and
+  tracked challenge-map IDs before release prep relies on leader-key or listing
+  fallback data.
+
+### Improved
+
+- WCL raid boss detail rows now use the same cache discipline as applicant
+  rank data, including broader-scope reuse, malformed disk-data sanitizing,
+  stale-generation rejection, and cleanup after not-found results.
+- WCL fetches for unknown future spec IDs skip invalid M+ ranking queries while
+  still keeping enabled raid evidence available.
+- Local RaiderIO reads now reject incomplete Mythic+ encoding metadata without
+  losing available raid-progress context.
+- WoW lifecycle sync tracks the current helper process more explicitly and can
+  stop a live helper without leaving a stale in-process reference behind.
+- Public visual fixtures and release checks were refreshed for the current
+  overlay sizing, dependency-license, pinned-dependency, and paired-asset
+  contracts.
+
+### Fixed
+
+- Fixed cache and row-refresh edges where stale live snapshots, stale WCL raid
+  detail cache writes, or same-target completions could leave the overlay
+  waiting on outdated evidence.
+- Fixed malformed WCL OAuth `expires_in` responses, including huge numeric
+  strings, so they fail as credential/API errors instead of writing bad token
+  cache state.
+- Fixed grouped Party/manual-key and leader-key release contracts so paired
+  addon metadata, release assets, and seasonal dungeon mappings are validated
+  before public artifacts are prepared.
+- Paired addon `0.4.8` hardens secret-tagged Midnight unit API reads and keeps
+  active transport heartbeats running through temporary LFG-read lockdown.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.4.8`.
+- Installer: `ApplicantScoutCompanionSetup-0.8.5.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.8.5.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.8.5-portable.zip`
+
 ## 0.8.4 - 02-Jun-2026
 
 Performance and responsiveness patch paired with ApplicantScout addon `0.4.7`.
