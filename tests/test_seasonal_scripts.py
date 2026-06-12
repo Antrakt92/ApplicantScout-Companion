@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.seasonal import get_mplus_activity_ids, get_mplus_encounter_ids
+from scripts.seasonal import (
+    get_mplus_activity_ids,
+    get_mplus_challenge_map_ids,
+    get_mplus_encounter_ids,
+)
 
 
 def test_format_mplus_tuples_outputs_copyable_constants():
@@ -86,6 +90,16 @@ def _activity_csv(*rows: str) -> str:
         "GroupFinderActivityGrpID,MapID,DifficultyID,ExpansionID,"
         "MaxPlayers,MapChallengeModeID"
     )
+    return "\n".join((header, *rows))
+
+
+def _challenge_map_csv(*rows: str) -> str:
+    header = "Name_lang,ID,MapID"
+    return "\n".join((header, *rows))
+
+
+def _season_tracked_map_csv(*rows: str) -> str:
+    header = "ID,MapChallengeModeID,DisplaySeasonID"
     return "\n".join((header, *rows))
 
 
@@ -180,3 +194,77 @@ def test_format_activity_mapping_outputs_copyable_constants():
     assert '182: "Skyreach",' in text
     assert '404: "Skyreach",' in text
     assert '1770: "Pit of Saron",' in text
+
+
+def test_extract_mplus_challenge_map_mapping_selects_latest_tracked_season():
+    challenge_csv = _challenge_map_csv(
+        "Skyreach,161,1209",
+        "Pit of Saron,556,658",
+        "Old Dungeon,999,1",
+    )
+    tracked_csv = _season_tracked_map_csv(
+        "1,999,33",
+        "2,161,34",
+        "3,556,34",
+    )
+
+    mapping = get_mplus_challenge_map_ids.extract_mplus_challenge_map_mapping(
+        challenge_csv, tracked_csv, ["Skyreach", "Pit of Saron"]
+    )
+
+    assert mapping == {
+        161: "Skyreach",
+        556: "Pit of Saron",
+    }
+
+
+def test_extract_mplus_challenge_map_mapping_rejects_missing_columns():
+    challenge_csv = "ID,Name_lang\n161,Skyreach"
+    tracked_csv = _season_tracked_map_csv("1,161,34")
+
+    with pytest.raises(
+        get_mplus_challenge_map_ids.SeasonalScriptError, match="columns"
+    ):
+        get_mplus_challenge_map_ids.extract_mplus_challenge_map_mapping(
+            challenge_csv, tracked_csv, ["Skyreach"]
+        )
+
+
+def test_extract_mplus_challenge_map_mapping_rejects_missing_current_dungeon():
+    challenge_csv = _challenge_map_csv("Skyreach,161,1209")
+    tracked_csv = _season_tracked_map_csv("1,161,34")
+
+    with pytest.raises(
+        get_mplus_challenge_map_ids.SeasonalScriptError, match="Pit of Saron"
+    ):
+        get_mplus_challenge_map_ids.extract_mplus_challenge_map_mapping(
+            challenge_csv, tracked_csv, ["Skyreach", "Pit of Saron"]
+        )
+
+
+def test_extract_mplus_challenge_map_mapping_rejects_unknown_tracked_dungeon():
+    challenge_csv = _challenge_map_csv(
+        "Skyreach,161,1209",
+        "Old Dungeon,999,1",
+    )
+    tracked_csv = _season_tracked_map_csv(
+        "1,161,34",
+        "2,999,34",
+    )
+
+    with pytest.raises(
+        get_mplus_challenge_map_ids.SeasonalScriptError, match="Old Dungeon"
+    ):
+        get_mplus_challenge_map_ids.extract_mplus_challenge_map_mapping(
+            challenge_csv, tracked_csv, ["Skyreach"]
+        )
+
+
+def test_format_challenge_map_mapping_outputs_copyable_constants():
+    text = get_mplus_challenge_map_ids.format_challenge_map_mapping(
+        {161: "Skyreach", 556: "Pit of Saron"}
+    )
+
+    assert "MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME" in text
+    assert '161: "Skyreach",' in text
+    assert '556: "Pit of Saron",' in text

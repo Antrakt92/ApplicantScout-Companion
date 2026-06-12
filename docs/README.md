@@ -31,3 +31,5 @@ fixtures.
   `../scripts/seasonal/get_mplus_encounter_ids.py`.
 - Seasonal LFG activity ID helper:
   `../scripts/seasonal/get_mplus_activity_ids.py`.
+- Seasonal M+ challenge-map helper:
+  `../scripts/seasonal/get_mplus_challenge_map_ids.py`.

@@ -68,6 +68,7 @@ from .constants import (
     MPLUS_ENCOUNTERS,
     group_id_colour,
     mplus_dungeon_name_for_activity_id,
+    mplus_dungeon_name_for_challenge_map_id,
     percentile_colour,
     rio_score_colour,
 )
@@ -2898,6 +2899,24 @@ class OverlayWindow(QMainWindow):
         leader_key = getattr(self._state, "leader_key", None)
         return positive_int(getattr(leader_key, "key_level", 0))
 
+    def _leader_target_dungeon_name(self) -> str:
+        leader_key = getattr(self._state, "leader_key", None)
+        if leader_key is None:
+            return ""
+        return mplus_dungeon_name_for_challenge_map_id(
+            getattr(leader_key, "challenge_map_id", 0)
+        )
+
+    def _synthetic_mplus_listing(self, key_level: int) -> Listing:
+        return Listing(
+            activity_id=0,
+            dungeon_name=self._leader_target_dungeon_name() or "Mythic+",
+            listing_name="",
+            comment="",
+            key_level=key_level,
+            category_id=_MPLUS_CATEGORY_ID,
+        )
+
     def _party_roster_is_raid(self) -> bool:
         return any(
             getattr(member, "is_raid_member", False)
@@ -3340,27 +3359,13 @@ class OverlayWindow(QMainWindow):
             if self._state.listing is not None and leader_target_key > 0:
                 return replace(self._state.listing, key_level=leader_target_key)
             if self._state.listing is None and leader_target_key > 0:
-                return Listing(
-                    activity_id=0,
-                    dungeon_name="Mythic+",
-                    listing_name="",
-                    comment="",
-                    key_level=leader_target_key,
-                    category_id=2,
-                )
+                return self._synthetic_mplus_listing(leader_target_key)
             if self._state.listing is None and self._state.party_members:
                 return self._last_raid_listing
             return self._state.listing
         if self._state.listing is not None:
             return replace(self._state.listing, key_level=self._manual_target_key)
-        return Listing(
-            activity_id=0,
-            dungeon_name="Mythic+",
-            listing_name="",
-            comment="",
-            key_level=self._manual_target_key,
-            category_id=2,
-        )
+        return self._synthetic_mplus_listing(self._manual_target_key)
 
     def _sync_target_key_control(self) -> None:
         show_key_control = self._should_show_target_key_control()

@@ -420,6 +420,7 @@ function Test-GitHubReleaseAssets {
         [string]$Repo,
         [string]$ReleaseTag,
         [string[]]$ExpectedAssets,
+        [string[]]$ProtectedAssetPatterns = @(),
         [ValidateSet("Draft", "Published")]
         [string]$ExpectedState = "Published"
     )
@@ -446,6 +447,16 @@ function Test-GitHubReleaseAssets {
             throw "GitHub Release $ReleaseTag in $Repo is missing asset: $AssetName"
         }
     }
+    foreach ($AssetName in $AssetNames) {
+        if ($ExpectedAssets -contains $AssetName) {
+            continue
+        }
+        foreach ($Pattern in $ProtectedAssetPatterns) {
+            if ($AssetName -match $Pattern) {
+                throw "GitHub Release $ReleaseTag in $Repo has unexpected asset: $AssetName"
+            }
+        }
+    }
 }
 
 function Wait-GitHubReleaseAssets {
@@ -454,6 +465,7 @@ function Wait-GitHubReleaseAssets {
         [string]$Repo,
         [string]$ReleaseTag,
         [string[]]$ExpectedAssets,
+        [string[]]$ProtectedAssetPatterns = @(),
         [ValidateSet("Draft", "Published")]
         [string]$ExpectedState = "Published",
         [int]$WaitSeconds,
@@ -477,6 +489,7 @@ function Wait-GitHubReleaseAssets {
                 -Repo $Repo `
                 -ReleaseTag $ReleaseTag `
                 -ExpectedAssets $ExpectedAssets `
+                -ProtectedAssetPatterns $ProtectedAssetPatterns `
                 -ExpectedState $ExpectedState
             return
         }
@@ -548,6 +561,14 @@ $InstallerName = "ApplicantScoutCompanionSetup-$TagVersion.exe"
 $ChecksumName = "$InstallerName.sha256"
 $PortableName = "ApplicantScoutCompanion-$TagVersion-portable.zip"
 $ExpectedCompanionAssets = @($InstallerName, $ChecksumName, $PortableName)
+$ProtectedCompanionAssetPatterns = @(
+    '^ApplicantScoutCompanionSetup-\d+\.\d+\.\d+\.exe$',
+    '^ApplicantScoutCompanionSetup-\d+\.\d+\.\d+\.exe\.sha256$',
+    '^ApplicantScoutCompanion-\d+\.\d+\.\d+-portable\.zip$'
+)
+$ProtectedAddonAssetPatterns = @(
+    '^ApplicantScout-v?\d+\.\d+\.\d+(?:-[A-Za-z0-9._-]+)?\.zip$'
+)
 if ($PyprojectVersion -ne $TagVersion) {
     $Errors += "pyproject.toml version is $PyprojectVersion, expected $TagVersion from tag $TagName."
 }
@@ -649,6 +670,7 @@ if ($RequireDraftReleaseAssets) {
         -Repo $GitHubRepository `
         -ReleaseTag $TagName `
         -ExpectedAssets $ExpectedCompanionAssets `
+        -ProtectedAssetPatterns $ProtectedCompanionAssetPatterns `
         -ExpectedState "Draft"
 }
 
@@ -662,6 +684,7 @@ if ($RequirePublishedReleaseAssets) {
         -Repo $GitHubRepository `
         -ReleaseTag $TagName `
         -ExpectedAssets $ExpectedCompanionAssets `
+        -ProtectedAssetPatterns $ProtectedCompanionAssetPatterns `
         -ExpectedState "Published" `
         -WaitSeconds $PublishedReleaseWaitSeconds `
         -PollSeconds $PublishedReleasePollSeconds
@@ -707,6 +730,7 @@ if ($RequirePublishedPairedAddonAssets) {
         -Repo "Antrakt92/ApplicantScout-Addon" `
         -ReleaseTag $PairedAddonTag `
         -ExpectedAssets $ExpectedAddonAssets `
+        -ProtectedAssetPatterns $ProtectedAddonAssetPatterns `
         -WaitSeconds $PublishedReleaseWaitSeconds `
         -PollSeconds $PublishedReleasePollSeconds
 }

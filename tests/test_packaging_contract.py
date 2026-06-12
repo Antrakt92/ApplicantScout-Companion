@@ -349,6 +349,7 @@ def test_check_script_checks_native_command_exit_codes():
     assert "render_overlay_fixture.py" in script
     assert "render_settings_dialog_fixture.py" in script
     assert "scripts\\seasonal\\get_mplus_activity_ids.py --check" in script
+    assert "scripts\\seasonal\\get_mplus_challenge_map_ids.py --check" in script
     assert "export_public_visual_assets.py" in script
     assert "--addon-root $AddonRoot --check" in script
     assert 'if ($VisualMode -eq "Strict")' in script
@@ -801,6 +802,9 @@ def test_release_checklist_requires_local_strict_visual_and_media_export_gate():
     assert "local strict visual baselines" in checklist.lower()
     assert ".\\scripts\\check.ps1 -SeasonalOnlineChecks" in checklist
     assert "MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME" in checklist
+    assert "MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME" in checklist
+    assert "MythicPlusSeasonTrackedMap" in checklist
+    assert "MapChallengeMode" in checklist
     assert "Do not use `-VisualMode Smoke` for this local release gate" in checklist
     assert "CI/release smoke" in checklist
     assert ".\\scripts\\check.ps1" in checklist
@@ -825,6 +829,7 @@ def test_docs_readme_explains_public_media_export_and_strict_gate():
 
     assert "Strict local baseline checks" in docs_index
     assert "CI/release smoke" in docs_index
+    assert "Seasonal M+ challenge-map helper" in docs_index
     assert (
         ".\\.venv\\Scripts\\python scripts\\export_public_visual_assets.py "
         "--addon-root ..\\ApplicantScout-Addon --check"
@@ -1131,6 +1136,48 @@ def test_release_version_check_accepts_own_draft_release_assets(tmp_path):
     assert f"v{project_version}" in gh_args
 
 
+def test_release_version_check_rejects_unexpected_own_draft_release_asset(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    stale_version = _previous_patch_version(project_version)
+    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        release_json={
+            "tagName": f"v{project_version}",
+            "isDraft": True,
+            "isPrerelease": False,
+            "assets": [
+                {"name": installer_name},
+                {"name": checksum_name},
+                {"name": portable_name},
+                {"name": f"ApplicantScoutCompanionSetup-{stale_version}.exe"},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequireDraftReleaseAssets",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    output = re.sub(r"\s+", "", result.stdout + result.stderr)
+    assert (
+        f"unexpectedasset:ApplicantScoutCompanionSetup-{stale_version}.exe" in output
+    )
+
+
 def test_release_version_check_rejects_own_draft_when_already_public(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
@@ -1264,6 +1311,53 @@ def test_release_version_check_accepts_own_published_release_assets(tmp_path):
     gh_args = (tmp_path / "fake-gh-args.txt").read_text(encoding="utf-8")
     assert "Antrakt92/ApplicantScout-Companion" in gh_args
     assert f"v{project_version}" in gh_args
+
+
+def test_release_version_check_rejects_unexpected_own_published_release_asset(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    stale_version = _previous_patch_version(project_version)
+    installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_repo="Antrakt92/ApplicantScout-Companion",
+        expected_tag=f"v{project_version}",
+        release_json={
+            "tagName": f"v{project_version}",
+            "isDraft": False,
+            "isPrerelease": False,
+            "assets": [
+                {"name": installer_name},
+                {"name": checksum_name},
+                {"name": portable_name},
+                {"name": f"ApplicantScoutCompanion-{stale_version}-portable.zip"},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedReleaseAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubRepository",
+        "Antrakt92/ApplicantScout-Companion",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    output = re.sub(r"\s+", "", result.stdout + result.stderr)
+    assert (
+        f"unexpectedasset:ApplicantScoutCompanion-{stale_version}-portable.zip"
+        in output
+    )
 
 
 def test_release_version_check_own_release_assets_require_repository(tmp_path):
@@ -1610,6 +1704,46 @@ def test_release_version_check_accepts_published_paired_addon_assets(tmp_path):
     gh_args = (tmp_path / "fake-gh-args.txt").read_text(encoding="utf-8")
     assert "Antrakt92/ApplicantScout-Addon" in gh_args
     assert f"v{paired_addon_version}" in gh_args
+
+
+def test_release_version_check_rejects_unexpected_published_paired_addon_asset(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    paired_addon_version = _paired_addon_version()
+    stale_addon_version = _previous_patch_version(paired_addon_version)
+    fake_gh = _fake_gh_release_view(
+        tmp_path,
+        expected_tag=f"v{paired_addon_version}",
+        release_json={
+            "tagName": f"v{paired_addon_version}",
+            "isDraft": False,
+            "isPrerelease": False,
+            "assets": [
+                {"name": f"ApplicantScout-v{paired_addon_version}.zip"},
+                {"name": "release.json"},
+                {"name": f"ApplicantScout-v{stale_addon_version}.zip"},
+            ],
+        },
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-RequirePublishedPairedAddonAssets",
+        "-PublishedReleaseWaitSeconds",
+        "0",
+        "-GitHubCliPath",
+        str(fake_gh),
+    )
+
+    assert result.returncode != 0
+    output = re.sub(r"\s+", "", result.stdout + result.stderr)
+    assert (
+        f"unexpectedasset:ApplicantScout-v{stale_addon_version}.zip" in output
+    )
 
 
 def test_release_version_check_rejects_missing_published_paired_addon_asset(tmp_path):

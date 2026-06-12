@@ -334,6 +334,36 @@ def mplus_dungeon_name_for_activity_id(activity_id: object) -> str:
     return MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME.get(clean, "")
 
 
+# ChallengeMapID values from Blizzard MapChallengeMode, filtered to the current
+# MythicPlusSeasonTrackedMap season. The addon emits this ID for party leader
+# keystones; it is a separate namespace from GroupFinderActivity activity IDs.
+MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME: dict[int, str] = {
+    161: "Skyreach",
+    239: "Seat of the Triumvirate",
+    402: "Algeth'ar Academy",
+    556: "Pit of Saron",
+    557: "Windrunner Spire",
+    558: "Magisters' Terrace",
+    559: "Nexus-Point Xenas",
+    560: "Maisara Caverns",
+}
+
+
+def mplus_dungeon_name_for_challenge_map_id(challenge_map_id: object) -> str:
+    if isinstance(challenge_map_id, bool):
+        return ""
+    if isinstance(challenge_map_id, int):
+        clean = challenge_map_id
+    elif isinstance(challenge_map_id, str):
+        try:
+            clean = int(challenge_map_id)
+        except ValueError:
+            return ""
+    else:
+        return ""
+    return MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME.get(clean, "")
+
+
 # Spec ID → spec NAME (no class qualifier) as returned by WCL in encounterRankings
 # `ranks[].spec` fields. Used to filter per-run results to applicant's
 # current spec — example proved spec-filtering critical: same character as

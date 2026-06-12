@@ -42,7 +42,9 @@ checksum-gated updater smoke has been attested.
    CI/release smoke is only a render-health check and does not approve committed
    baseline or public-media updates. `-SeasonalOnlineChecks` validates
    `MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME` against Wago's GroupFinderActivity data
-   before seasonal release prep relies on the shipped localized-listing fallback.
+   and `MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME` against Wago's
+   MythicPlusSeasonTrackedMap / MapChallengeMode data before seasonal release
+   prep relies on the shipped localized-listing or Party leader-key fallback.
 
 ## Build
 

@@ -917,6 +917,27 @@ def test_leader_key_creates_effective_party_listing(qtbot, tmp_path):
     state = AppState()
     state.leader_key = LeaderKey(
         key_level=17,
+        challenge_map_id=556,
+        player_name="Leader-Realm",
+    )
+    state.party_members["dps-realm"] = _ready_mplus_member()
+    win = _window(tmp_path, qtbot, state)
+
+    listing = win._effective_listing()
+
+    assert listing is not None
+    assert listing.key_level == 17
+    assert listing.dungeon_name == "Pit of Saron"
+    win._active_tab = "party"
+    win._update_title()
+    assert win._title_bar.title_label.text() == "Party — Pit of Saron +17 (1)"
+    assert win._tab_bar._key_spin.value() == 17
+
+
+def test_unknown_leader_challenge_map_keeps_generic_party_listing(qtbot, tmp_path):
+    state = AppState()
+    state.leader_key = LeaderKey(
+        key_level=17,
         challenge_map_id=503,
         player_name="Leader-Realm",
     )
@@ -936,7 +957,7 @@ def test_manual_target_key_overrides_leader_key(qtbot, tmp_path):
     state = AppState()
     state.leader_key = LeaderKey(
         key_level=17,
-        challenge_map_id=503,
+        challenge_map_id=556,
         player_name="Leader-Realm",
     )
     state.party_members["dps-realm"] = _ready_mplus_member()
@@ -948,6 +969,7 @@ def test_manual_target_key_overrides_leader_key(qtbot, tmp_path):
     assert listing is not None
     assert win._manual_target_key == 16
     assert listing.key_level == 16
+    assert listing.dungeon_name == "Pit of Saron"
     assert win._tab_bar._key_spin.value() == 16
 
 

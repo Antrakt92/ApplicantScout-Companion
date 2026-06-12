@@ -80,6 +80,7 @@ if ($SeasonalOnlineChecks) {
     Write-Host "== Seasonal online checks =="
     Invoke-NativeChecked -Label "Seasonal online checks" -Command {
         & $Python scripts\seasonal\get_mplus_activity_ids.py --check
+        & $Python scripts\seasonal\get_mplus_challenge_map_ids.py --check
     }
 }
 else {

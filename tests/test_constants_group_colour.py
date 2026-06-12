@@ -6,11 +6,13 @@ import re
 
 from applicant_scout.constants import (
     MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME,
+    MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME,
     MPLUS_ENCOUNTERS,
     SPEC_ID_TO_WCL_NAME,
     SPEC_SHORT_NAMES,
     group_id_colour,
     mplus_dungeon_name_for_activity_id,
+    mplus_dungeon_name_for_challenge_map_id,
 )
 
 
@@ -106,3 +108,41 @@ def test_each_current_mplus_encounter_has_activity_id_mapping():
 def test_mplus_activity_id_mapping_rejects_non_numeric_values():
     assert mplus_dungeon_name_for_activity_id(True) == ""
     assert mplus_dungeon_name_for_activity_id("bogus") == ""
+
+
+def test_mplus_challenge_map_mapping_covers_current_season_dungeons():
+    mapped_names = {
+        mplus_dungeon_name_for_challenge_map_id(challenge_map_id)
+        for challenge_map_id in (
+            161,
+            239,
+            402,
+            556,
+            557,
+            558,
+            559,
+            560,
+        )
+    }
+    encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
+
+    assert mapped_names == encounter_names
+
+
+def test_all_mplus_challenge_map_mapping_names_are_current_encounters():
+    encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
+
+    assert set(MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME.values()) <= encounter_names
+
+
+def test_each_current_mplus_encounter_has_challenge_map_mapping():
+    encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
+    mapped_names = set(MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME.values())
+
+    assert encounter_names <= mapped_names
+
+
+def test_mplus_challenge_map_mapping_rejects_non_numeric_values():
+    assert mplus_dungeon_name_for_challenge_map_id(True) == ""
+    assert mplus_dungeon_name_for_challenge_map_id("bogus") == ""
+    assert mplus_dungeon_name_for_challenge_map_id(503) == ""
