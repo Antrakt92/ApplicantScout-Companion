@@ -4829,7 +4829,7 @@ def test_role_filter_shows_whole_group_when_one_member_matches(qtbot, tmp_path):
             "10:2": True,
             "20:1": False,
         }
-        assert window._role_filter_bar._status.text() == "showing 2 / 3"
+        assert window._role_filter_bar._status.text() == "showing 1 / 2"
     finally:
         client.close()
 
@@ -5189,7 +5189,7 @@ def test_applicant_tab_pin_cache_clears_when_listing_clears_to_party(
         client.close()
 
 
-def test_role_filter_title_count_uses_visible_group_members(qtbot, tmp_path):
+def test_role_filter_title_count_uses_visible_group_applications(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -5209,6 +5209,6 @@ def test_role_filter_title_count_uses_visible_group_members(qtbot, tmp_path):
             Qt.MouseButton.LeftButton,
         )
 
-        assert window._title_bar.title_label.text().endswith("(2 / 3)")
+        assert window._title_bar.title_label.text().endswith("(1 / 2)")
     finally:
         client.close()

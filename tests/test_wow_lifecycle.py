@@ -93,6 +93,18 @@ def test_is_wow_running_returns_false_when_tasklist_has_no_wow(
     assert not wow_lifecycle.is_wow_running()
 
 
+def test_is_wow_running_can_report_unknown_on_tasklist_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_run(*_args, **_kwargs):
+        raise wow_lifecycle.subprocess.TimeoutExpired(cmd="tasklist", timeout=5)
+
+    monkeypatch.setattr(wow_lifecycle.subprocess, "run", fail_run)
+
+    assert wow_lifecycle.is_wow_running() is False
+    assert wow_lifecycle.is_wow_running(unknown_on_error=True) is None
+
+
 def test_is_wow_foreground_accepts_wow_process(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda: 123)
     monkeypatch.setattr(

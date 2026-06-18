@@ -107,6 +107,7 @@ CONTROL_QUIT_COMMAND = b"quit"
 CONTROL_SHOW_SETTINGS_COMMAND = b"show-settings"
 UPDATE_QUIT_BLOCKED_MESSAGE = "Update is installing. Wait for it to finish before quitting."
 WOW_EXIT_POLL_MS = 5000
+WOW_EXIT_MISSES_BEFORE_QUIT = 3
 UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 UPDATE_HANDOFF_POLL_INTERVAL_MS = 1_000
@@ -1079,7 +1080,7 @@ class StateMachine(QObject):
         if new_listing != old_listing:
             self._state.listing = new_listing
             log.info(
-                "Listing: %s +%d cat=%d diff=%d (%d apps in snapshot)",
+                "Listing: %s +%d cat=%d diff=%d (%d applicant rows in snapshot)",
                 new_listing.dungeon_name,
                 new_listing.key_level,
                 new_listing.category_id,
@@ -1111,7 +1112,7 @@ class StateMachine(QObject):
             multi_member = {aid: c for aid, c in aid_groups.items() if c > 1}
             if multi_member:
                 log.info(
-                    "Snapshot: %d applicants across %d apps; multi-member groups: %s",
+                    "Snapshot: %d applicant rows across %d apps; multi-member groups: %s",
                     len(snap.applicants),
                     len(aid_groups),
                     multi_member,
@@ -1706,16 +1707,21 @@ def _start_wow_lifecycle_timer(
     quit_app: Callable[[], None] | None = None,
     can_quit: Callable[[], bool] | None = None,
     prepare_quit: Callable[[], bool] | None = None,
-    running_checker: Callable[[], bool] | None = None,
+    running_checker: Callable[[], bool | None] | None = None,
     async_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> QTimer:
     timer = QTimer(app)
     timer.setInterval(WOW_EXIT_POLL_MS)
     observed_wow = has_seen_wow
+    missing_wow_scans = 0
     quit_callback = quit_app or app.quit
     can_quit_callback = can_quit or (lambda: True)
     prepare_quit_callback = prepare_quit or (lambda: True)
-    check_wow_running = running_checker or is_wow_running
+
+    def _default_wow_running_checker() -> bool | None:
+        return is_wow_running(unknown_on_error=True)
+
+    check_wow_running = running_checker or _default_wow_running_checker
     signals = _WowLifecycleSignals()
     state = {"checking": False, "active": True, "rearm_failed": False}
     run_async = async_runner or (
@@ -1726,16 +1732,27 @@ def _start_wow_lifecycle_timer(
         ).start()
     )
 
-    def _handle_wow_running(running: bool) -> None:
-        nonlocal observed_wow
+    def _handle_wow_running(running: bool | None) -> None:
+        nonlocal observed_wow, missing_wow_scans
         state["checking"] = False
         if not state["active"]:
             return
+        if running is None:
+            return
         if running:
             observed_wow = True
+            missing_wow_scans = 0
             state["rearm_failed"] = False
             return
         if observed_wow:
+            missing_wow_scans += 1
+            if missing_wow_scans < WOW_EXIT_MISSES_BEFORE_QUIT:
+                log.info(
+                    "WoW process not visible (%d/%d); waiting before quitting.",
+                    missing_wow_scans,
+                    WOW_EXIT_MISSES_BEFORE_QUIT,
+                )
+                return
             if not can_quit_callback():
                 return
             if not prepare_quit_callback():
@@ -1871,7 +1888,7 @@ class _SnapshotSourceGate:
         self._latest_mtime_ns: int | None = None
         self._accepted_latest_ids: set[tuple[str, int]] = set()
 
-    def accept(self, source: object | None) -> bool:
+    def accept(self, source: object | None, *, advance: bool = True) -> bool:
         if source is None:
             return True
         mtime_ns = getattr(source, "mtime_ns", None)
@@ -1882,6 +1899,14 @@ class _SnapshotSourceGate:
         if not isinstance(size, int):
             return True
         identity = (file_id, size)
+        if not advance:
+            if self._latest_mtime_ns is None:
+                return True
+            if mtime_ns < self._latest_mtime_ns:
+                return False
+            if mtime_ns == self._latest_mtime_ns and identity in self._accepted_latest_ids:
+                return False
+            return True
         if self._latest_mtime_ns is None or mtime_ns > self._latest_mtime_ns:
             self._latest_mtime_ns = mtime_ns
             self._accepted_latest_ids = {identity}
@@ -2032,6 +2057,11 @@ class _SnapshotApplyQueue:
         self._schedule_flush()
 
     def enqueue_decode_failed(self, path: str, reason: str) -> None:
+        # WHY: a decode failure has no usable state. If a valid snapshot is
+        # already waiting for the GUI flush, keep it rather than turning a
+        # good-frame-plus-bad-frame burst into no state update.
+        if self._pending is not None and self._pending[0] == "snapshot":
+            return
         self._pending = ("decode_failed", (path, reason))
         self._schedule_flush()
 
@@ -2104,7 +2134,7 @@ def _connect_screenshot_watcher(
     ) -> None:
         if not signal_gate.is_current(generation):
             return
-        if not source_gate.accept(source):
+        if not source_gate.accept(source, advance=False):
             return
         apply_queue.enqueue_decode_failed(path, reason)
 

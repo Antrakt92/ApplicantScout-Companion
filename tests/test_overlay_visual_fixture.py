@@ -347,7 +347,7 @@ def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
         assert listing.difficulty_id == 15
         assert listing.key_level == 0
         assert window._title_bar.title_label.text() == (
-            "Raid Applicants — Manaforge Omega (3)"
+            "Raid Applicants — Manaforge Omega (1)"
         )
         assert len(state.applicants) == window._table.rowCount()
         assert not window._table.isColumnHidden(COL_H)

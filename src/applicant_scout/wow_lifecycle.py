@@ -64,7 +64,11 @@ def companion_launch_spec() -> LaunchSpec:
     return LaunchSpec(Path(sys.executable), ("-m", "applicant_scout"))
 
 
-def is_wow_running(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
+def is_wow_running(
+    process_names: tuple[str, ...] = WOW_PROCESS_NAMES,
+    *,
+    unknown_on_error: bool = False,
+) -> bool | None:
     """Return True when a Retail WoW process is visible to this user."""
     try:
         completed = subprocess.run(
@@ -76,6 +80,8 @@ def is_wow_running(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
+        if unknown_on_error:
+            return None
         return False
     expected = {name.casefold() for name in process_names}
     return any(name.casefold() in expected for name in _tasklist_image_names(completed.stdout))

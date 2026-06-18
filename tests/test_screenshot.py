@@ -1624,7 +1624,7 @@ def test_decode_log_includes_roster_count(monkeypatch, tmp_path: Path, caplog):
     assert marker is True
     assert snap is not None
     assert len(snap.roster) == 2
-    assert "apps=0 roster=2" in caplog.text
+    assert "applicant_rows=0 roster=2" in caplog.text
 
 
 def test_decode_screenshot_accepts_lua_generated_golden_as_legacy_hex(

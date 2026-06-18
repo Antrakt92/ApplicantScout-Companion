@@ -609,6 +609,17 @@ def _split_composite(composite_id: str) -> tuple[str, int]:
         return raw, 1
 
 
+def _application_count(applicant_ids: Iterable[str]) -> int:
+    """Count distinct Blizzard LFG applications, not rendered member rows."""
+    return len(
+        {
+            raw_aid
+            for applicant_id in applicant_ids
+            if (raw_aid := _split_composite(applicant_id)[0])
+        }
+    )
+
+
 def _rio_display_text(applicant: Applicant) -> str:
     if applicant.main_score > applicant.score and applicant.score:
         return f"{applicant.score} [{applicant.main_score}]"
@@ -3823,7 +3834,7 @@ class OverlayWindow(QMainWindow):
         prev_pinned = self._pinned_id
         active_rows = self._active_row_map()
         self._tab_bar.set_counts(
-            applicants=len(self._state.applicants),
+            applicants=_application_count(self._state.applicants),
             party=len(self._state.party_members),
         )
 
@@ -3977,7 +3988,13 @@ class OverlayWindow(QMainWindow):
                 visible_count += 1
                 visible_id_by_row.append((row, applicant_id))
 
-        self._role_filter_bar.set_status(visible_count, len(self._id_by_row))
+        if self._active_tab == "applicants":
+            self._role_filter_bar.set_status(
+                len(visible_raw_ids) if is_active else _application_count(self._id_by_row),
+                _application_count(self._id_by_row),
+            )
+        else:
+            self._role_filter_bar.set_status(visible_count, len(self._id_by_row))
 
         # Rebuild applicant group markers from visible-only rows so filtered
         # views keep the bracket shape aligned to what is actually on screen.
@@ -4654,7 +4671,7 @@ class OverlayWindow(QMainWindow):
 
     def _update_title(self) -> None:
         self._tab_bar.set_counts(
-            applicants=len(self._state.applicants),
+            applicants=_application_count(self._state.applicants),
             party=len(self._state.party_members),
         )
         self._sync_target_key_control()
@@ -4686,17 +4703,13 @@ class OverlayWindow(QMainWindow):
             self._title_bar.title_label.setToolTip(_format_listing_tooltip(listing))
             return
         listing = self._effective_listing()
-        n = self._state.count()
+        n = _application_count(self._state.applicants)
         # Filter-aware count: show (visible / total) when filter actually
-        # hides rows; plain (total) otherwise. Single helper avoids the
+        # hides applications; plain (total) otherwise. Single helper avoids the
         # ambiguity of "(20)" when 15 are hidden.
         if self._is_filter_active():
             visible_raw_ids = self._role_filter_visible_raw_ids()
-            n_visible = sum(
-                1
-                for applicant_id in self._state.applicants
-                if _split_composite(applicant_id)[0] in visible_raw_ids
-            )
+            n_visible = len(visible_raw_ids)
             count_str = f"({n_visible} / {n})"
         else:
             count_str = f"({n})"

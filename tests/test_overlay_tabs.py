@@ -248,6 +248,24 @@ def test_tabs_switch_between_applicants_and_party_rows(qtbot, tmp_path):
     assert win._table.rowCount() == 2
 
 
+def test_applicant_title_and_tab_count_group_applications_not_member_rows(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.listing = _listing(key_level=10, dungeon_name="Mythic+")
+    state.applicants["10:1"] = _app("10:1", "Tank-Realm", "TANK")
+    state.applicants["10:2"] = _app("10:2", "Damage-Realm", "DAMAGER")
+    state.applicants["20:1"] = _app("20:1", "Healer-Realm", "HEALER")
+    win = _window(tmp_path, qtbot, state)
+
+    win._refresh_table()
+    win._update_title()
+
+    assert win._table.rowCount() == 3
+    assert win._tab_bar._buttons["applicants"].text() == "Applicants (2)"
+    assert win._title_bar.title_label.text() == "M+ Applicants +10 (2)"
+
+
 def test_party_tab_role_filter_hides_individual_rows(qtbot, tmp_path):
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")

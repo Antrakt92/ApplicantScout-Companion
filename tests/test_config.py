@@ -3880,7 +3880,7 @@ def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
     monkeypatch: pytest.MonkeyPatch,
 ):
     callbacks = []
-    states = iter([False, True, False])
+    states = iter([False, True, False, False, False])
     quit_calls: list[str] = []
 
     class FakeTimer:
@@ -3898,7 +3898,7 @@ def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
             quit_calls.append("quit")
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: next(states))
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: next(states))
 
     main_mod._start_wow_lifecycle_timer(
         FakeApp(),
@@ -3908,6 +3908,11 @@ def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
 
     callbacks[0]()
     callbacks[0]()
+    callbacks[0]()
+    callbacks[0]()
+
+    assert quit_calls == []
+
     callbacks[0]()
 
     assert quit_calls == ["quit"]
@@ -3954,7 +3959,52 @@ def test_wow_lifecycle_timer_does_not_run_process_scan_on_gui_tick(
 
     workers[0]()
 
-    assert calls == ["scan", "quit"]
+    assert calls == ["scan"]
+
+
+def test_wow_lifecycle_timer_waits_for_consecutive_missing_wow_scans(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks = []
+    workers = []
+    calls: list[str] = []
+    states = iter([False, False, False])
+
+    class FakeTimer:
+        def __init__(self, _parent) -> None:
+            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
+
+        def setInterval(self, _interval: int) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    class FakeApp:
+        def quit(self) -> None:
+            calls.append("quit")
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "start_wow_sync_watcher", lambda **_kwargs: None)
+
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        running_checker=lambda: next(states),
+        async_runner=workers.append,
+    )
+
+    callbacks[0]()
+    workers[0]()
+    callbacks[0]()
+    workers[1]()
+
+    assert calls == []
+
+    callbacks[0]()
+    workers[2]()
+
+    assert calls == ["quit"]
 
 
 def test_wow_lifecycle_timer_retries_after_process_scan_failure(
@@ -3963,7 +4013,7 @@ def test_wow_lifecycle_timer_retries_after_process_scan_failure(
     callbacks = []
     workers = []
     calls: list[str] = []
-    states = iter([RuntimeError("tasklist failed"), False])
+    states = iter([RuntimeError("tasklist failed"), False, False, False])
 
     class FakeTimer:
         def __init__(self, _parent) -> None:
@@ -3999,9 +4049,13 @@ def test_wow_lifecycle_timer_retries_after_process_scan_failure(
 
     assert calls == []
 
-    callbacks[0]()
-    workers[1]()
+    for idx in range(1, main_mod.WOW_EXIT_MISSES_BEFORE_QUIT):
+        callbacks[0]()
+        workers[idx]()
+    assert calls == []
 
+    callbacks[0]()
+    workers[main_mod.WOW_EXIT_MISSES_BEFORE_QUIT]()
     assert calls == ["quit"]
 
 
@@ -4026,7 +4080,7 @@ def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
             calls.append("quit")
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
@@ -4039,7 +4093,8 @@ def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
         async_runner=lambda worker: worker(),
     )
 
-    callbacks[0]()
+    for _ in range(main_mod.WOW_EXIT_MISSES_BEFORE_QUIT):
+        callbacks[0]()
 
     assert calls == ["watcher:True", "quit"]
 
@@ -4072,7 +4127,7 @@ def test_wow_lifecycle_timer_retries_rearm_failure_before_quitting(
             raise result
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(main_mod, "start_wow_sync_watcher", start_watcher)
 
     main_mod._start_wow_lifecycle_timer(
@@ -4081,7 +4136,8 @@ def test_wow_lifecycle_timer_retries_rearm_failure_before_quitting(
         async_runner=lambda worker: worker(),
     )
 
-    callbacks[0]()
+    for _ in range(main_mod.WOW_EXIT_MISSES_BEFORE_QUIT):
+        callbacks[0]()
     assert calls == ["watcher:True"]
 
     callbacks[0]()
@@ -4110,7 +4166,7 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
             calls.append("app-quit")
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
@@ -4125,7 +4181,8 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
         async_runner=lambda worker: worker(),
     )
 
-    callbacks[0]()
+    for _ in range(main_mod.WOW_EXIT_MISSES_BEFORE_QUIT):
+        callbacks[0]()
     assert calls == []
 
     callbacks[0]()
@@ -4150,7 +4207,7 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_prepare_quit_is_blocked(
             pass
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
@@ -4165,6 +4222,10 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_prepare_quit_is_blocked(
         prepare_quit=lambda: calls.append("prepare") or next(prepare_values),
         async_runner=lambda worker: worker(),
     )
+
+    for _ in range(main_mod.WOW_EXIT_MISSES_BEFORE_QUIT - 1):
+        callbacks[0]()
+    assert calls == []
 
     callbacks[0]()
     assert calls == ["can", "prepare"]
@@ -4197,7 +4258,7 @@ def test_wow_lifecycle_timer_skips_rearm_when_prepare_quit_deactivates_timer(
         return True
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
@@ -4212,7 +4273,8 @@ def test_wow_lifecycle_timer_skips_rearm_when_prepare_quit_deactivates_timer(
         async_runner=lambda worker: worker(),
     )
 
-    callbacks[0]()
+    for _ in range(main_mod.WOW_EXIT_MISSES_BEFORE_QUIT):
+        callbacks[0]()
 
     assert calls == ["prepare"]
 
@@ -4233,7 +4295,7 @@ def test_wow_sync_runtime_apply_starts_lifecycle_timer_even_when_wow_is_closed(
         "start_wow_sync_watcher",
         lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}"),
     )
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: False)
+    monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
         "_start_wow_lifecycle_timer",
@@ -4719,6 +4781,73 @@ def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_sna
     assert window.failures == []
 
 
+def test_connect_screenshot_watcher_newer_decode_failure_does_not_block_older_valid_snapshot():
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.decoded: list[object] = []
+            self.failures: list[tuple[str, str]] = []
+
+        def note_decode(self, snap: object) -> None:
+            self.decoded.append(snap)
+
+        def note_decode_failed(self, path: str, reason: str) -> None:
+            self.failures.append((path, reason))
+
+    callbacks = []
+    failures: list[tuple[str, str]] = []
+    watcher = FakeWatcher()
+    machine = FakeMachine()
+    window = FakeWindow()
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        machine,
+        window,
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    newer_failure_source = SimpleNamespace(mtime_ns=200, file_id="bad.jpg", size=10)
+    older_snapshot = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=100, file_id="good.jpg", size=10)
+    )
+
+    watcher.decodeFailed.emit("bad.jpg", "CRC mismatch", newer_failure_source)
+    watcher.snapshotReceived.emit(older_snapshot)
+
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+
+    assert machine.snapshots == [older_snapshot]
+    assert window.decoded == [older_snapshot]
+    assert failures == []
+    assert window.failures == []
+
+
 def test_connect_screenshot_watcher_coalesces_snapshot_burst_to_latest():
     class FakeSignal:
         def __init__(self) -> None:
@@ -4784,6 +4913,74 @@ def test_connect_screenshot_watcher_coalesces_snapshot_burst_to_latest():
 
     assert machine.snapshots == [third]
     assert window.decoded == [third]
+
+
+def test_connect_screenshot_watcher_keeps_snapshot_when_newer_decode_failure_waits_for_flush():
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.decoded: list[object] = []
+            self.failures: list[tuple[str, str]] = []
+
+        def note_decode(self, snap: object) -> None:
+            self.decoded.append(snap)
+
+        def note_decode_failed(self, path: str, reason: str) -> None:
+            self.failures.append((path, reason))
+
+    callbacks = []
+    failures: list[tuple[str, str]] = []
+    watcher = FakeWatcher()
+    machine = FakeMachine()
+    window = FakeWindow()
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        machine,
+        window,
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    snapshot = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=100, file_id="good.jpg", size=10)
+    )
+    failure_source = SimpleNamespace(mtime_ns=200, file_id="bad.jpg", size=10)
+
+    watcher.snapshotReceived.emit(snapshot)
+    watcher.decodeFailed.emit("bad.jpg", "CRC mismatch", failure_source)
+
+    assert machine.snapshots == []
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+
+    assert machine.snapshots == [snapshot]
+    assert window.decoded == [snapshot]
+    assert failures == []
+    assert window.failures == []
 
 
 def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():

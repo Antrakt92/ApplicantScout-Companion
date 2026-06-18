@@ -798,7 +798,7 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
                     # see an older wire version, you're likely processing a stale
                     # screenshot taken before the addon update.
                     _log.info(
-                        "decoded %s: mode=%s wire=0x%02x apps=%d roster=%d",
+                        "decoded %s: mode=%s wire=0x%02x applicant_rows=%d roster=%d",
                         image_path.name,
                         kind,
                         wire_ver,
