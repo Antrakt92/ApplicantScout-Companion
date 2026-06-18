@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.8.6 - 18-Jun-2026
+
+Companion-only reliability patch paired with the already published
+ApplicantScout addon `0.4.9`. No addon update is required for this release.
+
+### Fixed
+
+- Preserved a pending valid screenshot snapshot when a later decode failure is
+  waiting for the same GUI flush, so a good-frame-plus-bad-frame burst no
+  longer turns into no overlay update.
+- Treated failed WoW process scans as unknown instead of closed, and waited for
+  three consecutive missing-WoW scans before quitting after WoW was previously
+  observed. This reduces accidental companion exits from transient `tasklist`
+  or process-enumeration misses.
+
+### Improved
+
+- Applicant counters now count distinct Blizzard LFG applications instead of
+  rendered member rows, so grouped applicants no longer inflate overlay counts,
+  role-filter status, or snapshot logs.
+- Screenshot decode logs now say `applicant_rows` where the value is row count,
+  making group snapshots easier to interpret while debugging.
+
+### Notes
+
+- Requires the ApplicantScout WoW addon `0.4.9`.
+- Installer: `ApplicantScoutCompanionSetup-0.8.6.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.8.6.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.8.6-portable.zip`
+
 ## 0.8.5 - 12-Jun-2026
 
 Reliability and release-gate patch paired with ApplicantScout addon `0.4.8`.
