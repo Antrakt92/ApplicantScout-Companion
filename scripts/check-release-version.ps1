@@ -550,6 +550,11 @@ $PairedAddonLineMatch = [regex]::Match(
     '(?m)^-\s+Requires the ApplicantScout WoW addon\s+`([^`]+)`\.\s*$'
 )
 $PairedAddonVersion = $null
+$IsCompanionOnlyPatch = [regex]::IsMatch(
+    $TopReleaseNotesEntry,
+    '\bcompanion-only\b',
+    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+)
 $ConstraintsVersion = Get-FirstRegexMatch `
     -Path "constraints-release.txt" `
     -Pattern '^# Release build constraints for ApplicantScout Companion ([0-9]+\.[0-9]+\.[0-9]+)\.' `
@@ -705,7 +710,12 @@ if ($PairedAddonRoot) {
         $AddonMetadata.PairedCompanionVersions.Count -eq 1 -and
         $AddonMetadata.PairedCompanionVersions[0] -ne $TagVersion
     ) {
-        $Errors += "Paired addon CHANGELOG.md top entry names companion $($AddonMetadata.PairedCompanionVersions[0]), expected $TagVersion."
+        if (-not $IsCompanionOnlyPatch) {
+            $Errors += "Paired addon CHANGELOG.md top entry names companion $($AddonMetadata.PairedCompanionVersions[0]), expected $TagVersion."
+        }
+        elseif ((Compare-SemVer -Left $AddonMetadata.PairedCompanionVersions[0] -Right $TagVersion) -gt 0) {
+            $Errors += "Paired addon CHANGELOG.md top entry names companion $($AddonMetadata.PairedCompanionVersions[0]), which is newer than companion-only release $TagVersion."
+        }
     }
     if ((Compare-SemVer -Left $AddonMetadata.TocVersion -Right $PairedAddonVersion) -lt 0) {
         $Errors += "Paired addon version is $($AddonMetadata.TocVersion), which is older than required $PairedAddonVersion from RELEASE_NOTES.md."

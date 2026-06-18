@@ -1534,6 +1534,13 @@ def test_release_version_check_rejects_stale_paired_addon_release_train_copy(tmp
         addon_version=_paired_addon_version(),
         companion_version=stale_version,
     )
+    notes = repo / "RELEASE_NOTES.md"
+    notes.write_text(
+        notes.read_text(encoding="utf-8")
+        .replace("Companion-only reliability patch", "Reliability patch", 1)
+        .replace(" No addon update is required for this release.", "", 1),
+        encoding="utf-8",
+    )
 
     result = _run_release_check(
         repo,
@@ -1548,6 +1555,73 @@ def test_release_version_check_rejects_stale_paired_addon_release_train_copy(tmp
     assert "paired addon changelog.md top entry names companion" in output.lower()
     assert stale_version in output
     assert f"expected {project_version}" in output
+
+
+def test_release_version_check_accepts_companion_only_patch_with_existing_addon(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    stale_version = _previous_patch_version(project_version)
+    addon = _paired_addon_fixture(
+        tmp_path,
+        addon_version=_paired_addon_version(),
+        companion_version=stale_version,
+    )
+    notes = repo / "RELEASE_NOTES.md"
+    notes.write_text(
+        notes.read_text(encoding="utf-8").replace(
+            f"## {project_version} -",
+            f"## {project_version} - companion-only",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRoot",
+        str(addon),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_release_version_check_rejects_companion_only_patch_with_newer_addon_copy(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    newer_version = _next_patch_version(project_version)
+    addon = _paired_addon_fixture(
+        tmp_path,
+        addon_version=_paired_addon_version(),
+        companion_version=newer_version,
+    )
+    notes = repo / "RELEASE_NOTES.md"
+    notes.write_text(
+        notes.read_text(encoding="utf-8").replace(
+            f"## {project_version} -",
+            f"## {project_version} - companion-only",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_release_check(
+        repo,
+        "-Tag",
+        f"v{project_version}",
+        "-PairedAddonRoot",
+        str(addon),
+    )
+
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "newer than companion-only release" in output
+    assert newer_version in output
 
 
 def test_release_version_check_rejects_missing_paired_addon_release_train_copy(
