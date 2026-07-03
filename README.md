@@ -236,7 +236,7 @@ updates should not require UAC elevation.
 ## Version Compatibility
 
 ApplicantScout Companion supports the latest published ApplicantScout WoW addon
-release. This source tree also supports ApplicantScout wire payloads through v8.
+release. This source tree also supports ApplicantScout wire payloads through v9.
 
 ## Development
 

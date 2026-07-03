@@ -113,6 +113,7 @@ def test_save_and_load_live_snapshot_round_trips_without_source(tmp_path):
     assert restored.snapshot.roster == snap.roster
     assert not restored.snapshot.terminal_clear
     assert not restored.snapshot.lfg_unavailable
+    assert not restored.snapshot.roster_unavailable
 
 
 def test_load_live_snapshot_rejects_and_removes_expired_snapshot(tmp_path):
@@ -140,6 +141,37 @@ def test_save_live_snapshot_ignores_partial_snapshot_without_clearing_previous(t
 
     assert restored is not None
     assert restored.saved_at == 100.0
+
+
+def test_save_live_snapshot_ignores_roster_unavailable_without_clearing_previous(
+    tmp_path,
+):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    partial = Snapshot(
+        listing=_live_snapshot().listing,
+        version=DecodedVersion("0.4.3", "12.0.5", 3, "Host-Realm"),
+        applicants=[
+            DecodedApplicant(
+                applicant_id=99,
+                member_idx=1,
+                class_id=8,
+                spec_id=64,
+                ilvl=281,
+                score=2444,
+                role=2,
+                name="Fresh-Realm",
+            )
+        ],
+        roster=[],
+        roster_unavailable=True,
+    )
+
+    save_live_snapshot(tmp_path, partial, now=110.0)
+    restored = load_live_snapshot(tmp_path, now=120.0)
+
+    assert restored is not None
+    assert restored.saved_at == 100.0
+    assert restored.snapshot.applicants[0].name == "Healer-Realm"
 
 
 def test_save_live_snapshot_clears_on_terminal_clear_or_no_listing(tmp_path):

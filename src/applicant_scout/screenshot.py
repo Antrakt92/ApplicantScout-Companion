@@ -60,12 +60,18 @@ MAGIC = b"APS1"
 # v0x03 = adds listing category_id + difficulty_id.
 # v0x04 = adds per-applicant RaiderIO main_score after current score.
 # v0x05 = adds compact target-relative RaiderIO completion summary.
+# v0x06 = adds current group roster.
+# v0x07 = adds current group leader keystone context.
+# v0x08 = adds terminal/LFG-unavailable partial flags.
+# v0x09 = adds roster-unavailable partial flag for QR-overflow fallback.
 # Set, not a min/max range — future versions may be incompatible with v1 but compatible
 # with v2; explicit allow-list is the cleanest contract.
-WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09}
 APS1_FLAG_TERMINAL_CLEAR = 0x01
 APS1_FLAG_LFG_UNAVAILABLE = 0x02
+APS1_FLAG_ROSTER_UNAVAILABLE = 0x04
 APS1_KNOWN_V8_FLAGS = APS1_FLAG_TERMINAL_CLEAR | APS1_FLAG_LFG_UNAVAILABLE
+APS1_KNOWN_V9_FLAGS = APS1_KNOWN_V8_FLAGS | APS1_FLAG_ROSTER_UNAVAILABLE
 
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
 STABLE_SIZE_POLL = 0.05  # poll interval
@@ -183,6 +189,7 @@ class Snapshot:
     roster: list[DecodedRosterMember] = field(default_factory=list)
     terminal_clear: bool = False
     lfg_unavailable: bool = False
+    roster_unavailable: bool = False
     source: SnapshotSource | None = field(default=None, compare=False, repr=False)
 
 
@@ -335,13 +342,16 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
     flags = raw[7]
     reserved2 = raw[8]
     if wire_ver >= 0x08:
-        unknown_flags = flags & ~APS1_KNOWN_V8_FLAGS
+        known_flags = APS1_KNOWN_V9_FLAGS if wire_ver >= 0x09 else APS1_KNOWN_V8_FLAGS
+        unknown_flags = flags & ~known_flags
         if unknown_flags:
-            return None, f"unsupported APS1 v8 flags 0x{unknown_flags:02x}"
+            return None, f"unsupported APS1 v{wire_ver} flags 0x{unknown_flags:02x}"
         if flags & APS1_FLAG_TERMINAL_CLEAR and flags & APS1_FLAG_LFG_UNAVAILABLE:
             return None, "terminal and LFG-unavailable flags are mutually exclusive"
+        if flags & APS1_FLAG_LFG_UNAVAILABLE and flags & APS1_FLAG_ROSTER_UNAVAILABLE:
+            return None, "LFG-unavailable and roster-unavailable flags are mutually exclusive"
         if reserved2:
-            return None, f"unsupported APS1 v8 reserved byte 0x{reserved2:02x}"
+            return None, f"unsupported APS1 v{wire_ver} reserved byte 0x{reserved2:02x}"
     elif flags or reserved2:
         return None, f"unsupported APS1 pre-v8 reserved bytes 0x{flags:02x} 0x{reserved2:02x}"
 
@@ -372,6 +382,7 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
             wire_ver,
             terminal_clear=bool(flags & APS1_FLAG_TERMINAL_CLEAR),
             lfg_unavailable=bool(flags & APS1_FLAG_LFG_UNAVAILABLE),
+            roster_unavailable=bool(flags & APS1_FLAG_ROSTER_UNAVAILABLE),
         )  # skip 9-byte header
         snap = validate_snapshot_for_application(snap)
     except (IndexError, UnicodeDecodeError, struct.error, ValueError) as e:
@@ -490,6 +501,7 @@ def _parse_payload(
     *,
     terminal_clear: bool = False,
     lfg_unavailable: bool = False,
+    roster_unavailable: bool = False,
 ) -> Snapshot:
     """Cursor-based parse of body (already past 9-byte header). Returns Snapshot.
     Raises IndexError if buf truncated (caught by caller as decode failure).
@@ -503,6 +515,8 @@ def _parse_payload(
       * v0x06: adds current party/raid roster after applicants.
       * v0x07: adds optional leader keystone context after version block.
       * v0x08: adds header flags for terminal clear and partial LFG snapshots.
+      * v0x09: adds a header flag for applicant snapshots that omitted the
+        roster block to stay inside the QR render budget.
     """
     cursor = 0
     listing: Optional[DecodedListing] = None
@@ -751,6 +765,7 @@ def _parse_payload(
         roster=roster,
         terminal_clear=terminal_clear,
         lfg_unavailable=lfg_unavailable,
+        roster_unavailable=roster_unavailable,
     )
 
 

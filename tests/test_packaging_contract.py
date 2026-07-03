@@ -342,7 +342,9 @@ def test_check_script_checks_native_command_exit_codes():
     assert "[switch]$SeasonalOnlineChecks" in script
     assert '[string]$VisualMode = "Strict"' in script
     assert 'Invoke-NativeChecked -Label "Python tests"' in script
-    assert 'Invoke-NativeChecked -Label "Seasonal online checks"' in script
+    assert 'Invoke-NativeChecked -Label "Seasonal activity IDs"' in script
+    assert 'Invoke-NativeChecked -Label "Seasonal challenge map IDs"' in script
+    assert 'Invoke-NativeChecked -Label "Seasonal online checks"' not in script
     assert 'Invoke-NativeChecked -Label "Overlay visual baselines"' in script
     assert 'Invoke-NativeChecked -Label "Settings dialog visual baselines"' in script
     assert 'Invoke-NativeChecked -Label "Public visual assets"' in script
@@ -801,6 +803,9 @@ def test_release_checklist_requires_local_strict_visual_and_media_export_gate():
 
     assert "local strict visual baselines" in checklist.lower()
     assert ".\\scripts\\check.ps1 -SeasonalOnlineChecks" in checklist
+    assert "check-applicantscout-copy.ps1" in checklist
+    assert "-AddonRoot ..\\ApplicantScout-Addon" in checklist
+    assert "-CompanionRoot ." in checklist
     assert "MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME" in checklist
     assert "MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME" in checklist
     assert "MythicPlusSeasonTrackedMap" in checklist
@@ -2131,7 +2136,7 @@ def test_companion_gitignore_does_not_hide_public_release_or_doc_inputs():
 def test_readme_documents_current_wire_support():
     readme = _read_repo_text("README.md")
 
-    assert "wire payloads through v8" in readme
+    assert "wire payloads through v9" in readme
     assert "wire payloads through v5" not in readme
 
 

@@ -6,9 +6,11 @@ from __future__ import annotations
 # Verified via Test B 2026-04-29 (https://www.warcraftlogs.com/zones).
 # Update once per season. M+ zones change every 3 months, raid zones every ~6.
 CURRENT_MPLUS_ZONE_ID = 47  # Midnight Season 1
-CURRENT_RAID_ZONE_ID = 46  # VS / DR / MQD
+CURRENT_RAID_ZONE_ID = 46  # VS / DR / MQD zoneRankings summary
 SEASON_NAME = "Midnight Season 1"
 
+# Boss-detail rows are per encounterID, so they can include the 12.0.7 Sporefall
+# mini-raid even though its aggregate zoneRankings live under WCL zone 50.
 CURRENT_RAID_ENCOUNTERS: list[tuple[str, int, str]] = [
     ("ia", 3176, "Imperator Averzian"),
     ("vo", 3177, "Vorasius"),
@@ -19,6 +21,7 @@ CURRENT_RAID_ENCOUNTERS: list[tuple[str, int, str]] = [
     ("cu", 3306, "Chimaerus"),
     ("ba", 3182, "Belo'ren"),
     ("mf", 3183, "Midnight Falls"),
+    ("ro", 3159, "Rotmire"),
 ]
 
 

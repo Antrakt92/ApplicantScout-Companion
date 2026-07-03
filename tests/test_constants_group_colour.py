@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from applicant_scout.constants import (
+    CURRENT_RAID_ENCOUNTERS,
     MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME,
     MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME,
     MPLUS_ENCOUNTERS,
@@ -71,6 +72,10 @@ def test_duplicate_spec_names_stay_class_neutral():
 def test_devourer_spec_mapping_is_known():
     assert SPEC_SHORT_NAMES[1480] == "Devour"
     assert SPEC_ID_TO_WCL_NAME[1480] == "Devourer"
+
+
+def test_current_raid_encounters_include_sporefall_rotmire():
+    assert CURRENT_RAID_ENCOUNTERS[-1] == ("ro", 3159, "Rotmire")
 
 
 def test_mplus_activity_id_mapping_covers_current_season_dungeons():

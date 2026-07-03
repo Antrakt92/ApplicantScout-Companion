@@ -981,7 +981,7 @@ class StateMachine(QObject):
         old_listing = self._state.listing
         had_applicants = bool(self._state.applicants)
 
-        # Explicit v8 terminal clear is authoritative even if a malformed or
+        # Explicit terminal clear is authoritative even if a malformed or
         # future producer accidentally includes listing/applicant/roster blocks.
         if snap.terminal_clear:
             self._state.listing = None
@@ -1001,7 +1001,7 @@ class StateMachine(QObject):
                 self.rosterChanged.emit()
             return
 
-        # Partial v8 snapshot: chat/LFG lockdown kept roster transport alive, but
+        # Partial LFG snapshot: chat/LFG lockdown kept roster transport alive, but
         # listing and applicant reads were not authoritative. Preserve LFG state
         # and apply only version/leader/roster data from this snapshot.
         if snap.lfg_unavailable and not snap.terminal_clear:
@@ -1232,12 +1232,13 @@ class StateMachine(QObject):
                     existing.clear_wcl_data()
                 self.applicantUpdated.emit(existing)
 
-        self._apply_roster_snapshot(
-            snap.roster,
-            region_identity_changed=region_identity_changed,
-            default_realm_changed=default_realm_changed,
-            rio_summary_target_key=rio_summary_target_key,
-        )
+        if not snap.roster_unavailable:
+            self._apply_roster_snapshot(
+                snap.roster,
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+                rio_summary_target_key=rio_summary_target_key,
+            )
 
 
 class UpdateSignals(QObject):

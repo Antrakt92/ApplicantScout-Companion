@@ -498,16 +498,17 @@ def test_wire_versions_supported_pin():
     assert 0x06 in WIRE_VERSIONS_SUPPORTED
     assert 0x07 in WIRE_VERSIONS_SUPPORTED
     assert 0x08 in WIRE_VERSIONS_SUPPORTED
+    assert 0x09 in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
-def test_v9_payload_is_rejected_instead_of_parsed_as_known_version():
-    raw = _wrap_payload(_build_body([]), wire_ver=0x09)
+def test_v10_payload_is_rejected_instead_of_parsed_as_known_version():
+    raw = _wrap_payload(_build_body([]), wire_ver=0x0A)
 
     snap, error = _try_parse_appscout_payload(raw)
 
     assert snap is None
-    assert error == "unsupported wire version 0x09"
+    assert error == "unsupported wire version 0x0a"
 
 
 def test_v8_payload_parses_lfg_unavailable_flag():
@@ -540,6 +541,36 @@ def test_v8_payload_parses_terminal_clear_flag():
     assert snap is not None
     assert snap.terminal_clear is True
     assert snap.lfg_unavailable is False
+    assert snap.roster_unavailable is False
+
+
+def test_v9_payload_parses_roster_unavailable_flag():
+    body = _build_body_v7(
+        [
+            _build_applicant_block(
+                aid=42,
+                member_idx=1,
+                class_id=8,
+                spec_id=64,
+                ilvl=281,
+                score=2444,
+                role=2,
+                name="Fresh-Realm",
+                version=5,
+            )
+        ],
+        [],
+    )
+    raw = _wrap_payload(body, wire_ver=0x09, flags=0x04)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert error is None
+    assert snap is not None
+    assert snap.terminal_clear is False
+    assert snap.lfg_unavailable is False
+    assert snap.roster_unavailable is True
+    assert [app.name for app in snap.applicants] == ["Fresh-Realm"]
 
 
 def test_v8_payload_rejects_unknown_or_conflicting_flags():

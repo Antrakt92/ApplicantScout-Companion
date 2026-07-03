@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 0.9.0 - 03-Jul-2026
+
+Paired release with ApplicantScout addon `0.5.0`. This release advances the
+live QR transport to APS1 v9 for oversized applicant bursts and adds Rotmire
+raid-detail logs for Sporefall while preserving current Party state when the
+addon has to omit roster rows from a dense QR snapshot.
+
+### Added
+
+- Added APS1 v9 `roster_unavailable` snapshot handling. The companion now
+  applies the applicant update while keeping the current Party roster when the
+  addon intentionally sends an applicant-only fallback payload.
+- Added Rotmire per-boss Warcraft Logs detail rows for Sporefall raid listings.
+- Expanded the raid detail panel so the additional boss row has room instead of
+  compressing the visible detail list.
+
+### Fixed
+
+- Partial roster-unavailable snapshots are no longer written as the latest live
+  snapshot cache, so a companion restart cannot restore an applicant-only frame
+  as if it contained a complete Party roster.
+- Release checks now fail if the seasonal online validation helper masks an
+  earlier failed command behind a later successful one.
+- CurseForge copy checks now validate the public paste slice instead of the
+  whole private form buffer, while still blocking local paths and copy markers
+  from public text.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.5.0`.
+- Installer: `ApplicantScoutCompanionSetup-0.9.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.9.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.9.0-portable.zip`
+
 ## 0.8.6 - 18-Jun-2026
 
 Companion-only reliability patch paired with the already published

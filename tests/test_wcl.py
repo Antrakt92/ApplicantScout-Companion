@@ -598,6 +598,27 @@ def test_raid_boss_detail_query_uses_two_aliases_per_enabled_boss():
     assert "difficulty: 4" not in query
 
 
+def test_raid_boss_detail_query_includes_sporefall_rotmire():
+    query = _build_raid_boss_detail_query(
+        "DAMAGER",
+        MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+
+    assert (
+        "raid_m_ro_overall: encounterRankings(encounterID: 3159, "
+        "difficulty: 5, metric: dps"
+    ) in query
+    assert (
+        "raid_m_ro_ilvl: encounterRankings(encounterID: 3159, "
+        "difficulty: 5, metric: dps"
+    ) in query
+
+
 def test_raid_boss_rows_parse_overall_and_ilvl_percentiles_by_spec():
     char = {
         "raid_m_ia_overall": {

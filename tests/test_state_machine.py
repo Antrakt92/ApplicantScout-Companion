@@ -2165,3 +2165,47 @@ def test_empty_roster_snapshot_clears_party_without_clearing_applicants():
 
     assert set(state.applicants) == {"7:1"}
     assert state.party_members == {}
+
+
+def test_roster_unavailable_snapshot_updates_applicants_without_clearing_party():
+    state = AppState()
+    sm = StateMachine(state)
+    removed: list[str] = []
+    added: list[str] = []
+    roster_updates: list[bool] = []
+    sm.applicantRemoved.connect(removed.append)
+    sm.applicantAdded.connect(lambda applicant: added.append(applicant.applicant_id))
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Stale-Realm")],
+            roster=[
+                _roster_decoded("Host-Realm", unit_index=0, flags=1, score=3000),
+                _roster_decoded("Friend-Realm", unit_index=1, score=2500),
+            ],
+        )
+    )
+    roster_updates.clear()
+    removed.clear()
+    added.clear()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(8, 1, "Fresh-Realm")],
+            roster=[],
+            roster_unavailable=True,
+        )
+    )
+
+    assert set(state.applicants) == {"8:1"}
+    assert state.applicants["8:1"].name == "Fresh-Realm"
+    assert set(state.party_members) == {"host-realm", "friend-realm"}
+    assert state.party_members["friend-realm"].score == 2500
+    assert removed == ["7:1"]
+    assert added == ["8:1"]
+    assert roster_updates == []

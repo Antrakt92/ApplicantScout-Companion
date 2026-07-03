@@ -33,6 +33,7 @@ checksum-gated updater smoke has been attested.
    .\.venv\Scripts\python -m pytest
    .\scripts\check.ps1 -SeasonalOnlineChecks
    .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
+   ..\WOW\scripts\check-applicantscout-copy.ps1 -AddonRoot ..\ApplicantScout-Addon -CompanionRoot .
    .\scripts\check-release-version.ps1 -Tag v<companion version>
    ```
 

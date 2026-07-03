@@ -29,6 +29,7 @@ from applicant_scout.overlay import (
     DUNGEON_NAME_WIDTH,
     DUNGEON_WCL_KEY_WIDTH,
     GAME_FOREGROUND_POLL_MS,
+    INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT,
     INFO_PANEL_PREFERRED_HEIGHT,
     LAUNCHER_SIZE,
     MPLUS_INDIVIDUAL_BG_ROLE,
@@ -308,7 +309,13 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
                         "name": "Imperator Averzian",
                         "overall": 46.0,
                         "ilvl": 68.0,
-                    }
+                    },
+                    {
+                        "encounter_id": 3159,
+                        "name": "Rotmire",
+                        "overall": 55.0,
+                        "ilvl": 66.0,
+                    },
                 ],
                 "H": [
                     {
@@ -334,8 +341,12 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     assert panel._dungeon_rows[0][3].width() == RAID_METRIC_WIDTH
     assert panel._dungeon_rows[1][0].text() == "Vorasius"
     assert panel._dungeon_rows[1][1].text() == ""
-    assert panel._visible_detail_rows == 9
-    assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
+    assert panel._dungeon_rows[9][0].text() == "Rotmire"
+    assert panel._dungeon_rows[9][3].text() == "M 55-66"
+    assert panel._visible_detail_rows == 10
+    assert panel.target_height() == (
+        INFO_PANEL_PREFERRED_HEIGHT + INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT
+    )
 
 
 def test_raid_panel_colours_each_difficulty_parse_segment(qtbot):

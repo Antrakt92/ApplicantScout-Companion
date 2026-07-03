@@ -53,6 +53,7 @@ def is_persistable_live_snapshot(snap: Snapshot) -> bool:
         snap.listing is not None
         and not snap.terminal_clear
         and not snap.lfg_unavailable
+        and not snap.roster_unavailable
     )
 
 
@@ -309,6 +310,7 @@ def _snapshot_to_dict(snap: Snapshot) -> dict[str, Any]:
         "roster": [asdict(member) for member in snap.roster],
         "terminal_clear": bool(snap.terminal_clear),
         "lfg_unavailable": bool(snap.lfg_unavailable),
+        "roster_unavailable": bool(snap.roster_unavailable),
     }
 
 
@@ -331,6 +333,7 @@ def _snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
         ],
         terminal_clear=_strict_bool(_required_field(data, "terminal_clear")),
         lfg_unavailable=_strict_bool(_required_field(data, "lfg_unavailable")),
+        roster_unavailable=_optional_bool_field(data, "roster_unavailable"),
         source=None,
     )
     return validate_snapshot_for_application(snap)
@@ -475,6 +478,17 @@ def _strict_bool(value: object) -> bool:
     if type(value) is bool:
         return value
     raise ValueError("expected bool")
+
+
+def _optional_bool_field(
+    data: dict[str, Any],
+    key: str,
+    *,
+    default: bool = False,
+) -> bool:
+    if key not in data:
+        return default
+    return _strict_bool(data[key])
 
 
 def _strict_timestamp_field(data: dict[str, Any], key: str) -> float:

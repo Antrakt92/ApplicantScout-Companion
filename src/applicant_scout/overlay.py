@@ -155,7 +155,9 @@ USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
 INFO_PANEL_MIN_HEIGHT = 80
 INFO_PANEL_PREFERRED_HEIGHT = 238
-INFO_PANEL_DETAIL_BASE_ROWS = max(len(MPLUS_ENCOUNTERS), len(CURRENT_RAID_ENCOUNTERS))
+# Preferred height is tuned for the original 9-row raid detail view; extra
+# seasonal mini-raid bosses should expand target_height() instead of squeezing.
+INFO_PANEL_DETAIL_BASE_ROWS = 9
 INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT = 17
 LAUNCHER_SIZE = 42
 GAME_FOREGROUND_POLL_MS = 500
