@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.9.1 - 08-Jul-2026
+
+Paired release with ApplicantScout addon `0.5.1`. This patch makes Warcraft
+Logs token use more deliberate during raid building and keeps the overlay
+footer accurate while manual raid-detail work is running.
+
+### Changed
+
+- Raid boss-by-boss Warcraft Logs details now load only from the row action
+  instead of automatically spending tokens during hover, tab changes, stale
+  responses, or retry timers.
+- Removed the local near-quota soft stop so the companion no longer disables
+  all WCL fetching merely because a cached quota snapshot is close to the
+  hourly limit. Real Warcraft Logs rate-limit responses still pause fetches
+  normally.
+
+### Fixed
+
+- The WCL footer now counts manual raid boss-detail fetches while quota data is
+  still pending instead of reporting idle.
+- Role-filter copy now describes the default unfiltered state more clearly.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.5.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.9.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.9.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.9.1-portable.zip`
+
 ## 0.9.0 - 03-Jul-2026
 
 Paired release with ApplicantScout addon `0.5.0`. This release advances the
