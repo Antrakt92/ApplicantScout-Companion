@@ -3253,7 +3253,9 @@ class OverlayWindow(QMainWindow):
         Visual urgency: turns yellow at 70% spent, red at 90%."""
         q = getattr(self._wcl_client, "last_quota", None)
         if q is None:
-            in_flight = len(self._fetches_in_flight)
+            in_flight = len(self._fetches_in_flight) + len(
+                self._raid_boss_fetches_in_flight
+            )
             if in_flight > 0:
                 suffix = "fetch" if in_flight == 1 else "fetches"
                 self._status_label.setText(

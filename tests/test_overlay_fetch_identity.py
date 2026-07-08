@@ -179,6 +179,43 @@ def test_quota_label_shows_in_flight_fetch_before_first_quota(qtbot, tmp_path):
         client.close()
 
 
+def test_quota_label_counts_raid_detail_fetch_before_first_quota(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    state.listing = Listing(
+        activity_id=999,
+        dungeon_name="",
+        listing_name="Raid",
+        comment="",
+        difficulty_id=16,
+    )
+    app = _app(fetch_status="ready", raid_boss_parses={})
+    state.add_or_update(app)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    window, client = _window(
+        qtbot,
+        tmp_path,
+        state,
+        metric_preferences=prefs,
+    )
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+    window._panel._set_detail_mode("raid")
+
+    try:
+        assert window._launch_raid_boss_fetch_if_needed(app) is True
+
+        assert len(queued_pool.tasks) == 1
+        assert window._status_label.text() == "WCL: fetching 1 fetch (quota pending)"
+    finally:
+        client.close()
+
+
 def test_quota_label_idle_before_first_quota_is_not_called_no_fetch_yet(
     qtbot, tmp_path
 ):
