@@ -36,15 +36,6 @@ WCL_OAUTH_URL = "https://www.warcraftlogs.com/oauth/token"
 WCL_API_URL = "https://www.warcraftlogs.com/api/v2/client"
 
 
-# When this fraction of the rolling-hour budget is consumed, fetch_character_ranks
-# refuses new requests and returns a "quota guard" error. Acts as a soft stop
-# that protects the remaining budget for any genuinely-needed fetch (e.g. a
-# fresh applicant whose data we don't yet have) instead of burning it on
-# refetches that would push the queue into a hard 429 → 5-min global cooldown
-# (which kills the whole scout session). 0.85 leaves a 15% reserve, which
-# covers ~30 applicants of headroom at typical 14-points-per-fetch cost.
-QUOTA_GUARD_RATIO = 0.85
-
 WCL_ERROR_QUOTA_GUARD = "quota_guard"
 WCL_ERROR_RATE_LIMITED = "rate_limited"
 WCL_ERROR_AUTH = "auth"
@@ -781,15 +772,7 @@ class WCLClient:
         return max(0.0, network_retry_until - current_time)
 
     def quota_guard_retry_remaining_seconds(self, now: float | None = None) -> float:
-        with self._quota_lock:
-            quota = self.last_quota
-            reserved = self._reserved_quota_points
-        if quota is None or quota.limit_per_hour <= 0:
-            return 0.0
-        ratio = (quota.points_spent + reserved) / quota.limit_per_hour
-        if ratio < QUOTA_GUARD_RATIO:
-            return 0.0
-        return self.quota_reset_remaining_seconds(now=now) or 0.0
+        return 0.0
 
     def _estimate_query_quota_points(
         self, metric_preferences: MetricPreferences
@@ -822,35 +805,10 @@ class WCLClient:
         )
         return 1.0 + float(enabled_difficulties * len(CURRENT_RAID_ENCOUNTERS) * 2)
 
-    def _quota_guard_error_locked(
-        self, now: float
-    ) -> CharacterRanks | None:
-        quota = self.last_quota
-        snapshot = self._quota_snapshot
-        if quota is None or quota.limit_per_hour <= 0 or snapshot is None:
-            return None
-        elapsed = max(0.0, now - snapshot.observed_at)
-        remaining = max(0.0, quota.reset_in_seconds - elapsed)
-        if remaining <= 0:
-            return None
-        usage = quota.points_spent + self._reserved_quota_points
-        ratio = usage / quota.limit_per_hour
-        if ratio < QUOTA_GUARD_RATIO:
-            return None
-        return CharacterRanks.empty(
-            error=f"WCL quota guard {int(ratio * 100)}% used — pausing"
-            f" fetches; resets in {int(remaining / 60)}m",
-            error_kind=WCL_ERROR_QUOTA_GUARD,
-        )
-
     def _reserve_quota_for_fetch(
         self, points: float, now: float | None = None
-    ) -> CharacterRanks | _QuotaReservation:
-        current_time = time.time() if now is None else now
+    ) -> _QuotaReservation:
         with self._quota_lock:
-            guard_error = self._quota_guard_error_locked(current_time)
-            if guard_error is not None:
-                return guard_error
             reserved = max(0.0, points)
             self._reserved_quota_points += reserved
             return _QuotaReservation(
@@ -1023,19 +981,12 @@ class WCLClient:
                 error_kind=WCL_ERROR_NETWORK,
             )
 
-        # Quota-aware gate: when we've used >=QUOTA_GUARD_RATIO of the rolling-
-        # hour budget, refuse new fetches and surface a guard error instead of
-        # racing toward a hard 429 (which triggers a 5-min full cooldown that
-        # blocks ALL applicants). The budget recovers gradually as the rolling
-        # window slides, so the gate auto-lifts within minutes once usage falls
-        # below the threshold. Only kicks in if we have a real quota snapshot
-        # (limit_per_hour > 0) — first fetch of a session always passes.
+        # Reserve estimated points so the status row can include in-flight work.
+        # This is accounting only; actual WCL 429 responses still drive cooldowns.
         quota_reservation = self._reserve_quota_for_fetch(
             self._estimate_query_quota_points(metric_preferences),
             now=now,
         )
-        if isinstance(quota_reservation, CharacterRanks):
-            return quota_reservation
 
         try:
             # Resolve region once: explicit param wins, else snapshot self.region
@@ -1222,11 +1173,6 @@ class WCLClient:
             self._estimate_raid_boss_detail_quota_points(metric_preferences),
             now=now,
         )
-        if isinstance(reservation, CharacterRanks):
-            raise WCLApiError(
-                reservation.error or "WCL quota guard",
-                error_kind=reservation.error_kind or WCL_ERROR_QUOTA_GUARD,
-            )
         try:
             body = {
                 "query": _build_raid_boss_detail_query(role, metric_preferences),

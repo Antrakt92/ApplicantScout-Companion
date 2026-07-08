@@ -1226,7 +1226,7 @@ def test_fetch_character_ranks_403_is_auth_error_kind():
     assert len(http.calls) == 1
 
 
-def test_quota_reservation_blocks_second_cache_miss_before_http(
+def test_quota_reservation_tracks_reentrant_cache_miss_without_soft_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     now = 1_000.0
@@ -1251,8 +1251,10 @@ def test_quota_reservation_blocks_second_cache_miss_before_http(
 
     assert first.error == ""
     assert len(second_result) == 1
-    assert second_result[0].error_kind == WCL_ERROR_QUOTA_GUARD
-    assert len(http.calls) == 1
+    assert second_result[0].error == ""
+    assert second_result[0].error_kind == ""
+    assert len(http.calls) == 2
+    assert client._reserved_quota_points == pytest.approx(0.0)
 
 
 def test_quota_reservation_releases_after_network_exception(
@@ -1309,7 +1311,7 @@ def test_reconfigure_auth_clears_quota_reservation_state(
     )
     reservation = client._reserve_quota_for_fetch(12.0, now=now)
     assert not isinstance(reservation, CharacterRanks)
-    assert client.quota_guard_retry_remaining_seconds(now=now) == pytest.approx(60.0)
+    assert client.quota_guard_retry_remaining_seconds(now=now) == 0.0
 
     client.reconfigure_auth(_FakeAuth())  # type: ignore[arg-type]
 
@@ -1408,7 +1410,7 @@ def test_reconfigure_auth_ignores_stale_401_invalidation():
     assert old_auth.invalidations == 0
 
 
-def test_quota_guard_blocks_before_reset_without_spending_http_call(
+def test_quota_snapshot_near_limit_does_not_soft_block_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ):
     now = 1_000.0
@@ -1421,8 +1423,8 @@ def test_quota_guard_blocks_before_reset_without_spending_http_call(
 
     result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
 
-    assert result.error.startswith("WCL quota guard 90% used")
-    assert http.calls == []
+    assert result.error == ""
+    assert len(http.calls) == 1
 
 
 def test_quota_guard_lifts_after_recorded_reset_deadline(
@@ -1776,10 +1778,12 @@ def test_wcl_api_error_preserves_message_and_kind():
     assert err.error_kind == WCL_ERROR_RATE_LIMITED
 
 
-def test_quota_guard_sets_retryable_error_kind(monkeypatch: pytest.MonkeyPatch):
+def test_near_limit_quota_snapshot_still_allows_character_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+):
     now = 1_000.0
     monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
-    client, _http = _client_for_payload(_wcl_payload(_character()))
+    client, _http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
     client._record_quota_snapshot(
         RateLimitInfo(limit_per_hour=100.0, points_spent=90.0, reset_in_seconds=60.0),
         now=now,
@@ -1787,7 +1791,8 @@ def test_quota_guard_sets_retryable_error_kind(monkeypatch: pytest.MonkeyPatch):
 
     result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
 
-    assert result.error_kind == WCL_ERROR_QUOTA_GUARD
+    assert result.error == ""
+    assert result.error_kind == ""
 
 
 def test_retry_block_remaining_seconds_uses_max_remaining_block(
@@ -1805,7 +1810,7 @@ def test_retry_block_remaining_seconds_uses_max_remaining_block(
 
     assert client.rate_limit_retry_remaining_seconds() == pytest.approx(120.0)
     assert client.network_retry_remaining_seconds() == pytest.approx(90.0)
-    assert client.quota_guard_retry_remaining_seconds() == pytest.approx(60.0)
+    assert client.quota_guard_retry_remaining_seconds() == 0.0
     assert client.retry_block_remaining_seconds() == pytest.approx(120.0)
 
 

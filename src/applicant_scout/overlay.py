@@ -1959,6 +1959,11 @@ class ApplicantInfoPanel(QFrame):
                 raid_detail_status,
                 error=raid_detail_status_error,
                 retry_available=raid_detail_retry_available,
+                action_text=(
+                    "Retry WCL"
+                    if raid_detail_status_error
+                    else "Load boss details"
+                ),
             )
         elif fit_status:
             self._show_status(fit_status)
@@ -1971,11 +1976,18 @@ class ApplicantInfoPanel(QFrame):
         *,
         error: bool = False,
         retry_available: bool = False,
+        action_text: str = "Retry WCL",
     ) -> None:
         self._status_label.setText(text)
         color = "#ff6666" if error else "#8d8d98"
         self._status_label.setStyleSheet(f"color: {color};")
         self._status_label.setVisible(bool(text))
+        self._wcl_retry_button.setText(action_text)
+        self._wcl_retry_button.setToolTip(
+            "Load boss-by-boss Warcraft Logs details for this row"
+            if action_text == "Load boss details"
+            else "Retry Warcraft Logs for this row"
+        )
         self._wcl_retry_button.setVisible(bool(text and retry_available))
 
     def _clear_metrics_and_dungeons(self) -> None:
@@ -3350,12 +3362,15 @@ class OverlayWindow(QMainWindow):
         if resolved is None:
             return
         identity, _charname = resolved
-        if not self._raid_boss_manual_retry_available(identity):
-            return
         if self._is_fetch_in_flight_for_raid_details(identity):
             self._sync_delegate_and_panel()
             return
-        self._raid_boss_fetch_failures.pop(_raid_boss_fetch_failure_key(identity), None)
+        if self._raid_boss_manual_retry_available(identity):
+            self._raid_boss_fetch_failures.pop(
+                _raid_boss_fetch_failure_key(identity), None
+            )
+        elif self._raid_boss_fetch_failure_state(identity) is not None:
+            return
         self._launch_raid_boss_fetch_if_needed(applicant)
         self._sync_delegate_and_panel()
 
@@ -3453,7 +3468,6 @@ class OverlayWindow(QMainWindow):
             self._panel.setPlaceholder()
             return
         raw_aid, _ = _split_composite(applicant.applicant_id)
-        self._launch_raid_boss_fetch_if_needed(applicant)
         raid_detail_status = self._raid_detail_status_for(applicant)
         self._panel.setApplicantData(
             applicant,
@@ -3594,12 +3608,6 @@ class OverlayWindow(QMainWindow):
         self._sync_delegate_and_panel()
 
     def _on_panel_detail_changed(self) -> None:
-        visible_id = self._resolve_visible_id()
-        if visible_id is None:
-            return
-        applicant = self._active_row_map().get(visible_id)
-        if applicant is not None:
-            self._launch_raid_boss_fetch_if_needed(applicant)
         self._sync_delegate_and_panel()
 
     def _resolve_hover_from_cursor(self) -> str | None:
@@ -4295,7 +4303,7 @@ class OverlayWindow(QMainWindow):
                 True,
                 self._raid_boss_manual_retry_available(identity),
             )
-        return None
+        return "Boss details not loaded", False, True
 
     def _schedule_raid_boss_retry(self, delay_ms: int) -> None:
         if self._raid_boss_retry_timer.isActive():
@@ -4605,10 +4613,6 @@ class OverlayWindow(QMainWindow):
         ) or not fetched_identity.metric_preferences.covers(
             current_identity.metric_preferences
         ):
-            if not self._is_fetch_in_flight_for_raid_details(
-                current_identity
-            ) and self._missing_raid_boss_details(applicant):
-                self._launch_raid_boss_fetch_if_needed(applicant)
             self._sync_delegate_and_panel()
             return
         if error:

@@ -154,6 +154,10 @@ def _disable_background_fetches(window: OverlayWindow) -> None:
     window._launch_raid_boss_fetch_if_needed = lambda _applicant: False
 
 
+def _request_visible_raid_boss_details(window: OverlayWindow) -> None:
+    window._retry_visible_wcl_error()
+
+
 def test_panel_reuses_child_labels_across_hover_updates(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
@@ -441,7 +445,7 @@ def test_mplus_detail_widths_restore_after_raid_detail(qtbot):
     assert panel._dungeon_rows[0][3].width() == DUNGEON_METRIC_WIDTH
 
 
-def test_overlay_queues_raid_boss_fetch_when_panel_switches_back_to_raid(
+def test_overlay_offers_manual_raid_boss_fetch_without_auto_queueing(
     qtbot, tmp_path
 ):
     auth = WCLAuth("client", "secret", tmp_path)
@@ -473,6 +477,42 @@ def test_overlay_queues_raid_boss_fetch_when_panel_switches_back_to_raid(
 
         app.raid_boss_parses = {}
         window._panel._on_detail_mode_clicked("raid")
+
+        assert window._raid_boss_fetches_in_flight == {}
+        assert window._panel._status_label.text() == "Boss details not loaded"
+        assert window._panel._wcl_retry_button.text() == "Load boss details"
+        assert not window._panel._wcl_retry_button.isHidden()
+    finally:
+        window.close()
+
+
+def test_manual_raid_boss_detail_button_queues_fetch(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    app = _app(name="Scout-Ravencrest", raid_boss_parses={})
+    state.add_or_update(app)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+
+    try:
+        window._pool = _QueuedPool()
+        window._refresh_table()
+        window._hover_id = "42"
+        window._sync_delegate_and_panel()
+
+        assert window._raid_boss_fetches_in_flight == {}
+
+        window._panel._wcl_retry_button.click()
 
         assert window._raid_boss_fetches_in_flight
     finally:
@@ -824,6 +864,11 @@ def test_stale_raid_boss_fetch_does_not_apply_after_difficulty_change(
         )
 
         assert app.raid_boss_parses == {}
+        assert window._raid_boss_fetches_in_flight == {}
+        assert window._panel._status_label.text() == "Boss details not loaded"
+
+        _request_visible_raid_boss_details(window)
+
         assert window._raid_boss_fetches_in_flight
         queued = next(iter(window._raid_boss_fetches_in_flight.values()))
         assert queued.metric_preferences.raid_heroic
@@ -876,6 +921,10 @@ def test_raid_boss_fetch_failure_is_scoped_to_metric_preferences(qtbot, tmp_path
 
         window.apply_metric_preferences(updated_prefs, refetch_missing=False)
 
+        assert window._raid_boss_fetches_in_flight == {}
+
+        _request_visible_raid_boss_details(window)
+
         assert window._raid_boss_fetches_in_flight
         queued = next(iter(window._raid_boss_fetches_in_flight.values()))
         assert queued.metric_preferences.raid_heroic
@@ -920,7 +969,7 @@ def test_raid_boss_fetch_failure_is_scoped_to_character_identity(qtbot, tmp_path
 
         app.name = "Other-Ravencrest"
         app.raid_boss_parses = {}
-        window._launch_raid_boss_fetch_if_needed(app)
+        _request_visible_raid_boss_details(window)
 
         assert window._raid_boss_fetches_in_flight
         queued = next(iter(window._raid_boss_fetches_in_flight.values()))
@@ -971,7 +1020,7 @@ def test_retryable_raid_boss_fetch_failure_expires(qtbot, tmp_path, monkeypatch)
         assert window._raid_boss_fetches_in_flight == {}
 
         now[0] += 2.0
-        window._launch_raid_boss_fetch_if_needed(app)
+        _request_visible_raid_boss_details(window)
 
         assert window._raid_boss_fetches_in_flight
     finally:
@@ -1003,6 +1052,7 @@ def test_raid_detail_loading_status_shows_without_changing_fetch_status(
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
 
         assert window._raid_boss_fetches_in_flight
         assert window._panel._status_label.text() == "Fetching raid boss details…"
@@ -1081,6 +1131,7 @@ def test_raid_detail_retryable_failure_replaces_loading_status_after_done(
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
         failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
 
         window._on_raid_boss_fetch_done(
@@ -1122,6 +1173,7 @@ def test_raid_detail_permanent_failure_shows_unavailable_without_requeue(
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
         failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
 
         window._on_raid_boss_fetch_done(
@@ -1170,6 +1222,7 @@ def test_raid_detail_graphql_failure_shows_manual_retry_and_requeues_without_cle
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
         failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
 
         window._on_raid_boss_fetch_done(
@@ -1220,6 +1273,7 @@ def test_raid_detail_auth_failure_hides_manual_retry(qtbot, tmp_path):
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
         failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
 
         window._on_raid_boss_fetch_done(
@@ -1264,6 +1318,7 @@ def test_raid_detail_status_restored_when_returning_to_raid_tab_with_inflight_fe
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
         assert window._panel._status_label.text() == "Fetching raid boss details…"
 
         window._panel._on_detail_mode_clicked("mplus")
@@ -1304,6 +1359,7 @@ def test_retryable_raid_detail_failure_retries_after_idle_expiry(
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
         failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
 
         window._on_raid_boss_fetch_done(
@@ -1324,8 +1380,13 @@ def test_retryable_raid_detail_failure_retries_after_idle_expiry(
         window._raid_boss_retry_timer.stop()
         window._retry_ready_raid_boss_fetches()
 
+        assert window._raid_boss_fetches_in_flight == {}
+        assert window._panel._status_label.text() == "Boss details not loaded"
+        assert not window._panel._wcl_retry_button.isHidden()
+
+        _request_visible_raid_boss_details(window)
+
         assert window._raid_boss_fetches_in_flight
-        assert window._panel._status_label.text() == "Fetching raid boss details…"
         assert app.fetch_status == "ready"
     finally:
         window.close()
@@ -1358,6 +1419,7 @@ def test_raid_detail_retry_status_restored_when_returning_to_raid_tab(
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
         failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
         window._on_raid_boss_fetch_done(
             failed_detail_identity,
