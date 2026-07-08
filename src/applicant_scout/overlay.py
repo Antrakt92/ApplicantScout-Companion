@@ -1452,9 +1452,9 @@ class SourceTabBar(QWidget):
 
 
 ROLE_FILTER_TOOLTIPS: dict[str, str] = {
-    "TANK": "Show only tank applicants",
-    "HEALER": "Show only healer applicants",
-    "DAMAGER": "Show only damage dealer applicants",
+    "TANK": "Show entries with a tank",
+    "HEALER": "Show entries with a healer",
+    "DAMAGER": "Show entries with a damage dealer",
 }
 ROLE_FILTER_RESET_TEXT = "All"
 ROLE_FILTER_RESET_TOOLTIP = "Show all roles"
@@ -1557,7 +1557,7 @@ class RoleFilterBar(QWidget):
         if not is_active or visible == total:
             self._status.setText("")
         else:
-            self._status.setText(f"showing {visible} / {total}")
+            self._status.setText(f"showing {visible} / {total} entries")
 
 
 # ───────────────────────────────────────────────────────────────────

@@ -4840,7 +4840,7 @@ def test_role_filter_shows_whole_group_when_one_member_matches(qtbot, tmp_path):
             "10:2": True,
             "20:1": False,
         }
-        assert window._role_filter_bar._status.text() == "showing 1 / 2"
+        assert window._role_filter_bar._status.text() == "showing 1 / 2 entries"
     finally:
         client.close()
 
