@@ -803,9 +803,7 @@ def test_release_checklist_requires_local_strict_visual_and_media_export_gate():
 
     assert "local strict visual baselines" in checklist.lower()
     assert ".\\scripts\\check.ps1 -SeasonalOnlineChecks" in checklist
-    assert "check-applicantscout-copy.ps1" in checklist
-    assert "-AddonRoot ..\\ApplicantScout-Addon" in checklist
-    assert "-CompanionRoot ." in checklist
+    assert "check-applicantscout-copy.ps1" not in checklist
     assert "MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME" in checklist
     assert "MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME" in checklist
     assert "MythicPlusSeasonTrackedMap" in checklist
