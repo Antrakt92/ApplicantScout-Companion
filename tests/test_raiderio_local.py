@@ -225,6 +225,51 @@ def test_reader_decodes_current_raid_progress_from_local_raiderio_db(tmp_path: P
     }
 
 
+def test_decoder_preserves_boss_offsets_across_current_raids():
+    main_raid = raiderio_local_mod._RaidInfo(
+        name="MN Tier 1 (VS / DR / MQD)",
+        short_name="VS/DR/MQD",
+        boss_count=9,
+    )
+    sporefall = raiderio_local_mod._RaidInfo(
+        name="Sporefall",
+        short_name="SF",
+        boss_count=1,
+    )
+    values: list[tuple[int, int]] = []
+    for difficulty, boss_kills in (
+        (1, (0,) * 9),
+        (1, (0,) * 9),
+        (2, (3,)),
+        (3, (4,)),
+    ):
+        values.append((difficulty - 1, 2))
+        values.extend((kills, 5) for kills in boss_kills)
+    record = _pack_bits(values, size=14)
+
+    progress = raiderio_local_mod._decode_raid_progress(
+        record,
+        (1,),
+        [main_raid, sporefall],
+        [],
+    )
+
+    assert progress == {
+        "H": {
+            "killed": 1,
+            "total": 10,
+            "boss_kills": [0] * 9 + [3],
+            "raid_name": "Sporefall",
+        },
+        "M": {
+            "killed": 1,
+            "total": 10,
+            "boss_kills": [0] * 9 + [4],
+            "raid_name": "Sporefall",
+        },
+    }
+
+
 def test_reader_keeps_mplus_available_when_raid_db_is_invalid(tmp_path: Path):
     _write_test_db(
         tmp_path,

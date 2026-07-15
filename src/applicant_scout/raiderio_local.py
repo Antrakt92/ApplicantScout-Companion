@@ -1014,10 +1014,10 @@ def _decode_raid_progress(
     previous_raids: list[_RaidInfo],
 ) -> dict[str, dict]:
     bit_offset = 0
-    progress: dict[str, dict] = {}
+    rows_by_difficulty: dict[str, dict[int, dict]] = {}
     for field in encoding_order:
         if field == 1:
-            for raid in current_raids:
+            for raid_index, raid in enumerate(current_raids):
                 for _idx in range(2):
                     row, bit_offset = _read_full_raid_progress(
                         record, bit_offset, raid
@@ -1025,9 +1025,10 @@ def _decode_raid_progress(
                     if row is None:
                         continue
                     key = row.pop("difficulty")
-                    existing = progress.get(key)
+                    rows_for_difficulty = rows_by_difficulty.setdefault(key, {})
+                    existing = rows_for_difficulty.get(raid_index)
                     if existing is None or row["killed"] > existing.get("killed", 0):
-                        progress[key] = row
+                        rows_for_difficulty[raid_index] = row
         elif field == 2:
             for raid in previous_raids:
                 _, bit_offset = _read_full_raid_progress(record, bit_offset, raid)
@@ -1041,6 +1042,29 @@ def _decode_raid_progress(
             )
         else:
             raise ValueError(f"unsupported RaiderIO raid encoding field {field}")
+
+    progress: dict[str, dict] = {}
+    for difficulty, rows_by_raid in rows_by_difficulty.items():
+        boss_kills: list[int] = []
+        raid_names: list[str] = []
+        for raid_index, raid in enumerate(current_raids):
+            row = rows_by_raid.get(raid_index)
+            if row is None:
+                boss_kills.extend([0] * raid.boss_count)
+                continue
+            boss_kills.extend(row["boss_kills"])
+            raid_name = str(row.get("raid_name") or "").strip()
+            if raid_name and raid_name not in raid_names:
+                raid_names.append(raid_name)
+        killed = sum(1 for kills in boss_kills if kills > 0)
+        if killed == 0:
+            continue
+        progress[difficulty] = {
+            "killed": killed,
+            "total": len(boss_kills),
+            "boss_kills": boss_kills,
+            "raid_name": " / ".join(raid_names),
+        }
     return progress
 
 

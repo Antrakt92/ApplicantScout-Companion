@@ -30,11 +30,10 @@ checksum-gated updater smoke has been attested.
 4. Run:
 
    ```powershell
-   .\.venv\Scripts\python -m pytest
-   .\scripts\check.ps1 -SeasonalOnlineChecks
-   .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
-   ..\WOW\scripts\check-applicantscout-copy.ps1 -AddonRoot ..\ApplicantScout-Addon -CompanionRoot .
-   .\scripts\check-release-version.ps1 -Tag v<companion version>
+    .\.venv\Scripts\python -m pytest
+    .\scripts\check.ps1 -SeasonalOnlineChecks
+    .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
+    .\scripts\check-release-version.ps1 -Tag v<companion version>
    ```
 
    The local `.\scripts\check.ps1` release gate must keep local strict visual
@@ -88,15 +87,17 @@ checksum-gated updater smoke has been attested.
    - `ApplicantScoutCompanionSetup-<companion version>.exe`
    - `ApplicantScoutCompanionSetup-<companion version>.exe.sha256`
    - `ApplicantScoutCompanion-<companion version>-portable.zip`
-3. Smoke-test from a previous stable or explicitly chosen baseline companion.
-   Record the chosen baseline in release notes or release-prep notes. Normal
+3. Smoke-test from the latest published stable companion. Record that baseline
+   in release notes or release-prep notes. The publish workflow rejects an older
+   arbitrary baseline so an updater-affecting release cannot skip the current
+   public upgrade path. Normal
    stable updater feed ignores draft releases, so this pre-public gate confirms
    the checksum-gated installer candidate and release asset contract; a future
    private/canary update feed would be required for full GitHub-feed smoke while
    still draft.
 4. Run the manual `Publish release` GitHub Actions workflow with:
    - `tag`: `v<companion version>`
-   - `smoke_tested_from_version`: the older baseline companion version
+   - `smoke_tested_from_version`: the latest published stable companion version
    - `confirm_checksum_gated_update_smoke`: checked
 5. Confirm the companion GitHub Release is public with all expected assets
    before the paired addon `Package and release` workflow reaches marketplace

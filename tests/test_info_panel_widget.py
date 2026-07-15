@@ -353,6 +353,39 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     )
 
 
+def test_raid_panel_places_sporefall_progress_on_rotmire(qtbot):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=True,
+        ),
+    )
+    qtbot.addWidget(panel)
+    app = _app(
+        rio_raid_progress={
+            "H": {
+                "boss_kills": [0] * 9 + [3],
+                "raid_name": "Sporefall",
+            },
+            "M": {
+                "boss_kills": [0] * 9 + [4],
+                "raid_name": "Sporefall",
+            },
+        },
+        raid_boss_parses={},
+    )
+
+    panel.setApplicantData(app, _raid_listing())
+
+    assert panel._dungeon_rows[0][0].text() == "Imperator Averzian"
+    assert panel._dungeon_rows[0][1].text() == ""
+    assert panel._dungeon_rows[9][0].text() == "Rotmire"
+    assert panel._dungeon_rows[9][1].text() == "H3 · M4"
+
+
 def test_raid_panel_colours_each_difficulty_parse_segment(qtbot):
     panel = ApplicantInfoPanel(
         None,
@@ -2781,6 +2814,35 @@ def test_hidden_panel_refresh_preserves_unexpanded_geometry_for_quit_flush(
         )
         assert saved_after_hidden_refresh["y"] == 180
         assert saved_after_hidden_refresh["h"] == 240
+    finally:
+        client.close()
+
+
+def test_partial_decode_marks_party_count_as_last_known(monkeypatch, qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
+        window._tab_bar.set_counts(applicants=1, party=15)
+        partial = type("PartialSnapshot", (), {"roster_unavailable": True})()
+
+        window.note_decode(partial)
+
+        party_button = window._tab_bar._buttons["party"]
+        assert party_button.text() == "Party (15?)"
+        assert "last known Party count" in party_button.toolTip()
+        assert window._health_label.text() == "shot partial"
+        assert "omitted the raid roster" in window._health_label.toolTip()
+
+        window.note_decode(object())
+
+        assert party_button.text() == "Party (15)"
+        assert party_button.toolTip() == ""
+        assert window._health_label.text() == "shot 0s ago"
     finally:
         client.close()
 

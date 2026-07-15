@@ -1419,12 +1419,33 @@ class SourceTabBar(QWidget):
         key_layout.addWidget(self._key_down_button)
         layout.addWidget(self._key_control)
         layout.addStretch(1)
+        self._applicant_count = 0
+        self._party_count = 0
+        self._party_count_stale = False
         self.set_counts(applicants=0, party=0)
         self.set_active("applicants", emit=False)
 
     def set_counts(self, *, applicants: int, party: int) -> None:
-        self._buttons["applicants"].setText(f"Applicants ({applicants})")
-        self._buttons["party"].setText(f"Party ({party})")
+        self._applicant_count = applicants
+        self._party_count = party
+        self._refresh_count_labels()
+
+    def set_party_count_stale(self, stale: bool) -> None:
+        self._party_count_stale = bool(stale)
+        self._refresh_count_labels()
+
+    def _refresh_count_labels(self) -> None:
+        self._buttons["applicants"].setText(f"Applicants ({self._applicant_count})")
+        stale_marker = "?" if self._party_count_stale else ""
+        party_button = self._buttons["party"]
+        party_button.setText(f"Party ({self._party_count}{stale_marker})")
+        if self._party_count_stale:
+            party_button.setToolTip(
+                "The latest valid QR omitted the raid roster. "
+                "Showing the last known Party count."
+            )
+        else:
+            party_button.setToolTip("")
 
     def set_active(self, key: str, *, emit: bool = True) -> None:
         if key not in self._buttons:
@@ -2645,6 +2666,7 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time: float | None = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._last_decode_roster_unavailable = False
         self._restored_snapshot_pending = False
         self._restored_snapshot_saved_at: float | None = None
         self._restored_snapshot_deadline: float | None = None
@@ -3145,7 +3167,7 @@ class OverlayWindow(QMainWindow):
             maybe_show=should_show_party,
         )
 
-    def note_decode(self, _snap: object) -> None:
+    def note_decode(self, snap: object) -> None:
         """Slot for ScreenshotWatcher.snapshotReceived. Bumps the local last-
         decode timestamp; _refresh_health_label reads it on the next tick.
         Arg typed `object` so overlay.py stays Snapshot-import-free; under
@@ -3154,14 +3176,22 @@ class OverlayWindow(QMainWindow):
         Runs on GUI thread (Qt queues cross-thread emits from the watchdog
         Observer thread onto the GUI thread automatically). Read by the timer
         slot also runs on GUI thread — no lock needed for the float field."""
+        was_roster_unavailable = self._last_decode_roster_unavailable
         self._last_decode_time = time.time()
         self._last_decode_failed_time = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._last_decode_roster_unavailable = bool(
+            getattr(snap, "roster_unavailable", False)
+        )
+        self._tab_bar.set_party_count_stale(self._last_decode_roster_unavailable)
         self._restored_snapshot_pending = False
         self._restored_snapshot_saved_at = None
         self._restored_snapshot_deadline = None
-        self._health_label.setToolTip("")
+        if self._last_decode_roster_unavailable or was_roster_unavailable:
+            self._refresh_health_label()
+        else:
+            self._health_label.setToolTip("")
 
     def note_restored_snapshot(
         self,
@@ -3178,6 +3208,8 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._last_decode_roster_unavailable = False
+        self._tab_bar.set_party_count_stale(False)
         self._refresh_health_label()
 
     def restored_snapshot_pending(self) -> bool:
@@ -3236,6 +3268,14 @@ class OverlayWindow(QMainWindow):
             )
             return
         last = self._last_decode_time
+        if self._last_decode_roster_unavailable and last is not None:
+            delta = max(0.0, time.time() - last)
+            self._health_label.setText("shot partial")
+            self._health_label.setToolTip(
+                "The latest valid QR omitted the raid roster; Party shows "
+                f"the last known members.\n{_format_age(delta)}"
+            )
+            return
         if last is None:
             self._health_label.setText("shot —")
             self._health_label.setToolTip("")

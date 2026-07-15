@@ -1425,6 +1425,9 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     assert "Checksum-gated updater smoke confirmation is required" in attestation
     assert "CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE" in attestation
     assert "SMOKE_TESTED_FROM_VERSION" in attestation
+    assert 'gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name' in attestation
+    assert "must match latest published stable" in attestation
+    assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in attestation
     assert "-RequireDraftReleaseAssets" in draft_check
     assert "gh release edit $env:RELEASE_TAG" in publish_step
     assert "--draft=false" in publish_step
@@ -2040,9 +2043,12 @@ def test_release_workflow_extracts_top_release_notes_entry_only():
 
 def test_public_docs_do_not_reference_private_audit_backlog():
     docs_index = _read_repo_text("docs/README.md")
+    release_checklist = _read_repo_text("RELEASE_CHECKLIST.md")
     screenshot_tests = _read_repo_text("tests/test_screenshot.py")
 
     assert "../AUDIT.md" not in docs_index
+    assert "..\\WOW\\" not in release_checklist
+    assert "Documents\\GitHub" not in release_checklist
     assert "AUDIT.md T2-" not in screenshot_tests
 
 
@@ -2111,6 +2117,7 @@ def test_companion_gitignore_covers_private_local_artifacts():
         "CLAUDE.md",
         "research.private.md",
         "research.private/file.txt",
+        "docs/superpowers/release-plan.md",
     ):
         assert _git_check_ignore(path), f"{path} should be ignored"
 
@@ -2521,7 +2528,8 @@ def test_release_checklist_uses_policy_placeholders_not_stale_versions():
 
     assert "<companion version>" in checklist
     assert "<paired addon version>" in checklist
-    assert "previous stable or explicitly chosen baseline" in checklist
+    assert "latest published stable companion" in checklist
+    assert "previous stable or explicitly chosen baseline" not in checklist
     assert "checksum-gated in-app updater" in checklist
     assert "Publish release" in checklist
     assert "verified draft" in checklist.lower()

@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+## 0.9.2 - 15-Jul-2026
+
+Paired release with ApplicantScout addon `0.5.2`. This patch restores reliable
+applicant and Party updates for dense raid snapshots and makes partial roster
+state visible instead of presenting an older count as current.
+
+### Fixed
+
+- Dense raid snapshots no longer depend on reload timing: addon `0.5.2` can
+  encode a 19-player roster and an active applicant without exceeding WoW's
+  script-safe QR texture budget.
+- Party tabs now show `Party (count?)` with `shot partial` when the latest valid
+  APS1 snapshot intentionally omitted roster rows, clearly identifying the
+  displayed count as the last known roster.
+- Local RaiderIO progress for Sporefall now stays aligned with Rotmire instead
+  of appearing on Imperator Averzian when multiple current raids share the
+  encoded progress record.
+
+### Improved
+
+- Transport contracts now parse Lua-produced placeholder snapshots through the
+  companion decoder and verify complete class/role enum parity across both
+  halves of the APS1 protocol.
+- Release publication now requires updater smoke from the latest published
+  stable companion rather than accepting any older baseline.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.5.2`.
+- Installer: `ApplicantScoutCompanionSetup-0.9.2.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.9.2.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.9.2-portable.zip`
+
 ## 0.9.1 - 08-Jul-2026
 
 Paired release with ApplicantScout addon `0.5.1`. This patch makes Warcraft
