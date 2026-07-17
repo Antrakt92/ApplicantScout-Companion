@@ -7,8 +7,16 @@ on:
         description: 'Companion release tag to publish, e.g. v0.8.2'
         required: true
         type: string
+      release_run_id:
+        description: 'Successful Build and release workflow run that owns the authoritative assets'
+        required: true
+        type: string
       smoke_tested_from_version:
         description: 'Installed baseline companion version used for checksum-gated update smoke'
+        required: true
+        type: string
+      smoke_tested_installer_sha256:
+        description: 'SHA-256 of the exact installer used for the checksum-gated update smoke'
         required: true
         type: string
       confirm_checksum_gated_update_smoke:
@@ -17,13 +25,27 @@ on:
         type: boolean
 
 jobs:
-  publish:
+  verify:
     runs-on: windows-2022
     permissions:
-      contents: write
+      actions: read
+      contents: read
+    outputs:
+      release_commit: ${{ steps.release-identity.outputs.commit }}
+      tag_version: ${{ steps.release-identity.outputs.version }}
+      release_run_attempt: ${{ steps.release-run.outputs.attempt }}
+      paired_addon_tag: ${{ steps.release-manifest.outputs.paired_addon_tag }}
+      paired_addon_commit: ${{ steps.release-manifest.outputs.paired_addon_commit }}
+      installer_sha256: ${{ steps.release-manifest.outputs.installer_sha256 }}
+      manifest_b64: ${{ steps.release-manifest.outputs.manifest_b64 }}
+      manifest_sha256: ${{ steps.release-manifest.outputs.manifest_sha256 }}
+      manifest_size: ${{ steps.release-manifest.outputs.manifest_size }}
+      latest_published_tag: ${{ steps.smoke-attestation.outputs.latest_published_tag }}
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_RUN_ID: ${{ inputs.release_run_id }}
       SMOKE_TESTED_FROM_VERSION: ${{ inputs.smoke_tested_from_version }}
+      SMOKE_TESTED_INSTALLER_SHA256: ${{ inputs.smoke_tested_installer_sha256 }}
       CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE: ${{ inputs.confirm_checksum_gated_update_smoke }}
     steps:
       - name: Checkout companion
@@ -33,24 +55,31 @@ jobs:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
           path: ApplicantScout-Companion
+          persist-credentials: false
 
       - name: Verify release tag is reachable from origin/main
+        id: release-identity
         shell: pwsh
         working-directory: ApplicantScout-Companion
         run: |
+          if ($env:RELEASE_TAG -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw "Release tag must use canonical vX.Y.Z format."
+          }
+          git fetch --force --no-tags origin "+refs/tags/$env:RELEASE_TAG`:refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not refresh release tag $env:RELEASE_TAG."
+          }
           git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
           if ($LASTEXITCODE -ne 0) {
             throw "Could not verify release tag ancestry: failed to fetch origin/main."
           }
-          $ReleaseCommit = (git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $ReleaseCommit) {
-            throw "Could not verify release tag ancestry: failed to resolve release commit."
-          }
-          $TagCommit = (git rev-parse "$env:RELEASE_TAG^{commit}").Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $TagCommit) {
-            throw "Could not verify release tag ancestry: failed to resolve $env:RELEASE_TAG."
-          }
-          if ($ReleaseCommit -ne $TagCommit) {
+          $ReleaseCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $TagCommit = (git rev-parse "$env:RELEASE_TAG^{commit}").Trim().ToLowerInvariant()
+          if (
+            $LASTEXITCODE -ne 0 -or
+            $ReleaseCommit -notmatch '^[0-9a-f]{40}$' -or
+            $TagCommit -ne $ReleaseCommit
+          ) {
             throw "Checked out commit $ReleaseCommit does not match release tag $env:RELEASE_TAG ($TagCommit)."
           }
           $MainCommit = (git rev-parse refs/remotes/origin/main).Trim()
@@ -58,49 +87,177 @@ jobs:
             throw "Could not verify release tag ancestry: failed to resolve origin/main."
           }
           git merge-base --is-ancestor $ReleaseCommit $MainCommit
-          $ExitCode = $LASTEXITCODE
-          if ($ExitCode -eq 1) {
+          if ($LASTEXITCODE -ne 0) {
             throw "Release tag commit $ReleaseCommit is not reachable from origin/main ($MainCommit)."
           }
-          if ($ExitCode -ne 0) {
-            throw "Could not verify release tag ancestry: git merge-base exited $ExitCode."
-          }
-          Write-Host "Release tag commit $ReleaseCommit is reachable from origin/main ($MainCommit)."
+          $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_OUTPUT,
+            "commit=$ReleaseCommit`nversion=$($env:RELEASE_TAG.Substring(1))`n",
+            $Utf8NoBom
+          )
 
-      - name: Validate smoke attestation
+      - name: Verify successful release workflow run
+        id: release-run
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RELEASE_RUN_ID -notmatch '^[1-9][0-9]*$') {
+            throw "Release workflow run ID must be a positive integer."
+          }
+          $Run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RELEASE_RUN_ID" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $null -eq $Run) {
+            throw "Could not resolve release workflow run $env:RELEASE_RUN_ID."
+          }
+          if ([string]$Run.path -notmatch '^\.github/workflows/release\.yml(?:@.*)?$') {
+            throw "Workflow run $env:RELEASE_RUN_ID did not execute release.yml: $($Run.path)"
+          }
+          if ([string]$Run.event -ne 'push' -or [string]$Run.status -ne 'completed' -or [string]$Run.conclusion -ne 'success') {
+            throw "Release workflow run $env:RELEASE_RUN_ID is not a successful completed tag push."
+          }
+          if ([string]$Run.head_sha -cne "${{ steps.release-identity.outputs.commit }}") {
+            throw "Release workflow run head SHA $($Run.head_sha) does not match the current tag commit."
+          }
+          $Attempt = [int]$Run.run_attempt
+          if ($Attempt -lt 1) {
+            throw "Release workflow run attempt is malformed."
+          }
+          $ExpectedArtifactName = "companion-release-assets-attempt-$Attempt"
+          $Artifacts = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RELEASE_RUN_ID/artifacts?name=$ExpectedArtifactName&per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or @($Artifacts.artifacts).Count -ne 1) {
+            throw "Release workflow run must expose exactly one $ExpectedArtifactName artifact."
+          }
+          $Artifact = @($Artifacts.artifacts)[0]
+          if ([string]$Artifact.name -cne $ExpectedArtifactName -or [bool]$Artifact.expired) {
+            throw "Authoritative release artifact is missing, renamed, or expired."
+          }
+          $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "attempt=$Attempt`n", $Utf8NoBom)
+
+      - name: Download authoritative release assets
+        # actions/download-artifact v8.0.1 pinned to the upstream release commit.
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: companion-release-assets-attempt-${{ steps.release-run.outputs.attempt }}
+          path: ${{ runner.temp }}/authoritative-release-assets
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.release_run_id }}
+
+      - name: Verify authoritative exact-tag manifest
+        id: release-manifest
         shell: pwsh
         working-directory: ApplicantScout-Companion
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $ReleaseTag = $env:RELEASE_TAG.Trim()
-          if ($ReleaseTag -notmatch '^v(\d+)\.(\d+)\.(\d+)$') {
-            throw "Release tag must use vX.Y.Z format."
+          $Assets = Join-Path $env:RUNNER_TEMP "authoritative-release-assets"
+          $ManifestPath = Join-Path $Assets "ApplicantScoutCompanion-${{ steps.release-identity.outputs.version }}-release-manifest.json"
+          if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+            throw "Authoritative Actions artifact is missing the exact-tag release manifest."
           }
-          $TargetVersion = $ReleaseTag.Substring(1)
+          try {
+            $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          }
+          catch {
+            throw "Authoritative exact-tag release manifest is malformed: $($_.Exception.Message)"
+          }
+          $PairedAddonTag = [string]$Manifest.pairedAddonTag
+          $PairedAddonCommit = ([string]$Manifest.pairedAddonCommit).ToLowerInvariant()
+          .\scripts\release-artifact-manifest.ps1 `
+            -Mode Verify `
+            -Purpose Release `
+            -Tag $env:RELEASE_TAG `
+            -CommitSha "${{ steps.release-identity.outputs.commit }}" `
+            -PairedAddonTag $PairedAddonTag `
+            -PairedAddonCommit $PairedAddonCommit `
+            -WorkflowRunId $env:RELEASE_RUN_ID `
+            -WorkflowRunAttempt ${{ steps.release-run.outputs.attempt }} `
+            -RootPath $Assets
+
+          function Resolve-ExactTagCommit {
+            param([string]$Repo, [string]$Tag)
+            $Ref = gh api "repos/$Repo/git/ref/tags/$Tag" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or [string]$Ref.ref -cne "refs/tags/$Tag") {
+              throw "Could not resolve exact tag refs/tags/$Tag in $Repo."
+            }
+            $Object = $Ref.object
+            for ($Depth = 0; $Depth -lt 5; $Depth++) {
+              $Type = [string]$Object.type
+              $Sha = ([string]$Object.sha).ToLowerInvariant()
+              if ($Sha -notmatch '^[0-9a-f]{40}$') {
+                throw "Tag refs/tags/$Tag in $Repo has a malformed Git object."
+              }
+              if ($Type -eq 'commit') { return $Sha }
+              if ($Type -ne 'tag') {
+                throw "Tag refs/tags/$Tag in $Repo resolves to unsupported object type $Type."
+              }
+              $TagObject = gh api "repos/$Repo/git/tags/$Sha" | ConvertFrom-Json
+              if ($LASTEXITCODE -ne 0 -or $null -eq $TagObject.object) {
+                throw "Could not peel annotated tag refs/tags/$Tag in $Repo."
+              }
+              $Object = $TagObject.object
+            }
+            throw "Tag refs/tags/$Tag in $Repo exceeded the annotated-tag peel limit."
+          }
+
+          $AddonCommit = Resolve-ExactTagCommit `
+            -Repo "Antrakt92/ApplicantScout-Addon" `
+            -Tag $PairedAddonTag
+          if ($AddonCommit -ne $PairedAddonCommit) {
+            throw "Paired addon tag moved after the authoritative release run."
+          }
+          $InstallerName = "ApplicantScoutCompanionSetup-${{ steps.release-identity.outputs.version }}.exe"
+          $InstallerRecords = @($Manifest.files | Where-Object { [string]$_.name -ceq $InstallerName })
+          if ($InstallerRecords.Count -ne 1 -or [string]$InstallerRecords[0].sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Authoritative release manifest has no unique installer digest."
+          }
+          $ManifestBytes = [System.IO.File]::ReadAllBytes($ManifestPath)
+          $ManifestB64 = [Convert]::ToBase64String($ManifestBytes)
+          $ManifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ManifestPath).Hash.ToLowerInvariant()
+          $ManifestSize = (Get-Item -LiteralPath $ManifestPath).Length
+          $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_OUTPUT,
+            "paired_addon_tag=$PairedAddonTag`n" +
+            "paired_addon_commit=$PairedAddonCommit`n" +
+            "installer_sha256=$([string]$InstallerRecords[0].sha256)`n" +
+            "manifest_b64=$ManifestB64`n" +
+            "manifest_sha256=$ManifestHash`n" +
+            "manifest_size=$ManifestSize`n",
+            $Utf8NoBom
+          )
+
+      - name: Validate smoke attestation
+        id: smoke-attestation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $TargetVersion = "${{ steps.release-identity.outputs.version }}"
           $BaselineVersion = $env:SMOKE_TESTED_FROM_VERSION.Trim()
-          if ($BaselineVersion -notmatch '^\d+\.\d+\.\d+$') {
-            throw "Smoke-tested baseline must use X.Y.Z format."
+          if ($BaselineVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw "Smoke-tested baseline must use canonical X.Y.Z format."
           }
           if ($env:CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE -ne 'true') {
-            throw "Checksum-gated updater smoke confirmation is required before publishing $ReleaseTag."
+            throw "Checksum-gated updater smoke confirmation is required before publishing $env:RELEASE_TAG."
+          }
+          $SmokeDigest = $env:SMOKE_TESTED_INSTALLER_SHA256.Trim().ToLowerInvariant()
+          if ($SmokeDigest -notmatch '^[0-9a-f]{64}$') {
+            throw "Smoke-tested installer SHA-256 must be a 64-character hexadecimal digest."
+          }
+          if ($SmokeDigest -ne "${{ steps.release-manifest.outputs.installer_sha256 }}") {
+            throw "Smoke-tested installer SHA-256 does not match the authoritative release artifact."
           }
 
           function Compare-SemVer {
-            param(
-              [string]$Left,
-              [string]$Right
-            )
-
+            param([string]$Left, [string]$Right)
             $LeftParts = @($Left.Split(".") | ForEach-Object { [int]$_ })
             $RightParts = @($Right.Split(".") | ForEach-Object { [int]$_ })
             for ($Index = 0; $Index -lt 3; $Index++) {
-              if ($LeftParts[$Index] -lt $RightParts[$Index]) {
-                return -1
-              }
-              if ($LeftParts[$Index] -gt $RightParts[$Index]) {
-                return 1
-              }
+              if ($LeftParts[$Index] -lt $RightParts[$Index]) { return -1 }
+              if ($LeftParts[$Index] -gt $RightParts[$Index]) { return 1 }
             }
             return 0
           }
@@ -108,34 +265,241 @@ jobs:
           if ((Compare-SemVer -Left $BaselineVersion -Right $TargetVersion) -ge 0) {
             throw "Smoke-tested baseline $BaselineVersion must be older than target $TargetVersion."
           }
-
           $LatestPublishedTag = (gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name).Trim()
-          if ($LASTEXITCODE -ne 0 -or $LatestPublishedTag -notmatch '^v\d+\.\d+\.\d+$') {
+          if ($LASTEXITCODE -ne 0 -or $LatestPublishedTag -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
             throw "Could not resolve the latest published stable companion release."
           }
-          $LatestPublishedVersion = $LatestPublishedTag.Substring(1)
-          if ($BaselineVersion -ne $LatestPublishedVersion) {
-            throw "Smoke-tested baseline $BaselineVersion must match latest published stable $LatestPublishedVersion."
+          if ($BaselineVersion -ne $LatestPublishedTag.Substring(1)) {
+            throw "Smoke-tested baseline $BaselineVersion must match latest published stable $($LatestPublishedTag.Substring(1))."
           }
-          Write-Host "Publishing $ReleaseTag after checksum-gated updater smoke from $BaselineVersion."
+          $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "latest_published_tag=$LatestPublishedTag`n", $Utf8NoBom)
 
       - name: Verify draft release assets
         shell: pwsh
         working-directory: ApplicantScout-Companion
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: .\scripts\check-release-version.ps1 -Tag $env:RELEASE_TAG -RequireDraftReleaseAssets -GitHubRepository $env:GITHUB_REPOSITORY
 
-      - name: Publish release
+      - name: Verify remote draft against authoritative Actions artifact
         shell: pwsh
         working-directory: ApplicantScout-Companion
         env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $Authoritative = Join-Path $env:RUNNER_TEMP "authoritative-release-assets"
+          $Remote = Join-Path $env:RUNNER_TEMP "remote-draft-assets"
+          New-Item -ItemType Directory -Path $Remote | Out-Null
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $Remote
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not download draft release assets."
+          }
+          .\scripts\release-artifact-manifest.ps1 `
+            -Mode Verify `
+            -Purpose Release `
+            -Tag $env:RELEASE_TAG `
+            -CommitSha "${{ steps.release-identity.outputs.commit }}" `
+            -PairedAddonTag "${{ steps.release-manifest.outputs.paired_addon_tag }}" `
+            -PairedAddonCommit "${{ steps.release-manifest.outputs.paired_addon_commit }}" `
+            -WorkflowRunId $env:RELEASE_RUN_ID `
+            -WorkflowRunAttempt ${{ steps.release-run.outputs.attempt }} `
+            -RootPath $Remote
+
+          $Release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not [bool]$Release.draft -or [bool]$Release.prerelease) {
+            throw "Release is no longer the expected stable draft."
+          }
+          $ExpectedFiles = @(Get-ChildItem -LiteralPath $Authoritative -File)
+          $ActualAssets = @($Release.assets)
+          if ($ActualAssets.Count -ne $ExpectedFiles.Count) {
+            throw "Draft release asset count differs from the authoritative Actions artifact."
+          }
+          foreach ($Expected in $ExpectedFiles) {
+            $RemotePath = Join-Path $Remote $Expected.Name
+            $RemoteItem = Get-Item -LiteralPath $RemotePath
+            $ExpectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Expected.FullName).Hash.ToLowerInvariant()
+            $RemoteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $RemotePath).Hash.ToLowerInvariant()
+            if ($ExpectedHash -ne $RemoteHash -or $Expected.Length -ne $RemoteItem.Length) {
+              throw "Draft download differs from authoritative Actions artifact: $($Expected.Name)"
+            }
+            $ApiMatches = @($ActualAssets | Where-Object { [string]$_.name -ceq $Expected.Name })
+            if (
+              $ApiMatches.Count -ne 1 -or
+              [long]$ApiMatches[0].size -ne [long]$Expected.Length -or
+              [string]$ApiMatches[0].digest -cne "sha256:$ExpectedHash"
+            ) {
+              throw "GitHub asset digest/size differs from authoritative Actions artifact: $($Expected.Name)"
+            }
+          }
+
+  publish:
+    needs: verify
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_COMMIT: ${{ needs.verify.outputs.release_commit }}
+      TAG_VERSION: ${{ needs.verify.outputs.tag_version }}
+      PAIRED_ADDON_TAG: ${{ needs.verify.outputs.paired_addon_tag }}
+      PAIRED_ADDON_COMMIT: ${{ needs.verify.outputs.paired_addon_commit }}
+      EXPECTED_MANIFEST_B64: ${{ needs.verify.outputs.manifest_b64 }}
+      EXPECTED_MANIFEST_SHA256: ${{ needs.verify.outputs.manifest_sha256 }}
+      EXPECTED_MANIFEST_SIZE: ${{ needs.verify.outputs.manifest_size }}
+      EXPECTED_LATEST_PUBLISHED_TAG: ${{ needs.verify.outputs.latest_published_tag }}
+      SMOKE_TESTED_INSTALLER_SHA256: ${{ inputs.smoke_tested_installer_sha256 }}
+    steps:
+      - name: Revalidate exact bytes and publish release
+        shell: pwsh
+        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false
+        run: |
+          function Resolve-ExactTagCommit {
+            param([string]$Repo, [string]$Tag)
+            $Ref = gh api "repos/$Repo/git/ref/tags/$Tag" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or [string]$Ref.ref -cne "refs/tags/$Tag") {
+              throw "Could not resolve exact tag refs/tags/$Tag in $Repo."
+            }
+            $Object = $Ref.object
+            for ($Depth = 0; $Depth -lt 5; $Depth++) {
+              $Type = [string]$Object.type
+              $Sha = ([string]$Object.sha).ToLowerInvariant()
+              if ($Sha -notmatch '^[0-9a-f]{40}$') {
+                throw "Tag refs/tags/$Tag in $Repo has a malformed Git object."
+              }
+              if ($Type -eq 'commit') { return $Sha }
+              if ($Type -ne 'tag') {
+                throw "Tag refs/tags/$Tag in $Repo resolves to unsupported object type $Type."
+              }
+              $TagObject = gh api "repos/$Repo/git/tags/$Sha" | ConvertFrom-Json
+              if ($LASTEXITCODE -ne 0 -or $null -eq $TagObject.object) {
+                throw "Could not peel annotated tag refs/tags/$Tag in $Repo."
+              }
+              $Object = $TagObject.object
+            }
+            throw "Tag refs/tags/$Tag in $Repo exceeded the annotated-tag peel limit."
+          }
+
+          $CurrentCommit = Resolve-ExactTagCommit `
+            -Repo $env:GITHUB_REPOSITORY `
+            -Tag $env:RELEASE_TAG
+          if ($CurrentCommit -ne $env:RELEASE_COMMIT) {
+            throw "Release tag moved after verification."
+          }
+          $CurrentAddonCommit = Resolve-ExactTagCommit `
+            -Repo "Antrakt92/ApplicantScout-Addon" `
+            -Tag $env:PAIRED_ADDON_TAG
+          if ($CurrentAddonCommit -ne $env:PAIRED_ADDON_COMMIT) {
+            throw "Paired addon tag moved after verification."
+          }
+          $CurrentLatestTag = (gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name).Trim()
+          if ($LASTEXITCODE -ne 0 -or $CurrentLatestTag -ne $env:EXPECTED_LATEST_PUBLISHED_TAG) {
+            throw "Latest stable release changed after smoke verification."
+          }
+
+          $ManifestBytes = [Convert]::FromBase64String($env:EXPECTED_MANIFEST_B64)
+          if ($ManifestBytes.LongLength -ne [long]$env:EXPECTED_MANIFEST_SIZE) {
+            throw "Authoritative manifest output size changed before publication."
+          }
+          $ManifestHasher = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $DecodedManifestHash = (
+              [System.BitConverter]::ToString($ManifestHasher.ComputeHash($ManifestBytes)) -replace '-', ''
+            ).ToLowerInvariant()
+          }
+          finally {
+            $ManifestHasher.Dispose()
+          }
+          if ($DecodedManifestHash -ne $env:EXPECTED_MANIFEST_SHA256) {
+            throw "Authoritative manifest output digest changed before publication."
+          }
+          $ManifestJson = [System.Text.Encoding]::UTF8.GetString($ManifestBytes)
+          $Manifest = $ManifestJson | ConvertFrom-Json
+          $Expected = @{}
+          foreach ($File in @($Manifest.files)) {
+            $Expected[[string]$File.name] = @{
+              size = [long]$File.size
+              digest = "sha256:$([string]$File.sha256)"
+            }
+          }
+          $ManifestName = "ApplicantScoutCompanion-$env:TAG_VERSION-release-manifest.json"
+          $Expected[$ManifestName] = @{
+            size = [long]$env:EXPECTED_MANIFEST_SIZE
+            digest = "sha256:$env:EXPECTED_MANIFEST_SHA256"
+          }
+          $InstallerName = "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe"
+          if ($Expected[$InstallerName].digest -cne "sha256:$($env:SMOKE_TESTED_INSTALLER_SHA256.Trim().ToLowerInvariant())") {
+            throw "Smoke-tested installer digest changed before publication."
+          }
+
+          $Release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not [bool]$Release.draft -or [bool]$Release.prerelease) {
+            throw "Release is no longer the expected stable draft."
+          }
+          $Assets = @($Release.assets)
+          if ($Assets.Count -ne $Expected.Count) {
+            throw "Draft release asset count changed before publication."
+          }
+          foreach ($Name in $Expected.Keys) {
+            $Matches = @($Assets | Where-Object { [string]$_.name -ceq $Name })
+            if (
+              $Matches.Count -ne 1 -or
+              [long]$Matches[0].size -ne [long]$Expected[$Name].size -or
+              [string]$Matches[0].digest -cne [string]$Expected[$Name].digest
+            ) {
+              throw "Draft release asset changed before publication: $Name"
+            }
+          }
+
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub refused to publish $env:RELEASE_TAG."
+          }
 
       - name: Verify published release assets
         shell: pwsh
-        working-directory: ApplicantScout-Companion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: .\scripts\check-release-version.ps1 -Tag $env:RELEASE_TAG -RequirePublishedReleaseAssets -PublishedReleaseWaitSeconds 120 -GitHubRepository $env:GITHUB_REPOSITORY
+        run: |
+          $Manifest = [System.Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String($env:EXPECTED_MANIFEST_B64)
+          ) | ConvertFrom-Json
+          $Expected = @{}
+          foreach ($File in @($Manifest.files)) {
+            $Expected[[string]$File.name] = @{
+              size = [long]$File.size
+              digest = "sha256:$([string]$File.sha256)"
+            }
+          }
+          $ManifestName = "ApplicantScoutCompanion-$env:TAG_VERSION-release-manifest.json"
+          $Expected[$ManifestName] = @{
+            size = [long]$env:EXPECTED_MANIFEST_SIZE
+            digest = "sha256:$env:EXPECTED_MANIFEST_SHA256"
+          }
+
+          $Deadline = (Get-Date).AddSeconds(120)
+          do {
+            $Release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+            if ($LASTEXITCODE -eq 0 -and -not [bool]$Release.draft -and -not [bool]$Release.prerelease) {
+              $Assets = @($Release.assets)
+              $Valid = $Assets.Count -eq $Expected.Count
+              foreach ($Name in $Expected.Keys) {
+                $Matches = @($Assets | Where-Object { [string]$_.name -ceq $Name })
+                if (
+                  $Matches.Count -ne 1 -or
+                  [long]$Matches[0].size -ne [long]$Expected[$Name].size -or
+                  [string]$Matches[0].digest -cne [string]$Expected[$Name].digest
+                ) {
+                  $Valid = $false
+                }
+              }
+              if ($Valid) {
+                Write-Host "Published release assets match the authoritative Actions artifact."
+                exit 0
+              }
+            }
+            if ((Get-Date) -ge $Deadline) { break }
+            Start-Sleep -Seconds 5
+          } while ($true)
+          throw "Published release did not converge to the authoritative asset contract."

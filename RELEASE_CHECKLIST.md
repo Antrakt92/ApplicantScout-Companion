@@ -67,7 +67,7 @@ checksum-gated updater smoke has been attested.
    asset contract for checksum-gated in-app updater eligibility, but does not
    exercise the normal GitHub latest-release feed while the release is still draft.
 
-3. Expected assets:
+3. Expected local build artifacts:
    - `dist\ApplicantScoutCompanionSetup-<companion version>.exe`
    - `dist\ApplicantScoutCompanionSetup-<companion version>.exe.sha256`
    - `dist\ApplicantScoutCompanion-<companion version>-portable.zip`
@@ -87,10 +87,21 @@ checksum-gated updater smoke has been attested.
    addon workflow later has a separate 180-second wait for published companion
    assets before BigWigs publishes marketplace files.
 2. Confirm the companion `Build and release` GitHub Actions workflow completed
-   with a verified draft release. The draft should contain:
+   with a verified draft release, then record its numeric run ID. The publish
+   gate downloads the retained run-attempt-specific release Actions artifact from
+   that exact successful tag/head-SHA run and fails closed if it is missing or
+   expired. The draft should contain:
    - `ApplicantScoutCompanionSetup-<companion version>.exe`
    - `ApplicantScoutCompanionSetup-<companion version>.exe.sha256`
    - `ApplicantScoutCompanion-<companion version>-portable.zip`
+   - `ApplicantScoutCompanion-<companion version>-release-manifest.json`
+
+   If the workflow fails before any draft exists, use **Re-run failed jobs**;
+   the draft writer reuses the exact build-attempt artifact. Do not rerun all
+   jobs after a draft exists. An existing or partially uploaded draft makes the
+   protocol fail closed; do not delete/recreate tags or retry publication from
+   unverified bytes. Retire that draft explicitly and recover forward with a
+   new PATCH release after reviewing its assets.
 3. Smoke-test from the latest published stable companion. Record that baseline
    in release notes or release-prep notes. The publish workflow rejects an older
    arbitrary baseline so an updater-affecting release cannot skip the current
@@ -99,9 +110,15 @@ checksum-gated updater smoke has been attested.
    the checksum-gated installer candidate and release asset contract; a future
    private/canary update feed would be required for full GitHub-feed smoke while
    still draft.
+   Record the SHA-256 of the exact installer exercised by the smoke test; the
+   publish gate requires it to match the authoritative manifest and GitHub's
+   server-reported asset digest.
 4. Run the manual `Publish release` GitHub Actions workflow with:
    - `tag`: `v<companion version>`
+   - `release_run_id`: the successful `Build and release` run ID from step 2
    - `smoke_tested_from_version`: the latest published stable companion version
+   - `smoke_tested_installer_sha256`: the 64-character lowercase SHA-256 of the
+     exact candidate installer used by the smoke test
    - `confirm_checksum_gated_update_smoke`: checked
 5. Confirm the companion GitHub Release is public with all expected assets
    before the paired addon `Package and release` workflow reaches marketplace
@@ -121,10 +138,11 @@ checksum-gated updater smoke has been attested.
    stop at draft/manual publish or use an explicit orchestrated release gate so
    users cannot install a companion that requires an unavailable addon.
 10. Signing remains the future publisher-identity path for broader distribution.
-    The build has an optional `signtool` hook: set
+    The narrow draft-writer has an optional `signtool` hook after the
+    credentialless build handoff: set
     `APSCOUT_SIGNING_CERT_SHA1` (and optionally
     `APSCOUT_SIGNING_TIMESTAMP_URL` / `APSCOUT_SIGNTOOL_PATH`) so the installer
-    is signed after Inno Setup and before `.sha256` generation. Without a
+    is signed after Inno Setup and before final `.sha256` generation. Without a
     configured certificate, release builds remain unsigned and the checksum
     still proves integrity, not publisher identity.
 11. After the addon release is public, verify it once through a separately

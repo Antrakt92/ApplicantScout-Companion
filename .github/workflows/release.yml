@@ -6,11 +6,17 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  build:
     if: ${{ github.event.created == true && github.event.forced == false && github.event.deleted == false }}
     runs-on: windows-2022
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      release_commit: ${{ steps.release-identity.outputs.commit }}
+      tag_version: ${{ steps.release-identity.outputs.version }}
+      build_attempt: ${{ steps.release-identity.outputs.attempt }}
+      paired_addon_tag: ${{ steps.paired-addon.outputs.ref }}
+      paired_addon_commit: ${{ steps.paired-addon-identity.outputs.commit }}
     steps:
       - name: Checkout companion
         # actions/checkout v6 pinned to the upstream tag commit.
@@ -18,18 +24,27 @@ jobs:
         with:
           fetch-depth: 0
           path: ApplicantScout-Companion
+          persist-credentials: false
 
       - name: Verify release tag is reachable from origin/main
+        id: release-identity
         shell: pwsh
         working-directory: ApplicantScout-Companion
         run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw "Release tag must use canonical vX.Y.Z format: $env:GITHUB_REF_NAME"
+          }
           git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
           if ($LASTEXITCODE -ne 0) {
             throw "Could not verify release tag ancestry: failed to fetch origin/main."
           }
-          $ReleaseCommit = (git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $ReleaseCommit) {
+          $ReleaseCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $ReleaseCommit -notmatch '^[0-9a-f]{40}$') {
             throw "Could not verify release tag ancestry: failed to resolve release commit."
+          }
+          $TagCommit = (git rev-parse "$env:GITHUB_REF_NAME^{commit}").Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $TagCommit -ne $ReleaseCommit) {
+            throw "Checked out commit $ReleaseCommit does not match release tag $env:GITHUB_REF_NAME ($TagCommit)."
           }
           $MainCommit = (git rev-parse refs/remotes/origin/main).Trim()
           if ($LASTEXITCODE -ne 0 -or -not $MainCommit) {
@@ -43,6 +58,14 @@ jobs:
           if ($ExitCode -ne 0) {
             throw "Could not verify release tag ancestry: git merge-base exited $ExitCode."
           }
+          $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_OUTPUT,
+            "commit=$ReleaseCommit`n" +
+            "version=$($env:GITHUB_REF_NAME.Substring(1))`n" +
+            "attempt=${{ github.run_attempt }}`n",
+            $Utf8NoBom
+          )
           Write-Host "Release tag commit $ReleaseCommit is reachable from origin/main ($MainCommit)."
 
       - name: Resolve paired addon tag
@@ -55,13 +78,13 @@ jobs:
         shell: pwsh
         working-directory: ApplicantScout-Companion
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RefuseExistingRelease -GitHubRepository $env:GITHUB_REPOSITORY
 
       - name: Wait for paired addon tag
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $Ref = "${{ steps.paired-addon.outputs.ref }}"
           $Deadline = (Get-Date).AddSeconds(120)
@@ -86,8 +109,10 @@ jobs:
           ref: ${{ steps.paired-addon.outputs.ref }}
           fetch-depth: 0
           path: ApplicantScout-Addon
+          persist-credentials: false
 
       - name: Verify paired addon tag is reachable from origin/main
+        id: paired-addon-identity
         shell: pwsh
         working-directory: ApplicantScout-Addon
         run: |
@@ -95,9 +120,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Could not verify paired addon tag ancestry: failed to fetch addon origin/main."
           }
-          $ReleaseCommit = (git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $ReleaseCommit) {
+          $ReleaseCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $ReleaseCommit -notmatch '^[0-9a-f]{40}$') {
             throw "Could not verify paired addon tag ancestry: failed to resolve paired addon tag commit."
+          }
+          $TagCommit = (git rev-parse "${{ steps.paired-addon.outputs.ref }}^{commit}").Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $TagCommit -ne $ReleaseCommit) {
+            throw "Checked out addon commit $ReleaseCommit does not match paired tag ($TagCommit)."
           }
           $MainCommit = (git rev-parse refs/remotes/origin/main).Trim()
           if ($LASTEXITCODE -ne 0 -or -not $MainCommit) {
@@ -111,7 +140,9 @@ jobs:
           if ($ExitCode -ne 0) {
             throw "Could not verify paired addon tag ancestry: git merge-base exited $ExitCode."
           }
-          Write-Host "Paired addon tag commit $ReleaseCommit is reachable from addon origin/main ($MainCommit)."
+          $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "commit=$ReleaseCommit`n", $Utf8NoBom)
+          Write-Host "Paired addon tag commit $ReleaseCommit is reachable from origin/main ($MainCommit)."
 
       - name: Validate paired addon metadata
         shell: pwsh
@@ -145,13 +176,9 @@ jobs:
           .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon -VisualMode Smoke
           .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME
 
-      - name: Build Windows artifacts
+      - name: Build unsigned Windows artifacts
         shell: pwsh
         working-directory: ApplicantScout-Companion
-        env:
-          APSCOUT_SIGNING_CERT_SHA1: ${{ secrets.APSCOUT_SIGNING_CERT_SHA1 }}
-          APSCOUT_SIGNING_TIMESTAMP_URL: ${{ secrets.APSCOUT_SIGNING_TIMESTAMP_URL }}
-          APSCOUT_SIGNTOOL_PATH: ${{ secrets.APSCOUT_SIGNTOOL_PATH }}
         run: .\scripts\build-windows.ps1 -SkipChecks
 
       - name: Validate release assets
@@ -173,23 +200,203 @@ jobs:
           }
           $Match.Value.Trim() | Set-Content -LiteralPath dist\release-body.md -Encoding UTF8
 
+      - name: Create credentialless build manifest
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $Version = "${{ steps.release-identity.outputs.version }}"
+          $Bundle = Join-Path $env:RUNNER_TEMP "release-build-bundle"
+          New-Item -ItemType Directory -Path $Bundle | Out-Null
+          Copy-Item -LiteralPath "dist\ApplicantScoutCompanionSetup-$Version.exe" -Destination $Bundle
+          Copy-Item -LiteralPath "dist\ApplicantScoutCompanionSetup-$Version.exe.sha256" -Destination $Bundle
+          Copy-Item -LiteralPath "dist\ApplicantScoutCompanion-$Version-portable.zip" -Destination $Bundle
+          Copy-Item -LiteralPath "dist\release-body.md" -Destination $Bundle
+          .\scripts\release-artifact-manifest.ps1 `
+            -Mode Create `
+            -Purpose Build `
+            -Tag $env:GITHUB_REF_NAME `
+            -CommitSha "${{ steps.release-identity.outputs.commit }}" `
+            -PairedAddonTag "${{ steps.paired-addon.outputs.ref }}" `
+            -PairedAddonCommit "${{ steps.paired-addon-identity.outputs.commit }}" `
+            -WorkflowRunId "${{ github.run_id }}" `
+            -WorkflowRunAttempt ${{ github.run_attempt }} `
+            -RootPath $Bundle
+
+      - name: Upload credentialless build bundle
+        # actions/upload-artifact v7.0.1 pinned to the upstream release commit.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: companion-release-build-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-build-bundle/*
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  draft:
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+      TAG_VERSION: ${{ needs.build.outputs.tag_version }}
+      BUILD_ATTEMPT: ${{ needs.build.outputs.build_attempt }}
+      PAIRED_ADDON_TAG: ${{ needs.build.outputs.paired_addon_tag }}
+      PAIRED_ADDON_COMMIT: ${{ needs.build.outputs.paired_addon_commit }}
+    steps:
+      - name: Checkout companion
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          path: ApplicantScout-Companion
+          persist-credentials: false
+
+      - name: Revalidate release and paired tag identities
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          git fetch --force --no-tags origin "+refs/tags/$env:RELEASE_TAG`:refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not refresh release tag $env:RELEASE_TAG."
+          }
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not refresh origin/main."
+          }
+          $HeadCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $TagCommit = (git rev-parse "$env:RELEASE_TAG^{commit}").Trim().ToLowerInvariant()
+          if ($HeadCommit -ne $env:RELEASE_COMMIT -or $TagCommit -ne $env:RELEASE_COMMIT) {
+            throw "Release tag moved after build: expected $env:RELEASE_COMMIT, HEAD=$HeadCommit, tag=$TagCommit."
+          }
+          git merge-base --is-ancestor $TagCommit refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release tag commit is no longer reachable from origin/main."
+          }
+
+          $AddonRefs = @(git ls-remote https://github.com/Antrakt92/ApplicantScout-Addon.git "refs/tags/$env:PAIRED_ADDON_TAG" "refs/tags/$env:PAIRED_ADDON_TAG^{}")
+          if ($LASTEXITCODE -ne 0 -or $AddonRefs.Count -lt 1) {
+            throw "Could not resolve current paired addon tag $env:PAIRED_ADDON_TAG."
+          }
+          $Peeled = $AddonRefs | Where-Object { $_ -match '\^\{\}$' } | Select-Object -First 1
+          $Selected = if ($Peeled) { $Peeled } else { $AddonRefs | Select-Object -First 1 }
+          $AddonCommit = (($Selected -split '\s+')[0]).ToLowerInvariant()
+          if ($AddonCommit -ne $env:PAIRED_ADDON_COMMIT) {
+            throw "Paired addon tag moved after build: expected $env:PAIRED_ADDON_COMMIT, got $AddonCommit."
+          }
+
+      - name: Refuse existing release before writer boundary
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\scripts\check-release-version.ps1 -Tag $env:RELEASE_TAG -RefuseExistingRelease -GitHubRepository $env:GITHUB_REPOSITORY
+
+      - name: Download credentialless build bundle
+        # actions/download-artifact v8.0.1 pinned to the upstream release commit.
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: companion-release-build-attempt-${{ needs.build.outputs.build_attempt }}
+          path: ${{ runner.temp }}/release-build-bundle
+
+      - name: Verify credentialless build manifest
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          .\scripts\release-artifact-manifest.ps1 `
+            -Mode Verify `
+            -Purpose Build `
+            -Tag $env:RELEASE_TAG `
+            -CommitSha $env:RELEASE_COMMIT `
+            -PairedAddonTag $env:PAIRED_ADDON_TAG `
+            -PairedAddonCommit $env:PAIRED_ADDON_COMMIT `
+            -WorkflowRunId "${{ github.run_id }}" `
+            -WorkflowRunAttempt $env:BUILD_ATTEMPT `
+            -RootPath (Join-Path $env:RUNNER_TEMP "release-build-bundle")
+
+      - name: Sign installer and refresh checksum
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          APSCOUT_SIGNING_CERT_SHA1: ${{ secrets.APSCOUT_SIGNING_CERT_SHA1 }}
+          APSCOUT_SIGNING_TIMESTAMP_URL: ${{ secrets.APSCOUT_SIGNING_TIMESTAMP_URL }}
+          APSCOUT_SIGNTOOL_PATH: ${{ secrets.APSCOUT_SIGNTOOL_PATH }}
+        run: |
+          $Bundle = Join-Path $env:RUNNER_TEMP "release-build-bundle"
+          .\scripts\sign-windows-installer.ps1 `
+            -InstallerPath (Join-Path $Bundle "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe") `
+            -ChecksumPath (Join-Path $Bundle "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe.sha256")
+
+      - name: Create exact-tag release manifest
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $Bundle = Join-Path $env:RUNNER_TEMP "release-build-bundle"
+          $Assets = Join-Path $env:RUNNER_TEMP "release-assets"
+          New-Item -ItemType Directory -Path $Assets | Out-Null
+          Copy-Item -LiteralPath (Join-Path $Bundle "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe") -Destination $Assets
+          Copy-Item -LiteralPath (Join-Path $Bundle "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe.sha256") -Destination $Assets
+          Copy-Item -LiteralPath (Join-Path $Bundle "ApplicantScoutCompanion-$env:TAG_VERSION-portable.zip") -Destination $Assets
+          .\scripts\release-artifact-manifest.ps1 `
+            -Mode Create `
+            -Purpose Release `
+            -Tag $env:RELEASE_TAG `
+            -CommitSha $env:RELEASE_COMMIT `
+            -PairedAddonTag $env:PAIRED_ADDON_TAG `
+            -PairedAddonCommit $env:PAIRED_ADDON_COMMIT `
+            -WorkflowRunId "${{ github.run_id }}" `
+            -WorkflowRunAttempt ${{ github.run_attempt }} `
+            -RootPath $Assets
+
+      - name: Verify exact-tag release manifest
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $Assets = Join-Path $env:RUNNER_TEMP "release-assets"
+          .\scripts\release-artifact-manifest.ps1 `
+            -Mode Verify `
+            -Purpose Release `
+            -Tag $env:RELEASE_TAG `
+            -CommitSha $env:RELEASE_COMMIT `
+            -PairedAddonTag $env:PAIRED_ADDON_TAG `
+            -PairedAddonCommit $env:PAIRED_ADDON_COMMIT `
+            -WorkflowRunId "${{ github.run_id }}" `
+            -WorkflowRunAttempt ${{ github.run_attempt }} `
+            -RootPath $Assets
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Copy-Item -LiteralPath (Join-Path $Assets "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe") -Destination dist
+          Copy-Item -LiteralPath (Join-Path $Assets "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe.sha256") -Destination dist
+          Copy-Item -LiteralPath (Join-Path $Assets "ApplicantScoutCompanion-$env:TAG_VERSION-portable.zip") -Destination dist
+          .\scripts\check-release-version.ps1 -Tag $env:RELEASE_TAG -RequireAssets
+
+      - name: Upload authoritative release assets
+        # actions/upload-artifact v7.0.1 pinned to the upstream release commit.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: companion-release-assets-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
       - name: Create draft release with assets
         shell: pwsh
         working-directory: ApplicantScout-Companion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $TagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
-          $Installer = "dist\ApplicantScoutCompanionSetup-$TagVersion.exe"
-          $Checksum = "dist\ApplicantScoutCompanionSetup-$TagVersion.exe.sha256"
-          $Portable = "dist\ApplicantScoutCompanion-$TagVersion-portable.zip"
-          gh release create $env:GITHUB_REF_NAME `
-            $Installer `
-            $Checksum `
-            $Portable `
+          $Assets = Join-Path $env:RUNNER_TEMP "release-assets"
+          $Body = Join-Path $env:RUNNER_TEMP "release-build-bundle\release-body.md"
+          gh release create $env:RELEASE_TAG `
+            (Join-Path $Assets "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe") `
+            (Join-Path $Assets "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe.sha256") `
+            (Join-Path $Assets "ApplicantScoutCompanion-$env:TAG_VERSION-portable.zip") `
+            (Join-Path $Assets "ApplicantScoutCompanion-$env:TAG_VERSION-release-manifest.json") `
             --repo $env:GITHUB_REPOSITORY `
-            --title $env:GITHUB_REF_NAME `
-            --notes-file dist\release-body.md `
+            --title $env:RELEASE_TAG `
+            --notes-file $Body `
             --draft `
             --verify-tag
 
@@ -198,4 +405,36 @@ jobs:
         working-directory: ApplicantScout-Companion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: .\scripts\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireDraftReleaseAssets -GitHubRepository $env:GITHUB_REPOSITORY
+        run: .\scripts\check-release-version.ps1 -Tag $env:RELEASE_TAG -RequireDraftReleaseAssets -GitHubRepository $env:GITHUB_REPOSITORY
+
+      - name: Verify remote draft bytes against authoritative manifest
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $RemoteAssets = Join-Path $env:RUNNER_TEMP "remote-draft-assets"
+          New-Item -ItemType Directory -Path $RemoteAssets | Out-Null
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $RemoteAssets
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not download the draft release assets for verification."
+          }
+          .\scripts\release-artifact-manifest.ps1 `
+            -Mode Verify `
+            -Purpose Release `
+            -Tag $env:RELEASE_TAG `
+            -CommitSha $env:RELEASE_COMMIT `
+            -PairedAddonTag $env:PAIRED_ADDON_TAG `
+            -PairedAddonCommit $env:PAIRED_ADDON_COMMIT `
+            -WorkflowRunId "${{ github.run_id }}" `
+            -WorkflowRunAttempt ${{ github.run_attempt }} `
+            -RootPath $RemoteAssets
+          $Authoritative = Join-Path $env:RUNNER_TEMP "release-assets"
+          foreach ($File in Get-ChildItem -LiteralPath $Authoritative -File) {
+            $RemoteFile = Join-Path $RemoteAssets $File.Name
+            $ExpectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $File.FullName).Hash
+            $ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $RemoteFile).Hash
+            if ($ExpectedHash -ne $ActualHash -or $File.Length -ne (Get-Item -LiteralPath $RemoteFile).Length) {
+              throw "Remote draft asset differs from the authoritative Actions artifact: $($File.Name)"
+            }
+          }

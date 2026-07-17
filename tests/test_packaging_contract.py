@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import os
 import pytest
 import re
 import shutil
@@ -185,6 +186,105 @@ def _run_release_check(repo: Path, *args: str) -> subprocess.CompletedProcess[st
         check=False,
         text=True,
         capture_output=True,
+    )
+
+
+def _run_release_manifest(
+    root: Path,
+    *args: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "release-artifact-manifest.ps1"),
+            "-RootPath",
+            str(root),
+            *args,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _run_installer_signer(
+    installer: Path,
+    checksum: Path,
+    *args: str,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    for name in (
+        "APSCOUT_SIGNING_CERT_SHA1",
+        "APSCOUT_SIGNING_TIMESTAMP_URL",
+        "APSCOUT_SIGNTOOL_PATH",
+    ):
+        env.pop(name, None)
+    env.update(extra_env or {})
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "sign-windows-installer.ps1"),
+            "-InstallerPath",
+            str(installer),
+            "-ChecksumPath",
+            str(checksum),
+            *args,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+
+def _write_manifest_bundle(root: Path, *, purpose: str) -> dict[str, str]:
+    version = _project_version()
+    root.mkdir(parents=True)
+    installer_name = f"ApplicantScoutCompanionSetup-{version}.exe"
+    checksum_name = f"{installer_name}.sha256"
+    portable_name = f"ApplicantScoutCompanion-{version}-portable.zip"
+    installer_bytes = b"setup-bytes"
+    (root / installer_name).write_bytes(installer_bytes)
+    digest = hashlib.sha256(installer_bytes).hexdigest()
+    (root / checksum_name).write_text(
+        f"{digest}  {installer_name}\n",
+        encoding="ascii",
+    )
+    _write_valid_portable_zip(root / portable_name)
+    if purpose == "Build":
+        (root / "release-body.md").write_text("release notes\n", encoding="utf-8")
+    return {
+        "installer": installer_name,
+        "checksum": checksum_name,
+        "portable": portable_name,
+    }
+
+
+def _manifest_identity_args(tag: str, commit: str) -> tuple[str, ...]:
+    return (
+        "-Tag",
+        tag,
+        "-CommitSha",
+        commit,
+        "-PairedAddonTag",
+        "v1.2.3",
+        "-PairedAddonCommit",
+        "d" * 40,
+        "-WorkflowRunId",
+        "123456",
+        "-WorkflowRunAttempt",
+        "2",
     )
 
 
@@ -411,12 +511,13 @@ def test_check_script_requires_lua51_interpreter_for_addon_golden_generation():
 
 def test_artifact_name_contract_stays_aligned():
     build_script = _read_repo_text("scripts/build-windows.ps1")
+    signer = _read_repo_text("scripts/sign-windows-installer.ps1")
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
     updater = _read_repo_text("src/applicant_scout/updater.py")
 
     assert "ApplicantScoutCompanion-$Version-portable.zip" in build_script
     assert "ApplicantScoutCompanionSetup-$Version.exe.sha256" in build_script
-    assert "Get-FileHash" in build_script
+    assert "System.Security.Cryptography.SHA256" in signer
     assert "ApplicantScoutCompanionSetup-{#MyAppVersion}" in inno_script
     assert "ApplicantScoutCompanionSetup-" in updater
     assert "portable.zip" not in updater
@@ -425,31 +526,60 @@ def test_artifact_name_contract_stays_aligned():
 
 def test_windows_build_supports_optional_installer_signing_before_checksum():
     build_script = _read_repo_text("scripts/build-windows.ps1")
+    signer = _read_repo_text("scripts/sign-windows-installer.ps1")
 
-    assert "Sign-Installer" in build_script
-    assert "Find-SignTool" in build_script
-    assert "APSCOUT_SIGNING_CERT_SHA1" in build_script
-    assert "APSCOUT_SIGNING_TIMESTAMP_URL" in build_script
-    assert "/fd SHA256" in build_script
-    assert "/td SHA256" in build_script
-    assert "RequireSigning" in build_script
+    assert "sign-windows-installer.ps1" in build_script
+    assert "Find-SignTool" in signer
+    assert "APSCOUT_SIGNING_CERT_SHA1" in signer
+    assert "APSCOUT_SIGNING_TIMESTAMP_URL" in signer
+    assert "/fd SHA256" in signer
+    assert "/td SHA256" in signer
+    assert "RequireSigning" in signer
 
     inno_idx = build_script.index('Invoke-NativeChecked -Label "Inno Setup compiler"')
-    sign_idx = build_script.index("Sign-Installer -InstallerPath $Installer")
-    checksum_idx = build_script.index("Get-FileHash -Algorithm SHA256")
+    sign_idx = build_script.index("& $InstallerSigner")
+    signer_sign_idx = signer.index("& $SignTool sign")
+    checksum_idx = signer.index("System.Security.Cryptography.SHA256")
 
-    assert inno_idx < sign_idx < checksum_idx
+    assert inno_idx < sign_idx
+    assert signer_sign_idx < checksum_idx
+
+
+def test_installer_signing_helper_refreshes_checksum_and_fails_closed(tmp_path):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-1.2.3.exe"
+    checksum = tmp_path / f"{installer.name}.sha256"
+    installer.write_bytes(b"installer-bytes")
+
+    unsigned = _run_installer_signer(installer, checksum)
+
+    assert unsigned.returncode == 0, unsigned.stdout + unsigned.stderr
+    expected = hashlib.sha256(b"installer-bytes").hexdigest()
+    assert checksum.read_text(encoding="ascii").strip() == f"{expected}  {installer.name}"
+
+    required = _run_installer_signer(installer, checksum, "-RequireSigning")
+    assert required.returncode != 0
+    assert "signing is required" in (required.stdout + required.stderr).lower()
+
+    malformed_thumbprint = _run_installer_signer(
+        installer,
+        checksum,
+        extra_env={"APSCOUT_SIGNING_CERT_SHA1": "not-a-thumbprint"},
+    )
+    assert malformed_thumbprint.returncode != 0
+    assert "40-character" in (malformed_thumbprint.stdout + malformed_thumbprint.stderr)
 
 
 def test_release_workflow_exposes_optional_signing_environment_without_requiring_cert():
     workflow = _read_repo_text(".github/workflows/release.yml")
-    build_step = _step_block(_job_block(workflow, "release"), "Build Windows artifacts")
+    build = _job_block(workflow, "build")
+    sign_step = _step_block(_job_block(workflow, "draft"), "Sign installer and refresh checksum")
 
-    assert "APSCOUT_SIGNING_CERT_SHA1" in build_step
-    assert "APSCOUT_SIGNING_TIMESTAMP_URL" in build_step
-    assert "secrets.APSCOUT_SIGNING_CERT_SHA1" in build_step
-    assert "secrets.APSCOUT_SIGNING_TIMESTAMP_URL" in build_step
-    assert "-RequireSigning" not in build_step
+    assert "APSCOUT_SIGNING_" not in build
+    assert "APSCOUT_SIGNING_CERT_SHA1" in sign_step
+    assert "APSCOUT_SIGNING_TIMESTAMP_URL" in sign_step
+    assert "secrets.APSCOUT_SIGNING_CERT_SHA1" in sign_step
+    assert "secrets.APSCOUT_SIGNING_TIMESTAMP_URL" in sign_step
+    assert "-RequireSigning" not in sign_step
 
 
 def test_windows_build_uses_app_icon_for_exe_installer_and_runtime():
@@ -685,6 +815,7 @@ def test_release_build_refuses_dirty_release_inputs_by_default():
         "scripts\\build-windows.ps1",
         "scripts\\check.ps1",
         "scripts\\check-release-version.ps1",
+        "scripts\\sign-windows-installer.ps1",
         "scripts\\collect_dependency_licenses.py",
         "scripts\\export_public_visual_assets.py",
         "scripts\\overlay_visual_fixture.py",
@@ -813,7 +944,7 @@ def test_release_checklist_documents_optional_signing_gate():
 
     assert "APSCOUT_SIGNING_CERT_SHA1" in checklist
     assert "signtool" in checklist.lower()
-    assert "before `.sha256` generation" in checklist
+    assert "before final `.sha256` generation" in checklist
     assert "unsigned" in checklist.lower()
 
 
@@ -873,54 +1004,251 @@ def test_docs_readme_explains_public_media_export_and_strict_gate():
 
 def test_release_workflow_runs_existing_gates_before_verified_draft():
     workflow = _read_repo_text(".github/workflows/release.yml")
-    release = _job_block(workflow, "release")
+    build = _job_block(workflow, "build")
+    draft = _job_block(workflow, "draft")
 
     assert "tags:" in workflow
     assert "'v*'" in workflow
     assert "github.event.created == true" in workflow
     assert "github.event.forced == false" in workflow
     assert "github.event.deleted == false" in workflow
-    assert re.search(r"(?m)^    runs-on: windows-2022\s*$", release)
-    assert "contents: write" in workflow
-    assert "python-version: '3.13'" in workflow
-    assert "constraints-release.txt" in workflow
-    assert ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in workflow
-    assert "APPLICANT_SCOUT_VISUAL_BASELINE" not in workflow
-    assert ".\\scripts\\check.ps1 -AddonRoot ..\\ApplicantScout-Addon -VisualMode Smoke" in workflow
-    assert "choco install lua51 --version=5.1.5" in workflow
-    assert "choco install innosetup --version=6.7.1" in workflow
-    assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
-    assert "id: paired-addon" in workflow
-    assert "-PairedAddonRefOutputPath $env:GITHUB_OUTPUT" in workflow
-    assert "ref: ${{ steps.paired-addon.outputs.ref }}" in workflow
-    assert "Validate paired addon metadata" in workflow
-    assert "-PairedAddonRoot ..\\ApplicantScout-Addon" in workflow
-    paired_version_idx = workflow.index("-PairedAddonRoot ..\\ApplicantScout-Addon")
-    check_idx = workflow.index(".\\scripts\\check.ps1 -AddonRoot")
-    version_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag", check_idx)
-    build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
-    assets_idx = workflow.index(".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets")
+    assert re.search(r"(?m)^    runs-on: windows-2022\s*$", build)
+    assert re.search(r"(?m)^    runs-on: windows-2022\s*$", draft)
+    assert "contents: read" in build
+    assert "contents: write" not in build
+    assert "contents: write" in draft
+    assert "python-version: '3.13'" in build
+    assert "constraints-release.txt" in build
+    assert ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in build
+    assert "APPLICANT_SCOUT_VISUAL_BASELINE" not in build
+    assert ".\\scripts\\check.ps1 -AddonRoot ..\\ApplicantScout-Addon -VisualMode Smoke" in build
+    assert "choco install lua51 --version=5.1.5" in build
+    assert "choco install innosetup --version=6.7.1" in build
+    assert "repository: Antrakt92/ApplicantScout-Addon" in build
+    assert "id: paired-addon" in build
+    assert "-PairedAddonRefOutputPath $env:GITHUB_OUTPUT" in build
+    assert "ref: ${{ steps.paired-addon.outputs.ref }}" in build
+    assert "Validate paired addon metadata" in build
+    assert "-PairedAddonRoot ..\\ApplicantScout-Addon" in build
+    paired_version_idx = build.index("-PairedAddonRoot ..\\ApplicantScout-Addon")
+    check_idx = build.index(".\\scripts\\check.ps1 -AddonRoot")
+    version_idx = build.index(".\\scripts\\check-release-version.ps1 -Tag", check_idx)
+    build_idx = build.index(".\\scripts\\build-windows.ps1 -SkipChecks")
+    assets_idx = build.index(".\\scripts\\check-release-version.ps1 -Tag $env:GITHUB_REF_NAME -RequireAssets")
     assert "-RequirePublishedPairedAddonAssets" not in workflow
-    release_idx = workflow.index("gh release create")
-    draft_check_idx = workflow.index("-RequireDraftReleaseAssets")
-
-    assert (
-        paired_version_idx
-        < check_idx
-        < version_idx
-        < build_idx
-        < assets_idx
-        < release_idx
-        < draft_check_idx
+    assert paired_version_idx < check_idx < version_idx < build_idx < assets_idx
+    _assert_order(
+        draft,
+        "Verify credentialless build manifest",
+        "Create exact-tag release manifest",
+        "Verify exact-tag release manifest",
+        "Create draft release with assets",
+        "Verify draft release assets",
+        "Verify remote draft bytes against authoritative manifest",
     )
     assert "gh release edit" not in workflow
     assert "draft=false" not in workflow
 
 
+def test_release_artifact_manifest_binds_build_bundle_to_tag_and_commit(tmp_path):
+    root = tmp_path / "release-bundle"
+    names = _write_manifest_bundle(root, purpose="Build")
+    version = _project_version()
+    tag = f"v{version}"
+    commit = "a" * 40
+
+    created = _run_release_manifest(
+        root,
+        "-Mode",
+        "Create",
+        "-Purpose",
+        "Build",
+        *_manifest_identity_args(tag, commit),
+    )
+
+    assert created.returncode == 0, created.stdout + created.stderr
+    manifest_path = root / "release-build-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    assert manifest["schemaVersion"] == 1
+    assert manifest["repository"] == "Antrakt92/ApplicantScout-Companion"
+    assert manifest["tag"] == tag
+    assert manifest["commit"] == commit
+    assert {entry["name"] for entry in manifest["files"]} == {
+        names["installer"],
+        names["checksum"],
+        names["portable"],
+        "release-body.md",
+    }
+    assert {entry["name"] for entry in manifest["portableEntries"]} >= {
+        "ApplicantScout/LICENSE",
+        "ApplicantScout/THIRD-PARTY-NOTICES.md",
+        "ApplicantScout/RELEASE_NOTES.md",
+    }
+
+    verified = _run_release_manifest(
+        root,
+        "-Mode",
+        "Verify",
+        "-Purpose",
+        "Build",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+
+
+def test_release_artifact_manifest_rejects_tag_commit_asset_and_notice_drift(tmp_path):
+    root = tmp_path / "release-assets"
+    names = _write_manifest_bundle(root, purpose="Release")
+    version = _project_version()
+    tag = f"v{version}"
+    commit = "b" * 40
+    created = _run_release_manifest(
+        root,
+        "-Mode",
+        "Create",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    wrong_tag = _run_release_manifest(
+        root,
+        "-Mode",
+        "Verify",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args("v9.9.9", commit),
+    )
+    assert wrong_tag.returncode != 0
+    assert "manifest" in (wrong_tag.stdout + wrong_tag.stderr).lower()
+
+    wrong_commit = _run_release_manifest(
+        root,
+        "-Mode",
+        "Verify",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args(tag, "c" * 40),
+    )
+    assert wrong_commit.returncode != 0
+    assert "commit" in (wrong_commit.stdout + wrong_commit.stderr).lower()
+
+    (root / names["installer"]).write_bytes(b"changed-installer")
+    changed_asset = _run_release_manifest(
+        root,
+        "-Mode",
+        "Verify",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert changed_asset.returncode != 0
+    assert "sha-256" in (changed_asset.stdout + changed_asset.stderr).lower()
+
+    (root / names["installer"]).write_bytes(b"setup-bytes")
+    _write_valid_portable_zip(
+        root / names["portable"],
+        extra_entries={
+            "ApplicantScout/THIRD-PARTY-NOTICES.md": b"changed notices",
+        },
+    )
+    changed_notice = _run_release_manifest(
+        root,
+        "-Mode",
+        "Verify",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert changed_notice.returncode != 0
+    assert "sha-256" in (changed_notice.stdout + changed_notice.stderr).lower()
+
+
+def test_release_artifact_manifest_rejects_noncanonical_tag_and_extra_files(tmp_path):
+    root = tmp_path / "release-assets"
+    _write_manifest_bundle(root, purpose="Release")
+    commit = "e" * 40
+
+    noncanonical = _run_release_manifest(
+        root,
+        "-Mode",
+        "Create",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args("v01.2.3", commit),
+    )
+    assert noncanonical.returncode != 0
+    assert "strict vx.y.z" in (noncanonical.stdout + noncanonical.stderr).lower()
+
+    tag = f"v{_project_version()}"
+    created = _run_release_manifest(
+        root,
+        "-Mode",
+        "Create",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+    (root / "unexpected.bin").write_bytes(b"unexpected")
+
+    verified = _run_release_manifest(
+        root,
+        "-Mode",
+        "Verify",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert verified.returncode != 0
+    assert "wrong exact file set" in (verified.stdout + verified.stderr).lower()
+
+
+def test_release_workflow_separates_read_only_build_from_narrow_draft_writer():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    build = _job_block(workflow, "build")
+    draft = _job_block(workflow, "draft")
+
+    assert "contents: read" in build
+    assert "contents: write" not in build
+    assert "persist-credentials: false" in _step_block(build, "Checkout companion")
+    assert "persist-credentials: false" in _step_block(build, "Checkout addon")
+    assert "Install release dependencies" in build
+    assert "APSCOUT_SIGNING_" not in build
+    assert "gh release create" not in build
+    create_manifest = _step_block(build, "Create credentialless build manifest")
+    assert "release-artifact-manifest.ps1" in create_manifest
+    assert "-Mode Create" in create_manifest
+    assert "-Purpose Build" in create_manifest
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in build
+    assert "companion-release-build-attempt-${{ github.run_attempt }}" in build
+    assert "build_attempt: ${{ steps.release-identity.outputs.attempt }}" in build
+
+    assert re.search(r"(?m)^    needs: build\s*$", draft)
+    assert "contents: write" in draft
+    assert "persist-credentials: false" in _step_block(draft, "Checkout companion")
+    assert "Install release dependencies" not in draft
+    assert "choco install" not in draft
+    assert "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in draft
+    assert "companion-release-build-attempt-${{ needs.build.outputs.build_attempt }}" in draft
+    assert "-WorkflowRunAttempt $env:BUILD_ATTEMPT" in draft
+    assert "companion-release-assets-attempt-${{ github.run_attempt }}" in draft
+    _assert_order(
+        draft,
+        "Verify credentialless build manifest",
+        "Sign installer and refresh checksum",
+        "Create exact-tag release manifest",
+        "Verify exact-tag release manifest",
+        "Upload authoritative release assets",
+        "Create draft release with assets",
+    )
+
+
 def test_release_workflow_requires_tag_commit_reachable_from_origin_main():
     workflow = _read_repo_text(".github/workflows/release.yml")
-    release = _job_block(workflow, "release")
-    gate = _step_block(release, "Verify release tag is reachable from origin/main")
+    build = _job_block(workflow, "build")
+    gate = _step_block(build, "Verify release tag is reachable from origin/main")
 
     assert "working-directory: ApplicantScout-Companion" in gate
     assert "git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main" in gate
@@ -931,23 +1259,22 @@ def test_release_workflow_requires_tag_commit_reachable_from_origin_main():
     assert "not reachable from origin/main" in gate
     assert "Could not verify release tag ancestry" in gate
     _assert_order(
-        release,
+        build,
         "Checkout companion",
         "Verify release tag is reachable from origin/main",
         "Resolve paired addon tag",
         "Refuse existing release",
         "Wait for paired addon tag",
-        "Build Windows artifacts",
-        "Create draft release with assets",
-        "Verify draft release assets",
+        "Build unsigned Windows artifacts",
+        "Upload credentialless build bundle",
     )
 
 
 def test_release_workflow_requires_paired_addon_tag_reachable_from_origin_main():
     workflow = _read_repo_text(".github/workflows/release.yml")
-    release = _job_block(workflow, "release")
+    build = _job_block(workflow, "build")
     gate = _step_block(
-        release,
+        build,
         "Verify paired addon tag is reachable from origin/main",
     )
 
@@ -960,20 +1287,22 @@ def test_release_workflow_requires_paired_addon_tag_reachable_from_origin_main()
     assert "not reachable from addon origin/main" in gate
     assert "Could not verify paired addon tag ancestry" in gate
     _assert_order(
-        release,
+        build,
         "Checkout addon",
         "Verify paired addon tag is reachable from origin/main",
         "Validate paired addon metadata",
-        "Build Windows artifacts",
-        "Create draft release with assets",
+        "Build unsigned Windows artifacts",
+        "Upload credentialless build bundle",
     )
 
 
 def test_release_workflow_refuses_existing_release_before_build_or_create():
     workflow = _read_repo_text(".github/workflows/release.yml")
     script = _read_repo_text("scripts/check-release-version.ps1")
-    release = _job_block(workflow, "release")
-    refuse_step = _step_block(release, "Refuse existing release")
+    build = _job_block(workflow, "build")
+    draft = _job_block(workflow, "draft")
+    refuse_step = _step_block(build, "Refuse existing release")
+    writer_refuse = _step_block(draft, "Refuse existing release before writer boundary")
 
     refuse_idx = workflow.index("Refuse existing release")
     build_idx = workflow.index(".\\scripts\\build-windows.ps1 -SkipChecks")
@@ -982,7 +1311,8 @@ def test_release_workflow_refuses_existing_release_before_build_or_create():
     assert "-RefuseExistingRelease" in refuse_step
     assert "-GitHubRepository $env:GITHUB_REPOSITORY" in refuse_step
     assert "working-directory: ApplicantScout-Companion" in refuse_step
-    assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in refuse_step
+    assert "GH_TOKEN: ${{ github.token }}" in refuse_step
+    assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in writer_refuse
     assert "gh release view $env:GITHUB_REF_NAME" not in refuse_step
     assert "already exists; refusing" in script
     assert refuse_idx < build_idx < release_idx
@@ -1138,6 +1468,7 @@ def test_release_version_check_accepts_own_draft_release_assets(tmp_path):
     installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
     checksum_name = f"{installer_name}.sha256"
     portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    manifest_name = f"ApplicantScoutCompanion-{project_version}-release-manifest.json"
     fake_gh = _fake_gh_release_view(
         tmp_path,
         expected_repo="Antrakt92/ApplicantScout-Companion",
@@ -1150,6 +1481,7 @@ def test_release_version_check_accepts_own_draft_release_assets(tmp_path):
                 {"name": installer_name},
                 {"name": checksum_name},
                 {"name": portable_name},
+                {"name": manifest_name},
             ],
         },
     )
@@ -1178,6 +1510,7 @@ def test_release_version_check_rejects_unexpected_own_draft_release_asset(tmp_pa
     installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
     checksum_name = f"{installer_name}.sha256"
     portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    manifest_name = f"ApplicantScoutCompanion-{project_version}-release-manifest.json"
     fake_gh = _fake_gh_release_view(
         tmp_path,
         expected_repo="Antrakt92/ApplicantScout-Companion",
@@ -1190,6 +1523,7 @@ def test_release_version_check_rejects_unexpected_own_draft_release_asset(tmp_pa
                 {"name": installer_name},
                 {"name": checksum_name},
                 {"name": portable_name},
+                {"name": manifest_name},
                 {"name": f"ApplicantScoutCompanionSetup-{stale_version}.exe"},
             ],
         },
@@ -1313,6 +1647,7 @@ def test_release_version_check_accepts_own_published_release_assets(tmp_path):
     installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
     checksum_name = f"{installer_name}.sha256"
     portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    manifest_name = f"ApplicantScoutCompanion-{project_version}-release-manifest.json"
     fake_gh = _fake_gh_release_view(
         tmp_path,
         expected_repo="Antrakt92/ApplicantScout-Companion",
@@ -1325,6 +1660,7 @@ def test_release_version_check_accepts_own_published_release_assets(tmp_path):
                 {"name": installer_name},
                 {"name": checksum_name},
                 {"name": portable_name},
+                {"name": manifest_name},
             ],
         },
     )
@@ -1357,6 +1693,7 @@ def test_release_version_check_rejects_unexpected_own_published_release_asset(
     installer_name = f"ApplicantScoutCompanionSetup-{project_version}.exe"
     checksum_name = f"{installer_name}.sha256"
     portable_name = f"ApplicantScoutCompanion-{project_version}-portable.zip"
+    manifest_name = f"ApplicantScoutCompanion-{project_version}-release-manifest.json"
     fake_gh = _fake_gh_release_view(
         tmp_path,
         expected_repo="Antrakt92/ApplicantScout-Companion",
@@ -1369,6 +1706,7 @@ def test_release_version_check_rejects_unexpected_own_published_release_asset(
                 {"name": installer_name},
                 {"name": checksum_name},
                 {"name": portable_name},
+                {"name": manifest_name},
                 {"name": f"ApplicantScoutCompanion-{stale_version}-portable.zip"},
             ],
         },
@@ -1418,8 +1756,10 @@ def test_release_workflow_pins_external_actions_to_commit_shas():
 
     assert Counter(action for action, _ in action_refs) == Counter(
         {
-            "actions/checkout": 2,
+            "actions/checkout": 3,
             "actions/setup-python": 1,
+            "actions/upload-artifact": 2,
+            "actions/download-artifact": 1,
         }
     )
     for action, ref in action_refs:
@@ -1428,11 +1768,14 @@ def test_release_workflow_pins_external_actions_to_commit_shas():
 
 def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets():
     workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    verify = _job_block(workflow, "verify")
     publish = _job_block(workflow, "publish")
 
     assert "workflow_dispatch:" in workflow
     assert "tag:" in workflow
+    assert "release_run_id:" in workflow
     assert "smoke_tested_from_version:" in workflow
+    assert "smoke_tested_installer_sha256:" in workflow
     assert "confirm_checksum_gated_update_smoke:" in workflow
     assert "type: boolean" in workflow
     assert (
@@ -1440,38 +1783,104 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
         "${{ inputs.confirm_checksum_gated_update_smoke }}"
     ) in workflow
     assert re.search(r"(?m)^    runs-on: windows-2022\s*$", publish)
-    assert "contents: write" in workflow
+    assert "actions: read" in verify
+    assert "contents: read" in verify
+    assert "contents: write" not in verify
+    assert "contents: write" in publish
 
-    checkout = _step_block(publish, "Checkout companion")
-    ancestry = _step_block(publish, "Verify release tag is reachable from origin/main")
-    attestation = _step_block(publish, "Validate smoke attestation")
-    draft_check = _step_block(publish, "Verify draft release assets")
-    publish_step = _step_block(publish, "Publish release")
+    checkout = _step_block(verify, "Checkout companion")
+    ancestry = _step_block(verify, "Verify release tag is reachable from origin/main")
+    run_check = _step_block(verify, "Verify successful release workflow run")
+    manifest_check = _step_block(verify, "Verify authoritative exact-tag manifest")
+    attestation = _step_block(verify, "Validate smoke attestation")
+    draft_check = _step_block(verify, "Verify draft release assets")
+    publish_step = _step_block(publish, "Revalidate exact bytes and publish release")
     published_check = _step_block(publish, "Verify published release assets")
 
     assert "ref: ${{ inputs.tag }}" in checkout
     assert '"$env:RELEASE_TAG^{commit}"' in ancestry
     assert "does not match release tag" in ancestry
+    assert "release.yml" in run_check
+    assert ".event" in run_check
+    assert ".status" in run_check
+    assert ".conclusion" in run_check
+    assert "head_sha" in run_check
+    assert "run_attempt" in run_check
+    assert "companion-release-assets-attempt-$Attempt" in run_check
+    assert ".expired" in run_check
+    assert "GH_TOKEN: ${{ github.token }}" in manifest_check
+    assert "git/ref/tags/$Tag" in manifest_check
+    assert "git/tags/$Sha" in manifest_check
+    assert "/commits/$PairedAddonTag" not in manifest_check
     assert "Checksum-gated updater smoke confirmation is required" in attestation
     assert "CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE" in attestation
     assert "SMOKE_TESTED_FROM_VERSION" in attestation
+    assert "SMOKE_TESTED_INSTALLER_SHA256" in attestation
+    assert "authoritative release artifact" in attestation
     assert 'gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name' in attestation
     assert "must match latest published stable" in attestation
-    assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in attestation
+    assert "GH_TOKEN: ${{ github.token }}" in attestation
     assert "-RequireDraftReleaseAssets" in draft_check
     assert "gh release edit $env:RELEASE_TAG" in publish_step
     assert "--draft=false" in publish_step
     assert "--prerelease=false" in publish_step
-    assert "-RequirePublishedReleaseAssets" in published_check
-    assert "-PublishedReleaseWaitSeconds 120" in published_check
+    assert "AddSeconds(120)" in published_check
+    assert "authoritative asset contract" in published_check
     _assert_order(
-        publish,
+        verify,
         "Checkout companion",
         "Verify release tag is reachable from origin/main",
+        "Verify successful release workflow run",
+        "Download authoritative release assets",
+        "Verify authoritative exact-tag manifest",
         "Validate smoke attestation",
         "Verify draft release assets",
-        "Publish release",
+        "Verify remote draft against authoritative Actions artifact",
+    )
+    _assert_order(
+        publish,
+        "Revalidate exact bytes and publish release",
         "Verify published release assets",
+    )
+
+
+def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
+    workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    verify = _job_block(workflow, "verify")
+    publish = _job_block(workflow, "publish")
+    checkout = _step_block(verify, "Checkout companion")
+    manifest_check = _step_block(verify, "Verify remote draft against authoritative Actions artifact")
+
+    assert "persist-credentials: false" in checkout
+    assert "gh release download $env:RELEASE_TAG" in manifest_check
+    assert "release-artifact-manifest.ps1" in manifest_check
+    assert "-Mode Verify" in manifest_check
+    assert "-Purpose Release" in manifest_check
+    assert "WorkflowRunId $env:RELEASE_RUN_ID" in manifest_check
+    assert "Get-FileHash" in manifest_check
+    assert ".digest" in manifest_check
+    assert "Checkout companion" not in publish
+    assert "pip install" not in publish
+    assert "choco install" not in publish
+    writer = _step_block(publish, "Revalidate exact bytes and publish release")
+    _assert_order(
+        writer,
+        "-Repo $env:GITHUB_REPOSITORY",
+        '-Repo "Antrakt92/ApplicantScout-Addon"',
+        "releases/latest",
+        "releases/tags/$env:RELEASE_TAG",
+        "gh release edit $env:RELEASE_TAG",
+    )
+    assert "git/ref/tags/$Tag" in writer
+    assert "git/tags/$Sha" in writer
+    assert "/commits/$env:RELEASE_TAG" not in writer
+    assert "/commits/$env:PAIRED_ADDON_TAG" not in writer
+    assert ".digest" in writer
+    assert ".size" in writer
+    _assert_order(
+        verify,
+        "Verify draft release assets",
+        "Verify remote draft against authoritative Actions artifact",
     )
 
 
@@ -1480,7 +1889,10 @@ def test_publish_release_workflow_pins_external_actions_to_commit_shas():
     action_refs = _workflow_action_refs(workflow)
 
     assert Counter(action for action, _ in action_refs) == Counter(
-        {"actions/checkout": 1}
+        {
+            "actions/checkout": 1,
+            "actions/download-artifact": 1,
+        }
     )
     for action, ref in action_refs:
         assert _SHA_REF_RE.fullmatch(ref), f"{action} must be pinned to a full commit SHA"
@@ -1521,13 +1933,13 @@ def test_check_wrapper_runs_addon_contract_tests_after_lua_syntax():
 
 def test_release_workflow_checks_out_paired_addon_tag_from_release_notes():
     workflow = _read_repo_text(".github/workflows/release.yml")
-    release = _job_block(workflow, "release")
+    build = _job_block(workflow, "build")
 
-    resolve_idx = workflow.index("Resolve paired addon tag")
-    wait_idx = workflow.index("Wait for paired addon tag")
-    checkout_idx = workflow.index("Checkout addon")
-    tag_wait_step = release[
-        release.index("Wait for paired addon tag") : release.index("Checkout addon")
+    resolve_idx = build.index("Resolve paired addon tag")
+    wait_idx = build.index("Wait for paired addon tag")
+    checkout_idx = build.index("Checkout addon")
+    tag_wait_step = build[
+        build.index("Wait for paired addon tag") : build.index("Checkout addon")
     ]
 
     assert resolve_idx < wait_idx < checkout_idx
@@ -2079,9 +2491,11 @@ def test_check_workflow_pins_external_actions_to_commit_shas():
 def test_release_workflow_uploads_exact_updater_assets_as_draft_first():
     workflow = _read_repo_text(".github/workflows/release.yml")
 
-    assert "ApplicantScoutCompanionSetup-$TagVersion.exe" in workflow
-    assert "ApplicantScoutCompanionSetup-$TagVersion.exe.sha256" in workflow
-    assert "ApplicantScoutCompanion-$TagVersion-portable.zip" in workflow
+    assert "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe" in workflow
+    assert "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe.sha256" in workflow
+    assert "ApplicantScoutCompanion-$env:TAG_VERSION-portable.zip" in workflow
+    assert "ApplicantScoutCompanion-$env:TAG_VERSION-release-manifest.json" in workflow
+    assert "companion-release-assets" in workflow
     assert "--draft" in workflow
     assert "--verify-tag" in workflow
     assert "-RequireDraftReleaseAssets" in workflow
@@ -2589,6 +3003,14 @@ def test_release_checklist_uses_policy_placeholders_not_stale_versions():
     assert "previous stable or explicitly chosen baseline" not in checklist
     assert "checksum-gated in-app updater" in checklist
     assert "Publish release" in checklist
+    assert "release_run_id" in checklist
+    assert "smoke_tested_installer_sha256" in checklist
+    assert "release-manifest.json" in checklist
+    assert "authoritative manifest" in checklist
+    assert "Re-run failed jobs" in checklist
+    assert "Do not rerun all jobs after a draft exists" in " ".join(checklist.split())
+    assert "recover forward with a" in checklist
+    assert "new PATCH release" in checklist
     assert "verified draft" in checklist.lower()
     _assert_copy_contains(
         checklist.lower(),

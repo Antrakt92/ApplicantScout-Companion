@@ -565,11 +565,14 @@ $Errors = @()
 $InstallerName = "ApplicantScoutCompanionSetup-$TagVersion.exe"
 $ChecksumName = "$InstallerName.sha256"
 $PortableName = "ApplicantScoutCompanion-$TagVersion-portable.zip"
-$ExpectedCompanionAssets = @($InstallerName, $ChecksumName, $PortableName)
+$ManifestName = "ApplicantScoutCompanion-$TagVersion-release-manifest.json"
+$ExpectedBuildAssets = @($InstallerName, $ChecksumName, $PortableName)
+$ExpectedCompanionAssets = @($ExpectedBuildAssets + $ManifestName)
 $ProtectedCompanionAssetPatterns = @(
     '^ApplicantScoutCompanionSetup-\d+\.\d+\.\d+\.exe$',
     '^ApplicantScoutCompanionSetup-\d+\.\d+\.\d+\.exe\.sha256$',
-    '^ApplicantScoutCompanion-\d+\.\d+\.\d+-portable\.zip$'
+    '^ApplicantScoutCompanion-\d+\.\d+\.\d+-portable\.zip$',
+    '^ApplicantScoutCompanion-\d+\.\d+\.\d+-release-manifest\.json$'
 )
 $ProtectedAddonAssetPatterns = @(
     '^ApplicantScout-v?\d+\.\d+\.\d+(?:-[A-Za-z0-9._-]+)?\.zip$'
@@ -613,7 +616,7 @@ $Errors += Assert-PublicInstallLinksUseLatest `
     -RequiredLatestUrls @($AddonLatestUrl, $CompanionLatestUrl)
 
 if ($RequireAssets) {
-    foreach ($AssetName in $ExpectedCompanionAssets) {
+    foreach ($AssetName in $ExpectedBuildAssets) {
         $AssetPath = Join-Path $RepoRoot "dist\$AssetName"
         if (-not (Test-Path -LiteralPath $AssetPath)) {
             $Errors += "Missing release asset: dist\$AssetName"
@@ -763,3 +766,4 @@ Write-Host "Expected paired addon ref: v$PairedAddonVersion"
 Write-Host "Expected installer asset: $InstallerName"
 Write-Host "Expected checksum asset: $ChecksumName"
 Write-Host "Expected portable asset: $PortableName"
+Write-Host "Expected release manifest: $ManifestName"
