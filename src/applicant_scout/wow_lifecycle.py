@@ -83,6 +83,10 @@ def is_wow_running(
         if unknown_on_error:
             return None
         return False
+    if completed.returncode != 0:
+        if unknown_on_error:
+            return None
+        return False
     expected = {name.casefold() for name in process_names}
     return any(name.casefold() in expected for name in _tasklist_image_names(completed.stdout))
 

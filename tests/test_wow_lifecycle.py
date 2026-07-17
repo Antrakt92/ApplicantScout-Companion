@@ -105,6 +105,22 @@ def test_is_wow_running_can_report_unknown_on_tasklist_failure(
     assert wow_lifecycle.is_wow_running(unknown_on_error=True) is None
 
 
+def test_is_wow_running_can_report_unknown_on_nonzero_tasklist_exit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        wow_lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Completed(
+            stdout='"Wow.exe","10","Console","1","120,000 K"\n',
+            returncode=1,
+        ),
+    )
+
+    assert wow_lifecycle.is_wow_running() is False
+    assert wow_lifecycle.is_wow_running(unknown_on_error=True) is None
+
+
 def test_is_wow_foreground_accepts_wow_process(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda: 123)
     monkeypatch.setattr(

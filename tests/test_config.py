@@ -4040,13 +4040,54 @@ def test_wow_lifecycle_timer_waits_for_consecutive_missing_wow_scans(
     assert calls == ["quit"]
 
 
+def test_wow_lifecycle_timer_resets_missing_streak_after_unknown_scan(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks = []
+    workers = []
+    calls: list[str] = []
+    states = iter([False, None, False, False, False])
+
+    class FakeTimer:
+        def __init__(self, _parent) -> None:
+            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
+
+        def setInterval(self, _interval: int) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    class FakeApp:
+        def quit(self) -> None:
+            calls.append("quit")
+
+    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        running_checker=lambda: next(states),
+        async_runner=workers.append,
+    )
+
+    for idx in range(4):
+        callbacks[0]()
+        workers[idx]()
+    assert calls == []
+
+    callbacks[0]()
+    workers[4]()
+    assert calls == ["quit"]
+
+
 def test_wow_lifecycle_timer_retries_after_process_scan_failure(
     monkeypatch: pytest.MonkeyPatch,
 ):
     callbacks = []
     workers = []
     calls: list[str] = []
-    states = iter([RuntimeError("tasklist failed"), False, False, False])
+    states = iter([False, RuntimeError("tasklist failed"), False, False, False])
 
     class FakeTimer:
         def __init__(self, _parent) -> None:
@@ -4082,13 +4123,16 @@ def test_wow_lifecycle_timer_retries_after_process_scan_failure(
 
     assert calls == []
 
-    for idx in range(1, main_mod.WOW_EXIT_MISSES_BEFORE_QUIT):
+    callbacks[0]()
+    workers[1]()
+
+    for idx in range(2, 2 + main_mod.WOW_EXIT_MISSES_BEFORE_QUIT - 1):
         callbacks[0]()
         workers[idx]()
     assert calls == []
 
     callbacks[0]()
-    workers[main_mod.WOW_EXIT_MISSES_BEFORE_QUIT]()
+    workers[1 + main_mod.WOW_EXIT_MISSES_BEFORE_QUIT]()
     assert calls == ["quit"]
 
 

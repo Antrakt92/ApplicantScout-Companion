@@ -1755,12 +1755,10 @@ def _start_wow_lifecycle_timer(
         ).start()
     )
 
-    def _handle_wow_running(running: bool | None) -> None:
+    def _handle_wow_running(running: bool) -> None:
         nonlocal observed_wow, missing_wow_scans
         state["checking"] = False
         if not state["active"]:
-            return
-        if running is None:
             return
         if running:
             observed_wow = True
@@ -1794,7 +1792,10 @@ def _start_wow_lifecycle_timer(
             quit_callback()
 
     def _handle_wow_check_failed() -> None:
+        nonlocal missing_wow_scans
         state["checking"] = False
+        # WHY: an unknown scan breaks the consecutive evidence that WoW exited.
+        missing_wow_scans = 0
 
     signals.checked.connect(_handle_wow_running)
     signals.checkFailed.connect(_handle_wow_check_failed)
@@ -1809,6 +1810,9 @@ def _start_wow_lifecycle_timer(
                 running = check_wow_running()
             except Exception as exc:  # noqa: BLE001
                 log.warning("Could not check WoW lifecycle state: %s", exc)
+                signals.checkFailed.emit()
+                return
+            if running is None:
                 signals.checkFailed.emit()
                 return
             signals.checked.emit(running)
