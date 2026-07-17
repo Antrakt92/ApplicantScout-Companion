@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -30,6 +32,14 @@ _MAX_INSTALLER_DOWNLOAD_BYTES = 256 * 1024 * 1024
 _MAX_CHECKSUM_DOWNLOAD_BYTES = 8 * 1024
 _AUTHENTICODE_TIMEOUT_SECONDS = 15
 _TRUSTED_SIGNER_CERT_SHA256: frozenset[str] = frozenset()
+_UPDATE_INSTALLER_STALE_AGE_SECONDS = 30 * 24 * 60 * 60
+_UPDATE_INSTALLER_MAX_FILES = 4
+_STRICT_UPDATE_INSTALLER_RE = re.compile(
+    rf"^{re.escape(_INSTALLER_PREFIX)}"
+    r"((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\.exe$",
+    re.I,
+)
+_log = logging.getLogger("applicant_scout.updater")
 
 
 @dataclass(frozen=True)
@@ -319,6 +329,72 @@ def _default_update_download_dir() -> Path:
     return user_cache_dir() / "updates"
 
 
+def _strict_update_installer_version(name: str) -> tuple[int, int, int] | None:
+    match = _STRICT_UPDATE_INSTALLER_RE.fullmatch(name)
+    if match is None:
+        return None
+    return _semver_key(match.group(1))
+
+
+def _prune_stale_update_installers(
+    download_dir: Path,
+    *,
+    active_installer: Path,
+) -> int:
+    """Best-effort cleanup for installers owned by the in-app updater."""
+    try:
+        children = list(download_dir.iterdir())
+    except OSError as exc:
+        _log.warning("Could not inspect the update cache for cleanup: %s", exc)
+        return 0
+
+    candidates: list[tuple[tuple[int, int, int], float, Path]] = []
+    for path in children:
+        version = _strict_update_installer_version(path.name)
+        if version is None:
+            continue
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            modified_at = path.stat().st_mtime
+        except OSError as exc:
+            _log.warning("Could not inspect cached update %s: %s", path.name, exc)
+            continue
+        candidates.append((version, modified_at, path))
+
+    candidates.sort(
+        key=lambda item: (item[0], item[1], item[2].name.casefold()),
+        reverse=True,
+    )
+    active_name = active_installer.name.casefold()
+    inactive = [
+        candidate
+        for candidate in candidates
+        if candidate[2].name.casefold() != active_name
+    ]
+
+    # Keep the newest inactive payload as a rollback candidate. The hard cap
+    # bounds frequent patch accumulation even before the age threshold elapses.
+    prunable = inactive[1:]
+    hard_excess = max(0, len(candidates) - _UPDATE_INSTALLER_MAX_FILES)
+    hard_prune = {
+        candidate[2] for candidate in (prunable[-hard_excess:] if hard_excess else [])
+    }
+    now = time.time()
+    removed = 0
+    for _version, modified_at, path in prunable:
+        stale = now - modified_at >= _UPDATE_INSTALLER_STALE_AGE_SECONDS
+        if not stale and path not in hard_prune:
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            _log.warning("Could not remove cached update %s: %s", path.name, exc)
+        else:
+            removed += 1
+    return removed
+
+
 def _content_length(response: Any) -> int | None:
     headers = getattr(response, "headers", None)
     if headers is None:
@@ -465,6 +541,7 @@ def download_update_installer(
             raise RuntimeError("Update installer checksum mismatch.")
         tmp_path.replace(target)
         tmp_path = None
+        _prune_stale_update_installers(target_dir, active_installer=target)
         return target
     finally:
         if fd != -1:

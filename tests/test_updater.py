@@ -560,6 +560,133 @@ def test_download_update_installer_saves_setup_asset_atomically(tmp_path):
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_download_update_installer_prunes_aged_owned_payloads_only(
+    tmp_path, monkeypatch
+):
+    now = 1_800_000_000.0
+    monkeypatch.setattr(updater_mod.time, "time", lambda: now)
+    recent_rollback = tmp_path / "ApplicantScoutCompanionSetup-0.1.9.exe"
+    stale_owned = tmp_path / "ApplicantScoutCompanionSetup-0.1.8.exe"
+    custom_setup = tmp_path / "ApplicantScoutCompanionSetup-custom.exe"
+    noncanonical_setup = tmp_path / "ApplicantScoutCompanionSetup-01.2.3.exe"
+    user_file = tmp_path / "keep-me.txt"
+    setup_directory = tmp_path / "ApplicantScoutCompanionSetup-0.1.7.exe"
+    for path in (
+        recent_rollback,
+        stale_owned,
+        custom_setup,
+        noncanonical_setup,
+        user_file,
+    ):
+        path.write_bytes(path.name.encode())
+    setup_directory.mkdir()
+    os.utime(recent_rollback, (now, now))
+    stale_time = now - updater_mod._UPDATE_INSTALLER_STALE_AGE_SECONDS - 1
+    os.utime(stale_owned, (stale_time, stale_time))
+    os.utime(custom_setup, (stale_time, stale_time))
+    os.utime(noncanonical_setup, (stale_time, stale_time))
+
+    result = _installer_result()
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    client = _DownloadClient(
+        {
+            result.checksum_url: f"{digest}  {result.asset_name}\n".encode(),
+            result.asset_url: b"setup-bytes",
+        }
+    )
+
+    active = download_update_installer(
+        result,
+        download_dir=tmp_path,
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert active.read_bytes() == b"setup-bytes"
+    assert recent_rollback.exists()
+    assert not stale_owned.exists()
+    assert custom_setup.exists()
+    assert noncanonical_setup.exists()
+    assert user_file.exists()
+    assert setup_directory.is_dir()
+
+
+def test_download_update_installer_hard_caps_recent_owned_payloads(
+    tmp_path, monkeypatch
+):
+    now = 1_800_000_000.0
+    monkeypatch.setattr(updater_mod.time, "time", lambda: now)
+    retained_names = [
+        "ApplicantScoutCompanionSetup-0.1.9.exe",
+        "ApplicantScoutCompanionSetup-0.1.8.exe",
+        "ApplicantScoutCompanionSetup-0.1.7.exe",
+        "ApplicantScoutCompanionSetup-0.1.6.exe",
+    ]
+    for name in retained_names:
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        os.utime(path, (now, now))
+
+    result = _installer_result()
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    client = _DownloadClient(
+        {
+            result.checksum_url: f"{digest}  {result.asset_name}\n".encode(),
+            result.asset_url: b"setup-bytes",
+        }
+    )
+
+    active = download_update_installer(
+        result,
+        download_dir=tmp_path,
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert active.exists()
+    assert (tmp_path / retained_names[0]).exists()
+    assert (tmp_path / retained_names[1]).exists()
+    assert (tmp_path / retained_names[2]).exists()
+    assert not (tmp_path / retained_names[3]).exists()
+    assert len(list(tmp_path.glob("ApplicantScoutCompanionSetup-*.exe"))) == 4
+
+
+def test_download_update_installer_cleanup_failure_is_non_fatal(tmp_path, monkeypatch):
+    now = 1_800_000_000.0
+    monkeypatch.setattr(updater_mod.time, "time", lambda: now)
+    rollback = tmp_path / "ApplicantScoutCompanionSetup-0.1.9.exe"
+    locked_stale = tmp_path / "ApplicantScoutCompanionSetup-0.1.8.exe"
+    for path in (rollback, locked_stale):
+        path.write_bytes(path.name.encode())
+    stale_time = now - updater_mod._UPDATE_INSTALLER_STALE_AGE_SECONDS - 1
+    os.utime(locked_stale, (stale_time, stale_time))
+
+    original_unlink = Path.unlink
+
+    def fail_locked_unlink(path: Path, *args, **kwargs):
+        if path == locked_stale:
+            raise PermissionError("installer is still locked")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_locked_unlink)
+    result = _installer_result()
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    client = _DownloadClient(
+        {
+            result.checksum_url: f"{digest}  {result.asset_name}\n".encode(),
+            result.asset_url: b"setup-bytes",
+        }
+    )
+
+    active = download_update_installer(
+        result,
+        download_dir=tmp_path,
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert active.read_bytes() == b"setup-bytes"
+    assert rollback.exists()
+    assert locked_stale.exists()
+
+
 def test_download_update_installer_accepts_case_insensitive_setup_asset(tmp_path):
     digest = hashlib.sha256(b"setup-bytes").hexdigest()
     result = UpdateResult(
