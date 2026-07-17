@@ -74,6 +74,17 @@ checksum-gated updater smoke has been attested.
 
 ## Publish
 
+Before creating or pushing release tags, enable **Release immutability** under
+the companion repository's release settings. Configure the repository secret
+`RELEASE_SETTINGS_READ_TOKEN` as a fine-grained token limited to this repository
+with **Administration: read** and **Metadata: read**, and no write permission.
+The manual publish workflow uses it only to read the immutable-release setting
+immediately before making the draft public, restores the normal workflow token
+for publication, and accepts the result only after GitHub reports the published
+release as immutable with the exact authoritative assets. Enabling the setting
+does not retrofit existing releases; the next published release is the first
+live immutability proof.
+
 1. Create both local tags only after both release-prep commits are on `main`.
    Push both tags inside the paired workflows' 120-second wait window:
 

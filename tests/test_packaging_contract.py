@@ -1824,7 +1824,22 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     assert "gh release edit $env:RELEASE_TAG" in publish_step
     assert "--draft=false" in publish_step
     assert "--prerelease=false" in publish_step
+    assert "RELEASE_SETTINGS_READ_TOKEN: ${{ secrets.RELEASE_SETTINGS_READ_TOKEN }}" in publish_step
+    assert "IsNullOrWhiteSpace($env:RELEASE_SETTINGS_READ_TOKEN)" in publish_step
+    assert "$env:GH_TOKEN = $env:RELEASE_SETTINGS_READ_TOKEN" in publish_step
+    assert "$env:GH_TOKEN = $PublishToken" in publish_step
+    assert 'X-GitHub-Api-Version: 2026-03-10' in publish_step
+    assert 'repos/$env:GITHUB_REPOSITORY/immutable-releases' in publish_step
+    assert "$ImmutableSettings.enabled -isnot [bool]" in publish_step
+    assert "-not $ImmutableSettings.enabled" in publish_step
     assert "AddSeconds(120)" in published_check
+    assert "$Release.immutable -is [bool]" in published_check
+    assert re.search(
+        r"\$Release\.immutable -is \[bool\]\s+-and\s+\$Release\.immutable",
+        published_check,
+    )
+    assert 'X-GitHub-Api-Version: 2026-03-10' in published_check
+    assert "did not become immutable" in published_check
     assert "authoritative asset contract" in published_check
     _assert_order(
         verify,
@@ -1869,6 +1884,10 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
         '-Repo "Antrakt92/ApplicantScout-Addon"',
         "releases/latest",
         "releases/tags/$env:RELEASE_TAG",
+        "IsNullOrWhiteSpace($env:RELEASE_SETTINGS_READ_TOKEN)",
+        "$env:GH_TOKEN = $env:RELEASE_SETTINGS_READ_TOKEN",
+        "immutable-releases",
+        "$env:GH_TOKEN = $PublishToken",
         "gh release edit $env:RELEASE_TAG",
     )
     assert "git/ref/tags/$Tag" in writer

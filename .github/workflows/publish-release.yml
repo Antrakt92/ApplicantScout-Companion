@@ -354,6 +354,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SETTINGS_READ_TOKEN: ${{ secrets.RELEASE_SETTINGS_READ_TOKEN }}
         run: |
           function Resolve-ExactTagCommit {
             param([string]$Repo, [string]$Tag)
@@ -452,6 +453,28 @@ jobs:
             }
           }
 
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_SETTINGS_READ_TOKEN)) {
+            throw "RELEASE_SETTINGS_READ_TOKEN is required to verify release immutability."
+          }
+          $PublishToken = $env:GH_TOKEN
+          try {
+            $env:GH_TOKEN = $env:RELEASE_SETTINGS_READ_TOKEN
+            $ImmutableSettings = gh api `
+              -H "X-GitHub-Api-Version: 2026-03-10" `
+              "repos/$env:GITHUB_REPOSITORY/immutable-releases" | ConvertFrom-Json
+            if (
+              $LASTEXITCODE -ne 0 -or
+              $null -eq $ImmutableSettings -or
+              $ImmutableSettings.enabled -isnot [bool] -or
+              -not $ImmutableSettings.enabled
+            ) {
+              throw "Repository release immutability must be enabled before publishing $env:RELEASE_TAG."
+            }
+          }
+          finally {
+            $env:GH_TOKEN = $PublishToken
+          }
+
           gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub refused to publish $env:RELEASE_TAG."
@@ -480,8 +503,16 @@ jobs:
 
           $Deadline = (Get-Date).AddSeconds(120)
           do {
-            $Release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
-            if ($LASTEXITCODE -eq 0 -and -not [bool]$Release.draft -and -not [bool]$Release.prerelease) {
+            $Release = gh api `
+              -H "X-GitHub-Api-Version: 2026-03-10" `
+              "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+            if (
+              $LASTEXITCODE -eq 0 -and
+              -not [bool]$Release.draft -and
+              -not [bool]$Release.prerelease -and
+              $Release.immutable -is [bool] -and
+              $Release.immutable
+            ) {
               $Assets = @($Release.assets)
               $Valid = $Assets.Count -eq $Expected.Count
               foreach ($Name in $Expected.Keys) {
@@ -502,4 +533,4 @@ jobs:
             if ((Get-Date) -ge $Deadline) { break }
             Start-Sleep -Seconds 5
           } while ($true)
-          throw "Published release did not converge to the authoritative asset contract."
+          throw "Published release did not become immutable or converge to the authoritative asset contract."
