@@ -14,12 +14,16 @@ run without QApplication. State inspection via state.applicants dict.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from pathlib import Path
 
 import pytest
 
-from applicant_scout.__main__ import StateMachine
+from applicant_scout.__main__ import (
+    RIO_PRELOAD_REFRESH_INTERVAL_SECONDS,
+    StateMachine,
+)
 from applicant_scout.screenshot import (
     DecodedApplicant,
     DecodedLeaderKey,
@@ -164,6 +168,7 @@ class _ColdRioReader:
     def __init__(self, rows: list[dict] | None = None, current_score: int = 0) -> None:
         self.loaded = False
         self.callbacks = []
+        self.preload_calls: list[str | None] = []
         self.rows = rows or [{"name": "Pit of Saron", "key_level": 12}]
         self.current_score = current_score
 
@@ -191,12 +196,32 @@ class _ColdRioReader:
 
     def preload_region_async(self, region: str | None, on_loaded=None) -> None:
         assert region == "EU"
+        self.preload_calls.append(region)
         if on_loaded is not None:
             self.callbacks.append(on_loaded)
 
     def finish(self) -> None:
         self.loaded = True
-        for callback in list(self.callbacks):
+        callbacks, self.callbacks = self.callbacks, []
+        for callback in callbacks:
+            callback()
+
+
+class _ControlledRioReader:
+    def __init__(self) -> None:
+        self.preload_calls: list[str | None] = []
+        self.callbacks: dict[str, list[Callable[[], None]]] = {}
+
+    def lookup_profile(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def preload_region_async(self, region: str | None, on_loaded=None) -> None:
+        self.preload_calls.append(region)
+        if region is not None and on_loaded is not None:
+            self.callbacks.setdefault(region, []).append(on_loaded)
+
+    def finish(self, region: str) -> None:
+        for callback in self.callbacks.pop(region, []):
             callback()
 
 
@@ -1030,6 +1055,145 @@ def test_first_snapshot_reenriches_party_member_after_async_rio_preload_complete
     assert state.party_members["chinie"].score == 3000
     assert state.party_members["chinie"].rio_profile is True
     assert roster_updates == 2
+
+
+def test_identical_rio_preloads_coalesce_until_bounded_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    state = AppState()
+    reader = _ColdRioReader()
+    now = [100.0]
+    sm = StateMachine(
+        state,
+        rio_reader=reader,
+        rio_preload_monotonic=lambda: now[0],
+    )
+    reenrichments: list[bool] = []
+    monkeypatch.setattr(
+        sm, "_reenrich_local_rio_rows", lambda: reenrichments.append(True)
+    )
+    snapshot = Snapshot(listing=None, version=_version("Dmss-Ragnaros"))
+
+    for _ in range(20):
+        sm.apply_snapshot(snapshot)
+
+    assert reader.preload_calls == ["EU"]
+    assert len(reader.callbacks) == 1
+    reader.finish()
+    assert reenrichments == [True]
+
+    now[0] += RIO_PRELOAD_REFRESH_INTERVAL_SECONDS - 0.01
+    sm.apply_snapshot(snapshot)
+    assert reader.preload_calls == ["EU"]
+
+    now[0] += 0.01
+    sm.apply_snapshot(snapshot)
+    assert reader.preload_calls == ["EU", "EU"]
+    assert len(reader.callbacks) == 1
+
+
+def test_rio_preload_region_and_reader_changes_start_immediately_and_ignore_stale(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    state = AppState()
+    first_reader = _ControlledRioReader()
+    second_reader = _ControlledRioReader()
+    sm = StateMachine(state, rio_reader=first_reader)
+    reenrichments: list[bool] = []
+    monkeypatch.setattr(
+        sm, "_reenrich_local_rio_rows", lambda: reenrichments.append(True)
+    )
+
+    sm.apply_snapshot(Snapshot(listing=None, version=_version("Dmss-Ragnaros")))
+    first_reader.finish("EU")
+    assert reenrichments == [True]
+    reenrichments.clear()
+
+    sm.apply_snapshot(
+        Snapshot(listing=None, version=_version("Dmss-Illidan", region_id=1))
+    )
+    sm.apply_snapshot(Snapshot(listing=None, version=_version("Dmss-Ragnaros")))
+
+    assert first_reader.preload_calls == ["EU", "US", "EU"]
+    first_reader.finish("US")
+    assert reenrichments == []
+
+    sm.set_rio_reader(second_reader)
+    sm.apply_snapshot(Snapshot(listing=None, version=_version("Dmss-Ragnaros")))
+    assert second_reader.preload_calls == ["EU"]
+
+    first_reader.finish("EU")
+    assert reenrichments == []
+    second_reader.finish("EU")
+    assert reenrichments == [True]
+
+
+def test_rio_preload_failure_can_retry_and_synchronous_completion_clears_active(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class RetryReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def lookup_profile(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def preload_region_async(self, region: str | None, on_loaded=None) -> None:
+            assert region == "EU"
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("load failed")
+            assert on_loaded is not None
+            on_loaded()
+
+    state = AppState()
+    reader = RetryReader()
+    sm = StateMachine(state, rio_reader=reader)
+    reenrichments: list[bool] = []
+    monkeypatch.setattr(
+        sm, "_reenrich_local_rio_rows", lambda: reenrichments.append(True)
+    )
+    snapshot = Snapshot(listing=None, version=_version("Dmss-Ragnaros"))
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        sm.apply_snapshot(snapshot)
+    sm.apply_snapshot(snapshot)
+
+    assert reader.calls == 2
+    assert reenrichments == [True]
+
+
+def test_legacy_rio_preload_cooldown_starts_after_slow_fallback_returns():
+    now = [100.0]
+
+    class SlowLegacyReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def lookup_profile(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def preload_region_async(self, region: str | None) -> None:
+            assert region == "EU"
+            self.calls += 1
+            now[0] += RIO_PRELOAD_REFRESH_INTERVAL_SECONDS + 1.0
+
+    state = AppState()
+    reader = SlowLegacyReader()
+    sm = StateMachine(
+        state,
+        rio_reader=reader,
+        rio_preload_monotonic=lambda: now[0],
+    )
+    snapshot = Snapshot(listing=None, version=_version("Dmss-Ragnaros"))
+
+    sm.apply_snapshot(snapshot)
+    sm.apply_snapshot(snapshot)
+    assert reader.calls == 1
+
+    now[0] += RIO_PRELOAD_REFRESH_INTERVAL_SECONDS
+    sm.apply_snapshot(snapshot)
+    assert reader.calls == 2
 
 
 def test_stale_rio_preload_completion_is_ignored_after_reader_swap():

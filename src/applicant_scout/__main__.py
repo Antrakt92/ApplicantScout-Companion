@@ -98,6 +98,7 @@ from .wow_lifecycle import (
 
 log = logging.getLogger("applicant_scout")
 _RIO_LOOKUP_FAILED = object()
+RIO_PRELOAD_REFRESH_INTERVAL_SECONDS = 30.0
 APP_ICON_PATH = Path(__file__).with_name("assets") / "app_icon.ico"
 APP_USER_MODEL_ID = "Antrakt.ApplicantScout.Companion"
 CONTROL_SERVER_NAME = "Antrakt.ApplicantScout.Companion.Control"
@@ -580,13 +581,26 @@ class StateMachine(QObject):
     # Region change → main wires to wcl_client.region so non-EU users don't
     # silently get "Server not found" with default config.
     versionUpdated = pyqtSignal(int)
-    _rioPreloadCompleted = pyqtSignal(str, int)
+    _rioPreloadCompleted = pyqtSignal(str, int, int)
 
-    def __init__(self, state: AppState, parent=None, rio_reader: Any | None = None):
+    def __init__(
+        self,
+        state: AppState,
+        parent=None,
+        rio_reader: Any | None = None,
+        *,
+        rio_preload_monotonic: Callable[[], float] = time.monotonic,
+    ):
         super().__init__(parent)
         self._state = state
         self._rio_reader = rio_reader
         self._rio_reader_generation = 0
+        self._rio_preload_monotonic = rio_preload_monotonic
+        self._rio_preload_serial = 0
+        self._rio_preload_current_key: tuple[int, str] | None = None
+        self._rio_preload_active: tuple[int, str, int] | None = None
+        self._rio_preload_completed_key: tuple[int, str] | None = None
+        self._rio_preload_refresh_after = 0.0
         self._rioPreloadCompleted.connect(self._on_rio_preload_completed)
 
     def set_rio_reader(self, rio_reader: Any | None) -> None:
@@ -600,16 +614,59 @@ class StateMachine(QObject):
         if not callable(preload):
             return
         generation = self._rio_reader_generation
+        request_key = (generation, region_token)
+        key_changed = request_key != self._rio_preload_current_key
+        active = self._rio_preload_active
+        if not key_changed and active is not None and active[:2] == request_key:
+            return
+        now = self._rio_preload_monotonic()
+        if (
+            not key_changed
+            and self._rio_preload_completed_key == request_key
+            and now < self._rio_preload_refresh_after
+        ):
+            return
+        self._rio_preload_current_key = request_key
+        self._rio_preload_serial += 1
+        serial = self._rio_preload_serial
+        request = (generation, region_token, serial)
+        self._rio_preload_active = request
 
         def _on_loaded() -> None:
-            self._rioPreloadCompleted.emit(region_token, generation)
+            self._rioPreloadCompleted.emit(region_token, generation, serial)
 
         try:
             preload(region_token, on_loaded=_on_loaded)
         except TypeError:
-            preload(region_token)
+            try:
+                preload(region_token)
+            except Exception:
+                if self._rio_preload_active == request:
+                    self._rio_preload_active = None
+                raise
+            if self._rio_preload_active == request:
+                self._rio_preload_active = None
+                self._rio_preload_completed_key = request_key
+                self._rio_preload_refresh_after = (
+                    self._rio_preload_monotonic()
+                    + RIO_PRELOAD_REFRESH_INTERVAL_SECONDS
+                )
+        except Exception:
+            if self._rio_preload_active == request:
+                self._rio_preload_active = None
+            raise
 
-    def _on_rio_preload_completed(self, region_token: str, generation: int) -> None:
+    def _on_rio_preload_completed(
+        self, region_token: str, generation: int, serial: int
+    ) -> None:
+        request = (generation, region_token, serial)
+        if request != self._rio_preload_active:
+            return
+        self._rio_preload_active = None
+        self._rio_preload_completed_key = (generation, region_token)
+        self._rio_preload_refresh_after = (
+            self._rio_preload_monotonic() + RIO_PRELOAD_REFRESH_INTERVAL_SECONDS
+        )
         if generation != self._rio_reader_generation:
             return
         current_region = REGION_ID_TO_WCL.get(self._state.player.region_id)
