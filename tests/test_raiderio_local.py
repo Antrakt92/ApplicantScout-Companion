@@ -50,6 +50,29 @@ ns.dungeons = {
     )
 
 
+def _write_mplus_character_names(
+    root: Path,
+    names: list[str],
+    *,
+    realm: str = "Ragnaros",
+    base_offset: int = 0,
+) -> None:
+    characters_path = (
+        root
+        / "Interface"
+        / "AddOns"
+        / "RaiderIO"
+        / "db"
+        / "db_mythicplus_eu_characters.lua"
+    )
+    encoded_names = ",".join(f'"{name}"' for name in names)
+    characters_path.write_text(
+        'local provider={name=...,data=1,region="eu",db={}}\n'
+        f'provider.db["{realm}"]={{{base_offset},{encoded_names}}}\n',
+        encoding="utf-8",
+    )
+
+
 def _write_multirealm_test_db(root: Path, lookup_payload: bytes) -> None:
     db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
     db.mkdir(parents=True, exist_ok=True)
@@ -190,6 +213,85 @@ def test_reader_decodes_timed_dungeon_rows_from_local_raiderio_db(tmp_path: Path
     assert profile.current_score == 3074
     assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
     assert profile.raid_progress == {}
+
+
+def test_reader_name_index_preserves_first_casefold_match(tmp_path: Path):
+    first_record = _record(3200, 15, 14, 1, 0)
+    second_record = _record(3074, 0, 12, 0, 2)
+    _write_test_db(tmp_path, first_record + second_record)
+    _write_mplus_character_names(tmp_path, ["Alpha", "ALPHA"])
+    reader = RaiderIOLocalReader(tmp_path)
+
+    profile = reader.lookup_profile("alpha", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3200
+    assert profile.dungeons == [{"name": "Skyreach", "key_level": 15}]
+
+
+def test_reader_large_repeated_lookups_use_one_prebuilt_name_index_get(
+    tmp_path: Path,
+):
+    names = [f"Player{index}" for index in range(2_000)]
+    records = b"".join(
+        _record(2_000 + index, 0, 10 + (index % 5), 0, 0)
+        for index in range(len(names))
+    )
+    _write_test_db(tmp_path, records)
+    _write_mplus_character_names(tmp_path, names)
+    reader = RaiderIOLocalReader(tmp_path)
+    initial = reader.lookup_profile("PLAYER1999", "Ragnaros", "EU")
+    assert initial is not None
+    assert initial.current_score == 3999
+
+    entry = reader._cache["eu"]
+    assert entry.db is not None
+    realm_data = entry.db._mplus_realm_cache["ragnaros"]
+
+    class CountingIndex(dict[str, int]):
+        get_calls = 0
+
+        def get(self, key: str, default: int | None = None) -> int | None:
+            self.get_calls += 1
+            return super().get(key, default)
+
+    counting_index = CountingIndex(realm_data.name_indexes)
+    entry.db._mplus_realm_cache["ragnaros"] = raiderio_local_mod._RealmData(
+        base_offset=realm_data.base_offset,
+        name_indexes=counting_index,
+    )
+
+    for _ in range(250):
+        profile = entry.db.lookup_profile("PLAYER1999", "Ragnaros")
+        assert profile is not None
+        assert profile.current_score == 3999
+
+    assert counting_index.get_calls == 250
+
+
+def test_reader_fingerprint_reload_replaces_realm_name_index(tmp_path: Path):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    _write_mplus_character_names(tmp_path, ["Alphapack", "Oldname"])
+    reader = RaiderIOLocalReader(tmp_path)
+    old_profile = reader.lookup_profile("Oldname", "Ragnaros", "EU")
+    assert old_profile is not None
+    assert old_profile.current_score == 3074
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+    )
+    _write_mplus_character_names(tmp_path, ["Alphapack", "Newname"])
+    _mark_test_db_changed(tmp_path)
+
+    new_profile = reader.lookup_profile("Newname", "Ragnaros", "EU")
+
+    assert new_profile is not None
+    assert new_profile.current_score == 3333
+    assert reader.lookup_profile("Oldname", "Ragnaros", "EU") is None
 
 
 def test_reader_decodes_current_raid_progress_from_local_raiderio_db(tmp_path: Path):

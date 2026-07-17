@@ -96,6 +96,12 @@ class _RaidInfo:
 
 
 @dataclass(frozen=True)
+class _RealmData:
+    base_offset: int
+    name_indexes: dict[str, int]
+
+
+@dataclass(frozen=True)
 class _RegionCacheEntry:
     db: _RegionDB | None
     fingerprint: _RegionDBFingerprint
@@ -228,8 +234,8 @@ class _RegionDB:
         raid_meta: _ProviderMeta | None,
         current_raids: list[_RaidInfo],
         previous_raids: list[_RaidInfo],
-        mplus_realm_cache: dict[str, tuple[int, list[str]] | None] | None = None,
-        raid_realm_cache: dict[str, tuple[int, list[str]] | None] | None = None,
+        mplus_realm_cache: dict[str, _RealmData] | None = None,
+        raid_realm_cache: dict[str, _RealmData] | None = None,
     ):
         self._mplus_characters_path = mplus_characters_path
         self._mplus_lookup_payload = mplus_lookup_payload
@@ -269,7 +275,7 @@ class _RegionDB:
         dungeons: list[str] = []
         mplus_meta: _ProviderMeta | None = None
         mplus_lookup_payload: bytes | None = None
-        mplus_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
+        mplus_realm_cache: dict[str, _RealmData] = {}
         if has_mplus:
             try:
                 mplus_characters_text = mplus_characters_path.read_text(
@@ -306,7 +312,7 @@ class _RegionDB:
         raid_lookup_payload: bytes | None = None
         current_raids: list[_RaidInfo] = []
         previous_raids: list[_RaidInfo] = []
-        raid_realm_cache: dict[str, tuple[int, list[str]] | None] = {}
+        raid_realm_cache: dict[str, _RealmData] = {}
         if has_raid:
             try:
                 raid_characters_text = raid_characters_path.read_text(
@@ -437,23 +443,17 @@ class _RegionDB:
         characters_path: Path,
         lookup_payload: bytes,
         meta: _ProviderMeta,
-        realm_cache: dict[str, tuple[int, list[str]] | None],
+        realm_cache: dict[str, _RealmData],
         name: str,
         realm: str,
     ) -> bytes | None:
         realm_data = self._realm_data(characters_path, realm_cache, realm)
         if realm_data is None:
             return None
-        base_offset, names = realm_data
-        try:
-            name_index = next(
-                idx
-                for idx, candidate in enumerate(names)
-                if candidate.casefold() == name.casefold()
-            )
-        except StopIteration:
+        name_index = realm_data.name_indexes.get(name.casefold())
+        if name_index is None:
             return None
-        record_offset = base_offset + name_index * meta.record_size
+        record_offset = realm_data.base_offset + name_index * meta.record_size
         record = lookup_payload[record_offset : record_offset + meta.record_size]
         if len(record) != meta.record_size:
             return None
@@ -462,9 +462,9 @@ class _RegionDB:
     def _realm_data(
         self,
         characters_path: Path,
-        realm_cache: dict[str, tuple[int, list[str]] | None],
+        realm_cache: dict[str, _RealmData],
         realm: str,
-    ) -> tuple[int, list[str]] | None:
+    ) -> _RealmData | None:
         cache_key = _realm_lookup_key(realm)
         return realm_cache.get(cache_key)
 
@@ -907,13 +907,13 @@ def _parse_dungeon_names(text: str) -> list[str]:
     return re.findall(r'\["name"\]\s*=\s*"([^"]+)"', text)
 
 
-def _parse_realm_data(text: str, realm: str) -> tuple[int, list[str]] | None:
+def _parse_realm_data(text: str, realm: str) -> _RealmData | None:
     lookup_key = _realm_lookup_key(realm)
     return _parse_all_realm_data(text).get(lookup_key)
 
 
-def _parse_all_realm_data(text: str) -> dict[str, tuple[int, list[str]] | None]:
-    realms: dict[str, tuple[int, list[str]] | None] = {}
+def _parse_all_realm_data(text: str) -> dict[str, _RealmData]:
+    realms: dict[str, _RealmData] = {}
     pattern = re.compile(r'provider\.db\["([^"]+)"\]\s*=\s*\{')
     for match in pattern.finditer(text):
         lookup_key = _realm_lookup_key(match.group(1))
@@ -928,7 +928,13 @@ def _parse_all_realm_data(text: str) -> dict[str, tuple[int, list[str]] | None]:
         if not offset_match:
             continue
         names = re.findall(r'"([^"]*)"', body[offset_match.end() :])
-        realms[lookup_key] = (int(offset_match.group(1)), names)
+        name_indexes: dict[str, int] = {}
+        for index, name in enumerate(names):
+            name_indexes.setdefault(name.casefold(), index)
+        realms[lookup_key] = _RealmData(
+            base_offset=int(offset_match.group(1)),
+            name_indexes=name_indexes,
+        )
     return realms
 
 
