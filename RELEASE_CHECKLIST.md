@@ -117,6 +117,11 @@ the queue to publish multiple drafts.
    - `ApplicantScoutCompanion-<companion version>-portable.zip`
    - `ApplicantScoutCompanion-<companion version>-release-manifest.json`
 
+   The manifest also binds the exact tag-derived release title and body. Manual
+   draft copy edits are not publication input: the publish workflow restores
+   the manifest copy in the same operation that makes the release public, then
+   verifies the immutable published release still matches it.
+
    If the workflow fails before any draft exists, use **Re-run failed jobs**;
    the draft writer reuses the exact build-attempt artifact. Do not rerun all
    jobs after a draft exists. An existing or partially uploaded draft makes the

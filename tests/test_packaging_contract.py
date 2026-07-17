@@ -262,12 +262,17 @@ def _write_manifest_bundle(root: Path, *, purpose: str) -> dict[str, str]:
         encoding="ascii",
     )
     _write_valid_portable_zip(root / portable_name)
-    if purpose == "Build":
-        (root / "release-body.md").write_text("release notes\n", encoding="utf-8")
+    release_body = (
+        root / "release-body.md"
+        if purpose == "Build"
+        else root.parent / "release-body.md"
+    )
+    release_body.write_bytes(b"## Release notes\n\nExact tag copy.\n")
     return {
         "installer": installer_name,
         "checksum": checksum_name,
         "portable": portable_name,
+        "release_body": str(release_body),
     }
 
 
@@ -1072,7 +1077,7 @@ def test_release_artifact_manifest_binds_build_bundle_to_tag_and_commit(tmp_path
     assert created.returncode == 0, created.stdout + created.stderr
     manifest_path = root / "release-build-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-    assert manifest["schemaVersion"] == 1
+    assert manifest["schemaVersion"] == 2
     assert manifest["repository"] == "Antrakt92/ApplicantScout-Companion"
     assert manifest["tag"] == tag
     assert manifest["commit"] == commit
@@ -1111,6 +1116,8 @@ def test_release_artifact_manifest_rejects_tag_commit_asset_and_notice_drift(tmp
         "Create",
         "-Purpose",
         "Release",
+        "-ReleaseBodyPath",
+        names["release_body"],
         *_manifest_identity_args(tag, commit),
     )
     assert created.returncode == 0, created.stdout + created.stderr
@@ -1168,9 +1175,52 @@ def test_release_artifact_manifest_rejects_tag_commit_asset_and_notice_drift(tmp
     assert "sha-256" in (changed_notice.stdout + changed_notice.stderr).lower()
 
 
+def test_release_artifact_manifest_binds_and_rejects_tampered_release_copy(tmp_path):
+    root = tmp_path / "release-assets"
+    names = _write_manifest_bundle(root, purpose="Release")
+    version = _project_version()
+    tag = f"v{version}"
+    commit = "f" * 40
+    created = _run_release_manifest(
+        root,
+        "-Mode",
+        "Create",
+        "-Purpose",
+        "Release",
+        "-ReleaseBodyPath",
+        names["release_body"],
+        *_manifest_identity_args(tag, commit),
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    manifest_path = root / f"ApplicantScoutCompanion-{version}-release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schemaVersion"] == 2
+    assert manifest["releaseCopy"]["title"] == tag
+    body = manifest["releaseCopy"]["body"]
+    expected_body = Path(names["release_body"]).read_bytes()
+    assert body["encoding"] == "utf-8"
+    assert body["size"] == len(expected_body)
+    assert body["sha256"] == hashlib.sha256(expected_body).hexdigest()
+    assert body["contentBase64"]
+
+    body["contentBase64"] = "dGFtcGVyZWQK"
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    verified = _run_release_manifest(
+        root,
+        "-Mode",
+        "Verify",
+        "-Purpose",
+        "Release",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert verified.returncode != 0
+    assert "release copy body" in (verified.stdout + verified.stderr).lower()
+
+
 def test_release_artifact_manifest_rejects_noncanonical_tag_and_extra_files(tmp_path):
     root = tmp_path / "release-assets"
-    _write_manifest_bundle(root, purpose="Release")
+    names = _write_manifest_bundle(root, purpose="Release")
     commit = "e" * 40
 
     noncanonical = _run_release_manifest(
@@ -1179,6 +1229,8 @@ def test_release_artifact_manifest_rejects_noncanonical_tag_and_extra_files(tmp_
         "Create",
         "-Purpose",
         "Release",
+        "-ReleaseBodyPath",
+        names["release_body"],
         *_manifest_identity_args("v01.2.3", commit),
     )
     assert noncanonical.returncode != 0
@@ -1191,6 +1243,8 @@ def test_release_artifact_manifest_rejects_noncanonical_tag_and_extra_files(tmp_
         "Create",
         "-Purpose",
         "Release",
+        "-ReleaseBodyPath",
+        names["release_body"],
         *_manifest_identity_args(tag, commit),
     )
     assert created.returncode == 0, created.stdout + created.stderr
@@ -1246,6 +1300,32 @@ def test_release_workflow_separates_read_only_build_from_narrow_draft_writer():
         "Upload authoritative release assets",
         "Create draft release with assets",
     )
+
+
+def test_release_workflow_carries_exact_tag_copy_through_authoritative_manifest():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    build = _job_block(workflow, "build")
+    draft = _job_block(workflow, "draft")
+    extract = _step_block(build, "Extract release notes")
+    create_manifest = _step_block(draft, "Create exact-tag release manifest")
+    create_draft = _step_block(draft, "Create draft release with assets")
+    verify_draft = _step_block(
+        draft,
+        "Verify remote draft bytes against authoritative manifest",
+    )
+
+    assert "WriteAllText" in extract
+    assert "UTF8Encoding]::new($false)" in extract
+    assert '-replace "`r`n?", "`n"' in extract
+    assert '-ReleaseBodyPath (Join-Path $Bundle "release-body.md")' in create_manifest
+    assert "$Manifest.releaseCopy.title" in create_draft
+    assert "$Manifest.releaseCopy.body.contentBase64" in create_draft
+    assert "WriteAllBytes" in create_draft
+    assert "--title $Title" in create_draft
+    assert "--notes-file $Body" in create_draft
+    assert "$Release.name -cne [string]$Manifest.releaseCopy.title" in verify_draft
+    assert "$Release.body -cne $ExpectedBody" in verify_draft
+    assert "authoritative exact-tag manifest" in verify_draft
 
 
 def test_release_workflow_requires_tag_commit_reachable_from_origin_main():
@@ -1843,7 +1923,7 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     )
     assert 'X-GitHub-Api-Version: 2026-03-10' in published_check
     assert "did not become immutable" in published_check
-    assert "authoritative asset contract" in published_check
+    assert "authoritative copy and asset contract" in published_check
     _assert_order(
         verify,
         "Checkout companion",
@@ -1928,6 +2008,32 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
         "Verify draft release assets",
         "Verify remote draft against authoritative Actions artifact",
     )
+
+
+def test_publish_release_workflow_restores_mutated_draft_copy_before_publication():
+    workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    publish = _job_block(workflow, "publish")
+    writer = _step_block(publish, "Revalidate exact bytes and publish release")
+    published_check = _step_block(publish, "Verify published release assets")
+
+    assert "$ExpectedReleaseTitle = [string]$Manifest.releaseCopy.title" in writer
+    assert "$Manifest.releaseCopy.body.contentBase64" in writer
+    assert "WriteAllBytes($ExpectedReleaseBodyPath" in writer
+    assert "$Release.name -cne $ExpectedReleaseTitle" in writer
+    assert "$Release.body -cne $ExpectedReleaseBody" in writer
+    assert "will be restored atomically during publication" in writer
+    assert re.search(
+        r"(?ms)gh release edit \$env:RELEASE_TAG\s+`\s*"
+        r"--repo \$env:GITHUB_REPOSITORY\s+`\s*"
+        r"--title \$ExpectedReleaseTitle\s+`\s*"
+        r"--notes-file \$ExpectedReleaseBodyPath\s+`\s*"
+        r"--draft=false\s+`\s*"
+        r"--prerelease=false",
+        writer,
+    )
+    assert "$Release.name -ceq $ExpectedReleaseTitle" in published_check
+    assert "$Release.body -ceq $ExpectedReleaseBody" in published_check
+    assert "copy and assets match the authoritative Actions artifact" in published_check
 
 
 def test_publish_release_workflow_pins_external_actions_to_commit_shas():

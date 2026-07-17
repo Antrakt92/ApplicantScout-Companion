@@ -18,7 +18,8 @@ param(
     [Parameter(Mandatory = $true)]
     [int]$WorkflowRunAttempt,
     [Parameter(Mandatory = $true)]
-    [string]$RootPath
+    [string]$RootPath,
+    [string]$ReleaseBodyPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,6 +88,118 @@ function Get-Sha256Hex {
     finally {
         $Hasher.Dispose()
     }
+}
+
+function Assert-CanonicalReleaseBodyBytes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Bytes
+    )
+
+    if ($Bytes.Length -eq 0) {
+        throw "Release body must not be empty."
+    }
+    if (
+        $Bytes.Length -ge 3 -and
+        $Bytes[0] -eq 0xEF -and
+        $Bytes[1] -eq 0xBB -and
+        $Bytes[2] -eq 0xBF
+    ) {
+        throw "Release body must use UTF-8 without a byte-order mark."
+    }
+    $StrictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    try {
+        $Text = $StrictUtf8.GetString($Bytes)
+    }
+    catch {
+        throw "Release body must contain valid UTF-8: $($_.Exception.Message)"
+    }
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        throw "Release body must contain non-whitespace release notes."
+    }
+    if ($Text.Contains([char]0)) {
+        throw "Release body must not contain NUL characters."
+    }
+    if ($Text.Contains("`r")) {
+        throw "Release body must use canonical LF line endings."
+    }
+    if (-not $Text.EndsWith("`n", [System.StringComparison]::Ordinal)) {
+        throw "Release body must end with a canonical LF newline."
+    }
+}
+
+function Get-ReleaseBodyRecord {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Missing exact-tag release body: $Path"
+    }
+    $Item = Get-Item -LiteralPath $Path -Force
+    if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Exact-tag release body must not be a reparse point: $Path"
+    }
+    $Bytes = [System.IO.File]::ReadAllBytes($Item.FullName)
+    Assert-CanonicalReleaseBodyBytes -Bytes $Bytes
+    $Stream = [System.IO.MemoryStream]::new($Bytes, $false)
+    try {
+        $Digest = Get-Sha256Hex -Stream $Stream
+    }
+    finally {
+        $Stream.Dispose()
+    }
+    return [ordered]@{
+        encoding = "utf-8"
+        size = [long]$Bytes.LongLength
+        sha256 = $Digest
+        contentBase64 = [Convert]::ToBase64String($Bytes)
+    }
+}
+
+function Assert-ReleaseBodyRecord {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Record
+    )
+
+    if ([string]$Record.encoding -cne "utf-8") {
+        throw "Release copy body encoding must be utf-8."
+    }
+    if ([string]$Record.size -notmatch '^[1-9][0-9]*$') {
+        throw "Release copy body size is malformed: $($Record.size)"
+    }
+    if ([string]$Record.sha256 -notmatch '^[0-9a-f]{64}$') {
+        throw "Release copy body SHA-256 is malformed: $($Record.sha256)"
+    }
+    $Encoded = [string]$Record.contentBase64
+    if ([string]::IsNullOrEmpty($Encoded)) {
+        throw "Release copy body is missing base64 content."
+    }
+    try {
+        $Bytes = [Convert]::FromBase64String($Encoded)
+    }
+    catch {
+        throw "Release copy body has malformed base64 content: $($_.Exception.Message)"
+    }
+    if ([Convert]::ToBase64String($Bytes) -cne $Encoded) {
+        throw "Release copy body must use canonical base64 encoding."
+    }
+    if ($Bytes.LongLength -ne [long]$Record.size) {
+        throw "Release copy body size does not match its content."
+    }
+    $Stream = [System.IO.MemoryStream]::new($Bytes, $false)
+    try {
+        $Digest = Get-Sha256Hex -Stream $Stream
+    }
+    finally {
+        $Stream.Dispose()
+    }
+    if ($Digest -cne [string]$Record.sha256) {
+        throw "Release copy body SHA-256 does not match its content."
+    }
+    Assert-CanonicalReleaseBodyBytes -Bytes $Bytes
 }
 
 function Get-FileRecord {
@@ -204,7 +317,7 @@ if ($Mode -eq "Create") {
     $Files = @($ExpectedFileNames | ForEach-Object { Get-FileRecord -Name $_ })
     $PortableEntries = @(Get-PortableEntryRecords)
     $Manifest = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         repository = $Repository
         purpose = $Purpose
         tag = $Tag
@@ -215,6 +328,15 @@ if ($Mode -eq "Create") {
         workflowRunAttempt = $WorkflowRunAttempt
         files = $Files
         portableEntries = $PortableEntries
+    }
+    if ($Purpose -eq "Release") {
+        if ([string]::IsNullOrWhiteSpace($ReleaseBodyPath)) {
+            throw "ReleaseBodyPath is required when creating an exact-tag release manifest."
+        }
+        $Manifest["releaseCopy"] = [ordered]@{
+            title = $Tag
+            body = Get-ReleaseBodyRecord -Path $ReleaseBodyPath
+        }
     }
     $Json = $Manifest | ConvertTo-Json -Depth 6
     $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
@@ -234,7 +356,7 @@ try {
 catch {
     throw "Release artifact manifest is malformed JSON: $($_.Exception.Message)"
 }
-if ([int]$Manifest.schemaVersion -ne 1) {
+if ([int]$Manifest.schemaVersion -ne 2) {
     throw "Unsupported release artifact manifest schema: $($Manifest.schemaVersion)"
 }
 if ([string]$Manifest.repository -cne $Repository) {
@@ -260,6 +382,21 @@ if ([string]$Manifest.workflowRunId -cne $RunId) {
 }
 if ([int]$Manifest.workflowRunAttempt -ne $WorkflowRunAttempt) {
     throw "Release artifact manifest workflow attempt mismatch: expected $WorkflowRunAttempt, got $($Manifest.workflowRunAttempt)."
+}
+if ($Purpose -eq "Release") {
+    if ($null -eq $Manifest.releaseCopy) {
+        throw "Release artifact manifest is missing exact-tag release copy."
+    }
+    if ([string]$Manifest.releaseCopy.title -cne $Tag) {
+        throw "Release copy title mismatch: expected $Tag, got $($Manifest.releaseCopy.title)."
+    }
+    if ($null -eq $Manifest.releaseCopy.body) {
+        throw "Release artifact manifest is missing exact-tag release body."
+    }
+    Assert-ReleaseBodyRecord -Record $Manifest.releaseCopy.body
+}
+elseif ($null -ne $Manifest.releaseCopy) {
+    throw "Build artifact manifest must not contain release copy."
 }
 
 $ManifestFiles = @($Manifest.files)

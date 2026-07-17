@@ -423,6 +423,13 @@ jobs:
           }
           $ManifestJson = [System.Text.Encoding]::UTF8.GetString($ManifestBytes)
           $Manifest = $ManifestJson | ConvertFrom-Json
+          $ExpectedReleaseTitle = [string]$Manifest.releaseCopy.title
+          $ExpectedReleaseBodyBytes = [Convert]::FromBase64String(
+            [string]$Manifest.releaseCopy.body.contentBase64
+          )
+          $ExpectedReleaseBody = [System.Text.Encoding]::UTF8.GetString($ExpectedReleaseBodyBytes)
+          $ExpectedReleaseBodyPath = Join-Path $env:RUNNER_TEMP "authoritative-release-body.md"
+          [System.IO.File]::WriteAllBytes($ExpectedReleaseBodyPath, $ExpectedReleaseBodyBytes)
           $Expected = @{}
           foreach ($File in @($Manifest.files)) {
             $Expected[[string]$File.name] = @{
@@ -458,6 +465,12 @@ jobs:
               throw "Draft release asset changed before publication: $Name"
             }
           }
+          if (
+            [string]$Release.name -cne $ExpectedReleaseTitle -or
+            [string]$Release.body -cne $ExpectedReleaseBody
+          ) {
+            Write-Host "Draft release copy drifted from the exact-tag manifest and will be restored atomically during publication."
+          }
 
           if ([string]::IsNullOrWhiteSpace($env:RELEASE_SETTINGS_READ_TOKEN)) {
             throw "RELEASE_SETTINGS_READ_TOKEN is required to verify release immutability."
@@ -486,7 +499,12 @@ jobs:
             throw "Latest stable release changed immediately before publication."
           }
 
-          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false
+          gh release edit $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --title $ExpectedReleaseTitle `
+            --notes-file $ExpectedReleaseBodyPath `
+            --draft=false `
+            --prerelease=false
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub refused to publish $env:RELEASE_TAG."
           }
@@ -499,6 +517,10 @@ jobs:
           $Manifest = [System.Text.Encoding]::UTF8.GetString(
             [Convert]::FromBase64String($env:EXPECTED_MANIFEST_B64)
           ) | ConvertFrom-Json
+          $ExpectedReleaseTitle = [string]$Manifest.releaseCopy.title
+          $ExpectedReleaseBody = [System.Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String([string]$Manifest.releaseCopy.body.contentBase64)
+          )
           $Expected = @{}
           foreach ($File in @($Manifest.files)) {
             $Expected[[string]$File.name] = @{
@@ -522,7 +544,9 @@ jobs:
               -not [bool]$Release.draft -and
               -not [bool]$Release.prerelease -and
               $Release.immutable -is [bool] -and
-              $Release.immutable
+              $Release.immutable -and
+              [string]$Release.name -ceq $ExpectedReleaseTitle -and
+              [string]$Release.body -ceq $ExpectedReleaseBody
             ) {
               $Assets = @($Release.assets)
               $Valid = $Assets.Count -eq $Expected.Count
@@ -537,11 +561,11 @@ jobs:
                 }
               }
               if ($Valid) {
-                Write-Host "Published release assets match the authoritative Actions artifact."
+                Write-Host "Published release copy and assets match the authoritative Actions artifact."
                 exit 0
               }
             }
             if ((Get-Date) -ge $Deadline) { break }
             Start-Sleep -Seconds 5
           } while ($true)
-          throw "Published release did not become immutable or converge to the authoritative asset contract."
+          throw "Published release did not become immutable or converge to the authoritative copy and asset contract."

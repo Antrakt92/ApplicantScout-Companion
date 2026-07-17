@@ -198,7 +198,9 @@ jobs:
           if (-not $Match.Success) {
             throw "Could not find top release notes entry for $TagVersion."
           }
-          $Match.Value.Trim() | Set-Content -LiteralPath dist\release-body.md -Encoding UTF8
+          $CanonicalBody = ($Match.Value.Trim() -replace "`r`n?", "`n") + "`n"
+          $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText("dist\release-body.md", $CanonicalBody, $Utf8NoBom)
 
       - name: Create credentialless build manifest
         shell: pwsh
@@ -348,7 +350,8 @@ jobs:
             -PairedAddonCommit $env:PAIRED_ADDON_COMMIT `
             -WorkflowRunId "${{ github.run_id }}" `
             -WorkflowRunAttempt ${{ github.run_attempt }} `
-            -RootPath $Assets
+            -RootPath $Assets `
+            -ReleaseBodyPath (Join-Path $Bundle "release-body.md")
 
       - name: Verify exact-tag release manifest
         shell: pwsh
@@ -388,14 +391,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $Assets = Join-Path $env:RUNNER_TEMP "release-assets"
-          $Body = Join-Path $env:RUNNER_TEMP "release-build-bundle\release-body.md"
+          $ManifestPath = Join-Path $Assets "ApplicantScoutCompanion-$env:TAG_VERSION-release-manifest.json"
+          $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $Title = [string]$Manifest.releaseCopy.title
+          $Body = Join-Path $env:RUNNER_TEMP "authoritative-release-body.md"
+          [System.IO.File]::WriteAllBytes(
+            $Body,
+            [Convert]::FromBase64String([string]$Manifest.releaseCopy.body.contentBase64)
+          )
           gh release create $env:RELEASE_TAG `
             (Join-Path $Assets "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe") `
             (Join-Path $Assets "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe.sha256") `
             (Join-Path $Assets "ApplicantScoutCompanion-$env:TAG_VERSION-portable.zip") `
             (Join-Path $Assets "ApplicantScoutCompanion-$env:TAG_VERSION-release-manifest.json") `
             --repo $env:GITHUB_REPOSITORY `
-            --title $env:RELEASE_TAG `
+            --title $Title `
             --notes-file $Body `
             --draft `
             --verify-tag
@@ -430,6 +440,19 @@ jobs:
             -WorkflowRunAttempt ${{ github.run_attempt }} `
             -RootPath $RemoteAssets
           $Authoritative = Join-Path $env:RUNNER_TEMP "release-assets"
+          $ManifestPath = Join-Path $Authoritative "ApplicantScoutCompanion-$env:TAG_VERSION-release-manifest.json"
+          $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $ExpectedBody = [System.Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String([string]$Manifest.releaseCopy.body.contentBase64)
+          )
+          $Release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if (
+            $LASTEXITCODE -ne 0 -or
+            [string]$Release.name -cne [string]$Manifest.releaseCopy.title -or
+            [string]$Release.body -cne $ExpectedBody
+          ) {
+            throw "Draft release title/body differs from the authoritative exact-tag manifest."
+          }
           foreach ($File in Get-ChildItem -LiteralPath $Authoritative -File) {
             $RemoteFile = Join-Path $RemoteAssets $File.Name
             $ExpectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $File.FullName).Hash
