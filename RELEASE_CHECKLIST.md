@@ -85,6 +85,11 @@ release as immutable with the exact authoritative assets. Enabling the setting
 does not retrofit existing releases; the next published release is the first
 live immutability proof.
 
+Manual publish dispatches share one non-cancelling repository queue. Each run
+starts verification only after the preceding run finishes and rechecks the
+latest stable release immediately before publication; do not cancel or bypass
+the queue to publish multiple drafts.
+
 1. Create both local tags only after both release-prep commits are on `main`.
    Push both tags inside the paired workflows' 120-second wait window:
 

@@ -24,6 +24,12 @@ on:
         required: true
         type: boolean
 
+# WHY: preserve both the active publisher and every queued manual dispatch.
+concurrency:
+  group: applicantscout-companion-release-publication
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   verify:
     runs-on: windows-2022
@@ -473,6 +479,11 @@ jobs:
           }
           finally {
             $env:GH_TOKEN = $PublishToken
+          }
+
+          $FinalLatestTag = (gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name).Trim()
+          if ($LASTEXITCODE -ne 0 -or $FinalLatestTag -ne $env:EXPECTED_LATEST_PUBLISHED_TAG) {
+            throw "Latest stable release changed immediately before publication."
           }
 
           gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false

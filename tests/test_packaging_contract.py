@@ -1859,6 +1859,30 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     )
 
 
+def test_publish_release_workflow_serializes_dispatches_and_rechecks_latest():
+    workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    publish = _job_block(workflow, "publish")
+    writer = _step_block(publish, "Revalidate exact bytes and publish release")
+
+    assert re.search(
+        r"(?m)^concurrency:\n"
+        r"  group: applicantscout-companion-release-publication\n"
+        r"  cancel-in-progress: false\n"
+        r"  queue: max$",
+        workflow,
+    )
+    assert writer.count('repos/$env:GITHUB_REPOSITORY/releases/latest') == 2
+    assert "$FinalLatestTag" in writer
+    assert "changed immediately before publication" in writer
+    _assert_order(
+        writer,
+        "$env:GH_TOKEN = $PublishToken",
+        "$FinalLatestTag",
+        "changed immediately before publication",
+        "gh release edit $env:RELEASE_TAG",
+    )
+
+
 def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
     workflow = _read_repo_text(".github/workflows/publish-release.yml")
     verify = _job_block(workflow, "verify")
