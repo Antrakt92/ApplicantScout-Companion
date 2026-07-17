@@ -52,6 +52,7 @@ from applicant_scout.metric_preferences import (
     MetricPreferences,
 )
 from applicant_scout.scoring import PackageFit, package_fit
+from applicant_scout.screenshot import DecodedListing, Snapshot
 from applicant_scout.state import (
     DEFAULT_WINDOW_WIDTH,
     WINDOW_GEOMETRY_LAYOUT_VERSION,
@@ -2861,7 +2862,21 @@ def test_health_label_warns_when_paired_addon_is_outdated(
         client.close()
 
 
-def test_partial_decode_marks_party_count_as_last_known(monkeypatch, qtbot, tmp_path):
+@pytest.mark.parametrize(
+    ("category_id", "difficulty_id", "listing_name"),
+    [
+        pytest.param(2, 8, "+16 Skyreach", id="party"),
+        pytest.param(3, 16, "Mythic Raid", id="raid"),
+    ],
+)
+def test_partial_group_roster_decode_marks_party_count_as_last_known(
+    monkeypatch,
+    qtbot,
+    tmp_path,
+    category_id,
+    difficulty_id,
+    listing_name,
+):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -2871,15 +2886,30 @@ def test_partial_decode_marks_party_count_as_last_known(monkeypatch, qtbot, tmp_
     try:
         monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
         window._tab_bar.set_counts(applicants=1, party=15)
-        partial = type("PartialSnapshot", (), {"roster_unavailable": True})()
+        partial = Snapshot(
+            listing=DecodedListing(
+                activity_id=401 if category_id == 2 else 0,
+                key_level=16 if category_id == 2 else 0,
+                dungeon_name="Skyreach" if category_id == 2 else "",
+                listing_name=listing_name,
+                comment="",
+                category_id=category_id,
+                difficulty_id=difficulty_id,
+            ),
+            version=None,
+            roster_unavailable=True,
+        )
 
         window.note_decode(partial)
 
         party_button = window._tab_bar._buttons["party"]
         assert party_button.text() == "Party (15?)"
+        assert "omitted the group roster" in party_button.toolTip()
         assert "last known Party count" in party_button.toolTip()
         assert window._health_label.text() == "shot partial"
-        assert "omitted the raid roster" in window._health_label.toolTip()
+        assert "omitted the group roster" in window._health_label.toolTip()
+        assert "raid roster" not in party_button.toolTip()
+        assert "raid roster" not in window._health_label.toolTip()
 
         window.note_decode(object())
 

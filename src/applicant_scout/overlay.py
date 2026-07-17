@@ -1443,7 +1443,7 @@ class SourceTabBar(QWidget):
         party_button.setText(f"Party ({self._party_count}{stale_marker})")
         if self._party_count_stale:
             party_button.setToolTip(
-                "The latest valid QR omitted the raid roster. "
+                "The latest valid QR omitted the group roster. "
                 "Showing the last known Party count."
             )
         else:
@@ -3289,7 +3289,7 @@ class OverlayWindow(QMainWindow):
             delta = max(0.0, time.time() - last)
             self._health_label.setText("shot partial")
             self._health_label.setToolTip(
-                "The latest valid QR omitted the raid roster; Party shows "
+                "The latest valid QR omitted the group roster; Party shows "
                 f"the last known members.\n{_format_age(delta)}"
             )
             return
