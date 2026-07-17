@@ -715,12 +715,14 @@ def test_release_license_artifacts_exist_and_are_copied_into_dist():
     assert (REPO_ROOT / "LICENSE").is_file()
     assert (REPO_ROOT / "THIRD-PARTY-NOTICES.md").is_file()
     assert (REPO_ROOT / "RELEASE_NOTES.md").is_file()
+    assert (REPO_ROOT / "packaging/dependency-license-overrides.toml").is_file()
 
     build_script = _read_repo_text("scripts/build-windows.ps1")
 
     assert "Copy-ReleaseTextArtifacts" in build_script
     assert "Copy-DependencyLicenseArtifacts" in build_script
     assert "collect_dependency_licenses.py" in build_script
+    assert "--overrides $LicenseOverrides" in build_script
     assert "packages = [" not in build_script
     assert "THIRD-PARTY-NOTICES.md" in build_script
     assert "RELEASE_NOTES.md" in build_script
@@ -757,6 +759,7 @@ def test_dependency_license_collection_validates_pyproject_constraint_coverage()
     collector = _read_repo_text("scripts/collect_dependency_licenses.py")
 
     assert "--pyproject $Pyproject" in build_script
+    assert "--overrides $LicenseOverrides" in build_script
     assert "release_dependency_names_from_pyproject" in collector
     assert "missing_pyproject_constraints" in collector
 
@@ -2995,6 +2998,41 @@ def test_release_version_check_require_assets_rejects_portable_zip_without_licen
 
     assert result.returncode != 0
     assert "ApplicantScout/licenses/" in result.stdout + result.stderr
+
+
+def test_release_version_check_rejects_missing_license_placeholder(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(
+        repo / "dist" / portable_name,
+        extra_entries={
+            "ApplicantScout/LiCeNsEs/NoLicenseWheel/no-license-file-found.TxT": (
+                b"No license file found."
+            )
+        },
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "missing-license placeholder" in (result.stdout + result.stderr).lower()
+
+
+def test_release_version_check_rejects_empty_dependency_license(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(
+        repo / "dist" / portable_name,
+        omit={"ApplicantScout/licenses/PyQt6/LICENSE.txt"},
+        extra_entries={"ApplicantScout/licenses/Empty/LICENSE.txt": b""},
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "empty dependency license payload" in (result.stdout + result.stderr).lower()
 
 
 def test_start_batch_explains_missing_local_environment():

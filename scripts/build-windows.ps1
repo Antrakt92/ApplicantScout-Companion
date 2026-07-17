@@ -54,13 +54,18 @@ function Copy-DependencyLicenseArtifacts {
     $LicenseDir = Join-Path $TargetDir "licenses"
     $Constraints = Join-Path $RepoRoot "constraints-release.txt"
     $Pyproject = Join-Path $RepoRoot "pyproject.toml"
+    $LicenseOverrides = Join-Path $RepoRoot "packaging\dependency-license-overrides.toml"
     $Collector = Join-Path $RepoRoot "scripts\collect_dependency_licenses.py"
     if (-not (Test-Path -LiteralPath $Collector)) {
         throw "Missing dependency license collector: $Collector"
     }
     New-Item -ItemType Directory -Path $LicenseDir -Force | Out-Null
     Invoke-NativeChecked -Label "Collect dependency license files" -Command {
-        & $Python $Collector --constraints $Constraints --pyproject $Pyproject --dest $LicenseDir
+        & $Python $Collector `
+            --constraints $Constraints `
+            --pyproject $Pyproject `
+            --overrides $LicenseOverrides `
+            --dest $LicenseDir
     }
 }
 

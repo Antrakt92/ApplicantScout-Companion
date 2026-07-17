@@ -280,8 +280,16 @@ function Test-PortableZipContract {
             $IsDirectory = $EntryName.EndsWith("/")
             if (-not $IsDirectory) {
                 $FileEntries[$NormalizedName] = $Entry
-                if ($NormalizedName.StartsWith("$ExpectedRoot/licenses/")) {
-                    $HasLicensePayload = $true
+                if ($NormalizedName.StartsWith("$ExpectedRoot/licenses/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    if ($NormalizedName.EndsWith("/NO-LICENSE-FILE-FOUND.txt", [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $ContractErrors += "Portable ZIP contains a missing-license placeholder: $NormalizedName"
+                    }
+                    elseif ($Entry.Length -le 0) {
+                        $ContractErrors += "Portable ZIP contains an empty dependency license payload: $NormalizedName"
+                    }
+                    else {
+                        $HasLicensePayload = $true
+                    }
                 }
             }
         }

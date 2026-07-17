@@ -6,7 +6,11 @@ runtime files. Their licenses remain with their respective copyright holders.
 
 Release builds copy dependency license files from the active Python environment
 into the bundled `licenses/` directory. Treat that directory as part of the
-portable ZIP and installer payload.
+portable ZIP and installer payload. A dependency that exposes no license-like
+file fails the release build unless a reviewed override is bound to its exact
+installed version, an HTTPS provenance source, a rationale, and a tracked
+non-empty notice. Missing-license placeholders are never accepted as release
+license coverage.
 
 ## Key Runtime Dependencies
 

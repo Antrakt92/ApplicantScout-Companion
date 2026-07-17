@@ -1,0 +1,7 @@
+schema_version = 1
+
+# Add an override only after reviewing the exact installed distribution version.
+# Each entry must provide an HTTPS provenance URL, a concise rationale, and a
+# non-empty notice under dependency-license-notices/. Stale, unnecessary, or
+# version-mismatched entries fail the release build.
+[overrides]

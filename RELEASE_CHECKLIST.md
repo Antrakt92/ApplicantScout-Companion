@@ -72,6 +72,11 @@ checksum-gated updater smoke has been attested.
    - `dist\ApplicantScoutCompanionSetup-<companion version>.exe.sha256`
    - `dist\ApplicantScoutCompanion-<companion version>-portable.zip`
 
+   Dependency license collection fails closed when an installed distribution
+   exposes no non-empty license-like file. Add an exact-version entry to
+   `packaging/dependency-license-overrides.toml` only with reviewed HTTPS
+   provenance, rationale, and notice text; placeholders are not release evidence.
+
 ## Publish
 
 Before creating or pushing release tags, enable **Release immutability** under
