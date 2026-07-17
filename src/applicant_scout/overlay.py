@@ -4355,7 +4355,7 @@ class OverlayWindow(QMainWindow):
             return "Fetching raid boss details…", False, False
         failure_state = self._raid_boss_fetch_failure_state(identity)
         if failure_state == "retrying":
-            return "Raid boss details retrying soon…", False, False
+            return "Raid boss details on cooldown…", False, False
         if failure_state == "unavailable":
             return (
                 "Raid boss details unavailable",

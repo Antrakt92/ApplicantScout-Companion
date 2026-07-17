@@ -820,12 +820,12 @@ def test_raid_boss_fetch_coalesced_failure_records_each_waiter(qtbot, tmp_path):
 
         assert len(window._raid_boss_fetch_failures) == 2
         assert window._raid_detail_status_for(applicant) == (
-            "Raid boss details retrying soon…",
+            "Raid boss details on cooldown…",
             False,
             False,
         )
         assert window._raid_detail_status_for(member) == (
-            "Raid boss details retrying soon…",
+            "Raid boss details on cooldown…",
             False,
             False,
         )
@@ -1138,7 +1138,7 @@ def test_refresh_panel_renders_once_when_raid_detail_fetch_starts(
         window.close()
 
 
-def test_raid_detail_retryable_failure_replaces_loading_status_after_done(
+def test_raid_detail_retryable_failure_shows_cooldown_status_after_done(
     qtbot, tmp_path, monkeypatch
 ):
     now = [100.0]
@@ -1175,7 +1175,7 @@ def test_raid_detail_retryable_failure_replaces_loading_status_after_done(
             overlay_mod.WCL_ERROR_NETWORK,
         )
 
-        assert window._panel._status_label.text() == "Raid boss details retrying soon…"
+        assert window._panel._status_label.text() == "Raid boss details on cooldown…"
         assert app.fetch_status == "ready"
         assert not hasattr(app, "raid_detail_status")
     finally:
@@ -1366,7 +1366,7 @@ def test_raid_detail_status_restored_when_returning_to_raid_tab_with_inflight_fe
         window.close()
 
 
-def test_retryable_raid_detail_failure_retries_after_idle_expiry(
+def test_raid_detail_cooldown_expiry_exposes_manual_load_without_auto_fetch(
     qtbot, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(overlay_mod, "WCL_RETRY_BATCH_DELAY_MS", 50)
@@ -1389,11 +1389,13 @@ def test_retryable_raid_detail_failure_retries_after_idle_expiry(
     qtbot.addWidget(window)
 
     try:
-        window._pool = None
+        queued_pool = _QueuedPool()
+        window._pool = queued_pool
         window._refresh_table()
         window._hover_id = "42"
         window._sync_delegate_and_panel()
         _request_visible_raid_boss_details(window)
+        assert len(queued_pool.tasks) == 1
         failed_detail_identity = next(iter(window._raid_boss_fetches_in_flight.values()))
 
         window._on_raid_boss_fetch_done(
@@ -1414,19 +1416,21 @@ def test_retryable_raid_detail_failure_retries_after_idle_expiry(
         window._raid_boss_retry_timer.stop()
         window._retry_ready_raid_boss_fetches()
 
+        assert len(queued_pool.tasks) == 1
         assert window._raid_boss_fetches_in_flight == {}
         assert window._panel._status_label.text() == "Boss details not loaded"
         assert not window._panel._wcl_retry_button.isHidden()
 
-        _request_visible_raid_boss_details(window)
+        window._panel._wcl_retry_button.click()
 
+        assert len(queued_pool.tasks) == 2
         assert window._raid_boss_fetches_in_flight
         assert app.fetch_status == "ready"
     finally:
         window.close()
 
 
-def test_raid_detail_retry_status_restored_when_returning_to_raid_tab(
+def test_raid_detail_cooldown_status_restored_when_returning_to_raid_tab(
     qtbot, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(overlay_mod, "WCL_RETRY_BATCH_DELAY_MS", 500)
@@ -1461,14 +1465,14 @@ def test_raid_detail_retry_status_restored_when_returning_to_raid_tab(
             "network",
             overlay_mod.WCL_ERROR_NETWORK,
         )
-        assert window._panel._status_label.text() == "Raid boss details retrying soon…"
+        assert window._panel._status_label.text() == "Raid boss details on cooldown…"
 
         window._panel._on_detail_mode_clicked("mplus")
         assert window._panel._active_detail_mode() == "mplus"
 
         window._panel._on_detail_mode_clicked("raid")
 
-        assert window._panel._status_label.text() == "Raid boss details retrying soon…"
+        assert window._panel._status_label.text() == "Raid boss details on cooldown…"
     finally:
         window.close()
 
