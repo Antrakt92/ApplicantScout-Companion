@@ -2668,7 +2668,11 @@ def test_main_manual_launch_continues_when_no_control_server_exists(
     )
     monkeypatch.setattr(main_mod, "QApplication", FakeApp)
     monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: calls.append("server") or object())
-    monkeypatch.setattr(main_mod, "_load_startup_config", lambda: calls.append("config") or None)
+    monkeypatch.setattr(
+        main_mod,
+        "_load_startup_config",
+        lambda **_kwargs: calls.append("config") or None,
+    )
 
     assert main_mod.main([]) == 1
     assert calls == ["logging", "control", "app", "server", "config"]
@@ -2756,7 +2760,7 @@ def test_main_claims_control_server_before_loading_startup_config(
     monkeypatch.setattr(
         main_mod,
         "_load_startup_config",
-        lambda: calls.append("config") or None,
+        lambda **_kwargs: calls.append("config") or None,
     )
 
     assert main_mod.main([]) == 1
@@ -2798,7 +2802,7 @@ def test_main_control_server_uses_guarded_quit_callback(
         return object()
 
     monkeypatch.setattr(main_mod, "_create_control_server", fake_create_control_server)
-    monkeypatch.setattr(main_mod, "_load_startup_config", lambda: None)
+    monkeypatch.setattr(main_mod, "_load_startup_config", lambda **_kwargs: None)
 
     assert main_mod.main([]) == 1
     assert captured["quit_app"].__name__ == "_quit_application"
@@ -2828,7 +2832,9 @@ def test_load_startup_config_marks_whether_first_run_setup_was_shown(
         lambda _cfg: tmp_path / "Screenshots",
     )
 
-    loaded = main_mod._load_startup_config()
+    loaded = main_mod._load_startup_config(
+        update_quit_gate=_active_update_quit_gate()
+    )
 
     assert loaded == (ready_cfg, tmp_path / "Screenshots", True)
     assert calls == ["settings"]
@@ -2856,7 +2862,9 @@ def test_load_startup_config_prompts_for_saved_suspicious_screenshots_override(
         lambda *_args, **_kwargs: calls.append("warning"),
     )
 
-    loaded = main_mod._load_startup_config()
+    loaded = main_mod._load_startup_config(
+        update_quit_gate=_active_update_quit_gate()
+    )
 
     assert loaded == (ready_cfg, root / "Screenshots", True)
     assert calls == ["warning", "settings"]
@@ -2882,7 +2890,9 @@ def test_load_startup_config_rejects_suspicious_process_env_override_without_pro
         lambda message: calls.append(message),
     )
 
-    loaded = main_mod._load_startup_config()
+    loaded = main_mod._load_startup_config(
+        update_quit_gate=_active_update_quit_gate()
+    )
 
     assert loaded is None
     assert calls
@@ -2912,7 +2922,9 @@ def test_load_startup_config_rejects_nested_process_env_override_without_prompt(
         lambda message: calls.append(message),
     )
 
-    loaded = main_mod._load_startup_config()
+    loaded = main_mod._load_startup_config(
+        update_quit_gate=_active_update_quit_gate()
+    )
 
     assert loaded is None
     assert calls
@@ -3057,7 +3069,10 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
         raising=False,
     )
 
-    assert main_mod._run_first_run_settings(cfg)
+    assert main_mod._run_first_run_settings(
+        cfg,
+        update_quit_gate=_active_update_quit_gate(),
+    )
     assert calls == ["shortcut", "save", "watcher:False"]
 
 
@@ -3104,7 +3119,10 @@ def test_first_run_wow_sync_disable_stops_current_session_watcher_after_save(
         raising=False,
     )
 
-    assert main_mod._run_first_run_settings(cfg)
+    assert main_mod._run_first_run_settings(
+        cfg,
+        update_quit_gate=_active_update_quit_gate(),
+    )
     assert calls == ["shortcut:False", "save", "watcher-stop"]
 
 
@@ -3370,7 +3388,10 @@ def test_first_run_wow_sync_enable_save_failure_rolls_back_shortcut(
         lambda _parent, _title, message: warnings.append(message),
     )
 
-    assert not main_mod._run_first_run_settings(cfg)
+    assert not main_mod._run_first_run_settings(
+        cfg,
+        update_quit_gate=_active_update_quit_gate(),
+    )
     assert calls == ["shortcut:True", "save", "shortcut:False"]
     assert len(warnings) == 1
     assert "save failed" in warnings[0]
@@ -3430,7 +3451,10 @@ def test_first_run_wow_sync_disable_save_failure_restores_previous_enabled_short
         lambda _parent, _title, message: warnings.append(message),
     )
 
-    assert not main_mod._run_first_run_settings(cfg)
+    assert not main_mod._run_first_run_settings(
+        cfg,
+        update_quit_gate=_active_update_quit_gate(),
+    )
     assert calls == ["shortcut:False", "save", "shortcut:True"]
     assert len(warnings) == 1
     assert "save failed" in warnings[0]
@@ -3485,7 +3509,10 @@ def test_first_run_wow_sync_save_failure_warns_when_rollback_fails(
         lambda _parent, _title, message: warnings.append(message),
     )
 
-    assert not main_mod._run_first_run_settings(cfg)
+    assert not main_mod._run_first_run_settings(
+        cfg,
+        update_quit_gate=_active_update_quit_gate(),
+    )
     assert calls == ["shortcut:True", "save", "shortcut:False"]
     assert len(warnings) == 1
     assert "save failed" in warnings[0]
@@ -3534,7 +3561,10 @@ def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
         lambda _parent, _title, message: warnings.append(message),
     )
 
-    assert not main_mod._run_first_run_settings(cfg)
+    assert not main_mod._run_first_run_settings(
+        cfg,
+        update_quit_gate=_active_update_quit_gate(),
+    )
     assert calls == []
     assert len(warnings) == 1
     assert "shortcut failed" in warnings[0]
@@ -3582,7 +3612,10 @@ def test_first_run_wow_sync_disable_cleanup_failure_still_saves_settings(
         lambda _parent, _title, message: warnings.append(message),
     )
 
-    assert main_mod._run_first_run_settings(cfg)
+    assert main_mod._run_first_run_settings(
+        cfg,
+        update_quit_gate=_active_update_quit_gate(),
+    )
     assert calls == ["save"]
     assert len(warnings) == 1
     assert "Settings were saved" in warnings[0]
@@ -6399,6 +6432,12 @@ def test_wow_start_update_prompt_message_points_at_titlebar_icon():
     )
 
 
+def _active_update_quit_gate() -> main_mod._UpdateQuitGate:
+    gate = main_mod._UpdateQuitGate()
+    gate.set_update_in_progress(True)
+    return gate
+
+
 def test_check_updates_treats_unavailable_update_check_as_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -6414,7 +6453,7 @@ def test_check_updates_treats_unavailable_update_check_as_error(
     )
 
     with pytest.raises(RuntimeError, match="offline"):
-        main_mod._check_updates()
+        main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
 
 
 def test_safe_update_check_reports_unavailable_on_unexpected_exception(
@@ -6449,14 +6488,14 @@ def test_check_updates_treats_uninstallable_available_release_as_error(
     )
 
     with pytest.raises(RuntimeError, match="no installer asset"):
-        main_mod._check_updates()
+        main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
 
 
 def test_check_updates_rejects_parallel_installer_runs():
     assert main_mod._UPDATE_INSTALL_LOCK.acquire(blocking=False)
     try:
         with pytest.raises(RuntimeError, match="already in progress"):
-            main_mod._check_updates()
+            main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
     finally:
         main_mod._UPDATE_INSTALL_LOCK.release()
 
@@ -6492,7 +6531,9 @@ def test_check_updates_downloads_and_launches_installable_release(
         or launch,
     )
 
-    update_result = main_mod._check_updates()
+    update_result = main_mod._check_updates(
+        update_quit_gate=_active_update_quit_gate()
+    )
 
     assert calls == [result, (installer, False)]
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
@@ -6500,6 +6541,97 @@ def test_check_updates_downloads_and_launches_installable_release(
     assert update_result.installer_handoff is True
     assert update_result.installer_launch is launch
     assert "Installing ApplicantScout Companion v0.2.0" in update_result.message
+
+
+def test_check_updates_arms_control_quit_before_launching_installer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    result = SimpleNamespace(
+        status="available",
+        message="Version v0.2.0 is available.",
+        latest_version="v0.2.0",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        asset_url="https://example.test/setup.exe",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+        checksum_url="https://example.test/setup.exe.sha256",
+    )
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    launch = object()
+    gate = main_mod._UpdateQuitGate()
+    gate.set_update_in_progress(True)
+    launch_gate_states: list[bool] = []
+    control_quit_results: list[bool] = []
+    normal_prepare_calls: list[None] = []
+    monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
+    monkeypatch.setattr(
+        main_mod,
+        "download_update_installer",
+        lambda _result: installer,
+    )
+
+    def launch_installer(
+        _path: Path, *, require_trusted_signature: bool = True
+    ) -> object:
+        launch_gate_states.append(gate.can_control_quit())
+        control_quit_results.append(
+            gate.prepare_control_quit(
+                lambda: normal_prepare_calls.append(None) or False
+            )
+        )
+        return launch
+
+    monkeypatch.setattr(main_mod, "launch_update_installer", launch_installer)
+
+    update_result = main_mod._check_updates(
+        update_quit_gate=gate,
+    )
+
+    assert launch_gate_states == [True]
+    assert control_quit_results == [True]
+    assert normal_prepare_calls == []
+    assert isinstance(update_result, main_mod.SettingsUpdateResult)
+    assert update_result.installer_launch is launch
+
+
+def test_check_updates_rolls_back_handoff_when_installer_launch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    result = SimpleNamespace(
+        status="available",
+        message="Version v0.2.0 is available.",
+        latest_version="v0.2.0",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        asset_url="https://example.test/setup.exe",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+        checksum_url="https://example.test/setup.exe.sha256",
+    )
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    gate = main_mod._UpdateQuitGate()
+    gate.set_update_in_progress(True)
+    launch_gate_states: list[bool] = []
+    monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
+    monkeypatch.setattr(
+        main_mod,
+        "download_update_installer",
+        lambda _result: installer,
+    )
+
+    def reject_launch(
+        _path: Path, *, require_trusted_signature: bool = True
+    ) -> object:
+        launch_gate_states.append(gate.can_control_quit())
+        raise RuntimeError("Popen failed")
+
+    monkeypatch.setattr(main_mod, "launch_update_installer", reject_launch)
+
+    with pytest.raises(RuntimeError, match="Popen failed"):
+        main_mod._check_updates(update_quit_gate=gate)
+
+    assert launch_gate_states == [True]
+    assert gate.update_in_progress
+    assert not gate.can_control_quit()
 
 
 def test_check_updates_launches_checksum_verified_installer_without_pinned_signer(
@@ -6534,7 +6666,9 @@ def test_check_updates_launches_checksum_verified_installer_without_pinned_signe
         or launch,
     )
 
-    update_result = main_mod._check_updates()
+    update_result = main_mod._check_updates(
+        update_quit_gate=_active_update_quit_gate()
+    )
 
     assert calls == [result, (installer, False)]
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
@@ -6575,7 +6709,7 @@ def test_check_updates_reports_untrusted_installer_without_handoff(
     monkeypatch.setattr(main_mod, "launch_update_installer", reject_launch)
 
     with pytest.raises(RuntimeError, match="not trusted"):
-        main_mod._check_updates()
+        main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
 
     assert calls == [result, (installer, False)]
 
@@ -6826,7 +6960,11 @@ def test_settings_dialog_gets_explicit_app_icon_before_exec(
     monkeypatch.setattr(main_mod, "_app_icon", lambda: icon)
     monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
 
-    assert not main_mod._run_settings_dialog(cfg, first_run=True)
+    assert not main_mod._run_settings_dialog(
+        cfg,
+        first_run=True,
+        update_quit_gate=_active_update_quit_gate(),
+    )
     assert seen_dialogs
     assert seen_dialogs[0].icon is icon
 

@@ -1256,31 +1256,45 @@ class _UpdateCompletion:
 
 class _UpdateQuitGate:
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._update_in_progress = False
         self._installer_handoff_started = False
 
     @property
     def update_in_progress(self) -> bool:
-        return self._update_in_progress
+        with self._lock:
+            return self._update_in_progress
 
     def set_update_in_progress(self, in_progress: bool) -> None:
-        self._update_in_progress = in_progress
-        if not in_progress:
-            self._installer_handoff_started = False
+        with self._lock:
+            self._update_in_progress = in_progress
+            if not in_progress:
+                self._installer_handoff_started = False
 
-    def mark_installer_handoff_started(self) -> None:
-        if self._update_in_progress:
+    def mark_installer_handoff_started(self) -> bool:
+        with self._lock:
+            if not self._update_in_progress:
+                return False
             self._installer_handoff_started = True
+            return True
+
+    def rollback_installer_handoff(self) -> None:
+        with self._lock:
+            if self._update_in_progress:
+                self._installer_handoff_started = False
 
     def can_user_quit(self) -> bool:
-        return not self._update_in_progress
+        with self._lock:
+            return not self._update_in_progress
 
     def can_control_quit(self) -> bool:
-        return not self._update_in_progress or self._installer_handoff_started
+        with self._lock:
+            return not self._update_in_progress or self._installer_handoff_started
 
     def prepare_control_quit(self, normal_prepare: Callable[[], bool]) -> bool:
-        if self._update_in_progress and self._installer_handoff_started:
-            return True
+        with self._lock:
+            if self._update_in_progress and self._installer_handoff_started:
+                return True
         return normal_prepare()
 
 
@@ -1586,7 +1600,9 @@ def _safe_check_for_update(current_version: str) -> UpdateResult:
         )
 
 
-def _check_updates() -> SettingsUpdateResult | tuple[str, str | None]:
+def _check_updates(
+    *, update_quit_gate: _UpdateQuitGate
+) -> SettingsUpdateResult | tuple[str, str | None]:
     if not _UPDATE_INSTALL_LOCK.acquire(blocking=False):
         raise RuntimeError("Update is already in progress.")
     try:
@@ -1600,12 +1616,18 @@ def _check_updates() -> SettingsUpdateResult | tuple[str, str | None]:
         if not _update_result_has_installable_asset(result):
             raise RuntimeError(str(message))
         installer = download_update_installer(result)
+        if not update_quit_gate.mark_installer_handoff_started():
+            raise RuntimeError("Update installer handoff is not active.")
         # WHY: current broad releases are unsigned by policy; the installer and
         # matching .sha256 sidecar are the in-app update gate, not publisher ID.
-        installer_launch = launch_update_installer(
-            installer,
-            require_trusted_signature=False,
-        )
+        try:
+            installer_launch = launch_update_installer(
+                installer,
+                require_trusted_signature=False,
+            )
+        except BaseException:
+            update_quit_gate.rollback_installer_handoff()
+            raise
         return SettingsUpdateResult(
             message=(
                 f"Installing ApplicantScout Companion {getattr(result, 'latest_version', 'update')}. "
@@ -2827,8 +2849,22 @@ def _apply_settings_change(
 def _run_first_run_settings(
     cfg: Config,
     *,
+    update_quit_gate: _UpdateQuitGate,
     character_cache: CharacterCache | None = None,
 ) -> bool:
+    def _check_updates_with_handoff() -> SettingsUpdateResult | tuple[str, str | None]:
+        update_quit_gate.set_update_in_progress(True)
+        keep_handoff = False
+        try:
+            result = _check_updates(update_quit_gate=update_quit_gate)
+            keep_handoff = (
+                isinstance(result, SettingsUpdateResult) and result.installer_handoff
+            )
+            return result
+        finally:
+            if not keep_handoff:
+                update_quit_gate.set_update_in_progress(False)
+
     dialog = SettingsDialog(
         cfg,
         first_run=True,
@@ -2840,7 +2876,7 @@ def _run_first_run_settings(
         ),
         open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
         clear_cache=lambda: _clear_cache_dir(cfg.cache_dir, character_cache),
-        check_updates=_check_updates,
+        check_updates=_check_updates_with_handoff,
     )
     dialog.setWindowIcon(_app_icon())
     _connect_release_notes_dialog_action(dialog)
@@ -2911,14 +2947,21 @@ def _run_settings_dialog(
     cfg: Config,
     *,
     first_run: bool,
+    update_quit_gate: _UpdateQuitGate,
     character_cache: CharacterCache | None = None,
 ) -> bool:
     if not first_run:
         raise RuntimeError("Normal settings are modeless; use _show_settings.")
-    return _run_first_run_settings(cfg, character_cache=character_cache)
+    return _run_first_run_settings(
+        cfg,
+        update_quit_gate=update_quit_gate,
+        character_cache=character_cache,
+    )
 
 
-def _load_startup_config() -> tuple[Config, Path, bool] | None:
+def _load_startup_config(
+    *, update_quit_gate: _UpdateQuitGate
+) -> tuple[Config, Path, bool] | None:
     startup_settings_shown = False
     try:
         cfg = load_config()
@@ -2927,7 +2970,11 @@ def _load_startup_config() -> tuple[Config, Path, bool] | None:
         return None
     while True:
         if not is_config_ready(cfg):
-            if not _run_settings_dialog(cfg, first_run=True):
+            if not _run_settings_dialog(
+                cfg,
+                first_run=True,
+                update_quit_gate=update_quit_gate,
+            ):
                 return None
             startup_settings_shown = True
             try:
@@ -2948,7 +2995,11 @@ def _load_startup_config() -> tuple[Config, Path, bool] | None:
                 )
                 return None
             QMessageBox.warning(None, "ApplicantScout setup", str(exc))
-            if not _run_settings_dialog(cfg, first_run=True):
+            if not _run_settings_dialog(
+                cfg,
+                first_run=True,
+                update_quit_gate=update_quit_gate,
+            ):
                 return None
             startup_settings_shown = True
             try:
@@ -3059,6 +3110,9 @@ def main(argv: list[str] | None = None) -> int:
     watcher_signal_gate = _WatcherSignalGate()
     live_snapshot_writer: LiveSnapshotCacheWriter | None = None
 
+    def _check_updates_with_handoff() -> SettingsUpdateResult | tuple[str, str | None]:
+        return _check_updates(update_quit_gate=update_quit_gate)
+
     def _flush_before_quit() -> None:
         _quiesce_screenshot_ingestion(
             watcher,
@@ -3138,7 +3192,7 @@ def main(argv: list[str] | None = None) -> int:
     if control_server is not None:
         setattr(app, "_applicant_scout_control_server", control_server)
 
-    loaded = _load_startup_config()
+    loaded = _load_startup_config(update_quit_gate=update_quit_gate)
     if loaded is None:
         return 1
 
@@ -3262,7 +3316,7 @@ def main(argv: list[str] | None = None) -> int:
                 auth,
                 live_snapshot_writer=live_snapshot_writer,
             ),
-            check_updates=_check_updates,
+            check_updates=_check_updates_with_handoff,
             hide_to_tray_on_close=tray_controller is not None,
             parent=window,
         )
@@ -3410,7 +3464,7 @@ def main(argv: list[str] | None = None) -> int:
 
         def _worker() -> None:
             try:
-                result = _check_updates()
+                result = _check_updates_with_handoff()
                 if isinstance(result, SettingsUpdateResult):
                     completion = _UpdateCompletion(
                         message=result.message,
