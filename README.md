@@ -86,9 +86,10 @@ ApplicantScout is split intentionally:
 The QR frame appears only during the screenshot capture window so it stays out
 of the way between snapshots.
 
-ApplicantScout temporarily raises screenshot quality and uses JPG format while
-enabled, then restores your prior screenshot settings when you turn it off with
-`/apscout off`.
+ApplicantScout temporarily raises screenshot quality and uses JPG format only
+during each QR capture, then restores your prior screenshot settings after the
+screenshot. `/apscout off` and the next `/reload` also restore an interrupted
+capture lease defensively.
 
 ## Overlay Data
 

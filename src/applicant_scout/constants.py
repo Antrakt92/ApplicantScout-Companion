@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 
-# Verified via Test B 2026-04-29 (https://www.warcraftlogs.com/zones).
-# Update once per season. M+ zones change every 3 months, raid zones every ~6.
+# Verified by scripts/seasonal/verify_wcl_season.py against the WCL GraphQL API.
+# Re-run the quota-aware release gate whenever the active season changes.
 CURRENT_MPLUS_ZONE_ID = 47  # Midnight Season 1
 CURRENT_RAID_ZONE_ID = 46  # VS / DR / MQD zoneRankings summary
+# Boss-detail encounter IDs span the main Midnight zone and Sporefall.
+CURRENT_RAID_ENCOUNTER_ZONE_IDS: tuple[int, ...] = (CURRENT_RAID_ZONE_ID, 50)
 SEASON_NAME = "Midnight Season 1"
 
 # Boss-detail rows are per encounterID, so they can include the 12.0.7 Sporefall
@@ -18,8 +20,8 @@ CURRENT_RAID_ENCOUNTERS: list[tuple[str, int, str]] = [
     ("ve", 3178, "Vaelgor & Ezzorak"),
     ("lv", 3180, "Lightblinded Vanguard"),
     ("cc", 3181, "Crown of the Cosmos"),
-    ("cu", 3306, "Chimaerus"),
-    ("ba", 3182, "Belo'ren"),
+    ("cu", 3306, "Chimaerus, the Undreamt God"),
+    ("ba", 3182, "Belo'ren, Child of Al'ar"),
     ("mf", 3183, "Midnight Falls"),
     ("ro", 3159, "Rotmire"),
 ]

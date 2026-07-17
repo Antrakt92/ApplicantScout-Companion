@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from applicant_scout.config import Config
-from applicant_scout.metric_preferences import MetricPreferences
+from applicant_scout.metric_preferences import (
+    DEFAULT_METRIC_PREFERENCES,
+    MetricPreferences,
+)
 from applicant_scout.settings_dialog import SettingsDialog
 from scripts.visual_fixture_checks import VisualFixtureDiff, compare_visual_images
 
@@ -48,7 +51,19 @@ def _baseline_path(name: str) -> Path:
     )
 
 
-def _visual_config(*, blank_credentials: bool = False) -> Config:
+def _visual_config(
+    *, first_run: bool = False, blank_credentials: bool = False
+) -> Config:
+    metric_preferences = (
+        DEFAULT_METRIC_PREFERENCES
+        if first_run
+        else MetricPreferences(
+            mplus=True,
+            raid_normal=True,
+            raid_heroic=True,
+            raid_mythic=True,
+        )
+    )
     return Config(
         wcl_client_id="" if blank_credentials else "fixture-client-id",
         wcl_client_secret="" if blank_credentials else "fixture-client-secret",
@@ -58,12 +73,7 @@ def _visual_config(*, blank_credentials: bool = False) -> Config:
         region="EU",
         cache_dir=Path(r"C:\ApplicantScoutFixture\cache"),
         config_dir=Path(r"C:\ApplicantScoutFixture\config"),
-        metric_preferences=MetricPreferences(
-            mplus=True,
-            raid_normal=True,
-            raid_heroic=True,
-            raid_mythic=True,
-        ),
+        metric_preferences=metric_preferences,
         screenshots_path=None,
         sync_with_wow=False,
     )
@@ -139,7 +149,10 @@ def create_settings_visual_dialog(
 ) -> SettingsDialog:
     resolved = resolve_settings_visual_scenario(scenario)
     dialog = SettingsDialog(
-        _visual_config(blank_credentials=resolved.blank_credentials),
+        _visual_config(
+            first_run=resolved.first_run,
+            blank_credentials=resolved.blank_credentials,
+        ),
         first_run=resolved.first_run,
         hide_to_tray_on_close=hide_to_tray_on_close,
     )

@@ -153,6 +153,16 @@ def test_settings_visual_fixture_first_run_layout_has_setup_buttons(qtbot):
     assert dialog.close_button.accessibleName() == "Close setup"
 
 
+def test_settings_visual_fixture_first_run_uses_real_metric_defaults(qtbot):
+    dialog = create_settings_visual_dialog("first-run")
+    qtbot.addWidget(dialog)
+
+    assert dialog.mplus_check.isChecked()
+    assert not dialog.raid_normal_check.isChecked()
+    assert not dialog.raid_heroic_check.isChecked()
+    assert not dialog.raid_mythic_check.isChecked()
+
+
 def test_settings_visual_fixture_titles_are_version_stable(qtbot):
     normal = create_settings_visual_dialog("normal-default")
     first_run = create_settings_visual_dialog("first-run")

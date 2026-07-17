@@ -2818,6 +2818,49 @@ def test_hidden_panel_refresh_preserves_unexpanded_geometry_for_quit_flush(
         client.close()
 
 
+def test_health_label_warns_when_paired_addon_is_outdated(
+    monkeypatch, qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
+        old_snapshot = type(
+            "OldSnapshot",
+            (),
+            {
+                "version": type("Version", (), {"addon_version": "0.5.1"})(),
+                "roster_unavailable": False,
+            },
+        )()
+
+        window.note_decode(old_snapshot)
+
+        assert window._health_label.text() == "addon update"
+        assert "0.5.1" in window._health_label.toolTip()
+        assert "0.5.3" in window._health_label.toolTip()
+        assert "/reload" in window._health_label.toolTip()
+
+        current_snapshot = type(
+            "CurrentSnapshot",
+            (),
+            {
+                "version": type("Version", (), {"addon_version": "0.5.3"})(),
+                "roster_unavailable": False,
+            },
+        )()
+        window.note_decode(current_snapshot)
+
+        assert window._health_label.text() == "shot 0s ago"
+        assert window._health_label.toolTip() == ""
+    finally:
+        client.close()
+
+
 def test_partial_decode_marks_party_count_as_last_known(monkeypatch, qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)

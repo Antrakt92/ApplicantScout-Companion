@@ -31,7 +31,7 @@ checksum-gated updater smoke has been attested.
 
    ```powershell
     .\.venv\Scripts\python -m pytest
-    .\scripts\check.ps1 -SeasonalOnlineChecks
+    .\scripts\check.ps1 -SeasonalOnlineChecks -SeasonalWCLChecks
     .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
     .\scripts\check-release-version.ps1 -Tag v<companion version>
    ```
@@ -45,6 +45,10 @@ checksum-gated updater smoke has been attested.
    and `MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME` against Wago's
    MythicPlusSeasonTrackedMap / MapChallengeMode data before seasonal release
    prep relies on the shipped localized-listing or Party leader-key fallback.
+   `-SeasonalWCLChecks` is an explicit quota-spend acknowledgment: it makes one
+   authenticated Warcraft Logs GraphQL request, validates the shipped M+ and
+   raid zone/encounter constants, reports the post-query quota snapshot, and
+   fails if fewer than 50 points remain.
 
 ## Build
 
@@ -103,7 +107,10 @@ checksum-gated updater smoke has been attested.
    before the paired addon `Package and release` workflow reaches marketplace
    publishing.
 6. Confirm the paired addon GitHub Release is public with its ZIP and
-   `release.json`.
+   `release.json`, and confirm the addon's separate read-only
+   `verify-curseforge` job reports the expected ZIP as the first public
+   Approved/Released file. If marketplace propagation is delayed, rerun only
+   that verification job; never retry the already completed upload.
 7. If the addon workflow fails only because companion assets were not public
    inside the 180-second wait, rerun the failed addon workflow after the
    companion assets exist. Do not delete/recreate or force-push release tags for
@@ -120,3 +127,8 @@ checksum-gated updater smoke has been attested.
     is signed after Inno Setup and before `.sha256` generation. Without a
     configured certificate, release builds remain unsigned and the checksum
     still proves integrity, not publisher identity.
+11. After the addon release is public, verify it once through a separately
+    managed Retail installation or isolated test instance and keep automatic
+    updates enabled there. Do not overwrite a linked or development checkout;
+    a manually copied folder is not owned by CurseForge and will not receive
+    marketplace updates even when the public file is current.

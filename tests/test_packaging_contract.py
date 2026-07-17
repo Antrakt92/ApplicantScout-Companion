@@ -125,6 +125,16 @@ def _paired_addon_version() -> str:
     return match.group(1)
 
 
+def _minimum_runtime_addon_version() -> str:
+    match = re.search(
+        r'^MINIMUM_ADDON_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
+        _read_repo_text("src/applicant_scout/compatibility.py"),
+        re.M,
+    )
+    assert match is not None
+    return match.group(1)
+
+
 def _previous_patch_version(version: str) -> str:
     major, minor, patch = (int(part) for part in version.split("."))
     if patch > 0:
@@ -340,10 +350,14 @@ def test_check_script_checks_native_command_exit_codes():
 
     assert "Invoke-NativeChecked" in script
     assert "[switch]$SeasonalOnlineChecks" in script
+    assert "[switch]$SeasonalWCLChecks" in script
     assert '[string]$VisualMode = "Strict"' in script
     assert 'Invoke-NativeChecked -Label "Python tests"' in script
     assert 'Invoke-NativeChecked -Label "Seasonal activity IDs"' in script
     assert 'Invoke-NativeChecked -Label "Seasonal challenge map IDs"' in script
+    assert (
+        'Invoke-NativeChecked -Label "Seasonal WCL zones and encounters"' in script
+    )
     assert 'Invoke-NativeChecked -Label "Seasonal online checks"' not in script
     assert 'Invoke-NativeChecked -Label "Overlay visual baselines"' in script
     assert 'Invoke-NativeChecked -Label "Settings dialog visual baselines"' in script
@@ -352,6 +366,10 @@ def test_check_script_checks_native_command_exit_codes():
     assert "render_settings_dialog_fixture.py" in script
     assert "scripts\\seasonal\\get_mplus_activity_ids.py --check" in script
     assert "scripts\\seasonal\\get_mplus_challenge_map_ids.py --check" in script
+    assert (
+        "scripts\\seasonal\\verify_wcl_season.py --confirm-spend-wcl-quota"
+        in script
+    )
     assert "export_public_visual_assets.py" in script
     assert "--addon-root $AddonRoot --check" in script
     assert 'if ($VisualMode -eq "Strict")' in script
@@ -366,6 +384,11 @@ def test_check_script_checks_native_command_exit_codes():
         'Write-Host "== Seasonal online checks =="'
     )
     assert script.index('Write-Host "== Seasonal online checks =="') < script.index(
+        'Write-Host "== Seasonal WCL check (spends one authenticated query) =="'
+    )
+    assert script.index(
+        'Write-Host "== Seasonal WCL check (spends one authenticated query) =="'
+    ) < script.index(
         'Write-Host "== Overlay visual baselines =="'
     )
 
@@ -640,6 +663,10 @@ def test_release_constraints_header_matches_project_version():
     assert constraints_version.group(1) == project_version.group(1)
 
 
+def test_runtime_addon_warning_matches_paired_release_version():
+    assert _minimum_runtime_addon_version() == _paired_addon_version()
+
+
 def test_release_build_refuses_dirty_release_inputs_by_default():
     build_script = _read_repo_text("scripts/build-windows.ps1")
     release_inputs = _release_input_paths(build_script)
@@ -802,12 +829,17 @@ def test_release_checklist_requires_local_strict_visual_and_media_export_gate():
     checklist = _read_repo_text("RELEASE_CHECKLIST.md")
 
     assert "local strict visual baselines" in checklist.lower()
-    assert ".\\scripts\\check.ps1 -SeasonalOnlineChecks" in checklist
+    assert (
+        ".\\scripts\\check.ps1 -SeasonalOnlineChecks -SeasonalWCLChecks"
+        in checklist
+    )
     assert "check-applicantscout-copy.ps1" not in checklist
     assert "MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME" in checklist
     assert "MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME" in checklist
     assert "MythicPlusSeasonTrackedMap" in checklist
     assert "MapChallengeMode" in checklist
+    assert "authenticated Warcraft Logs GraphQL request" in checklist
+    assert "fewer than 50 points remain" in checklist
     assert "Do not use `-VisualMode Smoke` for this local release gate" in checklist
     assert "CI/release smoke" in checklist
     assert ".\\scripts\\check.ps1" in checklist
@@ -1987,20 +2019,44 @@ def test_release_version_check_does_not_invoke_addon_release_script():
 def test_check_workflow_runs_non_release_companion_and_addon_gates():
     workflow = _read_repo_text(".github/workflows/check.yml")
     check = _job_block(workflow, "check")
+    package = _job_block(workflow, "package")
 
     assert "push:" in workflow
     assert "pull_request:" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "paired_addon_ref:" in workflow
     assert "tags:" not in workflow
     assert re.search(r"(?m)^    runs-on: windows-2022\s*$", check)
     assert "contents: read" in workflow
     assert "contents: write" not in workflow
     assert "path: ApplicantScout-Companion" in workflow
     assert "repository: Antrakt92/ApplicantScout-Addon" in workflow
+    addon_checkout = _step_block(check, "Checkout addon")
+    assert "ref: ${{ github.event.inputs.paired_addon_ref || 'main' }}" in (
+        addon_checkout
+    )
+    assert "default: main" in workflow
+    assert "type: string" in workflow
     assert "path: ApplicantScout-Addon" in workflow
     assert "APPLICANT_SCOUT_VISUAL_BASELINE" not in workflow
     assert ".\\scripts\\check.ps1 -AddonRoot ..\\ApplicantScout-Addon -VisualMode Smoke" in workflow
     assert "gh release" not in workflow
-    assert "build-windows.ps1" not in workflow
+    assert "build-windows.ps1" not in check
+    assert re.search(r"(?m)^    needs: check\s*$", package)
+    assert re.search(r"(?m)^    runs-on: windows-2022\s*$", package)
+    assert "repository: Antrakt92/ApplicantScout-Addon" not in package
+    assert ".\\scripts\\build-windows.ps1 -SkipChecks" in package
+    assert "check-release-version.ps1 -Tag \"v$Version\" -RequireAssets" in package
+    assert "APSCOUT_SIGNING_" not in package
+    assert "upload-artifact" not in package
+    assert "choco install innosetup --version=6.7.1 -y --no-progress" in package
+    _assert_order(
+        package,
+        "Install release dependencies",
+        "Install Windows packaging tools",
+        "Build unsigned Windows artifacts",
+        "Validate Windows artifacts",
+    )
 
 
 def test_check_workflow_pins_external_actions_to_commit_shas():
@@ -2009,12 +2065,15 @@ def test_check_workflow_pins_external_actions_to_commit_shas():
 
     assert Counter(action for action, _ in action_refs) == Counter(
         {
-            "actions/checkout": 2,
-            "actions/setup-python": 1,
+            "actions/checkout": 3,
+            "actions/setup-python": 2,
         }
     )
     for action, ref in action_refs:
         assert _SHA_REF_RE.fullmatch(ref), f"{action} must be pinned to a full commit SHA"
+
+    install_args = _release_tool_install_args(workflow)
+    assert install_args["innosetup"] == [" --version=6.7.1 -y --no-progress"]
 
 
 def test_release_workflow_uploads_exact_updater_assets_as_draft_first():

@@ -8,7 +8,6 @@ from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtWidgets import QApplication
 
 import applicant_scout.overlay as overlay_mod
-from applicant_scout.constants import ALL_ROLES
 from applicant_scout.overlay import COL_H, COL_M, COL_MPLUS, COL_N
 from scripts import render_overlay_fixture
 from scripts.overlay_visual_fixture import (
@@ -202,8 +201,12 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
         screen = window.screen()
         if screen is not None:
             assert window.geometry().top() >= screen.availableGeometry().top()
-        assert window._role_filter_bar._active == set(ALL_ROLES)
-        assert not window._role_filter_bar._reset_btn.isHidden()
+        assert window._role_filter_bar._active == set()
+        assert window._role_filter_bar._reset_btn.isHidden()
+        assert all(
+            not button.isChecked()
+            for button in window._role_filter_bar._buttons.values()
+        )
         assert all(
             not window._table.isRowHidden(row)
             for row in range(window._table.rowCount())

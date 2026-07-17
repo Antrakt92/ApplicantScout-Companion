@@ -952,6 +952,26 @@ def test_leader_key_creates_effective_party_listing(qtbot, tmp_path):
     assert win._tab_bar._key_spin.value() == 17
 
 
+def test_leader_key_above_30_remains_effective_and_visible(qtbot, tmp_path):
+    state = AppState()
+    state.leader_key = LeaderKey(
+        key_level=31,
+        challenge_map_id=556,
+        player_name="Leader-Realm",
+    )
+    state.party_members["dps-realm"] = _ready_mplus_member()
+    win = _window(tmp_path, qtbot, state)
+
+    listing = win._effective_listing()
+
+    assert listing is not None
+    assert listing.key_level == 31
+    win._active_tab = "party"
+    win._update_title()
+    assert win._title_bar.title_label.text() == "Party — Pit of Saron +31 (1)"
+    assert win._tab_bar._key_spin.value() == 31
+
+
 def test_unknown_leader_challenge_map_keeps_generic_party_listing(qtbot, tmp_path):
     state = AppState()
     state.leader_key = LeaderKey(
@@ -989,6 +1009,28 @@ def test_manual_target_key_overrides_leader_key(qtbot, tmp_path):
     assert listing.key_level == 16
     assert listing.dungeon_name == "Pit of Saron"
     assert win._tab_bar._key_spin.value() == 16
+
+
+def test_manual_target_key_above_30_is_preserved_and_steps(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["dps-realm"] = _ready_mplus_member()
+    win = _window(tmp_path, qtbot, state)
+
+    win._tab_bar._key_spin.setValue(31)
+
+    listing = win._effective_listing()
+    assert listing is not None
+    assert listing.key_level == 31
+    assert win._manual_target_key == 31
+    assert win._tab_bar._key_spin.value() == 31
+
+    qtbot.mouseClick(win._tab_bar._key_up_button, Qt.MouseButton.LeftButton)
+
+    listing = win._effective_listing()
+    assert listing is not None
+    assert listing.key_level == 32
+    assert win._manual_target_key == 32
+    assert win._tab_bar._key_spin.value() == 32
 
 
 def test_manual_target_key_recomputes_party_mplus_cells(qtbot, tmp_path):

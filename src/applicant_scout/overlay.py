@@ -72,6 +72,7 @@ from .constants import (
     percentile_colour,
     rio_score_colour,
 )
+from .compatibility import addon_version_warning
 from .metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
@@ -175,6 +176,7 @@ MPLUS_INDIVIDUAL_BG_ROLE = Qt.ItemDataRole.UserRole + 24
 MPLUS_GROUP_LANE_MAX_WIDTH = 72
 MPLUS_GROUP_LANE_MIN_WIDTH = 42
 MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 56
+MPLUS_TARGET_KEY_MAX = 99
 _TABLE_DETAIL_ONLY_APPLICANT_FIELDS = {"raid_boss_parses"}
 
 MAX_WCL_RETRY_BATCH = 3
@@ -1389,7 +1391,7 @@ class SourceTabBar(QWidget):
         key_layout.setSpacing(0)
         self._key_spin = QSpinBox()
         self._key_spin.setObjectName("targetKeySpin")
-        self._key_spin.setRange(0, 30)
+        self._key_spin.setRange(0, MPLUS_TARGET_KEY_MAX)
         self._key_spin.setSpecialValueText("—")
         self._key_spin.setPrefix("+")
         self._key_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
@@ -1458,7 +1460,7 @@ class SourceTabBar(QWidget):
             self.tabChanged.emit(key)
 
     def set_target_key(self, key_level: int) -> None:
-        key_level = max(0, min(30, int(key_level)))
+        key_level = max(0, min(MPLUS_TARGET_KEY_MAX, int(key_level)))
         was_blocked = self._key_spin.blockSignals(True)
         self._key_spin.setValue(key_level)
         self._key_spin.blockSignals(was_blocked)
@@ -2667,6 +2669,7 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
         self._last_decode_roster_unavailable = False
+        self._addon_version_warning: str | None = None
         self._restored_snapshot_pending = False
         self._restored_snapshot_saved_at: float | None = None
         self._restored_snapshot_deadline: float | None = None
@@ -3177,6 +3180,7 @@ class OverlayWindow(QMainWindow):
         Observer thread onto the GUI thread automatically). Read by the timer
         slot also runs on GUI thread — no lock needed for the float field."""
         was_roster_unavailable = self._last_decode_roster_unavailable
+        previous_addon_warning = self._addon_version_warning
         self._last_decode_time = time.time()
         self._last_decode_failed_time = None
         self._last_decode_failed_path = ""
@@ -3184,11 +3188,20 @@ class OverlayWindow(QMainWindow):
         self._last_decode_roster_unavailable = bool(
             getattr(snap, "roster_unavailable", False)
         )
+        version = getattr(snap, "version", None)
+        self._addon_version_warning = addon_version_warning(
+            getattr(version, "addon_version", None)
+        )
         self._tab_bar.set_party_count_stale(self._last_decode_roster_unavailable)
         self._restored_snapshot_pending = False
         self._restored_snapshot_saved_at = None
         self._restored_snapshot_deadline = None
-        if self._last_decode_roster_unavailable or was_roster_unavailable:
+        if (
+            self._last_decode_roster_unavailable
+            or was_roster_unavailable
+            or self._addon_version_warning
+            or previous_addon_warning
+        ):
             self._refresh_health_label()
         else:
             self._health_label.setToolTip("")
@@ -3266,6 +3279,10 @@ class OverlayWindow(QMainWindow):
                 f"{self._last_decode_failed_reason}\n"
                 f"{_format_age(delta)}"
             )
+            return
+        if self._addon_version_warning:
+            self._health_label.setText("addon update")
+            self._health_label.setToolTip(self._addon_version_warning)
             return
         last = self._last_decode_time
         if self._last_decode_roster_unavailable and last is not None:

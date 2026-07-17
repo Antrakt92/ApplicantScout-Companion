@@ -5,6 +5,13 @@ on:
     branches:
       - '**'
   pull_request:
+  workflow_dispatch:
+    inputs:
+      paired_addon_ref:
+        description: Addon branch, tag, or commit to validate with this companion ref
+        required: false
+        default: main
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +32,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: Antrakt92/ApplicantScout-Addon
+          ref: ${{ github.event.inputs.paired_addon_ref || 'main' }}
           fetch-depth: 0
           path: ApplicantScout-Addon
 
@@ -50,3 +58,44 @@ jobs:
         shell: pwsh
         working-directory: ApplicantScout-Companion
         run: .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon -VisualMode Smoke
+
+  package:
+    needs: check
+    runs-on: windows-2022
+    steps:
+      - name: Checkout companion
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          path: ApplicantScout-Companion
+
+      - name: Set up Python
+        # actions/setup-python v6 pinned to the upstream tag commit.
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.13'
+
+      - name: Install release dependencies
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install -r constraints-release.txt
+          .\.venv\Scripts\python -m pip install -e '.[dev]' -c constraints-release.txt
+
+      - name: Install Windows packaging tools
+        shell: pwsh
+        run: choco install innosetup --version=6.7.1 -y --no-progress
+
+      - name: Build unsigned Windows artifacts
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\scripts\build-windows.ps1 -SkipChecks
+
+      - name: Validate Windows artifacts
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $Version = (& .\.venv\Scripts\python -c "import applicant_scout; print(applicant_scout.__version__)").Trim()
+          .\scripts\check-release-version.ps1 -Tag "v$Version" -RequireAssets

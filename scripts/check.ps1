@@ -2,7 +2,8 @@ param(
     [string]$AddonRoot = "",
     [ValidateSet("Strict", "Smoke")]
     [string]$VisualMode = "Strict",
-    [switch]$SeasonalOnlineChecks
+    [switch]$SeasonalOnlineChecks,
+    [switch]$SeasonalWCLChecks
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,6 +88,16 @@ if ($SeasonalOnlineChecks) {
 }
 else {
     Write-Host "== Seasonal online checks skipped =="
+}
+
+if ($SeasonalWCLChecks) {
+    Write-Host "== Seasonal WCL check (spends one authenticated query) =="
+    Invoke-NativeChecked -Label "Seasonal WCL zones and encounters" -Command {
+        & $Python scripts\seasonal\verify_wcl_season.py --confirm-spend-wcl-quota
+    }
+}
+else {
+    Write-Host "== Seasonal WCL check skipped =="
 }
 
 Write-Host "== Overlay visual baselines =="

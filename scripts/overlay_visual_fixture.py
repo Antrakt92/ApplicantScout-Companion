@@ -445,8 +445,6 @@ def _prepare_common_visual_window(window: OverlayWindow) -> None:
     viewport = window._table.viewport()
     if viewport is not None:
         viewport.setMouseTracking(False)
-    for role in ("TANK", "HEALER", "DAMAGER"):
-        window._role_filter_bar._buttons[role].setChecked(True)
 
 
 def _pin_visual_row(window: OverlayWindow, applicant_id: str) -> None:
