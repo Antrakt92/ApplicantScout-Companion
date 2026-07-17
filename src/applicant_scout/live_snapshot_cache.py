@@ -29,6 +29,8 @@ LIVE_SNAPSHOT_CACHE_FILENAME = "last-live-snapshot.json"
 LIVE_SNAPSHOT_CACHE_SCHEMA = 1
 LIVE_SNAPSHOT_CACHE_TTL_SECONDS = 90.0
 LIVE_SNAPSHOT_RESTORE_GRACE_SECONDS = 30.0
+LIVE_SNAPSHOT_CLOSE_TIMEOUT_SECONDS = 2.0
+LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS = 2
 
 
 @dataclass(frozen=True)
@@ -120,10 +122,12 @@ class LiveSnapshotCacheWriter:
         *,
         defer_saves: bool = True,
         save_debounce_seconds: float = 0.25,
+        close_timeout_seconds: float = LIVE_SNAPSHOT_CLOSE_TIMEOUT_SECONDS,
     ) -> None:
         self._cache_dir = Path(cache_dir)
         self._defer_saves = bool(defer_saves)
         self._save_debounce_seconds = max(0.0, float(save_debounce_seconds))
+        self._close_timeout_seconds = max(0.0, float(close_timeout_seconds))
         self._lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._pending: _PendingLiveSnapshotCacheOperation | None = None
@@ -148,29 +152,26 @@ class LiveSnapshotCacheWriter:
             self.flush()
 
     def flush(self) -> bool:
-        with self._lock:
-            self._cancel_timer_locked()
-            operation = self._pending
-            self._pending = None
-            generation = self._generation
-        if operation is None:
-            return True
-
+        # WHY: claim and requeue under the write barrier so close cannot observe
+        # a false-empty queue between a failed I/O attempt and its retry state.
         with self._write_lock:
+            with self._lock:
+                self._cancel_timer_locked()
+                if self._closed:
+                    return self._pending is None
+                operation = self._pending
+                self._pending = None
+                generation = self._generation
+            if operation is None:
+                return True
             succeeded = self._perform_operation(operation)
-        if succeeded:
-            return True
-
-        with self._lock:
-            if (
-                not self._closed
-                and self._pending is None
-                and generation == self._generation
-            ):
-                self._pending = operation
-                if self._defer_saves:
-                    self._schedule_locked()
-        return False
+            if not succeeded:
+                with self._lock:
+                    if self._pending is None and generation == self._generation:
+                        self._pending = operation
+                        if not self._closed and self._defer_saves:
+                            self._schedule_locked()
+            return succeeded
 
     def invalidate(self) -> None:
         with self._lock:
@@ -180,12 +181,41 @@ class LiveSnapshotCacheWriter:
         with self._write_lock:
             pass
 
-    def close(self) -> None:
-        self.flush()
+    def close(self) -> bool:
+        # WHY: reject new submissions before boundedly joining any timer-owned
+        # write; a failed in-flight operation is then available for final retry.
         with self._lock:
             self._closed = True
             self._cancel_timer_locked()
-            self._pending = None
+
+        if not self._write_lock.acquire(timeout=self._close_timeout_seconds):
+            _log.warning(
+                "Timed out after %.2fs draining the live snapshot cache writer.",
+                self._close_timeout_seconds,
+            )
+            return False
+        try:
+            with self._lock:
+                operation = self._pending
+                self._pending = None
+                generation = self._generation
+            if operation is None:
+                return True
+
+            for _attempt in range(LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS):
+                if self._perform_operation(operation):
+                    return True
+
+            with self._lock:
+                if self._pending is None and generation == self._generation:
+                    self._pending = operation
+            _log.warning(
+                "Failed to drain the live snapshot cache writer after %d attempts.",
+                LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS,
+            )
+            return False
+        finally:
+            self._write_lock.release()
 
     def _schedule_locked(self) -> None:
         if self._timer is not None:

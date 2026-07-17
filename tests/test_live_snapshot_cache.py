@@ -543,3 +543,126 @@ def test_live_snapshot_writer_retries_failed_clear_on_next_flush(
 
     assert calls == 2
     assert not _cache_path(tmp_path).exists()
+
+
+def test_live_snapshot_writer_close_waits_for_dequeued_failed_clear_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    started = threading.Event()
+    release = threading.Event()
+    close_returned = threading.Event()
+    original_clear = cache_mod.clear_live_snapshot
+    close_results: list[bool] = []
+    calls = 0
+
+    def blocked_flaky_clear(cache_dir):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            assert release.wait(timeout=2.0)
+            return False
+        return original_clear(cache_dir)
+
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", blocked_flaky_clear)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(Snapshot(listing=None, version=None), now=101.0)
+
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    close_thread = threading.Thread(
+        target=lambda: (close_results.append(writer.close()), close_returned.set())
+    )
+    close_thread.start()
+    try:
+        assert not close_returned.wait(timeout=0.05)
+    finally:
+        release.set()
+    flush_thread.join(timeout=2.0)
+    close_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert close_results == [True]
+    assert calls == 2
+    assert load_live_snapshot(tmp_path, now=102.0) is None
+
+
+def test_live_snapshot_writer_close_retries_failed_final_clear(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    original_clear = cache_mod.clear_live_snapshot
+    calls = 0
+
+    def flaky_clear(cache_dir):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return False
+        return original_clear(cache_dir)
+
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", flaky_clear)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(Snapshot(listing=None, version=None), now=101.0)
+
+    assert writer.close()
+    assert calls == 2
+    assert load_live_snapshot(tmp_path, now=102.0) is None
+
+
+def test_live_snapshot_writer_close_times_out_but_can_finish_later(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    started = threading.Event()
+    release = threading.Event()
+    original_clear = cache_mod.clear_live_snapshot
+    calls = 0
+
+    def blocked_flaky_clear(cache_dir):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            assert release.wait(timeout=2.0)
+            return False
+        return original_clear(cache_dir)
+
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", blocked_flaky_clear)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+        close_timeout_seconds=0.05,
+    )
+    writer.submit(Snapshot(listing=None, version=None), now=101.0)
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    try:
+        assert not writer.close()
+        assert flush_thread.is_alive()
+    finally:
+        release.set()
+    flush_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert writer.close()
+    assert calls == 2
+    assert load_live_snapshot(tmp_path, now=102.0) is None
