@@ -404,7 +404,12 @@ def _mplus_scorecard_candidate_fit(
         return None
     same_dungeon_key = _rio_same_dungeon_key(applicant, listing)
     rio_row_key_levels = _mplus_rio_row_key_levels(applicant)
-    rio_key_levels = _mplus_rio_key_levels(applicant, target_key, same_dungeon_key)
+    rio_key_levels = _mplus_rio_key_levels(
+        applicant,
+        target_key,
+        same_dungeon_key,
+        rio_row_key_levels=rio_row_key_levels,
+    )
     wcl_signals = [] if ignore_wcl else _mplus_wcl_signals(applicant, listing)
 
     if not rio_key_levels and not wcl_signals and not allow_score_fallback:
@@ -807,31 +812,34 @@ def _mplus_rio_row_key_levels(applicant: Applicant) -> list[int]:
 
 
 def _mplus_rio_key_levels(
-    applicant: Applicant, target_key: int, same_dungeon_key: int
+    applicant: Applicant,
+    target_key: int,
+    same_dungeon_key: int,
+    *,
+    rio_row_key_levels: list[int],
 ) -> list[int]:
-    row_levels = _mplus_rio_row_key_levels(applicant)
     dungeon_count = positive_int(applicant.rio_dungeon_count)
     expected_rows = min(MPLUS_DUNGEON_COUNT, dungeon_count or MPLUS_DUNGEON_COUNT)
-    if len(row_levels) >= expected_rows:
-        return sorted(row_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
+    if len(rio_row_key_levels) >= expected_rows:
+        return sorted(rio_row_key_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
 
     synthetic = (
         _mplus_synthetic_rio_key_levels(
             applicant,
             target_key,
             same_dungeon_key=same_dungeon_key,
-            include_named_keys=not row_levels,
+            include_named_keys=not rio_row_key_levels,
         )
         if _mplus_rio_summary_matches_target(applicant, target_key)
         else []
     )
     if not synthetic:
-        return sorted(row_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
-    if not row_levels:
+        return sorted(rio_row_key_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
+    if not rio_row_key_levels:
         return synthetic
 
     merged = list(synthetic)
-    for row_level in sorted(row_levels, reverse=True):
+    for row_level in sorted(rio_row_key_levels, reverse=True):
         replaceable = [
             idx for idx, synthetic_level in enumerate(merged) if row_level > synthetic_level
         ]

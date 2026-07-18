@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import pytest
 
+import applicant_scout.scoring as scoring_mod
 from applicant_scout.constants import percentile_colour
 from applicant_scout.scoring import (
     CONTEXT_MPLUS,
@@ -1538,6 +1539,41 @@ def test_mplus_duplicate_rio_dungeon_rows_score_like_single_canonical_row():
     assert candidate_fit(duplicate, target).confidence == candidate_fit(
         canonical, target
     ).confidence
+
+
+def test_mplus_scorecard_normalizes_rio_dungeon_rows_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    target = _listing(key_level=15, dungeon_name="Skyreach")
+    applicant = _app(
+        score=3200,
+        rio_profile=True,
+        rio_best_key=15,
+        rio_best_dungeon_key=15,
+        rio_dungeon_count=8,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 15},
+            {"name": "Pit of Saron", "key_level": 14},
+        ],
+    )
+    original = scoring_mod._mplus_rio_row_key_levels
+    calls = 0
+
+    def count_normalization(value: Applicant) -> list[int]:
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(
+        scoring_mod,
+        "_mplus_rio_row_key_levels",
+        count_normalization,
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.context == CONTEXT_MPLUS
+    assert calls == 1
 
 
 def test_mplus_duplicate_rio_dungeon_rows_keep_highest_normalized_key_level():
