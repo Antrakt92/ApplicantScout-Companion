@@ -3124,6 +3124,7 @@ class OverlayWindow(QMainWindow):
         h.setSectionResizeMode(COL_MPLUS, QHeaderView.ResizeMode.Stretch)
         h.setStretchLastSection(True)
         self._max_name_width_px = COLUMN_WIDTHS[COL_NAME]
+        self._metric_column_widths_dirty = True
         self._apply_metric_column_visibility()
         layout.addWidget(self._table, stretch=1)
 
@@ -3789,6 +3790,7 @@ class OverlayWindow(QMainWindow):
         self._id_by_row = []
         self._row_render_key_by_id.clear()
         self._package_fit_cache_by_raw.clear()
+        self._metric_column_widths_dirty = True
         self._hover_id = None
         self._pinned_id = None
         self._hover_by_tab["applicants"] = None
@@ -5048,12 +5050,20 @@ class OverlayWindow(QMainWindow):
                 row_key = self._row_render_key(applicant, listing)
                 new_render_key_by_id[applicant.applicant_id] = row_key
                 if self._row_render_key_by_id.get(applicant.applicant_id) != row_key:
+                    previous_raid_width_signature = (
+                        self._raid_metric_row_width_signature(row)
+                    )
                     self._render_row(
                         row,
                         applicant,
                         fit=sorted_candidate_fit_by_id.get(applicant.applicant_id),
                     )
+                    if previous_raid_width_signature != (
+                        self._raid_metric_row_width_signature(row)
+                    ):
+                        self._metric_column_widths_dirty = True
         else:
+            self._metric_column_widths_dirty = True
             # Reset delegate to "no highlight anywhere" BEFORE we tear down items.
             # Avoids a stripe / band paint at a row index that no longer maps if Qt
             # issues an intermediate paint event between setRowCount and the post-
@@ -5216,11 +5226,25 @@ class OverlayWindow(QMainWindow):
 
     def _auto_size_metric_columns(self) -> None:
         """Size raid metric columns to their rendered text instead of eliding fit."""
+        if not self._metric_column_widths_dirty:
+            return
         for col in (COL_N, COL_H, COL_M):
             if self._table.isColumnHidden(col):
                 continue
             width = self._metric_column_required_width(col)
-            self._table.setColumnWidth(col, width)
+            if self._table.columnWidth(col) != width:
+                self._table.setColumnWidth(col, width)
+        self._metric_column_widths_dirty = False
+
+    def _raid_metric_row_width_signature(self, row: int) -> tuple:
+        signature = []
+        for col in (COL_N, COL_H, COL_M):
+            item = self._table.item(row, col)
+            if item is None:
+                signature.append(None)
+                continue
+            signature.append((item.text(), item.font().toString()))
+        return tuple(signature)
 
     def _metric_column_required_width(self, col: int) -> int:
         width = COLUMN_WIDTHS[col]
@@ -5246,6 +5270,9 @@ class OverlayWindow(QMainWindow):
         return width
 
     def _apply_metric_column_visibility(self) -> None:
+        previous_visibility = tuple(
+            self._table.isColumnHidden(col) for col in (COL_N, COL_H, COL_M)
+        )
         prefs = self._metric_preferences
         target_raid_col = _raid_target_col_for_listing(self._effective_listing())
         self._table.setColumnHidden(
@@ -5258,6 +5285,11 @@ class OverlayWindow(QMainWindow):
             COL_M, not (prefs.raid_mythic or target_raid_col == COL_M)
         )
         self._table.setColumnHidden(COL_MPLUS, not prefs.mplus)
+        current_visibility = tuple(
+            self._table.isColumnHidden(col) for col in (COL_N, COL_H, COL_M)
+        )
+        if current_visibility != previous_visibility:
+            self._metric_column_widths_dirty = True
         self._apply_metric_minimum_width()
 
     def _apply_metric_minimum_width(self) -> None:

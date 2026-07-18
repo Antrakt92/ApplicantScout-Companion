@@ -6160,6 +6160,108 @@ def test_refresh_table_noop_reuses_existing_rows_when_order_stable(
         client.close()
 
 
+def test_metric_column_widths_skip_noop_and_mplus_only_refreshes(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="10:1", name="One-Realm"))
+    window = OverlayWindow(
+        state,
+        client,
+        cache,
+        tmp_path,
+        metric_preferences=prefs,
+    )
+    qtbot.addWidget(window)
+    original = window._metric_column_required_width
+    measured: list[int] = []
+
+    def counted_width(column: int) -> int:
+        measured.append(column)
+        return original(column)
+
+    monkeypatch.setattr(window, "_metric_column_required_width", counted_width)
+
+    try:
+        window._refresh_table()
+        assert measured == [COL_N, COL_H, COL_M]
+
+        measured.clear()
+        window._refresh_table()
+        assert measured == []
+
+        state.applicants["10:1"].mplus_dps = 91.0
+        window._refresh_table()
+        assert measured == []
+
+        state.applicants["10:1"].raid_normal = 99.0
+        window._refresh_table()
+        assert measured == [COL_N, COL_H, COL_M]
+    finally:
+        client.close()
+
+
+def test_metric_column_width_shrinks_after_widest_row_is_removed(qtbot, tmp_path):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=True,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(
+            applicant_id="10:1",
+            name="Wide-Realm",
+            raid_normal=100.0,
+            raid_normal_median=100.0,
+        )
+    )
+    state.add_or_update(
+        _app(
+            applicant_id="20:1",
+            name="Narrow-Realm",
+            raid_normal=9.0,
+            raid_normal_median=9.0,
+        )
+    )
+    window = OverlayWindow(
+        state,
+        client,
+        cache,
+        tmp_path,
+        metric_preferences=prefs,
+    )
+    qtbot.addWidget(window)
+
+    try:
+        window._refresh_table()
+        wide_width = window._table.columnWidth(COL_N)
+
+        state.remove("10:1")
+        window._refresh_table()
+
+        assert window._table.columnWidth(COL_N) < wide_width
+    finally:
+        client.close()
+
+
 def test_refresh_table_rerenders_only_changed_stable_order_row(
     qtbot, tmp_path, monkeypatch
 ):
