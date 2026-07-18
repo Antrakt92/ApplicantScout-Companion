@@ -365,6 +365,62 @@ def test_solo_app_creates_single_entry_with_member_idx_one():
     assert list(state.applicants.keys()) == ["99:1"]
 
 
+def test_identical_full_snapshot_does_not_emit_duplicate_applicant_update():
+    state = AppState()
+    sm = StateMachine(state)
+    updates: list[str] = []
+    sm.applicantUpdated.connect(
+        lambda applicant: updates.append(applicant.applicant_id)
+    )
+    snapshot = Snapshot(
+        listing=_listing(),
+        version=_version("Host-Realm"),
+        applicants=[_decoded(aid=99, member_idx=1, name="Solo-Realm")],
+        roster=[_roster_decoded("Host-Realm", flags=1)],
+    )
+
+    sm.apply_snapshot(snapshot)
+    applicant = state.applicants["99:1"]
+    applicant.fetch_status = "ready"
+    applicant.mplus_dps = 88.0
+    sm.apply_snapshot(snapshot)
+
+    assert state.applicants["99:1"] is applicant
+    assert applicant.fetch_status == "ready"
+    assert applicant.mplus_dps == 88.0
+    assert updates == []
+
+
+def test_region_identity_change_emits_update_for_already_pending_applicant():
+    state = AppState()
+    sm = StateMachine(state)
+    updates: list[str] = []
+    sm.applicantUpdated.connect(
+        lambda applicant: updates.append(applicant.applicant_id)
+    )
+    applicant_row = _decoded(aid=99, member_idx=1, name="Solo-Realm")
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm", region_id=3),
+            applicants=[applicant_row],
+        )
+    )
+    updates.clear()
+    assert state.applicants["99:1"].fetch_status == "pending"
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm", region_id=1),
+            applicants=[applicant_row],
+        )
+    )
+
+    assert updates == ["99:1"]
+
+
 def test_placeholder_applicant_name_is_skipped():
     state = AppState()
     sm = StateMachine(state)

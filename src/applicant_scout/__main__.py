@@ -1230,6 +1230,7 @@ class StateMachine(QObject):
                 )
                 self.applicantAdded.emit(applicant)
             else:
+                previous_state = replace(existing)
                 previous_local_rio = self._capture_local_rio_fields(existing)
                 local_rio_identity_stable = self._local_rio_identity_stable(
                     existing.name,
@@ -1284,7 +1285,14 @@ class StateMachine(QObject):
                     self._preserve_local_rio_fields(previous_local_rio, existing)
                 if needs_refetch:
                     existing.clear_wcl_data()
-                self.applicantUpdated.emit(existing)
+                # The transport intentionally sends one redundant settled
+                # snapshot instead of an ACK. Keep that resend idempotent so it
+                # does not enqueue a duplicate overlay refresh for every row.
+                # Identity changes still need a signal even when the row was
+                # already pending: the overlay owns starting the replacement
+                # WCL request against the new region/spec/metric-role context.
+                if existing != previous_state or needs_refetch:
+                    self.applicantUpdated.emit(existing)
 
         if not snap.roster_unavailable:
             self._apply_roster_snapshot(
