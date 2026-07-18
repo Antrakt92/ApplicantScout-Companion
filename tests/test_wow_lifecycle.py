@@ -25,7 +25,48 @@ def _reset_current_session_watcher() -> Iterator[None]:
         wow_lifecycle._CURRENT_SESSION_WATCHER = None
 
 
-def test_is_wow_running_detects_retail_process(monkeypatch: pytest.MonkeyPatch):
+@pytest.fixture
+def _tasklist_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        wow_lifecycle,
+        "_windows_process_image_names",
+        lambda: None,
+        raising=False,
+    )
+
+
+def test_is_wow_running_prefers_native_process_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        wow_lifecycle,
+        "_windows_process_image_names",
+        lambda: ["System", "Wow.exe", "python.exe"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        wow_lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("tasklist fallback ran after a successful native snapshot")
+        ),
+    )
+
+    assert wow_lifecycle.is_wow_running()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process enumeration only")
+def test_windows_process_image_names_contains_current_process():
+    names = wow_lifecycle._windows_process_image_names()
+
+    assert names is not None
+    assert Path(sys.executable).name.casefold() in {name.casefold() for name in names}
+
+
+def test_is_wow_running_detects_retail_process(
+    monkeypatch: pytest.MonkeyPatch,
+    _tasklist_fallback: None,
+):
     calls: list[list[str]] = []
 
     def fake_run(args, **_kwargs):
@@ -41,6 +82,7 @@ def test_is_wow_running_detects_retail_process(monkeypatch: pytest.MonkeyPatch):
 
 def test_is_wow_running_rejects_near_match_process_name(
     monkeypatch: pytest.MonkeyPatch,
+    _tasklist_fallback: None,
 ):
     monkeypatch.setattr(
         wow_lifecycle.subprocess,
@@ -55,6 +97,7 @@ def test_is_wow_running_rejects_near_match_process_name(
 
 def test_is_wow_running_rejects_classic_process_name(
     monkeypatch: pytest.MonkeyPatch,
+    _tasklist_fallback: None,
 ):
     monkeypatch.setattr(
         wow_lifecycle.subprocess,
@@ -69,6 +112,7 @@ def test_is_wow_running_rejects_classic_process_name(
 
 def test_is_wow_running_ignores_wow_token_outside_image_column(
     monkeypatch: pytest.MonkeyPatch,
+    _tasklist_fallback: None,
 ):
     monkeypatch.setattr(
         wow_lifecycle.subprocess,
@@ -83,6 +127,7 @@ def test_is_wow_running_ignores_wow_token_outside_image_column(
 
 def test_is_wow_running_returns_false_when_tasklist_has_no_wow(
     monkeypatch: pytest.MonkeyPatch,
+    _tasklist_fallback: None,
 ):
     monkeypatch.setattr(
         wow_lifecycle.subprocess,
@@ -95,6 +140,7 @@ def test_is_wow_running_returns_false_when_tasklist_has_no_wow(
 
 def test_is_wow_running_can_report_unknown_on_tasklist_failure(
     monkeypatch: pytest.MonkeyPatch,
+    _tasklist_fallback: None,
 ):
     def fail_run(*_args, **_kwargs):
         raise wow_lifecycle.subprocess.TimeoutExpired(cmd="tasklist", timeout=5)
@@ -107,6 +153,7 @@ def test_is_wow_running_can_report_unknown_on_tasklist_failure(
 
 def test_is_wow_running_can_report_unknown_on_nonzero_tasklist_exit(
     monkeypatch: pytest.MonkeyPatch,
+    _tasklist_fallback: None,
 ):
     monkeypatch.setattr(
         wow_lifecycle.subprocess,

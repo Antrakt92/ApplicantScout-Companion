@@ -19,6 +19,9 @@ WATCH_WOW_ARG = "--watch-wow"
 WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_TH32CS_SNAPPROCESS = 0x00000002
+_ERROR_NO_MORE_FILES = 18
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _ARGUMENT_LIST_SEPARATOR = "\x1f"
 _CURRENT_SESSION_WATCHER: subprocess.Popen | None = None
 _CURRENT_SESSION_WATCHER_LOCK = threading.Lock()
@@ -30,6 +33,21 @@ class LaunchSpec:
     arguments: tuple[str, ...] = ()
 
 
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = (
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    )
+
+
 def _tasklist_image_names(stdout: str) -> list[str]:
     names: list[str] = []
     for row in csv.reader(io.StringIO(stdout)):
@@ -38,6 +56,62 @@ def _tasklist_image_names(stdout: str) -> list[str]:
             if image_name:
                 names.append(image_name)
     return names
+
+
+def _windows_process_image_names() -> list[str] | None:
+    """Return one Tool Help process snapshot, or None when Win32 cannot provide it."""
+    if sys.platform != "win32":
+        return None
+
+    snapshot = None
+    close_handle = None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_snapshot = kernel32.CreateToolhelp32Snapshot
+        process_first = kernel32.Process32FirstW
+        process_next = kernel32.Process32NextW
+        close_handle = kernel32.CloseHandle
+
+        create_snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+        create_snapshot.restype = wintypes.HANDLE
+        process_first.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(_PROCESSENTRY32W),
+        )
+        process_first.restype = wintypes.BOOL
+        process_next.argtypes = process_first.argtypes
+        process_next.restype = wintypes.BOOL
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+
+        snapshot = create_snapshot(_TH32CS_SNAPPROCESS, 0)
+        if snapshot in (None, _INVALID_HANDLE_VALUE):
+            return None
+
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        ctypes.set_last_error(0)
+        if not process_first(snapshot, ctypes.byref(entry)):
+            return [] if ctypes.get_last_error() == _ERROR_NO_MORE_FILES else None
+
+        names: list[str] = []
+        while True:
+            image_name = entry.szExeFile.strip()
+            if image_name:
+                names.append(image_name)
+            ctypes.set_last_error(0)
+            if not process_next(snapshot, ctypes.byref(entry)):
+                if ctypes.get_last_error() == _ERROR_NO_MORE_FILES:
+                    return names
+                return None
+    except (AttributeError, OSError, ValueError):
+        return None
+    finally:
+        if (
+            close_handle is not None
+            and snapshot not in (None, _INVALID_HANDLE_VALUE)
+        ):
+            close_handle(snapshot)
 
 
 def _startup_folder() -> Path:
@@ -70,25 +144,28 @@ def is_wow_running(
     unknown_on_error: bool = False,
 ) -> bool | None:
     """Return True when a Retail WoW process is visible to this user."""
-    try:
-        completed = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"],
-            check=False,
-            capture_output=True,
-            text=True,
-            creationflags=_CREATE_NO_WINDOW,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        if unknown_on_error:
-            return None
-        return False
-    if completed.returncode != 0:
-        if unknown_on_error:
-            return None
-        return False
+    image_names = _windows_process_image_names()
+    if image_names is None:
+        try:
+            completed = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                check=False,
+                capture_output=True,
+                text=True,
+                creationflags=_CREATE_NO_WINDOW,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            if unknown_on_error:
+                return None
+            return False
+        if completed.returncode != 0:
+            if unknown_on_error:
+                return None
+            return False
+        image_names = _tasklist_image_names(completed.stdout)
     expected = {name.casefold() for name in process_names}
-    return any(name.casefold() in expected for name in _tasklist_image_names(completed.stdout))
+    return any(name.casefold() in expected for name in image_names)
 
 
 def foreground_process_id() -> int | None:
