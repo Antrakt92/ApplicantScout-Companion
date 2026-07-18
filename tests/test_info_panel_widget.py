@@ -5949,9 +5949,78 @@ def test_refresh_table_reuses_package_fit_from_sort(qtbot, tmp_path, monkeypatch
 
     try:
         window._refresh_table()
+        window._refresh_table()
 
         assert calls == 2
         assert set(window._package_fit_by_raw) == {"10"}
+    finally:
+        client.close()
+
+
+def test_refresh_table_fit_cache_invalidates_changed_groups_and_context(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(applicant_id="10:1", name="Tank-Realm", role="TANK", score=2400)
+    )
+    state.add_or_update(
+        _app(applicant_id="10:2", name="Damage-Realm", role="DAMAGER", score=2300)
+    )
+    state.add_or_update(
+        _app(applicant_id="20:1", name="Healer-Realm", role="HEALER", score=2200)
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    original = overlay_mod.package_fit
+    calls: list[tuple[str, ...]] = []
+
+    def counted_package_fit(members, listing):
+        member_list = list(members)
+        calls.append(tuple(member.applicant_id for member in member_list))
+        return original(member_list, listing)
+
+    monkeypatch.setattr(overlay_mod, "package_fit", counted_package_fit)
+
+    try:
+        window._refresh_table()
+        assert len(calls) == 2
+
+        state.add_or_update(
+            _app(
+                applicant_id="20:1",
+                name="Healer-Realm",
+                role="HEALER",
+                score=2250,
+            )
+        )
+        window._refresh_table()
+
+        assert calls[-1] == ("20:1",)
+        assert len(calls) == 3
+
+        state.listing = replace(state.listing, key_level=17)
+        window._refresh_table()
+        assert len(calls) == 5
+
+        window._metric_preferences = MetricPreferences(
+            mplus=True,
+            raid_normal=True,
+            raid_heroic=False,
+            raid_mythic=False,
+        )
+        window._refresh_table()
+        assert len(calls) == 7
+
+        state.remove("20:1")
+        window._refresh_table()
+        assert set(window._package_fit_cache_by_raw) == {"10"}
     finally:
         client.close()
 

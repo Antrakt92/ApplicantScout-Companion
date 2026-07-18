@@ -704,7 +704,11 @@ def _mplus_fit_source_text(applicant: Applicant) -> str:
 
 
 def _sort_applicants_grouped_with_package_fits(
-    applicants: Iterable[Applicant], listing: Listing | None = None
+    applicants: Iterable[Applicant],
+    listing: Listing | None = None,
+    *,
+    package_fit_cache: dict[str, tuple[object, PackageFit]] | None = None,
+    fit_cache_context: object = None,
 ) -> tuple[list[Applicant], dict[str, PackageFit], dict[str, CandidateFit]]:
     """Sort applicants with multi-member group adjacency.
 
@@ -738,9 +742,29 @@ def _sort_applicants_grouped_with_package_fits(
             group_has_ready[raw_aid] = True
         if a.fetch_status in _PROVISIONAL_STATES:
             group_has_provisional[raw_aid] = True
+    if package_fit_cache is not None:
+        for stale_raw_aid in set(package_fit_cache) - set(group_members):
+            package_fit_cache.pop(stale_raw_aid, None)
     if use_fit:
         for raw_aid, members in group_members.items():
-            fit = package_fit(members, listing)
+            # WHY: state rows mutate in place as WCL/RaiderIO data arrives;
+            # content keys make reuse independent of object and listing identity.
+            fit_cache_key = (
+                fit_cache_context,
+                _listing_render_key(listing),
+                tuple(_freeze_render_value(member) for member in members),
+            )
+            cached_fit = (
+                package_fit_cache.get(raw_aid)
+                if package_fit_cache is not None
+                else None
+            )
+            if cached_fit is not None and cached_fit[0] == fit_cache_key:
+                fit = cached_fit[1]
+            else:
+                fit = package_fit(members, listing)
+                if package_fit_cache is not None:
+                    package_fit_cache[raw_aid] = (fit_cache_key, fit)
             package_fits[raw_aid] = fit
             for member, member_fit in zip(members, fit.member_fits, strict=True):
                 candidate_fits[member.applicant_id] = member_fit
@@ -3183,6 +3207,9 @@ class OverlayWindow(QMainWindow):
         self._group_size_by_raw: dict[str, int] = {}
         self._group_position_by_id: dict[str, int] = {}
         self._package_fit_by_raw: dict[str, PackageFit] = {}
+        self._package_fit_cache_by_raw: dict[
+            str, tuple[object, PackageFit]
+        ] = {}
         # Hover & pin tracking. Display priority: hover > pin > hidden.
         # Pin survives applicant churn (preserved by id across re-sort);
         # hover is preserved by id when prev row's id still exists, falls
@@ -3761,6 +3788,7 @@ class OverlayWindow(QMainWindow):
         self._row_for_id.clear()
         self._id_by_row = []
         self._row_render_key_by_id.clear()
+        self._package_fit_cache_by_raw.clear()
         self._hover_id = None
         self._pinned_id = None
         self._hover_by_tab["applicants"] = None
@@ -4974,6 +5002,8 @@ class OverlayWindow(QMainWindow):
             ) = _sort_applicants_grouped_with_package_fits(
                 self._state.applicants.values(),
                 listing,
+                package_fit_cache=self._package_fit_cache_by_raw,
+                fit_cache_context=self._metric_preferences.cache_key(),
             )
         self._group_size_by_raw = {}
         self._group_position_by_id = {}
