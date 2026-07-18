@@ -15,6 +15,7 @@ import applicant_scout.__main__ as main_mod
 from applicant_scout import atomic_io
 import applicant_scout.config as config_mod
 import applicant_scout.live_snapshot_cache as live_snapshot_cache_mod
+import applicant_scout.screenshot as screenshot_mod
 from applicant_scout.live_snapshot_cache import (
     LIVE_SNAPSHOT_CACHE_FILENAME,
     LiveSnapshotCacheWriter,
@@ -4805,6 +4806,45 @@ def test_replace_screenshot_watcher_keeps_old_watcher_when_new_start_fails(
     assert calls == ["start:new", "stop:new"]
 
 
+def test_replace_screenshot_watcher_passes_cache_dir_to_persistent_backlog_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    seen: list[tuple[Path, Path | None]] = []
+
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            pass
+
+    class FakeWatcher:
+        def __init__(self, path: Path, *, cache_dir: Path | None = None) -> None:
+            seen.append((path, cache_dir))
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+
+    main_mod._replace_screenshot_watcher(
+        None,
+        screenshots,
+        object(),
+        object(),
+        lambda *_args: None,
+        cache_dir=cache_dir,
+        signal_gate=main_mod._WatcherSignalGate(),
+    )
+
+    assert seen == [(screenshots, cache_dir)]
+
+
 def test_replace_screenshot_watcher_starts_new_before_stopping_old(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7346,6 +7386,36 @@ def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(
     assert character_cache.generation > generation
     assert rio_clears == [cache_dir]
     assert invalidated == ["auth"]
+
+
+def test_clear_cache_dir_invalidates_live_screenshot_manual_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    screenshots = tmp_path / "Screenshots"
+    cache_dir.mkdir()
+    screenshots.mkdir()
+    image_path = screenshots / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"manual")
+    image_path.touch()
+    decoded: list[Path] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        decoded.append(path)
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+    first = screenshot_mod.ScreenshotWatcher(screenshots, cache_dir=cache_dir)
+    first._scan_recent_backlog()
+    assert decoded == [image_path]
+
+    main_mod._clear_cache_dir(cache_dir)
+    second = screenshot_mod.ScreenshotWatcher(screenshots, cache_dir=cache_dir)
+    second._scan_recent_backlog()
+
+    assert decoded == [image_path, image_path]
 
 
 def test_clear_cache_dir_invalidates_live_snapshot_writer_before_deleting_cache(

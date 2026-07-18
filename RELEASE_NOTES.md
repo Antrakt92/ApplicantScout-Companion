@@ -26,6 +26,9 @@ a keyboard or assistive technology.
   duplicate preload work instead of repeating full scans.
 - WCL cache reuse now checks only the finite set of compatible metric scopes
   instead of scanning every cached character on the overlay thread.
+- Startup screenshot cleanup now remembers confirmed manual files and shares
+  decode ownership with the live observer, so bounded scans reach older
+  ApplicantScout leftovers without repeating the same work after each launch.
 - Companion shutdown now drains pending WCL and live-snapshot cache work before
   closing shared state.
 - `/apscout qrvisible` now survives `/reload`, while disabling ApplicantScout

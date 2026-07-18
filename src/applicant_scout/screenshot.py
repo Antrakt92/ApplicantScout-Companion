@@ -25,6 +25,8 @@ are preserved.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import logging
 import os
 import struct
@@ -42,6 +44,8 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from .atomic_io import atomic_write_text
+
 
 _log = logging.getLogger("applicant_scout.screenshot")
 pyzbar_decode = None
@@ -50,6 +54,10 @@ ZBarSymbol = None
 
 class QRDecoderUnavailable(RuntimeError):
     """Raised when the native zbar/pyzbar decoder cannot be imported."""
+
+
+class QRScanFailed(RuntimeError):
+    """Raised when an available decoder cannot complete this image scan."""
 
 
 # ─── Wire format constants (must match addon's ApplicantScout.lua) ───────────
@@ -85,6 +93,9 @@ SLOW_SCREENSHOT_STAGE_LOG_S = 0.75
 # 5000 covers years of casual use (~30-80ms per file × 5000 ≈ 4 min thread
 # work, daemonised so it doesn't delay shutdown).
 _BACKLOG_CLEANUP_LIMIT = 5000
+_RECENT_WORK_KEY_TTL_SECONDS = 3.0
+_MANUAL_INDEX_VERSION = 1
+_MANUAL_INDEX_FILE_PREFIX = "screenshot-manual-index-v1"
 
 
 # ─── Decoded data model ─────────────────────────────────────────────────────
@@ -244,7 +255,7 @@ def _decode_qr_symbols(img: Image.Image) -> list[bytes]:
         raise
     except Exception as e:
         _log.debug("pyzbar error: %s", e)
-        return []
+        raise QRScanFailed(f"QR scan failed: {e}") from e
     return [bytes(r.data) for r in results]
 
 
@@ -298,6 +309,7 @@ def _iter_qr_symbol_data_batches(image_path: Path) -> Iterator[list[bytes]]:
                 yield payloads
     except (OSError, IOError) as e:
         _log.debug("Image.open failed %s: %s", image_path.name, e)
+        raise QRScanFailed(f"could not read screenshot image: {e}") from e
 
 
 def _decode_legacy_hex_qr(data: bytes) -> Optional[bytes]:
@@ -839,6 +851,10 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
             reason,
             decoder_unavailable=True,
         )
+    except QRScanFailed as exc:
+        reason = str(exc) or "QR scan failed"
+        _log.warning("could not scan %s: %s", image_path.name, reason)
+        return DecodeResult(None, False, reason)
 
     if not has_marker:
         return DecodeResult(None, False)  # no QR / unrelated QR
@@ -964,6 +980,11 @@ def cleanup_appscout_screenshots(
             preserved += 1
             continue
 
+        if result.error_reason is not None and not result.has_marker:
+            decode_errors += 1
+            preserved += 1
+            continue
+
         if not result.has_marker:
             preserved += 1
             continue
@@ -1028,9 +1049,283 @@ def screenshot_cleanup_exit_code(summary: ScreenshotCleanupSummary) -> int:
     ) else 0
 
 
+@dataclass(frozen=True)
+class _ScreenshotWorkKey:
+    path: str
+    mtime_ns: int
+    size: int
+
+
+def _normalized_work_path(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _work_key_from_stat(path: Path, stat_result: os.stat_result) -> _ScreenshotWorkKey:
+    return _ScreenshotWorkKey(
+        path=_normalized_work_path(path),
+        mtime_ns=int(
+            getattr(
+                stat_result,
+                "st_mtime_ns",
+                int(float(stat_result.st_mtime) * 1_000_000_000),
+            )
+        ),
+        size=int(stat_result.st_size),
+    )
+
+
+class _ScreenshotWorkClaim:
+    def __init__(
+        self,
+        owner: _ScreenshotWorkClaims,
+        path: Path,
+        key: _ScreenshotWorkKey,
+        stat_result: os.stat_result,
+    ) -> None:
+        self._owner = owner
+        self.path = path
+        self.path_key = key.path
+        self.key = key
+        self.stat_result = stat_result
+        self._seen_keys = {key}
+        self._released = False
+        self._release_keys_override: set[_ScreenshotWorkKey] | None = None
+        self.retry_requested = False
+
+    def refresh(self) -> os.stat_result | None:
+        try:
+            stat_result = self.path.stat()
+        except OSError:
+            return None
+        key = _work_key_from_stat(self.path, stat_result)
+        self.key = key
+        self.stat_result = stat_result
+        self._seen_keys.add(key)
+        return stat_result
+
+    def request_retry_for_changed_generation(
+        self,
+        decoded_key: _ScreenshotWorkKey,
+    ) -> None:
+        self.retry_requested = True
+        # The new generation has not been processed. Do not put its key in the
+        # recent set, or the bounded retry below would suppress the very work
+        # needed to replace the stale decode result.
+        self._release_keys_override = {decoded_key}
+
+    def release(self) -> None:
+        if self._released:
+            return
+        if self._release_keys_override is None:
+            self.refresh()
+        self._released = True
+        self._owner._release(
+            self.path_key,
+            self._release_keys_override or self._seen_keys,
+        )
+
+
+class _ScreenshotWorkClaims:
+    """One in-process arbitration point for watchdog and startup work."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active_paths: set[str] = set()
+        self._recent_keys: dict[_ScreenshotWorkKey, float] = {}
+
+    def try_claim(self, path: Path) -> _ScreenshotWorkClaim | None:
+        if not _is_supported_screenshot_path(path):
+            return None
+        try:
+            stat_result = path.stat()
+        except OSError:
+            return None
+        key = _work_key_from_stat(path, stat_result)
+        now = time.monotonic()
+        with self._lock:
+            self._recent_keys = {
+                recent_key: seen_at
+                for recent_key, seen_at in self._recent_keys.items()
+                if now - seen_at < _RECENT_WORK_KEY_TTL_SECONDS
+            }
+            if key.path in self._active_paths or key in self._recent_keys:
+                return None
+            self._active_paths.add(key.path)
+        return _ScreenshotWorkClaim(self, path, key, stat_result)
+
+    def _release(
+        self,
+        path_key: str,
+        seen_keys: set[_ScreenshotWorkKey],
+    ) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._active_paths.discard(path_key)
+            for key in seen_keys:
+                self._recent_keys[key] = now
+
+
+def _manual_index_path(cache_dir: Path, screenshots_dir: Path) -> Path:
+    directory_key = _normalized_work_path(screenshots_dir).encode(
+        "utf-8",
+        errors="surrogatepass",
+    )
+    digest = hashlib.sha256(directory_key).hexdigest()[:16]
+    return Path(cache_dir) / f"{_MANUAL_INDEX_FILE_PREFIX}-{digest}.json"
+
+
+class _ManualScreenshotIndex:
+    """Persistent fingerprints for files proven not to contain APS1 data."""
+
+    def __init__(self, state_path: Path | None) -> None:
+        self._state_path = state_path
+        self._lock = threading.Lock()
+        self._loaded = False
+        self._keys: set[_ScreenshotWorkKey] = set()
+        self._dirty = False
+
+    def _load_locked(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        if self._state_path is None:
+            return
+        try:
+            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            _log.warning("could not load screenshot manual index: %s", exc)
+            return
+        if not isinstance(raw, dict) or raw.get("version") != _MANUAL_INDEX_VERSION:
+            return
+        entries = raw.get("manual")
+        if not isinstance(entries, list):
+            return
+        for entry in entries:
+            if (
+                not isinstance(entry, list)
+                or len(entry) != 3
+                or not isinstance(entry[0], str)
+                or not isinstance(entry[1], int)
+                or not isinstance(entry[2], int)
+                or entry[1] < 0
+                or entry[2] < 0
+            ):
+                continue
+            self._keys.add(_ScreenshotWorkKey(entry[0], entry[1], entry[2]))
+
+    def snapshot(self) -> set[_ScreenshotWorkKey]:
+        with self._lock:
+            self._load_locked()
+            return set(self._keys)
+
+    def contains(self, key: _ScreenshotWorkKey) -> bool:
+        with self._lock:
+            self._load_locked()
+            return key in self._keys
+
+    def note_manual(self, key: _ScreenshotWorkKey, *, flush: bool) -> None:
+        with self._lock:
+            self._load_locked()
+            if key not in self._keys:
+                self._keys.add(key)
+                self._dirty = True
+            if flush:
+                self._flush_locked()
+
+    def prune_missing(
+        self,
+        baseline: set[_ScreenshotWorkKey],
+        current: set[_ScreenshotWorkKey],
+    ) -> None:
+        with self._lock:
+            self._load_locked()
+            stale = (baseline - current) & self._keys
+            if stale:
+                self._keys.difference_update(stale)
+                self._dirty = True
+
+    def flush(self) -> None:
+        with self._lock:
+            self._load_locked()
+            self._flush_locked()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._keys.clear()
+            self._loaded = True
+            self._dirty = False
+            if self._state_path is None:
+                return
+            try:
+                self._state_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                _log.warning("could not clear screenshot manual index: %s", exc)
+
+    def _flush_locked(self) -> None:
+        if not self._dirty or self._state_path is None:
+            return
+        entries = [
+            [key.path, key.mtime_ns, key.size]
+            for key in sorted(
+                self._keys,
+                key=lambda item: (item.path, item.mtime_ns, item.size),
+            )
+        ]
+        payload = json.dumps(
+            {"version": _MANUAL_INDEX_VERSION, "manual": entries},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        try:
+            atomic_write_text(self._state_path, payload, private=True)
+        except Exception as exc:  # noqa: BLE001 - best-effort cache state
+            _log.warning("could not save screenshot manual index: %s", exc)
+            return
+        self._dirty = False
+
+
+_MANUAL_INDEX_REGISTRY_LOCK = threading.Lock()
+_MANUAL_INDEX_REGISTRY: dict[str, _ManualScreenshotIndex] = {}
+
+
+def _manual_index_for(
+    screenshots_dir: Path,
+    cache_dir: Path | None,
+) -> _ManualScreenshotIndex:
+    if cache_dir is None:
+        return _ManualScreenshotIndex(None)
+    state_path = _manual_index_path(cache_dir, screenshots_dir)
+    registry_key = _normalized_work_path(state_path)
+    with _MANUAL_INDEX_REGISTRY_LOCK:
+        index = _MANUAL_INDEX_REGISTRY.get(registry_key)
+        if index is None:
+            index = _ManualScreenshotIndex(state_path)
+            _MANUAL_INDEX_REGISTRY[registry_key] = index
+        return index
+
+
+def clear_screenshot_manual_indexes(cache_dir: Path) -> None:
+    cache_key = _normalized_work_path(cache_dir)
+    with _MANUAL_INDEX_REGISTRY_LOCK:
+        indexes = [
+            index
+            for index in _MANUAL_INDEX_REGISTRY.values()
+            if index._state_path is not None
+            and _normalized_work_path(index._state_path.parent) == cache_key
+        ]
+    for index in indexes:
+        index.reset()
+
+
 class _Handler(FileSystemEventHandler):
-    """Filters JPG/TGA file events, dedups across on_created/on_modified/on_moved
-    and dispatches to callback. Listening to all three event types because:
+    """Filters JPG/TGA file events and dispatches all relevant paths.
+
+    ScreenshotWatcher owns deduplication so observer and backlog work share the
+    same claim. Listening to all three event types because:
 
     - on_created fires when a new file appears (typical WoW Screenshot() path)
     - on_modified fires if WoW writes via fwrite-without-create-flag, or if two
@@ -1044,38 +1339,14 @@ class _Handler(FileSystemEventHandler):
     def __init__(self, callback):
         super().__init__()
         self._callback = callback
-        # Dedup keyed on (path, mtime_ns, size) to coalesce on_created+
-        # on_modified+on_moved pairs for the SAME write while still re-processing
-        # a file that was deleted+recreated with the same filename. Critical:
-        # WoW Screenshot() filenames have only HH:MM:SS resolution, and float
-        # mtimes can collapse distinct rapid writes; nanosecond mtime plus size
-        # keeps burst screenshots moving through the pipeline.
-        self._recent_keys: dict[tuple[str, int, int], float] = {}
 
     def _should_process(self, path: Path) -> bool:
         if not _is_supported_screenshot_path(path):
             return False
         try:
-            stat_result = path.stat()
+            return path.is_file()
         except OSError:
-            # File vanished between event and stat (we just unlinked it). Don't
-            # try to process — but also don't block future events for this path.
             return False
-        mtime_ns = getattr(
-            stat_result,
-            "st_mtime_ns",
-            int(float(stat_result.st_mtime) * 1_000_000_000),
-        )
-        key = (str(path), int(mtime_ns), int(stat_result.st_size))
-        now = time.time()
-        # Evict entries older than 3s
-        self._recent_keys = {
-            k: t for k, t in self._recent_keys.items() if now - t < 3.0
-        }
-        if key in self._recent_keys:
-            return False
-        self._recent_keys[key] = now
-        return True
 
     @staticmethod
     def _path_from_event(value: str | bytes) -> Path:
@@ -1113,22 +1384,29 @@ class ScreenshotWatcher(QObject):
     snapshotReceived = pyqtSignal(object)  # Snapshot
     decodeFailed = pyqtSignal(str, str, object)  # path, reason, SnapshotSource | None
 
-    def __init__(self, screenshots_dir: Path, parent=None):
+    def __init__(
+        self,
+        screenshots_dir: Path,
+        parent=None,
+        *,
+        cache_dir: Path | None = None,
+    ):
         super().__init__(parent)
         self._dir = screenshots_dir
         self._observer: Optional[Any] = None
         self._backlog_thread: Optional[threading.Thread] = None
         self._stopped = threading.Event()
+        self._work_claims = _ScreenshotWorkClaims()
+        self._manual_index = _manual_index_for(screenshots_dir, cache_dir)
 
     def start(self) -> None:
         self._stopped.clear()
         # Ensure folder exists (WoW creates it on first screenshot, but companion
         # may start before WoW ever takes one)
         self._dir.mkdir(parents=True, exist_ok=True)
-        # Observer first so any new file arriving during the (slow) backlog
-        # scan still gets routed through _on_new_file. The dedup keys in
-        # _Handler prevent double-processing if observer + backlog race on
-        # the same path.
+        # Observer first so any new file arriving during the backlog scan still
+        # gets routed through _on_new_file. Both paths share _work_claims, so
+        # only one may decode a given file generation.
         observer = Observer()
         try:
             observer.schedule(
@@ -1181,6 +1459,7 @@ class ScreenshotWatcher(QObject):
             self._observer.stop()
             self._observer.join(timeout=2)
             self._observer = None
+        self._manual_index.flush()
         # Backlog thread is daemon=True so process exit doesn't wait for it.
         # We don't .join here: it may be in the middle of a 30-80 ms pyzbar
         # call we can't interrupt cleanly. Daemonised so it dies with us.
@@ -1210,13 +1489,6 @@ class ScreenshotWatcher(QObject):
             size=stat_result.st_size,
         )
 
-    def _snapshot_source_for_path(self, path: Path) -> SnapshotSource | None:
-        try:
-            stat_result = path.stat()
-        except OSError:
-            return None
-        return self._source_from_stat(path, stat_result)
-
     @staticmethod
     def _snapshot_with_source(
         snap: Snapshot,
@@ -1227,109 +1499,208 @@ class ScreenshotWatcher(QObject):
         return replace(snap, source=source)
 
     def _scan_recent_backlog(self) -> None:
-        """Startup cleanup pass over WoWScrnShot JPG/TGA files. Two jobs:
-        (1) emit most recent valid snapshot from last 60s — handles
-        'companion started mid-session' case where addon already painted
-        applicant data but we missed the watchdog event;
-        (2) delete ALL marker-bearing files regardless of age — recovers from
-        prior runs where companion crashed/exited before file delete, or where
-        decoder failed mid-stream leaving the file untouched.
+        """Restore recent state, then advance bounded historical cleanup.
 
-        Bounded at _BACKLOG_CLEANUP_LIMIT files for pathological cases (user
-        with thousands of historical screenshots). User's manual screenshots
-        are never touched — APS1 magic check is the discriminator."""
+        Confirmed manual screenshots are fingerprinted in the app cache. The
+        decode budget therefore applies only to unknown file generations, so a
+        later startup resumes beyond a large unchanged manual-screenshot set.
+        """
         if self._stopped.is_set():
             return
         now = time.time()
         apply_cutoff = now - 60
+        baseline_manual_keys = self._manual_index.snapshot()
         all_files: list[tuple[Path, os.stat_result]] = []
         for p in _iter_screenshot_candidates(self._dir):
             try:
                 all_files.append((p, p.stat()))
             except OSError:
                 continue
-        if not all_files:
-            return
-        all_files.sort(key=lambda t: t[1].st_mtime_ns, reverse=True)
-        if len(all_files) > _BACKLOG_CLEANUP_LIMIT:
-            all_files = all_files[:_BACKLOG_CLEANUP_LIMIT]
+        current_keys = {
+            _work_key_from_stat(path, stat_result)
+            for path, stat_result in all_files
+        }
+        self._manual_index.prune_missing(baseline_manual_keys, current_keys)
+        try:
+            if not all_files:
+                return
+            all_files.sort(key=lambda item: item[1].st_mtime_ns, reverse=True)
+            recent = [item for item in all_files if item[1].st_mtime >= apply_cutoff]
+            historical = [
+                item for item in all_files if item[1].st_mtime < apply_cutoff
+            ]
+            remaining = _BACKLOG_CLEANUP_LIMIT
+            apply_closed = False
+            deleted = 0
+            remaining, apply_closed, phase_deleted, stop_scan = (
+                self._scan_backlog_phase(
+                    recent,
+                    recent=True,
+                    remaining=remaining,
+                    apply_closed=apply_closed,
+                )
+            )
+            deleted += phase_deleted
+            if not stop_scan and remaining > 0 and not self._stopped.is_set():
+                remaining, apply_closed, phase_deleted, _stop_scan = (
+                    self._scan_backlog_phase(
+                        historical,
+                        recent=False,
+                        remaining=remaining,
+                        apply_closed=apply_closed,
+                    )
+                )
+                deleted += phase_deleted
+            if deleted:
+                _log.info(
+                    "backlog cleanup: deleted %d ApScout screenshots",
+                    deleted,
+                )
+        finally:
+            self._manual_index.flush()
 
-        apply_closed = False
+    def _scan_backlog_phase(
+        self,
+        candidates: list[tuple[Path, os.stat_result]],
+        *,
+        recent: bool,
+        remaining: int,
+        apply_closed: bool,
+    ) -> tuple[int, bool, int, bool]:
         deleted = 0
-        for p, stat_result in all_files:
-            mtime = stat_result.st_mtime
-            source = self._source_from_stat(p, stat_result)
-            if (
-                not apply_closed
-                and mtime >= apply_cutoff
-                and not _wait_for_stable_size(p)
-            ):
+        for path, _candidate_stat in candidates:
+            if self._stopped.is_set() or remaining <= 0:
+                break
+            if recent and not _wait_for_stable_size(path):
                 _log.info(
                     "backlog: skipping unstable recent screenshot %s",
-                    p.name,
+                    path.name,
                 )
                 continue
-            # Single decode pass. Within apply window AND not yet applied → emit
-            # the parsed snapshot. Outside window OR apply closed → still
-            # delete-if-marker (cleanup leftover ours from prior crashes). The
-            # tuple return collapses what was a two-pyzbar-call sequence into
-            # one — meaningful at 500 files × 30-80 ms saved per file.
+            claim = self._work_claims.try_claim(path)
+            if claim is None:
+                continue
+            stop_scan = False
             try:
-                result = _decode_screenshot_result(p)
-            except Exception as e:
-                _log.warning("backlog decode error %s: %s", p.name, e)
-                result = DecodeResult(None, False)
-            if self._stopped.is_set():
-                return
-            if (
-                result.snapshot is not None
-                and not apply_closed
-                and mtime >= apply_cutoff
-                and not self._stopped.is_set()
-            ):
-                if not self._emit_snapshot(
-                    self._snapshot_with_source(result.snapshot, source)
-                ):
-                    return
-                _log.info("backlog: applied snapshot from %s", p.name)
-                apply_closed = True
-            elif (
-                result.decoder_unavailable
-                and not apply_closed
-                and mtime >= apply_cutoff
-            ):
-                if not self._emit_decode_failed(
-                    p,
-                    result.error_reason or "QR decoder unavailable",
-                    source,
-                ):
-                    return
-                apply_closed = True
-            elif result.has_marker and not apply_closed and mtime >= apply_cutoff:
-                if not self._emit_decode_failed(
-                    p,
-                    result.error_reason or "parse failed",
-                    source,
-                ):
-                    return
-                _log.warning(
-                    "backlog: newest recent ApScout screenshot %s has marker but no "
-                    "snapshot; suppressing older startup fallback",
-                    p.name,
-                )
-                apply_closed = True
-            if result.has_marker:
-                if self._stopped.is_set():
-                    return
+                if self._manual_index.contains(claim.key):
+                    continue
+                remaining -= 1
+                decoded_key = claim.key
+                decode_succeeded = False
                 try:
-                    p.unlink()
-                    deleted += 1
-                except OSError:
+                    result = _decode_screenshot_result(path)
+                    decode_succeeded = True
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("backlog decode error %s: %s", path.name, exc)
+                    result = DecodeResult(None, False)
+                if self._stopped.is_set():
+                    return remaining, apply_closed, deleted, True
+                generation_current = self._finalize_decode_result(
+                    claim,
+                    decoded_key,
+                    result,
+                    decode_succeeded=decode_succeeded,
+                    flush=False,
+                )
+                source = self._source_from_stat(path, claim.stat_result)
+                if not generation_current:
                     pass
-        if deleted:
-            _log.info("backlog cleanup: deleted %d ApScout screenshots", deleted)
+                elif result.decoder_unavailable:
+                    if recent and not apply_closed:
+                        if not self._emit_decode_failed(
+                            path,
+                            result.error_reason or "QR decoder unavailable",
+                            source,
+                        ):
+                            return remaining, apply_closed, deleted, True
+                        apply_closed = True
+                    stop_scan = True
+                elif result.snapshot is not None and recent and not apply_closed:
+                    if not self._emit_snapshot(
+                        self._snapshot_with_source(result.snapshot, source)
+                    ):
+                        return remaining, apply_closed, deleted, True
+                    _log.info("backlog: applied snapshot from %s", path.name)
+                    apply_closed = True
+                elif result.has_marker and recent and not apply_closed:
+                    if not self._emit_decode_failed(
+                        path,
+                        result.error_reason or "parse failed",
+                        source,
+                    ):
+                        return remaining, apply_closed, deleted, True
+                    _log.warning(
+                        "backlog: newest recent ApScout screenshot %s has marker but "
+                        "no snapshot; suppressing older startup fallback",
+                        path.name,
+                    )
+                    apply_closed = True
+                if generation_current and result.has_marker:
+                    if self._stopped.is_set():
+                        return remaining, apply_closed, deleted, True
+                    try:
+                        path.unlink()
+                        deleted += 1
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        _log.warning(
+                            "backlog could not delete %s: %s",
+                            path.name,
+                            exc,
+                        )
+            finally:
+                claim.release()
+            if claim.retry_requested and not self._stopped.is_set():
+                self._on_new_file(path)
+            if stop_scan:
+                return remaining, apply_closed, deleted, True
+        return remaining, apply_closed, deleted, False
+
+    def _finalize_decode_result(
+        self,
+        claim: _ScreenshotWorkClaim,
+        decoded_key: _ScreenshotWorkKey,
+        result: DecodeResult,
+        *,
+        decode_succeeded: bool,
+        flush: bool,
+    ) -> bool:
+        current_stat = claim.refresh()
+        if current_stat is not None and claim.key != decoded_key:
+            _log.info(
+                "screenshot changed during decode; retrying current generation: %s",
+                claim.path.name,
+            )
+            claim.request_retry_for_changed_generation(decoded_key)
+            return False
+        if (
+            decode_succeeded
+            and current_stat is not None
+            and not result.has_marker
+            and not result.decoder_unavailable
+            and result.error_reason is None
+        ):
+            self._manual_index.note_manual(decoded_key, flush=flush)
+        return True
 
     def _on_new_file(self, path: Path) -> None:
+        for _attempt in range(2):
+            claim = self._work_claims.try_claim(path)
+            if claim is None:
+                return
+            try:
+                self._process_new_file(path, claim)
+            finally:
+                claim.release()
+            if not claim.retry_requested:
+                return
+
+    def _process_new_file(
+        self,
+        path: Path,
+        claim: _ScreenshotWorkClaim,
+    ) -> None:
         """Called from watchdog observer thread. Decode + emit + cleanup.
 
         Cleanup logic (single pyzbar pass via decode_screenshot's tuple return):
@@ -1341,6 +1712,8 @@ class ScreenshotWatcher(QObject):
           unrelated QR code)"""
         # INFO log on every screenshot arrival so user can verify watchdog is firing.
         if self._stopped.is_set():
+            return
+        if self._manual_index.contains(claim.key):
             return
         _log.info("new file: %s", path.name)
         wait_started = time.perf_counter()
@@ -1357,9 +1730,14 @@ class ScreenshotWatcher(QObject):
             # Manual screenshots can be large/slow too. Only surface a health
             # failure when the timed-out file is actually an ApScout transport
             # image; unrelated screenshots must stay silent and preserved.
-            source = self._snapshot_source_for_path(path)
+            if claim.refresh() is None or self._manual_index.contains(claim.key):
+                return
+            decoded_key = claim.key
+            source = self._source_from_stat(path, claim.stat_result)
+            decode_succeeded = False
             try:
                 result = _decode_screenshot_result(path)
+                decode_succeeded = True
             except Exception as e:
                 _log.debug(
                     "decode error before APS1 ownership for %s: %r",
@@ -1369,6 +1747,14 @@ class ScreenshotWatcher(QObject):
                 )
                 result = DecodeResult(None, False)
             if self._stopped.is_set():
+                return
+            if not self._finalize_decode_result(
+                claim,
+                decoded_key,
+                result,
+                decode_succeeded=decode_succeeded,
+                flush=True,
+            ):
                 return
             if result.snapshot is not None:
                 if not self._emit_snapshot(
@@ -1399,9 +1785,14 @@ class ScreenshotWatcher(QObject):
             return
         wait_elapsed = time.perf_counter() - wait_started
         decode_started = time.perf_counter()
-        source = self._snapshot_source_for_path(path)
+        if claim.refresh() is None or self._manual_index.contains(claim.key):
+            return
+        decoded_key = claim.key
+        source = self._source_from_stat(path, claim.stat_result)
+        decode_succeeded = False
         try:
             result = _decode_screenshot_result(path)
+            decode_succeeded = True
         except Exception as e:
             _log.debug(
                 "decode error before APS1 ownership for %s: %r",
@@ -1411,6 +1802,14 @@ class ScreenshotWatcher(QObject):
             )
             result = DecodeResult(None, False)
         if self._stopped.is_set():
+            return
+        if not self._finalize_decode_result(
+            claim,
+            decoded_key,
+            result,
+            decode_succeeded=decode_succeeded,
+            flush=True,
+        ):
             return
         decode_elapsed = time.perf_counter() - decode_started
         if (

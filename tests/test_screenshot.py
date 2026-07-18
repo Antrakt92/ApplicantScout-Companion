@@ -2115,34 +2115,28 @@ def test_handler_should_process_uses_supported_suffix_policy(tmp_path: Path):
     supported = tmp_path / "WoWScrnShot_0001.tga"
     supported.write_bytes(b"x")
     assert handler._should_process(supported)
-    assert not handler._should_process(supported)
+    assert handler._should_process(supported)
 
 
-def test_handler_should_process_distinguishes_reused_filename_by_precise_stat():
-    class FakePath:
-        suffix = ".jpg"
+def test_shared_work_claim_distinguishes_reused_filename_by_precise_stat(
+    tmp_path: Path,
+):
+    path = tmp_path / "WoWScrnShot_0001.jpg"
+    path.write_bytes(b"first")
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    claims = screenshot_mod._ScreenshotWorkClaims()
 
-        def __init__(self, *, mtime: float, mtime_ns: int, size: int) -> None:
-            self._stat = SimpleNamespace(
-                st_mtime=mtime,
-                st_mtime_ns=mtime_ns,
-                st_size=size,
-            )
+    first = claims.try_claim(path)
+    assert first is not None
+    assert claims.try_claim(path) is None
+    first.release()
+    assert claims.try_claim(path) is None
 
-        def __str__(self) -> str:
-            return "C:/World of Warcraft/_retail_/Screenshots/WoWScrnShot_0001.jpg"
-
-        def stat(self) -> SimpleNamespace:
-            return self._stat
-
-    handler = _Handler(lambda _path: None)
-
-    assert handler._should_process(FakePath(mtime=1000.0, mtime_ns=1000, size=10))
-    assert not handler._should_process(
-        FakePath(mtime=1000.0, mtime_ns=1000, size=10)
-    )
-    assert handler._should_process(FakePath(mtime=1000.0, mtime_ns=1001, size=10))
-    assert handler._should_process(FakePath(mtime=1000.0, mtime_ns=1001, size=12))
+    path.write_bytes(b"second-generation")
+    os.utime(path, ns=(1_000_000_001, 1_000_000_001))
+    second = claims.try_claim(path)
+    assert second is not None
+    second.release()
 
 
 def test_decode_qr_symbols_surfaces_lazy_import_failure(monkeypatch: pytest.MonkeyPatch):
@@ -2159,6 +2153,26 @@ def test_decode_qr_symbols_surfaces_lazy_import_failure(monkeypatch: pytest.Monk
 
     with pytest.raises(screenshot_mod.QRDecoderUnavailable, match="zbar missing"):
         screenshot_mod._decode_qr_symbols(Image.new("RGB", (1, 1)))
+
+
+def test_decode_result_marks_transient_zbar_failure_as_incomplete_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    _write_blank_image(image_path)
+
+    def fail_scan(_image, *, symbols=None):
+        raise RuntimeError("temporary zbar failure")
+
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", fail_scan)
+    monkeypatch.setattr(screenshot_mod, "ZBarSymbol", None)
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.snapshot is None
+    assert not result.has_marker
+    assert result.error_reason == "QR scan failed: temporary zbar failure"
 
 
 def test_cleanup_dry_run_reports_marker_files_without_deleting(
@@ -3080,3 +3094,169 @@ def test_watcher_stop_suppresses_backlog_signals(monkeypatch, tmp_path: Path):
 
     assert snapshots == []
     assert image_path.exists()
+
+
+def test_backlog_persists_manual_fingerprint_across_watcher_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    image_path = screenshots / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"manual")
+    os.utime(image_path, (900.0, 900.0))
+    calls: list[Path] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        calls.append(path)
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    assert calls == [image_path]
+
+    monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+
+    assert calls == [image_path]
+
+
+def test_backlog_does_not_persist_transient_scan_failure_as_manual(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    image_path = screenshots / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"maybe-transport")
+    os.utime(image_path, (900.0, 900.0))
+    calls: list[Path] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        calls.append(path)
+        if len(calls) == 1:
+            return screenshot_mod.DecodeResult(None, False, "transient scan failure")
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+
+    assert calls == [image_path, image_path]
+
+
+def test_backlog_resumes_beyond_unknown_decode_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    newer_manual = screenshots / "WoWScrnShot_0001.jpg"
+    older_manual = screenshots / "WoWScrnShot_0002.jpg"
+    oldest_transport = screenshots / "WoWScrnShot_0003.jpg"
+    for path, content, mtime in (
+        (newer_manual, b"manual-newer", 900.0),
+        (older_manual, b"manual-older", 800.0),
+        (oldest_transport, b"transport", 700.0),
+    ):
+        path.write_bytes(content)
+        os.utime(path, (mtime, mtime))
+    decoded: list[Path] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        decoded.append(path)
+        return screenshot_mod.DecodeResult(None, path == oldest_transport)
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_BACKLOG_CLEANUP_LIMIT", 2)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    assert decoded == [newer_manual, older_manual]
+    assert oldest_transport.exists()
+
+    monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+
+    assert decoded == [newer_manual, older_manual, oldest_transport]
+    assert not oldest_transport.exists()
+    assert newer_manual.exists()
+    assert older_manual.exists()
+
+
+def test_observer_and_backlog_share_single_in_flight_decode_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"manual")
+    watcher = ScreenshotWatcher(tmp_path)
+    decode_entered = screenshot_mod.threading.Event()
+    allow_decode = screenshot_mod.threading.Event()
+    decoded: list[Path] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        decoded.append(path)
+        decode_entered.set()
+        assert allow_decode.wait(timeout=2)
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+    observer_thread = screenshot_mod.threading.Thread(
+        target=watcher._on_new_file,
+        args=(image_path,),
+    )
+    observer_thread.start()
+    assert decode_entered.wait(timeout=2)
+
+    watcher._scan_recent_backlog()
+    allow_decode.set()
+    observer_thread.join(timeout=2)
+
+    assert not observer_thread.is_alive()
+    assert decoded == [image_path]
+    assert image_path.exists()
+
+
+def test_watcher_retries_changed_generation_without_deleting_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"old-transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    decoded_contents: list[bytes] = []
+    failures: list[tuple[object, ...]] = []
+    watcher.decodeFailed.connect(lambda *args: failures.append(args))
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        decoded_contents.append(path.read_bytes())
+        if len(decoded_contents) == 1:
+            path.write_bytes(b"replacement-manual-screenshot")
+            os.utime(path, ns=(2_000_000_001, 2_000_000_001))
+            return screenshot_mod.DecodeResult(None, True, "old generation failed")
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._on_new_file(image_path)
+
+    assert decoded_contents == [
+        b"old-transport",
+        b"replacement-manual-screenshot",
+    ]
+    assert failures == []
+    assert image_path.read_bytes() == b"replacement-manual-screenshot"

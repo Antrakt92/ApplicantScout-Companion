@@ -57,6 +57,7 @@ from .screenshot import (
     DecodedRosterMember,
     ScreenshotWatcher,
     Snapshot,
+    clear_screenshot_manual_indexes,
     cleanup_appscout_screenshots,
     format_screenshot_cleanup_summary,
     is_placeholder_transport_identity,
@@ -1560,6 +1561,7 @@ def _clear_cache_dir(
                 shutil.rmtree(child)
             else:
                 child.unlink()
+        clear_screenshot_manual_indexes(cache_dir)
         clear_lookup_payload_cache(cache_dir)
     finally:
         if auth is not None:
@@ -2268,12 +2270,16 @@ def _replace_screenshot_watcher(
     window: OverlayWindow,
     decode_failed_callback: Callable[[str, str], None],
     *,
+    cache_dir: Path | None = None,
     signal_gate: _WatcherSignalGate,
     live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
     stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
     previous_generation = signal_gate.generation
-    new_watcher = ScreenshotWatcher(screenshots_dir)
+    if cache_dir is None:
+        new_watcher = ScreenshotWatcher(screenshots_dir)
+    else:
+        new_watcher = ScreenshotWatcher(screenshots_dir, cache_dir=cache_dir)
     generation = signal_gate.prepare_next()
     source_gate = _SnapshotSourceGate()
     apply_queue = _connect_screenshot_watcher(
@@ -2331,6 +2337,7 @@ def _replace_screenshots_runtime(
             _ReaderBoundMachine(machine, next_reader),
             window,
             decode_failed_callback,
+            cache_dir=cache_dir,
             signal_gate=signal_gate,
             live_snapshot_cache_writer=live_snapshot_cache_writer,
             stop_runner=stop_runner,
@@ -3734,6 +3741,7 @@ def main(argv: list[str] | None = None) -> int:
         machine,
         window,
         _log_decode_failed,
+        cache_dir=cfg.cache_dir,
         signal_gate=watcher_signal_gate,
         live_snapshot_cache_writer=live_snapshot_writer,
     )
