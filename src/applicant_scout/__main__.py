@@ -89,6 +89,7 @@ from .wcl import (
 from .wow_lifecycle import (
     WATCH_WOW_ARG,
     configure_wow_sync_startup,
+    is_other_companion_runtime_running,
     is_wow_foreground,
     is_wow_running,
     start_wow_sync_watcher,
@@ -136,6 +137,10 @@ class _ControlCommandResult:
 
 
 class _DuplicateInstanceFound(RuntimeError):
+    pass
+
+
+class _ControlServerUnavailable(RuntimeError):
     pass
 
 
@@ -408,7 +413,7 @@ def _create_control_server(
     can_quit: Callable[[], bool] | None = None,
     prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
-) -> QLocalServer | None:
+) -> QLocalServer:
     server = QLocalServer(app)
     if not server.listen(CONTROL_SERVER_NAME):
         active_owner = _send_control_command(CONTROL_SHOW_SETTINGS_COMMAND, timeout_ms=200)
@@ -422,8 +427,7 @@ def _create_control_server(
             raise _DuplicateInstanceFound
         QLocalServer.removeServer(CONTROL_SERVER_NAME)
         if not server.listen(CONTROL_SERVER_NAME):
-            log.warning("Could not start control server: %s", server.errorString())
-            return None
+            raise _ControlServerUnavailable(server.errorString())
 
     server.newConnection.connect(
         lambda: _drain_control_connections(
@@ -3189,6 +3193,12 @@ def main(argv: list[str] | None = None) -> int:
                 result.error or "unknown error",
             )
             return 1
+    if is_other_companion_runtime_running():
+        log.warning(
+            "Another ApplicantScout runtime is already running without a reachable "
+            "control endpoint; refusing to start a duplicate instance."
+        )
+        return 1
 
     _set_windows_app_user_model_id()
     app = QApplication([sys.argv[0], *args])
@@ -3287,8 +3297,13 @@ def main(argv: list[str] | None = None) -> int:
     except _DuplicateInstanceFound:
         log.info("ApplicantScout Companion is already running; exiting duplicate launch.")
         return 0
-    if control_server is not None:
-        setattr(app, "_applicant_scout_control_server", control_server)
+    except _ControlServerUnavailable as exc:
+        log.error(
+            "Could not establish single-instance ownership; refusing startup: %s",
+            exc,
+        )
+        return 1
+    setattr(app, "_applicant_scout_control_server", control_server)
 
     loaded = _load_startup_config(update_quit_gate=update_quit_gate)
     if loaded is None:

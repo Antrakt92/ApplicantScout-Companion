@@ -15,6 +15,9 @@ a keyboard or assistive technology.
 
 ### Fixed
 
+- Packaged and developer launches now share a fail-closed single-instance
+  guard, preventing two overlay windows when the local control endpoint is
+  unavailable.
 - QR build, paint, capture, retry, and stale-texture cleanup work now has
   bounded recovery instead of leaving transport frozen until `/reload`.
 - Screenshot format and quality are leased only around each capture and are
