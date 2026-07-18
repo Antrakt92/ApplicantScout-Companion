@@ -91,6 +91,7 @@ from .scoring import (
     MPLUS_LIMIT_SCORE_ONLY,
     MPLUS_LIMIT_SPARSE_COVERAGE,
     MPLUS_LIMIT_WEAK_WCL,
+    CandidateFit,
     PackageFit,
     RAID_TARGET_BY_DIFFICULTY_ID,
     candidate_fit,
@@ -704,7 +705,7 @@ def _mplus_fit_source_text(applicant: Applicant) -> str:
 
 def _sort_applicants_grouped_with_package_fits(
     applicants: Iterable[Applicant], listing: Listing | None = None
-) -> tuple[list[Applicant], dict[str, PackageFit]]:
+) -> tuple[list[Applicant], dict[str, PackageFit], dict[str, CandidateFit]]:
     """Sort applicants with multi-member group adjacency.
 
     Unknown/no listing preserves the original max-RIO ordering. Known M+/raid
@@ -713,6 +714,7 @@ def _sort_applicants_grouped_with_package_fits(
     """
     apps = list(applicants)
     package_fits: dict[str, PackageFit] = {}
+    candidate_fits: dict[str, CandidateFit] = {}
     group_max: dict[str, int] = {}
     group_fit: dict[str, float] = {}
     group_confidence: dict[str, float] = {}
@@ -740,6 +742,8 @@ def _sort_applicants_grouped_with_package_fits(
         for raw_aid, members in group_members.items():
             fit = package_fit(members, listing)
             package_fits[raw_aid] = fit
+            for member, member_fit in zip(members, fit.member_fits, strict=True):
+                candidate_fits[member.applicant_id] = member_fit
             group_fit[raw_aid] = fit.score
             group_confidence[raw_aid] = fit.confidence
     elif use_mplus_headline:
@@ -785,15 +789,17 @@ def _sort_applicants_grouped_with_package_fits(
             )
         return (gmax == 0, -gmax, all_sunk, raw_aid, member_idx, sunk)
 
-    return sorted(apps, key=_key), package_fits
+    return sorted(apps, key=_key), package_fits, candidate_fits
 
 
 def sort_applicants_grouped(
     applicants: Iterable[Applicant], listing: Listing | None = None
 ) -> list[Applicant]:
-    sorted_apps, _package_fits = _sort_applicants_grouped_with_package_fits(
-        applicants,
-        listing,
+    sorted_apps, _package_fits, _candidate_fits = (
+        _sort_applicants_grouped_with_package_fits(
+            applicants,
+            listing,
+        )
     )
     return sorted_apps
 
@@ -2082,6 +2088,7 @@ class ApplicantInfoPanel(QFrame):
         listing: Listing | None = None,
         package: PackageFit | None = None,
         *,
+        fit: CandidateFit | None = None,
         pinned: bool = False,
         raid_detail_status: str = "",
         raid_detail_status_error: bool = False,
@@ -2089,6 +2096,7 @@ class ApplicantInfoPanel(QFrame):
         wcl_retry_available: bool = False,
     ) -> None:
         """Show full applicant scout data in the fixed widget layout."""
+        current_fit = fit or candidate_fit(applicant, listing)
         self._current_applicant = applicant
         self._current_listing = listing
         self.setAccessibleDescription(f"Details for {applicant.name}.")
@@ -2098,10 +2106,11 @@ class ApplicantInfoPanel(QFrame):
         )
         self._set_action_visible(self._unpin_button, pinned)
         self._set_identity(applicant)
-        self._set_package(package, applicant, listing)
+        self._set_package(package, applicant, listing, fit=current_fit)
         self._set_status_or_data(
             applicant,
             listing,
+            fit=current_fit,
             raid_detail_status=raid_detail_status,
             raid_detail_status_error=raid_detail_status_error,
             raid_detail_retry_available=raid_detail_retry_available,
@@ -2185,6 +2194,8 @@ class ApplicantInfoPanel(QFrame):
         package: PackageFit | None,
         applicant: Applicant | None = None,
         listing: Listing | None = None,
+        *,
+        fit: CandidateFit | None = None,
     ) -> None:
         metric_disabled = bool(
             package is not None
@@ -2206,7 +2217,7 @@ class ApplicantInfoPanel(QFrame):
             self._package_label.setVisible(False)
             return
         member_score = (
-            candidate_fit(applicant, listing).score
+            (fit or candidate_fit(applicant, listing)).score
             if applicant is not None and listing is not None
             else None
         )
@@ -2303,6 +2314,7 @@ class ApplicantInfoPanel(QFrame):
         applicant: Applicant,
         listing: Listing | None = None,
         *,
+        fit: CandidateFit | None = None,
         raid_detail_status: str = "",
         raid_detail_status_error: bool = False,
         raid_detail_retry_available: bool = False,
@@ -2327,13 +2339,13 @@ class ApplicantInfoPanel(QFrame):
             return
         if status == "error":
             msg = applicant.error_message or "unknown"
-            fit = candidate_fit(applicant, listing)
+            current_fit = fit or candidate_fit(applicant, listing)
             source_note = (
                 " · RaiderIO only"
-                if fit.context == CONTEXT_MPLUS and fit.score > 0.0
+                if current_fit.context == CONTEXT_MPLUS and current_fit.score > 0.0
                 else ""
             )
-            visible_metrics = self._set_metric_badges(applicant, listing)
+            visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
             visible_rows = self._set_detail_rows(applicant, listing)
             self._show_status(
                 f"WCL error: {msg}{source_note}",
@@ -2348,13 +2360,13 @@ class ApplicantInfoPanel(QFrame):
             )
             return
         if status == "not_found":
-            fit = candidate_fit(applicant, listing)
+            current_fit = fit or candidate_fit(applicant, listing)
             source_note = (
                 " · RaiderIO only"
-                if fit.context == CONTEXT_MPLUS and fit.score > 0.0
+                if current_fit.context == CONTEXT_MPLUS and current_fit.score > 0.0
                 else ""
             )
-            visible_metrics = self._set_metric_badges(applicant, listing)
+            visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
             visible_rows = self._set_detail_rows(applicant, listing)
             self._show_status(
                 f"Not found on Warcraft Logs{source_note}",
@@ -2370,9 +2382,9 @@ class ApplicantInfoPanel(QFrame):
             self._show_status("")
             return
 
-        visible_metrics = self._set_metric_badges(applicant, listing)
+        visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
         visible_rows = self._set_detail_rows(applicant, listing)
-        fit_status = self._mplus_fit_status_text(applicant, listing)
+        fit_status = self._mplus_fit_status_text(applicant, listing, fit=fit)
         if self._active_detail_mode() == "raid" and raid_detail_status:
             self._show_status(
                 raid_detail_status,
@@ -2527,7 +2539,11 @@ class ApplicantInfoPanel(QFrame):
         self.detailChanged.emit()
 
     def _set_metric_badges(
-        self, applicant: Applicant, listing: Listing | None = None
+        self,
+        applicant: Applicant,
+        listing: Listing | None = None,
+        *,
+        fit: CandidateFit | None = None,
     ) -> int:
         shown = 0
         target_raid = _raid_target_key_for_listing(listing)
@@ -2549,7 +2565,7 @@ class ApplicantInfoPanel(QFrame):
             if not enabled and key != target_raid:
                 self._metric_labels[key].setVisible(False)
                 continue
-            text, fg, bg = _raid_fit_visuals(applicant, listing, key)
+            text, fg, bg = _raid_fit_visuals(applicant, listing, key, fit=fit)
             if bg is None:
                 self._metric_labels[key].setVisible(False)
                 continue
@@ -2563,7 +2579,7 @@ class ApplicantInfoPanel(QFrame):
 
         if self._metric_preferences.mplus:
             metric_label, _breakdown, _best, _median = role_mplus_view(applicant)
-            text, _fg, bg = _mplus_cell_visuals(applicant, listing)
+            text, _fg, bg = _mplus_cell_visuals(applicant, listing, fit=fit)
             if bg is not None:
                 prefix = "M+ " if text.startswith("Fit ") else f"M+ {metric_label} "
                 self._set_badge(
@@ -2580,36 +2596,44 @@ class ApplicantInfoPanel(QFrame):
         return shown
 
     def _mplus_fit_status_text(
-        self, applicant: Applicant, listing: Listing | None = None
+        self,
+        applicant: Applicant,
+        listing: Listing | None = None,
+        *,
+        fit: CandidateFit | None = None,
     ) -> str:
         if not self._metric_preferences.mplus:
             return ""
-        fit = candidate_fit(applicant, listing)
-        if fit.context != CONTEXT_MPLUS or not fit.display or fit.score <= 0.0:
+        current_fit = fit or candidate_fit(applicant, listing)
+        if (
+            current_fit.context != CONTEXT_MPLUS
+            or not current_fit.display
+            or current_fit.score <= 0.0
+        ):
             return ""
         source = _mplus_fit_source_text(applicant)
-        coverage = int(round(fit.coverage * max(len(MPLUS_ENCOUNTERS), 1)))
-        parts = [f"Target +{fit.target_key}"]
-        if fit.best_nearby_key > 0:
-            parts.append(f"best nearby +{fit.best_nearby_key}")
+        coverage = int(round(current_fit.coverage * max(len(MPLUS_ENCOUNTERS), 1)))
+        parts = [f"Target +{current_fit.target_key}"]
+        if current_fit.best_nearby_key > 0:
+            parts.append(f"best nearby +{current_fit.best_nearby_key}")
         else:
             parts.append("no nearby key evidence")
 
         same_dungeon = []
-        if fit.same_dungeon_rio_key > 0:
-            same_dungeon.append(f"RIO +{fit.same_dungeon_rio_key}")
-        if fit.same_dungeon_wcl_key > 0:
+        if current_fit.same_dungeon_rio_key > 0:
+            same_dungeon.append(f"RIO +{current_fit.same_dungeon_rio_key}")
+        if current_fit.same_dungeon_wcl_key > 0:
             metric = mplus_metric_text(
-                fit.same_dungeon_wcl_best,
-                fit.same_dungeon_wcl_median,
-                fit.same_dungeon_wcl_run_count,
+                current_fit.same_dungeon_wcl_best,
+                current_fit.same_dungeon_wcl_median,
+                current_fit.same_dungeon_wcl_run_count,
             )
-            same_dungeon.append(f"WCL +{fit.same_dungeon_wcl_key} {metric}")
+            same_dungeon.append(f"WCL +{current_fit.same_dungeon_wcl_key} {metric}")
         if same_dungeon:
             parts.append(f"same dungeon {' / '.join(same_dungeon)}")
         elif (
-            fit.has_same_dungeon_context
-            and fit.limit_reason != MPLUS_LIMIT_NO_SAME_DUNGEON
+            current_fit.has_same_dungeon_context
+            and current_fit.limit_reason != MPLUS_LIMIT_NO_SAME_DUNGEON
         ):
             parts.append("no same-dungeon evidence")
 
@@ -2621,12 +2645,12 @@ class ApplicantInfoPanel(QFrame):
             MPLUS_LIMIT_BELOW_TARGET: "best key below target",
             MPLUS_LIMIT_SPARSE_COVERAGE: "sparse coverage",
             MPLUS_LIMIT_NO_SAME_DUNGEON: "no same-dungeon evidence",
-        }.get(fit.limit_reason, "")
+        }.get(current_fit.limit_reason, "")
         if limit_text:
             parts.append(f"limit: {limit_text}")
         parts.extend(
             (
-                f"evidence confidence {int(round(fit.confidence * 100))}%",
+                f"evidence confidence {int(round(current_fit.confidence * 100))}%",
                 f"coverage {coverage}/{max(len(MPLUS_ENCOUNTERS), 1)}",
                 source,
             )
@@ -3148,6 +3172,7 @@ class OverlayWindow(QMainWindow):
         self._panel_anchor_extra_height = 0
         self._panel_anchor_y_offset = 0
         self._panel_render_key: tuple | None = None
+        self._candidate_fits_for_sync: Mapping[str, CandidateFit] | None = None
 
         # Map of applicant_id -> table row (kept in sync with _id_by_row).
         self._row_for_id: dict[str, int] = {}
@@ -4378,6 +4403,11 @@ class OverlayWindow(QMainWindow):
             applicant,
             listing,
             package,
+            fit=(
+                self._candidate_fits_for_sync.get(visible_id)
+                if self._candidate_fits_for_sync is not None
+                else None
+            ),
             pinned=visible_id == self._pinned_id,
             raid_detail_status=raid_detail_status[0] if raid_detail_status else "",
             raid_detail_status_error=raid_detail_status[1]
@@ -4704,7 +4734,13 @@ class OverlayWindow(QMainWindow):
             _freeze_render_value(self._package_fit_by_raw.get(raw_aid)),
         )
 
-    def _render_row(self, row: int, applicant: Applicant) -> None:
+    def _render_row(
+        self,
+        row: int,
+        applicant: Applicant,
+        *,
+        fit: CandidateFit | None = None,
+    ) -> None:
         """Write applicant data into an existing table row. Caller manages
         row creation / position — used by _refresh_table after sort.
 
@@ -4780,7 +4816,7 @@ class OverlayWindow(QMainWindow):
                     and package.display
                     and self._group_ready_by_raw.get(raw_aid, False)
                     and self._group_size_by_raw.get(raw_aid, 1) >= 2
-                    else _raid_fit_cell(applicant, listing, raid_key)
+                    else _raid_fit_cell(applicant, listing, raid_key, fit=fit)
                 )
             else:
                 item = _raid_dual_cell(
@@ -4803,13 +4839,17 @@ class OverlayWindow(QMainWindow):
             self._table.setItem(
                 row,
                 COL_MPLUS,
-                _mplus_group_cell(package, applicant, listing),
+                _mplus_group_cell(package, applicant, listing, fit=fit),
             )
         else:
             # M+ cell: context-fit display for M+ listings, legacy headline
             # otherwise. Raid listings keep this neutral so the target raid
             # column owns the visible recommendation.
-            self._table.setItem(row, COL_MPLUS, _mplus_dual_cell(applicant, listing))
+            self._table.setItem(
+                row,
+                COL_MPLUS,
+                _mplus_dual_cell(applicant, listing, fit=fit),
+            )
 
         accessible_headers = (
             "Specialization",
@@ -4923,12 +4963,14 @@ class OverlayWindow(QMainWindow):
 
         listing = self._effective_listing()
         sorted_package_fit_by_raw: dict[str, PackageFit] = {}
+        sorted_candidate_fit_by_id: dict[str, CandidateFit] = {}
         if self._active_tab == "party":
             sorted_applicants = sort_roster_members(self._state.party_members.values())
         else:
             (
                 sorted_applicants,
                 sorted_package_fit_by_raw,
+                sorted_candidate_fit_by_id,
             ) = _sort_applicants_grouped_with_package_fits(
                 self._state.applicants.values(),
                 listing,
@@ -4976,7 +5018,11 @@ class OverlayWindow(QMainWindow):
                 row_key = self._row_render_key(applicant, listing)
                 new_render_key_by_id[applicant.applicant_id] = row_key
                 if self._row_render_key_by_id.get(applicant.applicant_id) != row_key:
-                    self._render_row(row, applicant)
+                    self._render_row(
+                        row,
+                        applicant,
+                        fit=sorted_candidate_fit_by_id.get(applicant.applicant_id),
+                    )
         else:
             # Reset delegate to "no highlight anywhere" BEFORE we tear down items.
             # Avoids a stripe / band paint at a row index that no longer maps if Qt
@@ -4989,7 +5035,11 @@ class OverlayWindow(QMainWindow):
             self._id_by_row = new_id_by_row
             for row, applicant in enumerate(sorted_applicants):
                 self._row_for_id[applicant.applicant_id] = row
-                self._render_row(row, applicant)
+                self._render_row(
+                    row,
+                    applicant,
+                    fit=sorted_candidate_fit_by_id.get(applicant.applicant_id),
+                )
                 new_render_key_by_id[applicant.applicant_id] = self._row_render_key(
                     applicant,
                     listing,
@@ -5016,7 +5066,11 @@ class OverlayWindow(QMainWindow):
         self._apply_role_filter()
         self._reconcile_keyboard_current(prev_keyboard, prev_keyboard_row)
         # Re-apply correct stripe rows + refresh panel content (single point).
-        self._sync_delegate_and_panel()
+        self._candidate_fits_for_sync = sorted_candidate_fit_by_id
+        try:
+            self._sync_delegate_and_panel()
+        finally:
+            self._candidate_fits_for_sync = None
 
     def _is_filter_active(self) -> bool:
         """True iff the role filter actually hides anything. Empty set OR
@@ -6307,9 +6361,13 @@ def _raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> s
 
 
 def _raid_fit_cell(
-    applicant: Applicant, listing: Listing | None, target: str
+    applicant: Applicant,
+    listing: Listing | None,
+    target: str,
+    *,
+    fit: CandidateFit | None = None,
 ) -> QTableWidgetItem:
-    text, fg, bg = _raid_fit_visuals(applicant, listing, target)
+    text, fg, bg = _raid_fit_visuals(applicant, listing, target, fit=fit)
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     if bg is not None:
@@ -6320,30 +6378,38 @@ def _raid_fit_cell(
 
 
 def _raid_fit_visuals(
-    applicant: Applicant, listing: Listing | None, target: str
+    applicant: Applicant,
+    listing: Listing | None,
+    target: str,
+    *,
+    fit: CandidateFit | None = None,
 ) -> tuple[str, str | None, str | None]:
     if applicant.fetch_status != "ready":
         best, median = _raid_values_for_key(applicant, target)
         return _raid_cell_visuals(best, median, applicant.fetch_status)
 
-    fit = candidate_fit(applicant, listing)
-    if fit.context != CONTEXT_RAID or fit.target_raid != target or not fit.display:
+    current_fit = fit or candidate_fit(applicant, listing)
+    if (
+        current_fit.context != CONTEXT_RAID
+        or current_fit.target_raid != target
+        or not current_fit.display
+    ):
         best, median = _raid_values_for_key(applicant, target)
         return _raid_cell_visuals(best, median, applicant.fetch_status)
 
-    if fit.source == "raid_exact":
-        prefix = fit.label
-    elif fit.source in {"raid_higher_fallback", "raid_lower_fallback"}:
+    if current_fit.source == "raid_exact":
+        prefix = current_fit.label
+    elif current_fit.source in {"raid_higher_fallback", "raid_lower_fallback"}:
         prefix = "EST"
     else:
         prefix = "SUP"
 
-    text = f"{prefix} {int(round(fit.score))}"
-    evidence = _raid_fit_evidence_text(applicant, target, fit.source)
+    text = f"{prefix} {int(round(current_fit.score))}"
+    evidence = _raid_fit_evidence_text(applicant, target, current_fit.source)
     if evidence:
         text = f"{text} · {evidence}"
 
-    bg = fit.colour
+    bg = current_fit.colour
     fg = _text_colour_for_bg(bg) if bg is not None else None
     return text, fg, bg
 
@@ -6611,18 +6677,21 @@ def _mplus_breakdown_all_single_run(breakdown: Iterable[object]) -> bool:
 
 
 def _mplus_cell_visuals(
-    applicant: Applicant, listing: Listing | None = None
+    applicant: Applicant,
+    listing: Listing | None = None,
+    *,
+    fit: CandidateFit | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Returns table text/colours for the role-relevant M+ headline cell."""
     status = applicant.fetch_status
     if status in {"loading", "pending"}:
         return "…", "#888", None
 
-    fit = candidate_fit(applicant, listing)
-    if fit.context == CONTEXT_MPLUS and fit.display:
-        bg = fit.colour
+    current_fit = fit or candidate_fit(applicant, listing)
+    if current_fit.context == CONTEXT_MPLUS and current_fit.display:
+        bg = current_fit.colour
         fg = _text_colour_for_bg(bg) if bg is not None else None
-        return f"Fit {fit.display}", fg, bg
+        return f"Fit {current_fit.display}", fg, bg
 
     if status == "error":
         return "?", "#ff5555", None
@@ -6645,7 +6714,7 @@ def _mplus_cell_visuals(
     if highest_key > 0:
         text = f"{text} +{highest_key}"
 
-    if fit.context == CONTEXT_RAID:
+    if current_fit.context == CONTEXT_RAID:
         return text, "#b8b8c8", None
 
     bg = percentile_colour(best) if best is not None else None
@@ -6664,10 +6733,13 @@ def _mplus_dungeon_metric_text(entry: object) -> str:
 
 
 def _mplus_dual_cell(
-    applicant: Applicant, listing: Listing | None = None
+    applicant: Applicant,
+    listing: Listing | None = None,
+    *,
+    fit: CandidateFit | None = None,
 ) -> QTableWidgetItem:
     """Qt adapter over the pure M+ headline render boundary."""
-    text, fg, bg = _mplus_cell_visuals(applicant, listing)
+    text, fg, bg = _mplus_cell_visuals(applicant, listing, fit=fit)
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     if fg is not None:
@@ -6682,11 +6754,13 @@ def _mplus_group_cell(
     package: PackageFit,
     applicant: Applicant,
     listing: Listing | None = None,
+    *,
+    fit: CandidateFit | None = None,
 ) -> QTableWidgetItem:
     package_text = package.display
     package_bg = package.colour or "#2a2a33"
     individual_text, individual_fg, individual_bg = _mplus_cell_visuals(
-        applicant, listing
+        applicant, listing, fit=fit
     )
     item = QTableWidgetItem(f"{package_text} | {individual_text}")
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)

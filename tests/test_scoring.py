@@ -1747,6 +1747,7 @@ def test_package_fit_solo_uses_individual_score_without_group_display():
     assert solo.score == fit.score
     assert solo.display == ""
     assert solo.member_scores == (fit.score,)
+    assert solo.member_fits == (fit,)
 
 
 def test_package_fit_unknown_context_keeps_member_stats_consistent():

@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 import applicant_scout.overlay as overlay_mod
+import applicant_scout.scoring as scoring_mod
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
     COL_H,
@@ -5955,6 +5956,112 @@ def test_refresh_table_reuses_package_fit_from_sort(qtbot, tmp_path, monkeypatch
         client.close()
 
 
+def test_refresh_table_reuses_member_fits_from_package_sort(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    applicants = [
+        _app(applicant_id="10:1", name="Tank-Realm", role="TANK", score=2400),
+        _app(
+            applicant_id="10:2",
+            name="Damage-Realm",
+            role="DAMAGER",
+            score=2300,
+        ),
+        _app(applicant_id="20:1", name="Healer-Realm", role="HEALER", score=2200),
+    ]
+    for applicant in applicants:
+        state.add_or_update(applicant)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    expected_individual_text = {
+        applicant.applicant_id: overlay_mod._mplus_cell_visuals(
+            applicant,
+            state.listing,
+        )[0]
+        for applicant in applicants
+    }
+    original_candidate_fit = scoring_mod.candidate_fit
+    calls: list[str] = []
+
+    def counted_candidate_fit(applicant, listing):
+        calls.append(applicant.applicant_id)
+        return original_candidate_fit(applicant, listing)
+
+    monkeypatch.setattr(scoring_mod, "candidate_fit", counted_candidate_fit)
+    monkeypatch.setattr(overlay_mod, "candidate_fit", counted_candidate_fit)
+
+    try:
+        window._refresh_table()
+
+        assert sorted(calls) == sorted(expected_individual_text)
+        assert window._candidate_fits_for_sync is None
+        for applicant_id, expected_text in expected_individual_text.items():
+            item = window._table.item(window._row_for_id[applicant_id], COL_MPLUS)
+            assert item is not None
+            if applicant_id.startswith("10:"):
+                assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == expected_text
+            else:
+                assert item.text() == expected_text
+    finally:
+        client.close()
+
+
+def test_refresh_table_reuses_member_fits_for_raid_rows(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _raid_listing()
+    applicants = [
+        _app(applicant_id="10:1", name="Tank-Realm", role="TANK"),
+        _app(applicant_id="20:1", name="Healer-Realm", role="HEALER"),
+        _app(applicant_id="30:1", name="Damage-Realm", role="DAMAGER"),
+    ]
+    for applicant in applicants:
+        state.add_or_update(applicant)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    expected_text = {
+        applicant.applicant_id: overlay_mod._raid_fit_visuals(
+            applicant,
+            state.listing,
+            "H",
+        )[0]
+        for applicant in applicants
+    }
+    original_candidate_fit = scoring_mod.candidate_fit
+    calls: list[str] = []
+
+    def counted_candidate_fit(applicant, listing):
+        calls.append(applicant.applicant_id)
+        return original_candidate_fit(applicant, listing)
+
+    monkeypatch.setattr(scoring_mod, "candidate_fit", counted_candidate_fit)
+    monkeypatch.setattr(overlay_mod, "candidate_fit", counted_candidate_fit)
+
+    try:
+        window._refresh_table()
+
+        assert sorted(calls) == sorted(expected_text)
+        for applicant_id, text in expected_text.items():
+            item = window._table.item(window._row_for_id[applicant_id], COL_H)
+            assert item is not None
+            assert item.text() == text
+    finally:
+        client.close()
+
+
 def test_refresh_table_noop_reuses_existing_rows_when_order_stable(
     qtbot, tmp_path, monkeypatch
 ):
@@ -5969,9 +6076,9 @@ def test_refresh_table_noop_reuses_existing_rows_when_order_stable(
     rendered: list[str] = []
     original_render = window._render_row
 
-    def counted_render(row, applicant):
+    def counted_render(row, applicant, *, fit=None):
         rendered.append(applicant.applicant_id)
-        original_render(row, applicant)
+        original_render(row, applicant, fit=fit)
 
     try:
         window._refresh_table()
@@ -5998,9 +6105,9 @@ def test_refresh_table_rerenders_only_changed_stable_order_row(
     rendered: list[str] = []
     original_render = window._render_row
 
-    def counted_render(row, applicant):
+    def counted_render(row, applicant, *, fit=None):
         rendered.append(applicant.applicant_id)
-        original_render(row, applicant)
+        original_render(row, applicant, fit=fit)
 
     try:
         window._refresh_table()
@@ -6030,9 +6137,9 @@ def test_refresh_table_full_rebuilds_when_sorted_order_changes(
     rendered: list[str] = []
     original_render = window._render_row
 
-    def counted_render(row, applicant):
+    def counted_render(row, applicant, *, fit=None):
         rendered.append(applicant.applicant_id)
-        original_render(row, applicant)
+        original_render(row, applicant, fit=fit)
 
     try:
         window._refresh_table()
@@ -6062,9 +6169,9 @@ def test_group_package_change_rerenders_all_members_in_package(
     rendered: list[str] = []
     original_render = window._render_row
 
-    def counted_render(row, applicant):
+    def counted_render(row, applicant, *, fit=None):
         rendered.append(applicant.applicant_id)
-        original_render(row, applicant)
+        original_render(row, applicant, fit=fit)
 
     try:
         window._refresh_table()
@@ -6099,9 +6206,9 @@ def test_raid_boss_detail_data_does_not_invalidate_table_rows(
     rendered: list[str] = []
     original_render = window._render_row
 
-    def counted_render(row, applicant):
+    def counted_render(row, applicant, *, fit=None):
         rendered.append(applicant.applicant_id)
-        original_render(row, applicant)
+        original_render(row, applicant, fit=fit)
 
     try:
         window._refresh_table()

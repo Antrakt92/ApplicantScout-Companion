@@ -92,6 +92,7 @@ class PackageFit:
     worst_score: float = 0.0
     spread: float = 0.0
     member_scores: tuple[float, ...] = ()
+    member_fits: tuple[CandidateFit, ...] = ()
     status_penalty: float = 0.0
     tank_count: int = 0
     healer_count: int = 0
@@ -225,7 +226,7 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
             not_found_count=not_found_count,
         )
 
-    fits = [candidate_fit(member, listing) for member in members]
+    fits = tuple(candidate_fit(member, listing) for member in members)
     scores = tuple(fit.score for fit in fits)
     high = max(scores)
     low = min(scores)
@@ -261,6 +262,7 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
         worst_score=low,
         spread=spread,
         member_scores=scores,
+        member_fits=fits,
         status_penalty=status_penalty,
         tank_count=tank_count,
         healer_count=healer_count,
