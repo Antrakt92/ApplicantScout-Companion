@@ -2671,23 +2671,48 @@ class OverlayWindow(QMainWindow):
         self._apply_metric_column_visibility()
         layout.addWidget(self._table, stretch=1)
 
-        # Bottom row: status label + size grip
+        # Bottom row: compact, semantically separate quota/freshness chips and
+        # the native resize affordance. The chips keep unrelated state readable
+        # without turning ordinary idle time into an alarm.
         bottom = QWidget()
+        bottom.setObjectName("statusRow")
         bottom_layout = QHBoxLayout(bottom)
-        bottom_layout.setContentsMargins(8, 2, 0, 0)
-        bottom_layout.setSpacing(8)
+        bottom_layout.setContentsMargins(7, 2, 3, 3)
+        bottom_layout.setSpacing(5)
         self._status_label = QLabel("")
-        self._status_label.setObjectName("statusLabel")
-        bottom_layout.addWidget(self._status_label, stretch=1)
+        self._status_label.setObjectName("quotaChip")
+        self._status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._status_label.setAccessibleName("Warcraft Logs quota status")
+        self._status_label.setProperty("statusState", "neutral")
+        self._status_label.setMinimumWidth(0)
+        bottom_layout.addWidget(self._status_label)
+        bottom_layout.addStretch(1)
         # Health indicator — "shot Xs ago" lit by snapshotReceived signal slot
         # note_decode. Stale-pipeline detection: if the watcher Observer thread
         # silently dies, the timestamp stops advancing and the user sees the
-        # delta climb. Right-aligned (no stretch) next to the size grip.
-        self._health_label = QLabel("shot —")
-        self._health_label.setObjectName("healthLabel")
+        # delta climb. Its visual state deliberately does not escalate with age;
+        # idle listings are valid, so a future stale-time alarm needs separate
+        # live-evidence validation.
+        self._health_label = QLabel("Shot —")
+        self._health_label.setObjectName("freshnessChip")
+        self._health_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._health_label.setAccessibleName("Screenshot freshness status")
+        self._health_label.setProperty("statusState", "neutral")
+        self._health_label.setMinimumWidth(0)
         bottom_layout.addWidget(self._health_label)
-        bottom_layout.addWidget(QSizeGrip(bottom))
+        self._size_grip = QSizeGrip(bottom)
+        self._size_grip.setObjectName("overlaySizeGrip")
+        self._size_grip.setAccessibleName("Resize ApplicantScout overlay")
+        bottom_layout.addWidget(self._size_grip)
         layout.addWidget(bottom)
+
+        footer_tooltip_widgets = (self._status_label, self._health_label)
+        self._action_tooltip_widgets = (
+            *self._action_tooltip_widgets,
+            *footer_tooltip_widgets,
+        )
+        for status_widget in footer_tooltip_widgets:
+            status_widget.installEventFilter(self)
 
         self.setStyleSheet(_STYLESHEET)
         self._launcher.setStyleSheet(_STYLESHEET)
@@ -2795,7 +2820,7 @@ class OverlayWindow(QMainWindow):
         self._foreground_timer.setInterval(GAME_FOREGROUND_POLL_MS)
         self._foreground_timer.timeout.connect(self._sync_game_foreground_visibility)
         self._foreground_timer.start()
-        self._refresh_status_row()  # initial paint of "WCL: —/—" + "shot —"
+        self._refresh_status_row()  # initial paint of neutral quota/shot chips
         for applicant in self._fetch_rows():
             applicant.project_wcl_data_to_preferences(
                 effective_wcl_preferences_for_spec(
@@ -3274,15 +3299,13 @@ class OverlayWindow(QMainWindow):
 
     def note_decode(self, snap: object) -> None:
         """Slot for ScreenshotWatcher.snapshotReceived. Bumps the local last-
-        decode timestamp; _refresh_health_label reads it on the next tick.
+        decode timestamp and repaints the freshness chip immediately.
         Arg typed `object` so overlay.py stays Snapshot-import-free; under
         score-prefixed to signal intentional unused.
 
         Runs on GUI thread (Qt queues cross-thread emits from the watchdog
         Observer thread onto the GUI thread automatically). Read by the timer
         slot also runs on GUI thread — no lock needed for the float field."""
-        was_roster_unavailable = self._last_decode_roster_unavailable
-        previous_addon_warning = self._addon_version_warning
         self._last_decode_time = time.time()
         self._last_decode_failed_time = None
         self._last_decode_failed_path = ""
@@ -3298,15 +3321,7 @@ class OverlayWindow(QMainWindow):
         self._restored_snapshot_pending = False
         self._restored_snapshot_saved_at = None
         self._restored_snapshot_deadline = None
-        if (
-            self._last_decode_roster_unavailable
-            or was_roster_unavailable
-            or self._addon_version_warning
-            or previous_addon_warning
-        ):
-            self._refresh_health_label()
-        else:
-            self._health_label.setToolTip("")
+        self._refresh_health_label()
 
     def note_restored_snapshot(
         self,
@@ -3351,63 +3366,97 @@ class OverlayWindow(QMainWindow):
         self._refresh_quota_label()
         self._refresh_health_label()
 
+    @staticmethod
+    def _set_status_chip_state(label: QLabel, state: str) -> None:
+        """Apply a semantic QSS state and force Qt to re-evaluate selectors."""
+        if label.property("statusState") == state:
+            return
+        label.setProperty("statusState", state)
+        style = label.style()
+        if style is not None:
+            style.unpolish(label)
+            style.polish(label)
+        label.update()
+
     def _refresh_health_label(self) -> None:
         """Updates _health_label text from _last_decode_time. None → "shot —"
         (no decode yet). Otherwise formats `time.time() - last` via _format_age.
 
         max(0, delta) clamp guards against a system-clock backwards-jump (DST
-        transition, manual change). No color escalation in v1 — idle listings
-        legitimately have no decodes for minutes; coloring would false-alarm.
-        Absolute "shot Xm ago" text is enough to spot a dead pipeline."""
+        transition, manual change). Explicit failure/partial/update states get
+        soft semantic colors, but elapsed age stays neutral: idle listings can
+        legitimately have no decodes for minutes, so a future time-based alarm
+        needs separate live-evidence validation. Absolute age text remains the
+        pipeline evidence."""
         failed_at = self._last_decode_failed_time
         if self._restored_snapshot_pending:
             saved_at = self._restored_snapshot_saved_at
             deadline = self._restored_snapshot_deadline
             age = _format_duration(max(0.0, time.time() - saved_at)) if saved_at else "?"
             wait = _format_duration(max(0.0, deadline - time.time())) if deadline else "?"
-            self._health_label.setText("shot restored")
-            self._health_label.setToolTip(
+            self._health_label.setText("Shot restored")
+            self._set_status_chip_state(self._health_label, "active")
+            detail = (
                 "Restored a recent live snapshot while waiting for a fresh QR.\n"
                 f"Snapshot age: {age}; clears in {wait} if no fresh QR arrives."
             )
+            self._health_label.setToolTip(detail)
+            self._health_label.setAccessibleDescription(detail)
             return
         if failed_at is not None and (
             self._last_decode_time is None or failed_at >= self._last_decode_time
         ):
             delta = max(0.0, time.time() - failed_at)
-            self._health_label.setText("shot failed")
-            self._health_label.setToolTip(
+            self._health_label.setText("Shot failed")
+            self._set_status_chip_state(self._health_label, "critical")
+            detail = (
                 f"{self._last_decode_failed_path}\n"
                 f"{self._last_decode_failed_reason}\n"
                 f"{_format_age(delta)}"
             )
+            self._health_label.setToolTip(detail)
+            self._health_label.setAccessibleDescription(detail)
             return
         if self._addon_version_warning:
-            self._health_label.setText("addon update")
+            self._health_label.setText("Addon update")
+            self._set_status_chip_state(self._health_label, "warning")
             self._health_label.setToolTip(self._addon_version_warning)
+            self._health_label.setAccessibleDescription(self._addon_version_warning)
             return
         last = self._last_decode_time
         if self._last_decode_roster_unavailable and last is not None:
             delta = max(0.0, time.time() - last)
-            self._health_label.setText("shot partial")
-            self._health_label.setToolTip(
+            self._health_label.setText("Shot partial")
+            self._set_status_chip_state(self._health_label, "warning")
+            detail = (
                 "The latest valid QR omitted the group roster; Party shows "
                 f"the last known members.\n{_format_age(delta)}"
             )
+            self._health_label.setToolTip(detail)
+            self._health_label.setAccessibleDescription(detail)
             return
         if last is None:
-            self._health_label.setText("shot —")
+            self._health_label.setText("Shot —")
+            self._set_status_chip_state(self._health_label, "neutral")
             self._health_label.setToolTip("")
+            self._health_label.setAccessibleDescription(
+                "No screenshot has been decoded yet."
+            )
             return
         delta = max(0.0, time.time() - last)
-        self._health_label.setText(f"shot {_format_age(delta)}")
+        age = _format_age(delta)
+        self._health_label.setText(f"Shot {age}")
+        self._set_status_chip_state(self._health_label, "neutral")
         self._health_label.setToolTip("")
+        self._health_label.setAccessibleDescription(f"Last screenshot decoded {age}.")
 
     def _refresh_quota_label(self) -> None:
-        """Pull latest quota snapshot from wcl_client and format into status
-        label. Format: "WCL: spent/limit (Xm to reset)" — e.g. "WCL: 245/3600
-        (52m to reset)". Before the first quota-bearing WCL response, shows
-        queued/running fetches when any are active.
+        """Pull the latest quota snapshot into the compact quota chip.
+
+        The visible chip shows utilization percentage so it remains readable at
+        the supported 300px width and across larger paid-tier limits. Exact
+        spent/limit/reset details stay in tooltip/accessibility text. Before the
+        first quota-bearing response, queued/running fetches remain visible.
 
         Visual urgency: turns yellow at 70% spent, red at 90%."""
         q = getattr(self._wcl_client, "last_quota", None)
@@ -3416,13 +3465,23 @@ class OverlayWindow(QMainWindow):
                 self._raid_boss_fetches_in_flight
             )
             if in_flight > 0:
-                suffix = "fetch" if in_flight == 1 else "fetches"
-                self._status_label.setText(
-                    f"WCL: fetching {in_flight} {suffix} (quota pending)"
+                suffix = "request" if in_flight == 1 else "requests"
+                self._status_label.setText(f"WCL {in_flight} active")
+                detail = (
+                    f"{in_flight} Warcraft Logs {suffix} in progress; quota "
+                    "will appear after the first response."
                 )
+                self._status_label.setToolTip(detail)
+                self._status_label.setAccessibleDescription(detail)
+                self._set_status_chip_state(self._status_label, "active")
             else:
-                self._status_label.setText("WCL: — / — (idle, no quota yet)")
-            self._status_label.setStyleSheet("")
+                self._status_label.setText("WCL —/—")
+                detail = (
+                    "No Warcraft Logs quota data yet; no requests are active."
+                )
+                self._status_label.setToolTip(detail)
+                self._status_label.setAccessibleDescription(detail)
+                self._set_status_chip_state(self._status_label, "neutral")
             return
         spent = int(round(q.points_spent))
         limit = int(round(q.limit_per_hour))
@@ -3430,16 +3489,26 @@ class OverlayWindow(QMainWindow):
         if remaining is None:
             remaining = q.reset_in_seconds
         reset_min = int(remaining / 60) if remaining > 0 else 0
-        reset_str = f"{reset_min}m to reset" if reset_min > 0 else "resetting"
-        self._status_label.setText(f"WCL: {spent} / {limit}  ({reset_str})")
-        # Color escalation
         ratio = q.points_spent / q.limit_per_hour if q.limit_per_hour > 0 else 0
+        # Floor the display so it cannot advertise the next urgency threshold
+        # before the exact ratio has actually crossed it.
+        percent = int(max(0.0, ratio) * 100) if q.limit_per_hour > 0 else None
+        self._status_label.setText(
+            f"WCL {percent}%" if percent is not None else "WCL —%"
+        )
+        reset_detail = f"resets in {reset_min}m" if reset_min > 0 else "resetting now"
+        detail = (
+            f"Warcraft Logs quota: {spent} of {limit} points used; {reset_detail}."
+        )
+        self._status_label.setToolTip(detail)
+        self._status_label.setAccessibleDescription(detail)
+        # Color escalation
         if ratio >= 0.9:
-            self._status_label.setStyleSheet("color: #ff5555;")
+            self._set_status_chip_state(self._status_label, "critical")
         elif ratio >= 0.7:
-            self._status_label.setStyleSheet("color: #ffcc55;")
+            self._set_status_chip_state(self._status_label, "warning")
         else:
-            self._status_label.setStyleSheet("")
+            self._set_status_chip_state(self._status_label, "neutral")
 
     def _retryable_wcl_error_rows(self) -> list[Applicant]:
         return [
@@ -5777,13 +5846,36 @@ _STYLESHEET = """
     background-color: rgba(52, 52, 66, 205);
     border-radius: 2px;
 }
-#statusLabel {
-    color: #888;
-    font-size: 10px;
+#statusRow {
+    background-color: rgba(14, 14, 20, 225);
+    border-top: 1px solid rgba(66, 66, 86, 120);
 }
-#healthLabel {
-    color: #888;
+#quotaChip,
+#freshnessChip {
+    color: #aaaab7;
+    background-color: rgba(38, 38, 50, 205);
+    border: 1px solid rgba(82, 82, 104, 160);
+    border-radius: 5px;
     font-size: 10px;
+    padding: 1px 6px;
+}
+#quotaChip[statusState="active"],
+#freshnessChip[statusState="active"] {
+    color: #b9d8f4;
+    background-color: rgba(36, 59, 82, 205);
+    border-color: rgba(82, 128, 170, 175);
+}
+#quotaChip[statusState="warning"],
+#freshnessChip[statusState="warning"] {
+    color: #f1d69a;
+    background-color: rgba(79, 63, 31, 205);
+    border-color: rgba(154, 123, 56, 180);
+}
+#quotaChip[statusState="critical"],
+#freshnessChip[statusState="critical"] {
+    color: #f1b0b0;
+    background-color: rgba(82, 37, 42, 210);
+    border-color: rgba(157, 70, 78, 185);
 }
 #overlayLauncher {
     background-color: rgba(12, 12, 18, 235);

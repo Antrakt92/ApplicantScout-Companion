@@ -24,6 +24,7 @@ from applicant_scout.state import AppState, Applicant, Listing, RosterMember, Wo
 from applicant_scout.wcl import (
     CharacterCache,
     CharacterRanks,
+    RateLimitInfo,
     WCLAuth,
     WCLClient,
     WCLApiError,
@@ -174,7 +175,8 @@ def test_quota_label_shows_in_flight_fetch_before_first_quota(qtbot, tmp_path):
         window._launch_fetch(app)
 
         assert len(queued_pool.tasks) == 1
-        assert window._status_label.text() == "WCL: fetching 1 fetch (quota pending)"
+        assert window._status_label.text() == "WCL 1 active"
+        assert window._status_label.property("statusState") == "active"
     finally:
         client.close()
 
@@ -211,7 +213,9 @@ def test_quota_label_counts_raid_detail_fetch_before_first_quota(qtbot, tmp_path
         assert window._launch_raid_boss_fetch_if_needed(app) is True
 
         assert len(queued_pool.tasks) == 1
-        assert window._status_label.text() == "WCL: fetching 1 fetch (quota pending)"
+        assert window._status_label.text() == "WCL 1 active"
+        assert window._status_label.property("statusState") == "active"
+        assert "quota will appear" in window._status_label.toolTip()
     finally:
         client.close()
 
@@ -225,7 +229,39 @@ def test_quota_label_idle_before_first_quota_is_not_called_no_fetch_yet(
     try:
         window._refresh_quota_label()
 
-        assert window._status_label.text() == "WCL: — / — (idle, no quota yet)"
+        assert window._status_label.text() == "WCL —/—"
+        assert window._status_label.property("statusState") == "neutral"
+        assert window._status_label.accessibleDescription() == (
+            "No Warcraft Logs quota data yet; no requests are active."
+        )
+    finally:
+        client.close()
+
+
+def test_quota_chip_preserves_warning_thresholds_with_compact_copy(qtbot, tmp_path):
+    window, client = _window(qtbot, tmp_path, AppState())
+
+    try:
+        for spent, expected_percent, expected_state in (
+            (69.9, 69, "neutral"),
+            (70.0, 70, "warning"),
+            (89.9, 89, "warning"),
+            (90.0, 90, "critical"),
+        ):
+            client.last_quota = RateLimitInfo(
+                limit_per_hour=100.0,
+                points_spent=spent,
+                reset_in_seconds=120.0,
+            )
+            window._refresh_quota_label()
+
+            assert window._status_label.text() == f"WCL {expected_percent}%"
+            assert window._status_label.property("statusState") == expected_state
+            assert "resets in 2m" in window._status_label.toolTip()
+            assert (
+                window._status_label.accessibleDescription()
+                == window._status_label.toolTip()
+            )
     finally:
         client.close()
 

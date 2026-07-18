@@ -2094,6 +2094,58 @@ def test_overlay_window_minimum_size_allows_user_compact_resize(qtbot, tmp_path)
         client.close()
 
 
+def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    footer = window._status_label.parentWidget()
+    assert footer is not None
+    cases = (
+        ("WCL 100%", "critical", "Addon update", "warning"),
+        ("WCL 12 active", "active", "Shot failed", "critical"),
+        ("WCL 12 active", "active", "Shot restored", "active"),
+        ("WCL 12 active", "active", "Shot partial", "warning"),
+        ("WCL —/—", "neutral", "Shot 99h ago", "neutral"),
+    )
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        for width in (window.minimumWidth(), 650):
+            window.resize(width, 240)
+            for quota_text, quota_state, shot_text, shot_state in cases:
+                window._status_label.setText(quota_text)
+                window._set_status_chip_state(window._status_label, quota_state)
+                window._health_label.setText(shot_text)
+                window._set_status_chip_state(window._health_label, shot_state)
+                QApplication.processEvents()
+
+                for label in (window._status_label, window._health_label):
+                    text_width = label.fontMetrics().horizontalAdvance(label.text())
+                    assert text_width <= label.contentsRect().width()
+                    assert label.sizeHint().width() <= label.width()
+                assert (
+                    window._status_label.geometry().right()
+                    < window._health_label.geometry().left()
+                )
+                assert (
+                    window._health_label.geometry().right()
+                    < window._size_grip.geometry().left()
+                )
+                assert footer.rect().contains(window._size_grip.geometry())
+
+        assert window._status_label.accessibleName() == "Warcraft Logs quota status"
+        assert window._health_label.accessibleName() == (
+            "Screenshot freshness status"
+        )
+        assert window._size_grip.accessibleName() == "Resize ApplicantScout overlay"
+    finally:
+        client.close()
+
+
 def test_compact_metric_table_exposes_horizontal_overflow_scrollbar(qtbot, tmp_path):
     prefs = MetricPreferences(
         mplus=True,
@@ -2689,10 +2741,45 @@ def test_health_label_surfaces_latest_decode_failure(monkeypatch, qtbot, tmp_pat
         monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
         window.note_decode_failed("WoWScrnShot_0001.jpg", "CRC mismatch")
 
-        assert window._health_label.text() == "shot failed"
+        assert window._health_label.text() == "Shot failed"
+        assert window._health_label.property("statusState") == "critical"
         assert "WoWScrnShot_0001.jpg" in window._health_label.toolTip()
         assert "CRC mismatch" in window._health_label.toolTip()
         assert "ago ago" not in window._health_label.toolTip()
+        assert (
+            window._health_label.accessibleDescription()
+            == window._health_label.toolTip()
+        )
+    finally:
+        client.close()
+
+
+def test_footer_chips_use_overlay_tooltip_bypass(monkeypatch, qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    rendered: list[tuple[QWidget, str, QPoint]] = []
+
+    def record_tooltip(parent_widget, tip: str, global_pos: QPoint) -> bool:
+        rendered.append((parent_widget, tip, global_pos))
+        return True
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
+        window.note_decode_failed("WoWScrnShot_0001.jpg", "CRC mismatch")
+        monkeypatch.setattr(overlay_mod, "_render_tooltip", record_tooltip)
+
+        for index, widget in enumerate(
+            (window._status_label, window._health_label), start=1
+        ):
+            global_pos = QPoint(70 + index, 90 + index)
+            event = QHelpEvent(QEvent.Type.ToolTip, QPoint(4, 5), global_pos)
+
+            assert widget in window._action_tooltip_widgets
+            assert window.eventFilter(widget, event) is True
+            assert rendered[-1] == (widget, widget.toolTip(), global_pos)
     finally:
         client.close()
 
@@ -2711,7 +2798,8 @@ def test_restored_snapshot_health_label_is_provisional(monkeypatch, qtbot, tmp_p
         window.note_restored_snapshot(object(), saved_at=100.0, grace_seconds=30.0)
 
         assert window.restored_snapshot_pending()
-        assert window._health_label.text() == "shot restored"
+        assert window._health_label.text() == "Shot restored"
+        assert window._health_label.property("statusState") == "active"
         assert "waiting for a fresh QR" in window._health_label.toolTip()
         assert "Snapshot age: 30s" in window._health_label.toolTip()
         assert "clears in 30s" in window._health_label.toolTip()
@@ -2719,7 +2807,8 @@ def test_restored_snapshot_health_label_is_provisional(monkeypatch, qtbot, tmp_p
         window.note_restored_snapshot_expired()
 
         assert not window.restored_snapshot_pending()
-        assert window._health_label.text() == "shot —"
+        assert window._health_label.text() == "Shot —"
+        assert window._health_label.property("statusState") == "neutral"
         assert window._health_label.toolTip() == ""
     finally:
         client.close()
@@ -2764,9 +2853,8 @@ def test_successful_decode_clears_previous_health_failure(monkeypatch, qtbot, tm
         monkeypatch.setattr(overlay_mod.time, "time", lambda: next(times))
         window.note_decode_failed("WoWScrnShot_0001.jpg", "CRC mismatch")
         window.note_decode(object())
-        window._refresh_health_label()
-
-        assert window._health_label.text() == "shot 2s ago"
+        assert window._health_label.text() == "Shot 2s ago"
+        assert window._health_label.property("statusState") == "neutral"
         assert window._health_label.toolTip() == ""
     finally:
         client.close()
@@ -2913,6 +3001,32 @@ def test_hidden_panel_refresh_preserves_unexpanded_geometry_for_quit_flush(
         client.close()
 
 
+def test_screenshot_age_never_escalates_status_from_elapsed_time(
+    monkeypatch, qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    now = {"value": 100.0}
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: now["value"])
+        window.note_decode(object())
+
+        for elapsed in (0.0, 60.0, 7200.0):
+            now["value"] = 100.0 + elapsed
+            window._refresh_health_label()
+
+            assert window._health_label.property("statusState") == "neutral"
+            assert "Last screenshot decoded" in (
+                window._health_label.accessibleDescription()
+            )
+    finally:
+        client.close()
+
+
 def test_health_label_warns_when_paired_addon_is_outdated(
     monkeypatch, qtbot, tmp_path
 ):
@@ -2935,7 +3049,8 @@ def test_health_label_warns_when_paired_addon_is_outdated(
 
         window.note_decode(old_snapshot)
 
-        assert window._health_label.text() == "addon update"
+        assert window._health_label.text() == "Addon update"
+        assert window._health_label.property("statusState") == "warning"
         assert "0.5.1" in window._health_label.toolTip()
         assert "0.5.3" in window._health_label.toolTip()
         assert "/reload" in window._health_label.toolTip()
@@ -2950,7 +3065,8 @@ def test_health_label_warns_when_paired_addon_is_outdated(
         )()
         window.note_decode(current_snapshot)
 
-        assert window._health_label.text() == "shot 0s ago"
+        assert window._health_label.text() == "Shot 0s ago"
+        assert window._health_label.property("statusState") == "neutral"
         assert window._health_label.toolTip() == ""
     finally:
         client.close()
@@ -3000,7 +3116,8 @@ def test_partial_group_roster_decode_marks_party_count_as_last_known(
         assert party_button.text() == "Party (15?)"
         assert "omitted the group roster" in party_button.toolTip()
         assert "last known Party count" in party_button.toolTip()
-        assert window._health_label.text() == "shot partial"
+        assert window._health_label.text() == "Shot partial"
+        assert window._health_label.property("statusState") == "warning"
         assert "omitted the group roster" in window._health_label.toolTip()
         assert "raid roster" not in party_button.toolTip()
         assert "raid roster" not in window._health_label.toolTip()
@@ -3009,7 +3126,8 @@ def test_partial_group_roster_decode_marks_party_count_as_last_known(
 
         assert party_button.text() == "Party (15)"
         assert party_button.toolTip() == ""
-        assert window._health_label.text() == "shot 0s ago"
+        assert window._health_label.text() == "Shot 0s ago"
+        assert window._health_label.property("statusState") == "neutral"
     finally:
         client.close()
 
