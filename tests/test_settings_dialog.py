@@ -374,8 +374,12 @@ def test_settings_dialog_defers_screenshots_health_check_on_text_change(
     dialog.screenshots_edit.setText(str(tmp_path / "sleeping-drive" / "Screenshots"))
 
     assert calls == []
-    qtbot.waitUntil(lambda: bool(calls), timeout=1000)
-    assert dialog.status_label.text() == "Screenshots folder warning: slow path."
+    qtbot.waitUntil(
+        lambda: dialog.status_label.text()
+        == "Screenshots folder warning: slow path.",
+        timeout=1000,
+    )
+    assert calls == [Path(dialog.screenshots_edit.text())]
 
 
 def test_settings_dialog_defers_initial_screenshots_health_check(
@@ -395,9 +399,12 @@ def test_settings_dialog_defers_initial_screenshots_health_check(
     qtbot.addWidget(dialog)
 
     assert calls == []
-    qtbot.waitUntil(lambda: bool(calls), timeout=1000)
+    qtbot.waitUntil(
+        lambda: dialog.status_label.text()
+        == "Screenshots folder warning: slow path.",
+        timeout=1000,
+    )
     assert calls == [cfg.screenshots_path]
-    assert dialog.status_label.text() == "Screenshots folder warning: slow path."
 
 
 def test_settings_dialog_reuses_one_path_probe_for_warning_and_autosave(
