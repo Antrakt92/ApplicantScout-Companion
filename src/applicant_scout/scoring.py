@@ -18,6 +18,14 @@ CONTEXT_MPLUS = "mplus"
 CONTEXT_RAID = "raid"
 CONTEXT_UNKNOWN = "unknown"
 
+MPLUS_LIMIT_SCORE_ONLY = "score_only"
+MPLUS_LIMIT_NO_RELEVANT_WCL = "no_relevant_wcl"
+MPLUS_LIMIT_LOW_WCL = "low_wcl"
+MPLUS_LIMIT_WEAK_WCL = "weak_wcl"
+MPLUS_LIMIT_BELOW_TARGET = "below_target"
+MPLUS_LIMIT_SPARSE_COVERAGE = "sparse_coverage"
+MPLUS_LIMIT_NO_SAME_DUNGEON = "no_same_dungeon"
+
 RAID_TARGET_BY_DIFFICULTY_ID = {
     14: "N",
     15: "H",
@@ -54,10 +62,18 @@ class CandidateFit:
     colour: str | None = None
     target_key: int = 0
     primary_key: int = 0
+    best_nearby_key: int = 0
     target_raid: str = ""
     confidence: float = 0.0
     coverage: float = 0.0
     same_dungeon_score: float = 0.0
+    has_same_dungeon_context: bool = False
+    same_dungeon_rio_key: int = 0
+    same_dungeon_wcl_key: int = 0
+    same_dungeon_wcl_best: float | None = None
+    same_dungeon_wcl_median: float | None = None
+    same_dungeon_wcl_run_count: int = 0
+    limit_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -294,6 +310,13 @@ def listing_dungeon_keys(listing: Listing | None) -> set[str]:
     return {key for key in keys if key}
 
 
+def _has_specific_mplus_dungeon(listing: Listing) -> bool:
+    if mplus_dungeon_name_for_activity_id(listing.activity_id):
+        return True
+    name = listing.dungeon_name.strip().casefold()
+    return name not in {"", "?", "mythic+", "mythic plus"}
+
+
 def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
     listing_keys = listing_dungeon_keys(listing)
     best_key = (
@@ -372,6 +395,13 @@ def _mplus_scorecard_candidate_fit(
     completion_key_levels = _mplus_completion_key_levels(
         rio_key_levels, wcl_key_levels
     )
+    best_nearby_key = _mplus_best_nearby_evidence_key(
+        applicant=applicant,
+        rio_row_key_levels=rio_row_key_levels,
+        wcl_signals=wcl_signals,
+        target_key=target_key,
+        same_dungeon_key=same_dungeon_key,
+    )
     key_score = _mplus_key_readiness_score(completion_key_levels, target_key)
     has_clean_same_dungeon_wcl = any(
         signal.same_dungeon
@@ -394,34 +424,41 @@ def _mplus_scorecard_candidate_fit(
     representative_wcl_signals = _mplus_representative_wcl_signals(
         wcl_signals, target_key
     )
+    has_same_dungeon_context = _has_specific_mplus_dungeon(listing)
+    same_dungeon_signal = (
+        _mplus_same_dungeon_representative(representative_wcl_signals, target_key)
+        if has_same_dungeon_context
+        else None
+    )
     wcl_gray_penalty = _mplus_wcl_gray_penalty(representative_wcl_signals, target_key)
     wcl_bad_penalty = _mplus_wcl_bad_penalty(representative_wcl_signals, target_key)
     readiness_score = (
         key_score + carry + same_bonus + consistency + completion_experience
     )
-    raw_score = (
-        readiness_score
-        + wcl_positive
-        + wcl_gray_completion
-        - wcl_gray_penalty
-        - wcl_bad_penalty
-    )
+    unpenalized_score = readiness_score + wcl_positive + wcl_gray_completion
+    raw_score = unpenalized_score - wcl_gray_penalty - wcl_bad_penalty
     raw_score = max(
         raw_score,
         _mplus_rio_completion_risk_floor(
             applicant, rio_key_levels, target_key, readiness_score
         ),
     )
+    applied_wcl_penalty = max(0.0, unpenalized_score - raw_score)
 
     has_relevant_wcl = any(
         signal.key_level - target_key >= -1 for signal in wcl_signals
     )
+    no_relevant_wcl_reduction = 0.0
     if not has_relevant_wcl:
-        raw_score = min(
-            raw_score,
-            _mplus_no_relevant_wcl_cap(completion_key_levels, target_key),
+        capped_score = min(
+            raw_score, _mplus_no_relevant_wcl_cap(completion_key_levels, target_key)
         )
-    if not completion_key_levels and not wcl_signals and allow_score_fallback:
+        no_relevant_wcl_reduction = max(0.0, raw_score - capped_score)
+        raw_score = capped_score
+    score_only_fallback = (
+        not completion_key_levels and not wcl_signals and allow_score_fallback
+    )
+    if score_only_fallback:
         raw_score = min(
             _mplus_rio_fit(effective_rio_score(applicant), target_key) * 0.40,
             42.0,
@@ -444,6 +481,21 @@ def _mplus_scorecard_candidate_fit(
         0.0,
         1.0,
     )
+    has_same_dungeon_evidence = bool(
+        has_same_dungeon_context and (same_dungeon_key > 0 or same_dungeon_signal)
+    )
+    limit_reason = _mplus_limit_reason(
+        score_only_fallback=score_only_fallback,
+        no_relevant_wcl_reduction=no_relevant_wcl_reduction,
+        applied_wcl_penalty=applied_wcl_penalty,
+        wcl_bad_penalty=wcl_bad_penalty,
+        wcl_gray_penalty=wcl_gray_penalty,
+        primary_key=primary_key,
+        target_key=target_key,
+        coverage=coverage,
+        has_same_dungeon_context=has_same_dungeon_context,
+        has_same_dungeon_evidence=has_same_dungeon_evidence,
+    )
     same_dungeon_score = max(
         (
             _mplus_wcl_single_positive_score(signal, target_key)
@@ -464,9 +516,27 @@ def _mplus_scorecard_candidate_fit(
         colour=fit_colour(score),
         target_key=target_key,
         primary_key=primary_key,
+        best_nearby_key=best_nearby_key,
         confidence=confidence,
         coverage=coverage,
         same_dungeon_score=same_dungeon_score,
+        has_same_dungeon_context=has_same_dungeon_context,
+        same_dungeon_rio_key=same_dungeon_key if has_same_dungeon_context else 0,
+        same_dungeon_wcl_key=(
+            same_dungeon_signal.key_level if same_dungeon_signal is not None else 0
+        ),
+        same_dungeon_wcl_best=(
+            same_dungeon_signal.percentile if same_dungeon_signal is not None else None
+        ),
+        same_dungeon_wcl_median=(
+            same_dungeon_signal.median_percent
+            if same_dungeon_signal is not None
+            else None
+        ),
+        same_dungeon_wcl_run_count=(
+            same_dungeon_signal.run_count if same_dungeon_signal is not None else 0
+        ),
+        limit_reason=limit_reason,
     )
 
 
@@ -526,6 +596,101 @@ def _mplus_representative_wcl_signals(
         if selected is not None:
             representatives.append(selected[1])
     return representatives
+
+
+def _mplus_same_dungeon_representative(
+    signals: list[_MPlusWCLSignal], target_key: int
+) -> _MPlusWCLSignal | None:
+    candidates = [
+        signal
+        for signal in signals
+        if signal.same_dungeon and _mplus_wcl_is_fit_evidence(signal, target_key)
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda signal: (
+            _mplus_signal_fit(signal, target_key) or 0.0,
+            signal.key_level,
+        ),
+    )
+
+
+def _mplus_best_nearby_evidence_key(
+    *,
+    applicant: Applicant,
+    rio_row_key_levels: list[int],
+    wcl_signals: list[_MPlusWCLSignal],
+    target_key: int,
+    same_dungeon_key: int,
+) -> int:
+    actual_keys = list(rio_row_key_levels)
+    if _mplus_rio_summary_matches_target(applicant, target_key):
+        actual_keys.extend(
+            (
+                positive_int(applicant.rio_best_key),
+                positive_int(same_dungeon_key),
+            )
+        )
+    actual_keys.extend(
+        signal.key_level
+        for signal in wcl_signals
+        if _mplus_wcl_is_fit_evidence(signal, target_key)
+    )
+    return max(
+        (level for level in actual_keys if abs(level - target_key) <= 2),
+        default=0,
+    )
+
+
+def _mplus_wcl_is_fit_evidence(
+    signal: _MPlusWCLSignal, target_key: int
+) -> bool:
+    quality = _mplus_wcl_quality_percent(signal)
+    delta = signal.key_level - target_key
+    if quality >= 50.0:
+        return True
+    # Weak/low logs participate only in the near-target completion, cap, and
+    # penalty paths. Far-below low parses are observations, not fit evidence.
+    return delta >= -1
+
+
+def _mplus_limit_reason(
+    *,
+    score_only_fallback: bool,
+    no_relevant_wcl_reduction: float,
+    applied_wcl_penalty: float,
+    wcl_bad_penalty: float,
+    wcl_gray_penalty: float,
+    primary_key: int,
+    target_key: int,
+    coverage: float,
+    has_same_dungeon_context: bool,
+    has_same_dungeon_evidence: bool,
+) -> str:
+    if score_only_fallback:
+        return MPLUS_LIMIT_SCORE_ONLY
+
+    penalty_reason = (
+        MPLUS_LIMIT_LOW_WCL
+        if wcl_bad_penalty >= wcl_gray_penalty
+        else MPLUS_LIMIT_WEAK_WCL
+    )
+    applied_limits = (
+        (no_relevant_wcl_reduction, MPLUS_LIMIT_NO_RELEVANT_WCL),
+        (applied_wcl_penalty, penalty_reason),
+    )
+    reduction, reason = max(applied_limits, key=lambda candidate: candidate[0])
+    if reduction > 0.0:
+        return reason
+    if 0 < primary_key < target_key:
+        return MPLUS_LIMIT_BELOW_TARGET
+    if coverage < 1.0:
+        return MPLUS_LIMIT_SPARSE_COVERAGE
+    if has_same_dungeon_context and not has_same_dungeon_evidence:
+        return MPLUS_LIMIT_NO_SAME_DUNGEON
+    return ""
 
 
 def _mplus_signal_fit(signal: _MPlusWCLSignal, target_key: int) -> float | None:

@@ -345,6 +345,140 @@ def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localize
     fit = candidate_fit(applicant, target)
 
     assert fit.same_dungeon_score > 0.0
+    assert fit.has_same_dungeon_context
+    assert fit.same_dungeon_rio_key == 0
+    assert fit.same_dungeon_wcl_key == 16
+    assert fit.same_dungeon_wcl_best == 88.0
+    assert fit.same_dungeon_wcl_median == 78.0
+    assert fit.same_dungeon_wcl_run_count == 2
+
+
+def test_mplus_fit_exposes_best_nearby_and_same_dungeon_key_evidence():
+    target = _listing(
+        activity_id=404,
+        key_level=16,
+        dungeon_name="Небесный Путь",
+    )
+    applicant = _app(
+        rio_profile=True,
+        rio_summary_target_key=target.key_level,
+        rio_dungeons=[
+            {"name": "Skyreach", "key_level": 15},
+            {"name": "Pit of Saron", "key_level": 20},
+        ],
+        dps_breakdown=[
+            _dungeon("Skyreach", [(14, 82.0, 74.0, 2)]),
+            _dungeon("Nexus-Point Xenas", [(18, 78.0, 70.0, 2)]),
+        ],
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.target_key == 16
+    assert fit.primary_key == 20
+    assert fit.best_nearby_key == 18
+    assert fit.same_dungeon_rio_key == 15
+    assert fit.same_dungeon_wcl_key == 14
+    assert fit.same_dungeon_wcl_best == 82.0
+    assert fit.same_dungeon_wcl_median == 74.0
+    assert fit.same_dungeon_wcl_run_count == 2
+
+
+def test_mplus_fit_does_not_describe_far_key_as_nearby_evidence():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        dps_breakdown=[
+            _dungeon("Pit of Saron", [(20, 85.0, 78.0, 2)]),
+        ]
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.primary_key == 20
+    assert fit.best_nearby_key == 0
+    assert fit.same_dungeon_rio_key == 0
+    assert fit.same_dungeon_wcl_key == 0
+
+
+def test_mplus_fit_keeps_raw_grey_same_dungeon_context_but_caps_key_evidence():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        dps_breakdown=[
+            _dungeon("Skyreach", [(20, 31.0, 31.0, 1)]),
+        ]
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.primary_key == 16
+    assert fit.best_nearby_key == 0
+    assert fit.same_dungeon_wcl_key == 20
+    assert fit.same_dungeon_wcl_best == 31.0
+    assert fit.same_dungeon_wcl_run_count == 1
+    assert fit.limit_reason == "weak_wcl"
+
+
+def test_mplus_fit_same_dungeon_context_uses_selected_representative_bracket():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        dps_breakdown=[
+            _dungeon(
+                "Skyreach",
+                [(16, 82.0, 74.0, 2), (18, 10.0, 10.0, 1)],
+            ),
+        ]
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.same_dungeon_wcl_key == 16
+    assert fit.same_dungeon_wcl_best == 82.0
+    assert fit.same_dungeon_wcl_median == 74.0
+    assert fit.same_dungeon_wcl_run_count == 2
+
+
+def test_mplus_fit_summary_uses_the_same_score_limiting_wcl_bracket():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    applicant = _app(
+        dps_breakdown=[
+            _dungeon(
+                "Skyreach",
+                [(16, 10.0, 10.0, 3), (20, 99.0, 95.0, 3)],
+            ),
+        ]
+    )
+
+    fit = candidate_fit(applicant, target)
+
+    assert fit.same_dungeon_wcl_key == 16
+    assert fit.same_dungeon_wcl_best == 10.0
+    assert fit.same_dungeon_wcl_median == 10.0
+    assert fit.same_dungeon_wcl_run_count == 3
+    assert fit.limit_reason == "low_wcl"
+
+
+def test_mplus_fit_does_not_label_ignored_far_low_wcl_as_same_dungeon_evidence():
+    target = _listing(key_level=16, dungeon_name="Skyreach")
+    rio_dungeons = [
+        {"name": f"Other Dungeon {index}", "key_level": 16}
+        for index in range(8)
+    ]
+    baseline = _app(rio_profile=True, rio_dungeons=rio_dungeons, dps_breakdown=[])
+    ignored_log = _app(
+        rio_profile=True,
+        rio_dungeons=rio_dungeons,
+        dps_breakdown=[_dungeon("Skyreach", [(10, 10.0, 10.0, 1)])],
+    )
+
+    baseline_fit = candidate_fit(baseline, target)
+    ignored_fit = candidate_fit(ignored_log, target)
+
+    assert ignored_fit.score == baseline_fit.score
+    assert ignored_fit.confidence == baseline_fit.confidence
+    assert ignored_fit.same_dungeon_wcl_key == 0
+    assert ignored_fit.same_dungeon_wcl_best is None
+    assert ignored_fit.same_dungeon_wcl_run_count == 0
+    assert ignored_fit.limit_reason == baseline_fit.limit_reason == "no_same_dungeon"
 
 
 def test_mplus_extra_bad_dungeons_do_not_reduce_sparse_penalty():
@@ -636,6 +770,8 @@ def test_mplus_scorecard_ignores_compact_rio_summary_for_different_target_key():
 
     assert stale_fit.score == baseline_fit.score
     assert stale_fit.primary_key == baseline_fit.primary_key
+    assert stale_fit.best_nearby_key == baseline_fit.best_nearby_key
+    assert stale_fit.same_dungeon_rio_key == 0
 
 
 def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
@@ -658,6 +794,10 @@ def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
 
     assert fit.source == "mplus_scorecard"
     assert fit.primary_key == 17
+    assert fit.best_nearby_key == 17
+    assert fit.same_dungeon_score == 0.0
+    assert fit.same_dungeon_rio_key == 15
+    assert fit.same_dungeon_wcl_key == 0
     assert "+17" in fit.display
     assert fit.confidence >= 0.55
 

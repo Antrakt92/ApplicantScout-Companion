@@ -1050,6 +1050,38 @@ def test_manual_target_key_recomputes_party_mplus_cells(qtbot, tmp_path):
     assert win._table.item(0, 7).text() != legacy_text
 
 
+def test_manual_target_key_recomputes_pinned_party_evidence_text(qtbot, tmp_path):
+    state = AppState()
+    member = _ready_mplus_member()
+    state.party_members[member.applicant_id] = member
+    win = _window(tmp_path, qtbot, state)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    win._pinned_id = member.applicant_id
+    win._pinned_by_tab["party"] = member.applicant_id
+
+    win._tab_bar._key_spin.setValue(10)
+    win._refresh_table()
+    win._sync_delegate_and_panel()
+    assert "Target +10" in win._panel._status_label.text()
+
+    win._tab_bar._key_spin.setValue(12)
+    assert win._manual_target_key == 12
+    assert win._effective_listing() is not None
+    assert win._effective_listing().key_level == 12
+    win._refresh_table()
+    assert win._manual_target_key == 12
+    assert win._effective_listing() is not None
+    assert win._effective_listing().key_level == 12
+    win._sync_delegate_and_panel()
+    assert win._panel._current_listing is not None
+    assert win._panel._current_listing.key_level == 12
+    assert "Target +12" in win._panel._mplus_fit_status_text(
+        member, win._effective_listing()
+    )
+    assert "Target +12" in win._panel._status_label.text()
+    assert "Target +10" not in win._panel._status_label.text()
+
+
 def test_listing_change_recomputes_party_mplus_cells(qtbot, tmp_path):
     state = AppState()
     member = _ready_mplus_member()

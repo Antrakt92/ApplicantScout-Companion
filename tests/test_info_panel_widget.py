@@ -55,7 +55,7 @@ from applicant_scout.metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
 )
-from applicant_scout.scoring import PackageFit, package_fit
+from applicant_scout.scoring import CONTEXT_MPLUS, PackageFit, package_fit
 from applicant_scout.screenshot import DecodedListing, Snapshot
 from applicant_scout.state import (
     DEFAULT_WINDOW_WIDTH,
@@ -1711,9 +1711,184 @@ def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
     panel.setApplicantData(app, listing)
 
     assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
-    assert "conf 75%" in panel._status_label.text()
-    assert "cov 8/8" in panel._status_label.text()
-    assert "RaiderIO only" in panel._status_label.text()
+    assert panel._status_label.text() == (
+        "Target +16 · best nearby +16 · same dungeon RIO +16 · "
+        "evidence confidence 75% · coverage 8/8 · RaiderIO only"
+    )
+
+
+def test_panel_explains_missing_nearby_and_same_dungeon_evidence(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    app = _app(
+        mplus_dps=None,
+        mplus_dps_median=None,
+        mplus_dps_breakdown=[],
+        rio_profile=False,
+        rio_best_key=0,
+        rio_best_dungeon_key=0,
+        rio_dungeons=[],
+    )
+
+    panel.setApplicantData(app, _listing())
+
+    assert "no nearby key evidence" in panel._status_label.text()
+    assert "no same-dungeon evidence" in panel._status_label.text()
+    assert "limit: score-only evidence" in panel._status_label.text()
+    assert "evidence confidence 30%" in panel._status_label.text()
+
+
+def test_panel_keeps_grey_same_dungeon_quality_visible(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    app = _app(
+        mplus_dps_breakdown=[
+            {
+                "name": "Skyreach",
+                "key_level": 20,
+                "parse_percent": 31.0,
+                "median_percent": 31.0,
+                "run_count": 1,
+            }
+        ]
+    )
+
+    panel.setApplicantData(app, _listing())
+
+    text = panel._status_label.text()
+    assert "no nearby key evidence" in text
+    assert "same dungeon WCL +20 31 N=1" in text
+    assert "limit: weak WCL evidence" in text
+
+
+def test_panel_does_not_label_far_key_as_nearby_and_omits_generic_dungeon(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    listing = replace(_listing(), activity_id=0, dungeon_name="Mythic+")
+    app = _app(
+        mplus_dps_breakdown=[
+            {
+                "name": "Pit of Saron",
+                "key_level": 20,
+                "parse_percent": 85.0,
+                "median_percent": 78.0,
+                "run_count": 2,
+            }
+        ]
+    )
+
+    panel.setApplicantData(app, listing)
+
+    text = panel._status_label.text()
+    assert "no nearby key evidence" in text
+    assert "best evidence" not in text
+    assert "same dungeon" not in text
+
+
+def test_panel_accessibility_metadata_tracks_mplus_raid_and_error_status(qtbot):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(
+            mplus=True,
+            raid_normal=True,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+    qtbot.addWidget(panel)
+
+    panel.setApplicantData(_app(), _listing())
+
+    assert panel._status_label.accessibleName() == ""
+    assert "Target +16" in panel._status_label.text()
+    assert "not a success probability" in panel._status_label.accessibleDescription()
+
+    panel.setApplicantData(
+        _app(),
+        _raid_listing(),
+        raid_detail_status="Raid boss details ready",
+    )
+
+    assert panel._status_label.text() == "Raid boss details ready"
+    assert panel._status_label.accessibleDescription() == ""
+
+    panel.setApplicantData(
+        _app(fetch_status="error", error_message="quota exhausted"),
+        _listing(),
+    )
+
+    assert "WCL error: quota exhausted" in panel._status_label.text()
+    assert panel._status_label.accessibleDescription() == ""
+
+
+def test_panel_omits_mplus_evidence_when_mplus_metric_is_disabled(qtbot):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(
+            mplus=False,
+            raid_normal=True,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+    qtbot.addWidget(panel)
+    package = PackageFit(
+        context=CONTEXT_MPLUS,
+        score=73.0,
+        label="fit",
+        display="G2 fit 73",
+        colour="#a335ee",
+        size=2,
+        confidence=0.68,
+        high_score=91.0,
+        average_score=74.0,
+        low_score=52.0,
+    )
+
+    panel.setApplicantData(_app(), _listing(), package=package)
+
+    assert panel._metric_labels["M+"].isHidden()
+    assert panel._status_label.text() == ""
+    assert panel._status_label.isHidden()
+    assert panel._package_label.text() == ""
+    assert panel._package_label.isHidden()
+    assert panel._package_label.accessibleDescription() == ""
+
+
+def test_panel_evidence_copy_reflows_at_content_safe_width_with_eight_rows(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    app = _app(
+        mplus_dps_breakdown=[
+            {
+                "name": f"Dungeon {index}",
+                "key_level": 14 + (index % 5),
+                "parse_percent": 80.0 - index,
+                "median_percent": 70.0 - index,
+                "run_count": 2,
+            }
+            for index in range(8)
+        ]
+    )
+    panel.setApplicantData(app, _listing())
+    target_height = panel.target_height()
+    panel.setMinimumHeight(target_height)
+    panel.setMaximumHeight(target_height)
+    panel.show()
+    compact_width = panel.minimumSizeHint().width()
+
+    for width in (650, compact_width, 650):
+        panel.resize(width, target_height)
+        QApplication.processEvents()
+        assert panel.width() == width
+        last_name = panel._dungeon_rows[7][0]
+        last_bottom = last_name.mapTo(panel, QPoint(0, 0)).y() + last_name.height()
+        assert not last_name.isHidden()
+        assert panel._status_label.minimumSizeHint().height() <= (
+            panel._status_label.height()
+        )
+        assert last_bottom <= panel.contentsRect().bottom()
+        assert panel.target_height() == target_height
 
 
 def test_panel_renders_group_package_line(qtbot):
@@ -1734,9 +1909,18 @@ def test_panel_renders_group_package_line(qtbot):
     panel.setApplicantData(_app(), package=package)
 
     assert panel._package_label.text() == (
-        "Group FIT 73 · high 91 · avg 74 · low 52 · conf 68%"
+        "Group FIT 73 · high 91 · avg 74 · low 52 · evidence confidence 68%"
+    )
+    assert panel._package_label.accessibleName() == ""
+    assert "68 percent" in panel._package_label.accessibleDescription()
+    assert "not a success probability" in (
+        panel._package_label.accessibleDescription()
     )
     assert not panel._package_label.isHidden()
+
+    panel.setApplicantData(_app(), package=None)
+
+    assert panel._package_label.accessibleDescription() == ""
 
 
 def test_panel_renders_real_mplus_package_without_blank_label(qtbot):
@@ -1771,7 +1955,7 @@ def test_panel_renders_real_mplus_package_without_blank_label(qtbot):
 
     assert panel._package_label.text().startswith("Group fit ")
     assert " · hi/avg/low " in panel._package_label.text()
-    assert " · conf " in panel._package_label.text()
+    assert " · evidence confidence " in panel._package_label.text()
     assert " · this low" in panel._package_label.text()
     assert "Group  " not in panel._package_label.text()
     assert not panel._package_label.isHidden()
@@ -1919,6 +2103,54 @@ def test_centered_long_error_is_bounded_with_full_tooltip(qtbot):
     assert panel._state_text_label.minimumSizeHint().height() <= (
         panel._state_text_label.height()
     )
+
+
+def test_overlay_centered_long_error_does_not_expand_for_hidden_full_status(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    raw_error = "GraphQL error: " + ("upstream proxy returned malformed data; " * 12)
+    full_status = f"WCL error: {raw_error}"
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(
+            applicant_id="error",
+            score=0,
+            mplus_dps=None,
+            mplus_dps_median=None,
+            mplus_dps_breakdown=[],
+            fetch_status="error",
+            error_message=raw_error,
+        )
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.resize(300, window.height())
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        window._hover_id = "error"
+        window._sync_delegate_and_panel()
+        QApplication.processEvents()
+
+        panel = window._panel
+        assert panel._status_label.isHidden()
+        assert panel._status_label.text() == full_status
+        assert not panel._state_stage.isHidden()
+        assert len(panel._state_text_label.text()) <= 120
+        assert panel._state_text_label.toolTip() == full_status
+        assert panel._state_text_label.heightForWidth(
+            panel._state_text_label.width()
+        ) <= panel._state_text_label.height()
+        assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
+        assert panel.height() == INFO_PANEL_PREFERRED_HEIGHT
+    finally:
+        client.close()
 
 
 def test_centered_long_error_uses_overlay_tooltip_bypass(
@@ -4877,6 +5109,81 @@ def test_overlay_panel_uses_group_package_fit_for_any_member(qtbot, tmp_path):
 
         assert window._panel._package_label.text().startswith("Group ")
         assert not window._panel._package_label.isHidden()
+    finally:
+        client.close()
+
+
+def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(
+            applicant_id="10:1",
+            name="Leader-Realm",
+            mplus_dps_breakdown=[
+                {
+                    "name": f"Dungeon {index}",
+                    "key_level": 14 + (index % 5),
+                    "parse_percent": 80.0 - index,
+                    "median_percent": 70.0 - index,
+                    "run_count": 2,
+                }
+                for index in range(8)
+            ],
+        )
+    )
+    state.add_or_update(_app(applicant_id="10:2", name="Follower-Realm"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    package = PackageFit(
+        context=CONTEXT_MPLUS,
+        score=73.0,
+        label="fit",
+        display="G2 fit 73",
+        colour="#a335ee",
+        size=2,
+        confidence=0.68,
+        high_score=91.0,
+        average_score=74.0,
+        low_score=52.0,
+        spread=39.0,
+    )
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        window._package_fit_by_raw["10"] = package
+        window._hover_id = "10:1"
+
+        for width in (300, 650):
+            window.resize(width, window.height())
+            window._sync_delegate_and_panel()
+            QApplication.processEvents()
+
+            label = window._panel._package_label
+            status = window._panel._status_label
+            last_name = window._panel._dungeon_rows[7][0]
+            last_bottom = (
+                last_name.mapTo(window._panel, QPoint(0, 0)).y()
+                + last_name.height()
+            )
+            assert window.width() == width
+            assert window._panel.height() == window._panel.target_height()
+            assert label.wordWrap()
+            assert "evidence confidence 68%" in label.text()
+            assert label.heightForWidth(label.width()) <= label.height()
+            assert status.heightForWidth(status.width()) <= status.height()
+            if width == 300:
+                assert label.height() >= label.fontMetrics().height() * 2
+            assert label.geometry().bottom() < status.geometry().top()
+            assert status.geometry().bottom() < window._panel._dungeon_widget.y()
+            assert last_bottom <= window._panel.contentsRect().bottom()
     finally:
         client.close()
 

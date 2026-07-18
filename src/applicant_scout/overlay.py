@@ -82,6 +82,13 @@ from .metric_preferences import (
 from .scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
+    MPLUS_LIMIT_BELOW_TARGET,
+    MPLUS_LIMIT_LOW_WCL,
+    MPLUS_LIMIT_NO_RELEVANT_WCL,
+    MPLUS_LIMIT_NO_SAME_DUNGEON,
+    MPLUS_LIMIT_SCORE_ONLY,
+    MPLUS_LIMIT_SPARSE_COVERAGE,
+    MPLUS_LIMIT_WEAK_WCL,
     PackageFit,
     RAID_TARGET_BY_DIFFICULTY_ID,
     candidate_fit,
@@ -1718,6 +1725,8 @@ class ApplicantInfoPanel(QFrame):
 
         self._package_label = QLabel("")
         self._package_label.setObjectName("infoPackageBadge")
+        self._package_label.setMinimumWidth(0)
+        self._package_label.setWordWrap(True)
         outer.addWidget(self._package_label)
 
         self._current_applicant: Applicant | None = None
@@ -1841,12 +1850,36 @@ class ApplicantInfoPanel(QFrame):
         return QSize(hint.width(), INFO_PANEL_MIN_HEIGHT)
 
     def target_height(self) -> int:
-        if self._visible_detail_rows <= 0:
-            return INFO_PANEL_PREFERRED_HEIGHT
         extra_rows = max(0, self._visible_detail_rows - INFO_PANEL_DETAIL_BASE_ROWS)
-        return INFO_PANEL_PREFERRED_HEIGHT + (
+        row_target = INFO_PANEL_PREFERRED_HEIGHT + (
             extra_rows * INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT
         )
+        layout = self.layout()
+        margins = layout.contentsMargins() if layout is not None else None
+        available_width = max(
+            1,
+            self.contentsRect().width()
+            - (margins.left() + margins.right() if margins is not None else 0),
+        )
+        wrapped_extra = 0
+        for label in (self._package_label, self._status_label):
+            if label.isHidden() or not label.text() or not label.wordWrap():
+                continue
+            single_line_width = max(
+                available_width,
+                label.fontMetrics().horizontalAdvance(label.text()) + 64,
+            )
+            single_line_height = label.heightForWidth(single_line_width)
+            wrapped_extra += max(
+                0,
+                label.heightForWidth(available_width) - single_line_height,
+            )
+        unused_row_slack = (
+            max(0, INFO_PANEL_DETAIL_BASE_ROWS - self._visible_detail_rows)
+            * INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT
+        )
+        wrap_growth = max(0, wrapped_extra - unused_row_slack)
+        return row_target + (wrap_growth + 2 if wrap_growth else 0)
 
     def setPlaceholder(self) -> None:
         """Show the compact hint when nothing is hovered/pinned."""
@@ -1903,6 +1936,7 @@ class ApplicantInfoPanel(QFrame):
             label.setText("")
             label.setVisible(False)
         self._package_label.setText("")
+        self._package_label.setAccessibleDescription("")
         self._package_label.setVisible(False)
         self._detail_tabs.setVisible(False)
         self._status_label.setText("")
@@ -1956,8 +1990,23 @@ class ApplicantInfoPanel(QFrame):
         applicant: Applicant | None = None,
         listing: Listing | None = None,
     ) -> None:
-        if package is None or package.size < 2 or not package.display:
+        metric_disabled = bool(
+            package is not None
+            and (
+                package.context == CONTEXT_MPLUS
+                and not self._metric_preferences.mplus
+                or package.context == CONTEXT_RAID
+                and not self._metric_preferences.raid_enabled
+            )
+        )
+        if (
+            package is None
+            or package.size < 2
+            or not package.display
+            or metric_disabled
+        ):
             self._package_label.setText("")
+            self._package_label.setAccessibleDescription("")
             self._package_label.setVisible(False)
             return
         member_score = (
@@ -1981,7 +2030,7 @@ class ApplicantInfoPanel(QFrame):
                 f"hi/avg/low {int(round(package.high_score))}/"
                 f"{int(round(package.average_score))}/"
                 f"{int(round(package.low_score))} · "
-                f"conf {int(round(package.confidence * 100))}%"
+                f"evidence confidence {int(round(package.confidence * 100))}%"
                 f"{member_note}"
             )
         else:
@@ -1990,11 +2039,17 @@ class ApplicantInfoPanel(QFrame):
                 f"high {int(round(package.high_score))} · "
                 f"avg {int(round(package.average_score))} · "
                 f"low {int(round(package.low_score))} · "
-                f"conf {int(round(package.confidence * 100))}%"
+                f"evidence confidence {int(round(package.confidence * 100))}%"
                 f"{member_note}"
             )
         bg = package.colour or "#2a2a33"
         self._set_badge(self._package_label, text, bg, _text_colour_for_bg(bg))
+        self._package_label.setAccessibleDescription(
+            f"Group evidence confidence is "
+            f"{int(round(package.confidence * 100))} percent. "
+            "It reflects the weakest member and fetch completeness, not a success "
+            "probability."
+        )
 
     def _set_status_or_data(
         self,
@@ -2009,6 +2064,8 @@ class ApplicantInfoPanel(QFrame):
         status = applicant.fetch_status
         self._clear_metrics_and_dungeons()
         self._sync_detail_controls(listing)
+        self._status_label.setText("")
+        self._status_label.setAccessibleDescription("")
         self._status_label.setVisible(False)
         self._state_stage.setVisible(False)
         self._bottom_filler.setVisible(True)
@@ -2081,7 +2138,13 @@ class ApplicantInfoPanel(QFrame):
                 ),
             )
         elif fit_status:
-            self._show_status(fit_status)
+            self._show_status(
+                fit_status,
+                accessible_description=(
+                    "Evidence confidence reflects coverage and clean run evidence; "
+                    "it is not a success probability."
+                ),
+            )
         elif not visible_metrics and not visible_rows:
             self._show_status(
                 "No Warcraft Logs data",
@@ -2098,8 +2161,10 @@ class ApplicantInfoPanel(QFrame):
         action_text: str = "Retry WCL",
         centered: bool = False,
         state_kind: str = "neutral",
+        accessible_description: str = "",
     ) -> None:
         self._status_label.setText(text)
+        self._status_label.setAccessibleDescription(accessible_description)
         color = "#ff6666" if error else "#8d8d98"
         self._status_label.setStyleSheet(f"color: {color};")
         self._status_label.setVisible(bool(text and not centered))
@@ -2255,15 +2320,56 @@ class ApplicantInfoPanel(QFrame):
     def _mplus_fit_status_text(
         self, applicant: Applicant, listing: Listing | None = None
     ) -> str:
+        if not self._metric_preferences.mplus:
+            return ""
         fit = candidate_fit(applicant, listing)
         if fit.context != CONTEXT_MPLUS or not fit.display or fit.score <= 0.0:
             return ""
         source = _mplus_fit_source_text(applicant)
         coverage = int(round(fit.coverage * max(len(MPLUS_ENCOUNTERS), 1)))
-        return (
-            f"M+ fit conf {int(round(fit.confidence * 100))}% · "
-            f"cov {coverage}/{max(len(MPLUS_ENCOUNTERS), 1)} · {source}"
+        parts = [f"Target +{fit.target_key}"]
+        if fit.best_nearby_key > 0:
+            parts.append(f"best nearby +{fit.best_nearby_key}")
+        else:
+            parts.append("no nearby key evidence")
+
+        same_dungeon = []
+        if fit.same_dungeon_rio_key > 0:
+            same_dungeon.append(f"RIO +{fit.same_dungeon_rio_key}")
+        if fit.same_dungeon_wcl_key > 0:
+            metric = mplus_metric_text(
+                fit.same_dungeon_wcl_best,
+                fit.same_dungeon_wcl_median,
+                fit.same_dungeon_wcl_run_count,
+            )
+            same_dungeon.append(f"WCL +{fit.same_dungeon_wcl_key} {metric}")
+        if same_dungeon:
+            parts.append(f"same dungeon {' / '.join(same_dungeon)}")
+        elif (
+            fit.has_same_dungeon_context
+            and fit.limit_reason != MPLUS_LIMIT_NO_SAME_DUNGEON
+        ):
+            parts.append("no same-dungeon evidence")
+
+        limit_text = {
+            MPLUS_LIMIT_SCORE_ONLY: "score-only evidence",
+            MPLUS_LIMIT_NO_RELEVANT_WCL: "no relevant WCL",
+            MPLUS_LIMIT_LOW_WCL: "low WCL evidence",
+            MPLUS_LIMIT_WEAK_WCL: "weak WCL evidence",
+            MPLUS_LIMIT_BELOW_TARGET: "best key below target",
+            MPLUS_LIMIT_SPARSE_COVERAGE: "sparse coverage",
+            MPLUS_LIMIT_NO_SAME_DUNGEON: "no same-dungeon evidence",
+        }.get(fit.limit_reason, "")
+        if limit_text:
+            parts.append(f"limit: {limit_text}")
+        parts.extend(
+            (
+                f"evidence confidence {int(round(fit.confidence * 100))}%",
+                f"coverage {coverage}/{max(len(MPLUS_ENCOUNTERS), 1)}",
+                source,
+            )
         )
+        return " · ".join(parts)
 
     @staticmethod
     def _set_detail_row_widths(
@@ -5295,6 +5401,8 @@ class OverlayWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "_status_layout"):
             self._reflow_status_row(event.size().width())
+        if hasattr(self, "_panel"):
+            QTimer.singleShot(0, self._apply_panel_height_above_table)
         if self._suppress_geometry_persist:
             return
         self._save_timer.start()
