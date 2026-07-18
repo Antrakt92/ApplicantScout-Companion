@@ -333,6 +333,69 @@ def test_clear_live_snapshot_if_saved_at_removes_matching_snapshot(tmp_path):
     assert not _cache_path(tmp_path).exists()
 
 
+def test_live_snapshot_writer_suppresses_bounded_source_only_resend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    original_save = cache_mod.save_live_snapshot
+    save_times: list[float | None] = []
+
+    def counting_save(cache_dir, snap, *, now):
+        save_times.append(now)
+        return original_save(cache_dir, snap, now=now)
+
+    monkeypatch.setattr(cache_mod, "save_live_snapshot", counting_save)
+    writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+    first = _live_snapshot()
+    resend = replace(
+        first,
+        source=SnapshotSource(
+            mtime_ns=456,
+            file_id="WoWScrnShot-resend.jpg",
+            size=456,
+        ),
+    )
+
+    writer.submit(first, now=100.0)
+    writer.submit(resend, now=100.5)
+
+    assert save_times == [100.0]
+    restored = load_live_snapshot(tmp_path, now=101.0)
+    assert restored is not None
+    assert restored.saved_at == 100.0
+
+    writer.submit(resend, now=103.0)
+
+    assert save_times == [100.0, 103.0]
+    refreshed = load_live_snapshot(tmp_path, now=104.0)
+    assert refreshed is not None
+    assert refreshed.saved_at == 103.0
+
+
+def test_live_snapshot_writer_duplicate_suppression_resets_after_clear_and_invalidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    original_save = cache_mod.save_live_snapshot
+    save_times: list[float | None] = []
+
+    def counting_save(cache_dir, snap, *, now):
+        save_times.append(now)
+        return original_save(cache_dir, snap, now=now)
+
+    monkeypatch.setattr(cache_mod, "save_live_snapshot", counting_save)
+    writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+    snapshot = _live_snapshot()
+
+    writer.submit(snapshot, now=100.0)
+    writer.submit(Snapshot(listing=None, version=None), now=100.1)
+    writer.submit(snapshot, now=100.2)
+    writer.invalidate()
+    writer.submit(snapshot, now=100.3)
+
+    assert save_times == [100.0, 100.2, 100.3]
+
+
 def test_live_snapshot_writer_partial_snapshot_does_not_cancel_pending_full_save(tmp_path):
     writer = LiveSnapshotCacheWriter(
         tmp_path,

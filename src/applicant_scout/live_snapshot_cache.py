@@ -31,6 +31,7 @@ LIVE_SNAPSHOT_CACHE_TTL_SECONDS = 90.0
 LIVE_SNAPSHOT_RESTORE_GRACE_SECONDS = 30.0
 LIVE_SNAPSHOT_CLOSE_TIMEOUT_SECONDS = 2.0
 LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS = 2
+LIVE_SNAPSHOT_DUPLICATE_SUPPRESSION_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class _PendingLiveSnapshotCacheOperation:
     kind: str
     snapshot: Snapshot | None = None
     saved_at: float | None = None
+    content: dict[str, Any] | None = None
 
 
 def live_snapshot_cache_path(cache_dir: Path) -> Path:
@@ -134,6 +136,8 @@ class LiveSnapshotCacheWriter:
         self._timer: threading.Timer | None = None
         self._closed = False
         self._generation = 0
+        self._last_saved_content: dict[str, Any] | None = None
+        self._last_saved_at: float | None = None
 
     def submit(self, snap: Snapshot, *, now: float | None = None) -> None:
         operation = _operation_for_snapshot(snap, now=now)
@@ -142,6 +146,8 @@ class LiveSnapshotCacheWriter:
         flush_now = False
         with self._lock:
             if self._closed:
+                return
+            if self._is_recent_duplicate_locked(operation):
                 return
             self._pending = operation
             if self._defer_saves:
@@ -165,6 +171,8 @@ class LiveSnapshotCacheWriter:
             if operation is None:
                 return True
             succeeded = self._perform_operation(operation)
+            if succeeded:
+                self._record_successful_operation(operation, generation)
             if not succeeded:
                 with self._lock:
                     if self._pending is None and generation == self._generation:
@@ -178,6 +186,8 @@ class LiveSnapshotCacheWriter:
             self._generation += 1
             self._cancel_timer_locked()
             self._pending = None
+            self._last_saved_content = None
+            self._last_saved_at = None
         with self._write_lock:
             pass
 
@@ -204,6 +214,7 @@ class LiveSnapshotCacheWriter:
 
             for _attempt in range(LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS):
                 if self._perform_operation(operation):
+                    self._record_successful_operation(operation, generation)
                     return True
 
             with self._lock:
@@ -242,6 +253,39 @@ class LiveSnapshotCacheWriter:
             )
         return True
 
+    def _is_recent_duplicate_locked(
+        self,
+        operation: _PendingLiveSnapshotCacheOperation,
+    ) -> bool:
+        # Caller must hold self._lock. A pending operation is never skipped:
+        # replacing it preserves the newest timestamp and lets clear/save order
+        # continue to follow the latest accepted snapshot.
+        if self._pending is not None or operation.kind != "save":
+            return False
+        if operation.content is None or operation.saved_at is None:
+            return False
+        if self._last_saved_content != operation.content:
+            return False
+        if self._last_saved_at is None:
+            return False
+        elapsed = operation.saved_at - self._last_saved_at
+        return 0.0 <= elapsed <= LIVE_SNAPSHOT_DUPLICATE_SUPPRESSION_SECONDS
+
+    def _record_successful_operation(
+        self,
+        operation: _PendingLiveSnapshotCacheOperation,
+        generation: int,
+    ) -> None:
+        with self._lock:
+            if generation != self._generation:
+                return
+            if operation.kind == "save":
+                self._last_saved_content = operation.content
+                self._last_saved_at = operation.saved_at
+                return
+            self._last_saved_content = None
+            self._last_saved_at = None
+
 
 def _operation_for_snapshot(
     snap: Snapshot,
@@ -257,7 +301,12 @@ def _operation_for_snapshot(
     except ValueError as exc:
         _log.warning("Ignoring live snapshot cache save with invalid timestamp: %s", exc)
         return None
-    return _PendingLiveSnapshotCacheOperation("save", snapshot=snap, saved_at=saved_at)
+    return _PendingLiveSnapshotCacheOperation(
+        "save",
+        snapshot=snap,
+        saved_at=saved_at,
+        content=_snapshot_to_dict(snap),
+    )
 
 
 def load_live_snapshot(
