@@ -1496,6 +1496,32 @@ def _metric_preference_breadth(metric_preferences: MetricPreferences) -> int:
     )
 
 
+_ALL_METRIC_PREFERENCE_SCOPES = tuple(
+    MetricPreferences(
+        mplus=mplus,
+        raid_normal=raid_normal,
+        raid_heroic=raid_heroic,
+        raid_mythic=raid_mythic,
+    )
+    for mplus in (False, True)
+    for raid_normal in (False, True)
+    for raid_heroic in (False, True)
+    for raid_mythic in (False, True)
+)
+
+# A requested scope has at most 15 broader Boolean supersets. Cache reads use
+# these exact keys instead of scanning every cached character, which keeps GUI-
+# thread lookup cost bounded as the persistent cache grows during a session.
+_COVERING_METRIC_SCOPE_KEYS = {
+    requested.cache_key(): tuple(
+        (stored.cache_key(), _metric_preference_breadth(stored))
+        for stored in _ALL_METRIC_PREFERENCE_SCOPES
+        if stored != requested and stored.covers(requested)
+    )
+    for requested in _ALL_METRIC_PREFERENCE_SCOPES
+}
+
+
 def _spec_norm(s: str) -> str:
     """Normalises spec-name strings for comparison (case-insensitive, no spaces).
 
@@ -1879,6 +1905,13 @@ class _CacheEntry:
 
 
 @dataclass(frozen=True)
+class _CacheLookupSnapshot:
+    generation: int
+    negative_candidate: _CacheEntry | None
+    candidates: tuple[_CacheEntry, ...]
+
+
+@dataclass(frozen=True)
 class _CacheSaveSnapshot:
     entries: tuple[tuple[str, _CacheEntry], ...]
     epoch: int
@@ -2251,6 +2284,61 @@ class CharacterCache:
     def _not_found_ttl_seconds(self) -> int:
         return min(self._ttl_seconds, self.NOT_FOUND_TTL_SECONDS)
 
+    def _lookup_snapshot(
+        self,
+        *,
+        prefix: str,
+        not_found_key: str,
+        metric_preferences: MetricPreferences,
+    ) -> _CacheLookupSnapshot:
+        now = time.time()
+        requested_scope_key = metric_preferences.cache_key()
+        exact_key = f"{prefix}:{requested_scope_key}"
+        with self._lock:
+            generation = self._generation
+            negative_candidate = self._data.get(not_found_key)
+            if negative_candidate is not None and not self._entry_is_fresh(
+                not_found_key,
+                negative_candidate,
+                now=now,
+            ):
+                negative_candidate = None
+
+            exact_candidate = self._data.get(exact_key)
+            if exact_candidate is not None and not self._entry_is_fresh(
+                exact_key,
+                exact_candidate,
+                now=now,
+            ):
+                exact_candidate = None
+
+            broader_candidates: list[tuple[float, int, str, _CacheEntry]] = []
+            for scope_key, breadth in _COVERING_METRIC_SCOPE_KEYS[
+                requested_scope_key
+            ]:
+                stored_key = f"{prefix}:{scope_key}"
+                entry = self._data.get(stored_key)
+                if entry is None or not self._entry_is_fresh(
+                    stored_key,
+                    entry,
+                    now=now,
+                ):
+                    continue
+                broader_candidates.append(
+                    (-entry.fetched_at, breadth, scope_key, entry)
+                )
+
+        broader_candidates.sort()
+        candidates = (
+            ((exact_candidate,) if exact_candidate is not None else ())
+            + tuple(candidate[-1] for candidate in broader_candidates)
+        )
+        return _CacheLookupSnapshot(
+            generation=generation,
+            negative_candidate=negative_candidate,
+            candidates=candidates,
+        )
+
     def get(
         self,
         name: str,
@@ -2261,56 +2349,30 @@ class CharacterCache:
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
     ) -> Optional[CharacterRanks]:
         prefix = self._key_prefix(name, server_slug, region, spec_id, role)
-        key = f"{prefix}:{metric_preferences.cache_key()}"
         not_found_key = self._not_found_key(name, server_slug, region)
-        now = time.time()
-        with self._lock:
-            generation = self._generation
-            negative_candidate = None
-            negative_entry = self._data.get(not_found_key)
-            if negative_entry is not None:
-                negative_age = now - negative_entry.fetched_at
-                if 0 <= negative_age <= self._not_found_ttl_seconds():
-                    negative_candidate = negative_entry
-            candidates: list[tuple[int, float, int, int, _CacheEntry]] = []
-            exact_entry = self._data.get(key)
-            if exact_entry is not None:
-                exact_age = now - exact_entry.fetched_at
-                if 0 <= exact_age <= self._ttl_seconds:
-                    candidates.append((0, -exact_entry.fetched_at, 0, -1, exact_entry))
-            for index, (stored_key, entry) in enumerate(self._data.items()):
-                if stored_key == key or not stored_key.startswith(f"{prefix}:"):
-                    continue
-                stored_raw = stored_key[len(prefix) + 1 :]
-                stored_preferences = MetricPreferences.from_cache_key(stored_raw)
-                if stored_preferences is None:
-                    continue
-                if not stored_preferences.covers(metric_preferences):
-                    continue
-                age = now - entry.fetched_at
-                if age < 0 or age > self._ttl_seconds:
-                    continue
-                breadth = _metric_preference_breadth(stored_preferences)
-                candidates.append((1, -entry.fetched_at, breadth, index, entry))
-        if negative_candidate is not None:
-            ranks = self._ranks_from_entry(negative_candidate)
+        snapshot = self._lookup_snapshot(
+            prefix=prefix,
+            not_found_key=not_found_key,
+            metric_preferences=metric_preferences,
+        )
+        if snapshot.negative_candidate is not None:
+            ranks = self._ranks_from_entry(snapshot.negative_candidate)
             if ranks is not None and ranks.not_found:
                 with self._lock:
-                    if generation != self._generation:
+                    if snapshot.generation != self._generation:
                         return None
                 return CharacterRanks.empty(
                     not_found=True,
                     error=ranks.error,
                     error_kind=ranks.error_kind,
                 )
-        if not candidates:
+        if not snapshot.candidates:
             return None
-        candidates.sort()
-        for _exact_rank, _fetched_at, _breadth, _index, entry in candidates:
+        for entry in snapshot.candidates:
             ranks = self._ranks_from_entry(entry)
             if ranks is not None:
                 with self._lock:
-                    if generation != self._generation:
+                    if snapshot.generation != self._generation:
                         return None
                 return _project_ranks_to_metric_preferences(ranks, metric_preferences)
         return None
@@ -2325,52 +2387,26 @@ class CharacterCache:
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
     ) -> dict[str, list[dict[str, object]]] | None:
         prefix = self._raid_boss_key_prefix(name, server_slug, region, spec_id, role)
-        key = f"{prefix}:{metric_preferences.cache_key()}"
         not_found_key = self._not_found_key(name, server_slug, region)
-        now = time.time()
-        with self._lock:
-            generation = self._generation
-            negative_candidate = None
-            negative_entry = self._data.get(not_found_key)
-            if negative_entry is not None:
-                negative_age = now - negative_entry.fetched_at
-                if 0 <= negative_age <= self._not_found_ttl_seconds():
-                    negative_candidate = negative_entry
-            candidates: list[tuple[int, float, int, int, _CacheEntry]] = []
-            exact_entry = self._data.get(key)
-            if exact_entry is not None:
-                exact_age = now - exact_entry.fetched_at
-                if 0 <= exact_age <= self._ttl_seconds:
-                    candidates.append((0, -exact_entry.fetched_at, 0, -1, exact_entry))
-            for index, (stored_key, entry) in enumerate(self._data.items()):
-                if stored_key == key or not stored_key.startswith(f"{prefix}:"):
-                    continue
-                stored_raw = stored_key[len(prefix) + 1 :]
-                stored_preferences = MetricPreferences.from_cache_key(stored_raw)
-                if stored_preferences is None:
-                    continue
-                if not stored_preferences.covers(metric_preferences):
-                    continue
-                age = now - entry.fetched_at
-                if age < 0 or age > self._ttl_seconds:
-                    continue
-                breadth = _metric_preference_breadth(stored_preferences)
-                candidates.append((1, -entry.fetched_at, breadth, index, entry))
-        if negative_candidate is not None:
-            ranks = self._ranks_from_entry(negative_candidate)
+        snapshot = self._lookup_snapshot(
+            prefix=prefix,
+            not_found_key=not_found_key,
+            metric_preferences=metric_preferences,
+        )
+        if snapshot.negative_candidate is not None:
+            ranks = self._ranks_from_entry(snapshot.negative_candidate)
             if ranks is not None and ranks.not_found:
                 with self._lock:
-                    if generation != self._generation:
+                    if snapshot.generation != self._generation:
                         return None
                 return None
-        if not candidates:
+        if not snapshot.candidates:
             return None
-        candidates.sort()
-        for _exact_rank, _fetched_at, _breadth, _index, entry in candidates:
+        for entry in snapshot.candidates:
             rows = self._raid_boss_details_from_entry(entry, metric_preferences)
             if rows is not None:
                 with self._lock:
-                    if generation != self._generation:
+                    if snapshot.generation != self._generation:
                         return None
                 return rows
         return None

@@ -24,6 +24,8 @@ a keyboard or assistive technology.
   restored after success, failure, `/apscout off`, or an interrupted session.
 - Local RaiderIO lookups now index realm character names once and coalesce
   duplicate preload work instead of repeating full scans.
+- WCL cache reuse now checks only the finite set of compatible metric scopes
+  instead of scanning every cached character on the overlay thread.
 - Companion shutdown now drains pending WCL and live-snapshot cache work before
   closing shared state.
 - `/apscout qrvisible` now survives `/reload`, while disabling ApplicantScout

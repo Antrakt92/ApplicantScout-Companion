@@ -2235,6 +2235,72 @@ def test_character_cache_raid_boss_details_reuses_broader_scope_for_narrow_reque
     assert result == _raid_boss_rows()
 
 
+def test_character_cache_scoped_reads_do_not_scan_unrelated_entries(tmp_path):
+    class LookupOnlyCacheData(dict):
+        def items(self):
+            raise AssertionError("scoped cache lookup scanned all entries")
+
+    cache = CharacterCache(tmp_path)
+    broad = MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        metric_preferences=broad,
+    )
+    cache.put_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _raid_boss_rows(),
+        role="DAMAGER",
+        metric_preferences=broad,
+    )
+    cache._data.update(
+        {
+            f"EU:other-realm:other-{index}:71:DPS:mp1.n0.h0.m0": entry
+            for index, entry in enumerate(tuple(cache._data.values()) * 20)
+        }
+    )
+    cache._data = LookupOnlyCacheData(cache._data)
+
+    ranks = cache.get(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=narrow,
+    )
+    details = cache.get_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        "DAMAGER",
+        metric_preferences=narrow,
+    )
+
+    assert ranks is not None
+    assert ranks.raid_heroic == pytest.approx(22.0)
+    assert details == {"H": []}
+
+
 def test_character_cache_not_found_evicts_raid_boss_detail_entries(tmp_path):
     cache = CharacterCache(tmp_path)
     prefs = MetricPreferences(
