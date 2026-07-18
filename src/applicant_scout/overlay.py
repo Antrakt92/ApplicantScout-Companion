@@ -1739,6 +1739,30 @@ class ApplicantInfoPanel(QFrame):
         self._status_label.setWordWrap(True)
         outer.addWidget(self._status_label)
 
+        self._state_stage = QWidget(self)
+        state_stage_layout = QVBoxLayout(self._state_stage)
+        state_stage_layout.setContentsMargins(22, 2, 22, 2)
+        state_stage_layout.setSpacing(0)
+        state_stage_layout.addStretch(1)
+        self._state_card = QFrame(self._state_stage)
+        self._state_card.setObjectName("infoPanelStateCard")
+        self._state_card.setMinimumHeight(64)
+        state_card_layout = QVBoxLayout(self._state_card)
+        state_card_layout.setContentsMargins(12, 8, 12, 8)
+        state_card_layout.setSpacing(2)
+        self._state_icon_label = QLabel("")
+        self._state_icon_label.setObjectName("infoPanelStateIcon")
+        self._state_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        state_card_layout.addWidget(self._state_icon_label)
+        self._state_text_label = QLabel("")
+        self._state_text_label.setObjectName("infoPanelStateText")
+        self._state_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._state_text_label.setWordWrap(True)
+        state_card_layout.addWidget(self._state_text_label)
+        state_stage_layout.addWidget(self._state_card)
+        state_stage_layout.addStretch(1)
+        outer.addWidget(self._state_stage, stretch=1)
+
         self._dungeon_widget = QWidget(self)
         self._dungeon_grid = QGridLayout(self._dungeon_widget)
         self._dungeon_grid.setContentsMargins(0, 2, 0, 0)
@@ -1775,7 +1799,8 @@ class ApplicantInfoPanel(QFrame):
             self._dungeon_rows.append((name, rio_key, wcl_key, value))
         self._dungeon_grid.setColumnStretch(4, 1)
         outer.addWidget(self._dungeon_widget)
-        outer.addStretch(1)
+        self._bottom_filler = QWidget(self)
+        outer.addWidget(self._bottom_filler, stretch=1)
 
         for label in self.findChildren(QLabel):
             label.setTextFormat(Qt.TextFormat.PlainText)
@@ -1783,7 +1808,11 @@ class ApplicantInfoPanel(QFrame):
         self.setPlaceholder()
 
     def tooltip_widgets(self) -> tuple[QWidget, ...]:
-        return (self._wcl_retry_button, self._unpin_button)
+        return (
+            self._wcl_retry_button,
+            self._unpin_button,
+            self._state_text_label,
+        )
 
     def set_metric_preferences(self, metric_preferences: MetricPreferences) -> None:
         self._metric_preferences = metric_preferences
@@ -1811,8 +1840,11 @@ class ApplicantInfoPanel(QFrame):
         self._hide_data_widgets()
         self._current_applicant = None
         self._current_listing = None
-        self._status_label.setText("Hover a row for applicant details.")
-        self._status_label.setVisible(True)
+        self._show_status(
+            "Hover a row for applicant details.",
+            centered=True,
+            state_kind="placeholder",
+        )
 
     def setApplicantData(
         self,
@@ -1860,6 +1892,13 @@ class ApplicantInfoPanel(QFrame):
         self._package_label.setText("")
         self._package_label.setVisible(False)
         self._detail_tabs.setVisible(False)
+        self._status_label.setText("")
+        self._status_label.setVisible(False)
+        self._state_text_label.setText("")
+        self._state_text_label.setToolTip("")
+        self._state_icon_label.setText("")
+        self._state_stage.setVisible(False)
+        self._bottom_filler.setVisible(True)
         self._visible_detail_rows = 0
         for row in self._dungeon_rows:
             for label in row:
@@ -1958,10 +1997,16 @@ class ApplicantInfoPanel(QFrame):
         self._clear_metrics_and_dungeons()
         self._sync_detail_controls(listing)
         self._status_label.setVisible(False)
+        self._state_stage.setVisible(False)
+        self._bottom_filler.setVisible(True)
         self._wcl_retry_button.hide()
         if status in ("loading", "pending"):
-            self._show_status("Fetching from Warcraft Logs…")
-            self._set_detail_rows(applicant, listing)
+            visible_rows = self._set_detail_rows(applicant, listing)
+            self._show_status(
+                "Fetching from Warcraft Logs…",
+                centered=visible_rows == 0 and not self._package_label.text(),
+                state_kind="loading",
+            )
             return
         if status == "error":
             msg = applicant.error_message or "unknown"
@@ -1971,13 +2016,19 @@ class ApplicantInfoPanel(QFrame):
                 if fit.context == CONTEXT_MPLUS and fit.score > 0.0
                 else ""
             )
+            visible_metrics = self._set_metric_badges(applicant, listing)
+            visible_rows = self._set_detail_rows(applicant, listing)
             self._show_status(
                 f"WCL error: {msg}{source_note}",
                 error=True,
                 retry_available=wcl_retry_available,
+                centered=(
+                    visible_metrics == 0
+                    and visible_rows == 0
+                    and not self._package_label.text()
+                ),
+                state_kind="error",
             )
-            self._set_metric_badges(applicant, listing)
-            self._set_detail_rows(applicant, listing)
             return
         if status == "not_found":
             fit = candidate_fit(applicant, listing)
@@ -1986,9 +2037,17 @@ class ApplicantInfoPanel(QFrame):
                 if fit.context == CONTEXT_MPLUS and fit.score > 0.0
                 else ""
             )
-            self._show_status(f"Not found on Warcraft Logs{source_note}")
-            self._set_metric_badges(applicant, listing)
-            self._set_detail_rows(applicant, listing)
+            visible_metrics = self._set_metric_badges(applicant, listing)
+            visible_rows = self._set_detail_rows(applicant, listing)
+            self._show_status(
+                f"Not found on Warcraft Logs{source_note}",
+                centered=(
+                    visible_metrics == 0
+                    and visible_rows == 0
+                    and not self._package_label.text()
+                ),
+                state_kind="not_found",
+            )
             return
         if status != "ready":
             self._show_status("")
@@ -2011,7 +2070,11 @@ class ApplicantInfoPanel(QFrame):
         elif fit_status:
             self._show_status(fit_status)
         elif not visible_metrics and not visible_rows:
-            self._show_status("No Warcraft Logs data")
+            self._show_status(
+                "No Warcraft Logs data",
+                centered=not self._package_label.text(),
+                state_kind="empty",
+            )
 
     def _show_status(
         self,
@@ -2020,11 +2083,30 @@ class ApplicantInfoPanel(QFrame):
         error: bool = False,
         retry_available: bool = False,
         action_text: str = "Retry WCL",
+        centered: bool = False,
+        state_kind: str = "neutral",
     ) -> None:
         self._status_label.setText(text)
         color = "#ff6666" if error else "#8d8d98"
         self._status_label.setStyleSheet(f"color: {color};")
-        self._status_label.setVisible(bool(text))
+        self._status_label.setVisible(bool(text and not centered))
+        state_text = text
+        if len(state_text) > 120:
+            state_text = state_text[:119].rstrip() + "…"
+        self._state_text_label.setText(state_text)
+        self._state_text_label.setToolTip(text if state_text != text else "")
+        self._state_text_label.setStyleSheet(f"color: {color};")
+        state_icons = {
+            "placeholder": "◇",
+            "loading": "…",
+            "error": "!",
+            "not_found": "○",
+            "empty": "—",
+        }
+        self._state_icon_label.setText(state_icons.get(state_kind, "—"))
+        self._state_icon_label.setStyleSheet(f"color: {color};")
+        self._state_stage.setVisible(bool(text and centered))
+        self._bottom_filler.setVisible(not bool(text and centered))
         self._wcl_retry_button.setText(action_text)
         self._wcl_retry_button.setToolTip(
             "Load boss-by-boss Warcraft Logs details for this row"
@@ -4890,7 +4972,8 @@ class OverlayWindow(QMainWindow):
                 return _render_tooltip(
                     obj, self._title_bar.title_label.toolTip(), event.globalPos()
                 )
-            # Branch E — action buttons (role filter/reset/title hide tooltips).
+            # Branch E — action controls and panel status text. Long centered
+            # errors rely on this bypass because their visible text is bounded.
             # Identity match only: objectName/text can change without affecting
             # which child widgets need the translucent-overlay tooltip bypass.
             if any(obj is widget for widget in self._action_tooltip_widgets):
@@ -5779,6 +5862,20 @@ _STYLESHEET = """
     color: #8d8d98;
     font-size: 12px;
     padding-top: 2px;
+}
+#infoPanelStateCard {
+    background-color: rgba(25, 25, 36, 150);
+    border: 1px solid rgba(72, 72, 96, 150);
+    border-radius: 4px;
+}
+#infoPanelStateIcon {
+    color: #8d8d98;
+    font-size: 18px;
+    font-weight: 600;
+}
+#infoPanelStateText {
+    color: #a8a8b4;
+    font-size: 12px;
 }
 #infoUnpinButton {
     color: #d8d8e2;

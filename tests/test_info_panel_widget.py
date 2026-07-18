@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PyQt6.QtGui import QColor, QFont, QImage, QPainter
+from PyQt6.QtGui import QColor, QFont, QHelpEvent, QImage, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
@@ -1649,6 +1649,8 @@ def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
     panel.setApplicantData(app, _listing())
 
     assert panel._status_label.text() == "Not found on Warcraft Logs · RaiderIO only"
+    assert not panel._status_label.isHidden()
+    assert panel._state_stage.isHidden()
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
     assert rio_label.text() == "RIO +15"
@@ -1860,15 +1862,93 @@ def test_status_states_hide_metrics_and_dungeons(qtbot):
     panel.setApplicantData(_app(fetch_status="loading"))
 
     assert panel._status_label.text() == "Fetching from Warcraft Logs…"
-    assert not panel._status_label.isHidden()
+    assert panel._status_label.isHidden()
+    assert not panel._state_stage.isHidden()
+    assert panel._state_text_label.text() == "Fetching from Warcraft Logs…"
+    assert panel._state_icon_label.text() == "…"
     assert all(label.isHidden() for label in panel._metric_labels.values())
     assert panel._dungeon_widget.isHidden()
+    assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
 
     panel.setApplicantData(_app(fetch_status="error", error_message="bad token"))
     assert panel._status_label.text() == "WCL error: bad token"
+    assert not panel._state_stage.isHidden()
+    assert panel._state_icon_label.text() == "!"
 
     panel.setApplicantData(_app(fetch_status="not_found"))
     assert panel._status_label.text() == "Not found on Warcraft Logs"
+    assert not panel._state_stage.isHidden()
+    assert panel._state_icon_label.text() == "○"
+
+
+def test_centered_status_owns_remaining_panel_body(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setMinimumHeight(INFO_PANEL_PREFERRED_HEIGHT)
+    panel.setMaximumHeight(INFO_PANEL_PREFERRED_HEIGHT)
+    panel.resize(650, INFO_PANEL_PREFERRED_HEIGHT)
+    panel.setApplicantData(_app(fetch_status="loading"))
+    panel.show()
+    QApplication.processEvents()
+
+    stage_rect = panel._state_stage.rect()
+    card_rect = panel._state_card.geometry()
+    assert panel._bottom_filler.isHidden()
+    assert panel._state_stage.geometry().bottom() >= panel.height() - 8
+    assert stage_rect.height() > 100
+    assert abs(card_rect.center().y() - stage_rect.center().y()) <= 2
+
+
+def test_centered_long_error_is_bounded_with_full_tooltip(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setMinimumHeight(INFO_PANEL_PREFERRED_HEIGHT)
+    panel.setMaximumHeight(INFO_PANEL_PREFERRED_HEIGHT)
+    panel.resize(300, INFO_PANEL_PREFERRED_HEIGHT)
+    raw_error = "GraphQL error: " + ("upstream proxy returned malformed data; " * 12)
+    full_status = f"WCL error: {raw_error}"
+    panel.setApplicantData(_app(fetch_status="error", error_message=raw_error))
+    panel.show()
+    QApplication.processEvents()
+
+    assert not panel._state_stage.isHidden()
+    assert panel._status_label.text() == full_status
+    assert len(panel._state_text_label.text()) <= 120
+    assert panel._state_text_label.text().endswith("…")
+    assert panel._state_text_label.toolTip() == full_status
+    assert panel._state_text_label.minimumSizeHint().height() <= (
+        panel._state_text_label.height()
+    )
+
+
+def test_centered_long_error_uses_overlay_tooltip_bypass(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    raw_error = "GraphQL error: " + ("upstream proxy returned malformed data; " * 12)
+    full_status = f"WCL error: {raw_error}"
+    window._panel.setApplicantData(_app(fetch_status="error", error_message=raw_error))
+    label = window._panel._state_text_label
+    rendered: list[tuple[QWidget, str, QPoint]] = []
+
+    def record_tooltip(parent_widget, tip: str, global_pos: QPoint) -> bool:
+        rendered.append((parent_widget, tip, global_pos))
+        return True
+
+    monkeypatch.setattr(overlay_mod, "_render_tooltip", record_tooltip)
+    global_pos = QPoint(70, 90)
+    event = QHelpEvent(QEvent.Type.ToolTip, QPoint(4, 5), global_pos)
+
+    try:
+        assert label in window._action_tooltip_widgets
+        assert window.eventFilter(label, event) is True
+        assert rendered == [(label, full_status, global_pos)]
+    finally:
+        client.close()
 
 
 def test_wcl_retry_button_visibility_is_explicitly_gated(qtbot):
@@ -1932,6 +2012,8 @@ def test_panel_explains_error_mplus_fit_uses_raiderio_only(qtbot):
 
     assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
     assert panel._status_label.text() == "WCL error: bad token · RaiderIO only"
+    assert not panel._status_label.isHidden()
+    assert panel._state_stage.isHidden()
 
 
 def test_ready_no_data_shows_compact_status(qtbot):
@@ -1953,8 +2035,12 @@ def test_ready_no_data_shows_compact_status(qtbot):
     )
 
     assert panel._status_label.text() == "No Warcraft Logs data"
-    assert not panel._status_label.isHidden()
+    assert panel._status_label.isHidden()
+    assert not panel._state_stage.isHidden()
+    assert panel._state_text_label.text() == "No Warcraft Logs data"
+    assert panel._state_icon_label.text() == "—"
     assert panel._dungeon_widget.isHidden()
+    assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
 
 
 def test_panel_external_text_labels_use_plain_text(qtbot):
