@@ -2866,8 +2866,7 @@ def test_readme_documents_snapshot_action_requires_enabled_addon():
         in readme
     )
     assert re.search(
-        r"keep ApplicantScout enabled and click \*\*Snapshot\*\*, or run\s+"
-        r"`/apscout shotnow`",
+        r"keep ApplicantScout enabled and run `/apscout shotnow`",
         readme,
     )
     assert "/apscout shotnow        force snapshot now\n" not in readme

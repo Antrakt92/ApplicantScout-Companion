@@ -5,13 +5,11 @@
 ## 0.10.0 - 18-Jul-2026
 
 Paired release with ApplicantScout addon `0.6.0`. This release hardens the QR
-capture lifecycle and makes the overlay easier to read, troubleshoot, and use
-with a keyboard or assistive technology.
+capture lifecycle and makes the overlay easier to read, navigate, and use with
+a keyboard or assistive technology.
 
 ### Added
 
-- The Group Finder panel now provides compact Status, Snapshot, Move/Lock QR,
-  Reset QR, and Debug controls without requiring memorized slash commands.
 - The overlay now has a complete keyboard focus path for settings, filters,
   applicant rows, Party calibration, and available detail actions.
 
