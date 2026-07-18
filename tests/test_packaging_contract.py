@@ -1982,6 +1982,8 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
     assert "WorkflowRunId $env:RELEASE_RUN_ID" in manifest_check
     assert "Get-FileHash" in manifest_check
     assert ".digest" in manifest_check
+    assert "gh release view $env:RELEASE_TAG" in manifest_check
+    assert "releases/tags/$env:RELEASE_TAG" not in manifest_check
     assert "Checkout companion" not in publish
     assert "pip install" not in publish
     assert "choco install" not in publish
@@ -1991,7 +1993,7 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
         "-Repo $env:GITHUB_REPOSITORY",
         '-Repo "Antrakt92/ApplicantScout-Addon"',
         "releases/latest",
-        "releases/tags/$env:RELEASE_TAG",
+        "gh release view $env:RELEASE_TAG",
         "IsNullOrWhiteSpace($env:RELEASE_SETTINGS_READ_TOKEN)",
         "$env:GH_TOKEN = $env:RELEASE_SETTINGS_READ_TOKEN",
         "immutable-releases",
@@ -2004,6 +2006,7 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
     assert "/commits/$env:PAIRED_ADDON_TAG" not in writer
     assert ".digest" in writer
     assert ".size" in writer
+    assert "releases/tags/$env:RELEASE_TAG" not in writer
     _assert_order(
         verify,
         "Verify draft release assets",
@@ -2730,6 +2733,11 @@ def test_windows_vs2026_canary_runs_both_package_paths_without_publishing():
 
 def test_release_workflow_uploads_exact_updater_assets_as_draft_first():
     workflow = _read_repo_text(".github/workflows/release.yml")
+    draft = _job_block(workflow, "draft")
+    remote_check = _step_block(
+        draft,
+        "Verify remote draft bytes against authoritative manifest",
+    )
 
     assert "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe" in workflow
     assert "ApplicantScoutCompanionSetup-$env:TAG_VERSION.exe.sha256" in workflow
@@ -2741,6 +2749,9 @@ def test_release_workflow_uploads_exact_updater_assets_as_draft_first():
     assert "-RequireDraftReleaseAssets" in workflow
     assert "draft=false" not in workflow
     assert "gh release edit" not in workflow
+    assert "gh release view $env:RELEASE_TAG" in remote_check
+    assert "--json name,body,isDraft,isPrerelease" in remote_check
+    assert "releases/tags/$env:RELEASE_TAG" not in remote_check
 
 
 def test_release_workflow_extracts_top_release_notes_entry_only():

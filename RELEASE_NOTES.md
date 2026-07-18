@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.10.0 - 18-Jul-2026
+## 0.10.1 - 18-Jul-2026
 
-Paired release with ApplicantScout addon `0.6.0`. This release hardens the QR
+Paired release with ApplicantScout addon `0.6.1`. This release hardens the QR
 capture lifecycle and makes the overlay easier to read, navigate, and use with
 a keyboard or assistive technology.
 
@@ -67,10 +67,10 @@ a keyboard or assistive technology.
 
 ### Release Assets
 
-- Requires the ApplicantScout WoW addon `0.6.0`.
-- Installer: `ApplicantScoutCompanionSetup-0.10.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.10.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.10.0-portable.zip`
+- Requires the ApplicantScout WoW addon `0.6.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.10.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.10.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.10.1-portable.zip`
 
 ## 0.9.2 - 15-Jul-2026
 

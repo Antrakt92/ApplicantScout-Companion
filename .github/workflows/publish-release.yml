@@ -312,8 +312,10 @@ jobs:
             -WorkflowRunAttempt ${{ steps.release-run.outputs.attempt }} `
             -RootPath $Remote
 
-          $Release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not [bool]$Release.draft -or [bool]$Release.prerelease) {
+          $Release = gh release view $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --json name,body,isDraft,isPrerelease,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not [bool]$Release.isDraft -or [bool]$Release.isPrerelease) {
             throw "Release is no longer the expected stable draft."
           }
           $ExpectedFiles = @(Get-ChildItem -LiteralPath $Authoritative -File)
@@ -447,8 +449,10 @@ jobs:
             throw "Smoke-tested installer digest changed before publication."
           }
 
-          $Release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not [bool]$Release.draft -or [bool]$Release.prerelease) {
+          $Release = gh release view $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --json name,body,isDraft,isPrerelease,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not [bool]$Release.isDraft -or [bool]$Release.isPrerelease) {
             throw "Release is no longer the expected stable draft."
           }
           $Assets = @($Release.assets)

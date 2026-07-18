@@ -445,9 +445,13 @@ jobs:
           $ExpectedBody = [System.Text.Encoding]::UTF8.GetString(
             [Convert]::FromBase64String([string]$Manifest.releaseCopy.body.contentBase64)
           )
-          $Release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $Release = gh release view $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --json name,body,isDraft,isPrerelease | ConvertFrom-Json
           if (
             $LASTEXITCODE -ne 0 -or
+            -not [bool]$Release.isDraft -or
+            [bool]$Release.isPrerelease -or
             [string]$Release.name -cne [string]$Manifest.releaseCopy.title -or
             [string]$Release.body -cne $ExpectedBody
           ) {
