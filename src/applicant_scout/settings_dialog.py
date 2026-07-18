@@ -45,7 +45,6 @@ from .config import (
     ConfigError,
     resolve_screenshots_path,
     screenshots_path_health_warning,
-    screenshots_path_validation_error,
 )
 from .metric_preferences import MetricPreferences
 
@@ -85,6 +84,7 @@ WCL_CREDENTIAL_TEST_BUSY_MESSAGE = (
     "WCL credential test is running. Wait for it to finish before continuing."
 )
 SCREENSHOTS_WARNING_DEBOUNCE_MS = 250
+SCREENSHOTS_VALIDATION_PENDING_MESSAGE = "Checking Screenshots folder..."
 
 
 def _settings_window_title(*, first_run: bool) -> str:
@@ -182,6 +182,13 @@ class _AsyncSignals(QObject):
     finished = pyqtSignal(object)
 
 
+@dataclass(frozen=True)
+class _ScreenshotsValidationResult:
+    generation: int
+    path: str
+    warning: str | None
+
+
 class ReleaseNotesDialog(QDialog):
     def __init__(self, release_notes: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -239,6 +246,7 @@ class SettingsDialog(QDialog):
     updateCompleted = pyqtSignal()
     updateHandoffStarted = pyqtSignal(str, object)
     changelogRequested = pyqtSignal()
+    _screenshotsValidationFinished = pyqtSignal(object)
 
     def __init__(
         self,
@@ -276,6 +284,15 @@ class SettingsDialog(QDialog):
         self._pending_screenshots_warning_path = ""
         self._screenshots_warning_path = ""
         self._screenshots_warning_text: str | None = None
+        self._screenshots_validation_generation = 0
+        self._screenshots_validation_started_generation: int | None = None
+        self._screenshots_validation_ready_generation: int | None = None
+        self._screenshots_validation_required_generation: int | None = None
+        self._screenshots_validation_waiting_autosave = False
+        self._screenshots_validation_active_workers = 0
+        self._screenshotsValidationFinished.connect(
+            self._finish_screenshots_validation
+        )
         self._screenshots_warning_timer = QTimer(self)
         self._screenshots_warning_timer.setSingleShot(True)
         self._screenshots_warning_timer.setInterval(SCREENSHOTS_WARNING_DEBOUNCE_MS)
@@ -799,7 +816,10 @@ class SettingsDialog(QDialog):
         if self._block_credential_test_in_progress():
             return
         values = self.values()
-        error = self._hard_validation_error(values)
+        error = self._hard_validation_error(
+            values,
+            require_screenshots_ready=True,
+        )
         if error is not None:
             self._set_status(error, error=True)
             return
@@ -868,7 +888,11 @@ class SettingsDialog(QDialog):
 
     def current_screenshots_warning(self) -> str | None:
         current_path = self.screenshots_edit.text().strip()
-        if current_path != self._screenshots_warning_path:
+        if (
+            current_path != self._screenshots_warning_path
+            or self._screenshots_validation_ready_generation
+            != self._screenshots_validation_generation
+        ):
             return None
         return self._screenshots_warning_text
 
@@ -907,19 +931,49 @@ class SettingsDialog(QDialog):
         self._set_status(WCL_CREDENTIAL_TEST_BUSY_MESSAGE, error=True)
         return True
 
-    def _hard_validation_error(self, values: SettingsValues) -> str | None:
+    def _hard_validation_error(
+        self,
+        values: SettingsValues,
+        *,
+        require_screenshots_ready: bool = False,
+    ) -> str | None:
         if not values.wcl_client_id or not values.wcl_client_secret:
             return "WCL Client ID and Secret are required."
         screenshots_path = values.screenshots_path
-        if screenshots_path and Path(screenshots_path).is_file():
-            return "Screenshots path points to a file, not a folder."
         if not values.metric_preferences.any_enabled:
             return "Select at least one WCL data type."
         if screenshots_path:
-            warning = screenshots_path_validation_error(Path(screenshots_path))
+            ready, warning = self._current_screenshots_validation(
+                screenshots_path,
+                require_ready=require_screenshots_ready,
+            )
+            if not ready:
+                return SCREENSHOTS_VALIDATION_PENDING_MESSAGE
             if warning is not None:
                 return warning
         return None
+
+    def _current_screenshots_validation(
+        self,
+        raw_path: str,
+        *,
+        require_ready: bool,
+    ) -> tuple[bool, str | None]:
+        path = raw_path.strip()
+        if (
+            self._screenshots_validation_ready_generation
+            == self._screenshots_validation_generation
+            and self._screenshots_warning_path == path
+        ):
+            return True, self._screenshots_warning_text
+        if (
+            not require_ready
+            and self._screenshots_validation_required_generation
+            != self._screenshots_validation_generation
+        ):
+            return True, None
+        self._start_screenshots_validation(path)
+        return False, None
 
     def _connect_value_change_signals(self) -> None:
         for edit in (
@@ -946,7 +1000,11 @@ class SettingsDialog(QDialog):
         values = self.values()
         error = self._hard_validation_error(values)
         if error is not None:
-            self._set_status(error, error=True)
+            if error == SCREENSHOTS_VALIDATION_PENDING_MESSAGE:
+                self._screenshots_validation_waiting_autosave = True
+                self._set_status(error, warning=True)
+            else:
+                self._set_status(error, error=True)
             self._last_values_apply_succeeded = False
             return False
         self._last_values_apply_succeeded = True
@@ -964,40 +1022,107 @@ class SettingsDialog(QDialog):
         self._set_status("Select at least one WCL data type.", error=True)
 
     def _handle_screenshots_text_changed(self, raw_path: str) -> None:
-        self._schedule_screenshots_warning(raw_path)
+        self._schedule_screenshots_warning(raw_path, require_before_save=True)
         self._schedule_values_changed()
 
-    def _schedule_screenshots_warning(self, raw_path: str) -> None:
+    def _schedule_screenshots_warning(
+        self,
+        raw_path: str,
+        *,
+        require_before_save: bool = False,
+    ) -> None:
         self._pending_screenshots_warning_path = raw_path
-        if raw_path.strip():
+        self._screenshots_validation_generation += 1
+        self._screenshots_validation_started_generation = None
+        self._screenshots_validation_ready_generation = None
+        self._screenshots_validation_required_generation = (
+            self._screenshots_validation_generation if require_before_save else None
+        )
+        path = raw_path.strip()
+        if path:
             self._screenshots_warning_timer.start()
         else:
             self._screenshots_warning_timer.stop()
-            self._update_screenshots_warning(raw_path)
+            self._screenshots_validation_waiting_autosave = False
+            self._screenshots_warning_path = ""
+            self._screenshots_warning_text = None
+            self._screenshots_validation_ready_generation = (
+                self._screenshots_validation_generation
+            )
+            if self.status_label.text().startswith("Screenshots folder warning:"):
+                self._set_status("")
 
     def _flush_screenshots_warning(self) -> None:
-        self._update_screenshots_warning(self._pending_screenshots_warning_path)
+        self._start_screenshots_validation(
+            self._pending_screenshots_warning_path.strip()
+        )
 
     def _hide_to_tray(self) -> None:
         self.hide()
         self.hideRequested.emit()
 
-    def _update_screenshots_warning(self, raw_path: str) -> None:
-        path = raw_path.strip()
-        if not path:
-            self._screenshots_warning_path = ""
-            self._screenshots_warning_text = None
-            if self.status_label.text().startswith("Screenshots folder warning:"):
-                self._set_status("")
+    def _start_screenshots_validation(self, path: str) -> None:
+        generation = self._screenshots_validation_generation
+        if not path or self.screenshots_edit.text().strip() != path:
             return
-        warning = screenshots_path_health_warning(Path(path))
-        self._screenshots_warning_path = path
-        self._screenshots_warning_text = warning
+        if self._screenshots_validation_started_generation == generation:
+            return
+        self._screenshots_warning_timer.stop()
+        if self._screenshots_validation_active_workers >= 2:
+            return
+        self._screenshots_validation_started_generation = generation
+        self._screenshots_validation_active_workers += 1
+
+        def _worker() -> None:
+            try:
+                candidate = Path(path)
+                if candidate.is_file():
+                    warning = "Screenshots path points to a file, not a folder."
+                else:
+                    warning = screenshots_path_health_warning(candidate)
+            except Exception as exc:  # noqa: BLE001 - filesystem boundary
+                warning = f"Screenshots folder warning: could not check path: {exc}"
+            result = _ScreenshotsValidationResult(generation, path, warning)
+            try:
+                self._screenshotsValidationFinished.emit(result)
+            except RuntimeError:
+                pass
+
+        threading.Thread(
+            target=_worker,
+            name="ScreenshotsPathValidation",
+            daemon=True,
+        ).start()
+
+    def _finish_screenshots_validation(self, raw: object) -> None:
+        if not isinstance(raw, _ScreenshotsValidationResult):
+            return
+        self._screenshots_validation_active_workers = max(
+            0,
+            self._screenshots_validation_active_workers - 1,
+        )
+        if (
+            raw.generation != self._screenshots_validation_generation
+            or raw.path != self.screenshots_edit.text().strip()
+        ):
+            self._start_screenshots_validation(
+                self.screenshots_edit.text().strip()
+            )
+            return
+        self._screenshots_warning_path = raw.path
+        self._screenshots_warning_text = raw.warning
+        self._screenshots_validation_ready_generation = raw.generation
         current = self.status_label.text()
-        if warning:
-            self._set_status(warning, error=True)
-        elif current.startswith("Screenshots folder warning:"):
+        if raw.warning:
+            self._set_status(raw.warning, error=True)
+        elif current.startswith("Screenshots folder warning:") or (
+            current == SCREENSHOTS_VALIDATION_PENDING_MESSAGE
+        ):
             self._set_status("")
+        if self._screenshots_validation_waiting_autosave:
+            self._screenshots_validation_waiting_autosave = False
+            self._autosave_timer.stop()
+            self._emit_values_changed_if_valid()
 
     def _set_status(self, text: str, *, error: bool = False, warning: bool = False) -> None:
         self.status_label.setText(text)

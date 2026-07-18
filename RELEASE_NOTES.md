@@ -40,6 +40,8 @@ a keyboard or assistive technology.
   chips separate screenshot health, WCL credentials, and fetch activity.
 - Background row updates no longer rebuild an unchanged pinned or hovered
   applicant panel on the GUI thread.
+- Screenshots-folder checks now run once per edit off the GUI thread, so a slow
+  or disconnected filesystem cannot freeze Settings or trigger duplicate probes.
 - M+ fit, grouped-applicant evidence, partial-roster state, and manual raid
   detail cooldowns now use more explicit wording.
 - The overlay reports exact installed and required addon versions when the WoW

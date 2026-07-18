@@ -400,6 +400,127 @@ def test_settings_dialog_defers_initial_screenshots_health_check(
     assert dialog.status_label.text() == "Screenshots folder warning: slow path."
 
 
+def test_settings_dialog_reuses_one_path_probe_for_warning_and_autosave(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_ready_generation
+        == dialog._screenshots_validation_generation,
+        timeout=1000,
+    )
+    path = tmp_path / "other" / "_retail_" / "Screenshots"
+    calls: list[Path] = []
+    saved: list[str] = []
+    monkeypatch.setattr(
+        settings_mod,
+        "screenshots_path_health_warning",
+        lambda candidate: calls.append(candidate) or None,
+    )
+    dialog.valuesChanged.connect(lambda values: saved.append(values.screenshots_path))
+
+    dialog.screenshots_edit.setText(str(path))
+    assert not dialog.flush_pending_values()
+    qtbot.waitUntil(lambda: bool(saved), timeout=1000)
+
+    assert calls == [path]
+    assert saved == [str(path)]
+
+
+def test_settings_dialog_ignores_stale_path_probe_result(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_ready_generation
+        == dialog._screenshots_validation_generation,
+        timeout=1000,
+    )
+    first = tmp_path / "first" / "_retail_" / "Screenshots"
+    second = tmp_path / "second" / "_retail_" / "Screenshots"
+    first_started = threading.Event()
+    release_first = threading.Event()
+    calls: list[Path] = []
+    saved: list[str] = []
+
+    def probe(path: Path) -> str | None:
+        calls.append(path)
+        if path == first:
+            first_started.set()
+            if not release_first.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+                raise RuntimeError("stale path probe timed out")
+            return "Screenshots folder warning: stale result."
+        return None
+
+    monkeypatch.setattr(settings_mod, "screenshots_path_health_warning", probe)
+    dialog.valuesChanged.connect(lambda values: saved.append(values.screenshots_path))
+    fallback = _fallback_release(release_first)
+    try:
+        dialog.screenshots_edit.setText(str(first))
+        assert not dialog.flush_pending_values()
+        assert first_started.wait(1)
+
+        dialog.screenshots_edit.setText(str(second))
+        assert dialog._autosave_timer.isActive()
+        qtbot.waitUntil(lambda: saved == [str(second)], timeout=1000)
+        assert not dialog._autosave_timer.isActive()
+        qtbot.wait(750)
+        assert saved == [str(second)]
+
+        release_first.set()
+        qtbot.wait(100)
+        assert calls.count(first) == 1
+        assert calls.count(second) == 1
+        assert dialog.current_screenshots_warning() is None
+        assert "stale result" not in dialog.status_label.text()
+    finally:
+        release_first.set()
+        fallback.cancel()
+
+
+def test_settings_dialog_slow_path_probe_keeps_gui_responsive(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_ready_generation
+        == dialog._screenshots_validation_generation,
+        timeout=1000,
+    )
+    path = tmp_path / "sleeping-drive" / "_retail_" / "Screenshots"
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    gui_ticks: list[bool] = []
+
+    def slow_probe(_path: Path) -> None:
+        probe_started.set()
+        if not release_probe.wait(ASYNC_TEST_BLOCK_TIMEOUT):
+            raise RuntimeError("slow path probe timed out")
+        return None
+
+    monkeypatch.setattr(settings_mod, "screenshots_path_health_warning", slow_probe)
+    fallback = _fallback_release(release_probe)
+    try:
+        dialog.screenshots_edit.setText(str(path))
+        assert not dialog.flush_pending_values()
+        assert probe_started.wait(1)
+
+        settings_mod.QTimer.singleShot(0, lambda: gui_ticks.append(True))
+        qtbot.waitUntil(lambda: gui_ticks == [True], timeout=500)
+    finally:
+        release_probe.set()
+        fallback.cancel()
+
+
 def test_settings_dialog_does_not_emit_values_changed_for_suspicious_screenshots_path(
     qtbot, tmp_path: Path
 ):
