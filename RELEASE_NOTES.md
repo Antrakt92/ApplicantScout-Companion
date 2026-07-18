@@ -2,38 +2,49 @@
 
 ## Unreleased
 
-## 0.9.3 - 16-Jul-2026
+## 0.10.0 - 18-Jul-2026
 
-Paired release with ApplicantScout addon `0.5.3`. This patch makes a stalled
-in-game QR pipeline recover automatically and makes paired-version drift
-visible in the overlay.
+Paired release with ApplicantScout addon `0.6.0`. This release hardens the QR
+capture lifecycle and makes the overlay easier to read, troubleshoot, and use
+with a keyboard or assistive technology.
+
+### Added
+
+- The Group Finder panel now provides compact Status, Snapshot, Move/Lock QR,
+  Reset QR, and Debug controls without requiring memorized slash commands.
+- The overlay now has a complete keyboard focus path for settings, filters,
+  applicant rows, Party calibration, and available detail actions.
 
 ### Fixed
 
-- Addon `0.5.3` keeps a completed QR locked through the framebuffer settle
-  window so a polling tick cannot cancel every screenshot before capture.
-- Interrupted QR build, paint, capture, and old-texture cleanup work now has a
-  bounded recovery path instead of requiring `/reload`.
-- Detected and manually selected Party target keys above `+30` are no longer
-  clamped in the overlay, so the displayed key and fit scoring stay aligned.
+- QR build, paint, capture, retry, and stale-texture cleanup work now has
+  bounded recovery instead of leaving transport frozen until `/reload`.
+- Screenshot format and quality are leased only around each capture and are
+  restored after success, failure, `/apscout off`, or an interrupted session.
+- Local RaiderIO lookups now index realm character names once and coalesce
+  duplicate preload work instead of repeating full scans.
+- Companion shutdown now drains pending WCL and live-snapshot cache work before
+  closing shared state.
+- `/apscout qrvisible` now survives `/reload`, while disabling ApplicantScout
+  clears the override.
 
 ### Improved
 
-- The overlay footer shows `addon update` with exact installed and required
-  versions when the WoW addon is older than this companion expects.
-- Addon `0.5.3` leases JPG format and capture quality only around QR screenshots,
-  then restores the user's prior screenshot settings after each capture.
-- Raid boss details use Warcraft Logs' full current names for Chimaerus and
-  Belo'ren instead of shortened labels that had drifted from the API.
-- `/apscout status` exposes the current QR phase, job age, watchdog recovery
-  count, and texture cleanup high-water mark for support diagnostics.
+- Numeric columns align consistently, empty states are centred, and footer
+  chips separate screenshot health, WCL credentials, and fetch activity.
+- M+ fit, grouped-applicant evidence, partial-roster state, and manual raid
+  detail cooldowns now use more explicit wording.
+- The overlay reports exact installed and required addon versions when the WoW
+  addon is older than this companion expects.
+- `/apscout status` exposes the current QR phase, job age, recovery count, and
+  texture cleanup high-water mark for support diagnostics.
 
 ### Release Assets
 
-- Requires the ApplicantScout WoW addon `0.5.3`.
-- Installer: `ApplicantScoutCompanionSetup-0.9.3.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.9.3.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.9.3-portable.zip`
+- Requires the ApplicantScout WoW addon `0.6.0`.
+- Installer: `ApplicantScoutCompanionSetup-0.10.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.10.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.10.0-portable.zip`
 
 ## 0.9.2 - 15-Jul-2026
 

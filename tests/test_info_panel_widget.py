@@ -3372,14 +3372,14 @@ def test_health_label_warns_when_paired_addon_is_outdated(
         assert window._health_label.text() == "Addon update"
         assert window._health_label.property("statusState") == "warning"
         assert "0.5.1" in window._health_label.toolTip()
-        assert "0.5.3" in window._health_label.toolTip()
+        assert "0.6.0" in window._health_label.toolTip()
         assert "/reload" in window._health_label.toolTip()
 
         current_snapshot = type(
             "CurrentSnapshot",
             (),
             {
-                "version": type("Version", (), {"addon_version": "0.5.3"})(),
+                "version": type("Version", (), {"addon_version": "0.6.0"})(),
                 "roster_unavailable": False,
             },
         )()
