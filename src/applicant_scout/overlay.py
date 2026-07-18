@@ -3147,6 +3147,7 @@ class OverlayWindow(QMainWindow):
         self._suppress_geometry_persist = False
         self._panel_anchor_extra_height = 0
         self._panel_anchor_y_offset = 0
+        self._panel_render_key: tuple | None = None
 
         # Map of applicant_id -> table row (kept in sync with _id_by_row).
         self._row_for_id: dict[str, int] = {}
@@ -4327,20 +4328,56 @@ class OverlayWindow(QMainWindow):
         between the dim placeholder and an applicant's scout card."""
         visible_id = self._resolve_visible_id()
         if visible_id is None:
+            render_key = ("placeholder",)
+            if self._panel_render_key == render_key:
+                return
             self._panel.setPlaceholder()
+            self._panel_render_key = render_key
             return
         applicant = self._active_row_map().get(visible_id)
         if applicant is None:
+            render_key = ("placeholder",)
+            if self._panel_render_key == render_key:
+                return
             self._panel.setPlaceholder()
+            self._panel_render_key = render_key
             return
         raw_aid, _ = _split_composite(applicant.applicant_id)
-        raid_detail_status = self._raid_detail_status_for(applicant)
-        self._panel.setApplicantData(
-            applicant,
-            self._effective_listing(),
+        listing = self._effective_listing()
+        package = (
             self._package_fit_by_raw.get(raw_aid)
             if self._active_tab == "applicants"
-            else None,
+            else None
+        )
+        raid_detail_status = self._raid_detail_status_for(applicant)
+        wcl_retry_available = self._manual_wcl_retry_available(applicant)
+        selection_source = (
+            "hover"
+            if visible_id == self._hover_id
+            else "keyboard"
+            if self._keyboard_preview_active and visible_id == self._keyboard_id
+            else "pinned"
+            if visible_id == self._pinned_id
+            else "fallback"
+        )
+        render_key = (
+            selection_source,
+            self._active_tab,
+            visible_id,
+            _freeze_render_value(applicant),
+            _listing_render_key(listing),
+            _freeze_render_value(package),
+            visible_id == self._pinned_id,
+            _freeze_render_value(raid_detail_status),
+            wcl_retry_available,
+            self._metric_preferences.cache_key(),
+        )
+        if self._panel_render_key == render_key:
+            return
+        self._panel.setApplicantData(
+            applicant,
+            listing,
+            package,
             pinned=visible_id == self._pinned_id,
             raid_detail_status=raid_detail_status[0] if raid_detail_status else "",
             raid_detail_status_error=raid_detail_status[1]
@@ -4349,8 +4386,9 @@ class OverlayWindow(QMainWindow):
             raid_detail_retry_available=raid_detail_status[2]
             if raid_detail_status
             else False,
-            wcl_retry_available=self._manual_wcl_retry_available(applicant),
+            wcl_retry_available=wcl_retry_available,
         )
+        self._panel_render_key = render_key
 
     def _apply_panel_height_above_table(self) -> None:
         if not self.isVisible():

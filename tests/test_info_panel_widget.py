@@ -2802,6 +2802,52 @@ def test_panel_content_swap_is_batched_with_height_change_to_avoid_one_frame_jum
         client.close()
 
 
+def test_unrelated_row_refresh_does_not_rebuild_pinned_panel(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    pinned = _app(applicant_id="pinned", name="Pinned-Realm", score=2500)
+    unrelated = _app(applicant_id="other", name="Other-Realm", score=2400)
+    state.add_or_update(pinned)
+    state.add_or_update(unrelated)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+    renders: list[str] = []
+    original_set_applicant_data = window._panel.setApplicantData
+
+    def record_set_applicant_data(applicant, *args, **kwargs) -> None:
+        renders.append(applicant.applicant_id)
+        original_set_applicant_data(applicant, *args, **kwargs)
+
+    try:
+        window._refresh_table()
+        window._pinned_id = pinned.applicant_id
+        window._pinned_by_tab[window._active_tab] = pinned.applicant_id
+        window._sync_delegate_and_panel()
+        monkeypatch.setattr(
+            window._panel,
+            "setApplicantData",
+            record_set_applicant_data,
+        )
+
+        unrelated.fetch_status = "ready"
+        unrelated.mplus_dps = 99.0
+        window._refresh_table()
+
+        assert renders == []
+
+        pinned.ilvl += 1
+        window._refresh_table()
+
+        assert renders == ["pinned"]
+    finally:
+        client.close()
+
+
 def test_geometry_leave_event_keeps_hover_when_cursor_still_over_row(
     qtbot, tmp_path, monkeypatch
 ):
