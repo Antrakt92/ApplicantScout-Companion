@@ -1871,13 +1871,14 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     assert "contents: read" in verify
     assert "contents: write" not in verify
     assert "contents: write" in publish
+    assert "gh release download $env:RELEASE_TAG" not in verify
+    assert "-RequireDraftReleaseAssets" not in verify
 
     checkout = _step_block(verify, "Checkout companion")
     ancestry = _step_block(verify, "Verify release tag is reachable from origin/main")
     run_check = _step_block(verify, "Verify successful release workflow run")
     manifest_check = _step_block(verify, "Verify authoritative exact-tag manifest")
     attestation = _step_block(verify, "Validate smoke attestation")
-    draft_check = _step_block(verify, "Verify draft release assets")
     publish_step = _step_block(publish, "Revalidate exact bytes and publish release")
     published_check = _step_block(publish, "Verify published release assets")
 
@@ -1904,7 +1905,6 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     assert 'gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name' in attestation
     assert "must match latest published stable" in attestation
     assert "GH_TOKEN: ${{ github.token }}" in attestation
-    assert "-RequireDraftReleaseAssets" in draft_check
     assert "gh release edit $env:RELEASE_TAG" in publish_step
     assert "--draft=false" in publish_step
     assert "--prerelease=false" in publish_step
@@ -1933,8 +1933,6 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
         "Download authoritative release assets",
         "Verify authoritative exact-tag manifest",
         "Validate smoke attestation",
-        "Verify draft release assets",
-        "Verify remote draft against authoritative Actions artifact",
     )
     _assert_order(
         publish,
@@ -1972,28 +1970,24 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
     verify = _job_block(workflow, "verify")
     publish = _job_block(workflow, "publish")
     checkout = _step_block(verify, "Checkout companion")
-    manifest_check = _step_block(verify, "Verify remote draft against authoritative Actions artifact")
+    writer = _step_block(publish, "Revalidate exact bytes and publish release")
 
     assert "persist-credentials: false" in checkout
-    assert "gh release download $env:RELEASE_TAG" in manifest_check
-    assert "release-artifact-manifest.ps1" in manifest_check
-    assert "-Mode Verify" in manifest_check
-    assert "-Purpose Release" in manifest_check
-    assert "WorkflowRunId $env:RELEASE_RUN_ID" in manifest_check
-    assert "Get-FileHash" in manifest_check
-    assert ".digest" in manifest_check
-    assert "gh release view $env:RELEASE_TAG" in manifest_check
-    assert "releases/tags/$env:RELEASE_TAG" not in manifest_check
+    assert "gh release download $env:RELEASE_TAG" in writer
+    assert "Get-FileHash" in writer
+    assert ".digest" in writer
+    assert "gh release view $env:RELEASE_TAG" in writer
+    assert "releases/tags/$env:RELEASE_TAG" not in writer
     assert "Checkout companion" not in publish
     assert "pip install" not in publish
     assert "choco install" not in publish
-    writer = _step_block(publish, "Revalidate exact bytes and publish release")
     _assert_order(
         writer,
         "-Repo $env:GITHUB_REPOSITORY",
         '-Repo "Antrakt92/ApplicantScout-Addon"',
         "releases/latest",
         "gh release view $env:RELEASE_TAG",
+        "gh release download $env:RELEASE_TAG",
         "IsNullOrWhiteSpace($env:RELEASE_SETTINGS_READ_TOKEN)",
         "$env:GH_TOKEN = $env:RELEASE_SETTINGS_READ_TOKEN",
         "immutable-releases",
@@ -2007,11 +2001,6 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
     assert ".digest" in writer
     assert ".size" in writer
     assert "releases/tags/$env:RELEASE_TAG" not in writer
-    _assert_order(
-        verify,
-        "Verify draft release assets",
-        "Verify remote draft against authoritative Actions artifact",
-    )
 
 
 def test_publish_release_workflow_restores_mutated_draft_copy_before_publication():

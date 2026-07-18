@@ -281,66 +281,9 @@ jobs:
           $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "latest_published_tag=$LatestPublishedTag`n", $Utf8NoBom)
 
-      - name: Verify draft release assets
-        shell: pwsh
-        working-directory: ApplicantScout-Companion
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: .\scripts\check-release-version.ps1 -Tag $env:RELEASE_TAG -RequireDraftReleaseAssets -GitHubRepository $env:GITHUB_REPOSITORY
-
-      - name: Verify remote draft against authoritative Actions artifact
-        shell: pwsh
-        working-directory: ApplicantScout-Companion
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $Authoritative = Join-Path $env:RUNNER_TEMP "authoritative-release-assets"
-          $Remote = Join-Path $env:RUNNER_TEMP "remote-draft-assets"
-          New-Item -ItemType Directory -Path $Remote | Out-Null
-          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $Remote
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not download draft release assets."
-          }
-          .\scripts\release-artifact-manifest.ps1 `
-            -Mode Verify `
-            -Purpose Release `
-            -Tag $env:RELEASE_TAG `
-            -CommitSha "${{ steps.release-identity.outputs.commit }}" `
-            -PairedAddonTag "${{ steps.release-manifest.outputs.paired_addon_tag }}" `
-            -PairedAddonCommit "${{ steps.release-manifest.outputs.paired_addon_commit }}" `
-            -WorkflowRunId $env:RELEASE_RUN_ID `
-            -WorkflowRunAttempt ${{ steps.release-run.outputs.attempt }} `
-            -RootPath $Remote
-
-          $Release = gh release view $env:RELEASE_TAG `
-            --repo $env:GITHUB_REPOSITORY `
-            --json name,body,isDraft,isPrerelease,assets | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not [bool]$Release.isDraft -or [bool]$Release.isPrerelease) {
-            throw "Release is no longer the expected stable draft."
-          }
-          $ExpectedFiles = @(Get-ChildItem -LiteralPath $Authoritative -File)
-          $ActualAssets = @($Release.assets)
-          if ($ActualAssets.Count -ne $ExpectedFiles.Count) {
-            throw "Draft release asset count differs from the authoritative Actions artifact."
-          }
-          foreach ($Expected in $ExpectedFiles) {
-            $RemotePath = Join-Path $Remote $Expected.Name
-            $RemoteItem = Get-Item -LiteralPath $RemotePath
-            $ExpectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Expected.FullName).Hash.ToLowerInvariant()
-            $RemoteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $RemotePath).Hash.ToLowerInvariant()
-            if ($ExpectedHash -ne $RemoteHash -or $Expected.Length -ne $RemoteItem.Length) {
-              throw "Draft download differs from authoritative Actions artifact: $($Expected.Name)"
-            }
-            $ApiMatches = @($ActualAssets | Where-Object { [string]$_.name -ceq $Expected.Name })
-            if (
-              $ApiMatches.Count -ne 1 -or
-              [long]$ApiMatches[0].size -ne [long]$Expected.Length -or
-              [string]$ApiMatches[0].digest -cne "sha256:$ExpectedHash"
-            ) {
-              throw "GitHub asset digest/size differs from authoritative Actions artifact: $($Expected.Name)"
-            }
-          }
-
+  # WHY: GitHub hides drafts from the read-only workflow token. Keep the verify
+  # job credentialless and validate the exact remote bytes inside the narrow
+  # writer immediately before making the release public.
   publish:
     needs: verify
     runs-on: windows-2022
@@ -467,6 +410,30 @@ jobs:
               [string]$Matches[0].digest -cne [string]$Expected[$Name].digest
             ) {
               throw "Draft release asset changed before publication: $Name"
+            }
+          }
+          $Remote = Join-Path $env:RUNNER_TEMP "remote-draft-assets"
+          New-Item -ItemType Directory -Path $Remote | Out-Null
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $Remote
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not download draft release assets."
+          }
+          $RemoteFiles = @(Get-ChildItem -LiteralPath $Remote -File)
+          if ($RemoteFiles.Count -ne $Expected.Count) {
+            throw "Downloaded draft asset count changed before publication."
+          }
+          foreach ($Name in $Expected.Keys) {
+            $RemotePath = Join-Path $Remote $Name
+            if (-not (Test-Path -LiteralPath $RemotePath -PathType Leaf)) {
+              throw "Downloaded draft release is missing asset: $Name"
+            }
+            $RemoteItem = Get-Item -LiteralPath $RemotePath
+            $RemoteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $RemotePath).Hash.ToLowerInvariant()
+            if (
+              [long]$RemoteItem.Length -ne [long]$Expected[$Name].size -or
+              "sha256:$RemoteHash" -cne [string]$Expected[$Name].digest
+            ) {
+              throw "Downloaded draft asset changed before publication: $Name"
             }
           }
           if (
