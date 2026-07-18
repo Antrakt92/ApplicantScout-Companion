@@ -43,7 +43,6 @@ class RestoredLiveSnapshot:
 @dataclass(frozen=True)
 class _PendingLiveSnapshotCacheOperation:
     kind: str
-    snapshot: Snapshot | None = None
     saved_at: float | None = None
     content: dict[str, Any] | None = None
 
@@ -94,10 +93,23 @@ def save_live_snapshot(
     except ValueError as exc:
         _log.warning("Failed to save live snapshot cache: %s", exc)
         return False
+    return _save_live_snapshot_content(
+        cache_dir,
+        _snapshot_to_dict(snap),
+        saved_at=saved_at,
+    )
+
+
+def _save_live_snapshot_content(
+    cache_dir: Path,
+    content: dict[str, Any],
+    *,
+    saved_at: float,
+) -> bool:
     payload = {
         "schema": LIVE_SNAPSHOT_CACHE_SCHEMA,
         "saved_at": saved_at,
-        "snapshot": _snapshot_to_dict(snap),
+        "snapshot": content,
     }
     path = live_snapshot_cache_path(cache_dir)
     try:
@@ -245,11 +257,15 @@ class LiveSnapshotCacheWriter:
     def _perform_operation(self, operation: _PendingLiveSnapshotCacheOperation) -> bool:
         if operation.kind == "clear":
             return clear_live_snapshot(self._cache_dir)
-        if operation.kind == "save" and operation.snapshot is not None:
-            return save_live_snapshot(
+        if (
+            operation.kind == "save"
+            and operation.content is not None
+            and operation.saved_at is not None
+        ):
+            return _save_live_snapshot_content(
                 self._cache_dir,
-                operation.snapshot,
-                now=operation.saved_at,
+                operation.content,
+                saved_at=operation.saved_at,
             )
         return True
 
@@ -303,7 +319,6 @@ def _operation_for_snapshot(
         return None
     return _PendingLiveSnapshotCacheOperation(
         "save",
-        snapshot=snap,
         saved_at=saved_at,
         content=_snapshot_to_dict(snap),
     )

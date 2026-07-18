@@ -337,14 +337,14 @@ def test_live_snapshot_writer_suppresses_bounded_source_only_resend(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
-    original_save = cache_mod.save_live_snapshot
+    original_save = cache_mod._save_live_snapshot_content
     save_times: list[float | None] = []
 
-    def counting_save(cache_dir, snap, *, now):
-        save_times.append(now)
-        return original_save(cache_dir, snap, now=now)
+    def counting_save(cache_dir, content, *, saved_at):
+        save_times.append(saved_at)
+        return original_save(cache_dir, content, saved_at=saved_at)
 
-    monkeypatch.setattr(cache_mod, "save_live_snapshot", counting_save)
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", counting_save)
     writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
     first = _live_snapshot()
     resend = replace(
@@ -376,14 +376,14 @@ def test_live_snapshot_writer_duplicate_suppression_resets_after_clear_and_inval
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
-    original_save = cache_mod.save_live_snapshot
+    original_save = cache_mod._save_live_snapshot_content
     save_times: list[float | None] = []
 
-    def counting_save(cache_dir, snap, *, now):
-        save_times.append(now)
-        return original_save(cache_dir, snap, now=now)
+    def counting_save(cache_dir, content, *, saved_at):
+        save_times.append(saved_at)
+        return original_save(cache_dir, content, saved_at=saved_at)
 
-    monkeypatch.setattr(cache_mod, "save_live_snapshot", counting_save)
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", counting_save)
     writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
     snapshot = _live_snapshot()
 
@@ -483,6 +483,46 @@ def test_live_snapshot_writer_retries_failed_save_on_next_flush(
     assert restored.saved_at == 100.0
 
 
+def test_live_snapshot_writer_materializes_content_once_across_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    original_snapshot_to_dict = cache_mod._snapshot_to_dict
+    original_write = cache_mod.atomic_write_text
+    conversions = 0
+    writes = 0
+
+    def counting_snapshot_to_dict(snapshot):
+        nonlocal conversions
+        conversions += 1
+        return original_snapshot_to_dict(snapshot)
+
+    def flaky_write(*args, **kwargs):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            raise OSError("locked")
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(cache_mod, "_snapshot_to_dict", counting_snapshot_to_dict)
+    monkeypatch.setattr(cache_mod, "atomic_write_text", flaky_write)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(_live_snapshot(), now=100.0)
+    assert not writer.flush()
+    assert writer.flush()
+
+    assert conversions == 1
+    assert writes == 2
+    restored = load_live_snapshot(tmp_path, now=101.0)
+    assert restored is not None
+    assert restored.saved_at == 100.0
+
+
 def test_live_snapshot_writer_invalidate_waits_for_in_flight_save(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -490,14 +530,14 @@ def test_live_snapshot_writer_invalidate_waits_for_in_flight_save(
     started = threading.Event()
     release = threading.Event()
     invalidate_returned = threading.Event()
-    original_save = cache_mod.save_live_snapshot
+    original_save = cache_mod._save_live_snapshot_content
 
-    def slow_save(cache_dir, snap, *, now):
+    def slow_save(cache_dir, content, *, saved_at):
         started.set()
         assert release.wait(timeout=2.0)
-        return original_save(cache_dir, snap, now=now)
+        return original_save(cache_dir, content, saved_at=saved_at)
 
-    monkeypatch.setattr(cache_mod, "save_live_snapshot", slow_save)
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", slow_save)
     writer = LiveSnapshotCacheWriter(
         tmp_path,
         defer_saves=True,
@@ -532,15 +572,16 @@ def test_live_snapshot_writer_invalidate_drops_failed_in_flight_retry(
     release = threading.Event()
     invalidate_returned = threading.Event()
     calls = 0
+    original_save = cache_mod._save_live_snapshot_content
 
-    def failing_save(_cache_dir, _snap, *, now):
+    def failing_save(_cache_dir, _content, *, saved_at):
         nonlocal calls
         calls += 1
         started.set()
         assert release.wait(timeout=2.0)
         return False
 
-    monkeypatch.setattr(cache_mod, "save_live_snapshot", failing_save)
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", failing_save)
     writer = LiveSnapshotCacheWriter(
         tmp_path,
         defer_saves=True,
@@ -568,7 +609,7 @@ def test_live_snapshot_writer_invalidate_drops_failed_in_flight_retry(
     assert writer.flush()
     assert calls == 1
 
-    monkeypatch.setattr(cache_mod, "save_live_snapshot", save_live_snapshot)
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", original_save)
     writer.submit(_live_snapshot(), now=120.0)
     assert writer.flush()
     restored = load_live_snapshot(tmp_path, now=121.0)

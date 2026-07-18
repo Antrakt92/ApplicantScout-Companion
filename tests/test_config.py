@@ -7456,14 +7456,18 @@ def test_clear_cache_dir_waits_for_in_flight_live_snapshot_writer(
     started = threading.Event()
     release = threading.Event()
     clear_returned = threading.Event()
-    original_save = live_snapshot_cache_mod.save_live_snapshot
+    original_save = live_snapshot_cache_mod._save_live_snapshot_content
 
-    def slow_save(cache_path: Path, snap: Snapshot, *, now: float) -> bool:
+    def slow_save(cache_path, content, *, saved_at):
         started.set()
         assert release.wait(timeout=2.0)
-        return original_save(cache_path, snap, now=now)
+        return original_save(cache_path, content, saved_at=saved_at)
 
-    monkeypatch.setattr(live_snapshot_cache_mod, "save_live_snapshot", slow_save)
+    monkeypatch.setattr(
+        live_snapshot_cache_mod,
+        "_save_live_snapshot_content",
+        slow_save,
+    )
     monkeypatch.setattr(main_mod, "clear_lookup_payload_cache", lambda _path: None)
     writer = LiveSnapshotCacheWriter(
         cache_dir,
@@ -7496,8 +7500,8 @@ def test_clear_cache_dir_waits_for_in_flight_live_snapshot_writer(
 
     monkeypatch.setattr(
         live_snapshot_cache_mod,
-        "save_live_snapshot",
-        save_live_snapshot,
+        "_save_live_snapshot_content",
+        original_save,
     )
     writer.submit(_live_snapshot(), now=120.0)
     assert writer.flush()
