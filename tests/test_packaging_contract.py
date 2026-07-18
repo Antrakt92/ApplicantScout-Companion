@@ -992,6 +992,7 @@ def test_workflows_do_not_upgrade_bootstrap_pip():
     for workflow_path in (
         ".github/workflows/check.yml",
         ".github/workflows/release.yml",
+        ".github/workflows/windows-vs2026-canary.yml",
     ):
         workflow = _read_repo_text(workflow_path)
 
@@ -2638,6 +2639,93 @@ def test_check_workflow_pins_external_actions_to_commit_shas():
 
     install_args = _release_tool_install_args(workflow)
     assert install_args["innosetup"] == [" --version=6.7.1 -y --no-progress"]
+
+
+def test_windows_vs2026_canary_runs_both_package_paths_without_publishing():
+    workflow = _read_repo_text(".github/workflows/windows-vs2026-canary.yml")
+    triggers = workflow.partition("permissions:")[0]
+    canary = _job_block(workflow, "canary")
+
+    assert "workflow_dispatch:" in triggers
+    assert "paired_addon_ref:" in triggers
+    assert "default: main" in triggers
+    assert "type: string" in triggers
+    assert "schedule:" in triggers
+    assert "cron: '17 5 * * 1'" in triggers
+    assert "push:" not in triggers
+    assert "pull_request:" not in triggers
+    assert "tags:" not in triggers
+    assert "\npermissions:\n  contents: read\n\nconcurrency:" in workflow
+    assert "contents: write" not in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert re.search(r"(?m)^    runs-on: windows-2025-vs2026\s*$", canary)
+    assert re.search(r"(?m)^    timeout-minutes: 30\s*$", canary)
+    assert "continue-on-error" not in canary
+
+    companion_checkout = _step_block(canary, "Checkout companion")
+    addon_checkout = _step_block(canary, "Checkout addon")
+    assert "persist-credentials: false" in companion_checkout
+    assert "persist-credentials: false" in addon_checkout
+    assert "repository: Antrakt92/ApplicantScout-Addon" in addon_checkout
+    assert "ref: ${{ github.event.inputs.paired_addon_ref || 'main' }}" in (
+        addon_checkout
+    )
+    assert "path: ApplicantScout-Companion" in companion_checkout
+    assert "path: ApplicantScout-Addon" in addon_checkout
+    assert "python-version: '3.13'" in canary
+    assert ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in canary
+    assert ".\\.venv\\Scripts\\python -m pip install -e '.[dev]' -c constraints-release.txt" in canary
+    assert "choco install lua51 --version=5.1.5 -y --no-progress" in canary
+    assert "choco install innosetup --version=6.7.1 -y --no-progress" in canary
+    check_step = _step_block(canary, "Check companion and addon contracts")
+    addon_package_step = _step_block(canary, "Build addon development package")
+    companion_build_step = _step_block(canary, "Build unsigned companion artifacts")
+    companion_validate_step = _step_block(canary, "Validate companion artifacts")
+    assert (
+        ".\\scripts\\check.ps1 -AddonRoot ..\\ApplicantScout-Addon -VisualMode Smoke"
+        in check_step
+    )
+    assert "working-directory: ApplicantScout-Companion" in check_step
+    assert "ApplicantScout-Addon\\scripts\\package-addon.ps1" in addon_package_step
+    assert "working-directory: ApplicantScout-Companion" in addon_package_step
+    assert ".\\scripts\\build-windows.ps1 -SkipChecks" in companion_build_step
+    assert "working-directory: ApplicantScout-Companion" in companion_build_step
+    assert (
+        "check-release-version.ps1 -Tag \"v$Version\" -RequireAssets"
+        in companion_validate_step
+    )
+    assert "working-directory: ApplicantScout-Companion" in companion_validate_step
+    _assert_order(
+        canary,
+        "Check companion and addon contracts",
+        "Build addon development package",
+        "Build unsigned companion artifacts",
+        "Validate companion artifacts",
+    )
+
+    action_refs = _workflow_action_refs(workflow)
+    assert Counter(action for action, _ in action_refs) == Counter(
+        {"actions/checkout": 2, "actions/setup-python": 1}
+    )
+    for action, ref in action_refs:
+        assert _SHA_REF_RE.fullmatch(ref), f"{action} must be pinned to a full commit SHA"
+    assert "${{ secrets." not in workflow
+    assert "GH_TOKEN" not in workflow
+    assert "gh release" not in workflow
+    assert "gh api" not in workflow
+    assert "upload-artifact" not in workflow
+    assert "download-artifact" not in workflow
+    assert "APSCOUT_SIGNING_" not in workflow
+    assert "release-artifact-manifest.ps1" not in workflow
+
+    for stable_workflow_path in (
+        ".github/workflows/check.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/publish-release.yml",
+    ):
+        stable_workflow = _read_repo_text(stable_workflow_path)
+        assert "windows-2025-vs2026" not in stable_workflow
+        assert "runs-on: windows-2022" in stable_workflow
 
 
 def test_release_workflow_uploads_exact_updater_assets_as_draft_first():

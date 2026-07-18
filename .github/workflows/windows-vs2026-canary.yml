@@ -1,0 +1,94 @@
+name: Windows VS2026 canary
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      paired_addon_ref:
+        description: Addon branch, tag, or commit to validate with this companion ref
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-vs2026-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 30
+    steps:
+      - name: Checkout companion
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: ApplicantScout-Companion
+
+      - name: Checkout addon
+        # actions/checkout v6 pinned to the upstream tag commit.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: Antrakt92/ApplicantScout-Addon
+          ref: ${{ github.event.inputs.paired_addon_ref || 'main' }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: ApplicantScout-Addon
+
+      - name: Report runner image
+        shell: pwsh
+        run: |
+          Write-Host "ImageOS=$env:ImageOS"
+          Write-Host "ImageVersion=$env:ImageVersion"
+
+      - name: Set up Python
+        # actions/setup-python v6 pinned to the upstream tag commit.
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install -r constraints-release.txt
+          .\.venv\Scripts\python -m pip install -e '.[dev]' -c constraints-release.txt
+
+      - name: Install Lua 5.1
+        shell: pwsh
+        run: choco install lua51 --version=5.1.5 -y --no-progress
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --version=6.7.1 -y --no-progress
+
+      - name: Check companion and addon contracts
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\scripts\check.ps1 -AddonRoot ..\ApplicantScout-Addon -VisualMode Smoke
+
+      - name: Build addon development package
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          & ..\ApplicantScout-Addon\scripts\package-addon.ps1 `
+            -OutputDir (Join-Path $env:RUNNER_TEMP "ApplicantScout-addon-package-smoke")
+
+      - name: Build unsigned companion artifacts
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\scripts\build-windows.ps1 -SkipChecks
+
+      - name: Validate companion artifacts
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $Version = (& .\.venv\Scripts\python -c "import applicant_scout; print(applicant_scout.__version__)").Trim()
+          .\scripts\check-release-version.ps1 -Tag "v$Version" -RequireAssets
