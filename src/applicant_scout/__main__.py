@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from PyQt6.QtCore import QObject, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
@@ -2107,6 +2107,44 @@ def _quiesce_screenshot_ingestion(
             log.warning("Could not close live snapshot cache writer: %s", exc)
 
 
+def _shutdown_runtime(
+    watcher: ScreenshotWatcher | None,
+    window: OverlayWindow,
+    cache: CharacterCache,
+    live_snapshot_writer: LiveSnapshotCacheWriter | None,
+    wcl_client: WCLClient,
+) -> None:
+    """Stop producers, drain WCL work, persist cache, then close shared clients."""
+    if watcher is not None:
+        try:
+            watcher.stop()
+        except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+            log.warning("Could not stop screenshot watcher during shutdown: %s", exc)
+    fetches_drained = False
+    try:
+        fetches_drained = window.shutdown_fetches()
+        if not fetches_drained:
+            log.error("WCL fetch pool did not fully drain during shutdown.")
+    except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+        log.error("Could not drain WCL fetch pool during shutdown: %s", exc)
+    if fetches_drained:
+        try:
+            if not cache.close():
+                log.warning("Could not persist the final WCL character cache snapshot.")
+        except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+            log.warning("Could not close WCL character cache: %s", exc)
+    if live_snapshot_writer is not None:
+        try:
+            live_snapshot_writer.close()
+        except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+            log.warning("Could not close live snapshot cache writer: %s", exc)
+    if fetches_drained:
+        try:
+            wcl_client.close()
+        except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+            log.warning("Could not close WCL client: %s", exc)
+
+
 class _SnapshotApplyQueue:
     def __init__(
         self,
@@ -3697,24 +3735,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rc = app.exec()
 
-    # Stop screenshot ingestion before draining WCL workers. Otherwise a late
-    # backlog/watchdog signal can enqueue a fresh fetch after waitForDone().
-    if watcher is not None:
-        watcher.stop()
-
-    # Drain in-flight WCL fetch tasks before closing the httpx client.
-    # Without this, a QRunnable mid-fetch hits "Cannot send a request, as
-    # the client has been closed." (caught by its except, but produces
-    # noisy traceback at exit). 2s ceiling = WCL p99 fetch headroom.
-    pool = QThreadPool.globalInstance()
-    if pool is not None:
-        pool.waitForDone(2000)
-    # Save the startup fetch burst once after workers drain instead of forcing a
-    # full JSON rewrite on every applicant result.
-    cache.flush()
-    if live_snapshot_writer is not None:
-        live_snapshot_writer.close()
-    wcl_client.close()
+    _shutdown_runtime(watcher, window, cache, live_snapshot_writer, wcl_client)
     return rc
 
 

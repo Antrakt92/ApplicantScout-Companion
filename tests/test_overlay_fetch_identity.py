@@ -52,6 +52,21 @@ class _QueuedPool:
         self.tasks.append(task)
 
 
+class _ShutdownPool(_QueuedPool):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleared = False
+        self.wait_args: list[int] = []
+
+    def clear(self) -> None:
+        self.cleared = True
+        self.tasks.clear()
+
+    def waitForDone(self, timeout_ms: int = -1) -> bool:
+        self.wait_args.append(timeout_ms)
+        return True
+
+
 class _UiThreadCacheProbe:
     generation = 0
 
@@ -263,6 +278,71 @@ def test_quota_chip_preserves_warning_thresholds_with_compact_copy(qtbot, tmp_pa
                 window._status_label.accessibleDescription()
                 == window._status_label.toolTip()
             )
+    finally:
+        client.close()
+
+
+def test_shutdown_fetches_rejects_new_work_then_clears_and_fully_drains_pool(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    applicant = _app(fetch_status="pending")
+    state.add_or_update(applicant)
+    window, client = _window(qtbot, tmp_path, state)
+    pool = _ShutdownPool()
+    window._pool = pool
+    pool.tasks.append(object())
+
+    try:
+        assert window.shutdown_fetches() is True
+        window._launch_fetch(applicant)
+
+        assert window._closed is True
+        assert pool.cleared is True
+        assert pool.wait_args == [-1]
+        assert pool.tasks == []
+        assert window.shutdown_fetches() is True
+        assert pool.wait_args == [-1]
+    finally:
+        client.close()
+
+
+def test_shutdown_fetches_ignores_late_completion_and_retry_callbacks(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    applicant = _app(fetch_status="loading")
+    state.add_or_update(applicant)
+    window, client = _window(qtbot, tmp_path, state)
+    pool = _ShutdownPool()
+    window._pool = pool
+    resolved = _fetch_identity_for_applicant(
+        applicant,
+        state.player.full_name,
+        "EU",
+        ALL_METRIC_PREFERENCES,
+    )
+    assert resolved is not None
+    identity, _charname = resolved
+    window._mark_fetch_in_flight(identity)
+    window._mark_raid_boss_fetch_in_flight(identity)
+    syncs: list[str] = []
+    window._sync_delegate_and_panel = lambda: syncs.append("sync")  # type: ignore[method-assign]
+
+    try:
+        assert window._refresh_flush_pending is False
+        assert window.shutdown_fetches() is True
+
+        window._on_fetch_done(identity, _ranks())
+        window._on_raid_boss_fetch_done(identity, {}, "")
+        window._retry_ready_raid_boss_fetches()
+
+        assert applicant.fetch_status == "loading"
+        assert applicant.raid_heroic is None
+        assert identity.storage_key in window._fetches_in_flight
+        assert identity.storage_key in window._raid_boss_fetches_in_flight
+        assert window._refresh_flush_pending is False
+        assert syncs == []
     finally:
         client.close()
 

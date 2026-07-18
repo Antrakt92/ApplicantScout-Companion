@@ -5686,6 +5686,122 @@ def test_quiesce_screenshot_ingestion_flushes_before_invalidate_then_closes_writ
     assert events == ["request_stop", "queue_flush", "writer_close"]
 
 
+def test_shutdown_runtime_orders_fetch_drain_before_cache_and_client_close():
+    events: list[str] = []
+
+    class FakeWatcher:
+        def stop(self) -> None:
+            events.append("watcher_stop")
+
+    class FakeWindow:
+        def shutdown_fetches(self) -> bool:
+            events.append("fetches_shutdown")
+            return True
+
+    class FakeCache:
+        def close(self) -> bool:
+            events.append("cache_close")
+            return True
+
+    class FakeWriter:
+        def close(self) -> None:
+            events.append("snapshot_writer_close")
+
+    class FakeClient:
+        def close(self) -> None:
+            events.append("client_close")
+
+    main_mod._shutdown_runtime(  # type: ignore[arg-type]
+        FakeWatcher(),
+        FakeWindow(),
+        FakeCache(),
+        FakeWriter(),
+        FakeClient(),
+    )
+
+    assert events == [
+        "watcher_stop",
+        "fetches_shutdown",
+        "cache_close",
+        "snapshot_writer_close",
+        "client_close",
+    ]
+
+
+def test_shutdown_runtime_leaves_shared_resources_open_when_drain_fails(caplog):
+    events: list[str] = []
+
+    class FakeWindow:
+        def shutdown_fetches(self) -> bool:
+            events.append("fetches_shutdown")
+            return False
+
+    class FakeCache:
+        def close(self) -> bool:
+            events.append("cache_close")
+            return True
+
+    class FakeWriter:
+        def close(self) -> None:
+            events.append("snapshot_writer_close")
+
+    class FakeClient:
+        def close(self) -> None:
+            events.append("client_close")
+
+    main_mod._shutdown_runtime(  # type: ignore[arg-type]
+        None,
+        FakeWindow(),
+        FakeCache(),
+        FakeWriter(),
+        FakeClient(),
+    )
+
+    assert events == [
+        "fetches_shutdown",
+        "snapshot_writer_close",
+    ]
+    assert "did not fully drain" in caplog.text
+
+
+def test_shutdown_runtime_closes_remaining_resources_after_cache_failure(caplog):
+    events: list[str] = []
+
+    class FakeWindow:
+        def shutdown_fetches(self) -> bool:
+            events.append("fetches_shutdown")
+            return True
+
+    class FakeCache:
+        def close(self) -> bool:
+            events.append("cache_close")
+            raise OSError("cache unavailable")
+
+    class FakeWriter:
+        def close(self) -> None:
+            events.append("snapshot_writer_close")
+
+    class FakeClient:
+        def close(self) -> None:
+            events.append("client_close")
+
+    main_mod._shutdown_runtime(  # type: ignore[arg-type]
+        None,
+        FakeWindow(),
+        FakeCache(),
+        FakeWriter(),
+        FakeClient(),
+    )
+
+    assert events == [
+        "fetches_shutdown",
+        "cache_close",
+        "snapshot_writer_close",
+        "client_close",
+    ]
+    assert "Could not close WCL character cache" in caplog.text
+
+
 def test_replace_screenshot_watcher_ignores_old_signal_emitted_during_old_stop_after_commit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

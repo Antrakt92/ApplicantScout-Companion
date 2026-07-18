@@ -2924,12 +2924,21 @@ def test_character_cache_stale_slow_snapshot_write_cannot_overwrite_newer_put(
     assert first_write_started.wait(1.0)
     second_thread = threading.Thread(target=put_second)
     second_thread.start()
+    deadline = time.monotonic() + 1.0
+    while cache.get("Two", "ravencrest", "EU", 73, "DAMAGER") is None:
+        assert time.monotonic() < deadline, "second put was not accepted"
+        time.sleep(0.01)
+    close_result: list[bool] = []
+    close_thread = threading.Thread(target=lambda: close_result.append(cache.close()))
+    close_thread.start()
     release_first_write.set()
     assert first_done.wait(1.0)
     assert second_done.wait(1.0)
     first_thread.join(timeout=1.0)
     second_thread.join(timeout=1.0)
+    close_thread.join(timeout=1.0)
 
+    assert close_result == [True]
     loaded = CharacterCache(tmp_path)
     assert loaded.get("One", "ravencrest", "EU", 72, "DAMAGER") is not None
     assert loaded.get("Two", "ravencrest", "EU", 73, "DAMAGER") is not None
@@ -2977,6 +2986,222 @@ def test_character_cache_deferred_flush_retries_after_transient_save_failure(
     assert cache._dirty is False
     loaded = CharacterCache(tmp_path)
     assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is not None
+
+
+def test_character_cache_close_waits_for_active_deferred_writer_and_persists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=0.0)
+    original_write = wcl_mod.atomic_write_text
+    write_started = threading.Event()
+    release_write = threading.Event()
+    close_done = threading.Event()
+    close_result: list[bool] = []
+
+    def slow_write(path, text, *, private=False) -> None:
+        write_started.set()
+        assert release_write.wait(2.0)
+        original_write(path, text, private=private)
+
+    monkeypatch.setattr(wcl_mod, "atomic_write_text", slow_write)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    assert write_started.wait(1.0)
+
+    def close_cache() -> None:
+        try:
+            close_result.append(cache.close())
+        finally:
+            close_done.set()
+
+    closer = threading.Thread(target=close_cache)
+    closer.start()
+    try:
+        assert not close_done.wait(0.1), "close returned while cache writer was active"
+    finally:
+        release_write.set()
+        assert close_done.wait(2.0)
+        closer.join(timeout=1.0)
+
+    assert close_result == [True]
+    loaded = CharacterCache(tmp_path)
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is not None
+
+
+def test_character_cache_close_retries_active_writer_failure_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=0.0)
+    original_write = wcl_mod.atomic_write_text
+    write_started = threading.Event()
+    release_write = threading.Event()
+    close_done = threading.Event()
+    close_result: list[bool] = []
+    calls = 0
+
+    def fail_first_write(path, text, *, private=False) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            write_started.set()
+            assert release_write.wait(2.0)
+            raise PermissionError("locked")
+        original_write(path, text, private=private)
+
+    monkeypatch.setattr(wcl_mod, "atomic_write_text", fail_first_write)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    assert write_started.wait(1.0)
+
+    def close_cache() -> None:
+        try:
+            close_result.append(cache.close())
+        finally:
+            close_done.set()
+
+    closer = threading.Thread(target=close_cache)
+    closer.start()
+    try:
+        assert not close_done.wait(0.1), "close returned while cache writer was active"
+    finally:
+        release_write.set()
+        assert close_done.wait(2.0)
+        closer.join(timeout=1.0)
+
+    assert calls == 2
+    assert close_result == [True]
+    loaded = CharacterCache(tmp_path)
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is not None
+
+
+def test_character_cache_close_waits_for_accepted_clear(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    original_unlink = wcl_mod.Path.unlink
+    clear_started = threading.Event()
+    release_clear = threading.Event()
+    clear_done = threading.Event()
+    close_done = threading.Event()
+    clear_result: list[bool] = []
+    close_result: list[bool] = []
+
+    def slow_unlink(path, *args, **kwargs):
+        if path == cache._path:
+            clear_started.set()
+            assert release_clear.wait(2.0)
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(wcl_mod.Path, "unlink", slow_unlink)
+
+    def clear_cache() -> None:
+        try:
+            clear_result.append(cache.clear())
+        finally:
+            clear_done.set()
+
+    def close_cache() -> None:
+        try:
+            close_result.append(cache.close())
+        finally:
+            close_done.set()
+
+    clearer = threading.Thread(target=clear_cache)
+    closer = threading.Thread(target=close_cache)
+    clearer.start()
+    assert clear_started.wait(1.0)
+    closer.start()
+    try:
+        assert not close_done.wait(0.1), "close returned while clear was active"
+    finally:
+        release_clear.set()
+        assert clear_done.wait(2.0)
+        assert close_done.wait(2.0)
+        clearer.join(timeout=1.0)
+        closer.join(timeout=1.0)
+
+    assert clear_result == [True]
+    assert close_result == [True]
+    loaded = CharacterCache(tmp_path)
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
+def test_character_cache_close_retries_failed_clear_persistence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    original_unlink = wcl_mod.Path.unlink
+    original_write = wcl_mod.atomic_write_text
+    write_calls = 0
+
+    def fail_cache_unlink(path, *args, **kwargs):
+        if path == cache._path:
+            raise PermissionError("locked")
+        return original_unlink(path, *args, **kwargs)
+
+    def fail_first_write(path, text, *, private=False) -> None:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            raise PermissionError("locked")
+        original_write(path, text, private=private)
+
+    monkeypatch.setattr(wcl_mod.Path, "unlink", fail_cache_unlink)
+    monkeypatch.setattr(wcl_mod, "atomic_write_text", fail_first_write)
+
+    assert cache.clear() is False
+    assert cache._dirty is True
+    assert cache.close() is True
+
+    assert write_calls == 2
+    loaded = CharacterCache(tmp_path)
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
+def test_character_cache_close_bounds_persistent_write_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=60.0)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    calls = 0
+
+    def fail_write(_path, _text, *, private=False) -> None:
+        nonlocal calls
+        calls += 1
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(wcl_mod, "atomic_write_text", fail_write)
+
+    assert cache.close() is False
+    assert cache.close() is False
+
+    assert calls == 2
+    assert cache._dirty is True
+    assert cache._save_timer is None
+
+
+def test_character_cache_close_rejects_late_puts(tmp_path):
+    cache = CharacterCache(tmp_path, defer_saves=True, save_debounce_seconds=60.0)
+
+    assert cache.close() is True
+    assert cache.close() is True
+    assert (
+        cache.put("Late", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+        is False
+    )
+    assert (
+        cache.put_raid_boss_details(
+            "Late",
+            "ravencrest",
+            "EU",
+            71,
+            {},
+            role="DAMAGER",
+        )
+        is False
+    )
+    assert cache.clear() is False
+    assert not cache._path.exists()
 
 
 def test_character_cache_clear_cancels_deferred_save(tmp_path):

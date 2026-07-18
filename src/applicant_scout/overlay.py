@@ -2891,6 +2891,7 @@ class OverlayWindow(QMainWindow):
         self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
         self._closed = False
+        self._fetch_shutdown_result: bool | None = None
         self._launcher = OverlayLauncher()
         self._launcher.clicked.connect(self.restore_from_launcher)
         self._launcher.dragStarted.connect(
@@ -2901,7 +2902,9 @@ class OverlayWindow(QMainWindow):
         )
         self._launcher.positionChanged.connect(self._persist_launcher_position)
         self._saved_launcher_position = load_launcher_position(self._config_dir)
-        self._pool = QThreadPool.globalInstance()
+        # Dedicated ownership lets shutdown clear queued WCL work without
+        # touching unrelated Qt tasks and then fully drain active network calls.
+        self._pool = QThreadPool(self)
         if self._pool is not None:
             self._pool.setMaxThreadCount(3)
 
@@ -4138,6 +4141,8 @@ class OverlayWindow(QMainWindow):
         ]
 
     def _schedule_wcl_retry(self, delay_ms: int | None = None) -> None:
+        if self._closed:
+            return
         if not self._metric_preferences.any_enabled:
             return
         if self._wcl_retry_timer.isActive():
@@ -4153,6 +4158,8 @@ class OverlayWindow(QMainWindow):
         self._wcl_retry_timer.start(delay_ms)
 
     def _retry_failed_wcl_fetches(self) -> int:
+        if self._closed:
+            return 0
         if not self._metric_preferences.any_enabled:
             return 0
         remaining = self._wcl_client.retry_block_remaining_seconds()
@@ -5349,6 +5356,8 @@ class OverlayWindow(QMainWindow):
         return "Boss details not loaded", False, True
 
     def _schedule_raid_boss_retry(self, delay_ms: int) -> None:
+        if self._closed:
+            return
         if self._raid_boss_retry_timer.isActive():
             remaining = self._raid_boss_retry_timer.remainingTime()
             if remaining >= 0 and remaining <= delay_ms:
@@ -5356,6 +5365,8 @@ class OverlayWindow(QMainWindow):
         self._raid_boss_retry_timer.start(max(0, delay_ms))
 
     def _retry_ready_raid_boss_fetches(self) -> None:
+        if self._closed:
+            return
         self._sync_delegate_and_panel()
 
     def _record_fetch_connection_status(
@@ -5395,6 +5406,8 @@ class OverlayWindow(QMainWindow):
         self._refresh_auth_label()
 
     def _launch_raid_boss_fetch_if_needed(self, applicant: Applicant) -> bool:
+        if self._closed:
+            return False
         resolved = self._current_raid_boss_fetch_for(applicant)
         if resolved is None:
             return False
@@ -5455,6 +5468,8 @@ class OverlayWindow(QMainWindow):
         return identity
 
     def _launch_fetch(self, applicant: Applicant) -> None:
+        if self._closed:
+            return
         if not self._metric_preferences.any_enabled:
             applicant.clear_wcl_data(fetch_status="ready")
             return
@@ -5520,6 +5535,8 @@ class OverlayWindow(QMainWindow):
         fetched_identity: _FetchIdentity,
         ranks: CharacterRanks,
     ) -> None:
+        if self._closed:
+            return
         was_current = (
             self._fetches_in_flight.get(fetched_identity.storage_key)
             == fetched_identity
@@ -5658,6 +5675,8 @@ class OverlayWindow(QMainWindow):
         error: str,
         error_kind: str = "",
     ) -> None:
+        if self._closed:
+            return
         waiters = self._raid_boss_fetch_waiters_by_target.pop(
             fetched_identity.network_key,
             None,
@@ -6013,6 +6032,21 @@ class OverlayWindow(QMainWindow):
         self._launcher.hide()
         self._launcher.close()
         super().closeEvent(event)
+
+    def shutdown_fetches(self) -> bool:
+        """Reject new WCL work, discard queued tasks, and drain active fetches."""
+        if self._fetch_shutdown_result is not None:
+            return self._fetch_shutdown_result
+        self._closed = True
+        self._wcl_retry_timer.stop()
+        self._raid_boss_retry_timer.stop()
+        pool = self._pool
+        if pool is None:
+            self._fetch_shutdown_result = True
+        else:
+            pool.clear()
+            self._fetch_shutdown_result = pool.waitForDone(-1)
+        return self._fetch_shutdown_result
 
 
 # ───────────────────────────────────────────────────────────────────

@@ -1935,6 +1935,9 @@ class CharacterCache:
         self._write_lock = threading.Lock()
         self._save_epoch = 0
         self._generation = 0
+        self._closing = False
+        self._close_done = threading.Event()
+        self._close_result: bool | None = None
 
     @property
     def generation(self) -> int:
@@ -2095,13 +2098,6 @@ class CharacterCache:
             and snapshot.generation == self._generation
         )
 
-    def _write_snapshot(self, snapshot: _CacheSaveSnapshot) -> bool:
-        with self._write_lock:
-            with self._lock:
-                if not self._snapshot_is_current_locked(snapshot):
-                    return True
-            return self._write_snapshot_with_write_lock(snapshot)
-
     def _write_snapshot_with_write_lock(self, snapshot: _CacheSaveSnapshot) -> bool:
         # Caller must hold self._write_lock.
         try:
@@ -2121,64 +2117,136 @@ class CharacterCache:
 
     def _start_save_timer_locked(self) -> None:
         # Caller must hold self._lock.
+        if self._closing:
+            return
         self._save_timer = threading.Timer(self._save_debounce_seconds, self.flush)
         self._save_timer.daemon = True
         self._save_timer.start()
 
-    def _schedule_save_locked(self) -> _CacheSaveSnapshot | None:
+    def _schedule_save_locked(self) -> bool:
         # Caller must hold self._lock.
-        if not self._defer_saves:
-            return self._snapshot_for_save_locked()
         self._dirty = True
+        if not self._defer_saves:
+            return True
         if self._save_timer is not None and self._save_timer.is_alive():
-            return None
+            return False
         self._start_save_timer_locked()
-        return None
+        return False
 
-    def flush(self) -> None:
+    def flush(self) -> bool:
+        """Serialize and persist the newest dirty snapshot."""
         timer: threading.Timer | None = None
         snapshot: _CacheSaveSnapshot | None = None
-        with self._lock:
-            timer = self._save_timer
-            self._save_timer = None
-            if not self._dirty:
-                return
-            self._dirty = False
-            snapshot = self._snapshot_for_save_locked()
-        if timer is not None and timer.is_alive() and timer is not threading.current_thread():
-            timer.cancel()
-        if snapshot is not None and not self._write_snapshot(snapshot):
+        with self._write_lock:
             with self._lock:
-                if not self._snapshot_is_current_locked(snapshot):
-                    return
-                self._dirty = True
+                timer = self._save_timer
+                self._save_timer = None
+                if not self._dirty:
+                    return True
+                self._dirty = False
+                snapshot = self._snapshot_for_save_locked()
+            if (
+                timer is not None
+                and timer.is_alive()
+                and timer is not threading.current_thread()
+            ):
+                timer.cancel()
+            write_succeeded = self._write_snapshot_with_write_lock(snapshot)
+            with self._lock:
                 if (
-                    self._defer_saves
+                    not write_succeeded
+                    and self._snapshot_is_current_locked(snapshot)
+                ):
+                    self._dirty = True
+                if (
+                    self._dirty
+                    and self._defer_saves
+                    and not self._closing
                     and (
                         self._save_timer is None
                         or not self._save_timer.is_alive()
                     )
                 ):
                     self._start_save_timer_locked()
+            return write_succeeded
 
-    def clear(self) -> None:
+    def close(self) -> bool:
+        """Reject new mutations and synchronously persist all accepted writes."""
+        timer: threading.Timer | None = None
+        wait_for_close = False
+        with self._lock:
+            if self._close_result is not None:
+                return self._close_result
+            if self._closing:
+                wait_for_close = True
+            else:
+                self._closing = True
+                timer = self._save_timer
+                self._save_timer = None
+        if wait_for_close:
+            self._close_done.wait()
+            with self._lock:
+                return bool(self._close_result)
+
+        result = False
+        try:
+            if timer is not None and timer is not threading.current_thread():
+                timer.cancel()
+                if timer.is_alive():
+                    timer.join()
+            result = self.flush()
+            if not result:
+                # One bounded retry handles a transient failure without leaving
+                # another daemon timer alive during interpreter shutdown.
+                result = self.flush()
+            with self._lock:
+                result = result and not self._dirty
+        except Exception:  # noqa: BLE001 - terminal persistence boundary
+            _log.exception("Unexpected failure while closing character cache")
+            result = False
+        finally:
+            with self._lock:
+                self._close_result = result
+                self._close_done.set()
+        return result
+
+    def clear(self) -> bool:
         """Drop both in-memory and persisted character-rank cache."""
-        snapshot: _CacheSaveSnapshot | None = None
+        timer: threading.Timer | None = None
         with self._write_lock:
             with self._lock:
-                if self._save_timer is not None:
-                    self._save_timer.cancel()
-                    self._save_timer = None
+                if self._closing:
+                    return False
+                timer = self._save_timer
+                self._save_timer = None
                 self._dirty = False
                 self._generation += 1
                 self._save_epoch += 1
                 self._data.clear()
                 snapshot = self._snapshot_for_save_locked()
+            if timer is not None and timer.is_alive():
+                timer.cancel()
+            write_succeeded = True
             try:
                 if self._path.exists():
                     self._path.unlink()
             except OSError:
-                self._write_snapshot_with_write_lock(snapshot)
+                write_succeeded = self._write_snapshot_with_write_lock(snapshot)
+            if not write_succeeded:
+                with self._lock:
+                    if self._snapshot_is_current_locked(snapshot):
+                        self._dirty = True
+                    if (
+                        self._dirty
+                        and self._defer_saves
+                        and not self._closing
+                        and (
+                            self._save_timer is None
+                            or not self._save_timer.is_alive()
+                        )
+                    ):
+                        self._start_save_timer_locked()
+            return write_succeeded
 
     def _not_found_ttl_seconds(self) -> int:
         return min(self._ttl_seconds, self.NOT_FOUND_TTL_SECONDS)
@@ -2383,6 +2451,8 @@ class CharacterCache:
         key = self._key(name, server_slug, region, spec_id, role, metric_preferences)
         not_found_key = self._not_found_key(name, server_slug, region)
         with self._lock:
+            if self._closing:
+                return False
             if (
                 expected_generation is not None
                 and expected_generation != self._generation
@@ -2405,9 +2475,9 @@ class CharacterCache:
                     fetched_at=time.time(), ranks=asdict(ranks)
                 )
             self._save_epoch += 1
-            snapshot = self._schedule_save_locked()
-        if snapshot is not None:
-            self._write_snapshot(snapshot)
+            flush_now = self._schedule_save_locked()
+        if flush_now:
+            self.flush()
         return True
 
     def put_raid_boss_details(
@@ -2432,6 +2502,8 @@ class CharacterCache:
         )
         sanitized = _sanitize_raid_boss_detail_rows(rows, metric_preferences)
         with self._lock:
+            if self._closing:
+                return False
             if (
                 expected_generation is not None
                 and expected_generation != self._generation
@@ -2442,7 +2514,7 @@ class CharacterCache:
                 raid_boss_details=sanitized,
             )
             self._save_epoch += 1
-            snapshot = self._schedule_save_locked()
-        if snapshot is not None:
-            self._write_snapshot(snapshot)
+            flush_now = self._schedule_save_locked()
+        if flush_now:
+            self.flush()
         return True
