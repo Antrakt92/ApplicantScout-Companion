@@ -18,6 +18,13 @@ a keyboard or assistive technology.
 - Packaged, developer, and WoW-watcher launches now share one atomic
   single-instance endpoint, so waiting helpers cannot block a manual launch or
   race into duplicate overlay windows.
+- Party calibration keeps detected and manual target keys valid through `+99`,
+  so the displayed key and fit scoring no longer diverge above `+30`.
+- In-app updates arm the installer handoff before launch, allow the expected
+  control shutdown during setup, and roll back safely when launch fails.
+- WoW lifecycle detection treats failed process scans as unknown instead of
+  counting them as evidence that WoW closed, and routine polling now uses a
+  native Windows process snapshot.
 - QR build, paint, capture, retry, and stale-texture cleanup work now has
   bounded recovery instead of leaving transport frozen until `/reload`.
 - Screenshot format and quality are leased only around each capture and are
@@ -33,6 +40,8 @@ a keyboard or assistive technology.
   closing shared state.
 - `/apscout qrvisible` now survives `/reload`, while disabling ApplicantScout
   clears the override.
+- Current Warcraft Logs raid evidence uses the full Chimaerus, the Undreamt God
+  and Belo'ren, Child of Al'ar encounter names.
 
 ### Improved
 
@@ -43,6 +52,10 @@ a keyboard or assistive technology.
 - Repeated applicant refreshes now reuse unchanged score inputs, package-fit
   results, metric widths, and live-snapshot materialization instead of repeating
   the same overlay and cache work during dense applicant bursts.
+- Updater cleanup now bounds old ApplicantScout installer files while leaving
+  unrelated downloads untouched.
+- Release assets are bound to the exact paired tags, require complete dependency
+  notices, and are published only after GitHub confirms immutable release state.
 - Screenshots-folder checks now run once per edit off the GUI thread, so a slow
   or disconnected filesystem cannot freeze Settings or trigger duplicate probes.
 - M+ fit, grouped-applicant evidence, partial-roster state, and manual raid
