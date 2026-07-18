@@ -543,25 +543,18 @@ def _create_tray_controller(
     return controller
 
 
-def _validate_oauth_async(auth: WCLAuth) -> None:
-    """First-run OAuth validation off the GUI thread.
-
-    Previously synchronous: 500ms-2s blocking HTTP roundtrip before
-    OverlayWindow.show() — startup felt frozen on first run / expired-token
-    refresh. Now fires a daemon thread that calls get_token(); failure surfaces
-    via the existing fetch-error path (overlay cell shows red `?` with WCL
-    error message in tooltip) the first time a real applicant fetch runs. Lazy
-    is OK because get_token() is also called from each QRunnable, so a missing
-    token can't propagate downstream — the failed fetch caps the blast radius."""
-
-    def _worker() -> None:
-        try:
-            auth.get_token()
-            log.info("WCL OAuth: OK")
-        except Exception as e:  # noqa: BLE001
-            log.error("WCL OAuth failed (will surface on first fetch): %s", e)
-
-    threading.Thread(target=_worker, name="WCLAuthValidator", daemon=True).start()
+def _validate_oauth_async(client: WCLClient) -> threading.Thread | None:
+    """Start a fresh, generation-safe OAuth probe off the GUI thread."""
+    validation = client.begin_auth_validation()
+    if validation is None:
+        return None
+    worker = threading.Thread(
+        target=lambda: client.run_auth_validation(validation),
+        name="WCLAuthValidator",
+        daemon=True,
+    )
+    worker.start()
+    return worker
 
 
 class StateMachine(QObject):
@@ -2877,6 +2870,10 @@ def _apply_settings_change(
         old_cfg.wcl_client_id != new_cfg.wcl_client_id
         or old_cfg.wcl_client_secret != new_cfg.wcl_client_secret
     )
+    credentials_validated_for_active = apply_credentials and (
+        values.wcl_client_id.strip() == new_cfg.wcl_client_id
+        and values.wcl_client_secret.strip() == new_cfg.wcl_client_secret
+    )
     region_effective_changed = region_runtime.set_fallback(new_cfg.region)
     wcl_runtime_changed = credentials_promoted or region_effective_changed
     new_auth = auth
@@ -2886,7 +2883,9 @@ def _apply_settings_change(
             new_cfg.wcl_client_secret,
             new_cfg.cache_dir,
         )
-        wcl_client.reconfigure_auth(new_auth)
+        wcl_client.reconfigure_auth(new_auth, validated=True)
+    elif credentials_validated_for_active:
+        wcl_client.mark_active_auth_validated()
     if wcl_runtime_changed:
         wcl_client.region = region_runtime.effective_region
         window.apply_metric_preferences(
@@ -3269,12 +3268,6 @@ def main(argv: list[str] | None = None) -> int:
     log.info("WCL metric preferences: %s", cfg.metric_preferences.cache_key())
 
     auth = WCLAuth(cfg.wcl_client_id, cfg.wcl_client_secret, cfg.cache_dir)
-    # OAuth validation now runs on a daemon thread so the overlay paints
-    # immediately. If credentials are bad, the first applicant's WCL fetch
-    # will surface the error in its cell tooltip via the existing fetch-error
-    # path — no special UI plumbing needed.
-    _validate_oauth_async(auth)
-
     cache = CharacterCache(
         cfg.cache_dir,
         ttl_seconds=cfg.cache_ttl_seconds,
@@ -3505,6 +3498,7 @@ def main(argv: list[str] | None = None) -> int:
         show_settings=_show_settings,
         game_foreground_probe=is_wow_foreground,
     )
+    _validate_oauth_async(wcl_client)
     window_ref["window"] = window
     window.setWindowIcon(_app_icon())
     show_settings_action.set_callback(_show_settings)

@@ -433,6 +433,11 @@ class WCLAuth:
                 return token.access_token
             return self._refresh()
 
+    def probe_online(self) -> None:
+        """Verify credentials online while preserving a usable token on failure."""
+        with self._refresh_lock:
+            self._refresh()
+
     def invalidate(self) -> None:
         """Force refresh on next get_token (call on 401 response)."""
         with self._token_state_lock:
@@ -443,6 +448,21 @@ class WCLAuth:
     def _refresh(self) -> str:
         with self._token_state_lock:
             refresh_generation = self._invalidate_generation
+        token = self._request_token()
+        with self._token_state_lock:
+            if refresh_generation != self._invalidate_generation:
+                return token.access_token
+            self._token = token
+        self._save_cached(token)
+        with self._token_state_lock:
+            stale_after_save = refresh_generation != self._invalidate_generation
+            if stale_after_save:
+                self._token = None
+        if stale_after_save:
+            self._delete_cached_token()
+        return token.access_token
+
+    def _request_token(self) -> _Token:
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(
                 WCL_OAUTH_URL,
@@ -462,39 +482,45 @@ class WCLAuth:
         body = _json_object_response(resp, WCLAuthError, "OAuth response")
         access_token = body.get("access_token")
         if not isinstance(access_token, str) or not access_token.strip():
-            raise WCLAuthError("OAuth response missing access_token")
+            raise WCLAuthError(
+                "OAuth response missing access_token",
+                error_kind=WCL_ERROR_MALFORMED,
+            )
         expires_raw = body.get("expires_in", 86400)
         if isinstance(expires_raw, bool):
-            raise WCLAuthError("OAuth response has invalid expires_in")
+            raise WCLAuthError(
+                "OAuth response has invalid expires_in",
+                error_kind=WCL_ERROR_MALFORMED,
+            )
         try:
             expires_in = int(expires_raw)
         except (TypeError, ValueError, OverflowError):
-            raise WCLAuthError("OAuth response has invalid expires_in") from None
+            raise WCLAuthError(
+                "OAuth response has invalid expires_in",
+                error_kind=WCL_ERROR_MALFORMED,
+            ) from None
         if expires_in <= 0:
-            raise WCLAuthError("OAuth response has invalid expires_in")
+            raise WCLAuthError(
+                "OAuth response has invalid expires_in",
+                error_kind=WCL_ERROR_MALFORMED,
+            )
         try:
             expires_at = time.time() + expires_in
         except OverflowError:
-            raise WCLAuthError("OAuth response has invalid expires_in") from None
+            raise WCLAuthError(
+                "OAuth response has invalid expires_in",
+                error_kind=WCL_ERROR_MALFORMED,
+            ) from None
         if not math.isfinite(expires_at):
-            raise WCLAuthError("OAuth response has invalid expires_in")
-        token = _Token(
+            raise WCLAuthError(
+                "OAuth response has invalid expires_in",
+                error_kind=WCL_ERROR_MALFORMED,
+            )
+        return _Token(
             access_token=access_token.strip(),
             expires_at=expires_at,
             client_fingerprint=self._client_fingerprint,
         )
-        with self._token_state_lock:
-            if refresh_generation != self._invalidate_generation:
-                return token.access_token
-            self._token = token
-        self._save_cached(token)
-        with self._token_state_lock:
-            stale_after_save = refresh_generation != self._invalidate_generation
-            if stale_after_save:
-                self._token = None
-        if stale_after_save:
-            self._delete_cached_token()
-        return token.access_token
 
     def _delete_cached_token(self) -> None:
         if self._token_path.exists():
@@ -520,14 +546,14 @@ def _json_object_response(resp, error_cls: type[Exception], context: str) -> dic
     try:
         body = resp.json()
     except ValueError as e:
-        if error_cls is WCLApiError:
+        if error_cls in (WCLApiError, WCLAuthError):
             raise error_cls(
                 f"Malformed {context}: invalid JSON",
                 error_kind=WCL_ERROR_MALFORMED,
             ) from e
         raise error_cls(f"Malformed {context}: invalid JSON") from e
     if not isinstance(body, dict):
-        if error_cls is WCLApiError:
+        if error_cls in (WCLApiError, WCLAuthError):
             raise error_cls(
                 f"Malformed {context}: expected JSON object",
                 error_kind=WCL_ERROR_MALFORMED,
@@ -682,6 +708,21 @@ def _raid_zone_alias_payload(char: dict, alias: str) -> dict:
 # GraphQL
 
 
+@dataclass(frozen=True)
+class WCLConnectionStatus:
+    """Secret-free credential/API status snapshot exposed to the UI."""
+
+    state: str = "unknown"
+    error_kind: str = ""
+
+
+@dataclass(frozen=True)
+class _WCLAuthValidation:
+    auth: WCLAuth
+    auth_generation: int
+    status_revision: int
+
+
 class WCLClient:
     """Synchronous WCL GraphQL client with token-aware retry and result aggregation."""
 
@@ -713,20 +754,123 @@ class WCLClient:
         self._quota_snapshot: Optional[_QuotaSnapshot] = None
         self._reserved_quota_points: float = 0.0
         self._auth_generation: int = 0
+        self._connection_status = WCLConnectionStatus()
+        self._connection_status_revision = 0
+        self._closed = False
 
     def close(self) -> None:
+        with self._quota_lock:
+            self._closed = True
+            self._auth_generation += 1
+            self._connection_status_revision += 1
+            self._connection_status = WCLConnectionStatus()
         self._http.close()
 
-    def reconfigure_auth(self, auth: WCLAuth) -> None:
+    @property
+    def connection_status(self) -> WCLConnectionStatus:
+        with self._quota_lock:
+            return self._connection_status
+
+    def begin_auth_validation(self) -> _WCLAuthValidation | None:
+        """Snapshot active auth and publish `checking` before worker launch."""
+        with self._quota_lock:
+            if self._closed:
+                return None
+            self._connection_status_revision += 1
+            validation = _WCLAuthValidation(
+                self._auth,
+                self._auth_generation,
+                self._connection_status_revision,
+            )
+            self._connection_status = WCLConnectionStatus(state="checking")
+            return validation
+
+    def run_auth_validation(self, validation: _WCLAuthValidation) -> None:
+        """Run a fresh OAuth probe and ignore stale/reconfigured completion."""
+        try:
+            validation.auth.probe_online()
+        except WCLAuthError as exc:
+            error_kind = exc.error_kind
+            _log.warning(
+                "WCL OAuth validation failed: kind=%s type=%s",
+                error_kind or "unknown",
+                type(exc).__name__,
+            )
+            status = WCLConnectionStatus(state="error", error_kind=error_kind)
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            _log.warning(
+                "WCL OAuth validation failed: kind=%s type=%s",
+                WCL_ERROR_NETWORK,
+                type(exc).__name__,
+            )
+            status = WCLConnectionStatus(
+                state="error",
+                error_kind=WCL_ERROR_NETWORK,
+            )
+        except Exception as exc:  # noqa: BLE001 — UI status stays category-only
+            _log.warning(
+                "WCL OAuth validation failed: kind=unknown type=%s",
+                type(exc).__name__,
+            )
+            status = WCLConnectionStatus(state="error")
+        else:
+            _log.info("WCL OAuth validation: OK")
+            status = WCLConnectionStatus(state="oauth_ready")
+        self._set_connection_status_if_current(
+            validation.auth_generation,
+            validation.status_revision,
+            status,
+        )
+
+    def _set_connection_status_if_current(
+        self,
+        auth_generation: int,
+        status_revision: int,
+        status: WCLConnectionStatus,
+    ) -> None:
+        with self._quota_lock:
+            if (
+                self._closed
+                or auth_generation != self._auth_generation
+                or status_revision != self._connection_status_revision
+            ):
+                return
+            self._connection_status_revision += 1
+            self._connection_status = status
+
+    def record_api_result(self, *, succeeded: bool, error_kind: str = "") -> None:
+        """Record a current-generation network result without raw response data."""
+        with self._quota_lock:
+            if self._closed:
+                return
+            self._connection_status_revision += 1
+            self._connection_status = WCLConnectionStatus(
+                state="api_ready" if succeeded else "error",
+                error_kind="" if succeeded else error_kind,
+            )
+
+    def mark_active_auth_validated(self) -> None:
+        """Publish a successful Settings test for the unchanged active auth."""
+        with self._quota_lock:
+            if self._closed:
+                return
+            self._connection_status_revision += 1
+            self._connection_status = WCLConnectionStatus(state="oauth_ready")
+
+    def reconfigure_auth(self, auth: WCLAuth, *, validated: bool = False) -> None:
         with self._quota_lock:
             self._auth = auth
             self._auth_generation += 1
+            self._connection_status_revision += 1
             self._rate_limited_until = 0.0
             self._server_retry_until = 0.0
             self._network_retry_until = 0.0
             self.last_quota = None
             self._quota_snapshot = None
             self._reserved_quota_points = 0.0
+            self._connection_status = WCLConnectionStatus(
+                state="oauth_ready" if validated else "unknown"
+            )
 
     def _record_quota_snapshot(
         self,

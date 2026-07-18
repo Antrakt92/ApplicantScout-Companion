@@ -184,6 +184,18 @@ class _FakeAuth:
         self.invalidations += 1
 
 
+class _ProbeAuth(_FakeAuth):
+    def __init__(self, error: Exception | None = None):
+        super().__init__()
+        self.error = error
+        self.probes = 0
+
+    def probe_online(self) -> None:
+        self.probes += 1
+        if self.error is not None:
+            raise self.error
+
+
 class _FakeResponse:
     def __init__(
         self,
@@ -1317,6 +1329,119 @@ def test_reconfigure_auth_clears_quota_reservation_state(
 
     assert client.last_quota is None
     assert client.quota_guard_retry_remaining_seconds(now=now) == 0.0
+
+
+def test_auth_validation_status_is_generation_safe_and_secret_free():
+    old_auth = _ProbeAuth(
+        WCLAuthError("raw provider body", error_kind=WCL_ERROR_AUTH)
+    )
+    client = WCLClient(old_auth, region="EU")  # type: ignore[arg-type]
+    validation = client.begin_auth_validation()
+
+    assert validation is not None
+    assert client.connection_status.state == "checking"
+
+    new_auth = _ProbeAuth()
+    client.reconfigure_auth(new_auth, validated=True)  # type: ignore[arg-type]
+    client.run_auth_validation(validation)
+
+    assert old_auth.probes == 1
+    assert client.connection_status.state == "oauth_ready"
+    assert client.connection_status.error_kind == ""
+    assert "raw provider body" not in repr(client.connection_status)
+
+
+def test_late_auth_validation_cannot_overwrite_newer_api_result():
+    auth = _ProbeAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    validation = client.begin_auth_validation()
+
+    assert validation is not None
+    client.record_api_result(succeeded=False, error_kind=WCL_ERROR_NETWORK)
+    client.run_auth_validation(validation)
+
+    assert auth.probes == 1
+    assert client.connection_status.state == "error"
+    assert client.connection_status.error_kind == WCL_ERROR_NETWORK
+
+
+def test_settings_validation_of_same_auth_invalidates_old_startup_probe():
+    auth = _ProbeAuth(
+        WCLAuthError("old failure", error_kind=WCL_ERROR_AUTH)
+    )
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    validation = client.begin_auth_validation()
+
+    assert validation is not None
+    client.mark_active_auth_validated()
+    client.run_auth_validation(validation)
+
+    assert auth.probes == 1
+    assert client.connection_status.state == "oauth_ready"
+    assert client.connection_status.error_kind == ""
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_kind"),
+    (
+        (
+            WCLAuthError("provider-auth-body", error_kind=WCL_ERROR_AUTH),
+            WCL_ERROR_AUTH,
+        ),
+        (
+            WCLAuthError("provider-server-body", error_kind=WCL_ERROR_SERVER),
+            WCL_ERROR_SERVER,
+        ),
+        (
+            WCLAuthError("provider-malformed-body", error_kind=WCL_ERROR_MALFORMED),
+            WCL_ERROR_MALFORMED,
+        ),
+        (httpx.ConnectError("provider-offline-body"), WCL_ERROR_NETWORK),
+        (RuntimeError("provider-unknown-body"), ""),
+    ),
+)
+def test_auth_validation_classifies_failure_without_raw_detail(error, expected_kind):
+    auth = _ProbeAuth(error)
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    validation = client.begin_auth_validation()
+
+    assert validation is not None
+    client.run_auth_validation(validation)
+
+    assert client.connection_status.state == "error"
+    assert client.connection_status.error_kind == expected_kind
+    assert str(error) not in repr(client.connection_status)
+
+
+def test_auth_validation_success_and_current_api_result_update_status():
+    auth = _ProbeAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    validation = client.begin_auth_validation()
+
+    assert validation is not None
+    client.run_auth_validation(validation)
+    assert client.connection_status.state == "oauth_ready"
+
+    client.record_api_result(succeeded=False, error_kind=WCL_ERROR_NETWORK)
+    assert client.connection_status.state == "error"
+    assert client.connection_status.error_kind == WCL_ERROR_NETWORK
+
+    client.record_api_result(succeeded=True)
+    assert client.connection_status.state == "api_ready"
+    assert client.connection_status.error_kind == ""
+
+
+def test_late_auth_validation_completion_after_close_is_ignored():
+    auth = _ProbeAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    validation = client.begin_auth_validation()
+
+    assert validation is not None
+    client.close()
+    client.run_auth_validation(validation)
+
+    assert auth.probes == 1
+    assert client.connection_status.state == "unknown"
 
 
 def test_stale_quota_reservation_release_after_reconfigure_does_not_clear_new_reservation():
@@ -3665,7 +3790,7 @@ def test_oauth_http_400_remains_non_retryable_auth_error(
     assert excinfo.value.error_kind == WCL_ERROR_AUTH
 
 
-def test_oauth_malformed_200_remains_non_retryable_auth_error(
+def test_oauth_malformed_200_is_classified_for_safe_status_copy(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     oauth_http = _OAuthHTTP(_FakeResponse({}, json_error=ValueError("bad json")))
@@ -3675,7 +3800,40 @@ def test_oauth_malformed_200_remains_non_retryable_auth_error(
     with pytest.raises(WCLAuthError, match="Malformed OAuth response") as excinfo:
         auth.get_token()
 
-    assert excinfo.value.error_kind == ""
+    assert excinfo.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_oauth_online_probe_bypasses_valid_cache_without_destroying_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    class _ProbeHTTP:
+        def __init__(self):
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return _FakeResponse(
+                    {"access_token": "cached-token", "expires_in": 3600}
+                )
+            raise httpx.ConnectError("offline")
+
+    probe_http = _ProbeHTTP()
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: probe_http)
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    assert auth.get_token() == "cached-token"
+    with pytest.raises(httpx.ConnectError):
+        auth.probe_online()
+
+    assert auth.get_token() == "cached-token"
+    assert probe_http.calls == 2
 
 
 def test_oauth_http_503_preserves_existing_token_file(

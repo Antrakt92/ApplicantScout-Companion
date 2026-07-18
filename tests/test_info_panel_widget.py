@@ -2103,41 +2103,81 @@ def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
     footer = window._status_label.parentWidget()
     assert footer is not None
     cases = (
-        ("WCL 100%", "critical", "Addon update", "warning"),
-        ("WCL 12 active", "active", "Shot failed", "critical"),
-        ("WCL 12 active", "active", "Shot restored", "active"),
-        ("WCL 12 active", "active", "Shot partial", "warning"),
-        ("WCL —/—", "neutral", "Shot 99h ago", "neutral"),
+        ("WCL 100%", "critical", "Auth offline", "warning", "Addon update", "warning"),
+        ("WCL 12 active", "active", "Auth failed", "critical", "Shot failed", "critical"),
+        ("WCL 12 active", "active", "Auth ready", "neutral", "Shot restored", "active"),
+        ("WCL 12 active", "active", "Auth issue", "warning", "Shot partial", "warning"),
+        ("WCL —/—", "neutral", "Auth —", "neutral", "Shot 99h ago", "neutral"),
     )
 
     try:
         window.show()
         qtbot.waitUntil(window.isVisible, timeout=1000)
 
-        for width in (window.minimumWidth(), 650):
+        for width in (
+            window.minimumWidth(),
+            overlay_mod.STATUS_ROW_SINGLE_LINE_MIN_WIDTH - 1,
+            overlay_mod.STATUS_ROW_SINGLE_LINE_MIN_WIDTH,
+            650,
+            window.minimumWidth(),
+        ):
             window.resize(width, 240)
-            for quota_text, quota_state, shot_text, shot_state in cases:
+            for (
+                quota_text,
+                quota_state,
+                auth_text,
+                auth_state,
+                shot_text,
+                shot_state,
+            ) in cases:
                 window._status_label.setText(quota_text)
                 window._set_status_chip_state(window._status_label, quota_state)
+                window._auth_label.setText(auth_text)
+                window._set_status_chip_state(window._auth_label, auth_state)
                 window._health_label.setText(shot_text)
                 window._set_status_chip_state(window._health_label, shot_state)
                 QApplication.processEvents()
 
-                for label in (window._status_label, window._health_label):
+                for label in (
+                    window._status_label,
+                    window._auth_label,
+                    window._health_label,
+                ):
                     text_width = label.fontMetrics().horizontalAdvance(label.text())
                     assert text_width <= label.contentsRect().width()
                     assert label.sizeHint().width() <= label.width()
-                assert (
-                    window._status_label.geometry().right()
-                    < window._health_label.geometry().left()
-                )
-                assert (
-                    window._health_label.geometry().right()
-                    < window._size_grip.geometry().left()
-                )
+                if width < overlay_mod.STATUS_ROW_SINGLE_LINE_MIN_WIDTH:
+                    assert window._status_row_compact is True
+                    assert window._status_label.geometry().right() < (
+                        window._health_label.geometry().left()
+                    )
+                    assert window._auth_label.geometry().right() < (
+                        window._size_grip.geometry().left()
+                    )
+                else:
+                    assert window._status_row_compact is False
+                    assert window._status_label.geometry().right() < (
+                        window._auth_label.geometry().left()
+                    )
+                    assert window._auth_label.geometry().right() < (
+                        window._health_label.geometry().left()
+                    )
+                    assert window._health_label.geometry().right() < (
+                        window._size_grip.geometry().left()
+                    )
+                grip_hint = window._size_grip.sizeHint()
+                assert window._size_grip.width() <= grip_hint.width() + 2
+                assert window._size_grip.height() <= grip_hint.height() + 2
                 assert footer.rect().contains(window._size_grip.geometry())
+                assert (
+                    footer.rect().right() - window._size_grip.geometry().right()
+                    <= 3
+                )
 
         assert window._status_label.accessibleName() == "Warcraft Logs quota status"
+        assert window._auth_label.accessibleName() == (
+            "Warcraft Logs credential and API status"
+        )
         assert window._health_label.accessibleName() == (
             "Screenshot freshness status"
         )
@@ -2772,7 +2812,7 @@ def test_footer_chips_use_overlay_tooltip_bypass(monkeypatch, qtbot, tmp_path):
         monkeypatch.setattr(overlay_mod, "_render_tooltip", record_tooltip)
 
         for index, widget in enumerate(
-            (window._status_label, window._health_label), start=1
+            (window._status_label, window._auth_label, window._health_label), start=1
         ):
             global_pos = QPoint(70 + index, 90 + index)
             event = QHelpEvent(QEvent.Type.ToolTip, QPoint(4, 5), global_pos)

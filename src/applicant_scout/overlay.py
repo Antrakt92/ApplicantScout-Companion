@@ -116,6 +116,7 @@ from .wcl import (
     WCLAuthError,
     WCL_ERROR_AUTH,
     WCL_ERROR_GRAPHQL,
+    WCL_ERROR_HTTP,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_QUOTA_GUARD,
@@ -155,6 +156,7 @@ WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
 MIN_VISIBLE_WINDOW_WIDTH = 420
 USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
+STATUS_ROW_SINGLE_LINE_MIN_WIDTH = 460
 INFO_PANEL_MIN_HEIGHT = 80
 INFO_PANEL_PREFERRED_HEIGHT = 238
 # Preferred height is tuned for the original 9-row raid detail view; extra
@@ -302,10 +304,12 @@ HEADER_TOOLTIPS: list[str] = [
 
 class _FetchSignals(QObject):
     done = pyqtSignal(object, object)  # _FetchIdentity, CharacterRanks
+    networkDone = pyqtSignal(object, object)  # excludes cache-only completions
 
 
 class _RaidBossFetchSignals(QObject):
     done = pyqtSignal(object, object, object, object)  # identity, rows, error, kind
+    networkDone = pyqtSignal(object, object, object, object)
 
 
 @dataclass(frozen=True)
@@ -511,6 +515,7 @@ class _FetchTask(QRunnable):
                 identity.metric_preferences,
                 expected_generation=self._cache_generation,
             )
+        self.signals.networkDone.emit(identity, ranks)
         self.signals.done.emit(identity, ranks)
 
 
@@ -531,6 +536,14 @@ class _RaidBossFetchTask(QRunnable):
         self._cache_generation = cache.generation
 
     def run(self) -> None:
+        def _emit_network_result(
+            rows: dict[str, list[dict[str, object]]],
+            error: str,
+            error_kind: str,
+        ) -> None:
+            self.signals.networkDone.emit(self._identity, rows, error, error_kind)
+            self.signals.done.emit(self._identity, rows, error, error_kind)
+
         cached = self._cache.get_raid_boss_details(
             self._name,
             self._identity.server_slug,
@@ -552,17 +565,17 @@ class _RaidBossFetchTask(QRunnable):
                 metric_preferences=self._identity.metric_preferences,
             )
         except WCLApiError as exc:
-            self.signals.done.emit(self._identity, {}, str(exc), exc.error_kind)
+            _emit_network_result({}, str(exc), exc.error_kind)
             return
         except WCLAuthError as exc:
             error_kind = getattr(exc, "error_kind", "") or WCL_ERROR_AUTH
-            self.signals.done.emit(self._identity, {}, str(exc), error_kind)
+            _emit_network_result({}, str(exc), error_kind)
             return
         except (httpx.TimeoutException, httpx.RequestError) as exc:
-            self.signals.done.emit(self._identity, {}, str(exc), WCL_ERROR_NETWORK)
+            _emit_network_result({}, str(exc), WCL_ERROR_NETWORK)
             return
         except Exception as exc:  # noqa: BLE001
-            self.signals.done.emit(self._identity, {}, str(exc), "")
+            _emit_network_result({}, str(exc), "")
             return
         self._cache.put_raid_boss_details(
             self._name,
@@ -574,7 +587,7 @@ class _RaidBossFetchTask(QRunnable):
             self._identity.metric_preferences,
             expected_generation=self._cache_generation,
         )
-        self.signals.done.emit(self._identity, rows, "", "")
+        _emit_network_result(rows, "", "")
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -2676,17 +2689,25 @@ class OverlayWindow(QMainWindow):
         # without turning ordinary idle time into an alarm.
         bottom = QWidget()
         bottom.setObjectName("statusRow")
-        bottom_layout = QHBoxLayout(bottom)
+        bottom_layout = QGridLayout(bottom)
         bottom_layout.setContentsMargins(7, 2, 3, 3)
-        bottom_layout.setSpacing(5)
+        bottom_layout.setHorizontalSpacing(5)
+        bottom_layout.setVerticalSpacing(2)
+        self._status_row = bottom
+        self._status_layout = bottom_layout
+        self._status_row_compact: bool | None = None
         self._status_label = QLabel("")
         self._status_label.setObjectName("quotaChip")
         self._status_label.setTextFormat(Qt.TextFormat.PlainText)
         self._status_label.setAccessibleName("Warcraft Logs quota status")
         self._status_label.setProperty("statusState", "neutral")
         self._status_label.setMinimumWidth(0)
-        bottom_layout.addWidget(self._status_label)
-        bottom_layout.addStretch(1)
+        self._auth_label = QLabel("Auth —")
+        self._auth_label.setObjectName("authChip")
+        self._auth_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._auth_label.setAccessibleName("Warcraft Logs credential and API status")
+        self._auth_label.setProperty("statusState", "neutral")
+        self._auth_label.setMinimumWidth(0)
         # Health indicator — "shot Xs ago" lit by snapshotReceived signal slot
         # note_decode. Stale-pipeline detection: if the watcher Observer thread
         # silently dies, the timestamp stops advancing and the user sees the
@@ -2699,14 +2720,17 @@ class OverlayWindow(QMainWindow):
         self._health_label.setAccessibleName("Screenshot freshness status")
         self._health_label.setProperty("statusState", "neutral")
         self._health_label.setMinimumWidth(0)
-        bottom_layout.addWidget(self._health_label)
         self._size_grip = QSizeGrip(bottom)
         self._size_grip.setObjectName("overlaySizeGrip")
         self._size_grip.setAccessibleName("Resize ApplicantScout overlay")
-        bottom_layout.addWidget(self._size_grip)
+        self._reflow_status_row(self.width())
         layout.addWidget(bottom)
 
-        footer_tooltip_widgets = (self._status_label, self._health_label)
+        footer_tooltip_widgets = (
+            self._status_label,
+            self._auth_label,
+            self._health_label,
+        )
         self._action_tooltip_widgets = (
             *self._action_tooltip_widgets,
             *footer_tooltip_widgets,
@@ -3359,11 +3383,53 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_reason = reason
         self._refresh_health_label()
 
+    def _reflow_status_row(self, window_width: int) -> None:
+        """Keep all three status chips readable at the supported 300px width."""
+        compact = window_width < STATUS_ROW_SINGLE_LINE_MIN_WIDTH
+        if self._status_row_compact is compact:
+            return
+        self._status_row_compact = compact
+        widgets = (
+            self._status_label,
+            self._auth_label,
+            self._health_label,
+            self._size_grip,
+        )
+        for widget in widgets:
+            self._status_layout.removeWidget(widget)
+        for column in range(5):
+            self._status_layout.setColumnStretch(column, 0)
+        if compact:
+            self._status_layout.addWidget(self._status_label, 0, 0)
+            self._status_layout.addWidget(self._health_label, 0, 2)
+            self._status_layout.addWidget(self._auth_label, 1, 0)
+            self._status_layout.addWidget(
+                self._size_grip,
+                1,
+                2,
+                alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+            )
+            self._status_layout.setColumnStretch(1, 1)
+        else:
+            self._status_layout.addWidget(self._status_label, 0, 0)
+            self._status_layout.addWidget(self._auth_label, 0, 1)
+            self._status_layout.addWidget(self._health_label, 0, 3)
+            self._status_layout.addWidget(
+                self._size_grip,
+                0,
+                4,
+                alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+            )
+            self._status_layout.setColumnStretch(2, 1)
+        self._status_layout.invalidate()
+        self._status_row.updateGeometry()
+
     def _refresh_status_row(self) -> None:
-        """One-shot update of both bottom-row labels. Driven by _quota_timer
+        """One-shot update of all bottom-row labels. Driven by _quota_timer
         at 1Hz. Quota refresh is idempotent (just reads last_quota snapshot);
         health refresh advances the "Xs ago" counter."""
         self._refresh_quota_label()
+        self._refresh_auth_label()
         self._refresh_health_label()
 
     @staticmethod
@@ -3449,6 +3515,82 @@ class OverlayWindow(QMainWindow):
         self._set_status_chip_state(self._health_label, "neutral")
         self._health_label.setToolTip("")
         self._health_label.setAccessibleDescription(f"Last screenshot decoded {age}.")
+
+    def _refresh_auth_label(self) -> None:
+        status = getattr(self._wcl_client, "connection_status", None)
+        state = getattr(status, "state", "unknown")
+        error_kind = getattr(status, "error_kind", "")
+        if state == "checking":
+            text = "Auth check"
+            chip_state = "active"
+            detail = "Checking the active Warcraft Logs credentials."
+        elif state == "oauth_ready":
+            text = "Auth ready"
+            chip_state = "neutral"
+            detail = (
+                "Warcraft Logs accepted the active credentials. Applicant API "
+                "and quota data have not been queried yet."
+            )
+        elif state == "api_ready":
+            text = "Auth ready"
+            chip_state = "neutral"
+            detail = "The latest Warcraft Logs applicant API request succeeded."
+        elif state == "error" and error_kind == WCL_ERROR_AUTH:
+            text = "Auth failed"
+            chip_state = "critical"
+            detail = (
+                "Warcraft Logs rejected the active credentials. Test them in Settings."
+            )
+        elif state == "error" and error_kind == WCL_ERROR_NETWORK:
+            text = "Auth offline"
+            chip_state = "warning"
+            detail = (
+                "Could not reach Warcraft Logs. Check internet access; displayed "
+                "applicant data may be cached."
+            )
+        elif state == "error" and error_kind == WCL_ERROR_SERVER:
+            text = "Auth issue"
+            chip_state = "warning"
+            detail = (
+                "Warcraft Logs is temporarily unavailable. Applicant requests "
+                "will retry automatically."
+            )
+        elif state == "error" and error_kind in {
+            WCL_ERROR_RATE_LIMITED,
+            WCL_ERROR_QUOTA_GUARD,
+        }:
+            text = "Auth issue"
+            chip_state = "warning"
+            detail = (
+                "Warcraft Logs is temporarily limiting requests. Applicant "
+                "requests will retry automatically."
+            )
+        elif state == "error" and error_kind in {
+            WCL_ERROR_GRAPHQL,
+            WCL_ERROR_HTTP,
+            WCL_ERROR_MALFORMED,
+        }:
+            text = "Auth issue"
+            chip_state = "warning"
+            detail = (
+                "Warcraft Logs returned an unexpected response. Check the "
+                "applicant row and retry."
+            )
+        elif state == "error":
+            text = "Auth issue"
+            chip_state = "warning"
+            detail = (
+                "Warcraft Logs validation failed. Open Settings to test the "
+                "active credentials."
+            )
+        else:
+            text = "Auth —"
+            chip_state = "neutral"
+            detail = "Warcraft Logs credentials have not been checked in this session."
+        self._auth_label.setText(text)
+        self._set_status_chip_state(self._auth_label, chip_state)
+        self._auth_label.setToolTip(detail)
+        self._auth_label.setAccessibleDescription(detail)
 
     def _refresh_quota_label(self) -> None:
         """Pull the latest quota snapshot into the compact quota chip.
@@ -4548,6 +4690,42 @@ class OverlayWindow(QMainWindow):
     def _retry_ready_raid_boss_fetches(self) -> None:
         self._sync_delegate_and_panel()
 
+    def _record_fetch_connection_status(
+        self,
+        fetched_identity: _FetchIdentity,
+        ranks: CharacterRanks,
+    ) -> None:
+        if self._closed or (
+            fetched_identity.runtime_generation != self._wcl_runtime_generation
+        ):
+            return
+        record_api_result = getattr(self._wcl_client, "record_api_result", None)
+        if callable(record_api_result):
+            record_api_result(
+                succeeded=ranks.not_found or not bool(ranks.error),
+                error_kind=ranks.error_kind,
+            )
+        self._refresh_auth_label()
+
+    def _record_raid_boss_connection_status(
+        self,
+        fetched_identity: _FetchIdentity,
+        _rows: dict[str, list[dict[str, object]]],
+        error: str,
+        error_kind: str,
+    ) -> None:
+        if self._closed or (
+            fetched_identity.runtime_generation != self._wcl_runtime_generation
+        ):
+            return
+        record_api_result = getattr(self._wcl_client, "record_api_result", None)
+        if callable(record_api_result):
+            record_api_result(
+                succeeded=not bool(error),
+                error_kind=error_kind,
+            )
+        self._refresh_auth_label()
+
     def _launch_raid_boss_fetch_if_needed(self, applicant: Applicant) -> bool:
         resolved = self._current_raid_boss_fetch_for(applicant)
         if resolved is None:
@@ -4574,6 +4752,7 @@ class OverlayWindow(QMainWindow):
         self._mark_raid_boss_fetch_in_flight(identity)
         self._mark_raid_boss_fetch_waiting_on_target(identity)
         task = _RaidBossFetchTask(identity, charname, self._wcl_client, self._cache)
+        task.signals.networkDone.connect(self._record_raid_boss_connection_status)
         task.signals.done.connect(self._on_raid_boss_fetch_done)
         if self._pool is not None:
             self._pool.start(task)
@@ -4651,6 +4830,7 @@ class OverlayWindow(QMainWindow):
         self._mark_fetch_in_flight(identity)
         self._mark_fetch_waiting_on_target(identity)
         task = _FetchTask(identity, charname, self._wcl_client, self._cache)
+        task.signals.networkDone.connect(self._record_fetch_connection_status)
         task.signals.done.connect(self._on_fetch_done)
         if self._pool is not None:
             _log.info(
@@ -5113,6 +5293,8 @@ class OverlayWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, "_status_layout"):
+            self._reflow_status_row(event.size().width())
         if self._suppress_geometry_persist:
             return
         self._save_timer.start()
@@ -5851,6 +6033,7 @@ _STYLESHEET = """
     border-top: 1px solid rgba(66, 66, 86, 120);
 }
 #quotaChip,
+#authChip,
 #freshnessChip {
     color: #aaaab7;
     background-color: rgba(38, 38, 50, 205);
@@ -5860,18 +6043,21 @@ _STYLESHEET = """
     padding: 1px 6px;
 }
 #quotaChip[statusState="active"],
+#authChip[statusState="active"],
 #freshnessChip[statusState="active"] {
     color: #b9d8f4;
     background-color: rgba(36, 59, 82, 205);
     border-color: rgba(82, 128, 170, 175);
 }
 #quotaChip[statusState="warning"],
+#authChip[statusState="warning"],
 #freshnessChip[statusState="warning"] {
     color: #f1d69a;
     background-color: rgba(79, 63, 31, 205);
     border-color: rgba(154, 123, 56, 180);
 }
 #quotaChip[statusState="critical"],
+#authChip[statusState="critical"],
 #freshnessChip[statusState="critical"] {
     color: #f1b0b0;
     background-color: rgba(82, 37, 42, 210);

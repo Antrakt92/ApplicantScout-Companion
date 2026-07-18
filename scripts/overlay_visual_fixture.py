@@ -571,6 +571,7 @@ def create_overlay_visual_window(
     state = resolved.build_state()
     auth = WCLAuth("visual-fixture-client", "visual-fixture-secret", work_dir)
     client = WCLClient(auth, metric_preferences=resolved.metric_preferences)
+    client.reconfigure_auth(auth, validated=True)
     cache = CharacterCache(work_dir)
     window = OverlayWindow(
         state,

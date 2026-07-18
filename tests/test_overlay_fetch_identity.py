@@ -29,6 +29,7 @@ from applicant_scout.wcl import (
     WCLClient,
     WCLApiError,
     WCL_ERROR_AUTH,
+    WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_RATE_LIMITED,
@@ -263,6 +264,77 @@ def test_quota_chip_preserves_warning_thresholds_with_compact_copy(qtbot, tmp_pa
                 == window._status_label.toolTip()
             )
     finally:
+        client.close()
+
+
+def test_auth_chip_maps_secret_free_status_copy_and_accessibility(qtbot, tmp_path):
+    window, client = _window(qtbot, tmp_path, AppState())
+    auth = WCLAuth("client", "secret", tmp_path)
+
+    def assert_chip(text: str, state: str, detail: str) -> None:
+        window._refresh_auth_label()
+        assert window._auth_label.text() == text
+        assert window._auth_label.property("statusState") == state
+        assert detail in window._auth_label.toolTip()
+        assert (
+            window._auth_label.accessibleDescription()
+            == window._auth_label.toolTip()
+        )
+        assert "client" not in window._auth_label.toolTip().lower()
+        assert "secret" not in window._auth_label.toolTip().lower()
+
+    try:
+        client.reconfigure_auth(auth)
+        assert_chip("Auth —", "neutral", "not been checked")
+
+        validation = client.begin_auth_validation()
+        assert validation is not None
+        assert_chip("Auth check", "active", "Checking")
+
+        client.reconfigure_auth(auth, validated=True)
+        assert_chip("Auth ready", "neutral", "accepted")
+
+        client.record_api_result(succeeded=True)
+        assert_chip("Auth ready", "neutral", "request succeeded")
+
+        for error_kind, expected_text, expected_state, expected_detail in (
+            (WCL_ERROR_AUTH, "Auth failed", "critical", "rejected"),
+            (WCL_ERROR_NETWORK, "Auth offline", "warning", "internet access"),
+            (WCL_ERROR_SERVER, "Auth issue", "warning", "unavailable"),
+            (WCL_ERROR_RATE_LIMITED, "Auth issue", "warning", "limiting"),
+            (WCL_ERROR_MALFORMED, "Auth issue", "warning", "unexpected response"),
+            ("", "Auth issue", "warning", "validation failed"),
+        ):
+            client.record_api_result(succeeded=False, error_kind=error_kind)
+            assert_chip(expected_text, expected_state, expected_detail)
+    finally:
+        client.close()
+
+
+def test_auth_chip_keeps_legacy_client_without_status_api_neutral(qtbot, tmp_path):
+    window, client = _window(qtbot, tmp_path, AppState())
+    legacy_client = object()
+    window._wcl_client = legacy_client
+
+    try:
+        window._refresh_auth_label()
+        window._record_fetch_connection_status(
+            _FetchIdentity(
+                applicant_id="42:1",
+                charname_key="scout",
+                server_slug="realma",
+                region="EU",
+                spec_id=71,
+                metric_role="DPS",
+                metric_preferences=ALL_METRIC_PREFERENCES,
+            ),
+            _ranks(),
+        )
+
+        assert window._auth_label.text() == "Auth —"
+        assert window._auth_label.property("statusState") == "neutral"
+    finally:
+        window._wcl_client = client
         client.close()
 
 
@@ -577,14 +649,50 @@ def test_fetch_task_refetches_when_cache_generation_changes_after_hit():
     client = _FreshFetchClient()
     task = _FetchTask(identity, "Scout", client, cache)  # type: ignore[arg-type]
     emitted: list[CharacterRanks] = []
+    network_emitted: list[CharacterRanks] = []
     task.signals.done.connect(lambda _identity, ranks: emitted.append(ranks))
+    task.signals.networkDone.connect(
+        lambda _identity, ranks: network_emitted.append(ranks)
+    )
 
     task.run()
 
     assert client.fetch_called is True
     assert emitted[-1].raid_heroic == 44.0
     assert emitted[-1].mplus_dps == 88.0
+    assert network_emitted == emitted
     assert cache.put_expected_generation == 0
+
+
+def test_fetch_task_cache_hit_does_not_claim_live_api_success():
+    identity = _FetchIdentity(
+        applicant_id="42:1",
+        charname_key="scout",
+        server_slug="realma",
+        region="EU",
+        spec_id=71,
+        metric_role="DPS",
+        metric_preferences=ALL_METRIC_PREFERENCES,
+    )
+    cache = _UiThreadCacheProbe()
+    cache.result = _ranks()
+    task = _FetchTask(
+        identity,
+        "Scout",
+        _FreshFetchClient(),
+        cache,
+    )  # type: ignore[arg-type]
+    done: list[CharacterRanks] = []
+    network_done: list[CharacterRanks] = []
+    task.signals.done.connect(lambda _identity, ranks: done.append(ranks))
+    task.signals.networkDone.connect(
+        lambda _identity, ranks: network_done.append(ranks)
+    )
+
+    task.run()
+
+    assert len(done) == 1
+    assert network_done == []
 
 
 def test_fetch_done_burst_coalesces_overlay_refresh(qtbot, tmp_path):
@@ -2211,6 +2319,80 @@ def test_wcl_runtime_generation_bump_refetches_party_members(qtbot, tmp_path):
         assert identity.storage_key in window._fetches_in_flight
         assert old_identity.network_key not in window._fetch_waiters_by_target
         assert identity.network_key in window._fetch_waiters_by_target
+    finally:
+        client.close()
+
+
+def test_stale_network_completion_cannot_overwrite_current_auth_status(
+    qtbot, tmp_path
+):
+    window, client = _window(qtbot, tmp_path, AppState())
+    stale_identity = _FetchIdentity(
+        applicant_id="42:1",
+        charname_key="scout",
+        server_slug="realma",
+        region="EU",
+        spec_id=71,
+        metric_role="DPS",
+        runtime_generation=0,
+        metric_preferences=ALL_METRIC_PREFERENCES,
+    )
+
+    try:
+        window._record_fetch_connection_status(
+            stale_identity,
+            CharacterRanks.empty(
+                error="offline detail",
+                error_kind=WCL_ERROR_NETWORK,
+            ),
+        )
+        assert client.connection_status.error_kind == WCL_ERROR_NETWORK
+
+        window.bump_wcl_runtime_generation()
+        client.reconfigure_auth(WCLAuth("new", "new-secret", tmp_path), validated=True)
+        window._record_fetch_connection_status(stale_identity, _ranks())
+
+        assert client.connection_status.state == "oauth_ready"
+
+        current_identity = _FetchIdentity(
+            applicant_id=stale_identity.applicant_id,
+            charname_key=stale_identity.charname_key,
+            server_slug=stale_identity.server_slug,
+            region=stale_identity.region,
+            spec_id=stale_identity.spec_id,
+            metric_role=stale_identity.metric_role,
+            runtime_generation=1,
+            metric_preferences=ALL_METRIC_PREFERENCES,
+        )
+        window._record_fetch_connection_status(current_identity, _ranks())
+        assert client.connection_status.state == "api_ready"
+    finally:
+        client.close()
+
+
+def test_network_character_not_found_is_successful_api_status(qtbot, tmp_path):
+    window, client = _window(qtbot, tmp_path, AppState())
+    identity = _FetchIdentity(
+        applicant_id="42:1",
+        charname_key="missing",
+        server_slug="realma",
+        region="EU",
+        spec_id=71,
+        metric_role="DPS",
+        metric_preferences=ALL_METRIC_PREFERENCES,
+    )
+
+    try:
+        window._record_fetch_connection_status(
+            identity,
+            CharacterRanks.empty(
+                error="Could not find character",
+                not_found=True,
+            ),
+        )
+
+        assert client.connection_status.state == "api_ready"
+        assert client.connection_status.error_kind == ""
     finally:
         client.close()
 

@@ -88,6 +88,53 @@ def _fake_config_source_checkout(monkeypatch: pytest.MonkeyPatch, root: Path) ->
     return root
 
 
+def test_validate_oauth_async_snapshots_before_daemon_worker_start(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[object] = []
+    validation = object()
+    client = SimpleNamespace(
+        begin_auth_validation=lambda: calls.append("begin") or validation,
+        run_auth_validation=lambda value: calls.append(("run", value)),
+    )
+
+    class _ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            calls.append("start")
+            self.target()
+
+    monkeypatch.setattr(main_mod.threading, "Thread", _ImmediateThread)
+
+    worker = main_mod._validate_oauth_async(client)
+
+    assert worker is not None
+    assert worker.name == "WCLAuthValidator"
+    assert worker.daemon is True
+    assert calls == ["begin", "start", ("run", validation)]
+
+
+def test_validate_oauth_async_does_not_launch_after_client_close(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        main_mod.threading,
+        "Thread",
+        lambda **_kwargs: pytest.fail("worker must not be constructed"),
+    )
+
+    assert (
+        main_mod._validate_oauth_async(
+            SimpleNamespace(begin_auth_validation=lambda: None)
+        )
+        is None
+    )
+
+
 def _live_snapshot() -> Snapshot:
     return Snapshot(
         listing=DecodedListing(
@@ -1586,6 +1633,170 @@ def test_settings_change_validates_screenshots_before_wow_sync_runtime(
         )
 
     assert calls == []
+
+
+def test_validated_settings_promotion_marks_new_active_auth_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    screenshots = root / "Screenshots"
+    screenshots.mkdir()
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    values = SimpleNamespace(
+        wcl_client_id="new-client",
+        wcl_client_secret="new-secret",
+        region=cfg.region,
+        screenshots_path=str(screenshots),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    new_auth = object()
+    reconfigured: list[tuple[object, bool]] = []
+    bumps: list[str] = []
+    client = SimpleNamespace(
+        region=cfg.region,
+        reconfigure_auth=lambda auth, *, validated=False: reconfigured.append(
+            (auth, validated)
+        ),
+    )
+    monkeypatch.setattr(main_mod, "WCLAuth", lambda *_args, **_kwargs: new_auth)
+    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_a, **_k: None)
+
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=True,
+        auth=object(),
+        wcl_client=client,
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda *_args, **_kwargs: None,
+            bump_wcl_runtime_generation=lambda: bumps.append("bump"),
+        ),
+        watcher=object(),
+        current_screenshots_dir=screenshots,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=None,
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert result.auth is new_auth
+    assert reconfigured == [(new_auth, True)]
+    assert bumps == ["bump"]
+
+
+def test_validated_same_active_credentials_repair_auth_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    screenshots = root / "Screenshots"
+    screenshots.mkdir()
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(screenshots),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    marked: list[str] = []
+    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_a, **_k: None)
+
+    main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=True,
+        auth=object(),
+        wcl_client=SimpleNamespace(
+            region=cfg.region,
+            reconfigure_auth=lambda *_args, **_kwargs: pytest.fail(
+                "unchanged auth must not be replaced"
+            ),
+            mark_active_auth_validated=lambda: marked.append("ready"),
+        ),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda *_args, **_kwargs: None,
+            bump_wcl_runtime_generation=lambda: pytest.fail(
+                "unchanged auth must not refetch rows"
+            ),
+        ),
+        watcher=object(),
+        current_screenshots_dir=screenshots,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=None,
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert marked == ["ready"]
+
+
+def test_env_overridden_validated_draft_does_not_replace_active_auth_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    root = _retail_root(tmp_path)
+    (root / "Interface" / "AddOns").mkdir(parents=True)
+    screenshots = root / "Screenshots"
+    screenshots.mkdir()
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    cfg.wcl_client_id = "env-client"
+    cfg.wcl_client_secret = "env-secret"
+    values = SimpleNamespace(
+        wcl_client_id="tested-draft",
+        wcl_client_secret="tested-draft-secret",
+        region=cfg.region,
+        screenshots_path=str(screenshots),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    active_auth = object()
+    reconfigured: list[object] = []
+    marked: list[str] = []
+    monkeypatch.setenv("WCL_CLIENT_ID", cfg.wcl_client_id)
+    monkeypatch.setenv("WCL_CLIENT_SECRET", cfg.wcl_client_secret)
+    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_a, **_k: None)
+
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=True,
+        auth=active_auth,
+        wcl_client=SimpleNamespace(
+            region=cfg.region,
+            reconfigure_auth=lambda auth, **_kwargs: reconfigured.append(auth),
+            mark_active_auth_validated=lambda: marked.append("ready"),
+        ),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda *_args, **_kwargs: None,
+            bump_wcl_runtime_generation=lambda: None,
+        ),
+        watcher=object(),
+        current_screenshots_dir=screenshots,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=None,
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert result.auth is active_auth
+    assert result.cfg.wcl_client_id == "env-client"
+    assert reconfigured == []
+    assert marked == []
 
 
 def test_settings_apply_respects_process_env_overrides_for_runtime(
