@@ -33,10 +33,12 @@ from PyQt6.QtGui import (
     QFontMetrics,
     QGuiApplication,
     QIcon,
+    QKeyEvent,
     QMouseEvent,
     QPalette,
 )
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QAbstractSpinBox,
     QApplication,
     QFrame,
@@ -183,6 +185,7 @@ MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
 MPLUS_INDIVIDUAL_TEXT_ROLE = Qt.ItemDataRole.UserRole + 22
 MPLUS_INDIVIDUAL_FG_ROLE = Qt.ItemDataRole.UserRole + 23
 MPLUS_INDIVIDUAL_BG_ROLE = Qt.ItemDataRole.UserRole + 24
+ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE = Qt.ItemDataRole.UserRole + 30
 MPLUS_GROUP_LANE_MAX_WIDTH = 72
 MPLUS_GROUP_LANE_MIN_WIDTH = 42
 MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 56
@@ -921,29 +924,44 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._hover_row = -1
         self._pinned_row = -1
+        self._keyboard_row = -1
         self._group_marker_by_row: dict[int, _GroupMarker] = {}
 
-    def set_rows(self, hover_row: int, pinned_row: int) -> set[int]:
+    def set_rows(
+        self, hover_row: int, pinned_row: int, keyboard_row: int = -1
+    ) -> set[int]:
         old_hover_row = self._hover_row
         old_pinned_row = self._pinned_row
+        old_keyboard_row = self._keyboard_row
         changed = {
             row
             for row in (
                 old_hover_row,
                 old_pinned_row,
+                old_keyboard_row,
                 hover_row,
                 pinned_row,
+                keyboard_row,
             )
             if row >= 0
         }
         changed = {
             row
             for row in changed
-            if (row == old_hover_row, row == old_pinned_row)
-            != (row == hover_row, row == pinned_row)
+            if (
+                row == old_hover_row,
+                row == old_pinned_row,
+                row == old_keyboard_row,
+            )
+            != (
+                row == hover_row,
+                row == pinned_row,
+                row == keyboard_row,
+            )
         }
         self._hover_row = hover_row
         self._pinned_row = pinned_row
+        self._keyboard_row = keyboard_row
         return changed
 
     def set_group_markers(self, markers: dict[int, _GroupMarker]) -> None:
@@ -955,6 +973,8 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         # Item paints first (preserves QTableWidgetItem.setBackground colours
         # for raid/M+ percentile cells). Stripe overlays after — visible over
         # any background, never desaturates the text behind it.
+        option = QStyleOptionViewItem(option)
+        option.state &= ~QStyle.StateFlag.State_Selected
         group_marker = self._group_marker_by_row.get(index.row())
         if index.column() == COL_SPEC:
             role = index.data(Qt.ItemDataRole.UserRole)
@@ -1018,6 +1038,8 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
             painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#e5cc80"))
         elif index.row() == self._hover_row:
             painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#ffffff"))
+        elif index.row() == self._keyboard_row:
+            painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#66d9ef"))
         # Group bracket at x=3..9, COLUMN 0 ONLY. The wider rail + caps answer
         # "these adjacent rows are one application" without adding table text.
         if index.column() == COL_SPEC and group_marker is not None:
@@ -1115,6 +1137,20 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class _KeyboardButton(QPushButton):
+    """QPushButton with consistent Enter/Return activation outside dialogs."""
+
+    def keyPressEvent(self, event: QKeyEvent | None) -> None:  # type: ignore[override]
+        if event is not None and event.key() in (
+            Qt.Key.Key_Enter,
+            Qt.Key.Key_Return,
+        ):
+            self.click()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class _TooltipTableWidget(QTableWidget):
     """QTableWidget with a viewportEvent override kept as the documented
     tooltip-bypass anchor.
@@ -1128,6 +1164,100 @@ class _TooltipTableWidget(QTableWidget):
 
     Header tooltips (column legends) and title-label tooltip route through
     OverlayWindow.eventFilter, NOT through this override."""
+
+    keyboardNavigated = pyqtSignal(int)
+    rowActivated = pyqtSignal(int)
+    unpinRequested = pyqtSignal()
+    focusTraversalRequested = pyqtSignal(bool)
+
+    _NAVIGATION_KEYS = frozenset(
+        {
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
+            Qt.Key.Key_Home,
+            Qt.Key.Key_End,
+            Qt.Key.Key_PageUp,
+            Qt.Key.Key_PageDown,
+        }
+    )
+
+    def event(self, event: QEvent | None) -> bool:  # type: ignore[override]
+        # QWidget consumes Tab for focus traversal before keyPressEvent. Route
+        # it explicitly so QAbstractItemView cannot reinterpret it as a cell
+        # move and trap focus inside the table.
+        if (
+            isinstance(event, QKeyEvent)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
+        ):
+            forward = not (
+                event.key() == Qt.Key.Key_Backtab
+                or event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            )
+            self.focusTraversalRequested.emit(forward)
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event: QKeyEvent | None) -> None:  # type: ignore[override]
+        if event is None:
+            return super().keyPressEvent(event)
+        key = event.key()
+        if key in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Space):
+            row = self.currentRow()
+            if row >= 0 and not self.isRowHidden(row):
+                self.rowActivated.emit(row)
+            event.accept()
+            return
+        if key == Qt.Key.Key_Escape:
+            self.unpinRequested.emit()
+            event.accept()
+            return
+        if key in self._NAVIGATION_KEYS:
+            visible_rows = [
+                row for row in range(self.rowCount()) if not self.isRowHidden(row)
+            ]
+            if visible_rows:
+                current = self.currentRow()
+                if key == Qt.Key.Key_Home:
+                    target = visible_rows[0]
+                elif key == Qt.Key.Key_End:
+                    target = visible_rows[-1]
+                elif current not in visible_rows:
+                    target = (
+                        visible_rows[-1]
+                        if key in (Qt.Key.Key_Up, Qt.Key.Key_PageUp)
+                        else visible_rows[0]
+                    )
+                else:
+                    current_index = visible_rows.index(current)
+                    if key in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
+                        row_height = max(1, self.rowHeight(current))
+                        viewport = self.viewport()
+                        viewport_height = (
+                            viewport.height() if viewport is not None else 0
+                        )
+                        step = max(1, viewport_height // row_height)
+                    else:
+                        step = 1
+                    direction = -1 if key in (Qt.Key.Key_Up, Qt.Key.Key_PageUp) else 1
+                    target = visible_rows[
+                        max(
+                            0,
+                            min(
+                                len(visible_rows) - 1,
+                                current_index + direction * step,
+                            ),
+                        )
+                    ]
+                self.setCurrentCell(target, COL_NAME)
+                item = self.item(target, COL_NAME)
+                if item is not None:
+                    self.scrollToItem(item)
+                self.keyboardNavigated.emit(target)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def viewportEvent(self, e):  # type: ignore[override]
         from PyQt6.QtCore import QEvent
@@ -1146,6 +1276,15 @@ class _TooltipTableWidget(QTableWidget):
                     tip = item.toolTip()
             return _render_tooltip(self, tip, e.globalPos())
         return super().viewportEvent(e)
+
+
+def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else plural or singular + 's'}"
+
+
+def _widget_has_focus(widget: QWidget) -> bool:
+    focus = QApplication.focusWidget()
+    return focus is not None and (focus is widget or widget.isAncestorOf(focus))
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -1168,12 +1307,18 @@ class TitleBar(QWidget):
 
         self.title_label = QLabel("M+ Applicants")
         self.title_label.setObjectName("titleLabel")
+        self.title_label.setAccessibleName("Current listing")
         layout.addWidget(self.title_label, stretch=1)
 
-        self.settings_button = QPushButton()
+        self.settings_button = _KeyboardButton()
         self.settings_button.setObjectName("settingsButton")
         self.settings_button.setFixedSize(20, 20)
         self.settings_button.setToolTip("Settings")
+        self.settings_button.setAccessibleName("Open ApplicantScout settings")
+        self.settings_button.setAccessibleDescription(
+            "Open the ApplicantScout companion settings window."
+        )
+        self.settings_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         style = self.style()
         if style is not None:
             self.settings_button.setIcon(
@@ -1182,10 +1327,15 @@ class TitleBar(QWidget):
         self.settings_button.clicked.connect(self.settingsClicked.emit)
         layout.addWidget(self.settings_button)
 
-        self.hide_button = QPushButton("-")
+        self.hide_button = _KeyboardButton("-")
         self.hide_button.setObjectName("hideButton")
         self.hide_button.setFixedSize(20, 20)
         self.hide_button.setToolTip("Hide overlay")
+        self.hide_button.setAccessibleName("Hide ApplicantScout overlay to launcher")
+        self.hide_button.setAccessibleDescription(
+            "Hide the overlay and leave the compact launcher visible in game."
+        )
+        self.hide_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.hide_button.clicked.connect(self.hideClicked.emit)
         layout.addWidget(self.hide_button)
 
@@ -1217,23 +1367,29 @@ class TitleBar(QWidget):
         self._drag_offset = None
 
 
-class OverlayLauncher(QFrame):
-    clicked = pyqtSignal()
+class OverlayLauncher(_KeyboardButton):
     dragStarted = pyqtSignal()
     dragFinished = pyqtSignal()
     positionChanged = pyqtSignal()
 
     def __init__(self) -> None:
-        super().__init__(None)
+        super().__init__("AS", None)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setObjectName("overlayLauncher")
         self.setFixedSize(LAUNCHER_SIZE, LAUNCHER_SIZE)
         self.setToolTip("Show ApplicantScout overlay")
+        self.setAccessibleName("Show ApplicantScout overlay")
+        self.setAccessibleDescription(
+            "Restore the overlay in passive in-game mode. Use the system tray Show "
+            "overlay action for keyboard access."
+        )
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._press_global_pos: QPoint | None = None
         self._press_window_pos: QPoint | None = None
         self._drag_active = False
@@ -1244,14 +1400,6 @@ class OverlayLauncher(QFrame):
         self._drag_timer = QTimer(self)
         self._drag_timer.setInterval(LAUNCHER_DRAG_POLL_MS)
         self._drag_timer.timeout.connect(self._poll_drag_cursor)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        label = QLabel("AS")
-        label.setObjectName("overlayLauncherLabel")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(label)
 
     def show_at(self, pos: QPoint) -> None:
         if self._drag_active:
@@ -1320,7 +1468,10 @@ class OverlayLauncher(QFrame):
         if self._drag_button_up_since is None:
             self._drag_button_up_since = time.monotonic()
             return
-        if time.monotonic() - self._drag_button_up_since >= LAUNCHER_DRAG_RELEASE_GRACE_S:
+        if (
+            time.monotonic() - self._drag_button_up_since
+            >= LAUNCHER_DRAG_RELEASE_GRACE_S
+        ):
             self._finish_drag(emit_click=True)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -1370,7 +1521,7 @@ class OverlayLauncher(QFrame):
         if should_click:
             self._click_emit_active = True
             try:
-                self.clicked.emit()
+                self.click()
             finally:
                 self._click_emit_active = False
         elif was_dragged:
@@ -1410,15 +1561,19 @@ class SourceTabBar(QWidget):
 
         self._buttons: dict[str, QPushButton] = {}
         for key, label in (("applicants", "Applicants"), ("party", "Party")):
-            button = QPushButton(label)
+            button = _KeyboardButton(label)
             button.setCheckable(True)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            button.setAccessibleName(
+                "Applicants view" if key == "applicants" else "Party view"
+            )
             button.clicked.connect(lambda _checked=False, k=key: self.set_active(k))
             self._buttons[key] = button
             layout.addWidget(button)
         self._key_label = QLabel("Key")
         self._key_label.setObjectName("targetKeyLabel")
         self._key_label.setToolTip("Manual Mythic+ key level for fit scoring.")
+        self._key_label.setAccessibleName("Manual Mythic Plus target key label")
         key_label_font = self._key_label.font()
         key_label_font.setBold(True)
         self._key_label.setFont(key_label_font)
@@ -1436,7 +1591,11 @@ class SourceTabBar(QWidget):
         self._key_spin.setPrefix("+")
         self._key_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self._key_spin.setFixedWidth(64)
-        self._key_spin.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self._key_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._key_spin.setAccessibleName("Manual Mythic Plus target key")
+        self._key_spin.setAccessibleDescription(
+            "Use Up or Down to set the current Mythic Plus key level. Zero means unknown."
+        )
         self._key_spin.setToolTip(
             "Set the current Mythic+ key when the addon cannot read it from your own listing."
         )
@@ -1444,19 +1603,24 @@ class SourceTabBar(QWidget):
         key_spin_font.setBold(True)
         self._key_spin.setFont(key_spin_font)
         self._key_spin.valueChanged.connect(self.keyChanged.emit)
+        self._key_label.setBuddy(self._key_spin)
         key_layout.addWidget(self._key_spin)
-        self._key_up_button = QPushButton("▲")
+        self._key_up_button = _KeyboardButton("▲")
         self._key_up_button.setObjectName("targetKeyStepUp")
         self._key_up_button.setFixedSize(24, 22)
-        self._key_up_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._key_up_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._key_up_button.setToolTip("Increase key level")
+        self._key_up_button.setAccessibleName("Increase manual Mythic Plus target key")
         self._key_up_button.clicked.connect(self._key_spin.stepUp)
         key_layout.addWidget(self._key_up_button)
-        self._key_down_button = QPushButton("▼")
+        self._key_down_button = _KeyboardButton("▼")
         self._key_down_button.setObjectName("targetKeyStepDown")
         self._key_down_button.setFixedSize(24, 22)
-        self._key_down_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._key_down_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._key_down_button.setToolTip("Decrease key level")
+        self._key_down_button.setAccessibleName(
+            "Decrease manual Mythic Plus target key"
+        )
         self._key_down_button.clicked.connect(self._key_spin.stepDown)
         key_layout.addWidget(self._key_down_button)
         layout.addWidget(self._key_control)
@@ -1464,6 +1628,7 @@ class SourceTabBar(QWidget):
         self._applicant_count = 0
         self._party_count = 0
         self._party_count_stale = False
+        self._active_key = "applicants"
         self.set_counts(applicants=0, party=0)
         self.set_active("applicants", emit=False)
 
@@ -1477,7 +1642,11 @@ class SourceTabBar(QWidget):
         self._refresh_count_labels()
 
     def _refresh_count_labels(self) -> None:
-        self._buttons["applicants"].setText(f"Applicants ({self._applicant_count})")
+        applicants_button = self._buttons["applicants"]
+        applicants_button.setText(f"Applicants ({self._applicant_count})")
+        applicants_button.setAccessibleDescription(
+            f"Show {_count_phrase(self._applicant_count, 'application')} in the applicant table."
+        )
         stale_marker = "?" if self._party_count_stale else ""
         party_button = self._buttons["party"]
         party_button.setText(f"Party ({self._party_count}{stale_marker})")
@@ -1486,8 +1655,15 @@ class SourceTabBar(QWidget):
                 "The latest valid QR omitted the group roster. "
                 "Showing the last known Party count."
             )
+            party_button.setAccessibleDescription(
+                f"Show the last known {_count_phrase(self._party_count, 'party member')}; "
+                "the latest snapshot omitted the roster."
+            )
         else:
             party_button.setToolTip("")
+            party_button.setAccessibleDescription(
+                f"Show {_count_phrase(self._party_count, 'party member')} in the party table."
+            )
 
     def set_active(self, key: str, *, emit: bool = True) -> None:
         if key not in self._buttons:
@@ -1496,6 +1672,7 @@ class SourceTabBar(QWidget):
             was_blocked = button.blockSignals(True)
             button.setChecked(button_key == key)
             button.blockSignals(was_blocked)
+        self._active_key = key
         if emit:
             self.tabChanged.emit(key)
 
@@ -1506,6 +1683,8 @@ class SourceTabBar(QWidget):
         self._key_spin.blockSignals(was_blocked)
 
     def set_target_key_visible(self, visible: bool) -> None:
+        if not visible and _widget_has_focus(self._key_control):
+            self._buttons[self._active_key].setFocus(Qt.FocusReason.OtherFocusReason)
         self._key_label.setVisible(visible)
         self._key_control.setVisible(visible)
 
@@ -1533,9 +1712,9 @@ class RoleFilterBar(QWidget):
     same check before deciding row visibility math.
 
     Each role toggle adds/removes its role from the active filter set. The reset
-    button clears all toggles and emits a single empty filter set. Buttons have
-    NoFocus policy — frameless overlay isn't a focus participant for
-    keyboard nav, mouse-only interaction matches the rest of the overlay."""
+    button clears all toggles and emits a single empty filter set. Buttons join
+    the focus chain only after the top-level overlay has been explicitly
+    activated; passive in-game show paths still do not take focus."""
 
     filterChanged = pyqtSignal(set)
 
@@ -1552,11 +1731,20 @@ class RoleFilterBar(QWidget):
         # Order: TANK | HEAL | DPS — matches Blizzard role-checkbox UI in
         # Group Finder for muscle-memory consistency.
         for role in ("TANK", "HEALER", "DAMAGER"):
-            btn = QPushButton(ROLE_LABELS[role])
+            btn = _KeyboardButton(ROLE_LABELS[role])
             btn.setCheckable(True)
             btn.setObjectName(f"roleBtn_{role}")
-            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             btn.setToolTip(ROLE_FILTER_TOOLTIPS[role])
+            accessible_role = {
+                "TANK": "Tank",
+                "HEALER": "Healer",
+                "DAMAGER": "Damage dealer",
+            }[role]
+            btn.setAccessibleName(f"{accessible_role} role filter")
+            btn.setAccessibleDescription(
+                f"Toggle entries containing a {accessible_role.lower()}."
+            )
             icon = _role_icon(role)
             if icon is not None:
                 btn.setIcon(icon)
@@ -1568,17 +1756,20 @@ class RoleFilterBar(QWidget):
             layout.addWidget(btn)
 
         layout.addStretch(1)
-        self._reset_btn = QPushButton(ROLE_FILTER_RESET_TEXT)
+        self._reset_btn = _KeyboardButton(ROLE_FILTER_RESET_TEXT)
         self._reset_btn.setObjectName("roleFilterReset")
         self._reset_btn.setFixedSize(ROLE_FILTER_RESET_SIZE)
-        self._reset_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._reset_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._reset_btn.setToolTip(ROLE_FILTER_RESET_TOOLTIP)
+        self._reset_btn.setAccessibleName("Clear role filters")
+        self._reset_btn.setAccessibleDescription("Show entries for every role.")
         self._reset_btn.clicked.connect(lambda _checked=False: self._reset())
         self._reset_btn.hide()
         layout.addWidget(self._reset_btn)
 
         self._status = QLabel("")
         self._status.setObjectName("roleFilterStatus")
+        self._status.setAccessibleName("Role filter result count")
         layout.addWidget(self._status)
 
     def _on_toggled(self, role: str, on: bool) -> None:
@@ -1602,6 +1793,8 @@ class RoleFilterBar(QWidget):
         self.filterChanged.emit(set())
 
     def _sync_reset_button(self) -> None:
+        if not self._active and _widget_has_focus(self._reset_btn):
+            self._buttons["TANK"].setFocus(Qt.FocusReason.OtherFocusReason)
         self._reset_btn.setVisible(bool(self._active))
 
     def tooltip_widgets(self) -> tuple[QWidget, ...]:
@@ -1637,6 +1830,7 @@ class ApplicantInfoPanel(QFrame):
     pinCleared = pyqtSignal()
     detailChanged = pyqtSignal()
     wclRetryRequested = pyqtSignal()
+    focusFallbackRequested = pyqtSignal()
 
     def __init__(
         self,
@@ -1646,6 +1840,8 @@ class ApplicantInfoPanel(QFrame):
         super().__init__(parent)
         self._metric_preferences = metric_preferences
         self.setObjectName("infoPanel")
+        self.setAccessibleName("Applicant details")
+        self.setAccessibleDescription("No applicant is currently selected.")
         # Three-layer translucency mitigation: panel is a child of rootContainer
         # which sits on the WA_TranslucentBackground top-level overlay window.
         # Without these, panel inherits transparent painting and renders
@@ -1671,17 +1867,17 @@ class ApplicantInfoPanel(QFrame):
         header_layout.addWidget(self._name_label)
         header_layout.addWidget(self._realm_label)
         header_layout.addStretch(1)
-        self._wcl_retry_button = QPushButton("Retry WCL")
+        self._wcl_retry_button = _KeyboardButton("Retry WCL")
         self._wcl_retry_button.setObjectName("infoWclRetryButton")
         self._wcl_retry_button.setFixedHeight(22)
-        self._wcl_retry_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._wcl_retry_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._wcl_retry_button.setToolTip("Retry Warcraft Logs for this row")
         self._wcl_retry_button.clicked.connect(self.wclRetryRequested.emit)
         header_layout.addWidget(self._wcl_retry_button)
-        self._unpin_button = QPushButton("×")
+        self._unpin_button = _KeyboardButton("×")
         self._unpin_button.setObjectName("infoUnpinButton")
         self._unpin_button.setFixedSize(22, 22)
-        self._unpin_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._unpin_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._unpin_button.setToolTip("Clear pinned applicant")
         self._unpin_button.clicked.connect(self.pinCleared.emit)
         header_layout.addWidget(self._unpin_button)
@@ -1744,10 +1940,18 @@ class ApplicantInfoPanel(QFrame):
         detail_layout.setSpacing(4)
         self._detail_buttons: dict[str, QPushButton] = {}
         for mode, label in (("raid", "Raid"), ("mplus", "M+")):
-            button = QPushButton(label)
+            button = _KeyboardButton(label)
             button.setObjectName(f"infoDetailTab_{mode}")
             button.setCheckable(True)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            button.setAccessibleName(
+                "Raid details view" if mode == "raid" else "Mythic Plus details view"
+            )
+            button.setAccessibleDescription(
+                "Show boss-by-boss raid evidence."
+                if mode == "raid"
+                else "Show dungeon-by-dungeon Mythic Plus evidence."
+            )
             button.clicked.connect(
                 lambda _checked=False, m=mode: self._on_detail_mode_clicked(m)
             )
@@ -1865,8 +2069,9 @@ class ApplicantInfoPanel(QFrame):
         self._hide_data_widgets()
         self._current_applicant = None
         self._current_listing = None
+        self.setAccessibleDescription("No applicant is currently selected.")
         self._show_status(
-            "Hover a row for applicant details.",
+            "Select or hover a row for applicant details.",
             centered=True,
             state_kind="placeholder",
         )
@@ -1886,7 +2091,12 @@ class ApplicantInfoPanel(QFrame):
         """Show full applicant scout data in the fixed widget layout."""
         self._current_applicant = applicant
         self._current_listing = listing
-        self._unpin_button.setVisible(pinned)
+        self.setAccessibleDescription(f"Details for {applicant.name}.")
+        self._unpin_button.setAccessibleName(f"Clear pinned applicant {applicant.name}")
+        self._unpin_button.setAccessibleDescription(
+            f"Return {applicant.name} to preview-only state."
+        )
+        self._set_action_visible(self._unpin_button, pinned)
         self._set_identity(applicant)
         self._set_package(package, applicant, listing)
         self._set_status_or_data(
@@ -1909,15 +2119,15 @@ class ApplicantInfoPanel(QFrame):
         ):
             label.setText("")
             label.setVisible(False)
-        self._unpin_button.hide()
-        self._wcl_retry_button.hide()
+        self._set_action_visible(self._unpin_button, False)
+        self._set_action_visible(self._wcl_retry_button, False)
         for label in self._metric_labels.values():
             label.setText("")
             label.setVisible(False)
         self._package_label.setText("")
         self._package_label.setAccessibleDescription("")
         self._package_label.setVisible(False)
-        self._detail_tabs.setVisible(False)
+        self._set_action_visible(self._detail_tabs, False)
         self._status_label.setText("")
         self._status_label.setToolTip("")
         self._status_label.setAccessibleDescription("")
@@ -1933,6 +2143,11 @@ class ApplicantInfoPanel(QFrame):
                 label.setText("")
                 label.setVisible(False)
         self._dungeon_widget.setVisible(False)
+
+    def _set_action_visible(self, widget: QWidget, visible: bool) -> None:
+        if not visible and widget.isVisible() and _widget_has_focus(widget):
+            self.focusFallbackRequested.emit()
+        widget.setVisible(visible)
 
     def _set_identity(self, applicant: Applicant) -> None:
         raw_name, _, raw_realm = applicant.name.partition("-")
@@ -2014,8 +2229,7 @@ class ApplicantInfoPanel(QFrame):
         )
         if role_total > 0:
             parts.append(
-                f"{package.tank_count}T/{package.healer_count}H/"
-                f"{package.dps_count}DPS"
+                f"{package.tank_count}T/{package.healer_count}H/{package.dps_count}DPS"
             )
             if package.unknown_role_count > 0:
                 parts.append(f"unknown {package.unknown_role_count}")
@@ -2039,9 +2253,7 @@ class ApplicantInfoPanel(QFrame):
                     f"low {int(round(package.low_score))}",
                 )
             )
-        parts.append(
-            f"evidence confidence {int(round(package.confidence * 100))}%"
-        )
+        parts.append(f"evidence confidence {int(round(package.confidence * 100))}%")
         if member_note:
             parts.append(member_note)
         text = " · ".join(parts)
@@ -2059,9 +2271,7 @@ class ApplicantInfoPanel(QFrame):
                 count_phrase(package.dps_count, "damage dealer"),
             ]
             if package.unknown_role_count > 0:
-                roles.append(
-                    count_phrase(package.unknown_role_count, "unknown role")
-                )
+                roles.append(count_phrase(package.unknown_role_count, "unknown role"))
             description_parts.append(f"Group composition: {', '.join(roles)}.")
         data_status = []
         if package.loading_count > 0:
@@ -2069,9 +2279,7 @@ class ApplicantInfoPanel(QFrame):
                 count_phrase(package.loading_count, "member loading", "members loading")
             )
         if package.error_count > 0:
-            data_status.append(
-                count_phrase(package.error_count, "WCL error")
-            )
+            data_status.append(count_phrase(package.error_count, "WCL error"))
         if package.not_found_count > 0:
             data_status.append(
                 count_phrase(
@@ -2109,7 +2317,6 @@ class ApplicantInfoPanel(QFrame):
         self._status_label.setVisible(False)
         self._state_stage.setVisible(False)
         self._bottom_filler.setVisible(True)
-        self._wcl_retry_button.hide()
         if status in ("loading", "pending"):
             visible_rows = self._set_detail_rows(applicant, listing)
             self._show_status(
@@ -2172,9 +2379,7 @@ class ApplicantInfoPanel(QFrame):
                 error=raid_detail_status_error,
                 retry_available=raid_detail_retry_available,
                 action_text=(
-                    "Retry WCL"
-                    if raid_detail_status_error
-                    else "Load boss details"
+                    "Retry WCL" if raid_detail_status_error else "Load boss details"
                 ),
             )
         elif fit_status:
@@ -2191,6 +2396,8 @@ class ApplicantInfoPanel(QFrame):
                 centered=not self._package_label.text(),
                 state_kind="empty",
             )
+        else:
+            self._set_action_visible(self._wcl_retry_button, False)
 
     def _show_status(
         self,
@@ -2238,7 +2445,16 @@ class ApplicantInfoPanel(QFrame):
             if action_text == "Load boss details"
             else "Retry Warcraft Logs for this row"
         )
-        self._wcl_retry_button.setVisible(bool(text and retry_available))
+        applicant_name = (
+            self._current_applicant.name
+            if self._current_applicant is not None
+            else "row"
+        )
+        self._wcl_retry_button.setAccessibleName(f"{action_text} for {applicant_name}")
+        self._wcl_retry_button.setAccessibleDescription(
+            self._wcl_retry_button.toolTip()
+        )
+        self._set_action_visible(self._wcl_retry_button, bool(text and retry_available))
 
     def _clear_metrics_and_dungeons(self) -> None:
         for label in self._metric_labels.values():
@@ -2269,7 +2485,7 @@ class ApplicantInfoPanel(QFrame):
             modes.append("mplus")
         if not modes:
             self._detail_rows_enabled = False
-            self._detail_tabs.setVisible(False)
+            self._set_action_visible(self._detail_tabs, False)
             return
         self._detail_rows_enabled = True
         default_mode = (
@@ -2285,16 +2501,15 @@ class ApplicantInfoPanel(QFrame):
         if mode not in modes:
             mode = default_mode
         self._set_detail_mode(mode)
-        self._detail_tabs.setVisible(len(modes) > 1 or mode == "raid")
+        self._set_action_visible(self._detail_tabs, len(modes) > 1 or mode == "raid")
 
     def _set_detail_mode(self, mode: str) -> None:
         self._detail_mode = mode
         for key, button in self._detail_buttons.items():
-            enabled = (
-                (key == "raid" and self._metric_preferences.raid_enabled)
-                or (key == "mplus" and self._metric_preferences.mplus)
+            enabled = (key == "raid" and self._metric_preferences.raid_enabled) or (
+                key == "mplus" and self._metric_preferences.mplus
             )
-            button.setVisible(enabled)
+            self._set_action_visible(button, enabled)
             button.setChecked(key == mode)
 
     def _active_detail_mode(self) -> str:
@@ -2678,8 +2893,12 @@ class OverlayWindow(QMainWindow):
         self._closed = False
         self._launcher = OverlayLauncher()
         self._launcher.clicked.connect(self.restore_from_launcher)
-        self._launcher.dragStarted.connect(self._pause_foreground_polling_for_launcher_drag)
-        self._launcher.dragFinished.connect(self._resume_foreground_polling_after_launcher_drag)
+        self._launcher.dragStarted.connect(
+            self._pause_foreground_polling_for_launcher_drag
+        )
+        self._launcher.dragFinished.connect(
+            self._resume_foreground_polling_after_launcher_drag
+        )
         self._launcher.positionChanged.connect(self._persist_launcher_position)
         self._saved_launcher_position = load_launcher_position(self._config_dir)
         self._pool = QThreadPool.globalInstance()
@@ -2693,6 +2912,7 @@ class OverlayWindow(QMainWindow):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setWindowTitle("ApplicantScout overlay")
         self.setMinimumSize(QSize(USER_MIN_WINDOW_WIDTH, USER_MIN_WINDOW_HEIGHT))
 
         # Central container with QSS-stylable background
@@ -2720,6 +2940,12 @@ class OverlayWindow(QMainWindow):
             "applicants": None,
             "party": None,
         }
+        self._keyboard_by_tab: dict[str, str | None] = {
+            "applicants": None,
+            "party": None,
+        }
+        self._keyboard_id: str | None = None
+        self._keyboard_preview_active = False
         self._manual_target_key: int | None = None
         self._tab_bar = SourceTabBar(container)
         self._tab_bar.tabChanged.connect(self._on_source_tab_changed)
@@ -2747,6 +2973,7 @@ class OverlayWindow(QMainWindow):
         self._panel.pinCleared.connect(self._clear_pin)
         self._panel.detailChanged.connect(self._on_panel_detail_changed)
         self._panel.wclRetryRequested.connect(self._retry_visible_wcl_error)
+        self._panel.focusFallbackRequested.connect(self._focus_table_or_source)
         panel_tooltip_widgets = self._panel.tooltip_widgets()
         self._action_tooltip_widgets = (
             *self._action_tooltip_widgets,
@@ -2806,6 +3033,10 @@ class OverlayWindow(QMainWindow):
         # it), so no manual button filter is needed.
         self._table.cellEntered.connect(self._on_cell_entered)
         self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.keyboardNavigated.connect(self._on_table_keyboard_navigated)
+        self._table.rowActivated.connect(self._on_table_row_activated)
+        self._table.unpinRequested.connect(self._clear_pin)
+        self._table.focusTraversalRequested.connect(self._move_focus_from_table)
         # Scroll changes the row under a stationary cursor without firing
         # cellEntered — re-resolve hover from cursor position on scroll.
         scrollbar = self._table.verticalScrollBar()
@@ -2815,9 +3046,17 @@ class OverlayWindow(QMainWindow):
         if vertical_header is not None:
             vertical_header.setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setTabKeyNavigation(False)
         self._table.setShowGrid(False)
-        self._table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._table.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self._table.setAccessibleName("Applicant applications table")
+        self._table.setAccessibleDescription(
+            "Use Up, Down, Home, End, or page keys to preview rows, Enter or Space "
+            "to pin a row, "
+            "and Escape to clear the pin."
+        )
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
         for i, w in enumerate(COLUMN_WIDTHS):
@@ -2893,6 +3132,7 @@ class OverlayWindow(QMainWindow):
 
         self.setStyleSheet(_STYLESHEET)
         self._launcher.setStyleSheet(_STYLESHEET)
+        self._set_accessibility_tab_order()
 
         # Constructor-time Qt geometry events can fire synchronously during
         # setGeometry(), so every field read by moveEvent/resizeEvent/hover
@@ -2912,6 +3152,7 @@ class OverlayWindow(QMainWindow):
         self._id_by_row: list[str] = []
         self._row_render_key_by_id: dict[str, tuple] = {}
         self._group_size_by_raw: dict[str, int] = {}
+        self._group_position_by_id: dict[str, int] = {}
         self._package_fit_by_raw: dict[str, PackageFit] = {}
         # Hover & pin tracking. Display priority: hover > pin > hidden.
         # Pin survives applicant churn (preserved by id across re-sort);
@@ -3006,6 +3247,7 @@ class OverlayWindow(QMainWindow):
                 )
             )
         self._schedule_wcl_retry()
+        self._update_title()
 
     # ─── public slots called from main app ─────
 
@@ -3046,6 +3288,73 @@ class OverlayWindow(QMainWindow):
     def collapse_to_launcher(self) -> None:
         self.show_launcher_only()
 
+    def _set_accessibility_tab_order(self) -> None:
+        """Keep a deterministic chain; Qt automatically skips hidden controls."""
+        controls = self._accessibility_tab_controls()
+        for current, following in zip(controls, controls[1:]):
+            QWidget.setTabOrder(current, following)
+
+    def _accessibility_tab_controls(self) -> tuple[QWidget, ...]:
+        """Return the declarative focus order for regression inspection."""
+        return (
+            self._title_bar.settings_button,
+            self._title_bar.hide_button,
+            self._tab_bar._buttons["applicants"],
+            self._tab_bar._buttons["party"],
+            self._tab_bar._key_spin,
+            self._tab_bar._key_up_button,
+            self._tab_bar._key_down_button,
+            self._role_filter_bar._buttons["TANK"],
+            self._role_filter_bar._buttons["HEALER"],
+            self._role_filter_bar._buttons["DAMAGER"],
+            self._role_filter_bar._reset_btn,
+            self._panel._wcl_retry_button,
+            self._panel._unpin_button,
+            self._panel._detail_buttons["raid"],
+            self._panel._detail_buttons["mplus"],
+            self._table,
+        )
+
+    def _focus_accessibility_entry(self) -> None:
+        """Enter keyboard mode only after the explicit tray activation path."""
+        if self._closed or not self.isVisible():
+            return
+        for widget in (
+            self._title_bar.settings_button,
+            self._title_bar.hide_button,
+            self._tab_bar._buttons["applicants"],
+        ):
+            if widget.isVisible() and widget.isEnabled():
+                widget.setFocus(Qt.FocusReason.OtherFocusReason)
+                return
+
+    def _focus_table_or_source(self) -> None:
+        """Move focus off a control that is about to disappear."""
+        if self._table.isVisible() and self._table.isEnabled():
+            self._table.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._sync_table_current_id()
+            return
+        self._tab_bar._buttons[self._active_tab].setFocus(
+            Qt.FocusReason.OtherFocusReason
+        )
+
+    def _move_focus_from_table(self, forward: bool) -> None:
+        controls = self._accessibility_tab_controls()[:-1]
+        candidates = controls if forward else tuple(reversed(controls))
+        reason = (
+            Qt.FocusReason.TabFocusReason
+            if forward
+            else Qt.FocusReason.BacktabFocusReason
+        )
+        for widget in candidates:
+            if (
+                widget.isVisible()
+                and widget.isEnabled()
+                and widget.focusPolicy() != Qt.FocusPolicy.NoFocus
+            ):
+                widget.setFocus(reason)
+                return
+
     def show_launcher_only(self) -> None:
         if self._closed:
             return
@@ -3075,10 +3384,7 @@ class OverlayWindow(QMainWindow):
             and self._launcher.isVisible()
             and self._game_foreground
             and not self._launcher_visible_after_non_game_foreground
-            and (
-                self._launcher.isActiveWindow()
-                or self._launcher.is_click_emitting()
-            )
+            and (self._launcher.isActiveWindow() or self._launcher.is_click_emitting())
         )
         if (
             require_game_foreground
@@ -3105,6 +3411,7 @@ class OverlayWindow(QMainWindow):
         self.raise_()
         if activate:
             self.activateWindow()
+            QTimer.singleShot(0, self._focus_accessibility_entry)
 
     def _is_game_foreground(self) -> bool:
         try:
@@ -3176,15 +3483,15 @@ class OverlayWindow(QMainWindow):
         ):
             return
         if foreground == self._game_foreground:
-            if not foreground and self._collapsed_to_launcher and self._launcher.isVisible():
+            if (
+                not foreground
+                and self._collapsed_to_launcher
+                and self._launcher.isVisible()
+            ):
                 self._launcher_visible_after_non_game_foreground = False
                 self._launcher.hide()
                 return
-            if (
-                not foreground
-                and self.isVisible()
-                and not self.isActiveWindow()
-            ):
+            if not foreground and self.isVisible() and not self.isActiveWindow():
                 self.hide()
             return
         self._game_foreground = foreground
@@ -3206,14 +3513,25 @@ class OverlayWindow(QMainWindow):
             if key == "party":
                 self._party_tab_auto_selected = False
             return
-        self._hover_by_tab[self._active_tab] = self._hover_id
-        self._pinned_by_tab[self._active_tab] = self._pinned_id
-        self._active_tab = key
-        self._party_tab_auto_selected = False
-        self._hover_id = self._hover_by_tab.get(key)
-        self._pinned_id = self._pinned_by_tab.get(key)
+        self._select_tab_state(key, auto_selected=False)
         self._refresh_table()
         self._update_title()
+
+    def _select_tab_state(self, key: str, *, auto_selected: bool) -> None:
+        if key not in self._hover_by_tab:
+            return
+        if key != self._active_tab:
+            self._hover_by_tab[self._active_tab] = self._hover_id
+            self._pinned_by_tab[self._active_tab] = self._pinned_id
+            self._keyboard_by_tab[self._active_tab] = self._keyboard_id
+            self._active_tab = key
+            self._hover_id = self._hover_by_tab.get(key)
+            self._pinned_id = self._pinned_by_tab.get(key)
+            self._keyboard_id = self._keyboard_by_tab.get(key)
+            self._keyboard_preview_active = False
+        self._party_tab_auto_selected = auto_selected
+        self._tab_bar.set_active(key, emit=False)
+        self._update_table_accessibility_context()
 
     def _on_target_key_changed(self, key_level: int) -> None:
         new_key = key_level if key_level > 0 else None
@@ -3288,9 +3606,7 @@ class OverlayWindow(QMainWindow):
     def _restore_applicants_after_party_fallback(self) -> None:
         if self._active_tab != "party" or not self._party_tab_auto_selected:
             return
-        self._active_tab = "applicants"
-        self._party_tab_auto_selected = False
-        self._tab_bar.set_active("applicants", emit=False)
+        self._select_tab_state("applicants", auto_selected=False)
         self._clear_role_filter()
 
     def _should_auto_select_party(self) -> bool:
@@ -3347,13 +3663,12 @@ class OverlayWindow(QMainWindow):
             self._pinned_id = None
             self._hover_by_tab["applicants"] = None
             self._pinned_by_tab["applicants"] = None
+            self._keyboard_by_tab["applicants"] = None
             if self._state.listing is not None:
                 self._schedule_overlay_refresh(update_title=True)
                 return
             if has_party:
-                self._active_tab = "party"
-                self._party_tab_auto_selected = True
-                self._tab_bar.set_active("party", emit=False)
+                self._select_tab_state("party", auto_selected=True)
                 self._clear_role_filter()
                 self._schedule_overlay_refresh(update_title=True, maybe_show=True)
                 return
@@ -3373,7 +3688,10 @@ class OverlayWindow(QMainWindow):
             and listing.key_level > 0
         ):
             self._clear_manual_target_key()
-        elif self._manual_target_key is not None and not self._can_apply_manual_target_key():
+        elif (
+            self._manual_target_key is not None
+            and not self._can_apply_manual_target_key()
+        ):
             self._clear_manual_target_key()
         self._schedule_overlay_refresh(
             update_title=True,
@@ -3384,10 +3702,12 @@ class OverlayWindow(QMainWindow):
         # listing comment edits would re-show the window otherwise.
         if self._state.listing is None:
             return
-        if listing_created and self._active_tab == "party" and self._party_tab_auto_selected:
-            self._active_tab = "applicants"
-            self._party_tab_auto_selected = False
-            self._tab_bar.set_active("applicants", emit=False)
+        if (
+            listing_created
+            and self._active_tab == "party"
+            and self._party_tab_auto_selected
+        ):
+            self._select_tab_state("applicants", auto_selected=False)
             self._clear_role_filter()
         if self._state.count() > 0:
             self._maybe_show()
@@ -3416,6 +3736,10 @@ class OverlayWindow(QMainWindow):
         self._pinned_id = None
         self._hover_by_tab["applicants"] = None
         self._pinned_by_tab["applicants"] = None
+        self._keyboard_by_tab["applicants"] = None
+        if self._active_tab == "applicants":
+            self._keyboard_id = None
+            self._keyboard_preview_active = False
         self._sync_delegate_and_panel()
         self._update_title()
         if self._state.party_members:
@@ -3423,9 +3747,7 @@ class OverlayWindow(QMainWindow):
                 member = self._state.party_members.get(identity.applicant_id)
                 if member is not None and member.fetch_status in {"pending", "loading"}:
                     self._launch_fetch(member)
-            self._active_tab = "party"
-            self._party_tab_auto_selected = True
-            self._tab_bar.set_active("party", emit=False)
+            self._select_tab_state("party", auto_selected=True)
             self._schedule_overlay_refresh(update_title=True, maybe_show=True)
             return
         # Only hide if there's also no active listing or Party roster. EMPTY
@@ -3440,15 +3762,21 @@ class OverlayWindow(QMainWindow):
         for member in self._state.party_members.values():
             if member.fetch_status == "pending" and not self._restored_snapshot_pending:
                 self._launch_fetch(member)
-        if self._manual_target_key is not None and not self._can_apply_manual_target_key():
+        if (
+            self._manual_target_key is not None
+            and not self._can_apply_manual_target_key()
+        ):
             self._clear_manual_target_key()
         if len(self._state.party_members) == 0:
             self._last_raid_listing = None
             self._hover_by_tab["party"] = None
             self._pinned_by_tab["party"] = None
+            self._keyboard_by_tab["party"] = None
             if self._active_tab == "party":
                 self._hover_id = None
                 self._pinned_id = None
+                self._keyboard_id = None
+                self._keyboard_preview_active = False
         if (
             len(self._state.party_members) == 0
             and self._state.count() == 0
@@ -3459,15 +3787,11 @@ class OverlayWindow(QMainWindow):
             self.show_launcher_only()
             return
         if self._active_tab == "party" and len(self._state.party_members) == 0:
-            self._active_tab = "applicants"
-            self._party_tab_auto_selected = False
-            self._tab_bar.set_active("applicants", emit=False)
+            self._select_tab_state("applicants", auto_selected=False)
             self._clear_role_filter()
         should_show_party = self._should_auto_select_party()
         if should_show_party:
-            self._active_tab = "party"
-            self._party_tab_auto_selected = True
-            self._tab_bar.set_active("party", emit=False)
+            self._select_tab_state("party", auto_selected=True)
             self._clear_role_filter()
         self._schedule_overlay_refresh(
             update_title=True,
@@ -3611,8 +3935,12 @@ class OverlayWindow(QMainWindow):
         if self._restored_snapshot_pending:
             saved_at = self._restored_snapshot_saved_at
             deadline = self._restored_snapshot_deadline
-            age = _format_duration(max(0.0, time.time() - saved_at)) if saved_at else "?"
-            wait = _format_duration(max(0.0, deadline - time.time())) if deadline else "?"
+            age = (
+                _format_duration(max(0.0, time.time() - saved_at)) if saved_at else "?"
+            )
+            wait = (
+                _format_duration(max(0.0, deadline - time.time())) if deadline else "?"
+            )
             self._health_label.setText("Shot restored")
             self._set_status_chip_state(self._health_label, "active")
             detail = (
@@ -3771,9 +4099,7 @@ class OverlayWindow(QMainWindow):
                 self._set_status_chip_state(self._status_label, "active")
             else:
                 self._status_label.setText("WCL —/—")
-                detail = (
-                    "No Warcraft Logs quota data yet; no requests are active."
-                )
+                detail = "No Warcraft Logs quota data yet; no requests are active."
                 self._status_label.setToolTip(detail)
                 self._status_label.setAccessibleDescription(detail)
                 self._set_status_chip_state(self._status_label, "neutral")
@@ -3792,9 +4118,7 @@ class OverlayWindow(QMainWindow):
             f"WCL {percent}%" if percent is not None else "WCL —%"
         )
         reset_detail = f"resets in {reset_min}m" if reset_min > 0 else "resetting now"
-        detail = (
-            f"Warcraft Logs quota: {spent} of {limit} points used; {reset_detail}."
-        )
+        detail = f"Warcraft Logs quota: {spent} of {limit} points used; {reset_detail}."
         self._status_label.setToolTip(detail)
         self._status_label.setAccessibleDescription(detail)
         # Color escalation
@@ -3946,8 +4270,9 @@ class OverlayWindow(QMainWindow):
     def _resolve_visible_id(self) -> str | None:
         """Resolve which row should feed the info panel.
 
-        Hover wins over pin, and both must reference a currently visible row.
-        Without an explicit hover/pin, preview the first visible row so the
+        Hover wins over active keyboard preview, which wins over pin. Every
+        state is identity-keyed and must reference a currently visible row.
+        Without an explicit interaction, preview the first visible row so the
         fixed-height info panel is never an empty spacer while rows exist.
         """
         rows = self._active_row_map()
@@ -3958,6 +4283,13 @@ class OverlayWindow(QMainWindow):
         ):
             return self._hover_id
         if (
+            self._keyboard_preview_active
+            and self._keyboard_id
+            and self._keyboard_id in rows
+            and self._is_row_visible_for_applicant(self._keyboard_id)
+        ):
+            return self._keyboard_id
+        if (
             self._pinned_id
             and self._pinned_id in rows
             and self._is_row_visible_for_applicant(self._pinned_id)
@@ -3967,7 +4299,9 @@ class OverlayWindow(QMainWindow):
 
     def _first_visible_row_id(self, rows: Mapping[str, Applicant]) -> str | None:
         for applicant_id in self._id_by_row:
-            if applicant_id in rows and self._is_row_visible_for_applicant(applicant_id):
+            if applicant_id in rows and self._is_row_visible_for_applicant(
+                applicant_id
+            ):
                 return applicant_id
         return None
 
@@ -3997,10 +4331,14 @@ class OverlayWindow(QMainWindow):
         self._panel.setApplicantData(
             applicant,
             self._effective_listing(),
-            self._package_fit_by_raw.get(raw_aid) if self._active_tab == "applicants" else None,
+            self._package_fit_by_raw.get(raw_aid)
+            if self._active_tab == "applicants"
+            else None,
             pinned=visible_id == self._pinned_id,
             raid_detail_status=raid_detail_status[0] if raid_detail_status else "",
-            raid_detail_status_error=raid_detail_status[1] if raid_detail_status else False,
+            raid_detail_status_error=raid_detail_status[1]
+            if raid_detail_status
+            else False,
             raid_detail_retry_available=raid_detail_status[2]
             if raid_detail_status
             else False,
@@ -4087,7 +4425,13 @@ class OverlayWindow(QMainWindow):
         pinned_row = (
             self._row_for_id.get(self._pinned_id, -1) if self._pinned_id else -1
         )
-        changed_rows = self._delegate.set_rows(hover_row, pinned_row)
+        keyboard_row = (
+            self._row_for_id.get(self._keyboard_id, -1)
+            if self._keyboard_preview_active and self._keyboard_id
+            else -1
+        )
+        changed_rows = self._delegate.set_rows(hover_row, pinned_row, keyboard_row)
+        self._sync_row_accessible_descriptions()
         updates_enabled = self.updatesEnabled()
         batch_updates = updates_enabled and self.isVisible()
         if batch_updates:
@@ -4108,7 +4452,9 @@ class OverlayWindow(QMainWindow):
         if not (0 <= row < len(self._id_by_row)):
             return
         new_id = self._id_by_row[row]
-        if new_id == self._hover_id:
+        keyboard_was_active = self._keyboard_preview_active
+        self._keyboard_preview_active = False
+        if new_id == self._hover_id and not keyboard_was_active:
             return  # de-dup same-row entries
         self._hover_id = new_id
         self._hover_by_tab[self._active_tab] = new_id
@@ -4121,16 +4467,89 @@ class OverlayWindow(QMainWindow):
         # silent un-pin).
         if not (0 <= row < len(self._id_by_row)):
             return
-        self._pinned_id = self._id_by_row[row]
+        applicant_id = self._id_by_row[row]
+        self._keyboard_preview_active = False
+        self._hover_id = applicant_id
+        self._hover_by_tab[self._active_tab] = applicant_id
+        self._pin_applicant_id(applicant_id)
+
+    def _pin_applicant_id(self, applicant_id: str) -> None:
+        if not self._is_row_visible_for_applicant(applicant_id):
+            return
+        self._pinned_id = applicant_id
         self._pinned_by_tab[self._active_tab] = self._pinned_id
         self._sync_delegate_and_panel()
 
+    def _on_table_keyboard_navigated(self, row: int) -> None:
+        if not (0 <= row < len(self._id_by_row)) or self._table.isRowHidden(row):
+            return
+        applicant_id = self._id_by_row[row]
+        self._keyboard_id = applicant_id
+        self._keyboard_by_tab[self._active_tab] = applicant_id
+        self._keyboard_preview_active = True
+        self._hover_id = None
+        self._hover_by_tab[self._active_tab] = None
+        self._sync_delegate_and_panel()
+
+    def _on_table_row_activated(self, row: int) -> None:
+        if not (0 <= row < len(self._id_by_row)) or self._table.isRowHidden(row):
+            return
+        self._on_table_keyboard_navigated(row)
+        self._pin_applicant_id(self._id_by_row[row])
+
+    def _clear_transient_interaction_preview(self) -> None:
+        changed = self._hover_id is not None or self._keyboard_preview_active
+        self._hover_id = None
+        self._hover_by_tab[self._active_tab] = None
+        self._keyboard_preview_active = False
+        if changed:
+            self._sync_delegate_and_panel()
+
     def _clear_pin(self) -> None:
-        if self._pinned_id is None and self._pinned_by_tab.get(self._active_tab) is None:
+        if (
+            self._pinned_id is None
+            and self._pinned_by_tab.get(self._active_tab) is None
+        ):
             return
         self._pinned_id = None
         self._pinned_by_tab[self._active_tab] = None
         self._sync_delegate_and_panel()
+
+    def _update_table_accessibility_context(self) -> None:
+        if self._active_tab == "party":
+            self._table.setAccessibleName("Party members table")
+        else:
+            self._table.setAccessibleName("Applicant applications table")
+
+    def _sync_table_current_id(self) -> None:
+        row = self._row_for_id.get(self._keyboard_id, -1) if self._keyboard_id else -1
+        if row >= 0 and not self._table.isRowHidden(row):
+            self._table.setCurrentCell(row, COL_NAME)
+        else:
+            self._table.clearSelection()
+            self._table.setCurrentCell(-1, -1)
+
+    def _reconcile_keyboard_current(
+        self, previous_id: str | None, previous_row: int | None
+    ) -> None:
+        if previous_id and self._is_row_visible_for_applicant(previous_id):
+            self._keyboard_id = previous_id
+        elif previous_id is not None:
+            visible = [
+                (row, applicant_id)
+                for row, applicant_id in enumerate(self._id_by_row)
+                if not self._table.isRowHidden(row)
+            ]
+            if visible:
+                anchor = previous_row if previous_row is not None else visible[0][0]
+                self._keyboard_id = min(
+                    visible, key=lambda item: (abs(item[0] - anchor), item[0])
+                )[1]
+            else:
+                self._keyboard_id = None
+                self._keyboard_preview_active = False
+        self._keyboard_by_tab[self._active_tab] = self._keyboard_id
+        self._sync_table_current_id()
 
     def _on_panel_detail_changed(self) -> None:
         self._sync_delegate_and_panel()
@@ -4155,6 +4574,8 @@ class OverlayWindow(QMainWindow):
         """Called when scrolling or window resize shifts cells under the
         stationary cursor without firing cellEntered. Re-derive hover_id
         from current cursor position; sync if changed."""
+        if self._keyboard_preview_active:
+            return
         new_id = self._resolve_hover_from_cursor()
         if new_id != self._hover_id:
             self._hover_id = new_id
@@ -4345,6 +4766,81 @@ class OverlayWindow(QMainWindow):
             # column owns the visible recommendation.
             self._table.setItem(row, COL_MPLUS, _mplus_dual_cell(applicant, listing))
 
+        accessible_headers = (
+            "Specialization",
+            "Name",
+            "Item level",
+            "RaiderIO score",
+            "Normal raid",
+            "Heroic raid",
+            "Mythic raid",
+            "Mythic Plus",
+        )
+        role_name = {
+            "TANK": "Tank",
+            "HEALER": "Healer",
+            "DAMAGER": "Damage dealer",
+        }.get(applicant.role, "Unknown")
+        raw_aid, _member_index = _split_composite(applicant.applicant_id)
+        group_size = self._group_size_by_raw.get(raw_aid, 1)
+        description = (
+            f"Role: {role_name}. Specialization: {spec_text}. "
+            f"Class: {applicant.cls.title()}."
+        )
+        if group_size > 1:
+            group_position = self._group_position_by_id.get(applicant.applicant_id, 1)
+            description += (
+                f" Group application member {group_position} of {group_size}."
+            )
+        for column, header in enumerate(accessible_headers):
+            item = self._table.item(row, column)
+            if item is None:
+                continue
+            if column == COL_NAME:
+                value = applicant.name
+            elif column == COL_MPLUS and isinstance(
+                item.data(MPLUS_PACKAGE_TEXT_ROLE), str
+            ):
+                package_text = str(item.data(MPLUS_PACKAGE_TEXT_ROLE) or "No data")
+                individual_text = str(
+                    item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) or "No data"
+                )
+                value = f"Group package {package_text}; individual {individual_text}"
+            else:
+                value = item.text() or "No data"
+            item.setData(
+                Qt.ItemDataRole.AccessibleTextRole,
+                f"{header}: {value}",
+            )
+            item.setData(ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE, description)
+            item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, description)
+
+    def _sync_row_accessible_descriptions(self) -> None:
+        current_state: dict[str, str] = {}
+        if self._pinned_id is not None:
+            current_state[self._pinned_id] = "Pinned."
+        if self._keyboard_preview_active and self._keyboard_id is not None:
+            current_state[self._keyboard_id] = (
+                f"{current_state.get(self._keyboard_id, '')} Keyboard preview."
+            ).strip()
+        previous_state = getattr(self, "_accessible_interaction_state_by_id", {})
+        for applicant_id in set(previous_state) | set(current_state):
+            row = self._row_for_id.get(applicant_id)
+            if row is None:
+                continue
+            for column in range(self._table.columnCount()):
+                item = self._table.item(row, column)
+                if item is None:
+                    continue
+                base = item.data(ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE) or ""
+                state = current_state.get(applicant_id, "")
+                suffix = f" {state}" if state else ""
+                item.setData(
+                    Qt.ItemDataRole.AccessibleDescriptionRole,
+                    f"{base}{suffix}".strip(),
+                )
+        self._accessible_interaction_state_by_id = current_state
+
     def _refresh_table(self) -> None:
         """Refresh the table sorted by effective RIO score DESC.
         Full rebuild when row identity/order changes; otherwise only rows whose
@@ -4370,6 +4866,10 @@ class OverlayWindow(QMainWindow):
         actual grouping signal."""
         prev_hover = self._hover_id
         prev_pinned = self._pinned_id
+        prev_keyboard = self._keyboard_id
+        prev_keyboard_row = (
+            self._row_for_id.get(prev_keyboard) if prev_keyboard is not None else None
+        )
         active_rows = self._active_row_map()
         self._tab_bar.set_counts(
             applicants=_application_count(self._state.applicants),
@@ -4389,6 +4889,7 @@ class OverlayWindow(QMainWindow):
                 listing,
             )
         self._group_size_by_raw = {}
+        self._group_position_by_id = {}
         self._group_ready_by_raw = {}
         self._package_fit_by_raw = {}
         if self._active_tab == "applicants":
@@ -4399,6 +4900,9 @@ class OverlayWindow(QMainWindow):
                     self._group_size_by_raw.get(raw_aid, 0) + 1
                 )
                 group_members.setdefault(raw_aid, []).append(applicant)
+            for members in group_members.values():
+                for position, member in enumerate(members, start=1):
+                    self._group_position_by_id[member.applicant_id] = position
             if detect_listing_context(listing) in (
                 CONTEXT_MPLUS,
                 CONTEXT_RAID,
@@ -4433,7 +4937,7 @@ class OverlayWindow(QMainWindow):
             # Avoids a stripe / band paint at a row index that no longer maps if Qt
             # issues an intermediate paint event between setRowCount and the post-
             # rebuild marker reset. Symmetric with set_group_markers({}) below.
-            self._delegate.set_rows(-1, -1)
+            self._delegate.set_rows(-1, -1, -1)
             self._delegate.set_group_markers({})
             self._table.setRowCount(len(sorted_applicants))
             self._row_for_id.clear()
@@ -4451,7 +4955,11 @@ class OverlayWindow(QMainWindow):
 
         # Preserve hover/pin BY ID; cursor fallback only when prev id is gone.
         if prev_hover not in active_rows:
-            self._hover_id = self._resolve_hover_from_cursor()
+            self._hover_id = (
+                None
+                if self._keyboard_preview_active
+                else self._resolve_hover_from_cursor()
+            )
         if prev_pinned not in active_rows:
             self._pinned_id = None
             self._pinned_by_tab[self._active_tab] = None
@@ -4461,6 +4969,7 @@ class OverlayWindow(QMainWindow):
         # This also owns group markers: when unfiltered, every row is visible;
         # when filtered, marker caps align to the visible group slice.
         self._apply_role_filter()
+        self._reconcile_keyboard_current(prev_keyboard, prev_keyboard_row)
         # Re-apply correct stripe rows + refresh panel content (single point).
         self._sync_delegate_and_panel()
 
@@ -4479,10 +4988,18 @@ class OverlayWindow(QMainWindow):
         """RoleFilterBar.filterChanged slot. Mutates _role_filter, possibly
         clears hidden hover/pin state, then re-applies filter + re-resolves
         hover + refreshes panel + updates title."""
+        previous_keyboard = self._keyboard_id
+        previous_keyboard_row = (
+            self._row_for_id.get(previous_keyboard)
+            if previous_keyboard is not None
+            else None
+        )
         self._role_filter = active
         self._apply_role_filter()
+        self._reconcile_keyboard_current(previous_keyboard, previous_keyboard_row)
         # Hovered row may now be hidden — re-resolve from cursor position.
-        self._reresolve_hover_from_cursor()
+        if not self._keyboard_preview_active:
+            self._reresolve_hover_from_cursor()
         self._sync_delegate_and_panel()
         self._update_title()
 
@@ -4528,7 +5045,9 @@ class OverlayWindow(QMainWindow):
 
         if self._active_tab == "applicants":
             self._role_filter_bar.set_status(
-                len(visible_raw_ids) if is_active else _application_count(self._id_by_row),
+                len(visible_raw_ids)
+                if is_active
+                else _application_count(self._id_by_row),
                 _application_count(self._id_by_row),
             )
         else:
@@ -4725,9 +5244,7 @@ class OverlayWindow(QMainWindow):
         if not waiters:
             self._raid_boss_fetch_waiters_by_target.pop(identity.network_key, None)
 
-    def _mark_raid_boss_fetch_waiting_on_target(
-        self, identity: _FetchIdentity
-    ) -> None:
+    def _mark_raid_boss_fetch_waiting_on_target(self, identity: _FetchIdentity) -> None:
         self._raid_boss_fetch_waiters_by_target.setdefault(identity.network_key, {})[
             identity.storage_key
         ] = identity
@@ -4791,9 +5308,7 @@ class OverlayWindow(QMainWindow):
             row_source=self._row_source_for(applicant),
         )
 
-    def _raid_boss_fetch_failure_state(
-        self, identity: _FetchIdentity
-    ) -> str | None:
+    def _raid_boss_fetch_failure_state(self, identity: _FetchIdentity) -> str | None:
         key = _raid_boss_fetch_failure_key(identity)
         if key not in self._raid_boss_fetch_failures:
             return None
@@ -5127,7 +5642,9 @@ class OverlayWindow(QMainWindow):
             applicant.mplus_hps_breakdown = [
                 _dungeon_perf_dict(d) for d in ranks.mplus_hps_breakdown
             ]
-            applicant.project_wcl_data_to_preferences(current_identity.metric_preferences)
+            applicant.project_wcl_data_to_preferences(
+                current_identity.metric_preferences
+            )
         # Re-sort: this fetch may have produced a new M+ value that changes the
         # applicant's row position. _refresh_table ends with sync — so a pinned
         # panel showing this applicant rebuilds its HTML automatically here.
@@ -5262,9 +5779,14 @@ class OverlayWindow(QMainWindow):
             if listing is not None:
                 level = f" +{listing.key_level}" if listing.key_level > 0 else ""
                 dn = listing.dungeon_name
-                generic = (not dn) or dn == "?" or dn.lower() in (
-                    "mythic+",
-                    "mythic plus",
+                generic = (
+                    (not dn)
+                    or dn == "?"
+                    or dn.lower()
+                    in (
+                        "mythic+",
+                        "mythic plus",
+                    )
                 )
                 if generic:
                     self._title_bar.setTitleText(f"Party{level} {count_str}")
@@ -5306,12 +5828,18 @@ class OverlayWindow(QMainWindow):
             if generic:
                 self._title_bar.setTitleText(f"{title_prefix}{level} {count_str}")
             else:
-                self._title_bar.setTitleText(f"{title_prefix} — {dn}{level} {count_str}")
+                self._title_bar.setTitleText(
+                    f"{title_prefix} — {dn}{level} {count_str}"
+                )
         else:
             self._title_bar.setTitleText(f"M+ Applicants {count_str}")
         # Listing tooltip — host's listing_name + comment from in-game LFG UI.
         # Read by eventFilter title-label branch on hover.
-        self._title_bar.title_label.setToolTip(_format_listing_tooltip(listing))
+        listing_tooltip = _format_listing_tooltip(listing)
+        self._title_bar.title_label.setToolTip(listing_tooltip)
+        self._title_bar.title_label.setAccessibleDescription(
+            html.unescape(listing_tooltip)
+        )
 
     def _persist_geometry(self) -> None:
         g = self.geometry()
@@ -5388,18 +5916,33 @@ class OverlayWindow(QMainWindow):
                 # make room for the expanded info panel. Re-resolve from the
                 # global cursor before clearing, otherwise hover can oscillate
                 # between detailed and placeholder states.
+                if self._keyboard_preview_active:
+                    return False
                 new_id = self._resolve_hover_from_cursor()
                 if new_id != self._hover_id:
                     self._hover_id = new_id
                     self._sync_delegate_and_panel()
             elif event.type() == QEvent.Type.MouseMove:
+                # event has position() in Qt6 (returns QPointF).
+                pos = event.position().toPoint()  # type: ignore[attr-defined]
+                if self._keyboard_preview_active:
+                    row = self._table.rowAt(pos.y())
+                    new_id = self._resolve_hover_from_cursor()
+                    if (
+                        new_id is None
+                        and 0 <= row < len(self._id_by_row)
+                        and not self._table.isRowHidden(row)
+                    ):
+                        new_id = self._id_by_row[row]
+                    self._keyboard_preview_active = False
+                    self._hover_id = new_id
+                    self._hover_by_tab[self._active_tab] = new_id
+                    self._sync_delegate_and_panel()
                 # Cursor over the empty area below the last row → clear hover.
                 # Re-resolve from the global cursor first because a panel height
                 # change can move the window between Qt's local event coordinate
                 # calculation and this filter, briefly making a valid hover look
                 # like empty local space.
-                # event has position() in Qt6 (returns QPointF).
-                pos = event.position().toPoint()  # type: ignore[attr-defined]
                 if self._table.rowAt(pos.y()) < 0 and self._hover_id is not None:
                     new_id = self._resolve_hover_from_cursor()
                     if new_id != self._hover_id:
@@ -5412,9 +5955,7 @@ class OverlayWindow(QMainWindow):
             and obj is self
             and event.type() == QEvent.Type.WindowDeactivate
         ):
-            if self._hover_id is not None:
-                self._hover_id = None
-                self._sync_delegate_and_panel()
+            self._clear_transient_interaction_preview()
             return False
         return super().eventFilter(obj, event)
 
@@ -5425,11 +5966,16 @@ class OverlayWindow(QMainWindow):
         # Mouse may have moved while window was hidden — drop stale hover.
         # Pin survives intentionally (it's persistent user state), but hover is
         # transient for every tab and must not resurrect from an inactive tab.
-        had_hover = self._hover_id is not None or any(self._hover_by_tab.values())
+        had_transient_preview = (
+            self._hover_id is not None
+            or any(self._hover_by_tab.values())
+            or self._keyboard_preview_active
+        )
         self._hover_id = None
+        self._keyboard_preview_active = False
         for tab_key in self._hover_by_tab:
             self._hover_by_tab[tab_key] = None
-        if had_hover:
+        if had_transient_preview:
             self._sync_delegate_and_panel()
         QTimer.singleShot(0, self._apply_panel_height_above_table)
         # Defer cursor-resolve to next event-loop tick: showEvent fires BEFORE
@@ -5878,7 +6424,9 @@ def _raid_boss_rows_for_display(
     for key in difficulty_keys:
         progress = applicant.rio_raid_progress.get(key, {})
         boss_kills = progress.get("boss_kills") if isinstance(progress, dict) else None
-        boss_kills_by_difficulty[key] = boss_kills if isinstance(boss_kills, list) else []
+        boss_kills_by_difficulty[key] = (
+            boss_kills if isinstance(boss_kills, list) else []
+        )
     rows: list[dict[str, object]] = []
     for idx, (_alias, encounter_id, name) in enumerate(CURRENT_RAID_ENCOUNTERS):
         kill_parts: list[str] = []
@@ -6183,6 +6731,17 @@ _STYLESHEET = """
     background-color: rgba(52, 52, 66, 205);
     border-radius: 2px;
 }
+#settingsButton:focus,
+#hideButton:focus,
+#sourceTabBar QPushButton:focus,
+#roleFilterBar QPushButton:focus,
+#infoDetailTabs QPushButton:focus,
+#infoUnpinButton:focus,
+#infoWclRetryButton:focus,
+#targetKeySpin:focus {
+    border: 2px solid #66d9ef;
+    border-radius: 3px;
+}
 #statusRow {
     background-color: rgba(14, 14, 20, 225);
     border-top: 1px solid rgba(66, 66, 86, 120);
@@ -6222,14 +6781,15 @@ _STYLESHEET = """
     background-color: rgba(12, 12, 18, 235);
     border: 1px solid rgba(240, 120, 90, 210);
     border-radius: 6px;
+    color: #ff8a65;
+    font-size: 14px;
+    font-weight: bold;
 }
 #overlayLauncher:hover {
     background-color: rgba(34, 34, 44, 240);
 }
-#overlayLauncherLabel {
-    color: #ff8a65;
-    font-size: 14px;
-    font-weight: bold;
+#overlayLauncher:focus {
+    border: 2px solid #66d9ef;
 }
 #targetKeyLabel {
     color: #f0d27a;
@@ -6268,6 +6828,9 @@ _STYLESHEET = """
 }
 #targetKeyStepUp:hover, #targetKeyStepDown:hover {
     background-color: rgba(240, 120, 90, 150);
+}
+#targetKeyStepUp:focus, #targetKeyStepDown:focus {
+    border: 2px solid #66d9ef;
 }
 #targetKeyStepUp:pressed, #targetKeyStepDown:pressed {
     background-color: rgba(240, 120, 90, 210);
@@ -6413,6 +6976,9 @@ QTableWidget {
     gridline-color: transparent;
     selection-background-color: transparent;
     font-size: 11px;
+}
+QTableWidget:focus {
+    border: 2px solid #66d9ef;
 }
 QTableWidget::item {
     padding: 1px 3px;

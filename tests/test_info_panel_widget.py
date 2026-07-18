@@ -6149,8 +6149,8 @@ def test_role_update_clears_hidden_hover_and_pin_under_active_filter(qtbot, tmp_
         assert window._pinned_by_tab["applicants"] is None
         assert window._delegate._hover_row == -1
         assert window._delegate._pinned_row == -1
-        assert (
-            window._panel._status_label.text() == "Hover a row for applicant details."
+        assert window._panel._status_label.text() == (
+            "Select or hover a row for applicant details."
         )
     finally:
         client.close()

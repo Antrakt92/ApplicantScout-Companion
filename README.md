@@ -158,6 +158,21 @@ the tray; use the tray menu's **Quit ApplicantScout** action to close the
 companion completely. If the system tray is unavailable, closing Settings quits
 the companion so it cannot keep running without a visible control surface.
 
+### Keyboard and assistive access
+
+Choose **Show overlay** from the system tray to activate the overlay for
+keyboard use. The compact in-game launcher restores the overlay in passive mode
+without entering its keyboard focus chain.
+
+Once activated, use `Tab` / `Shift+Tab` to move through Settings, Hide,
+Applicants/Party, the manual key field, role filters, available detail actions,
+and the applicant table. Buttons accept `Space` or `Enter`; the manual key field
+and its step buttons accept keyboard input. In the table, `Up`, `Down`, `Home`,
+`End`, and page keys move the visible row preview, `Enter` or `Space` pins it,
+and `Escape` clears the pin. Hidden actions are skipped automatically. Launcher
+drag, title-bar window drag, and the resize grip remain pointer-only geometry
+controls; restoring, hiding, and reviewing applicant data have keyboard paths.
+
 Developer/source runs may still use a repo-local `.env` when the local config
 file does not exist. Environment variables override both files.
 

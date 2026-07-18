@@ -222,7 +222,9 @@ def test_empty_info_panel_keeps_full_height(qtbot, tmp_path):
 
     assert win._id_by_row == []
     assert win._panel._current_applicant is None
-    assert win._panel._status_label.text() == "Hover a row for applicant details."
+    assert win._panel._status_label.text() == (
+        "Select or hover a row for applicant details."
+    )
     assert win._panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
 
 
