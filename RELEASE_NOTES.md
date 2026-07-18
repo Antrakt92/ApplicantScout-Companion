@@ -15,9 +15,9 @@ a keyboard or assistive technology.
 
 ### Fixed
 
-- Packaged and developer launches now share a fail-closed single-instance
-  guard, preventing two overlay windows when the local control endpoint is
-  unavailable.
+- Packaged, developer, and WoW-watcher launches now share one atomic
+  single-instance endpoint, so waiting helpers cannot block a manual launch or
+  race into duplicate overlay windows.
 - QR build, paint, capture, retry, and stale-texture cleanup work now has
   bounded recovery instead of leaving transport frozen until `/reload`.
 - Screenshot format and quality are leased only around each capture and are

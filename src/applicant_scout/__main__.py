@@ -89,7 +89,6 @@ from .wcl import (
 from .wow_lifecycle import (
     WATCH_WOW_ARG,
     configure_wow_sync_startup,
-    is_other_companion_runtime_running,
     is_wow_foreground,
     is_wow_running,
     start_wow_sync_watcher,
@@ -3193,13 +3192,6 @@ def main(argv: list[str] | None = None) -> int:
                 result.error or "unknown error",
             )
             return 1
-    if is_other_companion_runtime_running():
-        log.warning(
-            "Another ApplicantScout runtime is already running without a reachable "
-            "control endpoint; refusing to start a duplicate instance."
-        )
-        return 1
-
     _set_windows_app_user_model_id()
     app = QApplication([sys.argv[0], *args])
     app.setApplicationName("ApplicantScout")

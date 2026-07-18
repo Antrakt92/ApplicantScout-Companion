@@ -64,60 +64,6 @@ def companion_launch_spec() -> LaunchSpec:
     return LaunchSpec(Path(sys.executable), ("-m", "applicant_scout"))
 
 
-def is_other_companion_runtime_running(
-    *,
-    current_pid: int | None = None,
-    parent_pid: int | None = None,
-) -> bool:
-    """Return True when another packaged or source companion process exists.
-
-    The parent exclusion is required for Windows virtual-environment launchers:
-    the small venv ``python.exe`` shim remains as the real interpreter's parent
-    and carries the same command line while the application is running.
-    """
-    if sys.platform != "win32":
-        return False
-    pid = os.getpid() if current_pid is None else current_pid
-    parent = os.getppid() if parent_pid is None else parent_pid
-    try:
-        completed = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                (
-                    "& { param([int]$currentPid, [int]$parentPid) "
-                    "$found = Get-CimInstance Win32_Process | Where-Object { "
-                    "$name = [string]$_.Name; "
-                    "$cmd = [string]$_.CommandLine; "
-                    "$isPackaged = $name -ieq 'ApplicantScout.exe'; "
-                    "$isDev = (($name -ieq 'python.exe') -or "
-                    "($name -ieq 'pythonw.exe')) -and $cmd -and "
-                    "($cmd.IndexOf('-m applicant_scout', "
-                    "[System.StringComparison]::OrdinalIgnoreCase) -ge 0); "
-                    "$_.ProcessId -ne $currentPid -and "
-                    "$_.ProcessId -ne $parentPid -and "
-                    "($isPackaged -or $isDev) "
-                    "}; "
-                    "if ($found) { exit 0 } else { exit 1 }"
-                    " }"
-                ),
-                str(pid),
-                str(parent),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            creationflags=_CREATE_NO_WINDOW,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return completed.returncode == 0
-
-
 def is_wow_running(
     process_names: tuple[str, ...] = WOW_PROCESS_NAMES,
     *,

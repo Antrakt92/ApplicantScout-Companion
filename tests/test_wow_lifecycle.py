@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 import pytest
@@ -200,48 +199,6 @@ def test_dev_launch_spec_runs_python_module(monkeypatch: pytest.MonkeyPatch, tmp
 
     assert spec.executable == python_exe
     assert spec.arguments == ("-m", "applicant_scout")
-
-
-def test_other_companion_runtime_probe_matches_packaged_and_dev_processes(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    captured: list[list[str]] = []
-
-    def fake_run(args, **_kwargs):
-        captured.append(args)
-        return _Completed(returncode=0)
-
-    monkeypatch.setattr(wow_lifecycle.subprocess, "run", fake_run)
-
-    assert wow_lifecycle.is_other_companion_runtime_running(
-        current_pid=4321,
-        parent_pid=1234,
-    )
-    command = captured[0][captured[0].index("-Command") + 1]
-    assert "ApplicantScout.exe" in command
-    assert "python.exe" in command
-    assert "pythonw.exe" in command
-    assert "applicant_scout" in command
-    assert "$_.ProcessId -ne $currentPid" in command
-    assert "$_.ProcessId -ne $parentPid" in command
-    assert captured[0][-2:] == ["4321", "1234"]
-
-
-def test_other_companion_runtime_probe_returns_false_on_query_failure(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(
-        wow_lifecycle.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            subprocess.TimeoutExpired("ps", 5)
-        ),
-    )
-
-    assert not wow_lifecycle.is_other_companion_runtime_running(
-        current_pid=4321,
-        parent_pid=1234,
-    )
 
 
 def test_is_wow_sync_watcher_running_matches_python_module_command(

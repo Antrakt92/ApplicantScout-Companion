@@ -41,15 +41,6 @@ from applicant_scout.config import (
 from applicant_scout.metric_preferences import MetricPreferences
 
 
-@pytest.fixture(autouse=True)
-def _isolate_companion_process_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        main_mod,
-        "is_other_companion_runtime_running",
-        lambda: False,
-    )
-
-
 def _cfg(
     tmp_path: Path,
     *,
@@ -2817,40 +2808,20 @@ def test_main_duplicate_manual_launch_unknown_response_fails_before_startup(
     assert main_mod.main([]) == 1
 
 
-def test_main_refuses_duplicate_runtime_without_control_endpoint(
+def test_main_wow_watcher_duplicate_defers_to_atomic_control_server(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail_if_called(*_args, **_kwargs):
-        raise AssertionError("cross-runtime duplicate should stop before QApplication")
+    class FakeApp:
+        aboutToQuit = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setApplicationName(self, _name: str) -> None:
+            pass
 
     _stub_setup_logging(monkeypatch)
-    monkeypatch.setattr(
-        main_mod,
-        "_send_control_command",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            connected=False,
-            written=False,
-            response=None,
-        ),
-    )
-    monkeypatch.setattr(
-        main_mod,
-        "is_other_companion_runtime_running",
-        lambda: True,
-    )
-    monkeypatch.setattr(main_mod, "QApplication", fail_if_called)
-    monkeypatch.setattr(main_mod, "_load_startup_config", fail_if_called)
-
-    assert main_mod.main([]) == 1
-
-
-def test_main_refuses_wow_watcher_duplicate_without_control_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    def fail_if_called(*_args, **_kwargs):
-        raise AssertionError("WoW watcher duplicate should stop before QApplication")
-
-    _stub_setup_logging(monkeypatch)
+    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
     monkeypatch.setattr(
         main_mod,
         "_prepare_wow_watch_mode",
@@ -2859,16 +2830,20 @@ def test_main_refuses_wow_watcher_duplicate_without_control_endpoint(
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
-        fail_if_called,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("watch helpers must arbitrate through QLocalServer")
+        ),
     )
+    monkeypatch.setattr(main_mod, "QApplication", FakeApp)
     monkeypatch.setattr(
         main_mod,
-        "is_other_companion_runtime_running",
-        lambda: True,
+        "_create_control_server",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            main_mod._DuplicateInstanceFound
+        ),
     )
-    monkeypatch.setattr(main_mod, "QApplication", fail_if_called)
 
-    assert main_mod.main([main_mod.WATCH_WOW_ARG]) == 1
+    assert main_mod.main([main_mod.WATCH_WOW_ARG]) == 0
 
 
 def test_main_duplicate_manual_launch_requests_settings_before_qapplication(
