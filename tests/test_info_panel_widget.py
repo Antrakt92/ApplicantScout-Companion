@@ -1904,12 +1904,15 @@ def test_panel_renders_group_package_line(qtbot):
         high_score=91.0,
         average_score=74.0,
         low_score=52.0,
+        tank_count=1,
+        dps_count=1,
     )
 
     panel.setApplicantData(_app(), package=package)
 
     assert panel._package_label.text() == (
-        "Group FIT 73 · high 91 · avg 74 · low 52 · evidence confidence 68%"
+        "Group FIT 73 · 1T/0H/1DPS · high 91 · avg 74 · low 52 · "
+        "evidence confidence 68%"
     )
     assert panel._package_label.accessibleName() == ""
     assert "68 percent" in panel._package_label.accessibleDescription()
@@ -1955,10 +1958,49 @@ def test_panel_renders_real_mplus_package_without_blank_label(qtbot):
 
     assert panel._package_label.text().startswith("Group fit ")
     assert " · hi/avg/low " in panel._package_label.text()
+    assert " · 0T/0H/2DPS" in panel._package_label.text()
     assert " · evidence confidence " in panel._package_label.text()
     assert " · this low" in panel._package_label.text()
     assert "Group  " not in panel._package_label.text()
     assert not panel._package_label.isHidden()
+
+
+def test_panel_explains_incomplete_group_member_statuses(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    package = PackageFit(
+        context=CONTEXT_MPLUS,
+        score=48.0,
+        label="fit",
+        display="G5 fit 48",
+        colour="#1eff00",
+        size=5,
+        confidence=0.31,
+        high_score=82.0,
+        average_score=51.0,
+        low_score=0.0,
+        tank_count=1,
+        healer_count=1,
+        dps_count=2,
+        unknown_role_count=1,
+        loading_count=2,
+        error_count=1,
+        not_found_count=1,
+    )
+
+    panel.setApplicantData(_app(fetch_status="loading"), _listing(), package=package)
+
+    text = panel._package_label.text()
+    assert "1T/1H/2DPS" in text
+    assert "unknown 1" in text
+    assert "loading 2" in text
+    assert "error 1" in text
+    assert "not found 1" in text
+    description = panel._package_label.accessibleDescription()
+    assert "1 tank, 1 healer, 2 damage dealers, 1 unknown role" in description
+    assert "2 members loading" in description
+    assert "1 WCL error" in description
+    assert "1 member not found on WCL" in description
 
 
 def test_panel_hides_group_package_line_for_solo(qtbot):
@@ -2544,11 +2586,17 @@ def test_compact_overlay_table_screen_position_stays_fixed_when_panel_expands_up
     qtbot.addWidget(window)
 
     try:
-        window.setGeometry(160, 180, 360, 240)
+        # Leave enough headroom for the full panel so the screen-edge clamp does
+        # not mask the upward-anchor contract this test exercises.
+        window.setGeometry(160, 400, 360, 240)
         window.show()
         qtbot.waitUntil(window.isVisible, timeout=1000)
         window._refresh_table()
         QApplication.processEvents()
+        window._table.setMouseTracking(False)
+        viewport = window._table.viewport()
+        if viewport is not None:
+            viewport.setMouseTracking(False)
 
         window._hover_id = "compact"
         window._sync_delegate_and_panel()
@@ -2564,7 +2612,7 @@ def test_compact_overlay_table_screen_position_stays_fixed_when_panel_expands_up
         # runner images; the user-facing contract is no visible table jump.
         assert abs(table_top - compact_table_top) <= 4
         assert window._panel.height() > 80
-        assert window.y() < 180
+        assert window.y() < 400
     finally:
         client.close()
 
@@ -5108,7 +5156,109 @@ def test_overlay_panel_uses_group_package_fit_for_any_member(qtbot, tmp_path):
         window._sync_delegate_and_panel()
 
         assert window._panel._package_label.text().startswith("Group ")
+        assert "0T/0H/2DPS" in window._panel._package_label.text()
         assert not window._panel._package_label.isHidden()
+    finally:
+        client.close()
+
+
+def test_overlay_group_package_status_counts_follow_member_fetch_state(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(applicant_id="10:1", name="Tank-Realm", role="TANK")
+    )
+    state.add_or_update(
+        _app(
+            applicant_id="10:2",
+            name="Healer-Realm",
+            role="HEALER",
+            fetch_status="loading",
+        )
+    )
+    state.add_or_update(
+        _app(
+            applicant_id="10:3",
+            name="Damage-Realm",
+            role="DAMAGER",
+            fetch_status="error",
+        )
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window._refresh_table()
+        window._hover_id = "10:1"
+        window._sync_delegate_and_panel()
+
+        text = window._panel._package_label.text()
+        assert "1T/1H/1DPS" in text
+        assert "loading 1" in text
+        assert "error 1" in text
+
+        state.applicants["10:2"].fetch_status = "ready"
+        window._refresh_table()
+        window._sync_delegate_and_panel()
+
+        text = window._panel._package_label.text()
+        assert "1T/1H/1DPS" in text
+        assert "loading" not in text
+        assert "error 1" in text
+    finally:
+        client.close()
+
+
+def test_overlay_grouped_long_error_is_bounded_with_full_accessible_text(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    raw_error = "GraphQL error: " + ("upstream proxy returned malformed data; " * 12)
+    full_status = f"WCL error: {raw_error}"
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(applicant_id="10:1", name="Tank-Realm", role="TANK")
+    )
+    state.add_or_update(
+        _app(
+            applicant_id="10:2",
+            name="Healer-Realm",
+            role="HEALER",
+            fetch_status="error",
+            error_message=raw_error,
+        )
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.resize(300, window.height())
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+        window._hover_id = "10:2"
+        window._sync_delegate_and_panel()
+        window._panel.layout().activate()
+
+        panel = window._panel
+        assert not panel._package_label.isHidden()
+        assert not panel._status_label.isHidden()
+        assert len(panel._status_label.text()) <= 120
+        assert panel._status_label.text().endswith("…")
+        assert panel._status_label.toolTip() == full_status
+        assert panel._status_label.accessibleDescription() == full_status
+        assert panel._status_label in panel.tooltip_widgets()
+        assert panel._status_label.heightForWidth(
+            panel._status_label.width()
+        ) <= panel._status_label.height()
+        assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
     finally:
         client.close()
 
@@ -5152,6 +5302,8 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
         average_score=74.0,
         low_score=52.0,
         spread=39.0,
+        tank_count=1,
+        healer_count=1,
     )
 
     try:
@@ -5176,6 +5328,7 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
             assert window.width() == width
             assert window._panel.height() == window._panel.target_height()
             assert label.wordWrap()
+            assert "1T/1H/0DPS" in label.text()
             assert "evidence confidence 68%" in label.text()
             assert label.heightForWidth(label.width()) <= label.height()
             assert status.heightForWidth(status.width()) <= status.height()
@@ -5184,6 +5337,64 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
             assert label.geometry().bottom() < status.geometry().top()
             assert status.geometry().bottom() < window._panel._dungeon_widget.y()
             assert last_bottom <= window._panel.contentsRect().bottom()
+    finally:
+        client.close()
+
+
+def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(applicant_id="10:1", name="Tank-Realm", role="TANK")
+    )
+    state.add_or_update(
+        _app(applicant_id="10:2", name="Healer-Realm", role="HEALER")
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+        window._table.setMouseTracking(False)
+        viewport = window._table.viewport()
+        if viewport is not None:
+            viewport.setMouseTracking(False)
+        window._hover_id = None
+        window._pinned_id = "10:1"
+
+        table_top: int | None = None
+        for width in (300, 650):
+            window.resize(width, window.height())
+            window._sync_delegate_and_panel()
+            QApplication.processEvents()
+
+            panel = window._panel
+            package = panel._package_label
+            status = panel._status_label
+            last_name = panel._dungeon_rows[1][0]
+            last_bottom = last_name.mapTo(panel, QPoint(0, 0)).y() + last_name.height()
+            current_table_top = window._table.mapToGlobal(QPoint(0, 0)).y()
+            if table_top is None:
+                table_top = current_table_top
+            else:
+                assert abs(current_table_top - table_top) <= 4
+            assert window.width() == width
+            assert panel.height() == panel.target_height()
+            assert "1T/1H/0DPS" in package.text()
+            assert "evidence confidence" in status.text()
+            assert package.heightForWidth(package.width()) <= package.height()
+            assert status.heightForWidth(status.width()) <= status.height()
+            assert package.geometry().bottom() < status.geometry().top()
+            assert status.geometry().bottom() < panel._dungeon_widget.y()
+            assert last_bottom <= panel.contentsRect().bottom()
     finally:
         client.close()
 

@@ -93,6 +93,13 @@ class PackageFit:
     spread: float = 0.0
     member_scores: tuple[float, ...] = ()
     status_penalty: float = 0.0
+    tank_count: int = 0
+    healer_count: int = 0
+    dps_count: int = 0
+    unknown_role_count: int = 0
+    loading_count: int = 0
+    error_count: int = 0
+    not_found_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -179,6 +186,15 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
         return PackageFit()
     context = detect_listing_context(listing)
     size = len(members)
+    tank_count = sum(member.role == "TANK" for member in members)
+    healer_count = sum(member.role == "HEALER" for member in members)
+    dps_count = sum(member.role == "DAMAGER" for member in members)
+    unknown_role_count = size - tank_count - healer_count - dps_count
+    loading_count = sum(
+        member.fetch_status in {"pending", "loading"} for member in members
+    )
+    error_count = sum(member.fetch_status == "error" for member in members)
+    not_found_count = sum(member.fetch_status == "not_found" for member in members)
     if context == CONTEXT_UNKNOWN:
         member_scores = tuple(float(effective_rio_score(a)) for a in members)
         score = float(max(member_scores, default=0.0))
@@ -200,6 +216,13 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
             spread=score - low,
             member_scores=member_scores,
             status_penalty=0.0,
+            tank_count=tank_count,
+            healer_count=healer_count,
+            dps_count=dps_count,
+            unknown_role_count=unknown_role_count,
+            loading_count=loading_count,
+            error_count=error_count,
+            not_found_count=not_found_count,
         )
 
     fits = [candidate_fit(member, listing) for member in members]
@@ -239,6 +262,13 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
         spread=spread,
         member_scores=scores,
         status_penalty=status_penalty,
+        tank_count=tank_count,
+        healer_count=healer_count,
+        dps_count=dps_count,
+        unknown_role_count=unknown_role_count,
+        loading_count=loading_count,
+        error_count=error_count,
+        not_found_count=not_found_count,
     )
 
 

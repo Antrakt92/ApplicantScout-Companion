@@ -1833,6 +1833,7 @@ class ApplicantInfoPanel(QFrame):
         return (
             self._wcl_retry_button,
             self._unpin_button,
+            self._status_label,
             self._state_text_label,
         )
 
@@ -1854,32 +1855,10 @@ class ApplicantInfoPanel(QFrame):
         row_target = INFO_PANEL_PREFERRED_HEIGHT + (
             extra_rows * INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT
         )
-        layout = self.layout()
-        margins = layout.contentsMargins() if layout is not None else None
-        available_width = max(
-            1,
-            self.contentsRect().width()
-            - (margins.left() + margins.right() if margins is not None else 0),
-        )
-        wrapped_extra = 0
-        for label in (self._package_label, self._status_label):
-            if label.isHidden() or not label.text() or not label.wordWrap():
-                continue
-            single_line_width = max(
-                available_width,
-                label.fontMetrics().horizontalAdvance(label.text()) + 64,
-            )
-            single_line_height = label.heightForWidth(single_line_width)
-            wrapped_extra += max(
-                0,
-                label.heightForWidth(available_width) - single_line_height,
-            )
-        unused_row_slack = (
-            max(0, INFO_PANEL_DETAIL_BASE_ROWS - self._visible_detail_rows)
-            * INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT
-        )
-        wrap_growth = max(0, wrapped_extra - unused_row_slack)
-        return row_target + (wrap_growth + 2 if wrap_growth else 0)
+        content_target = self.heightForWidth(max(self.width(), 1))
+        if content_target < 0:
+            return row_target
+        return max(row_target, content_target + 2)
 
     def setPlaceholder(self) -> None:
         """Show the compact hint when nothing is hovered/pinned."""
@@ -1940,6 +1919,8 @@ class ApplicantInfoPanel(QFrame):
         self._package_label.setVisible(False)
         self._detail_tabs.setVisible(False)
         self._status_label.setText("")
+        self._status_label.setToolTip("")
+        self._status_label.setAccessibleDescription("")
         self._status_label.setVisible(False)
         self._state_text_label.setText("")
         self._state_text_label.setToolTip("")
@@ -2020,36 +2001,94 @@ class ApplicantInfoPanel(QFrame):
             and package.spread >= 1.0
             and abs(member_score - package.low_score) < 0.5
         ):
-            member_note = " · this low"
+            member_note = "this low"
         package_label = package.label or (
             "fit" if package.context == CONTEXT_MPLUS else "package"
         )
+        parts = [f"Group {package_label} {int(round(package.score))}"]
+        role_total = (
+            package.tank_count
+            + package.healer_count
+            + package.dps_count
+            + package.unknown_role_count
+        )
+        if role_total > 0:
+            parts.append(
+                f"{package.tank_count}T/{package.healer_count}H/"
+                f"{package.dps_count}DPS"
+            )
+            if package.unknown_role_count > 0:
+                parts.append(f"unknown {package.unknown_role_count}")
+        if package.loading_count > 0:
+            parts.append(f"loading {package.loading_count}")
+        if package.error_count > 0:
+            parts.append(f"error {package.error_count}")
+        if package.not_found_count > 0:
+            parts.append(f"not found {package.not_found_count}")
         if package.context == CONTEXT_MPLUS:
-            text = (
-                f"Group {package_label} {int(round(package.score))} · "
+            parts.append(
                 f"hi/avg/low {int(round(package.high_score))}/"
                 f"{int(round(package.average_score))}/"
-                f"{int(round(package.low_score))} · "
-                f"evidence confidence {int(round(package.confidence * 100))}%"
-                f"{member_note}"
+                f"{int(round(package.low_score))}"
             )
         else:
-            text = (
-                f"Group {package_label} {int(round(package.score))} · "
-                f"high {int(round(package.high_score))} · "
-                f"avg {int(round(package.average_score))} · "
-                f"low {int(round(package.low_score))} · "
-                f"evidence confidence {int(round(package.confidence * 100))}%"
-                f"{member_note}"
+            parts.extend(
+                (
+                    f"high {int(round(package.high_score))}",
+                    f"avg {int(round(package.average_score))}",
+                    f"low {int(round(package.low_score))}",
+                )
             )
+        parts.append(
+            f"evidence confidence {int(round(package.confidence * 100))}%"
+        )
+        if member_note:
+            parts.append(member_note)
+        text = " · ".join(parts)
         bg = package.colour or "#2a2a33"
         self._set_badge(self._package_label, text, bg, _text_colour_for_bg(bg))
-        self._package_label.setAccessibleDescription(
+
+        def count_phrase(count: int, singular: str, plural: str | None = None) -> str:
+            return f"{count} {singular if count == 1 else plural or singular + 's'}"
+
+        description_parts = []
+        if role_total > 0:
+            roles = [
+                count_phrase(package.tank_count, "tank"),
+                count_phrase(package.healer_count, "healer"),
+                count_phrase(package.dps_count, "damage dealer"),
+            ]
+            if package.unknown_role_count > 0:
+                roles.append(
+                    count_phrase(package.unknown_role_count, "unknown role")
+                )
+            description_parts.append(f"Group composition: {', '.join(roles)}.")
+        data_status = []
+        if package.loading_count > 0:
+            data_status.append(
+                count_phrase(package.loading_count, "member loading", "members loading")
+            )
+        if package.error_count > 0:
+            data_status.append(
+                count_phrase(package.error_count, "WCL error")
+            )
+        if package.not_found_count > 0:
+            data_status.append(
+                count_phrase(
+                    package.not_found_count,
+                    "member not found on WCL",
+                    "members not found on WCL",
+                )
+            )
+        if data_status:
+            description_parts.append(f"Data status: {', '.join(data_status)}.")
+        description_parts.append(
             f"Group evidence confidence is "
             f"{int(round(package.confidence * 100))} percent. "
             "It reflects the weakest member and fetch completeness, not a success "
             "probability."
         )
+        self._package_label.setAccessibleDescription(" ".join(description_parts))
 
     def _set_status_or_data(
         self,
@@ -2065,6 +2104,7 @@ class ApplicantInfoPanel(QFrame):
         self._clear_metrics_and_dungeons()
         self._sync_detail_controls(listing)
         self._status_label.setText("")
+        self._status_label.setToolTip("")
         self._status_label.setAccessibleDescription("")
         self._status_label.setVisible(False)
         self._state_stage.setVisible(False)
@@ -2163,11 +2203,18 @@ class ApplicantInfoPanel(QFrame):
         state_kind: str = "neutral",
         accessible_description: str = "",
     ) -> None:
-        self._status_label.setText(text)
-        self._status_label.setAccessibleDescription(accessible_description)
+        display_text = text
+        if not centered and state_kind == "error" and len(display_text) > 120:
+            display_text = display_text[:119].rstrip() + "…"
+        full_text_hidden = display_text != text
+        self._status_label.setText(display_text)
+        self._status_label.setToolTip(text if full_text_hidden else "")
+        self._status_label.setAccessibleDescription(
+            accessible_description or (text if full_text_hidden else "")
+        )
         color = "#ff6666" if error else "#8d8d98"
         self._status_label.setStyleSheet(f"color: {color};")
-        self._status_label.setVisible(bool(text and not centered))
+        self._status_label.setVisible(bool(display_text and not centered))
         state_text = text
         if len(state_text) > 120:
             state_text = state_text[:119].rstrip() + "…"

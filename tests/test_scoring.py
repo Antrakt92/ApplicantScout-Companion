@@ -1752,8 +1752,8 @@ def test_package_fit_solo_uses_individual_score_without_group_display():
 def test_package_fit_unknown_context_keeps_member_stats_consistent():
     group = package_fit(
         [
-            _app(score=3600, main_score=1200),
-            _app(score=2400, main_score=3100),
+            _app(role="TANK", score=3600, main_score=1200),
+            _app(role="HEALER", score=2400, main_score=3100),
             _app(score=3000),
         ],
         _listing(),
@@ -1765,6 +1765,7 @@ def test_package_fit_unknown_context_keeps_member_stats_consistent():
     assert group.low_score == 3000.0
     assert group.spread == 600.0
     assert group.display == ""
+    assert (group.tank_count, group.healer_count, group.dps_count) == (1, 1, 1)
 
 
 def test_package_fit_solid_group_has_no_flat_size_penalty():
@@ -1911,6 +1912,34 @@ def test_package_fit_status_confidence_and_penalty():
     assert loading_group.confidence < package_fit([ready, ready], target).confidence
     assert error_group.status_penalty == 10.0
     assert error_group.score < loading_group.score
+
+
+def test_package_fit_exposes_role_composition_and_incomplete_member_counts():
+    target = _listing(key_level=16)
+    members = [
+        _app(role="TANK", fetch_status="ready"),
+        _app(role="HEALER", fetch_status="pending"),
+        _app(role="DAMAGER", fetch_status="loading"),
+        _app(role="DAMAGER", fetch_status="error"),
+        _app(role="UNKNOWN", fetch_status="not_found"),
+    ]
+
+    group = package_fit(members, target)
+
+    assert group.size == 5
+    assert (group.tank_count, group.healer_count, group.dps_count) == (1, 1, 2)
+    assert group.unknown_role_count == 1
+    assert group.loading_count == 2
+    assert group.error_count == 1
+    assert group.not_found_count == 1
+    assert (
+        group.tank_count
+        + group.healer_count
+        + group.dps_count
+        + group.unknown_role_count
+        == group.size
+    )
+    assert group.display == "G5 3"
 
 
 def test_package_fit_terminal_member_does_not_score_from_stale_wcl_metrics():
