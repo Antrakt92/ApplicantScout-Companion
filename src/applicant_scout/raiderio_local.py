@@ -102,6 +102,13 @@ class _RealmData:
 
 
 @dataclass(frozen=True)
+class _CharacterLayout:
+    realms: dict[str, _RealmData]
+    required_payload_size: int
+    complete: bool
+
+
+@dataclass(frozen=True)
 class _RegionCacheEntry:
     db: _RegionDB | None
     fingerprint: _RegionDBFingerprint
@@ -289,16 +296,18 @@ class _RegionDB:
                     dungeons_path.read_text(encoding="utf-8")
                 )
                 _validate_encoding_plan(mplus_meta, len(dungeons))
+                mplus_layout = _parse_character_layout(
+                    mplus_characters_text,
+                    mplus_meta.record_size,
+                )
                 mplus_lookup_payload = _parse_lookup_payload_for_character_layout(
                     lookup_text,
                     source_path=mplus_lookup_path,
                     payload_cache_dir=payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
-                    characters_path=mplus_characters_path,
-                    characters_text=mplus_characters_text,
-                    meta=mplus_meta,
+                    character_layout=mplus_layout,
                 )
-                mplus_realm_cache = _parse_all_realm_data(mplus_characters_text)
+                mplus_realm_cache = mplus_layout.realms
             except (OSError, ValueError) as exc:
                 _log.warning(
                     "could not load RaiderIO local M+ DB for %s: %s", token, exc
@@ -327,16 +336,18 @@ class _RegionDB:
                     raid_lookup_text, "previousRaids"
                 )
                 _validate_raid_encoding_plan(raid_meta, current_raids, previous_raids)
+                raid_layout = _parse_character_layout(
+                    raid_characters_text,
+                    raid_meta.record_size,
+                )
                 raid_lookup_payload = _parse_lookup_payload_for_character_layout(
                     raid_lookup_text,
                     source_path=raid_lookup_path,
                     payload_cache_dir=payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
-                    characters_path=raid_characters_path,
-                    characters_text=raid_characters_text,
-                    meta=raid_meta,
+                    character_layout=raid_layout,
                 )
-                raid_realm_cache = _parse_all_realm_data(raid_characters_text)
+                raid_realm_cache = raid_layout.realms
             except (OSError, ValueError) as exc:
                 _log.warning(
                     "could not load RaiderIO local raid DB for %s: %s", token, exc
@@ -720,9 +731,7 @@ def _parse_lookup_payload_for_character_layout(
     *,
     source_path: Path,
     payload_cache_dir: Path | None,
-    characters_path: Path,
-    characters_text: str | None = None,
-    meta: _ProviderMeta,
+    character_layout: _CharacterLayout,
     payload_cache_generation: int | None = None,
 ) -> bytes:
     payload = _parse_lookup_payload(
@@ -733,11 +742,7 @@ def _parse_lookup_payload_for_character_layout(
     )
     if payload_cache_dir is None:
         return payload
-    if characters_text is None:
-        characters_text = characters_path.read_text(encoding="utf-8", errors="replace")
-    if _lookup_payload_covers_character_layout(
-        payload, characters_text, meta.record_size
-    ):
+    if _lookup_payload_covers_character_layout(payload, character_layout):
         return payload
     payload = _parse_lookup_payload(
         text,
@@ -746,34 +751,57 @@ def _parse_lookup_payload_for_character_layout(
         payload_cache_generation=payload_cache_generation,
         use_cache=False,
     )
-    if _lookup_payload_covers_character_layout(
-        payload, characters_text, meta.record_size
-    ):
+    if _lookup_payload_covers_character_layout(payload, character_layout):
         return payload
     raise ValueError("RaiderIO lookup payload shorter than character layout")
 
 
 def _lookup_payload_covers_character_layout(
-    payload: bytes, characters_text: str, record_size: int
+    payload: bytes,
+    character_layout: _CharacterLayout,
 ) -> bool:
-    if record_size <= 0:
-        return False
+    return character_layout.complete and (
+        len(payload) >= character_layout.required_payload_size
+    )
+
+
+def _parse_character_layout(text: str, record_size: int) -> _CharacterLayout:
+    realms: dict[str, _RealmData] = {}
     required_size = 0
+    complete = record_size > 0
     pattern = re.compile(r'provider\.db\["([^"]+)"\]\s*=\s*\{')
-    for match in pattern.finditer(characters_text):
+    for match in pattern.finditer(text):
         start = match.end()
-        end = characters_text.find("}", start)
+        end = text.find("}", start)
         if end < 0:
-            return False
-        body = characters_text[start:end]
+            complete = False
+            continue
+        body = text[start:end]
         offset_match = re.match(r"\s*(\d+)", body)
         if not offset_match:
-            return False
+            complete = False
+            continue
         names = re.findall(r'"([^"]*)"', body[offset_match.end() :])
+        base_offset = int(offset_match.group(1))
         required_size = max(
-            required_size, int(offset_match.group(1)) + len(names) * record_size
+            required_size,
+            base_offset + len(names) * record_size,
         )
-    return len(payload) >= required_size
+        lookup_key = _realm_lookup_key(match.group(1))
+        if not lookup_key:
+            continue
+        name_indexes: dict[str, int] = {}
+        for index, name in enumerate(names):
+            name_indexes.setdefault(name.casefold(), index)
+        realms[lookup_key] = _RealmData(
+            base_offset=base_offset,
+            name_indexes=name_indexes,
+        )
+    return _CharacterLayout(
+        realms=realms,
+        required_payload_size=required_size,
+        complete=complete,
+    )
 
 
 def _lookup_payload_cache_path(cache_dir: Path, source_path: Path) -> Path | None:
@@ -913,29 +941,7 @@ def _parse_realm_data(text: str, realm: str) -> _RealmData | None:
 
 
 def _parse_all_realm_data(text: str) -> dict[str, _RealmData]:
-    realms: dict[str, _RealmData] = {}
-    pattern = re.compile(r'provider\.db\["([^"]+)"\]\s*=\s*\{')
-    for match in pattern.finditer(text):
-        lookup_key = _realm_lookup_key(match.group(1))
-        if not lookup_key:
-            continue
-        start = match.end()
-        end = text.find("}", start)
-        if end < 0:
-            continue
-        body = text[start:end]
-        offset_match = re.match(r"\s*(\d+)", body)
-        if not offset_match:
-            continue
-        names = re.findall(r'"([^"]*)"', body[offset_match.end() :])
-        name_indexes: dict[str, int] = {}
-        for index, name in enumerate(names):
-            name_indexes.setdefault(name.casefold(), index)
-        realms[lookup_key] = _RealmData(
-            base_offset=int(offset_match.group(1)),
-            name_indexes=name_indexes,
-        )
-    return realms
+    return _parse_character_layout(text, 1).realms
 
 
 def _decode_profile(

@@ -220,13 +220,56 @@ def test_reader_name_index_preserves_first_casefold_match(tmp_path: Path):
     second_record = _record(3074, 0, 12, 0, 2)
     _write_test_db(tmp_path, first_record + second_record)
     _write_mplus_character_names(tmp_path, ["Alpha", "ALPHA"])
-    reader = RaiderIOLocalReader(tmp_path)
+    cache_dir = tmp_path / "cache"
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
 
     profile = reader.lookup_profile("alpha", "Ragnaros", "EU")
 
     assert profile is not None
     assert profile.current_score == 3200
     assert profile.dungeons == [{"name": "Skyreach", "key_level": 15}]
+
+    cache_file = next(cache_dir.rglob("*.payload.bin"))
+    cache_file.write_bytes(first_record)
+    repaired_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    repaired = repaired_reader.lookup_profile("alpha", "Ragnaros", "EU")
+
+    assert repaired is not None
+    assert repaired.current_score == 3200
+    assert cache_file.read_bytes() == first_record + second_record
+
+
+def test_region_load_parses_each_character_layout_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    _write_test_raid_db(
+        tmp_path,
+        _raid_record((1, (0, 0, 0)), (0, (0, 0, 0)))
+        + _raid_record((3, (2, 0, 1)), (2, (1, 1, 1))),
+    )
+    original_parse = raiderio_local_mod._parse_character_layout
+    parsed_texts: list[str] = []
+
+    def count_parse(text: str, record_size: int):
+        parsed_texts.append(text)
+        return original_parse(text, record_size)
+
+    monkeypatch.setattr(raiderio_local_mod, "_parse_character_layout", count_parse)
+
+    db = raiderio_local_mod._RegionDB.load(
+        tmp_path,
+        "eu",
+        payload_cache_dir=tmp_path / "payload-cache",
+    )
+
+    assert db is not None
+    assert len(parsed_texts) == 2
 
 
 def test_reader_large_repeated_lookups_use_one_prebuilt_name_index_get(
