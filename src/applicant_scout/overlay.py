@@ -29,6 +29,7 @@ from PyQt6.QtGui import (
     QColor,
     QCursor,
     QFont,
+    QFontDatabase,
     QFontMetrics,
     QGuiApplication,
     QIcon,
@@ -214,6 +215,25 @@ def _bold_cell_font(base: QFont | None = None) -> QFont:
     if font.pointSize() <= 0 and font.pixelSize() <= 0:
         font = QFont(QApplication.font())
     font.setBold(True)
+    return font
+
+
+def _metric_cell_font(
+    base: QFont | None = None,
+    *,
+    bold: bool | None = None,
+) -> QFont:
+    source = QFont(base or QApplication.font())
+    if source.pointSize() <= 0 and source.pixelSize() <= 0:
+        source = QFont(QApplication.font())
+    font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+    if source.pixelSize() > 0:
+        font.setPixelSize(source.pixelSize())
+    elif source.pointSizeF() > 0:
+        font.setPointSizeF(source.pointSizeF())
+    font.setBold(source.bold() if bold is None else bold)
+    font.setStyleHint(QFont.StyleHint.Monospace)
+    font.setFixedPitch(True)
     return font
 
 
@@ -3812,12 +3832,15 @@ class OverlayWindow(QMainWindow):
         # plus a higher RaiderIO main score in brackets when available.
         ilvl_item = QTableWidgetItem(str(applicant.ilvl) if applicant.ilvl else "—")
         ilvl_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        ilvl_item.setFont(_metric_cell_font(ilvl_item.font()))
         self._table.setItem(row, COL_ILVL, ilvl_item)
 
         rio_score = effective_rio_score(applicant)
         rio_item = QTableWidgetItem(_rio_display_text(applicant))
         rio_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        rio_item.setFont(f)  # bold — primary scouting signal alongside name
+        rio_item.setFont(
+            _metric_cell_font(rio_item.font(), bold=True)
+        )  # bold — primary scouting signal alongside name
         # Tier-band foreground colour (gold/purple/blue/green/white) matches
         # RaiderIO addon's score-tier visual language, mirrors raid percentile
         # cell palette so eye-tracking across columns reads consistently.
@@ -5096,7 +5119,7 @@ def _raid_dual_cell(
         item.setForeground(QColor(fg))
     if bg is not None:
         item.setBackground(QColor(bg))
-        item.setFont(_bold_cell_font(item.font()))
+    item.setFont(_metric_cell_font(item.font(), bold=bg is not None))
     return item
 
 
@@ -5185,7 +5208,7 @@ def _raid_fit_cell(
     if bg is not None:
         item.setBackground(QColor(bg))
         item.setForeground(QColor(fg or _text_colour_for_bg(bg)))
-        item.setFont(_bold_cell_font(item.font()))
+    item.setFont(_metric_cell_font(item.font(), bold=bg is not None))
     return item
 
 
@@ -5224,7 +5247,7 @@ def _raid_package_cell(package: PackageFit) -> QTableWidgetItem:
     bg = package.colour or "#2a2a33"
     item.setBackground(QColor(bg))
     item.setForeground(QColor(_text_colour_for_bg(bg)))
-    item.setFont(_bold_cell_font(item.font()))
+    item.setFont(_metric_cell_font(item.font(), bold=True))
     return item
 
 
@@ -5542,7 +5565,7 @@ def _mplus_dual_cell(
         item.setForeground(QColor(fg))
     if bg is not None:
         item.setBackground(QColor(bg))
-        item.setFont(_bold_cell_font(item.font()))
+    item.setFont(_metric_cell_font(item.font(), bold=bg is not None))
     return item
 
 
@@ -5563,7 +5586,7 @@ def _mplus_group_cell(
     item.setData(MPLUS_INDIVIDUAL_TEXT_ROLE, individual_text)
     item.setData(MPLUS_INDIVIDUAL_FG_ROLE, individual_fg or "")
     item.setData(MPLUS_INDIVIDUAL_BG_ROLE, individual_bg or "")
-    item.setFont(_bold_cell_font(item.font()))
+    item.setFont(_metric_cell_font(item.font(), bold=True))
     return item
 
 

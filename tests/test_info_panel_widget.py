@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
@@ -21,9 +21,13 @@ import applicant_scout.overlay as overlay_mod
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
     COL_H,
+    COL_ILVL,
     COL_M,
     COL_MPLUS,
+    COL_NAME,
     COL_N,
+    COL_RIO,
+    COL_SPEC,
     DUNGEON_KEY_WIDTH,
     DUNGEON_METRIC_WIDTH,
     DUNGEON_NAME_WIDTH,
@@ -4894,6 +4898,35 @@ def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
 
         assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == "?"
         assert item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
+    finally:
+        client.close()
+
+
+def test_overlay_table_uses_monospace_only_for_metric_columns(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    applicant = _app()
+    state.add_or_update(applicant)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window._refresh_table()
+        row = window._row_for_id[applicant.applicant_id]
+
+        for column in (COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS):
+            font = window._table.item(row, column).font()
+            assert font.fixedPitch()
+            assert font.styleHint() == QFont.StyleHint.Monospace
+
+        for column in (COL_SPEC, COL_NAME):
+            font = window._table.item(row, column).font()
+            assert not font.fixedPitch()
+            assert font.styleHint() != QFont.StyleHint.Monospace
+
+        assert window._table.item(row, COL_RIO).font().bold()
     finally:
         client.close()
 
