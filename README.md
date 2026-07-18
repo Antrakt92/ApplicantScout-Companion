@@ -225,7 +225,7 @@ open.
 /apscout playstyle [off|learning|relaxed|competitive|carry] set M+ default playstyle
 /apscout reset          clear transport cache, queue fresh snapshot
 /apscout shotnow        force snapshot now while enabled (debug / manual sync)
-/apscout qrvisible      toggle QR frame always-visible (debug aid)
+/apscout qrvisible      toggle persistent QR always-visible mode; off clears it
 /apscout qrmove         toggle QR move mode (Alt+drag QR frame)
 /apscout qrreset        reset QR frame position to top-left
 /apscout taintcheck     probe C_LFGList field secret-tagging
