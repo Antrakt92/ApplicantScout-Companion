@@ -2770,14 +2770,18 @@ def test_readme_documents_current_wire_support():
     assert "wire payloads through v5" not in readme
 
 
-def test_readme_documents_shotnow_requires_enabled_addon():
+def test_readme_documents_snapshot_action_requires_enabled_addon():
     readme = _read_repo_text("README.md")
 
     assert (
         "/apscout shotnow        force snapshot now while enabled (debug / manual sync)"
         in readme
     )
-    assert "keep ApplicantScout enabled and run `/apscout shotnow`" in readme
+    assert re.search(
+        r"keep ApplicantScout enabled and click \*\*Snapshot\*\*, or run\s+"
+        r"`/apscout shotnow`",
+        readme,
+    )
     assert "/apscout shotnow        force snapshot now\n" not in readme
 
 

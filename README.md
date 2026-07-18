@@ -197,6 +197,11 @@ updates should not require UAC elevation.
 
 ## In-Game Commands
 
+Open WoW Group Finder to use the compact in-game troubleshooting row: **Status**,
+**Snapshot**, **Move QR** / **Lock QR**, **Reset QR**, and **Debug**. The slash
+commands below remain available as fallbacks when the Group Finder panel is not
+open.
+
 ```text
 /apscout on | off       enable/disable capture
 /apscout toggle         flip enabled state
@@ -223,10 +228,15 @@ updates should not require UAC elevation.
 - Companion reports a screenshot setup error: open Settings and set the active
   `_retail_\Screenshots` folder. If `APSCOUT_SCREENSHOTS_PATH` is set as a
   process environment variable, correct or remove that override first.
-- WoW side looks idle: run `/apscout status` and check that ApplicantScout is
-  enabled while you are hosting a listing or reviewing Party view.
-- Need a manual sync: keep ApplicantScout enabled and run `/apscout shotnow`;
-  if applicant state looks stale, run `/apscout reset` while transport is active.
+- WoW side looks idle: click **Status** in the Group Finder settings panel, or
+  run `/apscout status`, and check that ApplicantScout is enabled while you are
+  hosting a listing or reviewing Party view.
+- Need a manual sync: keep ApplicantScout enabled and click **Snapshot**, or run
+  `/apscout shotnow`; if applicant state looks stale, run `/apscout reset` while
+  transport is active.
+- QR frame is in the way: click **Move QR**, Alt-drag it, then click **Lock QR**.
+  Use **Reset QR** to restore the default position; `/apscout qrmove` and
+  `/apscout qrreset` remain available as fallbacks.
 - WCL cells stay empty: open Settings and use Test WCL.
 - Screenshot cleanup is marker-safe: the watcher deletes only screenshots that
   decode to an ApplicantScout `APS1` payload. Manual screenshots and unrelated
