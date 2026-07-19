@@ -2930,6 +2930,14 @@ class OverlayWindow(QMainWindow):
             if detect_listing_context(state.listing) == CONTEXT_RAID
             else None
         )
+        self._last_authoritative_roster_is_raid: bool | None = (
+            any(
+                getattr(member, "is_raid_member", False)
+                for member in state.party_members.values()
+            )
+            if state.party_members
+            else None
+        )
         self._metric_preferences = metric_preferences
         self._show_settings = show_settings
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
@@ -3822,6 +3830,20 @@ class OverlayWindow(QMainWindow):
             self.show_launcher_only()
 
     def on_roster_changed(self) -> None:
+        current_roster_is_raid = (
+            self._party_roster_is_raid() if self._state.party_members else None
+        )
+        if not self._last_decode_roster_unavailable:
+            if (
+                self._state.listing is None
+                and self._last_authoritative_roster_is_raid is True
+                and current_roster_is_raid is False
+            ):
+                # Small raid groups use Party unit tokens too. Only a real
+                # authoritative raid-to-Party transition proves that the
+                # preserved raid listing no longer describes this group.
+                self._last_raid_listing = None
+            self._last_authoritative_roster_is_raid = current_roster_is_raid
         for member in self._state.party_members.values():
             if member.fetch_status == "pending" and not self._restored_roster_pending:
                 self._launch_fetch(member)

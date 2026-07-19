@@ -19,6 +19,7 @@ from applicant_scout.overlay import (
 from applicant_scout.scoring import CONTEXT_RAID, detect_listing_context
 from applicant_scout.screenshot import (
     DecodedApplicant,
+    DecodedListing,
     DecodedRosterMember,
     DecodedVersion,
     Snapshot,
@@ -137,15 +138,17 @@ def _decoded_applicant(aid: int, member_idx: int, name: str) -> DecodedApplicant
     )
 
 
-def _decoded_roster(name: str) -> DecodedRosterMember:
+def _decoded_roster(
+    name: str, *, flags: int = 1, score: int = 2443
+) -> DecodedRosterMember:
     return DecodedRosterMember(
         unit_index=0,
-        flags=1,
+        flags=flags,
         subgroup=1,
         class_id=1,
         spec_id=71,
         ilvl=701,
-        score=2443,
+        score=score,
         main_score=3468,
         rio_profile=True,
         rio_best_key=0,
@@ -438,6 +441,145 @@ def test_cleared_raid_listing_preserves_party_raid_difficulty(qtbot, tmp_path):
     assert win._table.item(0, COL_H).text().startswith(
         ("FIT ", "OK ", "RISK ", "SUP ", "EST ")
     )
+
+
+def test_authoritative_party_replacement_clears_preserved_raid_context(
+    qtbot, tmp_path
+):
+    state = AppState()
+    sm = StateMachine(state)
+    win = _window(tmp_path, qtbot, state)
+    sm.listingChanged.connect(win.on_listing_changed)
+    sm.cleared.connect(win.on_cleared)
+    sm.rosterChanged.connect(win.on_roster_changed)
+
+    raid_snapshot = Snapshot(
+        listing=DecodedListing(
+            activity_id=459,
+            key_level=0,
+            category_id=3,
+            difficulty_id=15,
+            dungeon_name="Manaforge Omega",
+            listing_name="Heroic raid",
+            comment="",
+        ),
+        version=_version(),
+        roster=[_decoded_roster("Host-Realm", flags=3)],
+    )
+    win.note_decode(raid_snapshot)
+    sm.apply_snapshot(raid_snapshot)
+    win._flush_overlay_refresh()
+
+    assert win._last_raid_listing is not None
+    assert win._party_roster_is_raid()
+
+    party_snapshot = Snapshot(
+        listing=None,
+        version=_version(),
+        roster=[_decoded_roster("Host-Realm", flags=1)],
+    )
+    win.note_decode(party_snapshot)
+    sm.apply_snapshot(party_snapshot)
+    win._flush_overlay_refresh()
+
+    assert state.listing is None
+    assert not win._party_roster_is_raid()
+    assert win._last_raid_listing is None
+    assert win._effective_listing() is None
+    assert win._title_bar.title_label.text() == "Party (1)"
+    assert not win._tab_bar._key_label.isHidden()
+    assert not win._tab_bar._key_control.isHidden()
+
+
+def test_same_small_raid_party_refresh_keeps_preserved_raid_context(qtbot, tmp_path):
+    state = AppState()
+    sm = StateMachine(state)
+    win = _window(tmp_path, qtbot, state)
+    sm.listingChanged.connect(win.on_listing_changed)
+    sm.cleared.connect(win.on_cleared)
+    sm.rosterChanged.connect(win.on_roster_changed)
+
+    raid_listing = DecodedListing(
+        activity_id=459,
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+        listing_name="Heroic raid",
+        comment="",
+    )
+    raid_snapshot = Snapshot(
+        listing=raid_listing,
+        version=_version(),
+        roster=[_decoded_roster("Host-Realm", flags=1)],
+    )
+    win.note_decode(raid_snapshot)
+    sm.apply_snapshot(raid_snapshot)
+
+    delisted_snapshot = Snapshot(
+        listing=None,
+        version=_version(),
+        roster=[_decoded_roster("Host-Realm", flags=1)],
+    )
+    win.note_decode(delisted_snapshot)
+    sm.apply_snapshot(delisted_snapshot)
+    win._flush_overlay_refresh()
+
+    assert win._last_raid_listing is not None
+    assert win._effective_listing() is not None
+
+    refreshed_snapshot = Snapshot(
+        listing=None,
+        version=_version(),
+        roster=[_decoded_roster("Host-Realm", flags=1, score=2600)],
+    )
+    win.note_decode(refreshed_snapshot)
+    sm.apply_snapshot(refreshed_snapshot)
+    win._flush_overlay_refresh()
+
+    assert state.party_members["host-realm"].score == 2600
+    assert win._last_authoritative_roster_is_raid is False
+    listing = win._effective_listing()
+    assert listing is not None
+    assert detect_listing_context(listing) == CONTEXT_RAID
+    assert listing.difficulty_id == 15
+    assert win._title_bar.title_label.text() == "Party — Manaforge Omega (1)"
+    assert win._tab_bar._key_label.isHidden()
+    assert win._tab_bar._key_control.isHidden()
+
+
+def test_roster_unavailable_refresh_cannot_commit_raid_to_party_transition(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    preserved = _listing(
+        key_level=0,
+        category_id=3,
+        difficulty_id=15,
+        dungeon_name="Manaforge Omega",
+    )
+    win._last_raid_listing = preserved
+    win._last_authoritative_roster_is_raid = True
+
+    win.note_decode(
+        Snapshot(
+            listing=None,
+            version=_version(),
+            roster=[],
+            roster_unavailable=True,
+        )
+    )
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._last_authoritative_roster_is_raid is True
+    assert win._last_raid_listing is preserved
+    assert win._effective_listing() is preserved
+    assert win._title_bar.title_label.text() == "Party — Manaforge Omega (1)"
+    assert win._tab_bar._key_label.isHidden()
+    assert win._tab_bar._key_control.isHidden()
 
 
 def test_cleared_snapshot_does_not_carry_applicant_filter_into_party_auto_switch(
