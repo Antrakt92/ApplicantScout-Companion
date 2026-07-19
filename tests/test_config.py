@@ -5464,6 +5464,9 @@ def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():
         def note_decode(self, _snap: object) -> None:
             events.append("note_decode")
 
+        def note_snapshot_applied(self, _snap: object) -> None:
+            events.append("snapshot_applied")
+
     callbacks = []
     watcher = FakeWatcher()
     main_mod._connect_screenshot_watcher(
@@ -5484,7 +5487,7 @@ def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():
     )
     callbacks.pop(0)()
 
-    assert events == ["note_decode", "apply"]
+    assert events == ["note_decode", "apply", "snapshot_applied"]
 
 
 def test_connect_screenshot_watcher_submits_cache_after_applying_snapshot():
@@ -5514,6 +5517,9 @@ def test_connect_screenshot_watcher_submits_cache_after_applying_snapshot():
         def note_decode(self, _snap: object) -> None:
             events.append("note_decode")
 
+        def note_snapshot_applied(self, _snap: object) -> None:
+            events.append("snapshot_applied")
+
     class FakeWriter:
         def submit(self, _snap: object) -> None:
             events.append("cache_submit")
@@ -5536,7 +5542,7 @@ def test_connect_screenshot_watcher_submits_cache_after_applying_snapshot():
     watcher.snapshotReceived.emit(snap)
     callbacks.pop(0)()
 
-    assert events == ["note_decode", "apply", "cache_submit"]
+    assert events == ["note_decode", "apply", "cache_submit", "snapshot_applied"]
 
 
 def test_connect_screenshot_watcher_invalidate_drops_queued_flush():
@@ -7268,9 +7274,15 @@ def test_restore_live_snapshot_expiry_clears_matching_disk_cache(
     class FakeMachine:
         def __init__(self) -> None:
             self.snapshots: list[Snapshot] = []
+            self.expired_surfaces: list[tuple[bool, bool]] = []
 
         def apply_snapshot(self, snap: Snapshot) -> None:
             self.snapshots.append(snap)
+
+        def expire_restored_snapshot_surfaces(
+            self, *, applicants: bool, roster: bool
+        ) -> None:
+            self.expired_surfaces.append((applicants, roster))
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -7281,6 +7293,9 @@ def test_restore_live_snapshot_expiry_clears_matching_disk_cache(
 
         def restored_snapshot_pending(self) -> bool:
             return True
+
+        def restored_snapshot_pending_surfaces(self) -> tuple[bool, bool]:
+            return True, True
 
         def note_restored_snapshot_expired(self) -> None:
             self.expired = True
@@ -7297,7 +7312,7 @@ def test_restore_live_snapshot_expiry_clears_matching_disk_cache(
     callbacks[0][1]()
 
     assert window.expired
-    assert machine.snapshots[-1].listing is None
+    assert machine.expired_surfaces == [(True, True)]
     assert not (cache_dir / LIVE_SNAPSHOT_CACHE_FILENAME).exists()
 
 
@@ -7320,12 +7335,20 @@ def test_restore_live_snapshot_expiry_preserves_newer_disk_cache(
         def apply_snapshot(self, _snap: Snapshot) -> None:
             pass
 
+        def expire_restored_snapshot_surfaces(
+            self, *, applicants: bool, roster: bool
+        ) -> None:
+            pass
+
     class FakeWindow:
         def note_restored_snapshot(self, *_args) -> None:
             pass
 
         def restored_snapshot_pending(self) -> bool:
             return True
+
+        def restored_snapshot_pending_surfaces(self) -> tuple[bool, bool]:
+            return True, True
 
         def note_restored_snapshot_expired(self) -> None:
             pass
@@ -7338,6 +7361,56 @@ def test_restore_live_snapshot_expiry_preserves_newer_disk_cache(
     restored = load_live_snapshot(cache_dir, now=newer_saved_at + 0.1)
     assert restored is not None
     assert restored.saved_at == newer_saved_at
+
+
+@pytest.mark.parametrize("pending_surfaces", [(True, False), (False, True)])
+def test_restore_live_snapshot_expiry_clears_only_provisional_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    pending_surfaces: tuple[bool, bool],
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    save_live_snapshot(cache_dir, _live_snapshot(), now=time.time())
+    callbacks = []
+    monkeypatch.setattr(
+        main_mod.QTimer,
+        "singleShot",
+        lambda _milliseconds, callback: callbacks.append(callback),
+    )
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[Snapshot] = []
+            self.expired_surfaces: list[tuple[bool, bool]] = []
+
+        def apply_snapshot(self, snap: Snapshot) -> None:
+            self.snapshots.append(snap)
+
+        def expire_restored_snapshot_surfaces(
+            self, *, applicants: bool, roster: bool
+        ) -> None:
+            self.expired_surfaces.append((applicants, roster))
+
+    class FakeWindow:
+        def note_restored_snapshot(self, *_args) -> None:
+            pass
+
+        def restored_snapshot_pending(self) -> bool:
+            return True
+
+        def restored_snapshot_pending_surfaces(self) -> tuple[bool, bool]:
+            return pending_surfaces
+
+        def note_restored_snapshot_expired(self) -> None:
+            pass
+
+    machine = FakeMachine()
+    assert main_mod._restore_live_snapshot_cache(cache_dir, machine, FakeWindow())
+
+    callbacks[0]()
+
+    assert machine.expired_surfaces == [pending_surfaces]
 
 
 def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(

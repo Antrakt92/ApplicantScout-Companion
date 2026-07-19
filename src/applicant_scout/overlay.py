@@ -3272,7 +3272,8 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_reason = ""
         self._last_decode_roster_unavailable = False
         self._addon_version_warning: str | None = None
-        self._restored_snapshot_pending = False
+        self._restored_applicants_pending = False
+        self._restored_roster_pending = False
         self._restored_snapshot_saved_at: float | None = None
         self._restored_snapshot_deadline: float | None = None
 
@@ -3679,7 +3680,7 @@ class OverlayWindow(QMainWindow):
         # "loading" before _refresh_table reads it. Otherwise the cell briefly
         # renders the default "pending" state (which displays as "no data") for
         # the fetch duration (50-500ms), then flips to "loading" then "ready".
-        if not self._restored_snapshot_pending:
+        if not self._restored_applicants_pending:
             self._launch_fetch(applicant)
         self._schedule_overlay_refresh(maybe_show=True)
 
@@ -3692,7 +3693,10 @@ class OverlayWindow(QMainWindow):
         # row-rebuild. Errors are NOT auto-retried here — they'd just re-error
         # under the same WCL state (rate limit, OAuth); manual `/apscout reset`
         # from addon side restarts the pipeline if user wants a retry cycle.
-        if applicant.fetch_status == "pending" and not self._restored_snapshot_pending:
+        if (
+            applicant.fetch_status == "pending"
+            and not self._restored_applicants_pending
+        ):
             self._launch_fetch(applicant)
         # Edge case: if the very first event for an applicant arrives as APP=
         # (e.g., addon emits "=" because it cached state across /reload), the
@@ -3819,7 +3823,7 @@ class OverlayWindow(QMainWindow):
 
     def on_roster_changed(self) -> None:
         for member in self._state.party_members.values():
-            if member.fetch_status == "pending" and not self._restored_snapshot_pending:
+            if member.fetch_status == "pending" and not self._restored_roster_pending:
                 self._launch_fetch(member)
         if (
             self._manual_target_key is not None
@@ -3878,10 +3882,56 @@ class OverlayWindow(QMainWindow):
             getattr(version, "addon_version", None)
         )
         self._tab_bar.set_party_count_stale(self._last_decode_roster_unavailable)
-        self._restored_snapshot_pending = False
-        self._restored_snapshot_saved_at = None
-        self._restored_snapshot_deadline = None
         self._refresh_health_label()
+
+    def note_snapshot_applied(self, snap: object) -> None:
+        """Reconcile provisional restored rows after a fresh snapshot applies.
+
+        StateMachine intentionally emits no row signals for identical snapshots.
+        Keep each restored surface guarded through apply, then release only the
+        surfaces the fresh snapshot authoritatively carried.
+        """
+        if not self.restored_snapshot_pending():
+            return
+
+        terminal_clear = bool(getattr(snap, "terminal_clear", False))
+        applicants_authoritative = terminal_clear or not bool(
+            getattr(snap, "lfg_unavailable", False)
+        )
+        roster_authoritative = terminal_clear or not bool(
+            getattr(snap, "roster_unavailable", False)
+        )
+        reconcile_applicants = (
+            self._restored_applicants_pending
+            and applicants_authoritative
+            and not terminal_clear
+        )
+        reconcile_roster = (
+            self._restored_roster_pending
+            and roster_authoritative
+            and not terminal_clear
+        )
+
+        if applicants_authoritative:
+            self._restored_applicants_pending = False
+        if roster_authoritative:
+            self._restored_roster_pending = False
+
+        if reconcile_applicants:
+            for applicant in self._state.applicants.values():
+                if applicant.fetch_status == "pending":
+                    self._launch_fetch(applicant)
+        if reconcile_roster:
+            for member in self._state.party_members.values():
+                if member.fetch_status == "pending":
+                    self._launch_fetch(member)
+
+        if not self.restored_snapshot_pending():
+            self._restored_snapshot_saved_at = None
+            self._restored_snapshot_deadline = None
+        self._refresh_health_label()
+        if reconcile_applicants or reconcile_roster:
+            self._schedule_overlay_refresh(maybe_show=True)
 
     def note_restored_snapshot(
         self,
@@ -3891,7 +3941,8 @@ class OverlayWindow(QMainWindow):
     ) -> None:
         """Mark a persisted snapshot as provisional until a fresh QR arrives."""
         now = time.time()
-        self._restored_snapshot_pending = True
+        self._restored_applicants_pending = True
+        self._restored_roster_pending = True
         self._restored_snapshot_saved_at = saved_at
         self._restored_snapshot_deadline = now + max(0.0, grace_seconds)
         self._last_decode_time = None
@@ -3903,10 +3954,14 @@ class OverlayWindow(QMainWindow):
         self._refresh_health_label()
 
     def restored_snapshot_pending(self) -> bool:
-        return self._restored_snapshot_pending
+        return self._restored_applicants_pending or self._restored_roster_pending
+
+    def restored_snapshot_pending_surfaces(self) -> tuple[bool, bool]:
+        return self._restored_applicants_pending, self._restored_roster_pending
 
     def note_restored_snapshot_expired(self) -> None:
-        self._restored_snapshot_pending = False
+        self._restored_applicants_pending = False
+        self._restored_roster_pending = False
         self._restored_snapshot_saved_at = None
         self._restored_snapshot_deadline = None
         self._refresh_health_label()
@@ -3991,7 +4046,7 @@ class OverlayWindow(QMainWindow):
         needs separate live-evidence validation. Absolute age text remains the
         pipeline evidence."""
         failed_at = self._last_decode_failed_time
-        if self._restored_snapshot_pending:
+        if self.restored_snapshot_pending():
             saved_at = self._restored_snapshot_saved_at
             deadline = self._restored_snapshot_deadline
             age = (

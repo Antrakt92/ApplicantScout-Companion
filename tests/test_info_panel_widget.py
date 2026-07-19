@@ -3193,6 +3193,7 @@ def test_restored_snapshot_suppresses_wcl_fetch_until_fresh_decode(qtbot, tmp_pa
         launched: list[str] = []
         window._launch_fetch = lambda applicant: launched.append(applicant.applicant_id)
         applicant = _app(fetch_status="pending")
+        state.add_or_update(applicant)
 
         window.note_restored_snapshot(object(), saved_at=100.0, grace_seconds=30.0)
         window.on_applicant_added(applicant)
@@ -3200,10 +3201,167 @@ def test_restored_snapshot_suppresses_wcl_fetch_until_fresh_decode(qtbot, tmp_pa
         assert launched == []
         assert applicant.fetch_status == "pending"
 
-        window.note_decode(object())
+        fresh = Snapshot(listing=None, version=None)
+        window.note_decode(fresh)
         window.on_applicant_updated(applicant)
 
+        assert launched == []
+
+        window.note_snapshot_applied(fresh)
+
         assert launched == [applicant.applicant_id]
+    finally:
+        client.close()
+
+
+def test_restored_identical_full_snapshot_reconciles_pending_rows_once(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    applicant = _app(fetch_status="pending")
+    member = _member()
+    member.fetch_status = "pending"
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        launched: list[tuple[str, str]] = []
+
+        def launch(row: Applicant) -> None:
+            launched.append((type(row).__name__, row.applicant_id))
+            row.fetch_status = "loading"
+
+        window._launch_fetch = launch
+        fresh = Snapshot(listing=None, version=None)
+
+        window.note_restored_snapshot(fresh, saved_at=100.0, grace_seconds=30.0)
+        window.on_applicant_added(applicant)
+        window.on_roster_changed()
+
+        assert launched == []
+
+        window.note_decode(fresh)
+        window.note_snapshot_applied(fresh)
+
+        assert launched == [
+            ("Applicant", applicant.applicant_id),
+            ("RosterMember", member.applicant_id),
+        ]
+        assert not window.restored_snapshot_pending()
+
+        window.note_decode(fresh)
+        window.note_snapshot_applied(fresh)
+
+        assert len(launched) == 2
+    finally:
+        client.close()
+
+
+def test_restored_partial_snapshots_release_only_authoritative_surface(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    applicant = _app(fetch_status="pending")
+    member = _member()
+    member.fetch_status = "pending"
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        launched: list[str] = []
+
+        def launch(row: Applicant) -> None:
+            launched.append(row.applicant_id)
+            row.fetch_status = "loading"
+
+        window._launch_fetch = launch
+        restored = Snapshot(listing=None, version=None)
+        window.note_restored_snapshot(
+            restored,
+            saved_at=100.0,
+            grace_seconds=30.0,
+        )
+
+        unavailable = Snapshot(
+            listing=None,
+            version=None,
+            lfg_unavailable=True,
+            roster_unavailable=True,
+        )
+        window.note_decode(unavailable)
+        window.note_snapshot_applied(unavailable)
+
+        assert launched == []
+        assert window.restored_snapshot_pending_surfaces() == (True, True)
+
+        roster_only = Snapshot(
+            listing=None,
+            version=None,
+            lfg_unavailable=True,
+        )
+        window.note_decode(roster_only)
+        window.on_applicant_updated(applicant)
+        window.on_roster_changed()
+
+        assert launched == []
+
+        window.note_snapshot_applied(roster_only)
+
+        assert launched == [member.applicant_id]
+        assert applicant.fetch_status == "pending"
+        assert window.restored_snapshot_pending()
+
+        applicants_only = Snapshot(
+            listing=None,
+            version=None,
+            roster_unavailable=True,
+        )
+        window.note_decode(applicants_only)
+        window.note_snapshot_applied(applicants_only)
+
+        assert launched == [member.applicant_id, applicant.applicant_id]
+        assert not window.restored_snapshot_pending()
+    finally:
+        client.close()
+
+
+def test_restored_terminal_clear_retires_pending_rows_without_fetch(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.add_or_update(_app(fetch_status="pending"))
+    state.add_or_update_party_member(_member())
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        launched: list[str] = []
+        window._launch_fetch = lambda row: launched.append(row.applicant_id)
+        terminal = Snapshot(listing=None, version=None, terminal_clear=True)
+        window.note_restored_snapshot(
+            terminal,
+            saved_at=100.0,
+            grace_seconds=30.0,
+        )
+        state.clear_all()
+        state.party_members.clear()
+
+        window.note_decode(terminal)
+        window.note_snapshot_applied(terminal)
+
+        assert launched == []
+        assert not window.restored_snapshot_pending()
     finally:
         client.close()
 

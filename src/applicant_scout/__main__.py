@@ -967,6 +967,28 @@ class StateMachine(QObject):
             self.rosterChanged.emit()
         return changed
 
+    def expire_restored_snapshot_surfaces(
+        self,
+        *,
+        applicants: bool,
+        roster: bool,
+    ) -> None:
+        """Discard restored domains that never received fresh transport proof."""
+        if applicants:
+            old_listing = self._state.listing
+            old_leader_key = self._state.leader_key
+            had_applicants = bool(self._state.applicants)
+            self._state.listing = None
+            self._state.leader_key = None
+            self._state.clear_all()
+            if old_listing is not None or old_leader_key is not None:
+                self.listingChanged.emit()
+            if old_listing is not None or had_applicants:
+                self.cleared.emit()
+
+        if roster and self._apply_roster_snapshot([], emit_signal=False):
+            self.rosterChanged.emit()
+
     def apply_snapshot(self, snap: Snapshot) -> None:
         region_identity_changed = False
         default_realm_changed = False
@@ -1072,12 +1094,13 @@ class StateMachine(QObject):
             elif effective_listing is not None and effective_listing.key_level > 0:
                 rio_summary_target_key = effective_listing.key_level
 
-            self._apply_roster_snapshot(
-                snap.roster,
-                region_identity_changed=region_identity_changed,
-                default_realm_changed=default_realm_changed,
-                rio_summary_target_key=rio_summary_target_key,
-            )
+            if not snap.roster_unavailable:
+                self._apply_roster_snapshot(
+                    snap.roster,
+                    region_identity_changed=region_identity_changed,
+                    default_realm_changed=default_realm_changed,
+                    rio_summary_target_key=rio_summary_target_key,
+                )
             for applicant in list(self._state.applicants.values()):
                 wcl_identity_changed = region_identity_changed or (
                     default_realm_changed
@@ -2217,6 +2240,11 @@ class _SnapshotApplyQueue:
                 and isinstance(snap, Snapshot)
             ):
                 self._live_snapshot_cache_writer.submit(snap)
+            getattr(
+                self._window,
+                "note_snapshot_applied",
+                lambda *_args: None,
+            )(snap)
             return
         path, reason = args
         self._decode_failed_callback(str(path), str(reason))
@@ -2412,16 +2440,17 @@ def _restore_live_snapshot_cache(
     machine.apply_snapshot(restored.snapshot)
 
     def _expire_restored_snapshot() -> None:
-        still_pending = getattr(
-            window,
-            "restored_snapshot_pending",
-            lambda: False,
-        )
-        if not still_pending():
+        if not window.restored_snapshot_pending():
             return
+        applicants_pending, roster_pending = (
+            window.restored_snapshot_pending_surfaces()
+        )
+        machine.expire_restored_snapshot_surfaces(
+            applicants=bool(applicants_pending),
+            roster=bool(roster_pending),
+        )
         getattr(window, "note_restored_snapshot_expired", lambda: None)()
         clear_live_snapshot_if_saved_at(cache_dir, restored.saved_at)
-        machine.apply_snapshot(Snapshot(listing=None, version=None))
 
     QTimer.singleShot(max(0, int(grace_seconds * 1000)), _expire_restored_snapshot)
     return True

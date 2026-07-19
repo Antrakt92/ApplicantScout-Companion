@@ -1915,6 +1915,47 @@ def test_lfg_unavailable_snapshot_preserves_listing_applicants_and_applies_roste
     assert roster_updates == [True]
 
 
+def test_combined_unavailable_snapshot_preserves_applicants_and_roster():
+    state = AppState()
+    sm = StateMachine(state)
+    cleared: list[bool] = []
+    removed: list[str] = []
+    roster_updates: list[bool] = []
+    sm.cleared.connect(lambda: cleared.append(True))
+    sm.applicantRemoved.connect(removed.append)
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[
+                _roster_decoded("Host-Realm", flags=1),
+                _roster_decoded("Friend-Realm", unit_index=2),
+            ],
+        )
+    )
+    roster_updates.clear()
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-Realm"),
+            applicants=[],
+            roster=[],
+            lfg_unavailable=True,
+            roster_unavailable=True,
+        )
+    )
+
+    assert state.listing is not None
+    assert set(state.applicants) == {"7:1"}
+    assert set(state.party_members) == {"host-realm", "friend-realm"}
+    assert cleared == []
+    assert removed == []
+    assert roster_updates == []
+
+
 def test_lfg_unavailable_region_change_invalidates_preserved_applicant_wcl():
     state = AppState()
     state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
@@ -2429,3 +2470,71 @@ def test_roster_unavailable_snapshot_updates_applicants_without_clearing_party()
     assert removed == ["7:1"]
     assert added == ["8:1"]
     assert roster_updates == []
+
+
+def test_restored_applicant_expiry_preserves_fresh_roster_domain():
+    state = AppState()
+    sm = StateMachine(state)
+    listing_updates: list[bool] = []
+    clears: list[bool] = []
+    roster_updates: list[bool] = []
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            leader_key=DecodedLeaderKey(
+                key_level=17,
+                challenge_map_id=503,
+                player_name="Host-Realm",
+            ),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[_roster_decoded("Host-Realm", flags=1)],
+        )
+    )
+    sm.listingChanged.connect(lambda: listing_updates.append(True))
+    sm.cleared.connect(lambda: clears.append(True))
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+
+    sm.expire_restored_snapshot_surfaces(applicants=True, roster=False)
+
+    assert state.listing is None
+    assert state.leader_key is None
+    assert state.applicants == {}
+    assert set(state.party_members) == {"host-realm"}
+    assert listing_updates == [True]
+    assert clears == [True]
+    assert roster_updates == []
+
+
+def test_restored_roster_expiry_preserves_fresh_applicant_domain():
+    state = AppState()
+    sm = StateMachine(state)
+    listing_updates: list[bool] = []
+    clears: list[bool] = []
+    roster_updates: list[bool] = []
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            leader_key=DecodedLeaderKey(
+                key_level=17,
+                challenge_map_id=503,
+                player_name="Host-Realm",
+            ),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[_roster_decoded("Host-Realm", flags=1)],
+        )
+    )
+    sm.listingChanged.connect(lambda: listing_updates.append(True))
+    sm.cleared.connect(lambda: clears.append(True))
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+
+    sm.expire_restored_snapshot_surfaces(applicants=False, roster=True)
+
+    assert state.listing is not None
+    assert state.leader_key is not None
+    assert set(state.applicants) == {"7:1"}
+    assert state.party_members == {}
+    assert listing_updates == []
+    assert clears == []
+    assert roster_updates == [True]
