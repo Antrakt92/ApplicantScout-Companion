@@ -24,10 +24,13 @@ from applicant_scout.live_snapshot_cache import (
 )
 from applicant_scout.screenshot import (
     DecodedApplicant,
+    DecodedLeaderKey,
     DecodedListing,
+    DecodedRosterMember,
     DecodedVersion,
     Snapshot,
 )
+from applicant_scout.state import AppState
 import applicant_scout.wow_lifecycle as wow_lifecycle_mod
 from applicant_scout.config import (
     Config,
@@ -165,6 +168,21 @@ def _live_snapshot() -> Snapshot:
                 name="Healer-Realm",
             )
         ],
+    )
+
+
+def _live_roster_member(name: str, *, unit_index: int = 1) -> DecodedRosterMember:
+    return DecodedRosterMember(
+        unit_index=unit_index,
+        flags=1 if unit_index == 1 else 0,
+        subgroup=1,
+        class_id=10,
+        spec_id=270,
+        ilvl=685,
+        score=3100,
+        main_score=0,
+        role=1,
+        name=name,
     )
 
 
@@ -1652,6 +1670,8 @@ def test_validated_settings_promotion_marks_new_active_auth_ready(
         metric_preferences=cfg.metric_preferences,
         sync_with_wow=cfg.sync_with_wow,
     )
+
+
     new_auth = object()
     reconfigured: list[tuple[object, bool]] = []
     bumps: list[str] = []
@@ -5634,7 +5654,7 @@ def test_connect_screenshot_watcher_invalidate_drops_queued_flush():
     assert writer.snapshots == []
 
 
-def test_connect_screenshot_watcher_coalesces_terminal_clear_by_source_order():
+def test_connect_screenshot_watcher_preserves_terminal_clear_by_source_order():
     class FakeSignal:
         def __init__(self) -> None:
             self._callbacks = []
@@ -5693,7 +5713,7 @@ def test_connect_screenshot_watcher_coalesces_terminal_clear_by_source_order():
     watcher.snapshotReceived.emit(new_normal)
     callbacks.pop(0)()
 
-    assert machine.snapshots == [new_normal]
+    assert machine.snapshots == [terminal_clear, new_normal]
 
     callbacks.clear()
     machine.snapshots.clear()
@@ -5711,6 +5731,325 @@ def test_connect_screenshot_watcher_coalesces_terminal_clear_by_source_order():
     callbacks.pop(0)()
 
     assert machine.snapshots == [newest_clear]
+
+
+@pytest.mark.parametrize(
+    ("snapshots", "expected_applicant", "expected_roster"),
+    [
+        ("full_then_roster_partial", "Healer-Realm", "Roster-Partial-Realm"),
+        ("full_then_lfg_partial", "LFG-Partial-Realm", "Roster-Full-Realm"),
+        ("lfg_then_roster_partial", "LFG-Partial-Realm", "Roster-Partial-Realm"),
+        ("roster_then_lfg_partial", "LFG-Partial-Realm", "Roster-Partial-Realm"),
+    ],
+)
+def test_snapshot_apply_queue_preserves_complementary_authoritative_domains(
+    snapshots: str,
+    expected_applicant: str,
+    expected_roster: str,
+):
+    state = AppState()
+    machine = main_mod.StateMachine(state)
+    callbacks: list[object] = []
+    decoded: list[object] = []
+    applied: list[object] = []
+    cached: list[Snapshot] = []
+    applicant_adds: list[str] = []
+    roster_updates: list[bool] = []
+    machine.applicantAdded.connect(lambda row: applicant_adds.append(row.name))
+    machine.rosterChanged.connect(lambda: roster_updates.append(True))
+
+    class FakeWindow:
+        def note_decode(self, snap: object) -> None:
+            decoded.append(snap)
+
+        def note_snapshot_applied(self, snap: object) -> None:
+            applied.append(snap)
+
+    class FakeWriter:
+        def submit(self, snap: Snapshot) -> None:
+            cached.append(snap)
+
+    full = _live_snapshot()
+    full.roster = [_live_roster_member("Roster-Full-Realm")]
+    lfg_partial = _live_snapshot()
+    lfg_partial.applicants[0].name = "LFG-Partial-Realm"
+    lfg_partial.roster_unavailable = True
+    roster_partial = Snapshot(
+        listing=None,
+        version=full.version,
+        applicants=[],
+        roster=[_live_roster_member("Roster-Partial-Realm")],
+        lfg_unavailable=True,
+    )
+    burst = {
+        "full_then_roster_partial": (full, roster_partial),
+        "full_then_lfg_partial": (full, lfg_partial),
+        "lfg_then_roster_partial": (lfg_partial, roster_partial),
+        "roster_then_lfg_partial": (roster_partial, lfg_partial),
+    }[snapshots]
+    queue = main_mod._SnapshotApplyQueue(
+        machine,
+        FakeWindow(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        live_snapshot_cache_writer=FakeWriter(),
+        scheduler=callbacks.append,
+    )
+
+    for snap in burst:
+        queue.enqueue_snapshot(snap)
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+
+    assert state.listing is not None
+    assert {row.name for row in state.applicants.values()} == {expected_applicant}
+    assert {row.name for row in state.party_members.values()} == {expected_roster}
+    assert applicant_adds == [expected_applicant]
+    assert roster_updates == [True]
+    assert decoded == [burst[-1]]
+    assert len(applied) == 1
+    assert cached == list(burst)
+    cached_full = [
+        snap
+        for snap in cached
+        if not snap.lfg_unavailable and not snap.roster_unavailable
+    ]
+    assert len(cached_full) == (1 if snapshots.startswith("full_then") else 0)
+
+
+@pytest.mark.parametrize("partial_kind", ["lfg", "roster", "complementary"])
+def test_snapshot_apply_queue_persists_real_full_before_partial(
+    partial_kind: str,
+    tmp_path: Path,
+):
+    full = _live_snapshot()
+    full.roster = [_live_roster_member("Full-Roster-Realm")]
+    lfg_partial = _live_snapshot()
+    lfg_partial.applicants[0].name = "Partial-Applicant-Realm"
+    lfg_partial.roster_unavailable = True
+    roster_partial = Snapshot(
+        listing=None,
+        version=full.version,
+        roster=[_live_roster_member("Partial-Roster-Realm")],
+        lfg_unavailable=True,
+    )
+    tail = {
+        "lfg": (lfg_partial,),
+        "roster": (roster_partial,),
+        "complementary": (lfg_partial, roster_partial),
+    }[partial_kind]
+    callbacks: list[object] = []
+    writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+    queue = main_mod._SnapshotApplyQueue(
+        SimpleNamespace(apply_snapshot=lambda _snap: None),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        live_snapshot_cache_writer=writer,
+        scheduler=callbacks.append,
+    )
+
+    queue.enqueue_snapshot(full)
+    for partial in tail:
+        queue.enqueue_snapshot(partial)
+    callbacks.pop(0)()
+
+    assert writer.close()
+    restored = load_live_snapshot(tmp_path)
+    assert restored is not None
+    assert restored.snapshot == full
+
+
+def test_snapshot_apply_queue_uses_latest_identity_and_leader_context_once():
+    state = AppState()
+    machine = main_mod.StateMachine(state)
+    callbacks: list[object] = []
+    version_updates: list[int] = []
+    applicant_adds: list[str] = []
+    machine.versionUpdated.connect(version_updates.append)
+    machine.applicantAdded.connect(lambda row: applicant_adds.append(row.name))
+    older_full = _live_snapshot()
+    older_full.version = DecodedVersion(
+        addon_version="0.4.3",
+        game_version="12.0.5",
+        region_id=3,
+        player_name="Host-OldRealm",
+    )
+    older_full.leader_key = DecodedLeaderKey(
+        key_level=14,
+        challenge_map_id=401,
+        player_name="Host-OldRealm",
+    )
+    newer_roster = Snapshot(
+        listing=None,
+        version=DecodedVersion(
+            addon_version="0.4.3",
+            game_version="12.0.5",
+            region_id=1,
+            player_name="Host-NewRealm",
+        ),
+        leader_key=DecodedLeaderKey(
+            key_level=20,
+            challenge_map_id=503,
+            player_name="Host-NewRealm",
+        ),
+        roster=[_live_roster_member("Host-NewRealm")],
+        lfg_unavailable=True,
+    )
+    queue = main_mod._SnapshotApplyQueue(
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+
+    queue.enqueue_snapshot(older_full)
+    queue.enqueue_snapshot(newer_roster)
+    callbacks.pop(0)()
+
+    assert version_updates == [1]
+    assert state.player.full_name == "Host-NewRealm"
+    assert applicant_adds == ["Healer-Realm"]
+    assert state.applicants["42:1"].rio_summary_target_key == 20
+
+
+def test_snapshot_apply_queue_preserves_positive_leader_before_zero_partial():
+    state = AppState()
+    machine = main_mod.StateMachine(state)
+    callbacks: list[object] = []
+    full = _live_snapshot()
+    full.leader_key = DecodedLeaderKey(
+        key_level=14,
+        challenge_map_id=401,
+        player_name="Host-Realm",
+    )
+    roster_partial = Snapshot(
+        listing=None,
+        version=full.version,
+        leader_key=DecodedLeaderKey(
+            key_level=0,
+            challenge_map_id=0,
+            player_name="",
+        ),
+        roster=[_live_roster_member("Host-Realm")],
+        lfg_unavailable=True,
+    )
+    queue = main_mod._SnapshotApplyQueue(
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+
+    queue.enqueue_snapshot(full)
+    queue.enqueue_snapshot(roster_partial)
+    callbacks.pop(0)()
+
+    assert state.leader_key is not None
+    assert state.leader_key.key_level == 14
+
+
+def test_snapshot_apply_queue_suppresses_terminal_version_superseded_after_clear():
+    state = AppState()
+    machine = main_mod.StateMachine(state)
+    callbacks: list[object] = []
+    version_updates: list[int] = []
+    machine.versionUpdated.connect(version_updates.append)
+    terminal = Snapshot(
+        listing=None,
+        version=DecodedVersion(
+            addon_version="0.4.3",
+            game_version="12.0.5",
+            region_id=3,
+            player_name="Host-OldRealm",
+        ),
+        terminal_clear=True,
+    )
+    current = _live_snapshot()
+    current.version = DecodedVersion(
+        addon_version="0.4.3",
+        game_version="12.0.5",
+        region_id=1,
+        player_name="Host-NewRealm",
+    )
+    queue = main_mod._SnapshotApplyQueue(
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+
+    queue.enqueue_snapshot(terminal)
+    queue.enqueue_snapshot(current)
+    callbacks.pop(0)()
+
+    assert version_updates == [1]
+    assert state.player.full_name == "Host-NewRealm"
+
+
+@pytest.mark.parametrize("post_clear_kind", ["full", "lfg_partial"])
+def test_snapshot_apply_queue_keeps_terminal_clear_before_new_state(
+    post_clear_kind: str,
+    tmp_path: Path,
+):
+    state = AppState()
+    machine = main_mod.StateMachine(state)
+    callbacks: list[object] = []
+    clear_events: list[bool] = []
+    machine.cleared.connect(lambda: clear_events.append(True))
+    previous = _live_snapshot()
+    previous.roster = [_live_roster_member("Previous-Realm")]
+    machine.apply_snapshot(previous)
+    assert save_live_snapshot(tmp_path, previous)
+    writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+
+    terminal = Snapshot(listing=None, version=None, terminal_clear=True)
+    current = _live_snapshot()
+    current.applicants[0].name = "Current-Applicant-Realm"
+    if post_clear_kind == "lfg_partial":
+        current.roster = []
+        current.roster_unavailable = True
+    else:
+        current.roster = [_live_roster_member("Current-Roster-Realm")]
+
+    queue = main_mod._SnapshotApplyQueue(
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        live_snapshot_cache_writer=writer,
+        scheduler=callbacks.append,
+    )
+    queue.enqueue_snapshot(terminal)
+    queue.enqueue_snapshot(current)
+    callbacks.pop(0)()
+
+    assert clear_events == [True]
+    assert {row.name for row in state.applicants.values()} == {
+        "Current-Applicant-Realm"
+    }
+    if post_clear_kind == "full":
+        assert {row.name for row in state.party_members.values()} == {
+            "Current-Roster-Realm"
+        }
+    else:
+        assert state.party_members == {}
+    assert writer.close()
+    restored = load_live_snapshot(tmp_path)
+    if post_clear_kind == "full":
+        assert restored is not None
+        assert restored.snapshot.applicants[0].name == "Current-Applicant-Realm"
+    else:
+        assert restored is None
 
 
 def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails(

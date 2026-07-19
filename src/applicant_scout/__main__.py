@@ -1220,15 +1220,17 @@ class StateMachine(QObject):
         if new_listing is None and old_listing is not None:
             self._state.listing = None
             self._state.clear_all()
-            roster_changed = self._apply_roster_snapshot(
-                snap.roster,
-                region_identity_changed=region_identity_changed,
-                default_realm_changed=default_realm_changed,
-                rio_summary_target_key=(
-                    new_leader_key.key_level if new_leader_key is not None else 0
-                ),
-                emit_signal=False,
-            )
+            roster_changed = False
+            if not snap.roster_unavailable:
+                roster_changed = self._apply_roster_snapshot(
+                    snap.roster,
+                    region_identity_changed=region_identity_changed,
+                    default_realm_changed=default_realm_changed,
+                    rio_summary_target_key=(
+                        new_leader_key.key_level if new_leader_key is not None else 0
+                    ),
+                    emit_signal=False,
+                )
             self.listingChanged.emit()
             self.cleared.emit()
             if roster_changed:
@@ -1237,14 +1239,15 @@ class StateMachine(QObject):
 
         # No listing in snap AND no prior listing → roster/version can still update.
         if new_listing is None:
-            self._apply_roster_snapshot(
-                snap.roster,
-                region_identity_changed=region_identity_changed,
-                default_realm_changed=default_realm_changed,
-                rio_summary_target_key=(
-                    new_leader_key.key_level if new_leader_key is not None else 0
-                ),
-            )
+            if not snap.roster_unavailable:
+                self._apply_roster_snapshot(
+                    snap.roster,
+                    region_identity_changed=region_identity_changed,
+                    default_realm_changed=default_realm_changed,
+                    rio_summary_target_key=(
+                        new_leader_key.key_level if new_leader_key is not None else 0
+                    ),
+                )
             if leader_key_changed:
                 self.listingChanged.emit()
             return
@@ -2295,6 +2298,153 @@ def _shutdown_runtime(
             log.warning("Could not close WCL client: %s", exc)
 
 
+_SNAPSHOT_AUTHORITY_LFG = 1 << 0
+_SNAPSHOT_AUTHORITY_ROSTER = 1 << 1
+_SNAPSHOT_AUTHORITY_VERSION = 1 << 2
+_SNAPSHOT_AUTHORITY_LEADER = 1 << 3
+_SNAPSHOT_AUTHORITY_LISTING_SEED = 1 << 4
+
+
+def _snapshot_carries_leader_update(snap: object) -> bool:
+    if bool(getattr(snap, "terminal_clear", False)) or not bool(
+        getattr(snap, "lfg_unavailable", False)
+    ):
+        return True
+    leader_key = getattr(snap, "leader_key", None)
+    key_level = getattr(leader_key, "key_level", None)
+    return isinstance(key_level, int) and key_level > 0
+
+
+def _snapshot_authority_mask(snap: object) -> int:
+    terminal_clear = bool(getattr(snap, "terminal_clear", False))
+    lfg_unavailable = bool(getattr(snap, "lfg_unavailable", False))
+    roster_unavailable = bool(getattr(snap, "roster_unavailable", False))
+    authority = 0
+    if terminal_clear or not lfg_unavailable:
+        authority |= (
+            _SNAPSHOT_AUTHORITY_LFG
+            | _SNAPSHOT_AUTHORITY_LEADER
+            | _SNAPSHOT_AUTHORITY_LISTING_SEED
+        )
+    else:
+        # A restricted LFG read can still carry independently useful context.
+        if _snapshot_carries_leader_update(snap):
+            authority |= _SNAPSHOT_AUTHORITY_LEADER
+        if getattr(snap, "listing", None) is not None:
+            authority |= _SNAPSHOT_AUTHORITY_LISTING_SEED
+    if terminal_clear or not roster_unavailable:
+        authority |= _SNAPSHOT_AUTHORITY_ROSTER
+    if getattr(snap, "version", None) is not None:
+        authority |= _SNAPSHOT_AUTHORITY_VERSION
+    return authority
+
+
+def _compact_snapshot_segment(snapshots: tuple[object, ...]) -> tuple[object, ...]:
+    """Keep the newest observation plus each older snapshot with unique authority."""
+    covered = 0
+    retained_reversed: list[object] = []
+    for snap in reversed(snapshots):
+        authority = _snapshot_authority_mask(snap)
+        if not retained_reversed or authority & ~covered:
+            retained_reversed.append(snap)
+            covered |= authority
+    retained_reversed.reverse()
+    return tuple(retained_reversed)
+
+
+def _append_pending_snapshot(
+    pending: tuple[object, ...],
+    snap: object,
+) -> tuple[object, ...]:
+    # A clear invalidates every earlier state event, but must itself survive a
+    # later partial/full frame so listing-session and waiter cleanup still runs.
+    if bool(getattr(snap, "terminal_clear", False)):
+        return (snap,)
+    if pending and bool(getattr(pending[0], "terminal_clear", False)):
+        return (pending[0],) + _compact_snapshot_segment(pending[1:] + (snap,))
+    return _compact_snapshot_segment(pending + (snap,))
+
+
+def _merge_snapshot_segment(snapshots: tuple[Snapshot, ...]) -> Snapshot:
+    """Compose final in-memory authority without fabricating a cache snapshot."""
+    latest = snapshots[-1]
+    lfg_source = next(
+        (snap for snap in reversed(snapshots) if not snap.lfg_unavailable),
+        None,
+    )
+    roster_source = next(
+        (snap for snap in reversed(snapshots) if not snap.roster_unavailable),
+        None,
+    )
+    version = next(
+        (snap.version for snap in reversed(snapshots) if snap.version is not None),
+        None,
+    )
+    leader_source = next(
+        (
+            snap
+            for snap in reversed(snapshots)
+            if _snapshot_carries_leader_update(snap)
+        ),
+        None,
+    )
+    listing_seed_source = None
+    if lfg_source is None:
+        listing_seed_source = next(
+            (snap for snap in reversed(snapshots) if snap.listing is not None),
+            None,
+        )
+    return replace(
+        latest,
+        listing=(
+            lfg_source.listing
+            if lfg_source is not None
+            else (
+                listing_seed_source.listing
+                if listing_seed_source is not None
+                else None
+            )
+        ),
+        version=version,
+        leader_key=(leader_source.leader_key if leader_source is not None else None),
+        applicants=list(lfg_source.applicants) if lfg_source is not None else [],
+        roster=list(roster_source.roster) if roster_source is not None else [],
+        terminal_clear=False,
+        lfg_unavailable=lfg_source is None,
+        roster_unavailable=roster_source is None,
+    )
+
+
+def _snapshot_application_plan(
+    snapshots: tuple[object, ...],
+    cache_snapshots: tuple[Snapshot, ...],
+) -> tuple[tuple[object, tuple[object, ...]], ...]:
+    """Build state-application steps while retaining original cache inputs."""
+    typed_snapshots = tuple(
+        snap for snap in snapshots if isinstance(snap, Snapshot)
+    )
+    if len(typed_snapshots) != len(snapshots):
+        return tuple((snap, (snap,)) for snap in snapshots)
+
+    steps: list[tuple[object, tuple[object, ...]]] = []
+    segment = typed_snapshots
+    cache_segment = cache_snapshots
+    if segment and segment[0].terminal_clear:
+        terminal = segment[0]
+        segment = segment[1:]
+        cache_terminal: tuple[object, ...] = ()
+        if cache_segment and cache_segment[0].terminal_clear:
+            cache_terminal = (cache_segment[0],)
+            cache_segment = cache_segment[1:]
+        planned_terminal = terminal
+        if segment and any(snap.version is not None for snap in segment):
+            planned_terminal = replace(terminal, version=None)
+        steps.append((planned_terminal, cache_terminal))
+    if segment:
+        steps.append((_merge_snapshot_segment(segment), tuple(cache_segment)))
+    return tuple(steps)
+
+
 class _SnapshotApplyQueue:
     def __init__(
         self,
@@ -2315,10 +2465,24 @@ class _SnapshotApplyQueue:
         self._live_snapshot_cache_writer = live_snapshot_cache_writer
         self._scheduler = scheduler or _schedule_snapshot_apply
         self._pending: tuple[str, tuple[object, ...]] | None = None
+        self._pending_cache_snapshots: tuple[Snapshot, ...] = ()
         self._flush_pending = False
 
     def enqueue_snapshot(self, snap: object) -> None:
-        self._pending = ("snapshot", (snap,))
+        pending_snapshots: tuple[object, ...] = ()
+        if self._pending is not None and self._pending[0] == "snapshot":
+            pending_snapshots = self._pending[1]
+        else:
+            self._pending_cache_snapshots = ()
+        if isinstance(snap, Snapshot):
+            if snap.terminal_clear:
+                self._pending_cache_snapshots = (snap,)
+            else:
+                self._pending_cache_snapshots += (snap,)
+        self._pending = (
+            "snapshot",
+            _append_pending_snapshot(pending_snapshots, snap),
+        )
         self._schedule_flush()
 
     def enqueue_decode_failed(self, path: str, reason: str) -> None:
@@ -2341,24 +2505,33 @@ class _SnapshotApplyQueue:
             self._flush_pending = False
             return
         kind, args = self._pending
+        cache_snapshots = self._pending_cache_snapshots
         self._pending = None
+        self._pending_cache_snapshots = ()
         self._flush_pending = False
         if not self._signal_gate.is_current(self._generation):
             return
         if kind == "snapshot":
-            snap = args[0]
-            getattr(self._window, "note_decode", lambda *_args: None)(snap)
-            getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
-            if (
-                self._live_snapshot_cache_writer is not None
-                and isinstance(snap, Snapshot)
+            latest_snap = args[-1]
+            getattr(self._window, "note_decode", lambda *_args: None)(latest_snap)
+            for snap, step_cache_snapshots in _snapshot_application_plan(
+                args,
+                cache_snapshots,
             ):
-                self._live_snapshot_cache_writer.submit(snap)
-            getattr(
-                self._window,
-                "note_snapshot_applied",
-                lambda *_args: None,
-            )(snap)
+                if not self._signal_gate.is_current(self._generation):
+                    return
+                getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
+                if not self._signal_gate.is_current(self._generation):
+                    return
+                if self._live_snapshot_cache_writer is not None:
+                    for cache_snap in step_cache_snapshots:
+                        if isinstance(cache_snap, Snapshot):
+                            self._live_snapshot_cache_writer.submit(cache_snap)
+                getattr(
+                    self._window,
+                    "note_snapshot_applied",
+                    lambda *_args: None,
+                )(snap)
             return
         path, reason = args
         self._decode_failed_callback(str(path), str(reason))

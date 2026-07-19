@@ -2858,6 +2858,45 @@ def test_roster_unavailable_snapshot_updates_applicants_without_clearing_party()
     assert roster_updates == []
 
 
+@pytest.mark.parametrize("listing_was_present", [False, True])
+def test_roster_unavailable_listing_clear_preserves_party(
+    listing_was_present: bool,
+):
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing() if listing_was_present else None,
+            version=_version("Host-Realm"),
+            applicants=(
+                [_decoded(7, 1, "Applicant-Realm")] if listing_was_present else []
+            ),
+            roster=[
+                _roster_decoded("Host-Realm", unit_index=0, flags=1, score=3000),
+                _roster_decoded("Friend-Realm", unit_index=1, score=2500),
+            ],
+        )
+    )
+    roster_updates: list[bool] = []
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-Realm"),
+            applicants=[],
+            roster=[],
+            roster_unavailable=True,
+        )
+    )
+
+    assert state.listing is None
+    assert state.applicants == {}
+    assert set(state.party_members) == {"host-realm", "friend-realm"}
+    assert state.party_members["friend-realm"].score == 2500
+    assert roster_updates == []
+
+
 def test_restored_applicant_expiry_preserves_fresh_roster_domain():
     state = AppState()
     sm = StateMachine(state)
