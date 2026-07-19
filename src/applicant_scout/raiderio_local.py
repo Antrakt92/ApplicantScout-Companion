@@ -29,6 +29,7 @@ _REGION_FILE_TOKENS = {
 
 _DUNGEON_LEVELS_FIELD = 10
 _NEGATIVE_CACHE_TTL_SECONDS = 30.0
+_REGION_LOAD_ATTEMPTS = 2
 _LOOKUP_PAYLOAD_CACHE_DIR = "raiderio-local"
 _LOOKUP_PAYLOAD_CACHE_VERSION = 2
 _LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
@@ -92,6 +93,14 @@ class _ProviderMeta:
 
 
 @dataclass(frozen=True)
+class _ProviderIdentity:
+    data: int
+    region: str
+    date: str
+    num_characters: int
+
+
+@dataclass(frozen=True)
 class _RaidInfo:
     name: str
     short_name: str
@@ -133,6 +142,9 @@ class RaiderIOLocalReader:
         self._loading: set[str] = set()
         self._load_callbacks: dict[str, list[Callable[[], None]]] = {}
         self._lock = threading.Lock()
+        self._refresh_locks = {
+            token: threading.Lock() for token in set(_REGION_FILE_TOKENS.values())
+        }
 
     def lookup_profile(
         self, name: str, realm: str, region: str | None, *, allow_load: bool = True
@@ -188,8 +200,12 @@ class RaiderIOLocalReader:
         ).start()
 
     def _region_db(self, token: str) -> _RegionDB | None:
-        now = time.monotonic()
+        with self._refresh_locks[token]:
+            return self._region_db_serialized(token)
+
+    def _region_db_serialized(self, token: str) -> _RegionDB | None:
         fingerprint = _region_db_fingerprint(self._retail_root, token)
+        now = time.monotonic()
         with self._lock:
             entry = self._cache.get(token)
             if entry is not None and not _cache_entry_is_stale(
@@ -197,16 +213,8 @@ class RaiderIOLocalReader:
             ):
                 return entry.db
             previous_entry = entry
-        try:
-            loaded = _RegionDB.load(
-                self._retail_root,
-                token,
-                payload_cache_dir=self._payload_cache_dir,
-                source_fingerprint=fingerprint,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("RaiderIO local DB unavailable for %s: %s", token, exc)
-            loaded = None
+        loaded, fingerprint = self._load_stable_region_db(token, fingerprint)
+        now = time.monotonic()
         with self._lock:
             if loaded is None and previous_entry is not None and previous_entry.db is not None:
                 current_entry = self._cache.get(token)
@@ -230,6 +238,38 @@ class RaiderIOLocalReader:
                 cached_at=now,
             )
         return loaded
+
+    def _load_stable_region_db(
+        self,
+        token: str,
+        fingerprint: _RegionDBFingerprint,
+    ) -> tuple[_RegionDB | None, _RegionDBFingerprint]:
+        payload_cache_generation = _lookup_payload_cache_generation(
+            self._payload_cache_dir
+        )
+        for attempt in range(_REGION_LOAD_ATTEMPTS):
+            try:
+                loaded = _RegionDB.load(
+                    self._retail_root,
+                    token,
+                    payload_cache_dir=self._payload_cache_dir,
+                    payload_cache_generation=payload_cache_generation,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("RaiderIO local DB unavailable for %s: %s", token, exc)
+                loaded = None
+            latest_fingerprint = _region_db_fingerprint(self._retail_root, token)
+            if latest_fingerprint == fingerprint:
+                return loaded, latest_fingerprint
+            fingerprint = latest_fingerprint
+            if attempt + 1 < _REGION_LOAD_ATTEMPTS:
+                continue
+            _log.warning(
+                "RaiderIO local DB changed during %s consecutive loads for %s",
+                _REGION_LOAD_ATTEMPTS,
+                token,
+            )
+        return None, fingerprint
 
 
 class _RegionDB:
@@ -267,17 +307,18 @@ class _RegionDB:
         token: str,
         *,
         payload_cache_dir: Path | None = None,
-        source_fingerprint: _RegionDBFingerprint | None = None,
+        payload_cache_generation: int | None = None,
     ) -> _RegionDB | None:
-        payload_cache_generation = _lookup_payload_cache_generation(payload_cache_dir)
+        if payload_cache_dir is not None and payload_cache_generation is None:
+            payload_cache_generation = _lookup_payload_cache_generation(
+                payload_cache_dir
+            )
         db_root = retail_root / "Interface" / "AddOns" / "RaiderIO" / "db"
         mplus_characters_path = db_root / f"db_mythicplus_{token}_characters.lua"
         mplus_lookup_path = db_root / f"db_mythicplus_{token}_lookup.lua"
         raid_characters_path = db_root / f"db_raiding_{token}_characters.lua"
         raid_lookup_path = db_root / f"db_raiding_{token}_lookup.lua"
         dungeons_path = db_root / "db_dungeons.lua"
-        if source_fingerprint is None:
-            source_fingerprint = _region_db_fingerprint(retail_root, token)
         has_mplus = (
             mplus_characters_path.is_file()
             and mplus_lookup_path.is_file()
@@ -293,10 +334,15 @@ class _RegionDB:
         if has_mplus:
             try:
                 mplus_characters_text = mplus_characters_path.read_text(
-                    encoding="utf-8", errors="replace"
+                    encoding="utf-8"
                 )
-                lookup_text = mplus_lookup_path.read_text(
-                    encoding="utf-8", errors="replace"
+                lookup_text, lookup_digest = _read_utf8_source_with_digest(
+                    mplus_lookup_path
+                )
+                _validate_provider_identity_pair(
+                    mplus_characters_text,
+                    lookup_text,
+                    "M+",
                 )
                 mplus_meta = _parse_provider_meta(lookup_text)
                 dungeons = _parse_dungeon_names(
@@ -310,10 +356,7 @@ class _RegionDB:
                 mplus_lookup_payload = _parse_lookup_payload_for_character_layout(
                     lookup_text,
                     source_path=mplus_lookup_path,
-                    source_digest=_source_content_digest(
-                        source_fingerprint,
-                        mplus_lookup_path,
-                    ),
+                    source_digest=lookup_digest,
                     payload_cache_dir=payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
                     character_layout=mplus_layout,
@@ -336,10 +379,15 @@ class _RegionDB:
         if has_raid:
             try:
                 raid_characters_text = raid_characters_path.read_text(
-                    encoding="utf-8", errors="replace"
+                    encoding="utf-8"
                 )
-                raid_lookup_text = raid_lookup_path.read_text(
-                    encoding="utf-8", errors="replace"
+                raid_lookup_text, raid_lookup_digest = _read_utf8_source_with_digest(
+                    raid_lookup_path
+                )
+                _validate_provider_identity_pair(
+                    raid_characters_text,
+                    raid_lookup_text,
+                    "raid",
                 )
                 raid_meta = _parse_provider_meta(raid_lookup_text)
                 current_raids = _parse_provider_raids(raid_lookup_text, "currentRaids")
@@ -354,10 +402,7 @@ class _RegionDB:
                 raid_lookup_payload = _parse_lookup_payload_for_character_layout(
                     raid_lookup_text,
                     source_path=raid_lookup_path,
-                    source_digest=_source_content_digest(
-                        source_fingerprint,
-                        raid_lookup_path,
-                    ),
+                    source_digest=raid_lookup_digest,
                     payload_cache_dir=payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
                     character_layout=raid_layout,
@@ -539,14 +584,9 @@ def _file_fingerprint(path: Path) -> _FileFingerprint:
     return (path.name, True, stat.st_mtime_ns, stat.st_size, digest)
 
 
-def _source_content_digest(
-    fingerprint: _RegionDBFingerprint,
-    source_path: Path,
-) -> str | None:
-    for name, exists, _mtime_ns, _size, digest in fingerprint:
-        if name == source_path.name:
-            return digest if exists else None
-    return None
+def _read_utf8_source_with_digest(path: Path) -> tuple[str, str]:
+    raw = path.read_bytes()
+    return raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
 
 
 def retail_root_from_screenshots_path(path: Path) -> Path | None:
@@ -572,6 +612,32 @@ def _parse_provider_meta(text: str) -> _ProviderMeta:
         raise ValueError("RaiderIO lookup metadata missing record size or encoding order")
     order = tuple(int(value) for value in re.findall(r"\d+", order_match.group(1)))
     return _ProviderMeta(record_size=int(record_match.group(1)), encoding_order=order)
+
+
+def _validate_provider_identity_pair(
+    characters_text: str,
+    lookup_text: str,
+    label: str,
+) -> None:
+    characters_identity = _parse_provider_identity(characters_text)
+    lookup_identity = _parse_provider_identity(lookup_text)
+    if characters_identity != lookup_identity:
+        raise ValueError(f"RaiderIO {label} provider generation mismatch")
+
+
+def _parse_provider_identity(text: str) -> _ProviderIdentity:
+    data = _lua_number_field(text, "data")
+    region = _lua_ascii_string_field(text, "region")
+    date = _lua_ascii_string_field(text, "date")
+    num_characters = _lua_number_field(text, "numCharacters")
+    if data is None or region is None or date is None or num_characters is None:
+        raise ValueError("RaiderIO provider identity missing")
+    return _ProviderIdentity(
+        data=data,
+        region=region,
+        date=date,
+        num_characters=num_characters,
+    )
 
 
 def _parse_provider_raids(text: str, key: str) -> list[_RaidInfo]:
@@ -624,6 +690,17 @@ def _lua_number_field(text: str, key: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _lua_ascii_string_field(text: str, key: str) -> str | None:
+    match = re.search(
+        rf'(?:\["{re.escape(key)}"\]|{re.escape(key)})\s*=\s*"([^"\\]*)"',
+        text,
+    )
+    if not match:
+        return None
+    value = match.group(1)
+    return value if value.isascii() else None
+
+
 def _lua_string_field(text: str, key: str) -> str | None:
     match = re.search(
         rf'(?:\["{re.escape(key)}"\]|{re.escape(key)})\s*=\s*"((?:\\.|[^"])*)"',
@@ -631,7 +708,7 @@ def _lua_string_field(text: str, key: str) -> str | None:
     )
     if not match:
         return None
-    return _decode_lua_string_bytes(match.group(1)).decode("utf-8", errors="replace")
+    return _decode_lua_string_bytes(match.group(1)).decode("utf-8")
 
 
 def _encoding_field_width(field: int, dungeon_count: int) -> int:

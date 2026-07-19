@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import applicant_scout.raiderio_local as raiderio_local_mod
-from applicant_scout.raiderio_local import RaiderIOLocalReader
+from applicant_scout.raiderio_local import RaiderIOLocalProfile, RaiderIOLocalReader
 
 
 def _write_test_db(
@@ -37,14 +37,16 @@ ns.dungeons = {
         encoding="utf-8",
     )
     (db / "db_mythicplus_eu_characters.lua").write_text(
-        'local provider={name=...,data=1,region="eu",db={}}\n'
+        'local provider={name=...,data=1,region="eu",date="test-mplus",'
+        f'numCharacters={len(lookup_payload) // record_size},db={{}}}}\n'
         'provider.db["Ragnaros"]={0,"Alphapack","Chinie"}\n',
         encoding="utf-8",
     )
     encoded = "".join(f"\\{byte}" for byte in lookup_payload)
     order = ",".join(str(value) for value in encoding_order)
     (db / "db_mythicplus_eu_lookup.lua").write_text(
-        'local provider={name=...,data=1,region="eu",lookup={},'
+        'local provider={name=...,data=1,region="eu",date="test-mplus",'
+        f'numCharacters={len(lookup_payload) // record_size},lookup={{}},'
         f"recordSizeInBytes={record_size},encodingOrder={{{order}}}}}\n"
         f'provider.lookup[1] = "{encoded}"\n',
         encoding="utf-8",
@@ -68,7 +70,8 @@ def _write_mplus_character_names(
     )
     encoded_names = ",".join(f'"{name}"' for name in names)
     characters_path.write_text(
-        'local provider={name=...,data=1,region="eu",db={}}\n'
+        'local provider={name=...,data=1,region="eu",date="test-mplus",'
+        f'numCharacters={len(names)},db={{}}}}\n'
         f'provider.db["{realm}"]={{{base_offset},{encoded_names}}}\n',
         encoding="utf-8",
     )
@@ -88,14 +91,16 @@ ns.dungeons = {
         encoding="utf-8",
     )
     (db / "db_mythicplus_eu_characters.lua").write_text(
-        'local provider={name=...,data=1,region="eu",db={}}\n'
+        'local provider={name=...,data=1,region="eu",date="test-mplus",'
+        f'numCharacters={len(lookup_payload) // 5},db={{}}}}\n'
         'provider.db["Ragnaros"]={0,"Alphapack"}\n'
         'provider.db["Silvermoon"]={5,"Moonie"}\n',
         encoding="utf-8",
     )
     encoded = "".join(f"\\{byte}" for byte in lookup_payload)
     (db / "db_mythicplus_eu_lookup.lua").write_text(
-        "local provider={name=...,data=1,region=\"eu\",lookup={},"
+        'local provider={name=...,data=1,region="eu",date="test-mplus",'
+        f'numCharacters={len(lookup_payload) // 5},lookup={{}},'
         "recordSizeInBytes=5,encodingOrder={1,2,10}}\n"
         f'provider.lookup[1] = "{encoded}"\n',
         encoding="utf-8",
@@ -113,14 +118,16 @@ def _write_test_raid_db(
     db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
     db.mkdir(parents=True, exist_ok=True)
     (db / "db_raiding_eu_characters.lua").write_text(
-        'local provider={name=...,data=2,region="eu",db={}}\n'
+        'local provider={name=...,data=2,region="eu",date="test-raid",'
+        f'numCharacters={len(lookup_payload) // record_size},db={{}}}}\n'
         'provider.db["Ragnaros"]={0,"Alphapack","Chinie"}\n',
         encoding="utf-8",
     )
     encoded = "".join(f"\\{byte}" for byte in lookup_payload)
     order = ",".join(str(value) for value in encoding_order)
     (db / "db_raiding_eu_lookup.lua").write_text(
-        'local provider={name=...,data=2,region="eu",lookup={},'
+        'local provider={name=...,data=2,region="eu",date="test-raid",'
+        f'numCharacters={len(lookup_payload) // record_size},lookup={{}},'
         f"recordSizeInBytes={record_size},encodingOrder={{{order}}},"
         f'currentRaids={{{{["id"]=1,["name"]="Test Raid",["shortName"]="TR",'
         f'["bossCount"]={boss_count},["ordinal"]=1}}}},previousRaids={{}}}}\n'
@@ -133,12 +140,14 @@ def _write_invalid_test_raid_db(root: Path) -> None:
     db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
     db.mkdir(parents=True, exist_ok=True)
     (db / "db_raiding_eu_characters.lua").write_text(
-        'local provider={name=...,data=2,region="eu",db={}}\n'
+        'local provider={name=...,data=2,region="eu",date="test-raid",'
+        'numCharacters=1,db={}}\n'
         'provider.db["Ragnaros"]={0,"Chinie"}\n',
         encoding="utf-8",
     )
     (db / "db_raiding_eu_lookup.lua").write_text(
-        'local provider={name=...,data=2,region="eu",lookup={},'
+        'local provider={name=...,data=2,region="eu",date="test-raid",'
+        'numCharacters=1,lookup={},'
         "recordSizeInBytes=1,encodingOrder={99},currentRaids={},previousRaids={}}\n"
         'provider.lookup[1] = "\\0"\n',
         encoding="utf-8",
@@ -176,6 +185,25 @@ def _replace_encoded_payload_preserving_size_and_mtime(
     after = path.stat()
     assert after.st_size == before.st_size
     assert after.st_mtime_ns == before.st_mtime_ns
+
+
+def _append_invalid_utf8(path: Path) -> None:
+    path.write_bytes(path.read_bytes() + b"\n-- invalid: \xff\n")
+
+
+def _write_mplus_generation(root: Path, score: int, pit_level: int) -> None:
+    _write_test_db(
+        root,
+        _record(3200, 15, 14, 1, 0) + _record(score, 0, pit_level, 0, 2),
+    )
+
+
+def _write_raid_generation(root: Path, boss_kills: tuple[int, int, int]) -> None:
+    _write_test_raid_db(
+        root,
+        _raid_record((1, (0, 0, 0)), (0, (0, 0, 0)))
+        + _raid_record((3, boss_kills), (2, (1, 1, 1))),
+    )
 
 
 def _record(score: int, skyreach: int, pit: int, skyreach_upgrades: int, pit_upgrades: int) -> bytes:
@@ -530,7 +558,8 @@ def test_reader_matches_display_realm_against_raiderio_normalized_realm_key(
         / "db_mythicplus_eu_characters.lua"
     )
     characters_path.write_text(
-        'local provider={name=...,data=1,region="eu",db={}}\n'
+        'local provider={name=...,data=1,region="eu",date="test-mplus",'
+        'numCharacters=2,db={}}\n'
         'provider.db["Корольлич"]={5,"Arthas"}\n',
         encoding="utf-8",
     )
@@ -992,6 +1021,147 @@ def test_reader_invalidates_raid_caches_when_content_changes_with_same_stat(
     assert restarted == refreshed
 
 
+def test_reader_rejects_shifted_records_from_invalid_lookup_utf8_and_keeps_fallback(
+    tmp_path: Path,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    cache_dir = tmp_path / "cache"
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    lookup_path = (
+        tmp_path
+        / "Interface"
+        / "AddOns"
+        / "RaiderIO"
+        / "db"
+        / "db_mythicplus_eu_lookup.lua"
+    )
+    raw = lookup_path.read_bytes()
+    assert raw.count(b"\\0") >= 1
+    lookup_path.write_bytes(raw.replace(b"\\0", b"\\\xff", 1))
+
+    fallback = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    fresh = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir).lookup_profile(
+        "Chinie",
+        "Ragnaros",
+        "EU",
+    )
+
+    assert fallback == first
+    assert fresh is None
+
+
+@pytest.mark.parametrize(
+    ("filename", "expect_mplus", "expect_raid"),
+    [
+        ("db_mythicplus_eu_characters.lua", False, True),
+        ("db_mythicplus_eu_lookup.lua", False, True),
+        ("db_dungeons.lua", False, True),
+        ("db_raiding_eu_characters.lua", True, False),
+        ("db_raiding_eu_lookup.lua", True, False),
+    ],
+)
+def test_reader_rejects_invalid_utf8_in_each_generated_source(
+    tmp_path: Path,
+    filename: str,
+    expect_mplus: bool,
+    expect_raid: bool,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    _write_test_raid_db(
+        tmp_path,
+        _raid_record((1, (0, 0, 0)), (0, (0, 0, 0)))
+        + _raid_record((3, (2, 0, 1)), (2, (1, 1, 1))),
+    )
+    source_path = (
+        tmp_path / "Interface" / "AddOns" / "RaiderIO" / "db" / filename
+    )
+    _append_invalid_utf8(source_path)
+
+    profile = RaiderIOLocalReader(tmp_path).lookup_profile(
+        "Chinie",
+        "Ragnaros",
+        "EU",
+    )
+
+    assert profile is not None
+    assert profile.has_mplus_profile is expect_mplus
+    assert bool(profile.raid_progress) is expect_raid
+
+
+@pytest.mark.parametrize(
+    ("filename", "source_date", "expect_mplus", "expect_raid"),
+    [
+        ("db_mythicplus_eu_lookup.lua", "test-mplus", False, True),
+        ("db_raiding_eu_lookup.lua", "test-raid", True, False),
+    ],
+)
+def test_reader_rejects_stable_cross_generation_provider_pairs(
+    tmp_path: Path,
+    filename: str,
+    source_date: str,
+    expect_mplus: bool,
+    expect_raid: bool,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    _write_raid_generation(tmp_path, (2, 0, 1))
+    lookup_path = (
+        tmp_path / "Interface" / "AddOns" / "RaiderIO" / "db" / filename
+    )
+    text = lookup_path.read_text(encoding="utf-8")
+    assert text.count(f'date="{source_date}"') == 1
+    lookup_path.write_text(
+        text.replace(f'date="{source_date}"', 'date="other-generation"', 1),
+        encoding="utf-8",
+    )
+
+    profile = RaiderIOLocalReader(tmp_path).lookup_profile(
+        "Chinie",
+        "Ragnaros",
+        "EU",
+    )
+
+    assert profile is not None
+    assert profile.has_mplus_profile is expect_mplus
+    assert bool(profile.raid_progress) is expect_raid
+
+
+def test_reader_rejects_invalid_utf8_escaped_in_raid_metadata(tmp_path: Path):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    _write_test_raid_db(
+        tmp_path,
+        _raid_record((1, (0, 0, 0)), (0, (0, 0, 0)))
+        + _raid_record((3, (2, 0, 1)), (2, (1, 1, 1))),
+    )
+    raid_lookup_path = (
+        tmp_path
+        / "Interface"
+        / "AddOns"
+        / "RaiderIO"
+        / "db"
+        / "db_raiding_eu_lookup.lua"
+    )
+    text = raid_lookup_path.read_text(encoding="utf-8")
+    assert text.count('["name"]="Test Raid"') == 1
+    raid_lookup_path.write_text(
+        text.replace('["name"]="Test Raid"', '["name"]="\\255 Raid"', 1),
+        encoding="utf-8",
+    )
+
+    profile = RaiderIOLocalReader(tmp_path).lookup_profile(
+        "Chinie",
+        "Ragnaros",
+        "EU",
+    )
+
+    assert profile is not None
+    assert profile.current_score == 3074
+    assert profile.raid_progress == {}
+
+
 def test_reader_redecodes_lookup_payload_when_decoded_cache_is_too_short_for_character_layout(
     tmp_path: Path,
 ):
@@ -1051,6 +1221,39 @@ def test_reader_does_not_recreate_decoded_lookup_payload_cache_after_clear_durin
 
     assert profile is not None
     assert profile.current_score == 3074
+    assert list(cache_dir.rglob("*.payload.bin")) == []
+
+
+def test_source_retry_does_not_recreate_payload_cache_cleared_during_first_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    cache_dir = tmp_path / "cache"
+    original_decode = raiderio_local_mod._decode_lua_string_bytes
+    cleared = False
+
+    def clear_and_replace_during_decode(value: str) -> bytes:
+        nonlocal cleared
+        payload = original_decode(value)
+        if not cleared:
+            cleared = True
+            raiderio_local_mod.clear_lookup_payload_cache(cache_dir)
+            _write_mplus_generation(tmp_path, 3333, 16)
+        return payload
+
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_decode_lua_string_bytes",
+        clear_and_replace_during_decode,
+    )
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3333
+    assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
     assert list(cache_dir.rglob("*.payload.bin")) == []
 
 
@@ -1116,6 +1319,204 @@ def test_preload_region_async_reloads_positive_cache_when_fingerprint_changes(
     assert refreshed is not None
     assert refreshed.current_score == 3333
     assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+
+
+def test_reader_retries_when_mplus_source_changes_during_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+    _write_mplus_generation(tmp_path, 3333, 16)
+
+    load_region_db = raiderio_local_mod._RegionDB.load
+    calls = 0
+
+    def load_then_replace(
+        retail_root: Path,
+        token: str,
+        *,
+        payload_cache_dir: Path | None = None,
+        payload_cache_generation: int | None = None,
+    ) -> raiderio_local_mod._RegionDB | None:
+        nonlocal calls
+        candidate = load_region_db(
+            retail_root,
+            token,
+            payload_cache_dir=payload_cache_dir,
+            payload_cache_generation=payload_cache_generation,
+        )
+        calls += 1
+        if calls == 1:
+            _write_mplus_generation(tmp_path, 3444, 17)
+        return candidate
+
+    monkeypatch.setattr(raiderio_local_mod._RegionDB, "load", load_then_replace)
+
+    refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert calls == 2
+    assert refreshed is not None
+    assert refreshed.current_score == 3444
+    assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 17}]
+
+
+def test_reader_retries_when_raid_source_changes_during_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    _write_raid_generation(tmp_path, (2, 0, 1))
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.raid_progress["M"]["boss_kills"] == [2, 0, 1]
+    _write_raid_generation(tmp_path, (1, 1, 0))
+
+    load_region_db = raiderio_local_mod._RegionDB.load
+    calls = 0
+
+    def load_then_replace(
+        retail_root: Path,
+        token: str,
+        *,
+        payload_cache_dir: Path | None = None,
+        payload_cache_generation: int | None = None,
+    ) -> raiderio_local_mod._RegionDB | None:
+        nonlocal calls
+        candidate = load_region_db(
+            retail_root,
+            token,
+            payload_cache_dir=payload_cache_dir,
+            payload_cache_generation=payload_cache_generation,
+        )
+        calls += 1
+        if calls == 1:
+            _write_raid_generation(tmp_path, (0, 1, 2))
+        return candidate
+
+    monkeypatch.setattr(raiderio_local_mod._RegionDB, "load", load_then_replace)
+
+    refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert calls == 2
+    assert refreshed is not None
+    assert refreshed.raid_progress["M"]["boss_kills"] == [0, 1, 2]
+
+
+def test_reader_bounds_unstable_retries_and_does_not_poison_payload_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cache_dir = tmp_path / "cache"
+    _write_mplus_generation(tmp_path, 3000, 11)
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    previous = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert previous is not None
+    assert previous.current_score == 3000
+    _write_mplus_generation(tmp_path, 3111, 12)
+    load_region_db = raiderio_local_mod._RegionDB.load
+    generations = [(3333, 16), (3444, 17)]
+    calls = 0
+
+    def replace_then_load(
+        retail_root: Path,
+        token: str,
+        *,
+        payload_cache_dir: Path | None = None,
+        payload_cache_generation: int | None = None,
+    ) -> raiderio_local_mod._RegionDB | None:
+        nonlocal calls
+        score, pit_level = generations[calls]
+        calls += 1
+        _write_mplus_generation(tmp_path, score, pit_level)
+        return load_region_db(
+            retail_root,
+            token,
+            payload_cache_dir=payload_cache_dir,
+            payload_cache_generation=payload_cache_generation,
+        )
+
+    monkeypatch.setattr(raiderio_local_mod._RegionDB, "load", replace_then_load)
+
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == previous
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == previous
+    assert calls == 2
+
+    _write_mplus_generation(tmp_path, 3333, 16)
+    monkeypatch.setattr(raiderio_local_mod._RegionDB, "load", load_region_db)
+    fresh = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir).lookup_profile(
+        "Chinie",
+        "Ragnaros",
+        "EU",
+    )
+
+    assert fresh is not None
+    assert fresh.current_score == 3333
+    assert fresh.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+
+
+def test_concurrent_region_loads_share_one_stable_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    reader = RaiderIOLocalReader(tmp_path)
+    load_region_db = raiderio_local_mod._RegionDB.load
+    entered = threading.Event()
+    release = threading.Event()
+    second_started = threading.Event()
+    call_lock = threading.Lock()
+    calls = 0
+
+    def slow_load(
+        retail_root: Path,
+        token: str,
+        *,
+        payload_cache_dir: Path | None = None,
+        payload_cache_generation: int | None = None,
+    ) -> raiderio_local_mod._RegionDB | None:
+        nonlocal calls
+        with call_lock:
+            calls += 1
+        entered.set()
+        assert release.wait(timeout=2.0)
+        return load_region_db(
+            retail_root,
+            token,
+            payload_cache_dir=payload_cache_dir,
+            payload_cache_generation=payload_cache_generation,
+        )
+
+    monkeypatch.setattr(raiderio_local_mod._RegionDB, "load", slow_load)
+    results: list[RaiderIOLocalProfile | None] = []
+
+    def lookup(started: threading.Event | None = None) -> None:
+        if started is not None:
+            started.set()
+        results.append(reader.lookup_profile("Chinie", "Ragnaros", "EU"))
+
+    first_thread = threading.Thread(target=lookup)
+    second_thread = threading.Thread(target=lookup, args=(second_started,))
+    first_thread.start()
+    assert entered.wait(timeout=2.0)
+    second_thread.start()
+    assert second_started.wait(timeout=2.0)
+    release.set()
+    first_thread.join(timeout=2.0)
+    second_thread.join(timeout=2.0)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert calls == 1
+    assert len(results) == 2
+    assert all(profile is not None for profile in results)
+    assert {profile.current_score for profile in results if profile is not None} == {
+        3074
+    }
 
 
 def test_positive_cache_reload_failure_keeps_previous_working_db(tmp_path: Path):
