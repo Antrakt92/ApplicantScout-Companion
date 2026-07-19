@@ -2210,6 +2210,30 @@ def test_main_shutdown_arg_exits_before_qapplication(monkeypatch: pytest.MonkeyP
     assert calls == ["logging", "shutdown"]
 
 
+def test_main_internal_screenshots_probe_exits_before_qapplication(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+    _stub_setup_logging(monkeypatch, calls)
+    monkeypatch.setattr(
+        main_mod,
+        "run_screenshots_path_probe_command",
+        lambda path, token: calls.append(f"probe:{path}:{token}") or 0,
+    )
+
+    def fail_qapplication(*_args, **_kwargs):
+        raise AssertionError("path probe helper should not start the GUI")
+
+    monkeypatch.setattr(main_mod, "QApplication", fail_qapplication)
+
+    token = "a" * 32
+    assert (
+        main_mod.main([main_mod.SCREENSHOTS_PATH_PROBE_ARG, r"D:\Shots", token])
+        == 0
+    )
+    assert calls == [rf"probe:D:\Shots:{token}"]
+
+
 def test_main_cleanup_screenshots_uses_configured_path_before_qapplication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

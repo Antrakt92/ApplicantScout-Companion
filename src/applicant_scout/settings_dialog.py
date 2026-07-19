@@ -4,10 +4,24 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 from pathlib import Path
+import sys
+import tempfile
 import threading
+import uuid
 
-from PyQt6.QtCore import QEvent, QPoint, QObject, QSignalBlocker, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QProcess,
+    QSignalBlocker,
+    Qt,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+)
 from PyQt6.QtGui import (
     QAction,
     QColor,
@@ -85,6 +99,83 @@ WCL_CREDENTIAL_TEST_BUSY_MESSAGE = (
 )
 SCREENSHOTS_WARNING_DEBOUNCE_MS = 250
 SCREENSHOTS_VALIDATION_PENDING_MESSAGE = "Checking Screenshots folder..."
+SCREENSHOTS_PATH_PROBE_ARG = "--internal-screenshots-path-probe"
+SCREENSHOTS_PATH_PROBE_TIMEOUT_MS = 5000
+SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING = (
+    "Screenshots folder warning: path check timed out."
+)
+SCREENSHOTS_PATH_PROBE_FAILURE_WARNING = (
+    "Screenshots folder warning: could not run the isolated path check."
+)
+
+
+def _screenshots_path_warning(path: Path) -> str | None:
+    candidate = Path(path)
+    if candidate.is_file():
+        return "Screenshots path points to a file, not a folder."
+    return screenshots_path_health_warning(candidate)
+
+
+def _screenshots_path_probe_result_path(token: str) -> Path:
+    if len(token) != 32 or any(char not in "0123456789abcdef" for char in token):
+        raise ValueError("invalid path probe token")
+    return (
+        Path(tempfile.gettempdir())
+        / f"applicant-scout-path-probe-{token}.json"
+    )
+
+
+def run_screenshots_path_probe_command(raw_path: str, token: str) -> int:
+    try:
+        result_path = _screenshots_path_probe_result_path(token)
+    except ValueError:
+        return 2
+    try:
+        warning = _screenshots_path_warning(Path(raw_path))
+    except Exception as exc:  # noqa: BLE001 - isolated filesystem boundary
+        warning = f"Screenshots folder warning: could not check path: {exc}"
+    try:
+        result_path.write_text(
+            json.dumps({"warning": warning}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        return 3
+    return 0
+
+
+def _screenshots_path_probe_program_args(
+    path: str,
+    token: str,
+) -> tuple[str, list[str]]:
+    if getattr(sys, "frozen", False):
+        return sys.executable, [SCREENSHOTS_PATH_PROBE_ARG, path, token]
+    return sys.executable, [
+        "-m",
+        "applicant_scout",
+        SCREENSHOTS_PATH_PROBE_ARG,
+        path,
+        token,
+    ]
+
+
+def _requires_isolated_screenshots_probe(path: Path) -> bool:
+    raw_path = str(path)
+    if raw_path.startswith((r"\\", "//")):
+        return True
+    anchor = path.anchor.casefold()
+    home_anchor = Path.home().anchor.casefold()
+    return bool(anchor and home_anchor and anchor != home_anchor)
+
+
+def _decode_screenshots_path_probe_output(raw: bytes) -> str | None:
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict) or set(payload) != {"warning"}:
+        raise ValueError("unexpected path probe payload")
+    warning = payload["warning"]
+    if warning is not None and not isinstance(warning, str):
+        raise ValueError("unexpected path probe warning")
+    return warning
 
 
 def _settings_window_title(*, first_run: bool) -> str:
@@ -187,6 +278,7 @@ class _ScreenshotsValidationResult:
     generation: int
     path: str
     warning: str | None
+    worker_counted: bool = True
 
 
 class ReleaseNotesDialog(QDialog):
@@ -290,6 +382,18 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_required_generation: int | None = None
         self._screenshots_validation_waiting_autosave = False
         self._screenshots_validation_active_workers = 0
+        self._screenshots_validation_process: QProcess | None = None
+        self._screenshots_validation_process_generation: int | None = None
+        self._screenshots_validation_process_path = ""
+        self._screenshots_validation_process_result_path: Path | None = None
+        self._screenshots_validation_process_timeout = QTimer(self)
+        self._screenshots_validation_process_timeout.setSingleShot(True)
+        self._screenshots_validation_process_timeout.setInterval(
+            SCREENSHOTS_PATH_PROBE_TIMEOUT_MS
+        )
+        self._screenshots_validation_process_timeout.timeout.connect(
+            self._handle_screenshots_validation_timeout
+        )
         self._screenshotsValidationFinished.connect(
             self._finish_screenshots_validation
         )
@@ -1068,6 +1172,10 @@ class SettingsDialog(QDialog):
         if self._screenshots_validation_started_generation == generation:
             return
         self._screenshots_warning_timer.stop()
+        if _requires_isolated_screenshots_probe(Path(path)):
+            self._start_isolated_screenshots_validation(generation, path)
+            return
+        self._cancel_isolated_screenshots_validation()
         if self._screenshots_validation_active_workers >= 2:
             return
         self._screenshots_validation_started_generation = generation
@@ -1075,11 +1183,7 @@ class SettingsDialog(QDialog):
 
         def _worker() -> None:
             try:
-                candidate = Path(path)
-                if candidate.is_file():
-                    warning = "Screenshots path points to a file, not a folder."
-                else:
-                    warning = screenshots_path_health_warning(candidate)
+                warning = _screenshots_path_warning(Path(path))
             except Exception as exc:  # noqa: BLE001 - filesystem boundary
                 warning = f"Screenshots folder warning: could not check path: {exc}"
             result = _ScreenshotsValidationResult(generation, path, warning)
@@ -1094,13 +1198,165 @@ class SettingsDialog(QDialog):
             daemon=True,
         ).start()
 
+    def _start_isolated_screenshots_validation(
+        self,
+        generation: int,
+        path: str,
+    ) -> None:
+        self._cancel_isolated_screenshots_validation()
+        process = QProcess(self)
+        self._screenshots_validation_process = process
+        self._screenshots_validation_process_generation = generation
+        self._screenshots_validation_process_path = path
+        token = uuid.uuid4().hex
+        result_path = _screenshots_path_probe_result_path(token)
+        self._screenshots_validation_process_result_path = result_path
+        self._screenshots_validation_started_generation = generation
+        process.finished.connect(
+            lambda exit_code, exit_status, active_process=process, output=result_path: (
+                self._finish_isolated_screenshots_validation(
+                    active_process,
+                    output,
+                    exit_code,
+                    exit_status,
+                )
+            )
+        )
+        process.errorOccurred.connect(
+            lambda error, active_process=process, output=result_path: (
+                self._handle_isolated_screenshots_validation_error(
+                    active_process,
+                    output,
+                    error,
+                )
+            )
+        )
+        program, arguments = _screenshots_path_probe_program_args(path, token)
+        process.start(program, arguments)
+        self._screenshots_validation_process_timeout.start()
+
+    def _cancel_isolated_screenshots_validation(self) -> None:
+        process = self._screenshots_validation_process
+        if process is None:
+            return
+        self._screenshots_validation_process = None
+        self._screenshots_validation_process_generation = None
+        self._screenshots_validation_process_path = ""
+        result_path = self._screenshots_validation_process_result_path
+        self._screenshots_validation_process_result_path = None
+        self._screenshots_validation_process_timeout.stop()
+        if process.state() != QProcess.ProcessState.NotRunning:
+            process.kill()
+        else:
+            process.deleteLater()
+        self._remove_screenshots_validation_result(result_path)
+
+    def _take_isolated_screenshots_validation(
+        self,
+        process: QProcess,
+    ) -> tuple[int, str] | None:
+        if process is not self._screenshots_validation_process:
+            return None
+        generation = self._screenshots_validation_process_generation
+        path = self._screenshots_validation_process_path
+        if generation is None:
+            return None
+        self._screenshots_validation_process = None
+        self._screenshots_validation_process_generation = None
+        self._screenshots_validation_process_path = ""
+        self._screenshots_validation_process_result_path = None
+        self._screenshots_validation_process_timeout.stop()
+        process.deleteLater()
+        return generation, path
+
+    @staticmethod
+    def _remove_screenshots_validation_result(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _finish_isolated_screenshots_validation(
+        self,
+        process: QProcess,
+        result_path: Path,
+        exit_code: int,
+        exit_status: QProcess.ExitStatus,
+    ) -> None:
+        request = self._take_isolated_screenshots_validation(process)
+        if request is None:
+            process.deleteLater()
+            self._remove_screenshots_validation_result(result_path)
+            return
+        generation, path = request
+        warning = SCREENSHOTS_PATH_PROBE_FAILURE_WARNING
+        if exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit:
+            try:
+                warning = _decode_screenshots_path_probe_output(
+                    result_path.read_bytes()
+                )
+            except (OSError, UnicodeDecodeError, ValueError):
+                warning = SCREENSHOTS_PATH_PROBE_FAILURE_WARNING
+        self._remove_screenshots_validation_result(result_path)
+        self._finish_screenshots_validation(
+            _ScreenshotsValidationResult(
+                generation,
+                path,
+                warning,
+                worker_counted=False,
+            )
+        )
+
+    def _handle_isolated_screenshots_validation_error(
+        self,
+        process: QProcess,
+        result_path: Path,
+        error: QProcess.ProcessError,
+    ) -> None:
+        if error != QProcess.ProcessError.FailedToStart:
+            return
+        request = self._take_isolated_screenshots_validation(process)
+        if request is None:
+            process.deleteLater()
+            self._remove_screenshots_validation_result(result_path)
+            return
+        generation, path = request
+        self._remove_screenshots_validation_result(result_path)
+        self._finish_screenshots_validation(
+            _ScreenshotsValidationResult(
+                generation,
+                path,
+                SCREENSHOTS_PATH_PROBE_FAILURE_WARNING,
+                worker_counted=False,
+            )
+        )
+
+    def _handle_screenshots_validation_timeout(self) -> None:
+        process = self._screenshots_validation_process
+        generation = self._screenshots_validation_process_generation
+        path = self._screenshots_validation_process_path
+        if process is None or generation is None:
+            return
+        self._cancel_isolated_screenshots_validation()
+        self._finish_screenshots_validation(
+            _ScreenshotsValidationResult(
+                generation,
+                path,
+                SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING,
+                worker_counted=False,
+            )
+        )
+
     def _finish_screenshots_validation(self, raw: object) -> None:
         if not isinstance(raw, _ScreenshotsValidationResult):
             return
-        self._screenshots_validation_active_workers = max(
-            0,
-            self._screenshots_validation_active_workers - 1,
-        )
+        if raw.worker_counted:
+            self._screenshots_validation_active_workers = max(
+                0,
+                self._screenshots_validation_active_workers - 1,
+            )
         if (
             raw.generation != self._screenshots_validation_generation
             or raw.path != self.screenshots_edit.text().strip()

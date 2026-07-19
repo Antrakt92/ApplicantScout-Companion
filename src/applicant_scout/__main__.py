@@ -65,10 +65,12 @@ from .screenshot import (
 )
 from .settings_dialog import (
     ReleaseNotesDialog,
+    SCREENSHOTS_PATH_PROBE_ARG,
     SETTINGS_QUIT_BLOCKED_MESSAGE,
     SettingsDialog,
     SettingsUpdateResult,
     open_folder,
+    run_screenshots_path_probe_command,
 )
 from .state import Applicant, AppState, LeaderKey, Listing, RosterMember, WoWPlayer
 from .updater import (
@@ -3253,8 +3255,12 @@ def _run_cleanup_screenshots_command(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _setup_logging()
     args = sys.argv[1:] if argv is None else argv
+    if args and args[0] == SCREENSHOTS_PATH_PROBE_ARG:
+        if len(args) != 3:
+            return 2
+        return run_screenshots_path_probe_command(args[1], args[2])
+    _setup_logging()
     if args and args[0] == "cleanup-screenshots":
         return _run_cleanup_screenshots_command(args[1:])
     if CONTROL_SHUTDOWN_ARG in args:
