@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
 import logging
 import os
 import re
@@ -29,10 +30,12 @@ _REGION_FILE_TOKENS = {
 _DUNGEON_LEVELS_FIELD = 10
 _NEGATIVE_CACHE_TTL_SECONDS = 30.0
 _LOOKUP_PAYLOAD_CACHE_DIR = "raiderio-local"
+_LOOKUP_PAYLOAD_CACHE_VERSION = 2
 _LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
 _LOOKUP_PAYLOAD_CACHE_LOCK = threading.Lock()
 _LOOKUP_PAYLOAD_CACHE_GENERATIONS: dict[Path, int] = {}
-_RegionDBFingerprint = tuple[tuple[str, bool, int, int], ...]
+_FileFingerprint = tuple[str, bool, int, int, str]
+_RegionDBFingerprint = tuple[_FileFingerprint, ...]
 
 
 def _lookup_payload_cache_key(cache_dir: Path) -> Path:
@@ -199,6 +202,7 @@ class RaiderIOLocalReader:
                 self._retail_root,
                 token,
                 payload_cache_dir=self._payload_cache_dir,
+                source_fingerprint=fingerprint,
             )
         except Exception as exc:  # noqa: BLE001
             _log.warning("RaiderIO local DB unavailable for %s: %s", token, exc)
@@ -263,6 +267,7 @@ class _RegionDB:
         token: str,
         *,
         payload_cache_dir: Path | None = None,
+        source_fingerprint: _RegionDBFingerprint | None = None,
     ) -> _RegionDB | None:
         payload_cache_generation = _lookup_payload_cache_generation(payload_cache_dir)
         db_root = retail_root / "Interface" / "AddOns" / "RaiderIO" / "db"
@@ -271,6 +276,8 @@ class _RegionDB:
         raid_characters_path = db_root / f"db_raiding_{token}_characters.lua"
         raid_lookup_path = db_root / f"db_raiding_{token}_lookup.lua"
         dungeons_path = db_root / "db_dungeons.lua"
+        if source_fingerprint is None:
+            source_fingerprint = _region_db_fingerprint(retail_root, token)
         has_mplus = (
             mplus_characters_path.is_file()
             and mplus_lookup_path.is_file()
@@ -303,6 +310,10 @@ class _RegionDB:
                 mplus_lookup_payload = _parse_lookup_payload_for_character_layout(
                     lookup_text,
                     source_path=mplus_lookup_path,
+                    source_digest=_source_content_digest(
+                        source_fingerprint,
+                        mplus_lookup_path,
+                    ),
                     payload_cache_dir=payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
                     character_layout=mplus_layout,
@@ -343,6 +354,10 @@ class _RegionDB:
                 raid_lookup_payload = _parse_lookup_payload_for_character_layout(
                     raid_lookup_text,
                     source_path=raid_lookup_path,
+                    source_digest=_source_content_digest(
+                        source_fingerprint,
+                        raid_lookup_path,
+                    ),
                     payload_cache_dir=payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
                     character_layout=raid_layout,
@@ -514,12 +529,24 @@ def _region_db_paths(retail_root: Path, token: str) -> tuple[Path, ...]:
     )
 
 
-def _file_fingerprint(path: Path) -> tuple[str, bool, int, int]:
+def _file_fingerprint(path: Path) -> _FileFingerprint:
     try:
-        stat = path.stat()
+        with path.open("rb") as handle:
+            stat = os.fstat(handle.fileno())
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
     except OSError:
-        return (path.name, False, 0, 0)
-    return (path.name, True, stat.st_mtime_ns, stat.st_size)
+        return (path.name, False, 0, 0, "")
+    return (path.name, True, stat.st_mtime_ns, stat.st_size, digest)
+
+
+def _source_content_digest(
+    fingerprint: _RegionDBFingerprint,
+    source_path: Path,
+) -> str | None:
+    for name, exists, _mtime_ns, _size, digest in fingerprint:
+        if name == source_path.name:
+            return digest if exists else None
+    return None
 
 
 def retail_root_from_screenshots_path(path: Path) -> Path | None:
@@ -684,6 +711,7 @@ def _parse_lookup_payload(
     text: str,
     *,
     source_path: Path | None = None,
+    source_digest: str | None = None,
     payload_cache_dir: Path | None = None,
     payload_cache_generation: int | None = None,
     use_cache: bool = True,
@@ -692,8 +720,12 @@ def _parse_lookup_payload(
     if not match:
         raise ValueError("RaiderIO lookup payload missing")
     cache_path = (
-        _lookup_payload_cache_path(payload_cache_dir, source_path)
-        if payload_cache_dir is not None and source_path is not None
+        _lookup_payload_cache_path(payload_cache_dir, source_path, source_digest)
+        if (
+            payload_cache_dir is not None
+            and source_path is not None
+            and source_digest is not None
+        )
         else None
     )
     if cache_path is not None and use_cache:
@@ -730,6 +762,7 @@ def _parse_lookup_payload_for_character_layout(
     text: str,
     *,
     source_path: Path,
+    source_digest: str | None,
     payload_cache_dir: Path | None,
     character_layout: _CharacterLayout,
     payload_cache_generation: int | None = None,
@@ -737,6 +770,7 @@ def _parse_lookup_payload_for_character_layout(
     payload = _parse_lookup_payload(
         text,
         source_path=source_path,
+        source_digest=source_digest,
         payload_cache_dir=payload_cache_dir,
         payload_cache_generation=payload_cache_generation,
     )
@@ -747,6 +781,7 @@ def _parse_lookup_payload_for_character_layout(
     payload = _parse_lookup_payload(
         text,
         source_path=source_path,
+        source_digest=source_digest,
         payload_cache_dir=payload_cache_dir,
         payload_cache_generation=payload_cache_generation,
         use_cache=False,
@@ -804,12 +839,16 @@ def _parse_character_layout(text: str, record_size: int) -> _CharacterLayout:
     )
 
 
-def _lookup_payload_cache_path(cache_dir: Path, source_path: Path) -> Path | None:
-    _name, exists, mtime_ns, size = _file_fingerprint(source_path)
-    if not exists:
-        return None
+def _lookup_payload_cache_path(
+    cache_dir: Path,
+    source_path: Path,
+    source_digest: str,
+) -> Path:
     safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_path.stem)
-    return cache_dir / f"{safe_stem}.{mtime_ns}.{size}{_LOOKUP_PAYLOAD_CACHE_SUFFIX}"
+    return cache_dir / (
+        f"{safe_stem}.v{_LOOKUP_PAYLOAD_CACHE_VERSION}.{source_digest}"
+        f"{_LOOKUP_PAYLOAD_CACHE_SUFFIX}"
+    )
 
 
 def _harden_existing_lookup_payload_cache(path: Path) -> None:

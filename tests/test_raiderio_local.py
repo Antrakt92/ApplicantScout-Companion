@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -154,6 +155,27 @@ def _mark_test_db_changed(root: Path) -> None:
         / "db_mythicplus_eu_lookup.lua"
     )
     path.write_text(path.read_text(encoding="utf-8") + "\n-- changed\n", encoding="utf-8")
+
+
+def _replace_encoded_payload_preserving_size_and_mtime(
+    path: Path,
+    old_payload: bytes,
+    new_payload: bytes,
+) -> None:
+    old_encoded = "".join(f"\\{byte}" for byte in old_payload)
+    new_encoded = "".join(f"\\{byte}" for byte in new_payload)
+    before = path.stat()
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old_encoded) == 1
+    updated = text.replace(old_encoded, new_encoded, 1)
+    assert len(updated.encode("utf-8")) == len(text.encode("utf-8"))
+
+    path.write_text(updated, encoding="utf-8")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    after = path.stat()
+    assert after.st_size == before.st_size
+    assert after.st_mtime_ns == before.st_mtime_ns
 
 
 def _record(score: int, skyreach: int, pit: int, skyreach_upgrades: int, pit_upgrades: int) -> bytes:
@@ -873,6 +895,101 @@ def test_reader_invalidates_decoded_lookup_payload_cache_when_lookup_file_change
     assert refreshed is not None
     assert refreshed.current_score == 3333
     assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+
+
+def test_reader_invalidates_mplus_caches_when_content_changes_with_same_stat(
+    tmp_path: Path,
+):
+    old_payload = _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2)
+    new_payload = _record(3200, 15, 14, 1, 0) + _record(3000, 0, 16, 0, 2)
+    _write_test_db(tmp_path, old_payload)
+    cache_dir = tmp_path / "cache"
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+    old_cache_files = list(cache_dir.rglob("*.payload.bin"))
+    assert len(old_cache_files) == 1
+    assert ".v2." in old_cache_files[0].name
+
+    lookup_path = (
+        tmp_path
+        / "Interface"
+        / "AddOns"
+        / "RaiderIO"
+        / "db"
+        / "db_mythicplus_eu_lookup.lua"
+    )
+    _replace_encoded_payload_preserving_size_and_mtime(
+        lookup_path,
+        old_payload,
+        new_payload,
+    )
+
+    restarted = RaiderIOLocalReader(
+        tmp_path,
+        cache_dir=cache_dir,
+    ).lookup_profile("Chinie", "Ragnaros", "EU")
+    new_cache_files = list(cache_dir.rglob("*.payload.bin"))
+    refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert refreshed is not None
+    assert refreshed.current_score == 3000
+    assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+    assert restarted == refreshed
+    assert len(new_cache_files) == 1
+    assert new_cache_files[0] != old_cache_files[0]
+
+
+def test_reader_invalidates_raid_caches_when_content_changes_with_same_stat(
+    tmp_path: Path,
+):
+    mplus_payload = _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2)
+    old_raid_payload = _raid_record(
+        (1, (0, 0, 0)),
+        (0, (0, 0, 0)),
+    ) + _raid_record(
+        (3, (2, 0, 1)),
+        (2, (1, 1, 1)),
+    )
+    new_raid_payload = _raid_record(
+        (1, (0, 0, 0)),
+        (0, (0, 0, 0)),
+    ) + _raid_record(
+        (3, (0, 1, 0)),
+        (2, (1, 1, 1)),
+    )
+    _write_test_db(tmp_path, mplus_payload)
+    _write_test_raid_db(tmp_path, old_raid_payload)
+    cache_dir = tmp_path / "cache"
+    reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.raid_progress["M"]["boss_kills"] == [2, 0, 1]
+
+    lookup_path = (
+        tmp_path
+        / "Interface"
+        / "AddOns"
+        / "RaiderIO"
+        / "db"
+        / "db_raiding_eu_lookup.lua"
+    )
+    _replace_encoded_payload_preserving_size_and_mtime(
+        lookup_path,
+        old_raid_payload,
+        new_raid_payload,
+    )
+
+    restarted = RaiderIOLocalReader(
+        tmp_path,
+        cache_dir=cache_dir,
+    ).lookup_profile("Chinie", "Ragnaros", "EU")
+    refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert refreshed is not None
+    assert refreshed.raid_progress["M"]["boss_kills"] == [0, 1, 0]
+    assert restarted == refreshed
 
 
 def test_reader_redecodes_lookup_payload_when_decoded_cache_is_too_short_for_character_layout(
