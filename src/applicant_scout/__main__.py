@@ -677,56 +677,18 @@ class StateMachine(QObject):
         if self._rio_reader is None:
             return
         for applicant in list(self._state.applicants.values()):
-            profile = self._rio_profile_for(applicant.name)
-            if profile is _RIO_LOOKUP_FAILED:
-                continue
-            transport_score, transport_profile, transport_rows = (
-                self._rio_transport_fields(applicant)
-            )
-            rows = self._rio_dungeon_rows_from_profile(profile, transport_rows)
-            raid_progress = self._rio_raid_progress_from_profile(profile)
-            score = self._rio_score_from_profile(profile, transport_score)
-            rio_profile = self._rio_profile_flag_from_profile(
-                profile, transport_profile
-            )
-            if (
-                rows == applicant.rio_dungeons
-                and raid_progress == applicant.rio_raid_progress
-                and score == applicant.score
-                and rio_profile == applicant.rio_profile
+            if self._apply_current_local_rio_context(
+                applicant, preserve_on_failure=True
             ):
-                continue
-            applicant.rio_dungeons = rows
-            applicant.rio_raid_progress = raid_progress
-            applicant.score = score
-            applicant.rio_profile = rio_profile
-            self.applicantUpdated.emit(applicant)
+                self.applicantUpdated.emit(applicant)
         roster_changed = False
         for member in list(self._state.party_members.values()):
-            profile = self._rio_profile_for(member.name)
-            if profile is _RIO_LOOKUP_FAILED:
-                continue
-            transport_score, transport_profile, transport_rows = (
-                self._rio_transport_fields(member)
+            roster_changed = (
+                self._apply_current_local_rio_context(
+                    member, preserve_on_failure=True
+                )
+                or roster_changed
             )
-            rows = self._rio_dungeon_rows_from_profile(profile, transport_rows)
-            raid_progress = self._rio_raid_progress_from_profile(profile)
-            score = self._rio_score_from_profile(profile, transport_score)
-            rio_profile = self._rio_profile_flag_from_profile(
-                profile, transport_profile
-            )
-            if (
-                rows == member.rio_dungeons
-                and raid_progress == member.rio_raid_progress
-                and score == member.score
-                and rio_profile == member.rio_profile
-            ):
-                continue
-            member.rio_dungeons = rows
-            member.rio_raid_progress = raid_progress
-            member.score = score
-            member.rio_profile = rio_profile
-            roster_changed = True
         if roster_changed:
             self.rosterChanged.emit()
 
@@ -818,6 +780,42 @@ class StateMachine(QObject):
             rio_dungeons = source.rio_dungeons
         return score, rio_profile, [dict(row) for row in rio_dungeons]
 
+    def _apply_current_local_rio_context(
+        self,
+        target: Applicant,
+        *,
+        preserve_on_failure: bool,
+    ) -> bool:
+        profile = self._rio_profile_for(target.name)
+        if profile is _RIO_LOOKUP_FAILED:
+            if preserve_on_failure:
+                return False
+            # The previous local profile belongs to a different identity
+            # context. Fall back to transport evidence even when the replacement
+            # database lookup fails; stale region/realm evidence is not valid.
+            profile = None
+        transport_score, transport_profile, transport_rows = (
+            self._rio_transport_fields(target)
+        )
+        rows = self._rio_dungeon_rows_from_profile(profile, transport_rows)
+        raid_progress = self._rio_raid_progress_from_profile(profile)
+        score = self._rio_score_from_profile(profile, transport_score)
+        rio_profile = self._rio_profile_flag_from_profile(
+            profile, transport_profile
+        )
+        if (
+            rows == target.rio_dungeons
+            and raid_progress == target.rio_raid_progress
+            and score == target.score
+            and rio_profile == target.rio_profile
+        ):
+            return False
+        target.rio_dungeons = rows
+        target.rio_raid_progress = raid_progress
+        target.score = score
+        target.rio_profile = rio_profile
+        return True
+
     @staticmethod
     def _roster_key(name: str) -> str:
         return name.strip().lower()
@@ -896,11 +894,64 @@ class StateMachine(QObject):
         region_identity_changed: bool,
         default_realm_changed: bool,
     ) -> bool:
-        if source_name != target_name or region_identity_changed:
+        if source_name != target_name:
             return False
-        return not (
-            default_realm_changed and not applicant_has_explicit_realm(target_name)
+        return not StateMachine._identity_context_changed(
+            target_name,
+            region_identity_changed=region_identity_changed,
+            default_realm_changed=default_realm_changed,
         )
+
+    @staticmethod
+    def _identity_context_changed(
+        name: str,
+        *,
+        region_identity_changed: bool,
+        default_realm_changed: bool,
+    ) -> bool:
+        return region_identity_changed or (
+            default_realm_changed and not applicant_has_explicit_realm(name)
+        )
+
+    def _refresh_preserved_identity_rows(
+        self,
+        *,
+        applicants: bool,
+        roster: bool,
+        region_identity_changed: bool,
+        default_realm_changed: bool,
+    ) -> None:
+        if not region_identity_changed and not default_realm_changed:
+            return
+        if applicants:
+            for applicant in list(self._state.applicants.values()):
+                if not self._identity_context_changed(
+                    applicant.name,
+                    region_identity_changed=region_identity_changed,
+                    default_realm_changed=default_realm_changed,
+                ):
+                    continue
+                applicant.clear_wcl_data()
+                self._apply_current_local_rio_context(
+                    applicant, preserve_on_failure=False
+                )
+                self.applicantUpdated.emit(applicant)
+        if roster:
+            roster_changed = False
+            for member in list(self._state.party_members.values()):
+                if not self._identity_context_changed(
+                    member.name,
+                    region_identity_changed=region_identity_changed,
+                    default_realm_changed=default_realm_changed,
+                ):
+                    continue
+                member.clear_wcl_data()
+                self._apply_current_local_rio_context(
+                    member, preserve_on_failure=False
+                )
+                roster_changed = True
+            if roster_changed:
+                self.rosterChanged.emit()
 
     def _roster_member_from_decoded(
         self,
@@ -990,10 +1041,10 @@ class StateMachine(QObject):
                     existing.spec_id != member.spec_id
                     or existing.name != member.name
                     or wcl_metric_role(existing.role) != wcl_metric_role(member.role)
-                    or region_identity_changed
-                    or (
-                        default_realm_changed
-                        and not applicant_has_explicit_realm(member.name)
+                    or self._identity_context_changed(
+                        member.name,
+                        region_identity_changed=region_identity_changed,
+                        default_realm_changed=default_realm_changed,
                     )
                 )
                 if not needs_refetch:
@@ -1058,14 +1109,25 @@ class StateMachine(QObject):
                 new_realm_slug != old_realm_slug
             )
             self._state.player = new_player
+            if snap.version.region_id != old_player.region_id:
+                # Direct Qt slots update the WCL client synchronously. Do this
+                # before local-RIO preload because supported readers may invoke
+                # their completion callback before preload_region_async returns.
+                self.versionUpdated.emit(snap.version.region_id)
             self._preload_local_rio_region(new_region_token)
             log.info(
                 "Player: %s (region=%d)",
                 snap.version.player_name,
                 snap.version.region_id,
             )
-            if snap.version.region_id != old_player.region_id:
-                self.versionUpdated.emit(snap.version.region_id)
+
+        if not snap.terminal_clear and not snap.lfg_unavailable:
+            self._refresh_preserved_identity_rows(
+                applicants=False,
+                roster=snap.roster_unavailable,
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+            )
 
         # ─── Leader keystone ───
         old_leader_key = self._state.leader_key
@@ -1143,14 +1205,12 @@ class StateMachine(QObject):
                     default_realm_changed=default_realm_changed,
                     rio_summary_target_key=rio_summary_target_key,
                 )
-            for applicant in list(self._state.applicants.values()):
-                wcl_identity_changed = region_identity_changed or (
-                    default_realm_changed
-                    and not applicant_has_explicit_realm(applicant.name)
-                )
-                if wcl_identity_changed:
-                    applicant.clear_wcl_data()
-                    self.applicantUpdated.emit(applicant)
+            self._refresh_preserved_identity_rows(
+                applicants=True,
+                roster=snap.roster_unavailable,
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+            )
             if listing_changed or leader_key_changed:
                 self.listingChanged.emit()
             return
@@ -1320,10 +1380,10 @@ class StateMachine(QObject):
                     existing.spec_id != incoming_spec_id
                     or existing.name != da.name
                     or wcl_metric_role(existing.role) != wcl_metric_role(role_name)
-                    or region_identity_changed
-                    or (
-                        default_realm_changed
-                        and not applicant_has_explicit_realm(da.name)
+                    or self._identity_context_changed(
+                        da.name,
+                        region_identity_changed=region_identity_changed,
+                        default_realm_changed=default_realm_changed,
                     )
                 )
                 existing.name = da.name

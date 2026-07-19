@@ -1424,6 +1424,49 @@ def test_rio_preload_failure_can_retry_and_synchronous_completion_clears_active(
     assert reenrichments == [True]
 
 
+def test_region_signal_precedes_synchronous_rio_preload_row_updates():
+    class SynchronousReader:
+        def lookup_profile(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def preload_region_async(self, region: str | None, on_loaded=None) -> None:
+            assert region == "US"
+            assert on_loaded is not None
+            on_loaded()
+
+    state = AppState()
+    state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
+    sm = StateMachine(state, rio_reader=_FullRioReader())
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-RealmA", region_id=3),
+            applicants=[_decoded(42, 1, "Scout-RealmX")],
+            roster=[_roster_decoded("Friend-RealmX")],
+        )
+    )
+    events: list[str] = []
+    sm.versionUpdated.connect(lambda _region_id: events.append("version"))
+    sm.applicantUpdated.connect(lambda _applicant: events.append("applicant"))
+    sm.rosterChanged.connect(lambda: events.append("roster"))
+    sm.set_rio_reader(SynchronousReader())
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-RealmA", region_id=1),
+            applicants=[],
+            roster=[],
+            lfg_unavailable=True,
+            roster_unavailable=True,
+        )
+    )
+
+    assert events[0] == "version"
+    assert "applicant" in events
+    assert "roster" in events
+
+
 def test_legacy_rio_preload_cooldown_starts_after_slow_fallback_returns():
     now = [100.0]
 
@@ -2159,6 +2202,144 @@ def test_combined_unavailable_snapshot_preserves_applicants_and_roster():
     assert cleared == []
     assert removed == []
     assert roster_updates == []
+
+
+@pytest.mark.parametrize(
+    ("change_kind", "lfg_unavailable", "explicit_realm", "should_refresh"),
+    [
+        ("region", False, True, True),
+        ("unknown-region", True, True, False),
+        ("default-realm", True, False, True),
+        ("default-realm", True, True, False),
+    ],
+)
+def test_roster_unavailable_identity_change_revalidates_preserved_enrichment(
+    change_kind: str,
+    lfg_unavailable: bool,
+    explicit_realm: bool,
+    should_refresh: bool,
+):
+    state = AppState()
+    state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
+    sm = StateMachine(state, rio_reader=_FullRioReader())
+    applicant_name = "Scout-RealmX" if explicit_realm else "Scout"
+    member_name = "Friend-RealmX" if explicit_realm else "Friend"
+    transport_rows = [{"name": "Transport", "key_level": 9}]
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-RealmA", region_id=3),
+            applicants=[
+                _decoded(
+                    42,
+                    1,
+                    applicant_name,
+                    score=2100,
+                    rio_profile=False,
+                    rio_dungeons=transport_rows,
+                )
+            ],
+            roster=[
+                _roster_decoded(
+                    member_name,
+                    score=2200,
+                    rio_profile=False,
+                    rio_dungeons=transport_rows,
+                )
+            ],
+        )
+    )
+    applicant = state.applicants["42:1"]
+    member_id = member_name.lower()
+    member = state.party_members[member_id]
+    for row in (applicant, member):
+        row.fetch_status = "ready"
+        row.raid_heroic = 92.0
+        assert row.rio_profile is True
+        assert row.rio_dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+        assert row.rio_raid_progress
+
+    applicant_updates: list[str] = []
+    roster_updates: list[bool] = []
+    signal_order: list[str] = []
+    sm.applicantUpdated.connect(
+        lambda updated: applicant_updates.append(updated.applicant_id)
+    )
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+    sm.versionUpdated.connect(lambda _region_id: signal_order.append("version"))
+    sm.applicantUpdated.connect(lambda _updated: signal_order.append("applicant"))
+    sm.rosterChanged.connect(lambda: signal_order.append("roster"))
+    sm._rio_reader = _OSErrorRioReader()
+    if change_kind == "region":
+        new_version = _version("Host-RealmA", region_id=1)
+    elif change_kind == "unknown-region":
+        new_version = _version("Host-RealmA", region_id=99)
+    else:
+        new_version = _version("Host-RealmB", region_id=3)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None if lfg_unavailable else _listing(),
+            version=new_version,
+            applicants=(
+                []
+                if lfg_unavailable
+                else [
+                    _decoded(
+                        42,
+                        1,
+                        applicant_name,
+                        score=2100,
+                        rio_profile=False,
+                        rio_dungeons=transport_rows,
+                    )
+                ]
+            ),
+            roster=[],
+            lfg_unavailable=lfg_unavailable,
+            roster_unavailable=True,
+        )
+    )
+
+    assert set(state.applicants) == {"42:1"}
+    assert set(state.party_members) == {member_id}
+    assert state.applicants["42:1"] is applicant
+    assert state.party_members[member_id] is member
+    if change_kind == "region":
+        assert signal_order[0] == "version"
+    if should_refresh:
+        assert applicant.fetch_status == "pending"
+        assert applicant.raid_heroic is None
+        assert applicant.score == 2100
+        assert applicant.rio_profile is False
+        assert applicant.rio_dungeons == transport_rows
+        assert applicant.rio_raid_progress == {}
+        assert member.fetch_status == "pending"
+        assert member.raid_heroic is None
+        assert member.score == 2200
+        assert member.rio_profile is False
+        assert member.rio_dungeons == transport_rows
+        assert member.rio_raid_progress == {}
+        assert applicant_updates == ["42:1"]
+        assert roster_updates == [True]
+    else:
+        assert applicant.fetch_status == "ready"
+        assert applicant.raid_heroic == 92.0
+        assert applicant.score == 2861
+        assert applicant.rio_profile is True
+        assert applicant.rio_dungeons == [
+            {"name": "Pit of Saron", "key_level": 12}
+        ]
+        assert applicant.rio_raid_progress
+        assert member.fetch_status == "ready"
+        assert member.raid_heroic == 92.0
+        assert member.score == 2861
+        assert member.rio_profile is True
+        assert member.rio_dungeons == [
+            {"name": "Pit of Saron", "key_level": 12}
+        ]
+        assert member.rio_raid_progress
+        assert applicant_updates == []
+        assert roster_updates == []
 
 
 def test_lfg_unavailable_region_change_invalidates_preserved_applicant_wcl():
