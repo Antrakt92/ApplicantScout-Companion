@@ -35,8 +35,10 @@ class _Client:
     def __init__(self, response: _Response | Exception):
         self.response = response
         self.closed = False
+        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def get(self, *_args, **_kwargs) -> _Response:
+    def get(self, *args, **kwargs) -> _Response:
+        self.calls.append((args, kwargs))
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
@@ -100,6 +102,7 @@ def _release(
     *,
     prerelease: bool = False,
     draft: bool = False,
+    immutable: object = True,
     assets: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -107,6 +110,7 @@ def _release(
         "html_url": f"https://github.test/releases/tag/{tag}",
         "prerelease": prerelease,
         "draft": draft,
+        "immutable": immutable,
         "assets": assets or [],
     }
 
@@ -164,6 +168,78 @@ def test_update_check_prefers_installer_asset():
     assert result.checksum_name == "ApplicantScoutCompanionSetup-0.2.0.exe.sha256"
     assert result.checksum_url == "https://example.test/setup.exe.sha256"
     assert result.open_url == "https://example.test/setup.exe"
+
+
+def test_update_check_requests_release_immutability_api_contract():
+    client = _Client(_Response(200, [_release("v0.1.0")]))
+
+    check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
+
+    assert len(client.calls) == 1
+    _args, kwargs = client.calls[0]
+    assert kwargs["headers"] == {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "ApplicantScout-Companion",
+        "X-GitHub-Api-Version": "2026-03-10",
+    }
+
+
+@pytest.mark.parametrize("immutable", [False, None, "true", 1, 0, {}, []])
+def test_update_check_rejects_false_or_malformed_release_immutability(immutable):
+    client = _Client(_Response(200, [_release("v0.2.0", immutable=immutable)]))
+
+    result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
+
+    assert result.status == "unavailable"
+    assert result.reason == "release_not_immutable"
+    assert result.latest_version == "v0.2.0"
+    assert result.asset_url is None
+    assert "not immutable" in result.message
+
+
+def test_update_check_rejects_missing_release_immutability():
+    release = _release("v0.2.0")
+    release.pop("immutable")
+    client = _Client(_Response(200, [release]))
+
+    result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
+
+    assert result.status == "unavailable"
+    assert result.reason == "release_not_immutable"
+    assert result.latest_version == "v0.2.0"
+    assert result.asset_url is None
+
+
+def test_update_check_does_not_fall_back_from_newer_mutable_release():
+    client = _Client(
+        _Response(
+            200,
+            [
+                _release(
+                    "v0.2.0",
+                    assets=[
+                        {
+                            "name": "ApplicantScoutCompanionSetup-0.2.0.exe",
+                            "browser_download_url": "https://example.test/trusted.exe",
+                        },
+                        {
+                            "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+                            "browser_download_url": "https://example.test/trusted.exe.sha256",
+                        },
+                    ],
+                ),
+                _release("v0.3.0", immutable=False),
+            ],
+        )
+    )
+
+    result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
+
+    assert result.status == "unavailable"
+    assert result.reason == "release_not_immutable"
+    assert result.latest_version == "v0.3.0"
+    assert result.asset_url is None
+    assert result.open_url is None
 
 
 def test_update_check_does_not_select_portable_asset_for_in_app_update():
@@ -390,7 +466,9 @@ def test_update_check_selects_asset_from_highest_release_not_first_release():
 
 
 def test_update_check_reports_unavailable_when_newer_release_has_no_open_url():
-    client = _Client(_Response(200, [{"tag_name": "v0.2.0", "assets": []}]))
+    client = _Client(
+        _Response(200, [{"tag_name": "v0.2.0", "immutable": True, "assets": []}])
+    )
 
     result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
 

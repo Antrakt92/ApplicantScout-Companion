@@ -22,6 +22,7 @@ from .config import user_cache_dir
 
 DEFAULT_RELEASE_REPO = "Antrakt92/ApplicantScout-Companion"
 GITHUB_API_BASE = "https://api.github.com"
+_GITHUB_API_VERSION = "2026-03-10"
 _SEMVER_RE = re.compile(r"^\s*[vV]?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?\s*$")
 
 UpdateStatus = Literal["available", "up_to_date", "unavailable"]
@@ -177,7 +178,7 @@ def check_for_update(
     repo: str = DEFAULT_RELEASE_REPO,
     client: httpx.Client | None = None,
 ) -> UpdateResult:
-    """Return latest non-prerelease GitHub Release status."""
+    """Return latest immutable, non-prerelease GitHub Release status."""
     owns_client = client is None
     try:
         http = client or httpx.Client(timeout=10.0)
@@ -195,6 +196,7 @@ def check_for_update(
             headers={
                 "Accept": "application/vnd.github+json",
                 "User-Agent": "ApplicantScout-Companion",
+                "X-GitHub-Api-Version": _GITHUB_API_VERSION,
             },
         )
         if resp.status_code == 404:
@@ -237,6 +239,21 @@ def check_for_update(
             )
         tag_name = latest.get("tag_name")
         latest_version = tag_name if isinstance(tag_name, str) else ""
+        # The checksum is published beside the installer, so it proves only
+        # that those two downloaded assets agree. Require GitHub's immutable
+        # release state before trusting either asset; truthy/malformed values
+        # and an older immutable release are not safe substitutes.
+        if latest.get("immutable") is not True:
+            return UpdateResult(
+                status="unavailable",
+                message=(
+                    "Latest stable GitHub Release is not immutable; "
+                    "automatic update is disabled."
+                ),
+                current_version=current_version,
+                reason="release_not_immutable",
+                latest_version=latest_version or None,
+            )
         release_url = latest.get("html_url")
         release_url = release_url if isinstance(release_url, str) else None
         if not latest_version:
