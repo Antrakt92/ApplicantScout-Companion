@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Oversized applicant and raid-roster snapshots are now reassembled completely
+  before they reach the overlay, preserving the last valid state while chunks
+  are incomplete and recovering retained chunks after a companion restart.
+- Large grouped applicant backlogs are now bounded by the APS1 payload itself
+  instead of an obsolete 200-row decoder limit.
+
+### Compatibility
+
+- Normal and terminal snapshots remain APS1 v9. Overflow snapshots use bounded
+  APS1 v10 fragment envelopes and require the paired addon version that emits
+  them.
+
 ## 0.10.1 - 18-Jul-2026
 
 Paired release with ApplicantScout addon `0.6.1`. This release hardens the QR

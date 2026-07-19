@@ -2879,7 +2879,9 @@ def test_companion_gitignore_does_not_hide_public_release_or_doc_inputs():
 def test_readme_documents_current_wire_support():
     readme = _read_repo_text("README.md")
 
-    assert "wire payloads through v9" in readme
+    assert "complete logical APS1 snapshots through v9" in readme
+    assert "bounded v10 overflow fragment envelopes" in readme
+    assert "only after exact reassembly of the original v9 payload" in readme
     assert "wire payloads through v5" not in readme
 
 

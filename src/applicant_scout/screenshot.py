@@ -8,14 +8,16 @@ handles QR Version ≥25 reliably, where opencv's QRCodeDetector empirically
 failed for our 30-applicant payloads), parse bytes through the binary format
 defined below, and emit a Snapshot via Qt signal.
 
-Wire format mirrors `ApplicantScout.lua::BuildPayload` byte-for-byte:
-header "APS1" + version + uint16 length + flags/reserved bytes, then listing
-block + version block + applicant array + CRC32 trailer. Pure binary,
+Complete logical snapshots mirror `ApplicantScout.lua::BuildPayload`
+byte-for-byte: header "APS1" + version + uint16 length + flags/reserved bytes,
+then listing block + version block + applicant array + CRC32 trailer. Oversized
+snapshots use bounded APS1 v10 fragment envelopes and are emitted only after
+the original v1-v9 payload has been reassembled and validated. Pure binary,
 big-endian, see addon for spec.
 QR is purely a transport layer over those bytes — Reed-Solomon ECC built into
 QR handles JPG quantization noise, partial occlusion, and rotation. Current
-addon builds prefer legacy hex text for already-fitting payloads and only fall
-back to raw byte-mode QR when hex would overflow Version 40.
+Addon builds use legacy-compatible hex text for normal payloads and bounded
+hex fragment frames for oversized payloads.
 
 CRITICAL: only files whose QR successfully decodes AND magic matches "APS1"
 are deleted. User's manual screenshots (no QR / unrelated QR / wrong magic)
@@ -34,7 +36,7 @@ import sys
 import threading
 import time
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
@@ -72,14 +74,35 @@ MAGIC = b"APS1"
 # v0x07 = adds current group leader keystone context.
 # v0x08 = adds terminal/LFG-unavailable partial flags.
 # v0x09 = adds roster-unavailable partial flag for QR-overflow fallback.
+# v0x0A = bounded transport fragment containing one slice of a complete v1-v9
+# payload. Fragments are assembled before any Snapshot reaches application code.
 # Set, not a min/max range — future versions may be incompatible with v1 but compatible
 # with v2; explicit allow-list is the cleanest contract.
-WIRE_VERSIONS_SUPPORTED = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09}
+WIRE_VERSIONS_SUPPORTED = {
+    0x01,
+    0x02,
+    0x03,
+    0x04,
+    0x05,
+    0x06,
+    0x07,
+    0x08,
+    0x09,
+    0x0A,
+}
+LOGICAL_WIRE_VERSIONS_SUPPORTED = frozenset(range(0x01, 0x0A))
 APS1_FLAG_TERMINAL_CLEAR = 0x01
 APS1_FLAG_LFG_UNAVAILABLE = 0x02
 APS1_FLAG_ROSTER_UNAVAILABLE = 0x04
 APS1_KNOWN_V8_FLAGS = APS1_FLAG_TERMINAL_CLEAR | APS1_FLAG_LFG_UNAVAILABLE
 APS1_KNOWN_V9_FLAGS = APS1_KNOWN_V8_FLAGS | APS1_FLAG_ROSTER_UNAVAILABLE
+APS1_FRAGMENT_VERSION = 0x0A
+APS1_FRAGMENT_CHUNK_BYTES = 640
+APS1_FRAGMENT_MIN_CHUNKS = 2
+APS1_FRAGMENT_MAX_CHUNKS = 128
+APS1_FRAGMENT_METADATA_BYTES = 18
+APS1_FRAGMENT_FRAME_OVERHEAD = 9 + APS1_FRAGMENT_METADATA_BYTES + 4
+APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS = 300.0
 
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
 STABLE_SIZE_POLL = 0.05  # poll interval
@@ -205,11 +228,27 @@ class Snapshot:
 
 
 @dataclass(frozen=True)
+class SnapshotFragment:
+    """One bounded v10 slice of a complete inner v1-v9 APS1 snapshot."""
+
+    stream_id: int
+    generation: int
+    chunk_index: int
+    chunk_count: int
+    inner_total_len: int
+    inner_crc32: int
+    chunk: bytes = field(repr=False)
+    source: SnapshotSource | None = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
 class DecodeResult:
     snapshot: Optional[Snapshot]
     has_marker: bool
     error_reason: Optional[str] = None
     decoder_unavailable: bool = False
+    fragment: Optional[SnapshotFragment] = None
+    fragment_candidate: bool = False
 
 
 @dataclass(frozen=True)
@@ -343,7 +382,9 @@ def _collect_appscout_qr_candidates(
     return raw_candidates + hex_candidates
 
 
-def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optional[str]]:
+def _try_parse_appscout_candidate(
+    raw: bytes,
+) -> tuple[Snapshot | SnapshotFragment | None, Optional[str]]:
     """Validate and parse one already-identified APS1 payload candidate."""
     if len(raw) < 9:
         return None, "payload shorter than 9-byte header"
@@ -353,7 +394,13 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
         return None, f"unsupported wire version 0x{wire_ver:02x}"
     flags = raw[7]
     reserved2 = raw[8]
-    if wire_ver >= 0x08:
+    if wire_ver == APS1_FRAGMENT_VERSION:
+        if flags or reserved2:
+            return (
+                None,
+                f"unsupported APS1 v10 reserved bytes 0x{flags:02x} 0x{reserved2:02x}",
+            )
+    elif wire_ver >= 0x08:
         known_flags = APS1_KNOWN_V9_FLAGS if wire_ver >= 0x09 else APS1_KNOWN_V8_FLAGS
         unknown_flags = flags & ~known_flags
         if unknown_flags:
@@ -388,6 +435,62 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
             f"CRC mismatch expected {expected_crc:08x} actual {actual_crc:08x}",
         )
 
+    if wire_ver == APS1_FRAGMENT_VERSION:
+        fragment_body = body[9:]
+        if len(fragment_body) < APS1_FRAGMENT_METADATA_BYTES + 1:
+            return None, "v10 fragment body is shorter than metadata plus one byte"
+        (
+            stream_id,
+            generation,
+            chunk_index,
+            chunk_count,
+            inner_total_len,
+            inner_crc32,
+        ) = struct.unpack(">IIHHHI", fragment_body[:APS1_FRAGMENT_METADATA_BYTES])
+        chunk = fragment_body[APS1_FRAGMENT_METADATA_BYTES:]
+        if not APS1_FRAGMENT_MIN_CHUNKS <= chunk_count <= APS1_FRAGMENT_MAX_CHUNKS:
+            return (
+                None,
+                f"v10 chunk_count {chunk_count} outside "
+                f"{APS1_FRAGMENT_MIN_CHUNKS}..{APS1_FRAGMENT_MAX_CHUNKS}",
+            )
+        if chunk_index >= chunk_count:
+            return None, f"v10 chunk_index {chunk_index} outside chunk_count {chunk_count}"
+        if not 13 <= inner_total_len <= 0xFFFF:
+            return None, f"v10 invalid inner_total_len {inner_total_len}"
+        expected_count = (
+            inner_total_len + APS1_FRAGMENT_CHUNK_BYTES - 1
+        ) // APS1_FRAGMENT_CHUNK_BYTES
+        if chunk_count != expected_count:
+            return (
+                None,
+                f"v10 chunk_count {chunk_count} does not match inner_total_len "
+                f"{inner_total_len} ({expected_count} expected)",
+            )
+        expected_chunk_len = APS1_FRAGMENT_CHUNK_BYTES
+        if chunk_index == chunk_count - 1:
+            expected_chunk_len = inner_total_len - (
+                APS1_FRAGMENT_CHUNK_BYTES * (chunk_count - 1)
+            )
+        if len(chunk) != expected_chunk_len:
+            return (
+                None,
+                f"v10 chunk {chunk_index}/{chunk_count} has {len(chunk)} bytes; "
+                f"expected {expected_chunk_len}",
+            )
+        return (
+            SnapshotFragment(
+                stream_id=stream_id,
+                generation=generation,
+                chunk_index=chunk_index,
+                chunk_count=chunk_count,
+                inner_total_len=inner_total_len,
+                inner_crc32=inner_crc32,
+                chunk=chunk,
+            ),
+            None,
+        )
+
     try:
         snap = _parse_payload(
             body[9:],
@@ -400,6 +503,14 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
     except (IndexError, UnicodeDecodeError, struct.error, ValueError) as e:
         return None, f"parse error: {e}"
     return snap, None
+
+
+def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optional[str]]:
+    """Parse one complete logical snapshot while preserving the v1-v9 API."""
+    parsed, error = _try_parse_appscout_candidate(raw)
+    if isinstance(parsed, SnapshotFragment):
+        return None, "v10 fragment requires watcher assembly"
+    return parsed, error
 
 
 def validate_snapshot_for_application(snap: Snapshot) -> Snapshot:
@@ -507,6 +618,20 @@ def _read_wire_role(buf: bytes, cursor: int, *, field: str) -> tuple[int, int]:
     return value, cursor
 
 
+def _minimum_applicant_record_size(wire_ver: int) -> int:
+    # Includes the one-byte length prefix for an empty name. The later
+    # application validator rejects blank identities; this is only a structural
+    # bound that prevents impossible loop counts before cursor parsing.
+    size = 4 + 1 + 2 + 2 + 2 + 1 + 1
+    if wire_ver >= 0x02:
+        size += 1
+    if wire_ver >= 0x04:
+        size += 2
+    if wire_ver >= 0x05:
+        size += 8
+    return size
+
+
 def _parse_payload(
     buf: bytes,
     wire_ver: int = 0x01,
@@ -610,11 +735,21 @@ def _parse_payload(
                 player_name=player_name,
             )
 
-    # Applicants array. LFG max is ~70 in practice; sane upper bound 200.
+    # Applicants array. Bound the count by what can structurally fit in this
+    # uint16-sized payload rather than a stale product assumption. Grouped
+    # applications can legitimately exceed 200 member rows.
     count = struct.unpack(">H", buf[cursor : cursor + 2])[0]
     cursor += 2
-    if count > 200:
-        raise ValueError(f"applicant_count {count} exceeds sane limit 200")
+    minimum_tail = 2 if wire_ver >= 0x06 else 0
+    remaining_for_applicants = len(buf) - cursor - minimum_tail
+    max_structural_count = max(
+        0,
+        remaining_for_applicants // _minimum_applicant_record_size(wire_ver),
+    )
+    if count > max_structural_count:
+        raise ValueError(
+            f"applicant_count {count} cannot fit in {remaining_for_applicants} bytes"
+        )
     for _ in range(count):
         aid = struct.unpack(">I", buf[cursor : cursor + 4])[0]
         cursor += 4
@@ -796,6 +931,7 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
     """
     first_error: Optional[str] = None
     has_marker = False
+    has_fragment_candidate = False
     try:
         batches = _iter_qr_symbol_data_batches(image_path)
         for symbol_payloads in batches:
@@ -804,8 +940,17 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
                 continue
             has_marker = True
             for kind, raw in candidates:
+                is_fragment_candidate = (
+                    len(raw) > 4 and raw[4] == APS1_FRAGMENT_VERSION
+                )
+                has_fragment_candidate = (
+                    has_fragment_candidate or is_fragment_candidate
+                )
                 try:
-                    snap, err = _try_parse_appscout_payload(raw)
+                    if is_fragment_candidate:
+                        parsed, err = _try_parse_appscout_candidate(raw)
+                    else:
+                        parsed, err = _try_parse_appscout_payload(raw)
                 except Exception as exc:  # noqa: BLE001
                     err = (
                         f"unexpected parser error: {type(exc).__name__}: "
@@ -817,7 +962,18 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
                         "candidate parser error in %s (%s)", image_path.name, kind
                     )
                     continue
-                if snap is not None:
+                if isinstance(parsed, SnapshotFragment):
+                    _log.info(
+                        "decoded %s: mode=%s wire=0x%02x fragment=%d/%d generation=%d",
+                        image_path.name,
+                        kind,
+                        raw[4],
+                        parsed.chunk_index + 1,
+                        parsed.chunk_count,
+                        parsed.generation,
+                    )
+                    return DecodeResult(None, True, fragment=parsed)
+                if isinstance(parsed, Snapshot):
                     wire_ver = raw[4]
                     # Diagnostic: confirms which wire version we just parsed.
                     # v0x01 = leader-only (legacy); v0x02 = multi-member groups;
@@ -829,10 +985,10 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
                         image_path.name,
                         kind,
                         wire_ver,
-                        len(snap.applicants),
-                        len(snap.roster),
+                        len(parsed.applicants),
+                        len(parsed.roster),
                     )
-                    return DecodeResult(snap, True)
+                    return DecodeResult(parsed, True)
                 if err is not None:
                     if first_error is None:
                         first_error = f"{kind}: {err}"
@@ -861,7 +1017,12 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
 
     if first_error is not None:
         _log.warning("decode failed in %s: %s", image_path.name, first_error)
-    return DecodeResult(None, True, first_error or "parse failed")
+    return DecodeResult(
+        None,
+        True,
+        first_error or "parse failed",
+        fragment_candidate=has_fragment_candidate,
+    )
 
 
 def decode_screenshot(image_path: Path) -> tuple[Optional[Snapshot], bool]:
@@ -1371,15 +1532,289 @@ class _Handler(FileSystemEventHandler):
         self._handle_path_event(event, dest)
 
 
+@dataclass(frozen=True)
+class _FragmentAssemblyOutcome:
+    snapshot: Snapshot | None = None
+    retired_files: tuple["_RetainedFragmentFile", ...] = ()
+    error_reason: str | None = None
+    accepted: bool = False
+    retry_after: float | None = None
+    diagnostic_path: Path | None = None
+    diagnostic_source: SnapshotSource | None = None
+
+
+@dataclass(frozen=True)
+class _RetainedFragmentFile:
+    path: Path
+    source: SnapshotSource | None
+
+
+@dataclass
+class _PendingFragmentAssembly:
+    chunks: dict[int, bytes]
+    files: dict[Path, SnapshotSource | None]
+    newest_source: SnapshotSource | None
+    newest_source_key: tuple[int, str, int] | None
+    last_seen: float
+
+
+def _snapshot_source_order_key(
+    source: SnapshotSource | None,
+) -> tuple[int, str, int] | None:
+    if source is None:
+        return None
+    return source.mtime_ns, source.file_id, source.size
+
+
+class _SnapshotFragmentAssembler:
+    """Thread-safe authority boundary between transport chunks and Snapshots."""
+
+    def __init__(self, *, ttl_seconds: float = APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS):
+        self._ttl_seconds = ttl_seconds
+        self._lock = threading.Lock()
+        self._stream_id: int | None = None
+        self._generation: int | None = None
+        self._signature: tuple[int, int, int] | None = None
+        self._completed = False
+        self._poisoned = False
+        self._frontier_source_key: tuple[int, str, int] | None = None
+        self._pending: _PendingFragmentAssembly | None = None
+        self._barred_stream_id: int | None = None
+        self._barred_generation: int | None = None
+
+    @staticmethod
+    def _sorted_files(
+        files: dict[Path, SnapshotSource | None],
+    ) -> tuple[_RetainedFragmentFile, ...]:
+        return tuple(
+            _RetainedFragmentFile(path, files[path])
+            for path in sorted(files, key=lambda item: str(item))
+        )
+
+    def _retire_pending_locked(self) -> tuple[_RetainedFragmentFile, ...]:
+        if self._pending is None:
+            return ()
+        files = self._sorted_files(self._pending.files)
+        self._pending = None
+        return files
+
+    def _expire_locked(self, now: float) -> tuple[_RetainedFragmentFile, ...]:
+        pending = self._pending
+        if pending is None or now - pending.last_seen <= self._ttl_seconds:
+            return ()
+        return self._retire_pending_locked()
+
+    def expire(self, *, now: float | None = None) -> _FragmentAssemblyOutcome:
+        """Expire pending bytes without requiring another screenshot arrival."""
+        current_time = time.monotonic() if now is None else now
+        with self._lock:
+            pending = self._pending
+            if pending is None:
+                return _FragmentAssemblyOutcome()
+            remaining = self._ttl_seconds - (current_time - pending.last_seen)
+            if remaining > 0:
+                return _FragmentAssemblyOutcome(retry_after=remaining)
+            diagnostic_source = pending.newest_source
+            if diagnostic_source is not None:
+                diagnostic_path = Path(diagnostic_source.file_id)
+            elif pending.files:
+                diagnostic_path = next(iter(pending.files))
+            else:
+                diagnostic_path = None
+            retired = self._retire_pending_locked()
+            return _FragmentAssemblyOutcome(
+                retired_files=retired,
+                error_reason="v10 fragment assembly timed out",
+                diagnostic_path=diagnostic_path,
+                diagnostic_source=diagnostic_source,
+            )
+
+    @staticmethod
+    def _is_newer_source(
+        candidate: tuple[int, str, int] | None,
+        frontier: tuple[int, str, int] | None,
+    ) -> bool:
+        if frontier is None:
+            return True
+        return candidate is not None and candidate > frontier
+
+    def accept_snapshot(
+        self,
+        snap: Snapshot,
+        *,
+        now: float | None = None,
+    ) -> _FragmentAssemblyOutcome:
+        """Apply a whole-frame barrier and reject snapshots behind chunk work."""
+        current_time = time.monotonic() if now is None else now
+        source_key = _snapshot_source_order_key(snap.source)
+        with self._lock:
+            retired = list(self._expire_locked(current_time))
+            if not self._is_newer_source(source_key, self._frontier_source_key):
+                return _FragmentAssemblyOutcome(retired_files=tuple(retired))
+            retired.extend(self._retire_pending_locked())
+            if self._stream_id is not None and self._generation is not None:
+                self._barred_stream_id = self._stream_id
+                self._barred_generation = self._generation
+            self._stream_id = None
+            self._generation = None
+            self._signature = None
+            self._completed = False
+            self._poisoned = False
+            self._frontier_source_key = source_key
+            return _FragmentAssemblyOutcome(
+                snapshot=snap,
+                retired_files=tuple(retired),
+                accepted=True,
+            )
+
+    def accept_fragment(
+        self,
+        fragment: SnapshotFragment,
+        path: Path,
+        *,
+        now: float | None = None,
+    ) -> _FragmentAssemblyOutcome:
+        current_time = time.monotonic() if now is None else now
+        source_key = _snapshot_source_order_key(fragment.source)
+        signature = (
+            fragment.chunk_count,
+            fragment.inner_total_len,
+            fragment.inner_crc32,
+        )
+        with self._lock:
+            retired = list(self._expire_locked(current_time))
+            if (
+                fragment.stream_id == self._barred_stream_id
+                and self._barred_generation is not None
+                and fragment.generation <= self._barred_generation
+            ):
+                retired.append(_RetainedFragmentFile(path, fragment.source))
+                return _FragmentAssemblyOutcome(retired_files=tuple(retired))
+            same_stream = fragment.stream_id == self._stream_id
+            if not same_stream:
+                if not self._is_newer_source(source_key, self._frontier_source_key):
+                    retired.append(_RetainedFragmentFile(path, fragment.source))
+                    return _FragmentAssemblyOutcome(retired_files=tuple(retired))
+                retired.extend(self._retire_pending_locked())
+                self._stream_id = fragment.stream_id
+                self._generation = fragment.generation
+                self._signature = signature
+                self._completed = False
+                self._poisoned = False
+            else:
+                assert self._generation is not None
+                if fragment.generation < self._generation:
+                    retired.append(_RetainedFragmentFile(path, fragment.source))
+                    return _FragmentAssemblyOutcome(retired_files=tuple(retired))
+                if fragment.generation > self._generation:
+                    retired.extend(self._retire_pending_locked())
+                    self._generation = fragment.generation
+                    self._signature = signature
+                    self._completed = False
+                    self._poisoned = False
+                elif self._completed or self._poisoned:
+                    retired.append(_RetainedFragmentFile(path, fragment.source))
+                    return _FragmentAssemblyOutcome(retired_files=tuple(retired))
+                elif signature != self._signature:
+                    retired.extend(self._retire_pending_locked())
+                    retired.append(_RetainedFragmentFile(path, fragment.source))
+                    self._poisoned = True
+                    return _FragmentAssemblyOutcome(
+                        retired_files=tuple(retired),
+                        error_reason="conflicting v10 metadata for one generation",
+                    )
+
+            if source_key is not None and (
+                self._frontier_source_key is None
+                or source_key > self._frontier_source_key
+            ):
+                self._frontier_source_key = source_key
+
+            if self._pending is None:
+                self._pending = _PendingFragmentAssembly(
+                    chunks={},
+                    files={},
+                    newest_source=fragment.source,
+                    newest_source_key=source_key,
+                    last_seen=current_time,
+                )
+            pending = self._pending
+            pending.files[path] = fragment.source
+            retired = [
+                item
+                for item in retired
+                if not (item.path == path and item.source == fragment.source)
+            ]
+            pending.last_seen = current_time
+            if source_key is not None and (
+                pending.newest_source_key is None
+                or source_key > pending.newest_source_key
+            ):
+                pending.newest_source = fragment.source
+                pending.newest_source_key = source_key
+
+            prior = pending.chunks.get(fragment.chunk_index)
+            if prior is not None and prior != fragment.chunk:
+                retired.extend(self._retire_pending_locked())
+                self._poisoned = True
+                return _FragmentAssemblyOutcome(
+                    retired_files=tuple(retired),
+                    error_reason=(
+                        f"conflicting v10 chunk {fragment.chunk_index} "
+                        "for one generation"
+                    ),
+                )
+            pending.chunks[fragment.chunk_index] = fragment.chunk
+            if len(pending.chunks) < fragment.chunk_count:
+                return _FragmentAssemblyOutcome(
+                    retired_files=tuple(retired),
+                    accepted=True,
+                )
+
+            inner = b"".join(pending.chunks[index] for index in range(fragment.chunk_count))
+            parsed: Snapshot | SnapshotFragment | None = None
+            if len(inner) != fragment.inner_total_len:
+                error = (
+                    f"assembled v10 payload has {len(inner)} bytes; "
+                    f"expected {fragment.inner_total_len}"
+                )
+            elif struct.unpack(">I", inner[-4:])[0] != fragment.inner_crc32:
+                error = "assembled v10 inner CRC trailer mismatch"
+            elif zlib.crc32(inner[:-4]) & 0xFFFFFFFF != fragment.inner_crc32:
+                error = "assembled v10 inner CRC mismatch"
+            else:
+                parsed, error = _try_parse_appscout_candidate(inner)
+                if isinstance(parsed, SnapshotFragment):
+                    parsed = None
+                    error = "nested v10 fragment payload is not allowed"
+                elif parsed is not None:
+                    parsed = replace(parsed, source=pending.newest_source)
+
+            retired.extend(self._retire_pending_locked())
+            if error is not None or not isinstance(parsed, Snapshot):
+                self._poisoned = True
+                return _FragmentAssemblyOutcome(
+                    retired_files=tuple(retired),
+                    error_reason=error or "assembled v10 payload did not contain a snapshot",
+                )
+            self._completed = True
+            return _FragmentAssemblyOutcome(
+                snapshot=parsed,
+                retired_files=tuple(retired),
+                accepted=True,
+            )
+
+
 class ScreenshotWatcher(QObject):
     """Watches Screenshots/ folder via watchdog Observer. On each new JPG/TGA:
     waits for write to complete, decodes QR, emits snapshotReceived(Snapshot)
     on success. Deletes the file if it carries our APS1 marker. Skips delete
     if no marker (preserves user's manual screenshots and unrelated QR codes).
 
-    On startup: scans Screenshots/ for files <60s old and applies the most
-    recent valid snapshot — handles 'companion started mid-session' case where
-    addon already emitted but we missed the watchdog event."""
+    On startup: applies the most recent valid snapshot from the last 60 seconds
+    and may reassemble incomplete v10 fragment sets retained for up to five
+    minutes. This handles starting the companion after capture began without
+    allowing an older logical snapshot to become fresh again."""
 
     snapshotReceived = pyqtSignal(object)  # Snapshot
     decodeFailed = pyqtSignal(str, str, object)  # path, reason, SnapshotSource | None
@@ -1390,6 +1825,10 @@ class ScreenshotWatcher(QObject):
         parent=None,
         *,
         cache_dir: Path | None = None,
+        fragment_clock: Callable[[], float] | None = None,
+        fragment_timer_factory: Callable[
+            [float, Callable[[], None]], Any
+        ] | None = None,
     ):
         super().__init__(parent)
         self._dir = screenshots_dir
@@ -1398,6 +1837,14 @@ class ScreenshotWatcher(QObject):
         self._stopped = threading.Event()
         self._work_claims = _ScreenshotWorkClaims()
         self._manual_index = _manual_index_for(screenshots_dir, cache_dir)
+        self._fragment_assembler = _SnapshotFragmentAssembler()
+        self._fragment_clock = fragment_clock or time.monotonic
+        self._fragment_timer_factory = fragment_timer_factory or threading.Timer
+        self._fragment_expiry_lock = threading.Lock()
+        self._fragment_expiry_timer: Any | None = None
+        self._fragment_expiry_token = 0
+        self._fragment_expiry_identity: tuple[int, int] | None = None
+        self._fragment_degraded_reported = False
 
     def start(self) -> None:
         self._stopped.clear()
@@ -1451,7 +1898,13 @@ class ScreenshotWatcher(QObject):
             raise
 
     def request_stop(self) -> None:
-        self._stopped.set()
+        with self._fragment_expiry_lock:
+            self._stopped.set()
+            self._fragment_expiry_token += 1
+            timer = self._fragment_expiry_timer
+            self._fragment_expiry_timer = None
+        if timer is not None:
+            timer.cancel()
 
     def stop(self) -> None:
         self.request_stop()
@@ -1463,6 +1916,109 @@ class ScreenshotWatcher(QObject):
         # Backlog thread is daemon=True so process exit doesn't wait for it.
         # We don't .join here: it may be in the middle of a 30-80 ms pyzbar
         # call we can't interrupt cleanly. Daemonised so it dies with us.
+
+    @staticmethod
+    def _set_timer_daemon(timer: Any) -> None:
+        try:
+            timer.daemon = True
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _start_fragment_timer(self, timer: Any) -> None:
+        self._set_timer_daemon(timer)
+        try:
+            timer.start()
+        except Exception as exc:  # noqa: BLE001
+            with self._fragment_expiry_lock:
+                if self._fragment_expiry_timer is timer:
+                    self._fragment_expiry_timer = None
+                    self._fragment_expiry_token += 1
+            _log.warning("could not start fragment expiry timer: %s", exc)
+
+    def _make_fragment_timer_locked(
+        self,
+        identity: tuple[int, int],
+        delay: float,
+    ) -> Any:
+        self._fragment_expiry_token += 1
+        token = self._fragment_expiry_token
+        timer = self._fragment_timer_factory(
+            max(0.001, delay),
+            lambda: self._on_fragment_expiry(token, identity),
+        )
+        self._fragment_expiry_timer = timer
+        return timer
+
+    def _arm_fragment_expiry(self, fragment: SnapshotFragment) -> None:
+        identity = fragment.stream_id, fragment.generation
+        with self._fragment_expiry_lock:
+            if self._stopped.is_set():
+                return
+            old_timer = self._fragment_expiry_timer
+            if identity != self._fragment_expiry_identity:
+                self._fragment_degraded_reported = False
+            self._fragment_expiry_identity = identity
+            timer = self._make_fragment_timer_locked(
+                identity,
+                APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS,
+            )
+        if old_timer is not None:
+            old_timer.cancel()
+        self._start_fragment_timer(timer)
+
+    def _cancel_fragment_expiry(self) -> None:
+        with self._fragment_expiry_lock:
+            self._fragment_expiry_token += 1
+            timer = self._fragment_expiry_timer
+            self._fragment_expiry_timer = None
+            self._fragment_expiry_identity = None
+            self._fragment_degraded_reported = False
+        if timer is not None:
+            timer.cancel()
+
+    def _note_fragment_degraded_failure(self) -> None:
+        with self._fragment_expiry_lock:
+            if self._fragment_expiry_identity is not None:
+                self._fragment_degraded_reported = True
+
+    def _on_fragment_expiry(
+        self,
+        token: int,
+        identity: tuple[int, int],
+    ) -> None:
+        retry_timer: Any | None = None
+        failure: tuple[Path, str, SnapshotSource | None] | None = None
+        with self._fragment_expiry_lock:
+            if (
+                self._stopped.is_set()
+                or token != self._fragment_expiry_token
+                or identity != self._fragment_expiry_identity
+            ):
+                return
+            self._fragment_expiry_timer = None
+            outcome = self._fragment_assembler.expire(now=self._fragment_clock())
+            if outcome.retry_after is not None:
+                retry_timer = self._make_fragment_timer_locked(
+                    identity,
+                    outcome.retry_after,
+                )
+            else:
+                self._delete_retired_fragment_files(outcome.retired_files)
+                if (
+                    outcome.error_reason is not None
+                    and not self._fragment_degraded_reported
+                ):
+                    self._fragment_degraded_reported = True
+                    failure = (
+                        outcome.diagnostic_path or self._dir,
+                        outcome.error_reason,
+                        outcome.diagnostic_source,
+                    )
+                self._fragment_expiry_identity = None
+        if retry_timer is not None:
+            self._start_fragment_timer(retry_timer)
+        if failure is not None:
+            self._emit_decode_failed(*failure)
 
     def _emit_snapshot(self, snap: Snapshot) -> bool:
         if self._stopped.is_set():
@@ -1498,6 +2054,38 @@ class ScreenshotWatcher(QObject):
             return snap
         return replace(snap, source=source)
 
+    @staticmethod
+    def _fragment_with_source(
+        fragment: SnapshotFragment,
+        source: SnapshotSource | None,
+    ) -> SnapshotFragment:
+        if source is None:
+            return fragment
+        return replace(fragment, source=source)
+
+    @staticmethod
+    def _delete_retired_fragment_files(
+        files: tuple[_RetainedFragmentFile, ...],
+    ) -> int:
+        deleted = 0
+        for retained in files:
+            path = retained.path
+            try:
+                if retained.source is not None:
+                    current = path.stat()
+                    if (
+                        current.st_mtime_ns != retained.source.mtime_ns
+                        or current.st_size != retained.source.size
+                    ):
+                        continue
+                path.unlink()
+                deleted += 1
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                _log.warning("could not delete retired fragment %s: %s", path.name, exc)
+        return deleted
+
     def _scan_recent_backlog(self) -> None:
         """Restore recent state, then advance bounded historical cleanup.
 
@@ -1509,6 +2097,7 @@ class ScreenshotWatcher(QObject):
             return
         now = time.time()
         apply_cutoff = now - 60
+        fragment_cutoff = now - APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS
         baseline_manual_keys = self._manual_index.snapshot()
         all_files: list[tuple[Path, os.stat_result]] = []
         for p in _iter_screenshot_candidates(self._dir):
@@ -1525,9 +2114,9 @@ class ScreenshotWatcher(QObject):
             if not all_files:
                 return
             all_files.sort(key=lambda item: item[1].st_mtime_ns, reverse=True)
-            recent = [item for item in all_files if item[1].st_mtime >= apply_cutoff]
+            recent = [item for item in all_files if item[1].st_mtime >= fragment_cutoff]
             historical = [
-                item for item in all_files if item[1].st_mtime < apply_cutoff
+                item for item in all_files if item[1].st_mtime < fragment_cutoff
             ]
             remaining = _BACKLOG_CLEANUP_LIMIT
             apply_closed = False
@@ -1538,6 +2127,7 @@ class ScreenshotWatcher(QObject):
                     recent=True,
                     remaining=remaining,
                     apply_closed=apply_closed,
+                    snapshot_apply_cutoff_ns=int(apply_cutoff * 1_000_000_000),
                 )
             )
             deleted += phase_deleted
@@ -1548,6 +2138,7 @@ class ScreenshotWatcher(QObject):
                         recent=False,
                         remaining=remaining,
                         apply_closed=apply_closed,
+                        snapshot_apply_cutoff_ns=None,
                     )
                 )
                 deleted += phase_deleted
@@ -1566,8 +2157,11 @@ class ScreenshotWatcher(QObject):
         recent: bool,
         remaining: int,
         apply_closed: bool,
+        snapshot_apply_cutoff_ns: int | None,
     ) -> tuple[int, bool, int, bool]:
         deleted = 0
+        fragment_frontier_active = False
+        deferred_failure: tuple[Path, str, SnapshotSource] | None = None
         for path, _candidate_stat in candidates:
             if self._stopped.is_set() or remaining <= 0:
                 break
@@ -1603,10 +2197,11 @@ class ScreenshotWatcher(QObject):
                     flush=False,
                 )
                 source = self._source_from_stat(path, claim.stat_result)
+                delete_current_marker = result.fragment is None
                 if not generation_current:
                     pass
                 elif result.decoder_unavailable:
-                    if recent and not apply_closed:
+                    if recent and not apply_closed and not fragment_frontier_active:
                         if not self._emit_decode_failed(
                             path,
                             result.error_reason or "QR decoder unavailable",
@@ -1615,27 +2210,106 @@ class ScreenshotWatcher(QObject):
                             return remaining, apply_closed, deleted, True
                         apply_closed = True
                     stop_scan = True
-                elif result.snapshot is not None and recent and not apply_closed:
-                    if not self._emit_snapshot(
-                        self._snapshot_with_source(result.snapshot, source)
-                    ):
-                        return remaining, apply_closed, deleted, True
-                    _log.info("backlog: applied snapshot from %s", path.name)
-                    apply_closed = True
-                elif result.has_marker and recent and not apply_closed:
-                    if not self._emit_decode_failed(
-                        path,
-                        result.error_reason or "parse failed",
-                        source,
-                    ):
-                        return remaining, apply_closed, deleted, True
-                    _log.warning(
-                        "backlog: newest recent ApScout screenshot %s has marker but "
-                        "no snapshot; suppressing older startup fallback",
-                        path.name,
-                    )
-                    apply_closed = True
-                if generation_current and result.has_marker:
+                elif result.fragment is not None:
+                    if not recent or apply_closed:
+                        delete_current_marker = True
+                    else:
+                        outcome = self._fragment_assembler.accept_fragment(
+                            self._fragment_with_source(result.fragment, source),
+                            path,
+                            now=self._fragment_clock(),
+                        )
+                        if outcome.error_reason is not None:
+                            self._cancel_fragment_expiry()
+                            if not self._emit_decode_failed(
+                                path,
+                                outcome.error_reason,
+                                source,
+                            ):
+                                return remaining, apply_closed, deleted, True
+                            deleted += self._delete_retired_fragment_files(
+                                outcome.retired_files
+                            )
+                            apply_closed = True
+                        elif outcome.snapshot is not None:
+                            self._cancel_fragment_expiry()
+                            assembled_source = outcome.snapshot.source
+                            is_fresh = (
+                                snapshot_apply_cutoff_ns is not None
+                                and assembled_source is not None
+                                and assembled_source.mtime_ns >= snapshot_apply_cutoff_ns
+                            )
+                            if is_fresh:
+                                if not self._emit_snapshot(outcome.snapshot):
+                                    return remaining, apply_closed, deleted, True
+                                deleted += self._delete_retired_fragment_files(
+                                    outcome.retired_files
+                                )
+                                _log.info(
+                                    "backlog: applied assembled snapshot ending at %s",
+                                    path.name,
+                                )
+                                apply_closed = True
+                            else:
+                                deleted += self._delete_retired_fragment_files(
+                                    outcome.retired_files
+                                )
+                        else:
+                            deleted += self._delete_retired_fragment_files(
+                                outcome.retired_files
+                            )
+                            if outcome.accepted:
+                                fragment_frontier_active = True
+                                self._arm_fragment_expiry(result.fragment)
+                elif result.snapshot is not None:
+                    if deferred_failure is None and not fragment_frontier_active:
+                        whole = self._snapshot_with_source(result.snapshot, source)
+                        outcome = self._fragment_assembler.accept_snapshot(
+                            whole,
+                            now=self._fragment_clock(),
+                        )
+                        if outcome.accepted:
+                            self._cancel_fragment_expiry()
+                        deleted += self._delete_retired_fragment_files(
+                            outcome.retired_files
+                        )
+                        is_fresh = (
+                            recent
+                            and snapshot_apply_cutoff_ns is not None
+                            and source.mtime_ns >= snapshot_apply_cutoff_ns
+                        )
+                        if outcome.accepted and is_fresh and not apply_closed:
+                            if not self._emit_snapshot(whole):
+                                return remaining, apply_closed, deleted, True
+                            _log.info("backlog: applied snapshot from %s", path.name)
+                            apply_closed = True
+                elif (
+                    result.has_marker
+                    and recent
+                    and not apply_closed
+                    and not fragment_frontier_active
+                ):
+                    if result.fragment_candidate:
+                        if deferred_failure is None:
+                            deferred_failure = (
+                                path,
+                                result.error_reason or "parse failed",
+                                source,
+                            )
+                        _log.warning(
+                            "backlog: newest recent ApScout v10 screenshot %s is "
+                            "invalid; deferring failure while checking fragment retries",
+                            path.name,
+                        )
+                    else:
+                        if not self._emit_decode_failed(
+                            path,
+                            result.error_reason or "parse failed",
+                            source,
+                        ):
+                            return remaining, apply_closed, deleted, True
+                        apply_closed = True
+                if generation_current and result.has_marker and delete_current_marker:
                     if self._stopped.is_set():
                         return remaining, apply_closed, deleted, True
                     try:
@@ -1655,6 +2329,17 @@ class ScreenshotWatcher(QObject):
                 self._on_new_file(path)
             if stop_scan:
                 return remaining, apply_closed, deleted, True
+        if (
+            deferred_failure is not None
+            and not apply_closed
+            and not self._stopped.is_set()
+        ):
+            failed_path, reason, source = deferred_failure
+            if fragment_frontier_active:
+                self._note_fragment_degraded_failure()
+            if not self._emit_decode_failed(failed_path, reason, source):
+                return remaining, apply_closed, deleted, True
+            apply_closed = True
         return remaining, apply_closed, deleted, False
 
     def _finalize_decode_result(
@@ -1695,6 +2380,83 @@ class ScreenshotWatcher(QObject):
                 claim.release()
             if not claim.retry_requested:
                 return
+
+    def _dispatch_live_decode_result(
+        self,
+        path: Path,
+        result: DecodeResult,
+        source: SnapshotSource,
+        *,
+        marker_failure_reason: str,
+    ) -> None:
+        if result.decoder_unavailable:
+            self._emit_decode_failed(
+                path,
+                result.error_reason or "QR decoder unavailable",
+                source,
+            )
+            return
+
+        if result.fragment is not None:
+            outcome = self._fragment_assembler.accept_fragment(
+                self._fragment_with_source(result.fragment, source),
+                path,
+                now=self._fragment_clock(),
+            )
+            if outcome.error_reason is not None:
+                self._cancel_fragment_expiry()
+                if not self._emit_decode_failed(path, outcome.error_reason, source):
+                    return
+                self._delete_retired_fragment_files(outcome.retired_files)
+            elif outcome.snapshot is not None:
+                self._cancel_fragment_expiry()
+                if not self._emit_snapshot(outcome.snapshot):
+                    return
+                self._delete_retired_fragment_files(outcome.retired_files)
+            else:
+                self._delete_retired_fragment_files(outcome.retired_files)
+                if outcome.accepted:
+                    self._arm_fragment_expiry(result.fragment)
+            # Valid incomplete fragments intentionally remain on disk and emit
+            # no GUI signal. Completion/supersession/poison/TTL retires them.
+            return
+
+        snap = result.snapshot
+        if snap is not None:
+            whole = self._snapshot_with_source(snap, source)
+            outcome = self._fragment_assembler.accept_snapshot(
+                whole,
+                now=self._fragment_clock(),
+            )
+            if outcome.accepted:
+                self._cancel_fragment_expiry()
+            self._delete_retired_fragment_files(outcome.retired_files)
+            if outcome.accepted and not self._emit_snapshot(whole):
+                return
+
+        if not result.has_marker:
+            _log.info(
+                "skip %s — no APS1 marker (manual screenshot, preserved)",
+                path.name,
+            )
+            return
+        if snap is None:
+            if not self._emit_decode_failed(
+                path,
+                result.error_reason or marker_failure_reason,
+                source,
+            ):
+                return
+            _log.warning(
+                "decode returned None for %s — APS1 marker FOUND but parse failed",
+                path.name,
+            )
+        if self._stopped.is_set():
+            return
+        try:
+            path.unlink()
+        except OSError as exc:
+            _log.warning("could not delete %s: %s", path.name, exc)
 
     def _process_new_file(
         self,
@@ -1756,32 +2518,12 @@ class ScreenshotWatcher(QObject):
                 flush=True,
             ):
                 return
-            if result.snapshot is not None:
-                if not self._emit_snapshot(
-                    self._snapshot_with_source(result.snapshot, source)
-                ):
-                    return
-            if result.decoder_unavailable:
-                self._emit_decode_failed(
-                    path,
-                    result.error_reason or "QR decoder unavailable",
-                    source,
-                )
-                return
-            if result.has_marker:
-                reason = result.error_reason or "size never stabilized"
-                if result.snapshot is None and not self._emit_decode_failed(
-                    path,
-                    reason,
-                    source,
-                ):
-                    return
-                if self._stopped.is_set():
-                    return
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
+            self._dispatch_live_decode_result(
+                path,
+                result,
+                source,
+                marker_failure_reason="size never stabilized",
+            )
             return
         wait_elapsed = time.perf_counter() - wait_started
         decode_started = time.perf_counter()
@@ -1823,41 +2565,12 @@ class ScreenshotWatcher(QObject):
                 decode_elapsed,
                 result.has_marker,
             )
-        snap = result.snapshot
-        marker = result.has_marker
-        if snap is not None:
-            if not self._emit_snapshot(self._snapshot_with_source(snap, source)):
-                return
-        if result.decoder_unavailable:
-            self._emit_decode_failed(
-                path,
-                result.error_reason or "QR decoder unavailable",
-                source,
-            )
-            return
-        if marker:
-            if snap is None:
-                if not self._emit_decode_failed(
-                    path,
-                    result.error_reason or "parse failed",
-                    source,
-                ):
-                    return
-                _log.warning(
-                    "decode returned None for %s — APS1 marker FOUND but parse failed",
-                    path.name,
-                )
-            if self._stopped.is_set():
-                return
-            try:
-                path.unlink()
-            except OSError as e:
-                _log.warning("could not delete %s: %s", path.name, e)
-        else:
-            _log.info(
-                "skip %s — no APS1 marker (manual screenshot, preserved)",
-                path.name,
-            )
+        self._dispatch_live_decode_result(
+            path,
+            result,
+            source,
+            marker_failure_reason="parse failed",
+        )
 
 
 def _positive_int_arg(raw: str) -> int:

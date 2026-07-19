@@ -259,7 +259,9 @@ through the slash commands below.
 ## Version Compatibility
 
 ApplicantScout Companion supports the latest published ApplicantScout WoW addon
-release. This source tree also supports ApplicantScout wire payloads through v9.
+release. This source tree supports complete logical APS1 snapshots through v9
+and bounded v10 overflow fragment envelopes. Fragmented snapshots are applied
+only after exact reassembly of the original v9 payload.
 
 ## Development
 

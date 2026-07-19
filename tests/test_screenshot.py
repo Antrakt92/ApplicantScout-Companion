@@ -12,6 +12,8 @@ import logging
 import os
 import struct
 import zlib
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +27,7 @@ from applicant_scout.screenshot import (
     MAGIC,
     ScreenshotWatcher,
     Snapshot,
+    SnapshotSource,
     WIRE_VERSIONS_SUPPORTED,
     _Handler,
     _is_supported_screenshot_path,
@@ -38,6 +41,50 @@ from applicant_scout.screenshot import (
 FIXTURES = Path(__file__).parent / "fixtures"
 LUA_GOLDEN_STEM = "aps1_v8_lua_golden"
 LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v8_lua_leader_key_golden"
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _FakeTimer:
+    def __init__(self, delay: float, callback: Callable[[], None]) -> None:
+        self.delay = delay
+        self.callback = callback
+        self.started = False
+        self.cancelled = False
+        self.daemon = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def fire(self) -> None:
+        if self.started and not self.cancelled:
+            self.callback()
+
+
+class _FakeTimerFactory:
+    def __init__(self) -> None:
+        self.timers: list[_FakeTimer] = []
+
+    def __call__(
+        self,
+        delay: float,
+        callback: Callable[[], None],
+    ) -> _FakeTimer:
+        timer = _FakeTimer(delay, callback)
+        self.timers.append(timer)
+        return timer
 
 
 def _lua_golden_hex_path(stem: str = LUA_GOLDEN_STEM) -> Path:
@@ -279,6 +326,75 @@ def _wrap_payload(
     return framed + struct.pack(">I", crc)
 
 
+def _large_v9_payload(row_count: int = 24) -> bytes:
+    blocks = [
+        _build_applicant_block(
+            aid=index + 1,
+            member_idx=1,
+            class_id=8,
+            spec_id=64,
+            ilvl=280,
+            score=2000 + index,
+            role=2,
+            name=f"Player{index}-Realm",
+            version=5,
+        )
+        for index in range(row_count)
+    ]
+    return _wrap_payload(_build_body_v7(blocks, []), wire_ver=0x09)
+
+
+def _wrap_fragments(
+    inner: bytes,
+    *,
+    stream_id: int = 17,
+    generation: int = 23,
+) -> list[bytes]:
+    chunk_size = screenshot_mod.APS1_FRAGMENT_CHUNK_BYTES
+    count = (len(inner) + chunk_size - 1) // chunk_size
+    assert screenshot_mod.APS1_FRAGMENT_MIN_CHUNKS <= count
+    assert count <= screenshot_mod.APS1_FRAGMENT_MAX_CHUNKS
+    inner_crc = struct.unpack(">I", inner[-4:])[0]
+    frames = []
+    for index in range(count):
+        chunk = inner[index * chunk_size : (index + 1) * chunk_size]
+        metadata = struct.pack(
+            ">IIHHHI",
+            stream_id,
+            generation,
+            index,
+            count,
+            len(inner),
+            inner_crc,
+        )
+        frames.append(_wrap_payload(metadata + chunk, wire_ver=0x0A))
+    return frames
+
+
+def _parse_fragment(raw: bytes) -> screenshot_mod.SnapshotFragment:
+    parsed, error = screenshot_mod._try_parse_appscout_candidate(raw)
+    assert error is None
+    assert isinstance(parsed, screenshot_mod.SnapshotFragment)
+    return parsed
+
+
+def _fragment_with_source(
+    fragment: screenshot_mod.SnapshotFragment,
+    *,
+    path: Path,
+    mtime_ns: int,
+    size: int = 10,
+) -> screenshot_mod.SnapshotFragment:
+    return replace(
+        fragment,
+        source=screenshot_mod.SnapshotSource(
+            mtime_ns=mtime_ns,
+            file_id=str(path),
+            size=size,
+        ),
+    )
+
+
 def _write_blank_image(path: Path) -> None:
     Image.new("L", (4, 4), 255).save(path)
 
@@ -499,16 +615,114 @@ def test_wire_versions_supported_pin():
     assert 0x07 in WIRE_VERSIONS_SUPPORTED
     assert 0x08 in WIRE_VERSIONS_SUPPORTED
     assert 0x09 in WIRE_VERSIONS_SUPPORTED
+    assert 0x0A in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
-def test_v10_payload_is_rejected_instead_of_parsed_as_known_version():
+def test_v10_non_fragment_body_is_rejected():
     raw = _wrap_payload(_build_body([]), wire_ver=0x0A)
 
-    snap, error = _try_parse_appscout_payload(raw)
+    parsed, error = screenshot_mod._try_parse_appscout_candidate(raw)
 
-    assert snap is None
-    assert error == "unsupported wire version 0x0a"
+    assert parsed is None
+    assert error == "v10 fragment body is shorter than metadata plus one byte"
+
+
+def test_v10_fragment_envelope_parses_fixed_chunk_contract():
+    inner = _large_v9_payload()
+    raw = _wrap_fragments(inner, stream_id=0x01020304, generation=99)[0]
+
+    parsed, error = screenshot_mod._try_parse_appscout_candidate(raw)
+
+    assert error is None
+    assert isinstance(parsed, screenshot_mod.SnapshotFragment)
+    assert parsed.stream_id == 0x01020304
+    assert parsed.generation == 99
+    assert parsed.chunk_index == 0
+    assert parsed.chunk_count == len(_wrap_fragments(inner))
+    assert parsed.inner_total_len == len(inner)
+    assert parsed.inner_crc32 == struct.unpack(">I", inner[-4:])[0]
+    assert len(parsed.chunk) == screenshot_mod.APS1_FRAGMENT_CHUNK_BYTES
+
+
+@pytest.mark.parametrize(("flags", "reserved"), [(1, 0), (0, 1), (4, 2)])
+def test_v10_fragment_rejects_flags_and_reserved_bytes(flags: int, reserved: int):
+    inner = _large_v9_payload()
+    body = _wrap_fragments(inner)[0][9:-4]
+
+    parsed, error = screenshot_mod._try_parse_appscout_candidate(
+        _wrap_payload(body, wire_ver=0x0A, flags=flags, reserved2=reserved)
+    )
+
+    assert parsed is None
+    assert error == (
+        f"unsupported APS1 v10 reserved bytes 0x{flags:02x} 0x{reserved:02x}"
+    )
+
+
+def test_v10_fragment_rejects_wrong_count_index_and_chunk_length():
+    inner = _large_v9_payload()
+    frames = _wrap_fragments(inner)
+    body = bytearray(frames[0][9:-4])
+
+    body[10:12] = struct.pack(">H", 1)
+    parsed, error = screenshot_mod._try_parse_appscout_candidate(
+        _wrap_payload(bytes(body), wire_ver=0x0A)
+    )
+    assert parsed is None
+    assert error == "v10 chunk_count 1 outside 2..128"
+
+    body = bytearray(frames[0][9:-4])
+    body[8:10] = struct.pack(">H", len(frames))
+    parsed, error = screenshot_mod._try_parse_appscout_candidate(
+        _wrap_payload(bytes(body), wire_ver=0x0A)
+    )
+    assert parsed is None
+    assert error == f"v10 chunk_index {len(frames)} outside chunk_count {len(frames)}"
+
+    body = frames[0][9:-4][:-1]
+    parsed, error = screenshot_mod._try_parse_appscout_candidate(
+        _wrap_payload(body, wire_ver=0x0A)
+    )
+    assert parsed is None
+    assert error is not None
+    assert "has 639 bytes; expected 640" in error
+
+
+def test_decode_result_fragment_field_preserves_existing_positional_arguments():
+    fragment = _parse_fragment(_wrap_fragments(_large_v9_payload())[0])
+
+    result = screenshot_mod.DecodeResult(None, True, None, False, fragment)
+
+    assert result.snapshot is None
+    assert result.has_marker is True
+    assert result.error_reason is None
+    assert result.decoder_unavailable is False
+    assert result.fragment is fragment
+    assert result.fragment_candidate is False
+
+
+@pytest.mark.parametrize("row_count", [200, 201])
+def test_applicant_row_bound_is_derived_from_wire_capacity(row_count: int):
+    payload = _large_v9_payload(row_count)
+
+    parsed, error = _try_parse_appscout_payload(payload)
+
+    assert error is None
+    assert isinstance(parsed, Snapshot)
+    assert len(parsed.applicants) == row_count
+
+
+def test_applicant_row_count_that_cannot_fit_is_rejected_before_row_loop():
+    body = bytes([0, 0, 0]) + struct.pack(">H", 201) + struct.pack(">H", 0)
+
+    parsed, error = _try_parse_appscout_payload(
+        _wrap_payload(body, wire_ver=0x09)
+    )
+
+    assert parsed is None
+    assert error is not None
+    assert "applicant_count 201 cannot fit" in error
 
 
 def test_v8_payload_parses_lfg_unavailable_flag():
@@ -1554,6 +1768,51 @@ def test_decode_screenshot_accepts_raw_byte_qr_with_embedded_nul(
     assert snap.applicants == []
 
 
+def test_decode_result_exposes_v10_fragment_without_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "fragment_qr.png"
+    _write_blank_image(image_path)
+    raw_fragment = _wrap_fragments(_large_v9_payload())[0]
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [SimpleNamespace(data=raw_fragment)],
+    )
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.has_marker is True
+    assert result.snapshot is None
+    assert isinstance(result.fragment, screenshot_mod.SnapshotFragment)
+    assert result.error_reason is None
+
+
+def test_decode_result_identifies_corrupt_v10_candidate_for_backlog_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "corrupt_fragment_qr.png"
+    _write_blank_image(image_path)
+    raw_fragment = bytearray(_wrap_fragments(_large_v9_payload())[0])
+    raw_fragment[-1] ^= 0xFF
+    monkeypatch.setattr(
+        screenshot_mod,
+        "pyzbar_decode",
+        lambda img, symbols=None: [SimpleNamespace(data=bytes(raw_fragment))],
+    )
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.has_marker is True
+    assert result.snapshot is None
+    assert result.fragment is None
+    assert result.fragment_candidate is True
+    assert result.error_reason is not None
+    assert "CRC mismatch" in result.error_reason
+
+
 @pytest.mark.parametrize(
     "fixture_stem",
     [LUA_GOLDEN_STEM, LUA_LEADER_KEY_GOLDEN_STEM],
@@ -2365,6 +2624,255 @@ def test_screenshot_module_cli_with_explicit_argv_does_not_configure_root_loggin
     assert calls == []
 
 
+def test_fragment_assembler_completes_out_of_order_exactly_once():
+    inner = _large_v9_payload()
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(inner)]
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    completed = []
+
+    for index in reversed(range(len(fragments))):
+        path = Path(f"chunk-{index}.jpg")
+        outcome = assembler.accept_fragment(
+            _fragment_with_source(
+                fragments[index],
+                path=path,
+                mtime_ns=100 + index,
+            ),
+            path,
+        )
+        if outcome.snapshot is not None:
+            completed.append(outcome.snapshot)
+
+    assert len(completed) == 1
+    assert len(completed[0].applicants) == 24
+    assert completed[0].source is not None
+    assert completed[0].source.mtime_ns == 100 + len(fragments) - 1
+    assert {item.path for item in outcome.retired_files} == {
+        Path(f"chunk-{index}.jpg") for index in range(len(fragments))
+    }
+
+    repeated_path = Path("repeat.jpg")
+    repeated = assembler.accept_fragment(
+        _fragment_with_source(
+            fragments[-1],
+            path=repeated_path,
+            mtime_ns=500,
+        ),
+        repeated_path,
+    )
+    assert repeated.snapshot is None
+    assert [item.path for item in repeated.retired_files] == [repeated_path]
+
+
+def test_fragment_assembler_identical_duplicate_is_idempotent():
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    first_path = Path("first.jpg")
+    duplicate_path = Path("duplicate.jpg")
+
+    first = assembler.accept_fragment(
+        _fragment_with_source(fragments[0], path=first_path, mtime_ns=100),
+        first_path,
+    )
+    duplicate = assembler.accept_fragment(
+        _fragment_with_source(fragments[0], path=duplicate_path, mtime_ns=101),
+        duplicate_path,
+    )
+    assert first.snapshot is None
+    assert duplicate.snapshot is None
+    assert duplicate.error_reason is None
+
+    outcome = duplicate
+    for index in range(1, len(fragments)):
+        path = Path(f"rest-{index}.jpg")
+        outcome = assembler.accept_fragment(
+            _fragment_with_source(fragments[index], path=path, mtime_ns=101 + index),
+            path,
+        )
+    assert outcome.snapshot is not None
+    assert first_path in {item.path for item in outcome.retired_files}
+    assert duplicate_path in {item.path for item in outcome.retired_files}
+
+
+def test_fragment_assembler_conflicting_duplicate_poisons_generation():
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    first_path = Path("first.jpg")
+    conflict_path = Path("conflict.jpg")
+    assembler.accept_fragment(
+        _fragment_with_source(fragments[0], path=first_path, mtime_ns=100),
+        first_path,
+    )
+    conflicting = replace(
+        fragments[0],
+        chunk=bytes([fragments[0].chunk[0] ^ 0xFF]) + fragments[0].chunk[1:],
+    )
+
+    poisoned = assembler.accept_fragment(
+        _fragment_with_source(conflicting, path=conflict_path, mtime_ns=101),
+        conflict_path,
+    )
+
+    assert poisoned.snapshot is None
+    assert poisoned.error_reason == "conflicting v10 chunk 0 for one generation"
+    assert {item.path for item in poisoned.retired_files} == {
+        first_path,
+        conflict_path,
+    }
+    late_path = Path("late.jpg")
+    late = assembler.accept_fragment(
+        _fragment_with_source(fragments[1], path=late_path, mtime_ns=102),
+        late_path,
+    )
+    assert late.snapshot is None
+    assert [item.path for item in late.retired_files] == [late_path]
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["inner-crc", "nested-v10"])
+def test_fragment_assembler_rejects_invalid_completed_inner_payload(nested: bool):
+    logical = _large_v9_payload()
+    if nested:
+        logical = _wrap_fragments(logical)[0]
+        frames = _wrap_fragments(logical, stream_id=18, generation=24)
+    else:
+        frames = _wrap_fragments(logical)
+    fragments = [_parse_fragment(frame) for frame in frames]
+    if not nested:
+        fragments[-1] = replace(
+            fragments[-1],
+            chunk=fragments[-1].chunk[:-5]
+            + bytes([fragments[-1].chunk[-5] ^ 0xFF])
+            + fragments[-1].chunk[-4:],
+        )
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    outcome = None
+    for index, fragment in enumerate(fragments):
+        path = Path(f"invalid-{index}.jpg")
+        outcome = assembler.accept_fragment(
+            _fragment_with_source(fragment, path=path, mtime_ns=100 + index),
+            path,
+        )
+
+    assert outcome is not None
+    assert outcome.snapshot is None
+    assert outcome.error_reason == (
+        "nested v10 fragment payload is not allowed"
+        if nested
+        else "assembled v10 inner CRC mismatch"
+    )
+
+
+def test_fragment_assembler_matches_metadata_crc_to_inner_v9_trailer():
+    fragments = [
+        replace(_parse_fragment(frame), inner_crc32=0x01020304)
+        for frame in _wrap_fragments(_large_v9_payload())
+    ]
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    outcome = None
+    for index, fragment in enumerate(fragments):
+        path = Path(f"wrong-trailer-{index}.jpg")
+        outcome = assembler.accept_fragment(
+            _fragment_with_source(fragment, path=path, mtime_ns=100 + index),
+            path,
+        )
+
+    assert outcome is not None
+    assert outcome.snapshot is None
+    assert outcome.error_reason == "assembled v10 inner CRC trailer mismatch"
+
+
+def test_fragment_assembler_newer_generation_supersedes_incomplete_old():
+    inner = _large_v9_payload()
+    old = [_parse_fragment(frame) for frame in _wrap_fragments(inner, generation=10)]
+    new = [_parse_fragment(frame) for frame in _wrap_fragments(inner, generation=11)]
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    old_path = Path("old-0.jpg")
+    assembler.accept_fragment(
+        _fragment_with_source(old[0], path=old_path, mtime_ns=100),
+        old_path,
+    )
+
+    new_path = Path("new-0.jpg")
+    superseding = assembler.accept_fragment(
+        _fragment_with_source(new[0], path=new_path, mtime_ns=101),
+        new_path,
+    )
+    assert [item.path for item in superseding.retired_files] == [old_path]
+
+    stale_path = Path("old-1.jpg")
+    stale = assembler.accept_fragment(
+        _fragment_with_source(old[1], path=stale_path, mtime_ns=102),
+        stale_path,
+    )
+    assert stale.snapshot is None
+    assert [item.path for item in stale.retired_files] == [stale_path]
+
+    outcome = superseding
+    for index in range(1, len(new)):
+        path = Path(f"new-{index}.jpg")
+        outcome = assembler.accept_fragment(
+            _fragment_with_source(new[index], path=path, mtime_ns=103 + index),
+            path,
+        )
+    assert outcome.snapshot is not None
+
+
+def test_fragment_assembler_terminal_barrier_blocks_older_late_chunks():
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    first_path = Path("fragment.jpg")
+    assembler.accept_fragment(
+        _fragment_with_source(fragments[0], path=first_path, mtime_ns=200),
+        first_path,
+    )
+    older_terminal = Snapshot(
+        listing=None,
+        version=None,
+        terminal_clear=True,
+        source=screenshot_mod.SnapshotSource(150, "old-clear.jpg", 10),
+    )
+    assert assembler.accept_snapshot(older_terminal).accepted is False
+
+    terminal = replace(
+        older_terminal,
+        source=screenshot_mod.SnapshotSource(250, "new-clear.jpg", 10),
+    )
+    barrier = assembler.accept_snapshot(terminal)
+    assert barrier.accepted is True
+    assert barrier.snapshot is terminal
+    assert [item.path for item in barrier.retired_files] == [first_path]
+
+    late_path = Path("late-fragment.jpg")
+    late = assembler.accept_fragment(
+        _fragment_with_source(fragments[1], path=late_path, mtime_ns=300),
+        late_path,
+    )
+    assert late.snapshot is None
+    assert [item.path for item in late.retired_files] == [late_path]
+
+
+def test_fragment_assembler_timeout_allows_same_generation_repeat_to_rebuild():
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    assembler = screenshot_mod._SnapshotFragmentAssembler(ttl_seconds=5)
+    first_path = Path("first.jpg")
+    first = _fragment_with_source(fragments[0], path=first_path, mtime_ns=100)
+    assembler.accept_fragment(first, first_path, now=0)
+
+    repeated = assembler.accept_fragment(first, first_path, now=6)
+    assert repeated.snapshot is None
+    assert repeated.retired_files == ()
+
+    outcome = repeated
+    for index in range(1, len(fragments)):
+        path = Path(f"chunk-{index}.jpg")
+        outcome = assembler.accept_fragment(
+            _fragment_with_source(fragments[index], path=path, mtime_ns=100 + index),
+            path,
+            now=6 + index,
+        )
+    assert outcome.snapshot is not None
+
+
 def test_watcher_start_cleans_observer_when_observer_start_raises(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2497,6 +3005,161 @@ def test_watcher_emits_decode_failed_for_marker_parse_failure(
 
     assert failures == [(str(image_path), "parse failed")]
     assert not image_path.exists()
+
+
+def test_watcher_retains_incomplete_fragments_and_emits_one_complete_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    paths = [tmp_path / f"WoWScrnShot_{index:04d}.jpg" for index in range(len(fragments))]
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    by_path = {
+        path: screenshot_mod.DecodeResult(None, True, fragment=fragment)
+        for path, fragment in zip(paths, fragments, strict=True)
+    }
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: by_path[path],
+    )
+
+    for path in paths[:-1]:
+        path.write_bytes(b"x")
+        watcher._on_new_file(path)
+        assert path.exists()
+        assert snapshots == []
+        assert failures == []
+
+    paths[-1].write_bytes(b"x")
+    watcher._on_new_file(paths[-1])
+
+    assert len(snapshots) == 1
+    assert len(snapshots[0].applicants) == 24
+    assert failures == []
+    assert not any(path.exists() for path in paths)
+
+
+def test_watcher_expires_incomplete_fragment_without_another_screenshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fragment = _parse_fragment(_wrap_fragments(_large_v9_payload())[0])
+    path = tmp_path / "WoWScrnShot_incomplete.jpg"
+    path.write_bytes(b"fragment")
+    clock = _FakeClock()
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        fragment_clock=clock,
+        fragment_timer_factory=timers,
+    )
+    failures: list[tuple[str, str, SnapshotSource | None]] = []
+    snapshots: list[Snapshot] = []
+    watcher.decodeFailed.connect(
+        lambda failed_path, reason, source: failures.append(
+            (failed_path, reason, source)
+        )
+    )
+    watcher.snapshotReceived.connect(snapshots.append)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, True, fragment=fragment),
+    )
+
+    watcher._on_new_file(path)
+
+    assert path.exists()
+    assert len(timers.timers) == 1
+    assert timers.timers[0].started is True
+    assert timers.timers[0].delay == pytest.approx(
+        screenshot_mod.APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS
+    )
+
+    clock.advance(screenshot_mod.APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS + 0.1)
+    timers.timers[0].fire()
+    timers.timers[0].fire()
+
+    assert snapshots == []
+    assert [(failed_path, reason) for failed_path, reason, _source in failures] == [
+        (str(path), "v10 fragment assembly timed out")
+    ]
+    assert failures[0][2] is not None
+    assert not path.exists()
+
+
+def test_watcher_stop_cancels_fragment_expiry_and_preserves_pending_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fragment = _parse_fragment(_wrap_fragments(_large_v9_payload())[0])
+    path = tmp_path / "WoWScrnShot_pending-on-stop.jpg"
+    path.write_bytes(b"fragment")
+    clock = _FakeClock()
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        fragment_clock=clock,
+        fragment_timer_factory=timers,
+    )
+    failures: list[tuple[str, str]] = []
+    watcher.decodeFailed.connect(
+        lambda failed_path, reason: failures.append((failed_path, reason))
+    )
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, True, fragment=fragment),
+    )
+
+    watcher._on_new_file(path)
+    watcher.stop()
+    clock.advance(screenshot_mod.APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS + 1)
+    timers.timers[0].fire()
+
+    assert timers.timers[0].cancelled is True
+    assert failures == []
+    assert path.exists()
+
+
+def test_watcher_stop_during_fragment_completion_preserves_all_chunk_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    paths = [tmp_path / f"WoWScrnShot_{index:04d}.jpg" for index in range(len(fragments))]
+    watcher = ScreenshotWatcher(tmp_path)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    by_path = {
+        path: screenshot_mod.DecodeResult(None, True, fragment=fragment)
+        for path, fragment in zip(paths, fragments, strict=True)
+    }
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: by_path[path],
+    )
+    for path in paths[:-1]:
+        path.write_bytes(b"x")
+        watcher._on_new_file(path)
+
+    def stop_before_emit(_snap: Snapshot) -> bool:
+        watcher.stop()
+        return False
+
+    monkeypatch.setattr(watcher, "_emit_snapshot", stop_before_emit)
+    paths[-1].write_bytes(b"x")
+    watcher._on_new_file(paths[-1])
+
+    assert all(path.exists() for path in paths)
 
 
 def test_watcher_stable_timeout_preserves_manual_screenshot_without_failure(
@@ -2656,7 +3319,7 @@ def test_watcher_decode_failure_includes_snapshot_source(monkeypatch, tmp_path: 
     os.utime(image_path, ns=(1_700_000_001_123_456_789, 1_700_000_001_123_456_789))
     expected_mtime_ns = image_path.stat().st_mtime_ns
     watcher = ScreenshotWatcher(tmp_path)
-    failures: list[tuple[str, str, object]] = []
+    failures: list[tuple[str, str, SnapshotSource]] = []
     watcher.decodeFailed.connect(
         lambda path, reason, source: failures.append((path, reason, source))
     )
@@ -2775,6 +3438,152 @@ def test_watcher_stop_during_snapshot_emit_preserves_marker_file(
 
     assert snapshots == []
     assert image_path.exists()
+
+
+def test_backlog_reassembles_newest_fragments_and_never_applies_older_whole(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    now = 2_000_000_000.0
+    fragment_paths = [
+        tmp_path / f"WoWScrnShot_fragment-{index}.jpg"
+        for index in range(len(fragments))
+    ]
+    older_whole_path = tmp_path / "WoWScrnShot_older-whole.jpg"
+    for index, path in enumerate(fragment_paths):
+        path.write_bytes(b"x")
+        os.utime(path, (now + index, now + index))
+    older_whole_path.write_bytes(b"x")
+    os.utime(older_whole_path, (now - 1, now - 1))
+    older = Snapshot(listing=None, version=None)
+    results = {
+        path: screenshot_mod.DecodeResult(None, True, fragment=fragment)
+        for path, fragment in zip(fragment_paths, fragments, strict=True)
+    }
+    results[older_whole_path] = screenshot_mod.DecodeResult(older, True)
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now + len(fragments))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: results[path],
+    )
+
+    watcher._scan_recent_backlog()
+
+    assert len(snapshots) == 1
+    assert len(snapshots[0].applicants) == 24
+    assert failures == []
+    assert not any(path.exists() for path in fragment_paths)
+    assert not older_whole_path.exists()
+
+
+def test_backlog_corrupt_newest_marker_defers_failure_for_redundant_fragment_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    now = 2_000_000_000.0
+    corrupt = tmp_path / "WoWScrnShot_newest-corrupt.jpg"
+    fragment_paths = [
+        tmp_path / f"WoWScrnShot_retry-{index}.jpg"
+        for index in range(len(fragments))
+    ]
+    manual = tmp_path / "WoWScrnShot_manual.jpg"
+    corrupt.write_bytes(b"corrupt")
+    os.utime(corrupt, (now, now))
+    for index, path in enumerate(reversed(fragment_paths), start=1):
+        path.write_bytes(b"fragment")
+        os.utime(path, (now - index, now - index))
+    manual.write_bytes(b"manual")
+    os.utime(manual, (now - len(fragment_paths) - 1, now - len(fragment_paths) - 1))
+    results = {
+        corrupt: screenshot_mod.DecodeResult(
+            None,
+            True,
+            "CRC mismatch",
+            fragment_candidate=True,
+        ),
+        manual: screenshot_mod.DecodeResult(None, False),
+    }
+    results.update(
+        {
+            path: screenshot_mod.DecodeResult(None, True, fragment=fragment)
+            for path, fragment in zip(fragment_paths, fragments, strict=True)
+        }
+    )
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: results[path],
+    )
+
+    watcher._scan_recent_backlog()
+
+    assert len(snapshots) == 1
+    assert len(snapshots[0].applicants) == 24
+    assert failures == []
+    assert not corrupt.exists()
+    assert not any(path.exists() for path in fragment_paths)
+    assert manual.exists()
+
+
+def test_backlog_incomplete_newest_generation_suppresses_older_whole_without_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fragment = _parse_fragment(_wrap_fragments(_large_v9_payload())[0])
+    now = 2_000_000_000.0
+    newest = tmp_path / "WoWScrnShot_newest-fragment.jpg"
+    older = tmp_path / "WoWScrnShot_older-whole.jpg"
+    oldest_corrupt = tmp_path / "WoWScrnShot_oldest-corrupt.jpg"
+    newest.write_bytes(b"fragment")
+    older.write_bytes(b"whole")
+    oldest_corrupt.write_bytes(b"corrupt")
+    os.utime(newest, (now, now))
+    os.utime(older, (now - 1, now - 1))
+    os.utime(oldest_corrupt, (now - 2, now - 2))
+    results = {
+        newest: screenshot_mod.DecodeResult(None, True, fragment=fragment),
+        older: screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None),
+            True,
+        ),
+        oldest_corrupt: screenshot_mod.DecodeResult(None, True, "CRC mismatch"),
+    }
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: results[path],
+    )
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == []
+    assert failures == []
+    assert newest.exists()
+    assert not older.exists()
+    assert not oldest_corrupt.exists()
 
 
 def test_backlog_does_not_apply_older_snapshot_after_newest_marker_decode_failure(
