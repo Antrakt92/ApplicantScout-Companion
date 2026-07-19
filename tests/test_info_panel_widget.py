@@ -4281,13 +4281,14 @@ def test_title_bar_hide_button_collapses_to_launcher_without_shutdown(qtbot, tmp
         client.close()
 
 
-def test_overlay_close_hides_launcher_window(qtbot, tmp_path):
+def test_overlay_close_collapses_and_tray_restore_reopens_fresh_state(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
     foreground = {"active": True}
+    state = AppState()
     window = OverlayWindow(
-        AppState(),
+        state,
         client,
         cache,
         tmp_path,
@@ -4297,22 +4298,30 @@ def test_overlay_close_hides_launcher_window(qtbot, tmp_path):
     qtbot.addWidget(window._launcher)
 
     try:
+        _disable_background_fetches(window)
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
 
-        assert window.close()
+        assert not window.close()
 
         assert not window.isVisible()
-        assert not window._launcher.isVisible()
+        assert window._launcher.isVisible()
+        assert window._collapsed_to_launcher
+        assert not window._closed
+        assert window._foreground_timer.isActive()
+        assert window._quota_timer.isActive()
         assert not window._launcher.is_dragging()
         assert QWidget.mouseGrabber() is not window._launcher
 
-        foreground["active"] = False
-        window._sync_game_foreground_visibility()
-        foreground["active"] = True
-        window._sync_game_foreground_visibility()
+        state.add_or_update(_app(applicant_id="after-close"))
+        window.on_applicant_added(state.applicants["after-close"])
+        window._flush_overlay_refresh()
+        window.restore_from_tray()
 
-        assert not window.isVisible()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
         assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+        assert window._table.rowCount() == 1
+        assert window._table.item(0, COL_NAME).text()
     finally:
         if QWidget.mouseGrabber() is window._launcher:
             window._launcher.releaseMouse()

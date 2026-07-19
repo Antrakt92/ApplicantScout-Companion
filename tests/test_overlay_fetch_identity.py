@@ -295,10 +295,17 @@ def test_shutdown_fetches_rejects_new_work_then_clears_and_fully_drains_pool(
     pool.tasks.append(object())
 
     try:
+        assert window._foreground_timer.isActive()
+        assert window._quota_timer.isActive()
+        assert window._launcher.isVisible()
+
         assert window.shutdown_fetches() is True
         window._launch_fetch(applicant)
 
         assert window._closed is True
+        assert not window._foreground_timer.isActive()
+        assert not window._quota_timer.isActive()
+        assert not window._launcher.isVisible()
         assert pool.cleared is True
         assert pool.wait_args == [-1]
         assert pool.tasks == []

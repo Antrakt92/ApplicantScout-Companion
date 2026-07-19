@@ -6232,23 +6232,34 @@ class OverlayWindow(QMainWindow):
         self._reresolve_hover_from_cursor()
 
     def closeEvent(self, event):
+        if self._closed:
+            super().closeEvent(event)
+            return
+        # WHY: Alt+F4 is another user request to hide the tray-owned overlay,
+        # not application shutdown. Keeping the window live lets later
+        # snapshots refresh it and lets the tray restore the same instance.
+        self.flush_geometry()
+        self.collapse_to_launcher()
+        event.ignore()
+
+    def _begin_terminal_shutdown(self) -> None:
+        if self._closed:
+            return
         self._closed = True
         self._foreground_timer.stop()
         self._quota_timer.stop()
         self._wcl_retry_timer.stop()
         self._raid_boss_retry_timer.stop()
         self.flush_geometry()
+        self.hide()
         self._launcher.hide()
         self._launcher.close()
-        super().closeEvent(event)
 
     def shutdown_fetches(self) -> bool:
-        """Reject new WCL work, discard queued tasks, and drain active fetches."""
+        """Begin terminal teardown, discard queued work, and drain active fetches."""
+        self._begin_terminal_shutdown()
         if self._fetch_shutdown_result is not None:
             return self._fetch_shutdown_result
-        self._closed = True
-        self._wcl_retry_timer.stop()
-        self._raid_boss_retry_timer.stop()
         pool = self._pool
         if pool is None:
             self._fetch_shutdown_result = True
