@@ -318,12 +318,18 @@ def test_configure_wow_sync_startup_creates_watch_shortcut(
     exe = tmp_path / "ApplicantScout.exe"
     exe.write_text("", encoding="utf-8")
     commands: list[list[str]] = []
+    replacements: list[tuple[Path, Path]] = []
 
     def fake_run(args, **_kwargs):
         commands.append(args)
         return _Completed()
 
     monkeypatch.setattr(wow_lifecycle.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        wow_lifecycle.os,
+        "replace",
+        lambda source, destination: replacements.append((source, destination)),
+    )
 
     result = wow_lifecycle.configure_wow_sync_startup(
         True,
@@ -337,7 +343,14 @@ def test_configure_wow_sync_startup_creates_watch_shortcut(
     script = commands[0][-1]
     assert str(exe) in script
     assert "--watch-wow" in script
-    assert str(shortcut) in script
+    assert len(replacements) == 1
+    assert replacements[0][1] == shortcut
+    assert str(replacements[0][0]) in script
+    assert replacements[0][0].suffix == ".lnk"
+    assert replacements[0][0].parent == (
+        shortcut.parent / wow_lifecycle.STARTUP_SHORTCUT_STAGING_DIR_NAME
+    )
+    assert replacements[0][0].parent != shortcut.parent
 
 
 def test_configure_wow_sync_startup_writes_dev_module_arguments(
@@ -348,8 +361,14 @@ def test_configure_wow_sync_startup_writes_dev_module_arguments(
     python_exe.parent.mkdir(parents=True)
     python_exe.write_text("", encoding="utf-8")
     commands: list[list[str]] = []
+    replacements: list[tuple[Path, Path]] = []
 
     monkeypatch.setattr(wow_lifecycle.subprocess, "run", lambda args, **_kwargs: commands.append(args) or _Completed())
+    monkeypatch.setattr(
+        wow_lifecycle.os,
+        "replace",
+        lambda source, destination: replacements.append((source, destination)),
+    )
 
     result = wow_lifecycle.configure_wow_sync_startup(
         True,
@@ -362,6 +381,54 @@ def test_configure_wow_sync_startup_writes_dev_module_arguments(
     script = commands[0][-1]
     assert str(python_exe) in script
     assert "-m applicant_scout --watch-wow" in script
+    assert len(replacements) == 1
+    assert replacements[0][1] == shortcut
+
+
+def test_configure_wow_sync_startup_timeout_preserves_existing_shortcut(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    shortcut = tmp_path / "Startup" / "ApplicantScout Companion.lnk"
+    shortcut.parent.mkdir(parents=True)
+    shortcut.write_text("working", encoding="utf-8")
+    exe = tmp_path / "ApplicantScout.exe"
+    exe.write_text("", encoding="utf-8")
+    replacements: list[tuple[Path, Path]] = []
+
+    def timeout(args, **kwargs):
+        script = args[-1]
+        create_line = next(
+            line for line in script.splitlines() if "$shell.CreateShortcut(" in line
+        )
+        temporary_path = create_line.split("CreateShortcut('", 1)[1].rsplit("')", 1)[0]
+        Path(temporary_path.replace("''", "'")).write_text(
+            "partial",
+            encoding="utf-8",
+        )
+        raise wow_lifecycle.subprocess.TimeoutExpired(
+            "powershell",
+            kwargs["timeout"],
+        )
+
+    monkeypatch.setattr(wow_lifecycle.subprocess, "run", timeout)
+    monkeypatch.setattr(
+        wow_lifecycle.os,
+        "replace",
+        lambda source, destination: replacements.append((source, destination)),
+    )
+
+    with pytest.raises(wow_lifecycle.subprocess.TimeoutExpired):
+        wow_lifecycle.configure_wow_sync_startup(
+            True,
+            executable_path=exe,
+            shortcut_path=shortcut,
+        )
+
+    assert shortcut.read_text(encoding="utf-8") == "working"
+    assert replacements == []
+    assert not (
+        shortcut.parent / wow_lifecycle.STARTUP_SHORTCUT_STAGING_DIR_NAME
+    ).exists()
 
 
 

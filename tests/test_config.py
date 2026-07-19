@@ -3357,9 +3357,15 @@ def test_wow_watch_mode_exits_if_sync_is_disabled_while_waiting(
     disabled_cfg.sync_with_wow = False
     configs = iter([enabled_cfg, disabled_cfg])
     checks: list[str] = []
+    shortcut_calls: list[bool] = []
 
     monkeypatch.setattr(main_mod, "load_config", lambda: next(configs))
     monkeypatch.setattr(main_mod, "is_wow_running", lambda: checks.append("wow") or False)
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda enabled: shortcut_calls.append(enabled),
+    )
 
     args, watch_mode, early_exit = main_mod._prepare_wow_watch_mode(["--watch-wow"])
 
@@ -3367,6 +3373,28 @@ def test_wow_watch_mode_exits_if_sync_is_disabled_while_waiting(
     assert not watch_mode
     assert early_exit == 0
     assert checks == ["wow"]
+    assert shortcut_calls == [False]
+
+
+def test_wow_watch_mode_removes_stale_shortcut_when_sync_starts_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    cfg.sync_with_wow = False
+    shortcut_calls: list[bool] = []
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda enabled: shortcut_calls.append(enabled),
+    )
+
+    args, watch_mode, early_exit = main_mod._prepare_wow_watch_mode(["--watch-wow"])
+
+    assert args == []
+    assert not watch_mode
+    assert early_exit == 0
+    assert shortcut_calls == [False]
 
 
 def test_wow_watch_mode_exits_if_companion_is_already_running(
@@ -4008,11 +4036,11 @@ def test_wow_sync_startup_config_async_defers_shortcut_mutation_off_caller():
     workers = []
     calls: list[bool] = []
 
-    main_mod._configure_wow_sync_startup_async(
-        True,
+    configurator = main_mod._WowSyncStartupConfigurator(
         runner=workers.append,
         configure=lambda enabled: calls.append(enabled),
     )
+    configurator.request(True)
 
     assert calls == []
     assert len(workers) == 1
@@ -4026,16 +4054,12 @@ def test_wow_sync_startup_config_async_skips_stale_queued_shortcut_work():
     workers = []
     calls: list[bool] = []
 
-    main_mod._configure_wow_sync_startup_async(
-        True,
+    configurator = main_mod._WowSyncStartupConfigurator(
         runner=workers.append,
         configure=lambda enabled: calls.append(enabled),
     )
-    main_mod._configure_wow_sync_startup_async(
-        False,
-        runner=workers.append,
-        configure=lambda enabled: calls.append(enabled),
-    )
+    configurator.request(True)
+    configurator.request(False)
 
     workers[0]()
     workers[1]()
@@ -4051,13 +4075,12 @@ def test_wow_sync_startup_config_async_reports_current_worker_failure():
     def configure(_enabled: bool) -> None:
         raise RuntimeError("shortcut failed")
 
-    main_mod._configure_wow_sync_startup_async(
-        True,
+    configurator = main_mod._WowSyncStartupConfigurator(
         runner=workers.append,
         configure=configure,
         notify=notifications.append,
-        on_error=errors.append,
     )
+    configurator.request(True, on_error=errors.append)
 
     workers[0]()
 
@@ -4068,6 +4091,194 @@ def test_wow_sync_startup_config_async_reports_current_worker_failure():
 
     assert len(errors) == 1
     assert "shortcut failed" in str(errors[0])
+
+
+def test_wow_sync_startup_config_suppresses_error_stale_before_gui_delivery():
+    workers = []
+    notifications = []
+    errors: list[Exception] = []
+
+    def configure(enabled: bool) -> None:
+        if enabled:
+            raise RuntimeError("stale shortcut failure")
+
+    configurator = main_mod._WowSyncStartupConfigurator(
+        runner=workers.append,
+        configure=configure,
+        notify=notifications.append,
+    )
+    configurator.request(True, on_error=errors.append)
+    workers[0]()
+    assert len(notifications) == 1
+
+    configurator.request(False, on_error=errors.append)
+    workers[1]()
+    notifications[0]()
+
+    assert errors == []
+    assert configurator.close() is None
+
+
+def test_wow_sync_startup_config_close_reconciles_latest_queued_request():
+    workers = []
+    calls: list[bool] = []
+    configurator = main_mod._WowSyncStartupConfigurator(
+        runner=workers.append,
+        configure=lambda enabled: calls.append(enabled),
+    )
+    configurator.request(True)
+
+    assert configurator.close() is None
+    workers[0]()
+
+    assert calls == [True]
+
+
+def test_wow_sync_startup_config_starts_tracked_thread_under_close_lock(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    starts_under_close_lock: list[bool] = []
+    calls: list[bool] = []
+
+    class InspectingThread:
+        def __init__(self, *, target, name: str, daemon: bool) -> None:
+            self._target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self) -> None:
+            starts_under_close_lock.append(configurator._close_lock.locked())
+            self._target()
+
+        def join(self) -> None:
+            raise AssertionError("completed tracked thread must be removed before close")
+
+    monkeypatch.setattr(main_mod.threading, "Thread", InspectingThread)
+    configurator = main_mod._WowSyncStartupConfigurator(
+        configure=lambda enabled: calls.append(enabled),
+    )
+
+    configurator.request(True)
+
+    assert starts_under_close_lock == [True]
+    assert calls == [True]
+    assert configurator.close() is None
+
+
+def test_wow_sync_startup_config_skips_duplicate_latest_physical_state():
+    workers = []
+    calls: list[bool] = []
+    configurator = main_mod._WowSyncStartupConfigurator(
+        runner=workers.append,
+        configure=lambda enabled: calls.append(enabled),
+    )
+    configurator.request(True)
+    workers[0]()
+    configurator.request(False)
+    configurator.request(True)
+
+    workers[1]()
+    workers[2]()
+
+    assert calls == [True]
+    assert configurator.close() is None
+
+
+def test_wow_sync_startup_config_close_retries_latest_failed_request():
+    workers = []
+    calls: list[bool] = []
+
+    def configure(enabled: bool) -> None:
+        calls.append(enabled)
+        if len(calls) == 1:
+            raise RuntimeError("transient shortcut failure")
+
+    configurator = main_mod._WowSyncStartupConfigurator(
+        runner=workers.append,
+        configure=configure,
+    )
+    configurator.request(True)
+    workers[0]()
+
+    assert configurator.close() is None
+    assert calls == [True, True]
+
+
+def test_wow_sync_startup_config_close_corrects_inflight_stale_mutation():
+    entered = threading.Event()
+    release = threading.Event()
+    close_started = threading.Event()
+    calls: list[bool] = []
+
+    def configure(enabled: bool) -> None:
+        calls.append(enabled)
+        if enabled:
+            entered.set()
+            assert release.wait(timeout=5.0)
+
+    configurator = main_mod._WowSyncStartupConfigurator(configure=configure)
+    configurator.request(True)
+    assert entered.wait(timeout=5.0)
+    configurator.request(False)
+
+    def close() -> None:
+        close_started.set()
+        assert configurator.close() is None
+
+    closer = threading.Thread(target=close)
+    closer.start()
+    assert close_started.wait(timeout=5.0)
+    release.set()
+    closer.join(timeout=5.0)
+
+    assert not closer.is_alive()
+    assert calls == [True, False]
+
+
+def test_wow_sync_startup_config_delivers_real_worker_error_on_gui_thread():
+    script = r'''
+import os
+import threading
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication
+from applicant_scout.__main__ import _WowSyncStartupConfigurator
+
+app = QApplication([])
+deliveries = []
+
+def configure(_enabled):
+    raise RuntimeError("shortcut failed")
+
+def on_error(exc):
+    deliveries.append((str(exc), threading.current_thread() is threading.main_thread()))
+    app.quit()
+
+configurator = _WowSyncStartupConfigurator(app, configure=configure)
+configurator.request(True, on_error=on_error)
+QTimer.singleShot(5000, app.quit)
+app.exec()
+print(f"deliveries={deliveries!r}")
+configurator.close()
+raise SystemExit(0 if deliveries == [("shortcut failed", True)] else 2)
+'''
+    env = dict(main_mod.os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+
+    completed = main_mod.subprocess.run(
+        [main_mod.sys.executable, "-c", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "deliveries=[('shortcut failed', True)]" in completed.stdout
 
 
 def test_settings_change_applies_wow_sync_runtime_without_startup_shortcut_on_caller_thread(
@@ -6219,6 +6430,44 @@ def test_quiesce_screenshot_ingestion_flushes_before_invalidate_then_closes_writ
     main_mod._quiesce_screenshot_ingestion(FakeWatcher(), gate, FakeWriter())
 
     assert events == ["request_stop", "queue_flush", "writer_close"]
+
+
+def test_application_event_loop_reconciles_wow_startup_before_runtime_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    events: list[str] = []
+
+    class FakeApp:
+        def exec(self) -> int:
+            events.append("exec")
+            return 17
+
+    class FakeConfigurator:
+        def request(self, enabled: bool) -> None:
+            events.append(f"request:{enabled}")
+
+        def close(self) -> None:
+            events.append("close")
+
+    monkeypatch.setattr(
+        main_mod,
+        "_shutdown_runtime",
+        lambda *_args: events.append("shutdown"),
+    )
+
+    result = main_mod._run_application_event_loop(
+        FakeApp(),  # type: ignore[arg-type]
+        wow_sync_startup_configurator=FakeConfigurator(),  # type: ignore[arg-type]
+        sync_with_wow=True,
+        watcher=object(),  # type: ignore[arg-type]
+        window=object(),  # type: ignore[arg-type]
+        cache=object(),  # type: ignore[arg-type]
+        live_snapshot_writer=object(),  # type: ignore[arg-type]
+        wcl_client=object(),  # type: ignore[arg-type]
+    )
+
+    assert result == 17
+    assert events == ["request:True", "exec", "close", "shutdown"]
 
 
 def test_shutdown_runtime_orders_fetch_drain_before_cache_and_client_close():

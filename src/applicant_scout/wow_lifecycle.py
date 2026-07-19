@@ -15,6 +15,8 @@ import threading
 
 
 STARTUP_SHORTCUT_NAME = "ApplicantScout Companion.lnk"
+STARTUP_SHORTCUT_CONFIG_TIMEOUT_SECONDS = 15
+STARTUP_SHORTCUT_STAGING_DIR_NAME = ".ApplicantScoutShortcutTmp"
 WATCH_WOW_ARG = "--watch-wow"
 WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -305,15 +307,24 @@ def _create_shortcut(
     shortcut_path: Path,
 ) -> None:
     shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = shortcut_path.parent / STARTUP_SHORTCUT_STAGING_DIR_NAME
+    staging_dir.mkdir(exist_ok=True)
+    temporary_shortcut_path = staging_dir / (
+        f"{shortcut_path.stem}.{os.getpid()}.{threading.get_ident()}.lnk"
+    )
+    try:
+        temporary_shortcut_path.unlink()
+    except FileNotFoundError:
+        pass
     exe = str(executable_path)
     shortcut_arguments = subprocess.list2cmdline([*arguments, WATCH_WOW_ARG])
-    shortcut = str(shortcut_path)
+    temporary_shortcut = str(temporary_shortcut_path)
     working_dir = str(executable_path.parent)
     script = "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
             "$shell = New-Object -ComObject WScript.Shell",
-            f"$shortcut = $shell.CreateShortcut({_ps_single_quoted(shortcut)})",
+            f"$shortcut = $shell.CreateShortcut({_ps_single_quoted(temporary_shortcut)})",
             f"$shortcut.TargetPath = {_ps_single_quoted(exe)}",
             f"$shortcut.Arguments = {_ps_single_quoted(shortcut_arguments)}",
             f"$shortcut.WorkingDirectory = {_ps_single_quoted(working_dir)}",
@@ -322,18 +333,30 @@ def _create_shortcut(
             "$shortcut.Save()",
         ]
     )
-    subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ],
-        check=True,
-        creationflags=_CREATE_NO_WINDOW,
-    )
+    try:
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            check=True,
+            creationflags=_CREATE_NO_WINDOW,
+            timeout=STARTUP_SHORTCUT_CONFIG_TIMEOUT_SECONDS,
+        )
+        os.replace(temporary_shortcut_path, shortcut_path)
+    finally:
+        try:
+            temporary_shortcut_path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            staging_dir.rmdir()
+        except OSError:
+            pass
 
 
 def configure_wow_sync_startup(

@@ -1896,6 +1896,13 @@ def _prepare_settings_before_quit(settings_dialog: object | None) -> bool:
     return bool(flush())
 
 
+def _remove_wow_sync_startup_best_effort() -> None:
+    try:
+        configure_wow_sync_startup(False)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        log.warning("Could not remove stale WoW lifecycle startup shortcut: %s", exc)
+
+
 def _prepare_wow_watch_mode(args: list[str]) -> tuple[list[str], bool, int | None]:
     if WATCH_WOW_ARG not in args:
         return args, False, None
@@ -1907,6 +1914,7 @@ def _prepare_wow_watch_mode(args: list[str]) -> tuple[list[str], bool, int | Non
         return clean_args, False, 1
     if not cfg.sync_with_wow:
         log.info("WoW lifecycle mode is disabled; exiting startup shortcut run.")
+        _remove_wow_sync_startup_best_effort()
         return clean_args, False, 0
     log.info("WoW lifecycle mode waiting for WoW to start.")
     while not is_wow_running():
@@ -1917,6 +1925,7 @@ def _prepare_wow_watch_mode(args: list[str]) -> tuple[list[str], bool, int | Non
             return clean_args, False, 1
         if not cfg.sync_with_wow:
             log.info("WoW lifecycle mode was disabled while waiting; exiting.")
+            _remove_wow_sync_startup_best_effort()
             return clean_args, False, 0
         time.sleep(WOW_EXIT_POLL_MS / 1000)
     if _has_running_instance():
@@ -2160,52 +2169,158 @@ def _schedule_snapshot_apply(callback: Callable[[], None]) -> None:
     QTimer.singleShot(0, callback)
 
 
-_WOW_SYNC_STARTUP_CONFIG_STATE_LOCK = threading.Lock()
-_WOW_SYNC_STARTUP_CONFIG_WORK_LOCK = threading.Lock()
-_WOW_SYNC_STARTUP_CONFIG_GENERATION = 0
+class _WowSyncStartupConfigurator(QObject):
+    _notificationReady = pyqtSignal(object)
 
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        configure: Callable[[bool], object] | None = None,
+        runner: Callable[[Callable[[], None]], None] | None = None,
+        notify: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._configure = configure or configure_wow_sync_startup
+        self._runner = runner
+        self._state_lock = threading.Lock()
+        self._work_lock = threading.Lock()
+        self._close_lock = threading.Lock()
+        self._generation = 0
+        self._desired_enabled: bool | None = None
+        self._applied_enabled: bool | None = None
+        self._closed = False
+        self._close_error: Exception | None = None
+        self._threads: set[threading.Thread] = set()
+        self._notificationReady.connect(self._run_notification)
+        self._notify = notify or self._notificationReady.emit
 
-def _configure_wow_sync_startup_async(
-    enabled: bool,
-    *,
-    on_error: Callable[[Exception], None] | None = None,
-    runner: Callable[[Callable[[], None]], None] | None = None,
-    configure: Callable[[bool], object] = configure_wow_sync_startup,
-    notify: Callable[[Callable[[], None]], None] = _schedule_snapshot_apply,
-) -> int:
-    global _WOW_SYNC_STARTUP_CONFIG_GENERATION
-    with _WOW_SYNC_STARTUP_CONFIG_STATE_LOCK:
-        _WOW_SYNC_STARTUP_CONFIG_GENERATION += 1
-        generation = _WOW_SYNC_STARTUP_CONFIG_GENERATION
+    @staticmethod
+    def _run_notification(callback: Callable[[], None]) -> None:
+        callback()
 
-    def _is_current() -> bool:
-        with _WOW_SYNC_STARTUP_CONFIG_STATE_LOCK:
-            return _WOW_SYNC_STARTUP_CONFIG_GENERATION == generation
+    def request(
+        self,
+        enabled: bool,
+        *,
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> int:
+        with self._close_lock:
+            return self._request_locked(enabled, on_error=on_error)
 
-    def _worker() -> None:
-        with _WOW_SYNC_STARTUP_CONFIG_WORK_LOCK:
-            if not _is_current():
-                return
+    def _request_locked(
+        self,
+        enabled: bool,
+        *,
+        on_error: Callable[[Exception], None] | None,
+    ) -> int:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("WoW startup shortcut configurator is closed")
+            self._generation += 1
+            generation = self._generation
+            self._desired_enabled = enabled
+
+        def _worker() -> None:
+            self._apply_generation(generation, enabled, on_error)
+
+        if self._runner is not None:
+            self._runner(_worker)
+            return generation
+
+        def _tracked_worker() -> None:
             try:
-                configure(enabled)
+                _worker()
+            finally:
+                with self._state_lock:
+                    self._threads.discard(thread)
+
+        thread = threading.Thread(
+            target=_tracked_worker,
+            name="ApplicantScoutStartupShortcut",
+            daemon=False,
+        )
+        with self._state_lock:
+            self._threads.add(thread)
+        try:
+            thread.start()
+        except Exception:
+            with self._state_lock:
+                self._threads.discard(thread)
+            raise
+        return generation
+
+    def _is_current(self, generation: int) -> bool:
+        with self._state_lock:
+            return not self._closed and self._generation == generation
+
+    def _apply_generation(
+        self,
+        generation: int,
+        enabled: bool,
+        on_error: Callable[[Exception], None] | None,
+    ) -> None:
+        with self._work_lock:
+            if not self._is_current(generation):
+                return
+            with self._state_lock:
+                if self._applied_enabled == enabled:
+                    return
+            try:
+                self._configure(enabled)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                if not _is_current():
+                if not self._is_current(generation):
                     return
                 log.warning("Could not configure WoW lifecycle startup shortcut: %s", exc)
                 if on_error is not None:
                     callback = on_error
                     error = exc
-                    notify(lambda: callback(error))
 
-    if runner is not None:
-        runner(_worker)
-    else:
-        threading.Thread(
-            target=_worker,
-            name="ApplicantScoutStartupShortcut",
-            daemon=True,
-        ).start()
-    return generation
+                    def _deliver_current_error() -> None:
+                        if self._is_current(generation):
+                            callback(error)
+
+                    self._notify(_deliver_current_error)
+                return
+            with self._state_lock:
+                self._applied_enabled = enabled
+
+    def close(self) -> Exception | None:
+        with self._close_lock:
+            with self._state_lock:
+                if self._closed:
+                    return self._close_error
+                self._closed = True
+                self._generation += 1
+                desired_enabled = self._desired_enabled
+
+            with self._work_lock:
+                with self._state_lock:
+                    applied_enabled = self._applied_enabled
+                if (
+                    desired_enabled is not None
+                    and applied_enabled != desired_enabled
+                ):
+                    try:
+                        self._configure(desired_enabled)
+                    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                        self._close_error = exc
+                        log.warning(
+                            "Could not reconcile WoW lifecycle startup shortcut during shutdown: %s",
+                            exc,
+                        )
+                    else:
+                        with self._state_lock:
+                            self._applied_enabled = desired_enabled
+
+            while True:
+                with self._state_lock:
+                    threads = tuple(self._threads)
+                if not threads:
+                    break
+                for thread in threads:
+                    thread.join()
+            return self._close_error
 
 
 def _stop_screenshot_watcher_async(
@@ -2296,6 +2411,27 @@ def _shutdown_runtime(
             wcl_client.close()
         except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
             log.warning("Could not close WCL client: %s", exc)
+
+
+def _run_application_event_loop(
+    app: QApplication,
+    *,
+    wow_sync_startup_configurator: _WowSyncStartupConfigurator,
+    sync_with_wow: bool,
+    watcher: ScreenshotWatcher | None,
+    window: OverlayWindow,
+    cache: CharacterCache,
+    live_snapshot_writer: LiveSnapshotCacheWriter | None,
+    wcl_client: WCLClient,
+) -> int:
+    try:
+        wow_sync_startup_configurator.request(sync_with_wow)
+    except RuntimeError as exc:
+        log.warning("Could not schedule WoW lifecycle startup reconciliation: %s", exc)
+    rc = app.exec()
+    wow_sync_startup_configurator.close()
+    _shutdown_runtime(watcher, window, cache, live_snapshot_writer, wcl_client)
+    return rc
 
 
 _SNAPSHOT_AUTHORITY_LFG = 1 << 0
@@ -3532,6 +3668,9 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("ApplicantScout")
     if isinstance(app, _QT_APPLICATION_CLASS):
         app.setWindowIcon(_app_icon())
+    wow_sync_startup_configurator = _WowSyncStartupConfigurator(
+        app if isinstance(app, QObject) else None
+    )
 
     settings_dialog: SettingsDialog | None = None
     window_ref: dict[str, OverlayWindow] = {}
@@ -3817,7 +3956,7 @@ def main(argv: list[str] | None = None) -> int:
                         error=True,
                     )
 
-                _configure_wow_sync_startup_async(
+                wow_sync_startup_configurator.request(
                     desired_sync_with_wow,
                     on_error=_report_startup_shortcut_error,
                 )
@@ -4076,10 +4215,16 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info("Ready. Overlay will appear when applicants are present.")
 
-    rc = app.exec()
-
-    _shutdown_runtime(watcher, window, cache, live_snapshot_writer, wcl_client)
-    return rc
+    return _run_application_event_loop(
+        app,
+        wow_sync_startup_configurator=wow_sync_startup_configurator,
+        sync_with_wow=cfg.sync_with_wow,
+        watcher=watcher,
+        window=window,
+        cache=cache,
+        live_snapshot_writer=live_snapshot_writer,
+        wcl_client=wcl_client,
+    )
 
 
 if __name__ == "__main__":
