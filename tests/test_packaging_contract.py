@@ -8,6 +8,7 @@ import pytest
 import re
 import shutil
 import subprocess
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -777,6 +778,30 @@ def test_release_constraints_are_all_exact_pins():
         if not line or line.startswith("#"):
             continue
         assert re.fullmatch(r"[A-Za-z0-9_.-]+==.+", line), line
+
+
+def test_pep517_setuptools_backend_matches_exact_release_constraint():
+    pyproject = tomllib.loads(_read_repo_text("pyproject.toml"))
+    build_requirements = pyproject["build-system"]["requires"]
+    setuptools_requirements = [
+        requirement
+        for requirement in build_requirements
+        if re.match(r"(?i)^setuptools(?:\W|$)", requirement)
+    ]
+
+    assert pyproject["build-system"]["build-backend"] == "setuptools.build_meta"
+    assert len(setuptools_requirements) == 1
+    build_pin = re.fullmatch(
+        r"(?i)setuptools==([0-9]+(?:\.[0-9]+)*)",
+        setuptools_requirements[0],
+    )
+    constraint_pin = re.search(
+        r"(?im)^setuptools==([0-9]+(?:\.[0-9]+)*)$",
+        _read_repo_text("constraints-release.txt"),
+    )
+    assert build_pin is not None
+    assert constraint_pin is not None
+    assert build_pin.group(1) == constraint_pin.group(1)
 
 
 def test_previous_patch_version_handles_major_boundary():
