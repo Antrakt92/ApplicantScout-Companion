@@ -678,11 +678,14 @@ class StateMachine(QObject):
             profile = self._rio_profile_for(applicant.name)
             if profile is _RIO_LOOKUP_FAILED:
                 continue
-            rows = self._rio_dungeon_rows_from_profile(profile, applicant.rio_dungeons)
+            transport_score, transport_profile, transport_rows = (
+                self._rio_transport_fields(applicant)
+            )
+            rows = self._rio_dungeon_rows_from_profile(profile, transport_rows)
             raid_progress = self._rio_raid_progress_from_profile(profile)
-            score = self._rio_score_from_profile(profile, applicant.score)
+            score = self._rio_score_from_profile(profile, transport_score)
             rio_profile = self._rio_profile_flag_from_profile(
-                profile, applicant.rio_profile
+                profile, transport_profile
             )
             if (
                 rows == applicant.rio_dungeons
@@ -701,11 +704,14 @@ class StateMachine(QObject):
             profile = self._rio_profile_for(member.name)
             if profile is _RIO_LOOKUP_FAILED:
                 continue
-            rows = self._rio_dungeon_rows_from_profile(profile, member.rio_dungeons)
+            transport_score, transport_profile, transport_rows = (
+                self._rio_transport_fields(member)
+            )
+            rows = self._rio_dungeon_rows_from_profile(profile, transport_rows)
             raid_progress = self._rio_raid_progress_from_profile(profile)
-            score = self._rio_score_from_profile(profile, member.score)
+            score = self._rio_score_from_profile(profile, transport_score)
             rio_profile = self._rio_profile_flag_from_profile(
-                profile, member.rio_profile
+                profile, transport_profile
             )
             if (
                 rows == member.rio_dungeons
@@ -782,6 +788,33 @@ class StateMachine(QObject):
         if profile is None or profile is _RIO_LOOKUP_FAILED:
             return False
         return bool(getattr(profile, "has_mplus_profile", True))
+
+    @staticmethod
+    def _record_rio_transport_fields(
+        target: Applicant,
+        *,
+        score: int,
+        rio_profile: bool,
+        rio_dungeons: list[dict],
+    ) -> None:
+        target.rio_transport_score = score
+        target.rio_transport_profile = rio_profile
+        target.rio_transport_dungeons = [dict(row) for row in rio_dungeons]
+
+    @staticmethod
+    def _rio_transport_fields(
+        source: Applicant,
+    ) -> tuple[int, bool, list[dict]]:
+        score = source.rio_transport_score
+        if score is None:
+            score = source.score if isinstance(source.score, int) else 0
+        rio_profile = source.rio_transport_profile
+        if rio_profile is None:
+            rio_profile = bool(source.rio_profile)
+        rio_dungeons = source.rio_transport_dungeons
+        if rio_dungeons is None:
+            rio_dungeons = source.rio_dungeons
+        return score, rio_profile, [dict(row) for row in rio_dungeons]
 
     @staticmethod
     def _roster_key(name: str) -> str:
@@ -876,7 +909,7 @@ class StateMachine(QObject):
     ) -> RosterMember:
         cls_name = CLASS_ID_TO_NAME.get(decoded.class_id, "?")
         role_name = ROLE_BYTE_TO_NAME.get(decoded.role, "DAMAGER")
-        return RosterMember(
+        member = RosterMember(
             applicant_id=self._roster_key(decoded.name),
             name=decoded.name,
             cls=cls_name,
@@ -905,6 +938,13 @@ class StateMachine(QObject):
             is_self=decoded.is_self,
             is_raid_member=decoded.is_raid_member,
         )
+        self._record_rio_transport_fields(
+            member,
+            score=decoded.score,
+            rio_profile=decoded.rio_profile,
+            rio_dungeons=decoded.rio_dungeons,
+        )
+        return member
 
     def _apply_roster_snapshot(
         self,
@@ -1238,6 +1278,12 @@ class StateMachine(QObject):
                         rio_profile
                     ),
                 )
+                self._record_rio_transport_fields(
+                    applicant,
+                    score=da.score,
+                    rio_profile=da.rio_profile,
+                    rio_dungeons=da.rio_dungeons,
+                )
                 self._state.add_or_update(applicant)
                 log.info(
                     "Applicant added: %s (%s, ilvl %d, score %d, main %d) "
@@ -1303,6 +1349,12 @@ class StateMachine(QObject):
                 )
                 existing.rio_raid_progress = self._rio_raid_progress_from_profile(
                     rio_profile
+                )
+                self._record_rio_transport_fields(
+                    existing,
+                    score=da.score,
+                    rio_profile=da.rio_profile,
+                    rio_dungeons=da.rio_dungeons,
                 )
                 if rio_profile is _RIO_LOOKUP_FAILED and local_rio_identity_stable:
                     self._preserve_local_rio_fields(previous_local_rio, existing)

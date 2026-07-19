@@ -144,6 +144,36 @@ class _ScoreOnlyRioReader:
         )()
 
 
+class _MutableRioReader:
+    def __init__(self, profile: object | None) -> None:
+        self.profile = profile
+
+    def lookup_profile(self, *_args: object, **_kwargs: object) -> object | None:
+        return self.profile
+
+
+def _local_rio_profile(
+    *,
+    score: int,
+    dungeons: list[dict],
+    raid_progress: dict[str, dict],
+    has_mplus_profile: bool = True,
+) -> object:
+    return type(
+        "Profile",
+        (),
+        {
+            "current_score": score,
+            "dungeons": [dict(row) for row in dungeons],
+            "raid_progress": {
+                difficulty: dict(progress)
+                for difficulty, progress in raid_progress.items()
+            },
+            "has_mplus_profile": has_mplus_profile,
+        },
+    )()
+
+
 class _FullRioReader:
     def lookup_profile(self, *_args: object, **_kwargs: object) -> object:
         return type(
@@ -305,6 +335,7 @@ def _roster_decoded(
     rio_timed_at_or_above_minus2: int = 0,
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
+    rio_dungeons: list[dict] | None = None,
     role: int = 2,
 ) -> DecodedRosterMember:
     return DecodedRosterMember(
@@ -326,6 +357,7 @@ def _roster_decoded(
         rio_dungeon_count=rio_dungeon_count,
         role=role,
         name=name,
+        rio_dungeons=rio_dungeons or [],
     )
 
 
@@ -1046,6 +1078,179 @@ def test_local_rio_reenrich_error_preserves_existing_raid_progress():
         }
     }
     assert updated == []
+
+
+@pytest.mark.parametrize("surface", ["applicant", "roster"])
+@pytest.mark.parametrize("refresh_kind", ["lower", "missing", "raid_only"])
+def test_local_rio_refresh_rebuilds_from_transport_provenance(
+    surface: str,
+    refresh_kind: str,
+):
+    initial_rows = [{"name": "Local Current", "key_level": 15}]
+    initial_raid = {"M": {"killed": 4, "total": 8}}
+    reader = _MutableRioReader(
+        _local_rio_profile(
+            score=3000,
+            dungeons=initial_rows,
+            raid_progress=initial_raid,
+        )
+    )
+    state = AppState()
+    sm = StateMachine(state, rio_reader=reader)
+    applicant_updates: list[str] = []
+    roster_updates: list[bool] = []
+    sm.applicantUpdated.connect(
+        lambda applicant: applicant_updates.append(applicant.applicant_id)
+    )
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+
+    if refresh_kind == "raid_only":
+        raw_score = 3100
+    elif refresh_kind == "lower":
+        raw_score = 2700
+    else:
+        raw_score = 2500
+    raw_profile = False
+    raw_rows = [{"name": "Transport", "key_level": 12}]
+    if surface == "applicant":
+        snapshot = Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    score=raw_score,
+                    rio_profile=raw_profile,
+                    rio_dungeons=raw_rows,
+                )
+            ],
+        )
+    else:
+        snapshot = Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            roster=[
+                _roster_decoded(
+                    "Chinie",
+                    score=raw_score,
+                    rio_profile=raw_profile,
+                    rio_dungeons=raw_rows,
+                )
+            ],
+        )
+    sm.apply_snapshot(snapshot)
+    applicant_updates.clear()
+    roster_updates.clear()
+
+    if refresh_kind == "lower":
+        expected_rows = [{"name": "Local Lower", "key_level": 10}]
+        expected_raid = {"H": {"killed": 2, "total": 8}}
+        reader.profile = _local_rio_profile(
+            score=2600,
+            dungeons=expected_rows,
+            raid_progress=expected_raid,
+        )
+        expected_score = raw_score
+        expected_profile = True
+    elif refresh_kind == "missing":
+        reader.profile = None
+        expected_rows = raw_rows
+        expected_raid = {}
+        expected_score = raw_score
+        expected_profile = raw_profile
+    else:
+        expected_raid = {"H": {"killed": 6, "total": 8}}
+        reader.profile = _local_rio_profile(
+            score=0,
+            dungeons=[{"name": "Ignored Local", "key_level": 20}],
+            raid_progress=expected_raid,
+            has_mplus_profile=False,
+        )
+        expected_rows = raw_rows
+        expected_score = raw_score
+        expected_profile = raw_profile
+
+    sm._reenrich_local_rio_rows()
+
+    if surface == "applicant":
+        row = state.applicants["42:1"]
+        assert applicant_updates == ["42:1"]
+        assert roster_updates == []
+    else:
+        row = state.party_members["chinie"]
+        assert applicant_updates == []
+        assert roster_updates == [True]
+    assert row.score == expected_score
+    assert row.rio_profile is expected_profile
+    assert row.rio_dungeons == expected_rows
+    assert row.rio_raid_progress == expected_raid
+
+
+@pytest.mark.parametrize("surface", ["applicant", "roster"])
+def test_fresh_snapshot_updates_transport_provenance_behind_local_enrichment(
+    surface: str,
+):
+    local_rows = [{"name": "Local Current", "key_level": 15}]
+    reader = _MutableRioReader(
+        _local_rio_profile(
+            score=3000,
+            dungeons=local_rows,
+            raid_progress={},
+        )
+    )
+    state = AppState()
+    sm = StateMachine(state, rio_reader=reader)
+
+    def apply_transport(score: int, key_level: int) -> None:
+        rows = [{"name": "Transport", "key_level": key_level}]
+        if surface == "applicant":
+            sm.apply_snapshot(
+                Snapshot(
+                    listing=_listing(),
+                    version=_version("Dmss-Ragnaros"),
+                    applicants=[
+                        _decoded(
+                            aid=42,
+                            member_idx=1,
+                            name="Chinie",
+                            score=score,
+                            rio_dungeons=rows,
+                        )
+                    ],
+                )
+            )
+        else:
+            sm.apply_snapshot(
+                Snapshot(
+                    listing=_listing(),
+                    version=_version("Dmss-Ragnaros"),
+                    roster=[
+                        _roster_decoded(
+                            "Chinie",
+                            score=score,
+                            rio_dungeons=rows,
+                        )
+                    ],
+                )
+            )
+
+    apply_transport(2500, 12)
+    apply_transport(2400, 11)
+    row = (
+        state.applicants["42:1"]
+        if surface == "applicant"
+        else state.party_members["chinie"]
+    )
+    assert row.score == 3000
+    assert row.rio_dungeons == local_rows
+
+    reader.profile = None
+    sm._reenrich_local_rio_rows()
+
+    assert row.score == 2400
+    assert row.rio_dungeons == [{"name": "Transport", "key_level": 11}]
 
 
 def test_first_snapshot_reenriches_applicant_after_async_rio_preload_completes():

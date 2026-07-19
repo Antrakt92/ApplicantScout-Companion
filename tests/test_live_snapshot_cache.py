@@ -7,6 +7,7 @@ import threading
 import pytest
 
 import applicant_scout.live_snapshot_cache as cache_mod
+from applicant_scout.__main__ import StateMachine
 from applicant_scout.live_snapshot_cache import (
     LIVE_SNAPSHOT_CACHE_FILENAME,
     LIVE_SNAPSHOT_CACHE_TTL_SECONDS,
@@ -23,6 +24,7 @@ from applicant_scout.screenshot import (
     Snapshot,
     SnapshotSource,
 )
+from applicant_scout.state import AppState
 
 
 def _live_snapshot() -> Snapshot:
@@ -114,6 +116,52 @@ def test_save_and_load_live_snapshot_round_trips_without_source(tmp_path):
     assert not restored.snapshot.terminal_clear
     assert not restored.snapshot.lfg_unavailable
     assert not restored.snapshot.roster_unavailable
+
+
+def test_restored_snapshot_reenrichment_uses_cached_transport_provenance(tmp_path):
+    class MutableReader:
+        def __init__(self) -> None:
+            self.profile: object | None = type(
+                "Profile",
+                (),
+                {
+                    "current_score": 4000,
+                    "dungeons": [{"name": "Local Current", "key_level": 20}],
+                    "raid_progress": {"M": {"killed": 4, "total": 8}},
+                    "has_mplus_profile": True,
+                },
+            )()
+
+        def lookup_profile(
+            self, *_args: object, **_kwargs: object
+        ) -> object | None:
+            return self.profile
+
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    restored = load_live_snapshot(tmp_path, now=101.0)
+    assert restored is not None
+    reader = MutableReader()
+    state = AppState()
+    machine = StateMachine(state, rio_reader=reader)
+
+    machine.apply_snapshot(restored.snapshot)
+
+    applicant = state.applicants["42:1"]
+    member = state.party_members["tank-realm"]
+    assert applicant.score == 4000
+    assert member.score == 4000
+
+    reader.profile = None
+    machine._reenrich_local_rio_rows()
+
+    assert applicant.score == 3100
+    assert applicant.rio_profile is True
+    assert applicant.rio_dungeons == [
+        {"name": "Theater of Pain", "key_level": 14}
+    ]
+    assert member.score == 3000
+    assert member.rio_profile is False
+    assert member.rio_dungeons == []
 
 
 def test_load_live_snapshot_rejects_and_removes_expired_snapshot(tmp_path):

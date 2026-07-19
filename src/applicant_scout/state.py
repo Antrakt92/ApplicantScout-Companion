@@ -50,6 +50,24 @@ class Applicant:
     # addon DB when available. Release QR payloads keep string rows out of
     # screenshot transport so the code stays small enough to paint reliably.
     rio_dungeons: list[dict] = field(default_factory=list)
+    # Raw QR evidence is kept separately from local-DB enrichment so a later
+    # RaiderIO refresh can retract or downgrade stale local values. These are
+    # internal provenance fields, not additional UI columns.
+    rio_transport_score: Optional[int] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    rio_transport_profile: Optional[bool] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    rio_transport_dungeons: Optional[list[dict]] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     # Filled by WCL fetcher. None = not yet fetched OR fetched-but-no-data
     # (we never use NaN; `fetch_status` field disambiguates loading vs done).
