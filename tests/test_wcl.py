@@ -2734,6 +2734,118 @@ def test_character_cache_discards_previous_version_entries(tmp_path):
     assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
 
 
+def test_character_cache_persists_current_query_fingerprint(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+
+    assert raw["__query_fingerprint__"] == wcl_mod._character_cache_query_fingerprint()
+
+
+def test_character_cache_discards_entries_without_query_fingerprint(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+    raw.pop("__query_fingerprint__")
+    cache._path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = CharacterCache(tmp_path)
+
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+
+
+@pytest.mark.parametrize(
+    ("constant_name", "replacement"),
+    [
+        ("SEASON_NAME", f"{wcl_mod.SEASON_NAME} rollover"),
+        ("CURRENT_MPLUS_ZONE_ID", wcl_mod.CURRENT_MPLUS_ZONE_ID + 1),
+        ("CURRENT_RAID_ZONE_ID", wcl_mod.CURRENT_RAID_ZONE_ID + 1),
+        (
+            "CURRENT_RAID_ENCOUNTER_ZONE_IDS",
+            (*wcl_mod.CURRENT_RAID_ENCOUNTER_ZONE_IDS, 999_000),
+        ),
+        (
+            "MPLUS_ENCOUNTERS",
+            [*wcl_mod.MPLUS_ENCOUNTERS, ("future", 999_001, "Future Dungeon")],
+        ),
+        (
+            "CURRENT_RAID_ENCOUNTERS",
+            [
+                *wcl_mod.CURRENT_RAID_ENCOUNTERS,
+                ("future", 999_002, "Future Raid Boss"),
+            ],
+        ),
+    ],
+)
+def test_character_cache_discards_rank_and_boss_entries_when_query_shape_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    constant_name: str,
+    replacement: object,
+):
+    preferences = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    cache = CharacterCache(tmp_path)
+    cache.put(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        _ranks(),
+        role="DAMAGER",
+        metric_preferences=preferences,
+    )
+    cache.put_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        "EU",
+        71,
+        {
+            "M": [
+                {
+                    "encounter_id": CURRENT_RAID_ENCOUNTERS[0][1],
+                    "name": CURRENT_RAID_ENCOUNTERS[0][2],
+                    "overall": 91.0,
+                    "ilvl": 83.0,
+                }
+            ]
+        },
+        role="DAMAGER",
+        metric_preferences=preferences,
+    )
+
+    monkeypatch.setattr(wcl_mod, constant_name, replacement)
+    loaded = CharacterCache(tmp_path)
+
+    assert (
+        loaded.get(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            "DAMAGER",
+            metric_preferences=preferences,
+        )
+        is None
+    )
+    assert (
+        loaded.get_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            "DAMAGER",
+            metric_preferences=preferences,
+        )
+        is None
+    )
+
+
 def test_character_cache_failed_replace_preserves_previous_disk_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
@@ -2835,6 +2947,7 @@ def test_character_cache_load_prunes_expired_positive_and_not_found_entries(
         json.dumps(
             {
                 "__version__": _CACHE_VERSION,
+                "__query_fingerprint__": wcl_mod._character_cache_query_fingerprint(),
                 "entries": {
                     fresh_key: {
                         "fetched_at": now - 60,

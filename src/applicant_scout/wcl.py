@@ -16,10 +16,13 @@ import httpx
 
 from .atomic_io import apply_private_file_mode, atomic_write_text
 from .constants import (
+    CURRENT_MPLUS_ZONE_ID,
+    CURRENT_RAID_ENCOUNTER_ZONE_IDS,
     CURRENT_RAID_ENCOUNTERS,
     CURRENT_RAID_ZONE_ID,
     MPLUS_ENCOUNTERS,
     ROLE_TO_RAID_METRIC,
+    SEASON_NAME,
     SPEC_ID_TO_WCL_NAME,
 )
 from .metric_preferences import (
@@ -1897,6 +1900,25 @@ def _sanitize_raid_boss_detail_rows(
 # Cache (TTL + persistent)
 
 
+def _character_cache_query_fingerprint() -> str:
+    """Bind persisted WCL evidence to the exact seasonal query contract."""
+    payload = {
+        "season_name": SEASON_NAME,
+        "mplus_zone_id": CURRENT_MPLUS_ZONE_ID,
+        "raid_zone_id": CURRENT_RAID_ZONE_ID,
+        "raid_encounter_zone_ids": CURRENT_RAID_ENCOUNTER_ZONE_IDS,
+        "mplus_encounters": MPLUS_ENCOUNTERS,
+        "raid_encounters": CURRENT_RAID_ENCOUNTERS,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 @dataclass
 class _CacheEntry:
     fetched_at: float
@@ -1951,6 +1973,7 @@ class CharacterCache:
         save_debounce_seconds: float = 1.0,
     ):
         self._path = cache_dir / "character-cache.json"
+        self._query_fingerprint = _character_cache_query_fingerprint()
         self._ttl_seconds = ttl_seconds if ttl_seconds is not None else self.TTL_SECONDS
         self._defer_saves = defer_saves
         self._save_debounce_seconds = max(0.0, save_debounce_seconds)
@@ -2056,6 +2079,12 @@ class CharacterCache:
         # applicant, ~25 quota) than show wrong percentiles for 10 min.
         if raw.get("__version__") != _CACHE_VERSION:
             return {}
+        # A cache schema can stay stable while a season rollover changes the
+        # WCL zone or encounter IDs behind otherwise identical character keys.
+        # Missing fingerprints are legacy files and must refetch once rather
+        # than present previous-season evidence as current.
+        if raw.get("__query_fingerprint__") != self._query_fingerprint:
+            return {}
         entries = raw.get("entries") or {}
         if not isinstance(entries, dict):
             return {}
@@ -2139,6 +2168,7 @@ class CharacterCache:
                 json.dumps(
                     {
                         "__version__": _CACHE_VERSION,
+                        "__query_fingerprint__": self._query_fingerprint,
                         "entries": {k: asdict(v) for k, v in snapshot.entries},
                     }
                 ),
