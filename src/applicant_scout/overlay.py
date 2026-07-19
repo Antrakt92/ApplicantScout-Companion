@@ -158,6 +158,12 @@ RAID_KILL_WIDTH = 96
 RAID_METRIC_WIDTH = 168
 RAID_SINGLE_KILL_WIDTH = 42
 RAID_SINGLE_METRIC_WIDTH = 72
+# The 300 px window minimum leaves 260 px for four labels after frame,
+# margins, and grid gaps. Keep a usable name lane; split the remaining
+# multi-raid space close to the preferred 96:168 kill/metric ratio.
+DETAIL_COMPACT_NAME_WIDTH = 56
+RAID_COMPACT_KILL_WIDTH = 74
+RAID_COMPACT_METRIC_WIDTH = 130
 METRIC_COLUMN_TEXT_PADDING = 22
 RAID_CONTEXT_EVIDENCE_FG = "#b8b8c8"
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
@@ -1883,6 +1889,7 @@ class ApplicantInfoPanel(QFrame):
         self.setMaximumHeight(INFO_PANEL_MIN_HEIGHT)
 
         outer = QVBoxLayout(self)
+        self._outer_layout = outer
         outer.setContentsMargins(10, 6, 10, 6)
         outer.setSpacing(4)
 
@@ -2069,6 +2076,7 @@ class ApplicantInfoPanel(QFrame):
             self._unpin_button,
             self._status_label,
             self._state_text_label,
+            *(labels[0] for labels in self._dungeon_rows),
         )
 
     def set_metric_preferences(self, metric_preferences: MetricPreferences) -> None:
@@ -2083,6 +2091,11 @@ class ApplicantInfoPanel(QFrame):
     def minimumSizeHint(self) -> QSize:  # type: ignore[override]
         hint = super().minimumSizeHint()
         return QSize(hint.width(), INFO_PANEL_MIN_HEIGHT)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if hasattr(self, "_dungeon_rows"):
+            self._reflow_detail_row_geometry()
 
     def target_height(self) -> int:
         extra_rows = max(0, self._visible_detail_rows - INFO_PANEL_DETAIL_BASE_ROWS)
@@ -2681,8 +2694,8 @@ class ApplicantInfoPanel(QFrame):
         )
         return " · ".join(parts)
 
-    @staticmethod
     def _set_detail_row_widths(
+        self,
         labels: tuple[QLabel, QLabel, QLabel, QLabel],
         *,
         raid: bool,
@@ -2690,22 +2703,45 @@ class ApplicantInfoPanel(QFrame):
     ) -> None:
         name_label, rio_label, wcl_key_label, value_label = labels
         raid_single = raid and raid_difficulty_count <= 1
-        name_label.setFixedWidth(RAID_NAME_WIDTH if raid else DUNGEON_NAME_WIDTH)
-        rio_label.setFixedWidth(
+        preferred = (
+            RAID_NAME_WIDTH if raid else DUNGEON_NAME_WIDTH,
             RAID_SINGLE_KILL_WIDTH
             if raid_single
             else RAID_KILL_WIDTH
             if raid
-            else DUNGEON_KEY_WIDTH
-        )
-        wcl_key_label.setFixedWidth(0 if raid else DUNGEON_WCL_KEY_WIDTH)
-        value_label.setFixedWidth(
+            else DUNGEON_KEY_WIDTH,
+            0 if raid else DUNGEON_WCL_KEY_WIDTH,
             RAID_SINGLE_METRIC_WIDTH
             if raid_single
             else RAID_METRIC_WIDTH
             if raid
-            else DUNGEON_METRIC_WIDTH
+            else DUNGEON_METRIC_WIDTH,
         )
+        minimum = (
+            (
+                DETAIL_COMPACT_NAME_WIDTH,
+                RAID_SINGLE_KILL_WIDTH,
+                0,
+                RAID_SINGLE_METRIC_WIDTH,
+            )
+            if raid_single
+            else (
+                DETAIL_COMPACT_NAME_WIDTH,
+                RAID_COMPACT_KILL_WIDTH,
+                0,
+                RAID_COMPACT_METRIC_WIDTH,
+            )
+            if raid
+            else (
+                DETAIL_COMPACT_NAME_WIDTH,
+                DUNGEON_KEY_WIDTH,
+                DUNGEON_WCL_KEY_WIDTH,
+                DUNGEON_METRIC_WIDTH,
+            )
+        )
+        widths = self._fit_detail_row_widths(preferred, minimum)
+        for label, width in zip(labels, widths):
+            label.setFixedWidth(width)
         if raid:
             rio_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2719,6 +2755,77 @@ class ApplicantInfoPanel(QFrame):
         wcl_key_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
+
+    def _fit_detail_row_widths(
+        self,
+        preferred: tuple[int, int, int, int],
+        minimum: tuple[int, int, int, int],
+    ) -> tuple[int, int, int, int]:
+        outer_margins = self._outer_layout.contentsMargins()
+        grid_margins = self._dungeon_grid.contentsMargins()
+        available = max(
+            0,
+            self.contentsRect().width()
+            - outer_margins.left()
+            - outer_margins.right()
+            - grid_margins.left()
+            - grid_margins.right(),
+        )
+        spacing = max(0, self._dungeon_grid.horizontalSpacing())
+        label_budget = max(0, available - (spacing * (len(preferred) - 1)))
+        if label_budget >= sum(preferred):
+            return preferred
+
+        widths = list(minimum)
+        minimum_total = sum(widths)
+        if label_budget < minimum_total:
+            if minimum_total <= 0:
+                return (0, 0, 0, 0)
+            scaled = [int(width * label_budget / minimum_total) for width in widths]
+            remainder = label_budget - sum(scaled)
+            for index in (0, 1, 3, 2):
+                if remainder <= 0:
+                    break
+                if minimum[index] > 0:
+                    scaled[index] += 1
+                    remainder -= 1
+            return scaled[0], scaled[1], scaled[2], scaled[3]
+
+        remainder = label_budget - minimum_total
+        for index, preferred_width in enumerate(preferred):
+            growth = min(remainder, preferred_width - widths[index])
+            widths[index] += growth
+            remainder -= growth
+            if remainder <= 0:
+                break
+        return widths[0], widths[1], widths[2], widths[3]
+
+    @staticmethod
+    def _set_detail_name(name_label: QLabel, full_name: str) -> None:
+        name_label.setProperty("detailFullName", full_name)
+        rendered = name_label.fontMetrics().elidedText(
+            full_name,
+            Qt.TextElideMode.ElideRight,
+            max(0, name_label.contentsRect().width()),
+        )
+        name_label.setText(rendered)
+        name_label.setToolTip(full_name if rendered != full_name else "")
+
+    def _reflow_detail_row_geometry(self) -> None:
+        raid = self._active_detail_mode() == "raid"
+        raid_difficulty_count = (
+            len(_enabled_raid_difficulty_keys(self._metric_preferences)) if raid else 0
+        )
+        for labels in self._dungeon_rows:
+            self._set_detail_row_widths(
+                labels,
+                raid=raid,
+                raid_difficulty_count=raid_difficulty_count,
+            )
+            name_label = labels[0]
+            full_name = name_label.property("detailFullName")
+            if isinstance(full_name, str) and full_name and not name_label.isHidden():
+                self._set_detail_name(name_label, full_name)
 
     def _set_dungeon_rows(
         self, applicant: Applicant, listing: Listing | None = None
@@ -2752,21 +2859,14 @@ class ApplicantInfoPanel(QFrame):
                 for label in labels:
                     label.setText("")
                     label.setVisible(False)
+                    label.setToolTip("")
+                name_label.setProperty("detailFullName", None)
                 continue
             row_key = row_keys[row_idx]
             rio_row = rio_rows.get(row_key, {})
             wcl_row = wcl_rows.get(row_key, {})
             dungeon_name = str(wcl_row.get("name") or rio_row.get("name") or "?")
-            name_label.setText(
-                name_label.fontMetrics().elidedText(
-                    dungeon_name,
-                    Qt.TextElideMode.ElideRight,
-                    DUNGEON_NAME_WIDTH,
-                )
-            )
-            name_label.setToolTip(
-                dungeon_name if name_label.text() != dungeon_name else ""
-            )
+            self._set_detail_name(name_label, dungeon_name)
             rio_key = positive_int(rio_row.get("key_level"))
             if rio_key > 0:
                 rio_label.setText(f"RIO +{rio_key}")
@@ -2833,24 +2933,18 @@ class ApplicantInfoPanel(QFrame):
                     label.setText("")
                     label.setVisible(False)
                     label.setStyleSheet("")
+                    label.setToolTip("")
+                name_label.setProperty("detailFullName", None)
                 continue
             row = rows[row_idx]
             raw_boss_name = row.get("name")
             boss_name = "?" if raw_boss_name is None else str(raw_boss_name)
             if boss_name:
-                name_label.setText(
-                    name_label.fontMetrics().elidedText(
-                        boss_name,
-                        Qt.TextElideMode.ElideRight,
-                        RAID_NAME_WIDTH,
-                    )
-                )
-                name_label.setToolTip(
-                    boss_name if name_label.text() != boss_name else ""
-                )
+                self._set_detail_name(name_label, boss_name)
             else:
                 name_label.setText("")
                 name_label.setToolTip("")
+                name_label.setProperty("detailFullName", None)
             rio_text = str(row.get("rio_text") or "")
             if rio_text:
                 rio_label.setText(rio_text)

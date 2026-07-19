@@ -5555,6 +5555,192 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
         client.close()
 
 
+def test_overlay_mplus_detail_rows_reflow_across_supported_widths(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    full_name = "Very Long Dungeon Name For Compact Geometry"
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(
+        _app(
+            applicant_id="10:1",
+            rio_profile=True,
+            rio_dungeons=[{"name": full_name, "key_level": 18}],
+            mplus_dps_breakdown=[
+                {
+                    "name": full_name,
+                    "key_level": 17,
+                    "parse_percent": 82.0,
+                    "median_percent": 74.0,
+                    "run_count": 2,
+                }
+            ],
+        )
+    )
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.resize(650, window.height())
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        window._pinned_id = "10:1"
+        window._sync_delegate_and_panel()
+        QApplication.processEvents()
+        render_key = window._panel_render_key
+
+        for width in (650, 300, 650):
+            window.resize(width, window.height())
+            QApplication.processEvents()
+            window._panel.layout().activate()
+            window._panel._dungeon_widget.layout().activate()
+            QApplication.processEvents()
+
+            panel = window._panel
+            labels = panel._dungeon_rows[0]
+            rects = [label.geometry() for label in labels]
+            grid_rect = panel._dungeon_widget.contentsRect()
+            assert window.width() == width
+            assert panel._dungeon_widget.width() == grid_rect.width()
+            assert all(label.text() for label in labels)
+            assert rects[0].left() >= grid_rect.left()
+            assert all(
+                previous.right() < current.left()
+                for previous, current in zip(rects, rects[1:])
+            )
+            assert rects[-1].right() <= grid_rect.right()
+
+            name_label = labels[0]
+            expected_name = name_label.fontMetrics().elidedText(
+                full_name,
+                Qt.TextElideMode.ElideRight,
+                name_label.contentsRect().width(),
+            )
+            assert name_label.text() == expected_name
+            assert name_label.toolTip() == (
+                full_name if expected_name != full_name else ""
+            )
+            if width == 650:
+                assert [label.width() for label in labels] == [
+                    DUNGEON_NAME_WIDTH,
+                    DUNGEON_KEY_WIDTH,
+                    DUNGEON_WCL_KEY_WIDTH,
+                    DUNGEON_METRIC_WIDTH,
+                ]
+            else:
+                assert 0 < name_label.width() < DUNGEON_NAME_WIDTH
+
+        assert window._panel_render_key == render_key
+        name_label = window._panel._dungeon_rows[0][0]
+        window.resize(300, window.height())
+        QApplication.processEvents()
+        rendered: list[tuple[QWidget, str, QPoint]] = []
+
+        def record_tooltip(parent_widget, tip: str, global_pos: QPoint) -> bool:
+            rendered.append((parent_widget, tip, global_pos))
+            return True
+
+        monkeypatch.setattr(overlay_mod, "_render_tooltip", record_tooltip)
+        global_pos = QPoint(70, 90)
+        event = QHelpEvent(QEvent.Type.ToolTip, QPoint(4, 5), global_pos)
+        assert name_label in window._action_tooltip_widgets
+        assert window.eventFilter(name_label, event) is True
+        assert rendered == [(name_label, full_name, global_pos)]
+    finally:
+        client.close()
+
+
+def test_overlay_multi_raid_detail_rows_fit_supported_widths(qtbot, tmp_path):
+    preferences = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=preferences)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _raid_listing()
+    state.add_or_update(
+        _app(
+            applicant_id="10:1",
+            rio_raid_progress={
+                "H": {"boss_kills": [1, 0, 0, 0, 0, 0, 0, 0, 0]},
+                "M": {"boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0]},
+            },
+            raid_boss_parses={
+                "H": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 83.0,
+                        "ilvl": 63.0,
+                    }
+                ],
+                "M": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": 46.0,
+                        "ilvl": 68.0,
+                    }
+                ],
+            },
+        )
+    )
+    window = OverlayWindow(
+        state,
+        client,
+        cache,
+        tmp_path,
+        metric_preferences=preferences,
+    )
+    qtbot.addWidget(window)
+
+    try:
+        window.resize(650, window.height())
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        window._pinned_id = "10:1"
+        window._sync_delegate_and_panel()
+        QApplication.processEvents()
+
+        for width in (650, 300, 650):
+            window.resize(width, window.height())
+            QApplication.processEvents()
+            window._panel.layout().activate()
+            window._panel._dungeon_widget.layout().activate()
+            QApplication.processEvents()
+
+            labels = window._panel._dungeon_rows[0]
+            populated = [label for label in labels if label.width() > 0]
+            rects = [label.geometry() for label in populated]
+            grid_rect = window._panel._dungeon_widget.contentsRect()
+            assert rects[0].left() >= grid_rect.left()
+            assert all(
+                previous.right() < current.left()
+                for previous, current in zip(rects, rects[1:])
+            )
+            assert rects[-1].right() <= grid_rect.right()
+            assert labels[0].width() > 0
+            if width == 650:
+                assert labels[0].width() == RAID_NAME_WIDTH
+                assert labels[1].width() == RAID_KILL_WIDTH
+                assert labels[3].width() == RAID_METRIC_WIDTH
+            else:
+                assert labels[0].width() < RAID_NAME_WIDTH
+                assert labels[1].width() < RAID_KILL_WIDTH
+                assert labels[3].width() < RAID_METRIC_WIDTH
+    finally:
+        client.close()
+
+
 def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
     qtbot, tmp_path
 ):
