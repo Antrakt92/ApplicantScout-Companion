@@ -710,6 +710,37 @@ def test_preload_region_async_invokes_completion_for_missing_db(tmp_path: Path):
     assert reader.lookup_profile("Chinie", "Ragnaros", "EU", allow_load=False) is None
 
 
+def test_preload_region_async_thread_start_failure_rolls_back_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_thread = raiderio_local_mod.threading.Thread
+    failed_callback = threading.Event()
+
+    class StartFailThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(raiderio_local_mod.threading, "Thread", StartFailThread)
+    reader = RaiderIOLocalReader(tmp_path)
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        reader.preload_region_async("EU", on_loaded=failed_callback.set)
+
+    assert reader._loading == set()
+    assert reader._load_callbacks == {}
+    assert not failed_callback.is_set()
+
+    monkeypatch.setattr(raiderio_local_mod.threading, "Thread", original_thread)
+    completed = threading.Event()
+    reader.preload_region_async("EU", on_loaded=completed.set)
+
+    assert completed.wait(timeout=5.0)
+
+
 def test_preload_region_async_retries_missing_db_when_files_appear(tmp_path: Path):
     reader = RaiderIOLocalReader(tmp_path)
     first_completed = threading.Event()

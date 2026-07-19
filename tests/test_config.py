@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import logging
 from pathlib import Path
@@ -1531,6 +1531,124 @@ def test_settings_change_rolls_back_config_when_screenshot_runtime_fails(
         )
 
     assert calls == ["persist-new", "rollback-old"]
+
+
+def test_settings_change_keeps_committed_watcher_when_rio_preload_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    old_root = _retail_root(tmp_path)
+    (old_root / "Interface" / "AddOns").mkdir(parents=True)
+    old_screenshots = old_root / "Screenshots"
+    old_screenshots.mkdir()
+    new_root = tmp_path / "Other World of Warcraft" / "_retail_"
+    (new_root / "Interface" / "AddOns").mkdir(parents=True)
+    new_screenshots = new_root / "Screenshots"
+    new_screenshots.mkdir()
+    cfg = _cfg(tmp_path, screenshots_path=old_screenshots)
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(new_screenshots),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            pass
+
+    class FakeWatcher:
+        def __init__(self, path: Path, *, cache_dir: Path | None = None) -> None:
+            self.path = path
+            self.cache_dir = cache_dir
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            pass
+
+        def request_stop(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    class FailingReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def lookup_profile(self, *_args, **_kwargs):
+            return None
+
+        def preload_region_async(self, _region: str | None, on_loaded=None) -> None:
+            self.calls += 1
+            raise RuntimeError("preload failed")
+
+    created: list[FakeWatcher] = []
+
+    def create_watcher(
+        path: Path,
+        *,
+        cache_dir: Path | None = None,
+    ) -> FakeWatcher:
+        watcher = FakeWatcher(path, cache_dir=cache_dir)
+        created.append(watcher)
+        return watcher
+
+    next_reader = FailingReader()
+    state = AppState()
+    state.player = main_mod.WoWPlayer("1", "12.0.0", 3, "Dmss-Ragnaros")
+    machine = main_mod.StateMachine(state, rio_reader=object())
+    old_watcher = FakeWatcher(old_screenshots, cache_dir=cfg.cache_dir)
+    calls: list[str] = []
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", create_watcher)
+    monkeypatch.setattr(
+        main_mod,
+        "_raiderio_reader_for_screenshots_path",
+        lambda _path, **_kwargs: next_reader,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("persist-new"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_config_snapshot",
+        lambda _cfg: calls.append("rollback-old"),
+    )
+
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=False,
+        auth=object(),
+        wcl_client=SimpleNamespace(region=cfg.region),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda *_args, **_kwargs: None,
+            bump_wcl_runtime_generation=lambda: None,
+        ),
+        watcher=old_watcher,
+        current_screenshots_dir=old_screenshots,
+        machine=machine,
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=None,
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert calls == ["persist-new"]
+    assert len(created) == 1
+    assert result.watcher is created[0]
+    assert result.current_screenshots_dir == new_screenshots
+    assert result.cfg.screenshots_path == new_screenshots
+    assert machine._rio_reader is next_reader
+    assert next_reader.calls == 1
 
 
 def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
@@ -6916,6 +7034,325 @@ def test_screenshot_runtime_restores_rio_reader_when_watcher_start_fails(
         )
 
     assert machine.reader == "old-reader"
+
+
+def test_screenshot_runtime_start_failure_preserves_old_reader_preload_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+            self.request_stop_calls = 0
+            self.stop_calls = 0
+
+        def start(self) -> None:
+            self.snapshotReceived.emit(
+                Snapshot(
+                    listing=None,
+                    version=DecodedVersion("1", "12.0.0", 3, "Dmss-Ragnaros"),
+                )
+            )
+            raise RuntimeError("cannot watch")
+
+        def request_stop(self) -> None:
+            self.request_stop_calls += 1
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    class ControlledReader:
+        def __init__(self) -> None:
+            self.preload_calls: list[str | None] = []
+            self.callbacks: list[Callable[[], None]] = []
+
+        def lookup_profile(self, *_args, **_kwargs):
+            return None
+
+        def preload_region_async(
+            self,
+            region: str | None,
+            on_loaded: Callable[[], None] | None = None,
+        ) -> None:
+            self.preload_calls.append(region)
+            if on_loaded is not None:
+                self.callbacks.append(on_loaded)
+
+        def finish(self) -> None:
+            callbacks, self.callbacks = self.callbacks, []
+            for callback in callbacks:
+                callback()
+
+    old_reader = ControlledReader()
+    next_reader = ControlledReader()
+    state = AppState()
+    state.player = main_mod.WoWPlayer("1", "12.0.0", 3, "Dmss-Ragnaros")
+    machine = main_mod.StateMachine(state, rio_reader=old_reader)
+    reenrichments: list[bool] = []
+    monkeypatch.setattr(
+        machine,
+        "_reenrich_local_rio_rows",
+        lambda: reenrichments.append(True),
+    )
+    machine._preload_local_rio_region("EU")
+    active_before = machine._rio_preload_active
+    generation_before = machine._rio_reader_generation
+    gate = main_mod._WatcherSignalGate()
+    old_watcher = FakeWatcher(tmp_path / "old" / "Screenshots")
+    created: list[FakeWatcher] = []
+
+    def create_watcher(path: Path) -> FakeWatcher:
+        watcher = FakeWatcher(path)
+        created.append(watcher)
+        return watcher
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", create_watcher)
+    monkeypatch.setattr(
+        main_mod,
+        "_raiderio_reader_for_screenshots_path",
+        lambda _path: next_reader,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot watch"):
+        main_mod._replace_screenshots_runtime(
+            old_watcher,
+            tmp_path / "new" / "Screenshots",
+            machine,
+            object(),
+            lambda *_args: None,
+            signal_gate=gate,
+        )
+
+    assert machine._rio_reader is old_reader
+    assert machine._rio_reader_generation == generation_before
+    assert machine._rio_preload_active == active_before
+    assert machine._rio_reader_binding_depth == 0
+    assert old_reader.preload_calls == ["EU"]
+    assert next_reader.preload_calls == []
+    assert gate.generation == 0
+    assert old_watcher.request_stop_calls == 0
+    assert old_watcher.stop_calls == 0
+    assert len(created) == 1
+    assert created[0].stop_calls == 1
+
+    old_reader.finish()
+
+    assert machine._rio_preload_active is None
+    assert reenrichments == [True]
+
+
+def test_screenshot_runtime_committed_failures_keep_new_watcher_owned_until_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+            self.request_stop_calls = 0
+            self.stop_calls = 0
+
+        def start(self) -> None:
+            pass
+
+        def request_stop(self) -> None:
+            self.request_stop_calls += 1
+            if self.request_stop_calls == 1:
+                raise RuntimeError("request stop failed")
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    class RetryReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def lookup_profile(self, *_args, **_kwargs):
+            return None
+
+        def preload_region_async(self, region: str | None, on_loaded=None) -> None:
+            assert region == "EU"
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("preload failed")
+            assert on_loaded is not None
+            on_loaded()
+
+    old_reader = object()
+    next_reader = RetryReader()
+    state = AppState()
+    state.player = main_mod.WoWPlayer("1", "12.0.0", 3, "Dmss-Ragnaros")
+    machine = main_mod.StateMachine(state, rio_reader=old_reader)
+    reenrichments: list[bool] = []
+    monkeypatch.setattr(
+        machine,
+        "_reenrich_local_rio_rows",
+        lambda: reenrichments.append(True),
+    )
+    created: list[FakeWatcher] = []
+
+    def create_watcher(path: Path) -> FakeWatcher:
+        watcher = FakeWatcher(path)
+        created.append(watcher)
+        return watcher
+
+    def fail_stop_schedule(_worker) -> None:
+        raise RuntimeError("stop runner failed")
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", create_watcher)
+    monkeypatch.setattr(
+        main_mod,
+        "_raiderio_reader_for_screenshots_path",
+        lambda _path: next_reader,
+    )
+    old_watcher = FakeWatcher(tmp_path / "old" / "Screenshots")
+    gate = main_mod._WatcherSignalGate()
+    caplog.set_level(logging.WARNING, logger="applicant_scout")
+
+    new_watcher = main_mod._replace_screenshots_runtime(
+        old_watcher,
+        tmp_path / "new" / "Screenshots",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+        stop_runner=fail_stop_schedule,
+    )
+
+    created_watcher = created[0]
+    assert new_watcher is created_watcher
+    assert machine._rio_reader is next_reader
+    assert gate.generation == 1
+    assert next_reader.calls == 1
+    assert old_watcher.request_stop_calls == 1
+    assert old_watcher.stop_calls == 0
+    assert "request stop failed" in caplog.text
+    assert "stop runner failed" in caplog.text
+    assert "preload failed" in caplog.text
+
+    created_watcher.snapshotReceived.emit(
+        Snapshot(
+            listing=None,
+            version=DecodedVersion("1", "12.0.0", 3, "Dmss-Ragnaros"),
+        )
+    )
+    getattr(created_watcher, "_applicant_scout_apply_queue").flush()
+
+    assert next_reader.calls == 2
+    assert reenrichments == [True]
+    assert machine._rio_reader_binding_depth == 0
+
+    class FakeWindow:
+        def shutdown_fetches(self) -> bool:
+            return True
+
+    class FakeCache:
+        def close(self) -> bool:
+            return True
+
+    class FakeClient:
+        def close(self) -> None:
+            pass
+
+    main_mod._shutdown_runtime(
+        new_watcher,
+        FakeWindow(),  # type: ignore[arg-type]
+        FakeCache(),  # type: ignore[arg-type]
+        None,
+        FakeClient(),  # type: ignore[arg-type]
+    )
+
+    assert created_watcher.stop_calls == 1
+    assert old_watcher.request_stop_calls == 2
+    assert old_watcher.stop_calls == 1
+
+
+def test_retired_watcher_shutdown_serializes_with_failed_async_stop():
+    first_stop_started = threading.Event()
+    release_first_stop = threading.Event()
+    second_stop_started = threading.Event()
+    shutdown_stop_requested = threading.Event()
+    calls_lock = threading.Lock()
+    request_stop_calls = 0
+    stop_calls = 0
+    active_stops = 0
+    max_active_stops = 0
+
+    class BlockingWatcher:
+        def request_stop(self) -> None:
+            nonlocal request_stop_calls
+            request_stop_calls += 1
+            if request_stop_calls == 2:
+                shutdown_stop_requested.set()
+
+        def stop(self) -> None:
+            nonlocal stop_calls, active_stops, max_active_stops
+            with calls_lock:
+                stop_calls += 1
+                call_number = stop_calls
+                active_stops += 1
+                max_active_stops = max(max_active_stops, active_stops)
+            if call_number == 1:
+                first_stop_started.set()
+                assert release_first_stop.wait(timeout=5.0)
+            else:
+                second_stop_started.set()
+            with calls_lock:
+                active_stops -= 1
+            if call_number == 1:
+                raise RuntimeError("first stop failed")
+
+    workers: list[threading.Thread] = []
+
+    def start_worker(worker) -> None:
+        thread = threading.Thread(target=worker)
+        workers.append(thread)
+        thread.start()
+
+    tracker = main_mod._RetiredScreenshotWatchers()
+    tracker.retire(BlockingWatcher(), stop_runner=start_worker)  # type: ignore[arg-type]
+    assert first_stop_started.wait(timeout=5.0)
+
+    shutdown_thread = threading.Thread(target=tracker.stop_all)
+    shutdown_thread.start()
+
+    assert shutdown_stop_requested.wait(timeout=5.0)
+    assert not second_stop_started.wait(timeout=0.25)
+    assert stop_calls == 1
+    release_first_stop.set()
+    shutdown_thread.join(timeout=5.0)
+    workers[0].join(timeout=5.0)
+
+    assert not shutdown_thread.is_alive()
+    assert not workers[0].is_alive()
+    assert stop_calls == 2
+    assert max_active_stops == 1
 
 
 def test_screenshot_runtime_keeps_new_reader_when_old_watcher_stop_fails(

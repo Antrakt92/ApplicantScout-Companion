@@ -124,6 +124,7 @@ UPDATE_HANDOFF_TIMEOUT_MESSAGE = (
     "Update installer did not close ApplicantScout in time. "
     "Finish or cancel any Windows installer prompt, then quit and install manually."
 )
+_RETIRED_WATCHER_TRACKER_ATTR = "_applicant_scout_retired_watcher_tracker"
 _UPDATE_INSTALL_LOCK = threading.Lock()
 _QT_APPLICATION_CLASS = QApplication
 # SYNC: updater._default_update_download_dir stores installers under this cache child.
@@ -594,6 +595,7 @@ class StateMachine(QObject):
         self._state = state
         self._rio_reader = rio_reader
         self._rio_reader_generation = 0
+        self._rio_reader_binding_depth = 0
         self._rio_preload_monotonic = rio_preload_monotonic
         self._rio_preload_serial = 0
         self._rio_preload_current_key: tuple[int, str] | None = None
@@ -606,8 +608,26 @@ class StateMachine(QObject):
         self._rio_reader = rio_reader
         self._rio_reader_generation += 1
 
+    def _apply_snapshot_with_rio_reader(
+        self,
+        snap: Snapshot,
+        rio_reader: Any | None,
+    ) -> None:
+        previous_reader = self._rio_reader
+        self._rio_reader = rio_reader
+        self._rio_reader_binding_depth += 1
+        try:
+            self.apply_snapshot(snap)
+        finally:
+            self._rio_reader_binding_depth -= 1
+            self._rio_reader = previous_reader
+
     def _preload_local_rio_region(self, region_token: str | None) -> None:
-        if self._rio_reader is None or region_token is None:
+        if (
+            self._rio_reader_binding_depth > 0
+            or self._rio_reader is None
+            or region_token is None
+        ):
             return
         preload = getattr(self._rio_reader, "preload_region_async", None)
         if not callable(preload):
@@ -1114,7 +1134,14 @@ class StateMachine(QObject):
                 # before local-RIO preload because supported readers may invoke
                 # their completion callback before preload_region_async returns.
                 self.versionUpdated.emit(snap.version.region_id)
-            self._preload_local_rio_region(new_region_token)
+            try:
+                self._preload_local_rio_region(new_region_token)
+            except Exception as exc:  # noqa: BLE001 - snapshot remains authoritative
+                log.warning(
+                    "Could not preload local RaiderIO data for snapshot region %s: %s",
+                    new_region_token,
+                    exc,
+                )
             log.info(
                 "Player: %s (region=%d)",
                 snap.version.player_name,
@@ -2323,29 +2350,89 @@ class _WowSyncStartupConfigurator(QObject):
             return self._close_error
 
 
-def _stop_screenshot_watcher_async(
-    watcher: ScreenshotWatcher,
-    *,
-    stop_runner: Callable[[Callable[[], None]], None] | None = None,
-) -> None:
-    request_stop = getattr(watcher, "request_stop", None)
-    if callable(request_stop):
-        request_stop()
+class _RetiredScreenshotWatchers:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stop_lock = threading.Lock()
+        self._watchers: dict[int, ScreenshotWatcher] = {}
 
-    def _worker() -> None:
+    def _stop_one(
+        self,
+        identity: int,
+        watcher: ScreenshotWatcher,
+        *,
+        failure_message: str,
+    ) -> None:
+        # WHY: shutdown can overlap the deferred retirement worker. Watcher.stop()
+        # mutates and joins the observer, so calls for retained watchers must not race.
+        with self._stop_lock:
+            with self._lock:
+                if self._watchers.get(identity) is not watcher:
+                    return
+            try:
+                watcher.stop()
+            except Exception as exc:  # noqa: BLE001 - ownership remains for retry
+                log.warning(failure_message, exc)
+                return
+            with self._lock:
+                if self._watchers.get(identity) is watcher:
+                    self._watchers.pop(identity, None)
+
+    def retire(
+        self,
+        watcher: ScreenshotWatcher,
+        *,
+        stop_runner: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
+        identity = id(watcher)
+        with self._lock:
+            self._watchers[identity] = watcher
+        request_stop = getattr(watcher, "request_stop", None)
+        if callable(request_stop):
+            try:
+                request_stop()
+            except Exception as exc:  # noqa: BLE001 - committed replacement is final
+                log.warning("Could not request previous screenshot watcher stop: %s", exc)
+
+        def _worker() -> None:
+            self._stop_one(
+                identity,
+                watcher,
+                failure_message="Could not stop previous screenshot watcher: %s",
+            )
+
         try:
-            watcher.stop()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Could not stop previous screenshot watcher: %s", exc)
+            if stop_runner is not None:
+                stop_runner(_worker)
+                return
+            threading.Thread(
+                target=_worker,
+                name="ApplicantScoutWatcherStop",
+                daemon=True,
+            ).start()
+        except Exception as exc:  # noqa: BLE001 - retained for shutdown retry
+            log.warning("Could not schedule previous screenshot watcher stop: %s", exc)
 
-    if stop_runner is not None:
-        stop_runner(_worker)
-        return
-    threading.Thread(
-        target=_worker,
-        name="ApplicantScoutWatcherStop",
-        daemon=True,
-    ).start()
+    def stop_all(self) -> None:
+        with self._lock:
+            watchers = tuple(self._watchers.items())
+        for identity, watcher in watchers:
+            request_stop = getattr(watcher, "request_stop", None)
+            if callable(request_stop):
+                try:
+                    request_stop()
+                except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+                    log.warning(
+                        "Could not request retired screenshot watcher stop during shutdown: %s",
+                        exc,
+                    )
+            self._stop_one(
+                identity,
+                watcher,
+                failure_message=(
+                    "Could not stop retired screenshot watcher during shutdown: %s"
+                ),
+            )
 
 
 def _quiesce_screenshot_ingestion(
@@ -2388,6 +2475,9 @@ def _shutdown_runtime(
             watcher.stop()
         except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
             log.warning("Could not stop screenshot watcher during shutdown: %s", exc)
+        retired_watchers = getattr(watcher, _RETIRED_WATCHER_TRACKER_ATTR, None)
+        if isinstance(retired_watchers, _RetiredScreenshotWatchers):
+            retired_watchers.stop_all()
     fetches_drained = False
     try:
         fetches_drained = window.shutdown_fetches()
@@ -2735,10 +2825,18 @@ def _replace_screenshot_watcher(
     stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
     previous_generation = signal_gate.generation
+    retired_watchers = getattr(
+        current_watcher,
+        _RETIRED_WATCHER_TRACKER_ATTR,
+        None,
+    )
+    if not isinstance(retired_watchers, _RetiredScreenshotWatchers):
+        retired_watchers = _RetiredScreenshotWatchers()
     if cache_dir is None:
         new_watcher = ScreenshotWatcher(screenshots_dir)
     else:
         new_watcher = ScreenshotWatcher(screenshots_dir, cache_dir=cache_dir)
+    setattr(new_watcher, _RETIRED_WATCHER_TRACKER_ATTR, retired_watchers)
     generation = signal_gate.prepare_next()
     source_gate = _SnapshotSourceGate()
     apply_queue = _connect_screenshot_watcher(
@@ -2765,7 +2863,7 @@ def _replace_screenshot_watcher(
     if current_watcher is not None:
         # WHY: watchdog Observer.stop()+join can block for seconds on Windows
         # storage paths. The generation gate above already ignores stale signals.
-        _stop_screenshot_watcher_async(current_watcher, stop_runner=stop_runner)
+        retired_watchers.retire(current_watcher, stop_runner=stop_runner)
     return new_watcher
 
 
@@ -2781,7 +2879,6 @@ def _replace_screenshots_runtime(
     live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
     stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
-    previous_reader = getattr(machine, "_rio_reader", None)
     if cache_dir is None:
         next_reader = _raiderio_reader_for_screenshots_path(screenshots_dir)
     else:
@@ -2789,23 +2886,22 @@ def _replace_screenshots_runtime(
             screenshots_dir,
             cache_dir=cache_dir,
         )
-    try:
-        watcher = _replace_screenshot_watcher(
-            current_watcher,
-            screenshots_dir,
-            _ReaderBoundMachine(machine, next_reader),
-            window,
-            decode_failed_callback,
-            cache_dir=cache_dir,
-            signal_gate=signal_gate,
-            live_snapshot_cache_writer=live_snapshot_cache_writer,
-            stop_runner=stop_runner,
-        )
-    except Exception:
-        machine.set_rio_reader(previous_reader)
-        raise
+    watcher = _replace_screenshot_watcher(
+        current_watcher,
+        screenshots_dir,
+        _ReaderBoundMachine(machine, next_reader),
+        window,
+        decode_failed_callback,
+        cache_dir=cache_dir,
+        signal_gate=signal_gate,
+        live_snapshot_cache_writer=live_snapshot_cache_writer,
+        stop_runner=stop_runner,
+    )
     machine.set_rio_reader(next_reader)
-    _preload_machine_rio_region(machine)
+    try:
+        _preload_machine_rio_region(machine)
+    except Exception as exc:  # noqa: BLE001 - committed watcher keeps lazy retry path
+        log.warning("Could not preload local RaiderIO data after watcher replacement: %s", exc)
     return watcher
 
 
@@ -2827,14 +2923,22 @@ class _ReaderBoundMachine:
 
     def apply_snapshot(self, snap: Snapshot) -> None:
         current_reader = getattr(self._machine, "_rio_reader", None)
-        switched = current_reader is not self._rio_reader
-        if switched:
-            self._machine.set_rio_reader(self._rio_reader)
+        if current_reader is self._rio_reader:
+            self._machine.apply_snapshot(snap)
+            return
+        bound_apply = getattr(
+            self._machine,
+            "_apply_snapshot_with_rio_reader",
+            None,
+        )
+        if callable(bound_apply):
+            bound_apply(snap, self._rio_reader)
+            return
+        self._machine.set_rio_reader(self._rio_reader)
         try:
             self._machine.apply_snapshot(snap)
         finally:
-            if switched:
-                self._machine.set_rio_reader(current_reader)
+            self._machine.set_rio_reader(current_reader)
 
 
 def _preload_machine_rio_region(machine: StateMachine) -> None:

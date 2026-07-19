@@ -1414,10 +1414,16 @@ def test_rio_preload_failure_can_retry_and_synchronous_completion_clears_active(
     monkeypatch.setattr(
         sm, "_reenrich_local_rio_rows", lambda: reenrichments.append(True)
     )
-    snapshot = Snapshot(listing=None, version=_version("Dmss-Ragnaros"))
+    snapshot = Snapshot(
+        listing=_listing(),
+        version=_version("Dmss-Ragnaros"),
+        applicants=[_decoded(aid=42, member_idx=1, name="Chinie")],
+    )
 
-    with pytest.raises(RuntimeError, match="load failed"):
-        sm.apply_snapshot(snapshot)
+    sm.apply_snapshot(snapshot)
+
+    assert state.listing is not None
+    assert "42:1" in state.applicants
     sm.apply_snapshot(snapshot)
 
     assert reader.calls == 2

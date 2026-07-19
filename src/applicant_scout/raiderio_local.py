@@ -173,31 +173,35 @@ class RaiderIOLocalReader:
                 if on_loaded is not None:
                     self._load_callbacks.setdefault(token, []).append(on_loaded)
                 return
-            else:
-                if on_loaded is not None:
-                    self._load_callbacks.setdefault(token, []).append(on_loaded)
-                self._loading.add(token)
+            if on_loaded is not None:
+                self._load_callbacks.setdefault(token, []).append(on_loaded)
+            self._loading.add(token)
 
-        def _worker() -> None:
+            def _worker() -> None:
+                try:
+                    self._region_db(token)
+                finally:
+                    with self._lock:
+                        self._loading.discard(token)
+                        callbacks = self._load_callbacks.pop(token, [])
+                    for callback in callbacks:
+                        try:
+                            callback()
+                        except Exception:  # noqa: BLE001
+                            _log.exception(
+                                "RaiderIO local preload callback failed for %s", token
+                            )
+
             try:
-                self._region_db(token)
-            finally:
-                with self._lock:
-                    self._loading.discard(token)
-                    callbacks = self._load_callbacks.pop(token, [])
-                for callback in callbacks:
-                    try:
-                        callback()
-                    except Exception:  # noqa: BLE001
-                        _log.exception(
-                            "RaiderIO local preload callback failed for %s", token
-                        )
-
-        threading.Thread(
-            target=_worker,
-            name=f"RaiderIOLocalLoad-{token}",
-            daemon=True,
-        ).start()
+                threading.Thread(
+                    target=_worker,
+                    name=f"RaiderIOLocalLoad-{token}",
+                    daemon=True,
+                ).start()
+            except Exception:
+                self._loading.discard(token)
+                self._load_callbacks.pop(token, None)
+                raise
 
     def _region_db(self, token: str) -> _RegionDB | None:
         with self._refresh_locks[token]:
