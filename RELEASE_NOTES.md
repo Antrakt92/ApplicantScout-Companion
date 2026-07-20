@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.11.1 - 20-Jul-2026
+
+Paired release with ApplicantScout addon `0.7.1`. This patch restores automatic
+QR updates on fractional WoW UI scales and prevents stale interaction state
+from suppressing every later capture until `/reload`.
+
+### Fixed
+
+- Dense top-left QR captures whose module widths were blurred by fractional UI
+  scaling are normalized and decoded instead of leaving the overlay on stale
+  applicant or Party data.
+- Screenshot cleanup reconsiders files once when decoder behavior changes while
+  avoiding repeated full-image scans of unchanged manual screenshots.
+- World transitions clear stale merchant, bank, trade, auction, taxi, and quest
+  suppression state so missed close events cannot stop later addon captures.
+
+### Improved
+
+- QR recovery validates the complete APS1 payload and checksum before claiming
+  a screenshot, and skips the expensive full-screen scan after successful
+  top-left recovery.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.7.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.11.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.11.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.11.1-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.11.1-release-manifest.json`
+
 ## 0.11.0 - 20-Jul-2026
 
 Paired release with ApplicantScout addon `0.7.0`. This release adds reliable
