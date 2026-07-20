@@ -2,19 +2,69 @@
 
 ## Unreleased
 
+## 0.11.0 - 20-Jul-2026
+
+Paired release with ApplicantScout addon `0.7.0`. This release adds reliable
+overflow transport for unusually large applicant and raid snapshots, while
+keeping normal and terminal snapshots on APS1 v9.
+
+### Added
+
+- Oversized applicant and raid-roster snapshots now use bounded APS1 v10
+  fragments and are applied only after the companion has reassembled and
+  validated the complete snapshot, including retained fragments after restart.
+
 ### Fixed
 
-- Oversized applicant and raid-roster snapshots are now reassembled completely
-  before they reach the overlay, preserving the last valid state while chunks
-  are incomplete and recovering retained chunks after a companion restart.
 - Large grouped applicant backlogs are now bounded by the APS1 payload itself
   instead of an obsolete 200-row decoder limit.
+- Restored snapshots, cache expiry, and terminal clears now retire only the
+  applicant or roster domain they authoritatively replace, so fresh data in the
+  other domain is not erased by provisional startup state.
+- Coalesced full, partial, and terminal snapshots preserve complementary
+  applicant/roster data and source ordering instead of letting a later partial
+  screenshot overwrite a complete snapshot.
+- Listing, region, and roster identity changes now invalidate stale WCL and
+  RaiderIO enrichment before preserved rows are shown in their new context.
+- Authoritative Party transitions clear obsolete raid context, while partial or
+  unavailable roster updates cannot falsely turn a raid view into Party data.
+- RaiderIO cache reuse now preserves the original transport provenance behind
+  local enrichment and keys decoded data by content, detecting replacements
+  even when file timestamps and sizes are unchanged.
+- Invalid UTF-8, mixed-generation, or changing RaiderIO source files are
+  rejected with bounded retries instead of producing shifted or incoherent
+  character records; concurrent region loads share one stable refresh.
+- Seasonal Warcraft Logs cache entries are invalidated when their zone or
+  encounter contract changes, instead of carrying old-season evidence forward.
+- WoW startup sync now reconciles the latest Settings choice across delayed
+  shortcut work, timeout, close, and shutdown instead of applying a stale
+  enable/disable request.
+- Screenshot watcher replacement is transactional: failed startup or RaiderIO
+  preload keeps the working watcher active, and retired watchers finish cleanup
+  before shared resources close.
+- Slow or disconnected screenshot-path probes run outside the GUI process with
+  a bounded timeout, and a newer Settings choice supersedes stalled older work.
+- Closing and restoring the overlay now rebuilds its visible state instead of
+  leaving a hidden stale window that cannot be reopened cleanly.
+- M+ and raid detail rows now reflow within compact overlay widths instead of
+  clipping or forcing the detail panel wider than the main table.
+- The updater now accepts only immutable stable GitHub Releases, preventing a
+  mutable release from becoming an automatic installer source.
 
-### Compatibility
+### Improved
 
-- Normal and terminal snapshots remain APS1 v9. Overflow snapshots use bounded
-  APS1 v10 fragment envelopes and require the paired addon version that emits
-  them.
+- Release builds use the isolated pinned setuptools backend rather than an
+  undeclared environment copy.
+- The narrow publisher now downloads and verifies the exact draft assets,
+  hashes, sizes, title, and body immediately before immutable publication.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.7.0`.
+- Installer: `ApplicantScoutCompanionSetup-0.11.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.11.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.11.0-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.11.0-release-manifest.json`
 
 ## 0.10.1 - 18-Jul-2026
 

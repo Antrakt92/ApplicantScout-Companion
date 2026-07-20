@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 import applicant_scout.overlay as overlay_mod
 import applicant_scout.scoring as scoring_mod
+from applicant_scout.compatibility import MINIMUM_ADDON_VERSION
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
     COL_H,
@@ -3577,14 +3578,16 @@ def test_health_label_warns_when_paired_addon_is_outdated(
         assert window._health_label.text() == "Addon update"
         assert window._health_label.property("statusState") == "warning"
         assert "0.5.1" in window._health_label.toolTip()
-        assert "0.6.1" in window._health_label.toolTip()
+        assert MINIMUM_ADDON_VERSION in window._health_label.toolTip()
         assert "/reload" in window._health_label.toolTip()
 
         current_snapshot = type(
             "CurrentSnapshot",
             (),
             {
-                "version": type("Version", (), {"addon_version": "0.6.1"})(),
+                "version": type(
+                    "Version", (), {"addon_version": MINIMUM_ADDON_VERSION}
+                )(),
                 "roster_unavailable": False,
             },
         )()
