@@ -4,9 +4,9 @@ Replaces the prior custom pixel-marker transport. Addon encodes binary payload
 as a QR code via embedded lua-qrcode library, renders it in a frame anchored
 TOPLEFT of UIParent, calls Screenshot() — image appears in _retail_/Screenshots/.
 We watch that folder, decode QR via pyzbar (battle-tested zbar library —
-handles QR Version ≥25 reliably, where opencv's QRCodeDetector empirically
-failed for our 30-applicant payloads), parse bytes through the binary format
-defined below, and emit a Snapshot via Qt signal.
+handles dense QR versions reliably when module boundaries are pixel-aligned,
+where opencv's QRCodeDetector empirically failed for large applicant payloads),
+parse bytes through the binary format below, and emit a Snapshot via Qt signal.
 
 Complete logical snapshots mirror `ApplicantScout.lua::BuildPayload`
 byte-for-byte: header "APS1" + version + uint16 length + flags/reserved bytes,
@@ -39,7 +39,7 @@ import zlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from PIL import Image
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -109,6 +109,23 @@ STABLE_SIZE_POLL = 0.05  # poll interval
 SUPPORTED_SCREENSHOT_SUFFIXES = frozenset({".jpg", ".tga"})
 QR_SCAN_CROP_PX = 720
 SLOW_SCREENSHOT_STAGE_LOG_S = 0.75
+_QR_RECOVERY_WHITE_THRESHOLD = 220
+_QR_RECOVERY_MIN_SIDE_PX = 84
+_QR_MIN_VERSION = 1
+_QR_MAX_VERSION = 40
+_QR_MODULES_BASE = 17
+_QR_MODULES_PER_VERSION = 4
+_QR_FINDER_MODULES = 7
+_QR_TIMING_PATTERN_MARGIN = 8
+_QR_STANDARD_QUIET_MODULES = 4
+_QR_RECOVERY_RENDER_MODULE_PX = 4
+_QR_RECOVERY_QUIET_ZONES = (2, 3, _QR_STANDARD_QUIET_MODULES)
+_QR_RECOVERY_MAX_FINDER_ERRORS = 6
+_QR_RECOVERY_MAX_TIMING_ERRORS = 4
+_QR_RECOVERY_EDGE_NONWHITE_RUN = 2
+_QR_RECOVERY_BLACK_THRESHOLD = 128
+_QR_RECOVERY_MIN_MODULE_PX = 2.0
+_QR_RECOVERY_MAX_MODULE_PX = 10.0
 
 # Cap startup-cleanup scan at most-recent N WoWScrnShot image files. Backlog scan
 # runs on a daemon thread — no startup-latency impact on overlay paint —
@@ -117,8 +134,10 @@ SLOW_SCREENSHOT_STAGE_LOG_S = 0.75
 # work, daemonised so it doesn't delay shutdown).
 _BACKLOG_CLEANUP_LIMIT = 5000
 _RECENT_WORK_KEY_TTL_SECONDS = 3.0
-_MANUAL_INDEX_VERSION = 1
-_MANUAL_INDEX_FILE_PREFIX = "screenshot-manual-index-v1"
+# Bump when no-marker classification changes so older fingerprints are
+# reconsidered exactly once by the new decoder rather than hidden forever.
+_MANUAL_INDEX_VERSION = 2
+_MANUAL_INDEX_FILE_PREFIX = f"screenshot-manual-index-v{_MANUAL_INDEX_VERSION}"
 
 
 # ─── Decoded data model ─────────────────────────────────────────────────────
@@ -249,6 +268,12 @@ class DecodeResult:
     decoder_unavailable: bool = False
     fragment: Optional[SnapshotFragment] = None
     fragment_candidate: bool = False
+    transport_suspected: bool = False
+
+
+@dataclass
+class _QRScanDiagnostics:
+    transport_suspected: bool = False
 
 
 @dataclass(frozen=True)
@@ -279,9 +304,7 @@ def _decode_qr_symbols(img: Image.Image) -> list[bytes]:
                 from pyzbar.pyzbar import ZBarSymbol as imported_symbol_type
                 from pyzbar.pyzbar import decode as imported_decoder
             except Exception as exc:  # noqa: BLE001
-                raise QRDecoderUnavailable(
-                    f"QR decoder unavailable: {exc}"
-                ) from exc
+                raise QRDecoderUnavailable(f"QR decoder unavailable: {exc}") from exc
 
             decoder = imported_decoder
             symbol_type = imported_symbol_type
@@ -302,7 +325,235 @@ def _has_appscout_symbol(payloads: list[bytes]) -> bool:
     return bool(_collect_appscout_qr_candidates(payloads))
 
 
-def _iter_qr_symbol_data_batches(image_path: Path) -> Iterator[list[bytes]]:
+def _white_edge_extent(img: Image.Image, *, horizontal: bool) -> int | None:
+    """Measure a white square flush with the image's top-left corner."""
+    major = img.width if horizontal else img.height
+    cross = min(2, img.height if horizontal else img.width)
+    if major < _QR_RECOVERY_MIN_SIDE_PX or cross <= 0:
+        return None
+
+    def edge_is_white(index: int) -> bool:
+        for offset in range(cross):
+            point = (index, offset) if horizontal else (offset, index)
+            if cast(int, img.getpixel(point)) < _QR_RECOVERY_WHITE_THRESHOLD:
+                return False
+        return True
+
+    if not edge_is_white(0):
+        return None
+    nonwhite_run = 0
+    for index in range(1, major):
+        if edge_is_white(index):
+            nonwhite_run = 0
+            continue
+        nonwhite_run += 1
+        if nonwhite_run >= _QR_RECOVERY_EDGE_NONWHITE_RUN:
+            return index - 1
+    return major
+
+
+def _finder_pattern_errors(
+    pixels: Any,
+    *,
+    row: int,
+    column: int,
+) -> int:
+    errors = 0
+    last = _QR_FINDER_MODULES - 1
+    for y in range(_QR_FINDER_MODULES):
+        for x in range(_QR_FINDER_MODULES):
+            expected_dark = (
+                y in (0, last) or x in (0, last) or (2 <= y <= 4 and 2 <= x <= 4)
+            )
+            actual_dark = (
+                cast(int, pixels[column + x, row + y]) < _QR_RECOVERY_BLACK_THRESHOLD
+            )
+            errors += actual_dark != expected_dark
+    return errors
+
+
+def _timing_pattern_errors(pixels: Any, modules: int) -> int:
+    errors = 0
+    timing_index = _QR_FINDER_MODULES - 1
+    for index in range(
+        _QR_TIMING_PATTERN_MARGIN,
+        modules - _QR_TIMING_PATTERN_MARGIN,
+    ):
+        expected_dark = index % 2 == 0
+        errors += (
+            cast(int, pixels[index, timing_index]) < _QR_RECOVERY_BLACK_THRESHOLD
+        ) != expected_dark
+        errors += (
+            cast(int, pixels[timing_index, index]) < _QR_RECOVERY_BLACK_THRESHOLD
+        ) != expected_dark
+    return errors
+
+
+def _sample_qr_recovery_candidate(
+    square: Image.Image,
+    *,
+    side: int,
+    version: int,
+    quiet: int,
+) -> tuple[tuple[int, int, int], Image.Image] | None:
+    modules = _QR_MODULES_BASE + _QR_MODULES_PER_VERSION * version
+    total = modules + 2 * quiet
+    module_px = side / total
+    if not _QR_RECOVERY_MIN_MODULE_PX <= module_px <= _QR_RECOVERY_MAX_MODULE_PX:
+        return None
+
+    with square.resize(
+        (total, total),
+        resample=Image.Resampling.NEAREST,
+    ) as sampled_total:
+        sampled = sampled_total.crop((quiet, quiet, quiet + modules, quiet + modules))
+
+    accepted = False
+    try:
+        pixels = sampled.load()
+        assert pixels is not None
+        finder_errors = _finder_pattern_errors(pixels, row=0, column=0)
+        if finder_errors > _QR_RECOVERY_MAX_FINDER_ERRORS:
+            return None
+        finder_errors += _finder_pattern_errors(
+            pixels,
+            row=0,
+            column=modules - _QR_FINDER_MODULES,
+        )
+        if finder_errors > _QR_RECOVERY_MAX_FINDER_ERRORS:
+            return None
+        finder_errors += _finder_pattern_errors(
+            pixels,
+            row=modules - _QR_FINDER_MODULES,
+            column=0,
+        )
+        if finder_errors > _QR_RECOVERY_MAX_FINDER_ERRORS:
+            return None
+        timing_errors = _timing_pattern_errors(pixels, modules)
+        if timing_errors > _QR_RECOVERY_MAX_TIMING_ERRORS:
+            return None
+        accepted = True
+        return (finder_errors + timing_errors, version, quiet), sampled
+    finally:
+        if not accepted:
+            sampled.close()
+
+
+def _render_normalized_qr(sampled: Image.Image) -> Image.Image:
+    modules = sampled.width
+    render_px = _QR_RECOVERY_RENDER_MODULE_PX
+    quiet_px = _QR_STANDARD_QUIET_MODULES * render_px
+    total_modules = modules + 2 * _QR_STANDARD_QUIET_MODULES
+    normalized = Image.new(
+        "L",
+        (total_modules * render_px, total_modules * render_px),
+        255,
+    )
+    with sampled.resize(
+        (modules * render_px, modules * render_px),
+        resample=Image.Resampling.NEAREST,
+    ) as rendered_modules:
+        normalized.paste(rendered_modules, (quiet_px, quiet_px))
+    return normalized
+
+
+def _normalized_top_left_qr(img: Image.Image) -> Image.Image | None:
+    """Recover a QR whose fractional UI scale blurred module boundaries.
+
+    ApplicantScout's historical renderer placed the QR flush with TOPLEFT and
+    used UI units as if they were physical pixels. At fractional effective
+    scales that produces alternating module widths which zbar may reject even
+    though module centres remain intact. Recognise the three finder patterns
+    plus both timing rows, then rebuild an integer-pixel QR for one final zbar
+    pass. This is only candidate recovery; APS1 parsing and CRC remain the
+    ownership boundary used by callers.
+    """
+    gray = img.convert("L")
+    best: tuple[tuple[int, int, int], Image.Image] | None = None
+    try:
+        width = _white_edge_extent(gray, horizontal=True)
+        height = _white_edge_extent(gray, horizontal=False)
+        if width is None or height is None:
+            return None
+        side = min(width, height)
+        if side < _QR_RECOVERY_MIN_SIDE_PX or abs(width - height) > max(2, side // 100):
+            return None
+
+        with gray.crop((0, 0, side, side)) as square:
+            for version in range(_QR_MIN_VERSION, _QR_MAX_VERSION + 1):
+                for quiet in _QR_RECOVERY_QUIET_ZONES:
+                    candidate = _sample_qr_recovery_candidate(
+                        square,
+                        side=side,
+                        version=version,
+                        quiet=quiet,
+                    )
+                    if candidate is None:
+                        continue
+                    if best is None or candidate[0] < best[0]:
+                        if best is not None:
+                            best[1].close()
+                        best = candidate
+                    else:
+                        candidate[1].close()
+
+        if best is None:
+            return None
+        (_score, version, source_quiet), sampled = best
+        normalized = _render_normalized_qr(sampled)
+        _log.debug(
+            "normalised top-left QR candidate: version=%d source_quiet=%d side=%d",
+            version,
+            source_quiet,
+            side,
+        )
+        return normalized
+    finally:
+        if best is not None:
+            best[1].close()
+        gray.close()
+
+
+def _recover_top_left_qr_symbols(img: Image.Image) -> tuple[list[bytes], bool]:
+    normalized = _normalized_top_left_qr(img)
+    if normalized is None:
+        return [], False
+    with normalized:
+        payloads = _decode_qr_symbols(normalized)
+    # Recovery is heuristic candidate discovery. Do not let geometry plus the
+    # four-byte magic broaden the deletion boundary: only return a symbol after
+    # the complete APS1 parser (including CRC and fragment validation) accepts
+    # it. Normal zbar scans retain their historical marker-failure behaviour.
+    accepted: list[bytes] = []
+    appscout_candidate_found = False
+    for symbol_payload in payloads:
+        candidates = _collect_appscout_qr_candidates([symbol_payload])
+        appscout_candidate_found = appscout_candidate_found or bool(candidates)
+        for _kind, raw in candidates:
+            try:
+                parsed, _error = _try_parse_appscout_candidate(raw)
+            except Exception:  # noqa: BLE001 - preserve uncertain screenshots
+                parsed = None
+            if isinstance(parsed, (Snapshot, SnapshotFragment)):
+                accepted.append(symbol_payload)
+                break
+    return accepted, appscout_candidate_found
+
+
+def _recover_top_left_qr_symbols_with_diagnostics(
+    img: Image.Image,
+    diagnostics: _QRScanDiagnostics | None,
+) -> list[bytes]:
+    recovered_payloads, suspected = _recover_top_left_qr_symbols(img)
+    if diagnostics is not None and suspected:
+        diagnostics.transport_suspected = True
+    return recovered_payloads
+
+
+def _iter_qr_symbol_data_batches(
+    image_path: Path,
+    diagnostics: _QRScanDiagnostics | None = None,
+) -> Iterator[list[bytes]]:
     """Yield raw pyzbar symbol batches from one screenshot image.
 
     pyzbar exposes zbar's payload pointer together with an explicit data length,
@@ -339,6 +590,13 @@ def _iter_qr_symbol_data_batches(image_path: Path) -> Iterator[list[bytes]]:
                     if full_payloads:
                         yield full_payloads
                     return
+                recovered_payloads = _recover_top_left_qr_symbols_with_diagnostics(
+                    img,
+                    diagnostics,
+                )
+                if recovered_payloads:
+                    yield recovered_payloads
+                    return
                 full_payloads = _decode_qr_symbols(img)
                 if full_payloads:
                     yield full_payloads
@@ -346,6 +604,13 @@ def _iter_qr_symbol_data_batches(image_path: Path) -> Iterator[list[bytes]]:
             payloads = _decode_qr_symbols(img)
             if payloads:
                 yield payloads
+            if not _has_appscout_symbol(payloads):
+                recovered_payloads = _recover_top_left_qr_symbols_with_diagnostics(
+                    img,
+                    diagnostics,
+                )
+                if recovered_payloads:
+                    yield recovered_payloads
     except (OSError, IOError) as e:
         _log.debug("Image.open failed %s: %s", image_path.name, e)
         raise QRScanFailed(f"could not read screenshot image: {e}") from e
@@ -408,11 +673,17 @@ def _try_parse_appscout_candidate(
         if flags & APS1_FLAG_TERMINAL_CLEAR and flags & APS1_FLAG_LFG_UNAVAILABLE:
             return None, "terminal and LFG-unavailable flags are mutually exclusive"
         if flags & APS1_FLAG_LFG_UNAVAILABLE and flags & APS1_FLAG_ROSTER_UNAVAILABLE:
-            return None, "LFG-unavailable and roster-unavailable flags are mutually exclusive"
+            return (
+                None,
+                "LFG-unavailable and roster-unavailable flags are mutually exclusive",
+            )
         if reserved2:
             return None, f"unsupported APS1 v{wire_ver} reserved byte 0x{reserved2:02x}"
     elif flags or reserved2:
-        return None, f"unsupported APS1 pre-v8 reserved bytes 0x{flags:02x} 0x{reserved2:02x}"
+        return (
+            None,
+            f"unsupported APS1 pre-v8 reserved bytes 0x{flags:02x} 0x{reserved2:02x}",
+        )
 
     total_len = struct.unpack(">H", raw[5:7])[0]
     # Sanity: 13 = minimum valid body (9 header + 1 has_listing=0 + 1
@@ -455,7 +726,10 @@ def _try_parse_appscout_candidate(
                 f"{APS1_FRAGMENT_MIN_CHUNKS}..{APS1_FRAGMENT_MAX_CHUNKS}",
             )
         if chunk_index >= chunk_count:
-            return None, f"v10 chunk_index {chunk_index} outside chunk_count {chunk_count}"
+            return (
+                None,
+                f"v10 chunk_index {chunk_index} outside chunk_count {chunk_count}",
+            )
         if not 13 <= inner_total_len <= 0xFFFF:
             return None, f"v10 invalid inner_total_len {inner_total_len}"
         expected_count = (
@@ -532,11 +806,13 @@ def _without_placeholder_transport_identities(snap: Snapshot) -> Snapshot:
     if not snap.applicants and not snap.roster:
         return snap
     applicants = [
-        applicant for applicant in snap.applicants
+        applicant
+        for applicant in snap.applicants
         if not is_placeholder_transport_identity(applicant.name)
     ]
     roster = [
-        member for member in snap.roster
+        member
+        for member in snap.roster
         if not is_placeholder_transport_identity(member.name)
     ]
     if len(applicants) == len(snap.applicants) and len(roster) == len(snap.roster):
@@ -592,9 +868,7 @@ def _read_len_str(
     cursor += 1
     end = cursor + length
     if end > len(buf):
-        raise ValueError(
-            f"{field} length {length} exceeds remaining payload bytes"
-        )
+        raise ValueError(f"{field} length {length} exceeds remaining payload bytes")
     raw = buf[cursor:end]
     try:
         return raw.decode(encoding), end
@@ -925,27 +1199,24 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
     skew / CRC mismatch) — caller should still delete it; the next snapshot
     in ≤0.5s will succeed.
 
-    Single pyzbar call per image: callers that previously did
-    `decode_screenshot(p) ... if not snap and _has_marker(p): unlink()` would
-    pay TWO ~30-80ms decodes per failure. The tuple return collapses to one.
+    Normal pixel-aligned transport stops after the top-left crop. Full-screen
+    and normalized scans run only as fallbacks when that fast path has no valid
+    ApplicantScout candidate.
     """
     first_error: Optional[str] = None
     has_marker = False
     has_fragment_candidate = False
     try:
-        batches = _iter_qr_symbol_data_batches(image_path)
+        diagnostics = _QRScanDiagnostics()
+        batches = _iter_qr_symbol_data_batches(image_path, diagnostics)
         for symbol_payloads in batches:
             candidates = _collect_appscout_qr_candidates(symbol_payloads)
             if not candidates:
                 continue
             has_marker = True
             for kind, raw in candidates:
-                is_fragment_candidate = (
-                    len(raw) > 4 and raw[4] == APS1_FRAGMENT_VERSION
-                )
-                has_fragment_candidate = (
-                    has_fragment_candidate or is_fragment_candidate
-                )
+                is_fragment_candidate = len(raw) > 4 and raw[4] == APS1_FRAGMENT_VERSION
+                has_fragment_candidate = has_fragment_candidate or is_fragment_candidate
                 try:
                     if is_fragment_candidate:
                         parsed, err = _try_parse_appscout_candidate(raw)
@@ -1013,7 +1284,11 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
         return DecodeResult(None, False, reason)
 
     if not has_marker:
-        return DecodeResult(None, False)  # no QR / unrelated QR
+        return DecodeResult(
+            None,
+            False,
+            transport_suspected=diagnostics.transport_suspected,
+        )
 
     if first_error is not None:
         _log.warning("decode failed in %s: %s", image_path.name, first_error)
@@ -1034,13 +1309,6 @@ def decode_screenshot(image_path: Path) -> tuple[Optional[Snapshot], bool]:
     """
     result = _decode_screenshot_result(image_path)
     return result.snapshot, result.has_marker
-
-
-def _has_marker(image_path: Path) -> bool:
-    """Cheap "is this our screenshot?" check — used by paths that don't need
-    the parsed Snapshot, only the cleanup discriminator. Single pyzbar call.
-    """
-    return _decode_screenshot_result(image_path).has_marker
 
 
 # ─── File watcher ────────────────────────────────────────────────────────────
@@ -1205,9 +1473,11 @@ def format_screenshot_cleanup_summary(
 
 
 def screenshot_cleanup_exit_code(summary: ScreenshotCleanupSummary) -> int:
-    return 1 if (
-        summary.scan_errors or summary.decode_errors or summary.delete_failed
-    ) else 0
+    return (
+        1
+        if (summary.scan_errors or summary.decode_errors or summary.delete_failed)
+        else 0
+    )
 
 
 @dataclass(frozen=True)
@@ -1336,7 +1606,7 @@ def _manual_index_path(cache_dir: Path, screenshots_dir: Path) -> Path:
 
 
 class _ManualScreenshotIndex:
-    """Persistent fingerprints for files proven not to contain APS1 data."""
+    """Persistent fingerprints for files not decoded as APS1 by this revision."""
 
     def __init__(self, state_path: Path | None) -> None:
         self._state_path = state_path
@@ -1771,7 +2041,9 @@ class _SnapshotFragmentAssembler:
                     accepted=True,
                 )
 
-            inner = b"".join(pending.chunks[index] for index in range(fragment.chunk_count))
+            inner = b"".join(
+                pending.chunks[index] for index in range(fragment.chunk_count)
+            )
             parsed: Snapshot | SnapshotFragment | None = None
             if len(inner) != fragment.inner_total_len:
                 error = (
@@ -1795,7 +2067,8 @@ class _SnapshotFragmentAssembler:
                 self._poisoned = True
                 return _FragmentAssemblyOutcome(
                     retired_files=tuple(retired),
-                    error_reason=error or "assembled v10 payload did not contain a snapshot",
+                    error_reason=error
+                    or "assembled v10 payload did not contain a snapshot",
                 )
             self._completed = True
             return _FragmentAssemblyOutcome(
@@ -1809,7 +2082,7 @@ class ScreenshotWatcher(QObject):
     """Watches Screenshots/ folder via watchdog Observer. On each new JPG/TGA:
     waits for write to complete, decodes QR, emits snapshotReceived(Snapshot)
     on success. Deletes the file if it carries our APS1 marker. Skips delete
-    if no marker (preserves user's manual screenshots and unrelated QR codes).
+    if no marker (preserves manual, unrelated, and uncertain transport images).
 
     On startup: applies the most recent valid snapshot from the last 60 seconds
     and may reassemble incomplete v10 fragment sets retained for up to five
@@ -1826,9 +2099,8 @@ class ScreenshotWatcher(QObject):
         *,
         cache_dir: Path | None = None,
         fragment_clock: Callable[[], float] | None = None,
-        fragment_timer_factory: Callable[
-            [float, Callable[[], None]], Any
-        ] | None = None,
+        fragment_timer_factory: Callable[[float, Callable[[], None]], Any]
+        | None = None,
     ):
         super().__init__(parent)
         self._dir = screenshots_dir
@@ -2089,9 +2361,10 @@ class ScreenshotWatcher(QObject):
     def _scan_recent_backlog(self) -> None:
         """Restore recent state, then advance bounded historical cleanup.
 
-        Confirmed manual screenshots are fingerprinted in the app cache. The
-        decode budget therefore applies only to unknown file generations, so a
-        later startup resumes beyond a large unchanged manual-screenshot set.
+        No-marker screenshots are fingerprinted for the current decoder
+        revision. Recovered APS1 candidates that fail full validation remain
+        retryable; a decoder revision bump reconsiders all other no-marker
+        fingerprints exactly once.
         """
         if self._stopped.is_set():
             return
@@ -2106,8 +2379,7 @@ class ScreenshotWatcher(QObject):
             except OSError:
                 continue
         current_keys = {
-            _work_key_from_stat(path, stat_result)
-            for path, stat_result in all_files
+            _work_key_from_stat(path, stat_result) for path, stat_result in all_files
         }
         self._manual_index.prune_missing(baseline_manual_keys, current_keys)
         try:
@@ -2237,7 +2509,8 @@ class ScreenshotWatcher(QObject):
                             is_fresh = (
                                 snapshot_apply_cutoff_ns is not None
                                 and assembled_source is not None
-                                and assembled_source.mtime_ns >= snapshot_apply_cutoff_ns
+                                and assembled_source.mtime_ns
+                                >= snapshot_apply_cutoff_ns
                             )
                             if is_fresh:
                                 if not self._emit_snapshot(outcome.snapshot):
@@ -2365,6 +2638,7 @@ class ScreenshotWatcher(QObject):
             and not result.has_marker
             and not result.decoder_unavailable
             and result.error_reason is None
+            and not result.transport_suspected
         ):
             self._manual_index.note_manual(decoded_key, flush=flush)
         return True
@@ -2435,10 +2709,17 @@ class ScreenshotWatcher(QObject):
                 return
 
         if not result.has_marker:
-            _log.info(
-                "skip %s — no APS1 marker (manual screenshot, preserved)",
-                path.name,
-            )
+            if result.transport_suspected:
+                _log.warning(
+                    "skip %s — recovered top-left APS1 candidate was not "
+                    "valid APS1 (preserved and left retryable)",
+                    path.name,
+                )
+            else:
+                _log.info(
+                    "skip %s — no decodable APS1 marker (manual screenshot, preserved)",
+                    path.name,
+                )
             return
         if snap is None:
             if not self._emit_decode_failed(
@@ -2470,8 +2751,8 @@ class ScreenshotWatcher(QObject):
         - parse failed but marker present (None, True) → delete (ours but
           corrupt — truncated write or transient image artifact; next snapshot
           in ≤0.5s will succeed)
-        - no marker (None, False) → preserve (user's manual screenshot or
-          unrelated QR code)"""
+        - no marker (None, False) → preserve (manual, unrelated QR, or an
+          unreadable transport candidate)"""
         # INFO log on every screenshot arrival so user can verify watchdog is firing.
         if self._stopped.is_set():
             return

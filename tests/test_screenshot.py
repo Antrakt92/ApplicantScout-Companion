@@ -399,6 +399,47 @@ def _write_blank_image(path: Path) -> None:
     Image.new("L", (4, 4), 255).save(path)
 
 
+def _write_fractionally_scaled_qr_candidate(path: Path) -> None:
+    """Create the historical 771px v29/quiet=2 geometry without private data."""
+    modules = 133
+    quiet = 2
+    matrix = [[False for _x in range(modules)] for _y in range(modules)]
+    reserved: set[tuple[int, int]] = set()
+
+    def paint_finder(row: int, column: int) -> None:
+        for y in range(7):
+            for x in range(7):
+                matrix[row + y][column + x] = (
+                    y in (0, 6) or x in (0, 6) or (2 <= y <= 4 and 2 <= x <= 4)
+                )
+                reserved.add((row + y, column + x))
+
+    paint_finder(0, 0)
+    paint_finder(0, modules - 7)
+    paint_finder(modules - 7, 0)
+    for index in range(8, modules - 8):
+        matrix[6][index] = index % 2 == 0
+        matrix[index][6] = index % 2 == 0
+        reserved.add((6, index))
+        reserved.add((index, 6))
+    for y in range(modules):
+        for x in range(modules):
+            if (y, x) not in reserved:
+                matrix[y][x] = ((x * 17 + y * 31 + x * y) % 11) < 5
+
+    source = Image.new("L", (modules + 2 * quiet, modules + 2 * quiet), 255)
+    pixels = source.load()
+    assert pixels is not None
+    for y, row in enumerate(matrix):
+        for x, dark in enumerate(row):
+            if dark:
+                pixels[x + quiet, y + quiet] = 0
+    fractional = source.resize((771, 771), resample=Image.Resampling.NEAREST)
+    screenshot = Image.new("RGB", (1200, 900), (20, 50, 90))
+    screenshot.paste(fractional, (0, 0))
+    screenshot.save(path, quality=80)
+
+
 # ─── v2: multi-member group (the bug we're fixing) ──────────────────────────
 
 
@@ -700,6 +741,7 @@ def test_decode_result_fragment_field_preserves_existing_positional_arguments():
     assert result.decoder_unavailable is False
     assert result.fragment is fragment
     assert result.fragment_candidate is False
+    assert result.transport_suspected is False
 
 
 @pytest.mark.parametrize("row_count", [200, 201])
@@ -716,9 +758,7 @@ def test_applicant_row_bound_is_derived_from_wire_capacity(row_count: int):
 def test_applicant_row_count_that_cannot_fit_is_rejected_before_row_loop():
     body = bytes([0, 0, 0]) + struct.pack(">H", 201) + struct.pack(">H", 0)
 
-    parsed, error = _try_parse_appscout_payload(
-        _wrap_payload(body, wire_ver=0x09)
-    )
+    parsed, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x09))
 
     assert parsed is None
     assert error is not None
@@ -1179,7 +1219,10 @@ def test_duplicate_validation_allows_same_applicant_id_with_distinct_member_idx(
 
     assert error is None
     assert snap is not None
-    assert [(a.applicant_id, a.member_idx) for a in snap.applicants] == [(42, 1), (42, 2)]
+    assert [(a.applicant_id, a.member_idx) for a in snap.applicants] == [
+        (42, 1),
+        (42, 2),
+    ]
 
 
 def test_crc_valid_payload_skips_placeholder_applicants_before_duplicate_validation():
@@ -1222,11 +1265,7 @@ def test_crc_valid_payload_preserves_non_placeholder_unknown_prefix_applicant():
 
 def test_crc_valid_payload_with_blank_applicant_name_is_rejected():
     body = _build_body(
-        [
-            _build_applicant_block(
-                42, 1, 71, 480, 2000, 2, "  ", member_idx=1, version=2
-            )
-        ]
+        [_build_applicant_block(42, 1, 71, 480, 2000, 2, "  ", member_idx=1, version=2)]
     )
 
     snap, error = _try_parse_appscout_payload(_wrap_payload(body, wire_ver=0x02))
@@ -1989,6 +2028,77 @@ def test_decode_screenshot_falls_back_to_full_image_when_crop_has_no_appscout_qr
     assert calls == [(screenshot_mod.QR_SCAN_CROP_PX, 720), (1280, 720)]
 
 
+def test_decode_screenshot_recovers_fractionally_scaled_top_left_qr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "fractional_qr.jpg"
+    _write_fractionally_scaled_qr_candidate(image_path)
+    raw_payload = _wrap_payload(_build_body([]))
+    calls: list[tuple[int, int]] = []
+
+    def fake_decode(img, symbols=None):
+        calls.append(img.size)
+        if img.size == ((133 + 8) * 4, (133 + 8) * 4):
+            return [SimpleNamespace(data=raw_payload.hex().upper().encode("ascii"))]
+        return []
+
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", fake_decode)
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.has_marker is True
+    assert result.snapshot is not None
+    assert calls == [
+        (screenshot_mod.QR_SCAN_CROP_PX, screenshot_mod.QR_SCAN_CROP_PX),
+        ((133 + 8) * 4, (133 + 8) * 4),
+    ]
+
+
+def test_fractional_qr_recovery_does_not_claim_foreign_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "fractional_foreign_qr.jpg"
+    _write_fractionally_scaled_qr_candidate(image_path)
+
+    def fake_decode(img, symbols=None):
+        if img.size == ((133 + 8) * 4, (133 + 8) * 4):
+            return [SimpleNamespace(data=b"https://example.invalid")]
+        return []
+
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", fake_decode)
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.has_marker is False
+    assert result.snapshot is None
+    assert result.transport_suspected is False
+
+
+def test_fractional_qr_recovery_preserves_corrupt_aps1_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "fractional_corrupt_aps1.jpg"
+    _write_fractionally_scaled_qr_candidate(image_path)
+    corrupt_payload = bytearray(_wrap_payload(_build_body([])))
+    corrupt_payload[-1] ^= 0xFF
+
+    def fake_decode(img, symbols=None):
+        if img.size == ((133 + 8) * 4, (133 + 8) * 4):
+            return [SimpleNamespace(data=bytes(corrupt_payload))]
+        return []
+
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", fake_decode)
+
+    result = screenshot_mod._decode_screenshot_result(image_path)
+
+    assert result.has_marker is False
+    assert result.snapshot is None
+    assert result.transport_suspected is True
+
+
 def test_decode_screenshot_prefers_valid_raw_candidate_over_legacy_hex(
     monkeypatch, tmp_path: Path
 ):
@@ -2070,9 +2180,10 @@ def test_decode_screenshot_prefers_raw_lua_golden_over_hex_candidate(
     assert marker is True
     assert snap is not None
     assert snap.version is not None
-    assert snap.version.addon_version == _load_lua_golden_expected()["version"][
-        "addon_version"
-    ]
+    assert (
+        snap.version.addon_version
+        == _load_lua_golden_expected()["version"]["addon_version"]
+    )
 
 
 def test_decode_screenshot_falls_through_corrupt_raw_to_valid_hex(
@@ -2258,7 +2369,9 @@ def test_decode_result_records_unexpected_appscout_candidate_exception_as_marker
     assert result.snapshot is None
     assert result.has_marker is True
     assert result.error_reason is not None
-    assert "unexpected parser error: RuntimeError: parser exploded" in result.error_reason
+    assert (
+        "unexpected parser error: RuntimeError: parser exploded" in result.error_reason
+    )
 
 
 def test_decode_result_continues_after_unexpected_candidate_exception_to_valid_candidate(
@@ -2398,7 +2511,9 @@ def test_shared_work_claim_distinguishes_reused_filename_by_precise_stat(
     second.release()
 
 
-def test_decode_qr_symbols_surfaces_lazy_import_failure(monkeypatch: pytest.MonkeyPatch):
+def test_decode_qr_symbols_surfaces_lazy_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
     screenshot_mod.pyzbar_decode = None
     screenshot_mod.ZBarSymbol = None
     original_import = __import__
@@ -2665,7 +2780,9 @@ def test_fragment_assembler_completes_out_of_order_exactly_once():
 
 
 def test_fragment_assembler_identical_duplicate_is_idempotent():
-    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
     assembler = screenshot_mod._SnapshotFragmentAssembler()
     first_path = Path("first.jpg")
     duplicate_path = Path("duplicate.jpg")
@@ -2695,7 +2812,9 @@ def test_fragment_assembler_identical_duplicate_is_idempotent():
 
 
 def test_fragment_assembler_conflicting_duplicate_poisons_generation():
-    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
     assembler = screenshot_mod._SnapshotFragmentAssembler()
     first_path = Path("first.jpg")
     conflict_path = Path("conflict.jpg")
@@ -2818,7 +2937,9 @@ def test_fragment_assembler_newer_generation_supersedes_incomplete_old():
 
 
 def test_fragment_assembler_terminal_barrier_blocks_older_late_chunks():
-    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
     assembler = screenshot_mod._SnapshotFragmentAssembler()
     first_path = Path("fragment.jpg")
     assembler.accept_fragment(
@@ -2852,7 +2973,9 @@ def test_fragment_assembler_terminal_barrier_blocks_older_late_chunks():
 
 
 def test_fragment_assembler_timeout_allows_same_generation_repeat_to_rebuild():
-    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
     assembler = screenshot_mod._SnapshotFragmentAssembler(ttl_seconds=5)
     first_path = Path("first.jpg")
     first = _fragment_with_source(fragments[0], path=first_path, mtime_ns=100)
@@ -3011,8 +3134,12 @@ def test_watcher_retains_incomplete_fragments_and_emits_one_complete_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
-    paths = [tmp_path / f"WoWScrnShot_{index:04d}.jpg" for index in range(len(fragments))]
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
+    paths = [
+        tmp_path / f"WoWScrnShot_{index:04d}.jpg" for index in range(len(fragments))
+    ]
     watcher = ScreenshotWatcher(tmp_path)
     snapshots: list[Snapshot] = []
     failures: list[tuple[str, str]] = []
@@ -3134,8 +3261,12 @@ def test_watcher_stop_during_fragment_completion_preserves_all_chunk_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
-    paths = [tmp_path / f"WoWScrnShot_{index:04d}.jpg" for index in range(len(fragments))]
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
+    paths = [
+        tmp_path / f"WoWScrnShot_{index:04d}.jpg" for index in range(len(fragments))
+    ]
     watcher = ScreenshotWatcher(tmp_path)
     monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
     by_path = {
@@ -3263,7 +3394,9 @@ def test_watcher_stable_timeout_emits_marker_snapshot_and_deletes_transport(
     assert not image_path.exists()
 
 
-def test_watcher_stamps_live_snapshot_source_from_file_stat(monkeypatch, tmp_path: Path):
+def test_watcher_stamps_live_snapshot_source_from_file_stat(
+    monkeypatch, tmp_path: Path
+):
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     content = b"transport"
     image_path.write_bytes(content)
@@ -3444,7 +3577,9 @@ def test_backlog_reassembles_newest_fragments_and_never_applies_older_whole(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
     now = 2_000_000_000.0
     fragment_paths = [
         tmp_path / f"WoWScrnShot_fragment-{index}.jpg"
@@ -3488,12 +3623,13 @@ def test_backlog_corrupt_newest_marker_defers_failure_for_redundant_fragment_pas
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())]
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
     now = 2_000_000_000.0
     corrupt = tmp_path / "WoWScrnShot_newest-corrupt.jpg"
     fragment_paths = [
-        tmp_path / f"WoWScrnShot_retry-{index}.jpg"
-        for index in range(len(fragments))
+        tmp_path / f"WoWScrnShot_retry-{index}.jpg" for index in range(len(fragments))
     ]
     manual = tmp_path / "WoWScrnShot_manual.jpg"
     corrupt.write_bytes(b"corrupt")
@@ -3607,9 +3743,11 @@ def test_backlog_does_not_apply_older_snapshot_after_newest_marker_decode_failur
     monkeypatch.setattr(
         screenshot_mod,
         "_decode_screenshot_result",
-        lambda path: screenshot_mod.DecodeResult(None, True, "CRC mismatch")
-        if path == newest
-        else screenshot_mod.DecodeResult(snapshot, True),
+        lambda path: (
+            screenshot_mod.DecodeResult(None, True, "CRC mismatch")
+            if path == newest
+            else screenshot_mod.DecodeResult(snapshot, True)
+        ),
     )
 
     watcher._scan_recent_backlog()
@@ -3702,9 +3840,11 @@ def test_backlog_can_apply_older_snapshot_when_newest_file_has_no_marker(
     monkeypatch.setattr(
         screenshot_mod,
         "_decode_screenshot_result",
-        lambda path: screenshot_mod.DecodeResult(None, False)
-        if path == manual
-        else screenshot_mod.DecodeResult(snapshot, True),
+        lambda path: (
+            screenshot_mod.DecodeResult(None, False)
+            if path == manual
+            else screenshot_mod.DecodeResult(snapshot, True)
+        ),
     )
 
     watcher._scan_recent_backlog()
@@ -3804,9 +3944,11 @@ def test_backlog_unstable_newest_manual_does_not_delete_older_valid_snapshot_wit
     monkeypatch.setattr(
         screenshot_mod,
         "_decode_screenshot_result",
-        lambda path: screenshot_mod.DecodeResult(snapshot, True)
-        if path == older
-        else screenshot_mod.DecodeResult(None, False),
+        lambda path: (
+            screenshot_mod.DecodeResult(snapshot, True)
+            if path == older
+            else screenshot_mod.DecodeResult(None, False)
+        ),
     )
 
     watcher._scan_recent_backlog()
@@ -3961,6 +4103,53 @@ def test_backlog_does_not_persist_transient_scan_failure_as_manual(
     ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
 
     assert calls == [image_path, image_path]
+
+
+def test_backlog_does_not_persist_qr_shaped_transport_candidate_as_manual(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    image_path = screenshots / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"unreadable-transport")
+    os.utime(image_path, (900.0, 900.0))
+    calls: list[Path] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        calls.append(path)
+        return screenshot_mod.DecodeResult(
+            None,
+            False,
+            transport_suspected=True,
+        )
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+
+    assert calls == [image_path, image_path]
+
+
+def test_manual_index_revision_invalidates_prior_no_marker_fingerprints(
+    tmp_path: Path,
+):
+    state_path = tmp_path / "manual-index.json"
+    key = screenshot_mod._ScreenshotWorkKey("old.jpg", 123, 456)
+    state_path.write_text(
+        json.dumps({"version": 1, "manual": [[key.path, key.mtime_ns, key.size]]}),
+        encoding="utf-8",
+    )
+
+    index = screenshot_mod._ManualScreenshotIndex(state_path)
+
+    assert screenshot_mod._MANUAL_INDEX_VERSION == 2
+    assert index.contains(key) is False
 
 
 def test_backlog_resumes_beyond_unknown_decode_budget(
