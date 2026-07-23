@@ -423,13 +423,19 @@ def test_identical_full_snapshot_does_not_emit_duplicate_applicant_update():
     assert updates == []
 
 
-def test_region_identity_change_emits_update_for_already_pending_applicant():
+def test_region_identity_change_rebuilds_already_pending_applicant():
     state = AppState()
     sm = StateMachine(state)
     updates: list[str] = []
+    additions: list[str] = []
+    clears: list[bool] = []
     sm.applicantUpdated.connect(
         lambda applicant: updates.append(applicant.applicant_id)
     )
+    sm.applicantAdded.connect(
+        lambda applicant: additions.append(applicant.applicant_id)
+    )
+    sm.cleared.connect(lambda: clears.append(True))
     applicant_row = _decoded(aid=99, member_idx=1, name="Solo-Realm")
 
     sm.apply_snapshot(
@@ -440,6 +446,8 @@ def test_region_identity_change_emits_update_for_already_pending_applicant():
         )
     )
     updates.clear()
+    additions.clear()
+    clears.clear()
     assert state.applicants["99:1"].fetch_status == "pending"
 
     sm.apply_snapshot(
@@ -450,7 +458,9 @@ def test_region_identity_change_emits_update_for_already_pending_applicant():
         )
     )
 
-    assert updates == ["99:1"]
+    assert updates == []
+    assert additions == ["99:1"]
+    assert clears == [True]
 
 
 def test_placeholder_applicant_name_is_skipped():
@@ -1430,7 +1440,7 @@ def test_rio_preload_failure_can_retry_and_synchronous_completion_clears_active(
     assert reenrichments == [True]
 
 
-def test_region_signal_precedes_synchronous_rio_preload_row_updates():
+def test_region_signal_precedes_source_retirement_signals():
     class SynchronousReader:
         def lookup_profile(self, *_args: object, **_kwargs: object) -> None:
             return None
@@ -1469,7 +1479,7 @@ def test_region_signal_precedes_synchronous_rio_preload_row_updates():
     )
 
     assert events[0] == "version"
-    assert "applicant" in events
+    assert "applicant" not in events
     assert "roster" in events
 
 
@@ -2023,7 +2033,7 @@ def test_player_full_name_change_invalidates_same_realm_ready_data():
     assert applicant.mplus_dps_breakdown == []
 
 
-def test_player_full_name_change_preserves_explicit_realm_data():
+def test_player_realm_change_retires_explicit_realm_enrichment():
     state = AppState()
     state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
     sm = StateMachine(state)
@@ -2045,8 +2055,8 @@ def test_player_full_name_change_preserves_explicit_realm_data():
     sm.apply_snapshot(snap2)
 
     applicant = state.applicants["42:1"]
-    assert applicant.fetch_status == "ready"
-    assert applicant.raid_heroic == 92.0
+    assert applicant.fetch_status == "pending"
+    assert applicant.raid_heroic is None
 
 
 def test_region_change_invalidates_explicit_realm_data():
@@ -2210,13 +2220,95 @@ def test_combined_unavailable_snapshot_preserves_applicants_and_roster():
     assert roster_updates == []
 
 
+def test_applicant_partial_preserves_only_exact_listing_context_then_recovers():
+    state = AppState()
+    sm = StateMachine(state)
+    listing_a = _listing(key_level=14)
+    listing_b = _listing(key_level=15)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=listing_a,
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Prior-Realm")],
+            roster=[_roster_decoded("Host-Realm", flags=1)],
+        )
+    )
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=listing_a,
+            version=_version("Host-Realm"),
+            applicants=[_decoded(8, 1, "Partial-Realm")],
+            roster=[_roster_decoded("Friend-Realm", unit_index=2)],
+            applicants_unavailable=True,
+        )
+    )
+
+    assert set(state.applicants) == {"7:1"}
+    assert state.applicants["7:1"].name == "Prior-Realm"
+    assert set(state.party_members) == {"friend-realm"}
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=listing_b,
+            version=_version("Host-Realm"),
+            applicants=[_decoded(9, 1, "Wrong-Context-Realm")],
+            roster=[],
+            applicants_unavailable=True,
+            roster_unavailable=True,
+        )
+    )
+
+    assert state.listing is not None
+    assert state.listing.key_level == 15
+    assert state.applicants == {}
+    assert set(state.party_members) == {"friend-realm"}
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=listing_b,
+            version=_version("Host-Realm"),
+            applicants=[_decoded(10, 1, "Recovered-Realm")],
+            roster=[_roster_decoded("Host-Realm", flags=1)],
+        )
+    )
+
+    assert set(state.applicants) == {"10:1"}
+    assert set(state.party_members) == {"host-realm"}
+
+
+def test_simultaneous_applicant_and_roster_partial_preserves_both_domains():
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[_roster_decoded("Host-Realm", flags=1)],
+        )
+    )
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[],
+            roster=[],
+            applicants_unavailable=True,
+            roster_unavailable=True,
+        )
+    )
+
+    assert set(state.applicants) == {"7:1"}
+    assert set(state.party_members) == {"host-realm"}
+
+
 @pytest.mark.parametrize(
     ("change_kind", "lfg_unavailable", "explicit_realm", "should_refresh"),
     [
         ("region", False, True, True),
         ("unknown-region", True, True, False),
-        ("default-realm", True, False, True),
-        ("default-realm", True, True, False),
     ],
 )
 def test_roster_unavailable_identity_change_revalidates_preserved_enrichment(
@@ -2278,10 +2370,8 @@ def test_roster_unavailable_identity_change_revalidates_preserved_enrichment(
     sm._rio_reader = _OSErrorRioReader()
     if change_kind == "region":
         new_version = _version("Host-RealmA", region_id=1)
-    elif change_kind == "unknown-region":
-        new_version = _version("Host-RealmA", region_id=99)
     else:
-        new_version = _version("Host-RealmB", region_id=3)
+        new_version = _version("Host-RealmA", region_id=99)
     sm.apply_snapshot(
         Snapshot(
             listing=None if lfg_unavailable else _listing(),
@@ -2306,12 +2396,21 @@ def test_roster_unavailable_identity_change_revalidates_preserved_enrichment(
         )
     )
 
+    if change_kind == "region":
+        replacement = state.applicants["42:1"]
+        assert replacement is not applicant
+        assert replacement.fetch_status == "pending"
+        assert replacement.raid_heroic is None
+        assert state.party_members == {}
+        assert signal_order[0] == "version"
+        assert applicant_updates == []
+        assert roster_updates == [True]
+        return
+
     assert set(state.applicants) == {"42:1"}
     assert set(state.party_members) == {member_id}
     assert state.applicants["42:1"] is applicant
     assert state.party_members[member_id] is member
-    if change_kind == "region":
-        assert signal_order[0] == "version"
     if should_refresh:
         assert applicant.fetch_status == "pending"
         assert applicant.raid_heroic is None
@@ -2348,7 +2447,7 @@ def test_roster_unavailable_identity_change_revalidates_preserved_enrichment(
         assert roster_updates == []
 
 
-def test_lfg_unavailable_region_change_invalidates_preserved_applicant_wcl():
+def test_lfg_unavailable_region_change_retires_preserved_applicant():
     state = AppState()
     state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
     sm = StateMachine(state)
@@ -2382,14 +2481,13 @@ def test_lfg_unavailable_region_change_invalidates_preserved_applicant_wcl():
         )
     )
 
-    applicant = state.applicants["42:1"]
-    assert applicant.fetch_status == "pending"
-    assert applicant.raid_heroic is None
-    assert applicant.mplus_dps is None
-    assert updated == ["42:1"]
+    assert state.listing is None
+    assert state.applicants == {}
+    assert set(state.party_members) == {"host-realma"}
+    assert updated == []
 
 
-def test_lfg_unavailable_default_realm_change_invalidates_same_realm_applicant_wcl():
+def test_lfg_unavailable_realm_change_retires_same_realm_applicant():
     state = AppState()
     state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
     sm = StateMachine(state)
@@ -2429,14 +2527,13 @@ def test_lfg_unavailable_default_realm_change_invalidates_same_realm_applicant_w
         )
     )
 
-    applicant = state.applicants["42:1"]
-    assert applicant.fetch_status == "pending"
-    assert applicant.raid_heroic is None
-    assert applicant.mplus_dps_breakdown == []
-    assert updated == ["42:1"]
+    assert state.listing is None
+    assert state.applicants == {}
+    assert set(state.party_members) == {"host-realmb"}
+    assert updated == []
 
 
-def test_lfg_unavailable_default_realm_change_preserves_explicit_realm_wcl():
+def test_lfg_unavailable_realm_change_retires_explicit_realm_applicant():
     state = AppState()
     state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
     sm = StateMachine(state)
@@ -2469,10 +2566,53 @@ def test_lfg_unavailable_default_realm_change_preserves_explicit_realm_wcl():
         )
     )
 
-    applicant = state.applicants["42:1"]
-    assert applicant.fetch_status == "ready"
-    assert applicant.raid_heroic == 92.0
+    assert state.listing is None
+    assert state.applicants == {}
+    assert set(state.party_members) == {"host-realmb"}
     assert updated == []
+
+
+def test_realm_less_version_does_not_erase_producer_identity_boundary():
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=14),
+            version=_version("Host-RealmA", region_id=3),
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout", spec_id=71)],
+            roster=[_roster_decoded("Host-RealmA", flags=1)],
+        )
+    )
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host", region_id=99),
+            applicants=[],
+            roster=[],
+            lfg_unavailable=True,
+            roster_unavailable=True,
+        )
+    )
+    assert state.listing is not None
+    assert set(state.applicants) == {"42:1"}
+    assert set(state.party_members) == {"host-realma"}
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host-RealmB", region_id=3),
+            applicants=[],
+            roster=[],
+            lfg_unavailable=True,
+            roster_unavailable=True,
+        )
+    )
+
+    assert state.player.full_name == "Host-RealmB"
+    assert state.listing is None
+    assert state.applicants == {}
+    assert state.party_members == {}
 
 
 def test_explicit_terminal_clear_snapshot_clears_listing_applicants_and_roster():
@@ -2969,3 +3109,112 @@ def test_restored_roster_expiry_preserves_fresh_applicant_domain():
     assert listing_updates == []
     assert clears == []
     assert roster_updates == [True]
+
+
+def test_restored_applicant_expiry_can_preserve_fresh_listing_context():
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+        )
+    )
+
+    sm.expire_restored_snapshot_surfaces(
+        applicants=True,
+        roster=False,
+        listing=False,
+    )
+
+    assert state.listing is not None
+    assert state.applicants == {}
+
+
+@pytest.mark.parametrize(
+    ("old_player", "new_player", "old_region", "new_region"),
+    [
+        ("Host-Realm", "Alt-Realm", 3, 3),
+        ("Host-RealmA", "Host-RealmB", 3, 3),
+        ("Host-Realm", "Host-Realm", 3, 1),
+    ],
+)
+def test_new_character_partial_snapshot_retires_previous_transport_domains(
+    old_player: str,
+    new_player: str,
+    old_region: int,
+    new_region: int,
+):
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version(old_player, region_id=old_region),
+            leader_key=DecodedLeaderKey(
+                key_level=17,
+                challenge_map_id=503,
+                player_name=old_player,
+            ),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[_roster_decoded(old_player, flags=1)],
+        )
+    )
+    listing_updates: list[bool] = []
+    clears: list[bool] = []
+    roster_updates: list[bool] = []
+    sm.listingChanged.connect(lambda: listing_updates.append(True))
+    sm.cleared.connect(lambda: clears.append(True))
+    sm.rosterChanged.connect(lambda: roster_updates.append(True))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version(new_player, region_id=new_region),
+            applicants=[],
+            roster=[],
+            lfg_unavailable=True,
+            roster_unavailable=True,
+            applicants_unavailable=True,
+        )
+    )
+
+    assert state.player.full_name == new_player
+    assert state.listing is None
+    assert state.leader_key is None
+    assert state.applicants == {}
+    assert state.party_members == {}
+    assert listing_updates == [True]
+    assert clears == [True]
+    assert roster_updates == [True]
+
+
+def test_same_character_missing_realm_partial_snapshot_keeps_transport_domains():
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Host-Realm"),
+            applicants=[_decoded(7, 1, "Applicant-Realm")],
+            roster=[_roster_decoded("Host-Realm", flags=1)],
+        )
+    )
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=_version("Host"),
+            applicants=[],
+            roster=[],
+            lfg_unavailable=True,
+            roster_unavailable=True,
+            applicants_unavailable=True,
+        )
+    )
+
+    assert state.player.full_name == "Host"
+    assert state.listing is not None
+    assert set(state.applicants) == {"7:1"}
+    assert set(state.party_members) == {"host-realm"}

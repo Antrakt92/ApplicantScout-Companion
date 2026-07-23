@@ -6,6 +6,7 @@ import sys
 import threading
 
 import pytest
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -270,6 +271,42 @@ def test_wcl_clients_link_visually_points_to_setup_example_button(
     ]
 
 
+def test_wcl_clients_link_is_keyboard_focusable_and_activatable(
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot,
+    tmp_path: Path,
+):
+    opened: list[str] = []
+    monkeypatch.setattr(
+        settings_mod.QDesktopServices,
+        "openUrl",
+        lambda url: opened.append(url.toString()) or True,
+    )
+    dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""), first_run=True)
+    qtbot.addWidget(dialog)
+    link = dialog.wcl_clients_link
+    dialog.show()
+    dialog._screenshots_warning_timer.stop()
+    dialog._cancel_screenshots_validation_process()
+
+    assert link.focusPolicy() == Qt.FocusPolicy.StrongFocus
+    assert link.accessibleName() == "Open Warcraft Logs API clients"
+    assert "Create Client" in link.accessibleDescription()
+
+    dialog.client_id_edit.setFocus()
+    qtbot.waitUntil(lambda: dialog.client_id_edit.hasFocus())
+    unfocused_image = link.grab().toImage()
+    link.setFocus()
+    qtbot.waitUntil(link.hasFocus)
+    focused_image = link.grab().toImage()
+
+    assert focused_image != unfocused_image
+    qtbot.keyClick(link, Qt.Key.Key_Return)
+
+    assert opened == ["https://www.warcraftlogs.com/api/clients/"]
+    dialog.close()
+
+
 def test_wcl_setup_example_exposes_copyable_create_client_values(
     qtbot, tmp_path: Path, monkeypatch
 ):
@@ -365,23 +402,46 @@ def test_settings_dialog_defers_screenshots_health_check_on_text_change(
 ):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
-    calls: list[Path] = []
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_ready_generation
+        == dialog._screenshots_validation_generation,
+        timeout=2000,
+    )
+    helper = tmp_path / "warning_probe.py"
+    marker = tmp_path / "probe-path.txt"
+    helper.write_text(
+        "\n".join(
+            (
+                "import json",
+                "from pathlib import Path",
+                "import sys",
+                "import tempfile",
+                "path = sys.argv[1]",
+                "marker = Path(sys.argv[2])",
+                "token = sys.argv[3]",
+                "marker.write_text(path, encoding='utf-8')",
+                "result = Path(tempfile.gettempdir()) / f'applicant-scout-path-probe-{token}.json'",
+                "result.write_text(json.dumps({'warning': 'Screenshots folder warning: slow path.'}), encoding='utf-8')",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings_mod,
+        "_screenshots_path_probe_program_args",
+        lambda path, token: (sys.executable, [str(helper), path, str(marker), token]),
+    )
+    path = tmp_path / "sleeping-drive" / "Screenshots"
 
-    def fake_warning(path: Path) -> str:
-        calls.append(path)
-        return "Screenshots folder warning: slow path."
+    dialog.screenshots_edit.setText(str(path))
 
-    monkeypatch.setattr(settings_mod, "screenshots_path_health_warning", fake_warning)
-
-    dialog.screenshots_edit.setText(str(tmp_path / "sleeping-drive" / "Screenshots"))
-
-    assert calls == []
+    assert not marker.exists()
     qtbot.waitUntil(
         lambda: dialog.status_label.text()
         == "Screenshots folder warning: slow path.",
-        timeout=1000,
+        timeout=2000,
     )
-    assert calls == [Path(dialog.screenshots_edit.text())]
+    assert marker.read_text(encoding="utf-8") == str(path)
 
 
 def test_settings_dialog_defers_initial_screenshots_health_check(
@@ -389,24 +449,41 @@ def test_settings_dialog_defers_initial_screenshots_health_check(
 ):
     cfg = _cfg(tmp_path)
     cfg.screenshots_path = tmp_path / "sleeping-drive" / "Screenshots"
-    calls: list[Path] = []
-
-    def fake_warning(path: Path) -> str:
-        calls.append(path)
-        return "Screenshots folder warning: slow path."
-
-    monkeypatch.setattr(settings_mod, "screenshots_path_health_warning", fake_warning)
+    helper = tmp_path / "initial_warning_probe.py"
+    marker = tmp_path / "initial-probe-path.txt"
+    helper.write_text(
+        "\n".join(
+            (
+                "import json",
+                "from pathlib import Path",
+                "import sys",
+                "import tempfile",
+                "path = sys.argv[1]",
+                "marker = Path(sys.argv[2])",
+                "token = sys.argv[3]",
+                "marker.write_text(path, encoding='utf-8')",
+                "result = Path(tempfile.gettempdir()) / f'applicant-scout-path-probe-{token}.json'",
+                "result.write_text(json.dumps({'warning': 'Screenshots folder warning: slow path.'}), encoding='utf-8')",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings_mod,
+        "_screenshots_path_probe_program_args",
+        lambda path, token: (sys.executable, [str(helper), path, str(marker), token]),
+    )
 
     dialog = SettingsDialog(cfg)
     qtbot.addWidget(dialog)
 
-    assert calls == []
+    assert not marker.exists()
     qtbot.waitUntil(
         lambda: dialog.status_label.text()
         == "Screenshots folder warning: slow path.",
-        timeout=1000,
+        timeout=2000,
     )
-    assert calls == [cfg.screenshots_path]
+    assert marker.read_text(encoding="utf-8") == str(cfg.screenshots_path)
 
 
 def test_settings_dialog_reuses_one_path_probe_for_warning_and_autosave(
@@ -422,24 +499,45 @@ def test_settings_dialog_reuses_one_path_probe_for_warning_and_autosave(
         timeout=1000,
     )
     path = tmp_path / "other" / "_retail_" / "Screenshots"
-    calls: list[Path] = []
+    helper = tmp_path / "successful_probe.py"
+    calls_path = tmp_path / "successful-probe-calls.txt"
+    helper.write_text(
+        "\n".join(
+            (
+                "import json",
+                "from pathlib import Path",
+                "import sys",
+                "import tempfile",
+                "path = sys.argv[1]",
+                "calls = Path(sys.argv[2])",
+                "token = sys.argv[3]",
+                "with calls.open('a', encoding='utf-8') as stream: stream.write(path + '\\n')",
+                "result = Path(tempfile.gettempdir()) / f'applicant-scout-path-probe-{token}.json'",
+                "result.write_text(json.dumps({'warning': None}), encoding='utf-8')",
+            )
+        ),
+        encoding="utf-8",
+    )
     saved: list[str] = []
     monkeypatch.setattr(
         settings_mod,
-        "screenshots_path_health_warning",
-        lambda candidate: calls.append(candidate) or None,
+        "_screenshots_path_probe_program_args",
+        lambda raw_path, token: (
+            sys.executable,
+            [str(helper), raw_path, str(calls_path), token],
+        ),
     )
     dialog.valuesChanged.connect(lambda values: saved.append(values.screenshots_path))
 
     dialog.screenshots_edit.setText(str(path))
     assert not dialog.flush_pending_values()
-    qtbot.waitUntil(lambda: bool(saved), timeout=1000)
+    qtbot.waitUntil(lambda: bool(saved), timeout=2000)
 
-    assert calls == [path]
+    assert calls_path.read_text(encoding="utf-8").splitlines() == [str(path)]
     assert saved == [str(path)]
 
 
-def test_settings_dialog_ignores_stale_path_probe_result(
+def test_settings_dialog_reselecting_same_path_triggers_retry(
     qtbot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -449,51 +547,43 @@ def test_settings_dialog_ignores_stale_path_probe_result(
     qtbot.waitUntil(
         lambda: dialog._screenshots_validation_ready_generation
         == dialog._screenshots_validation_generation,
-        timeout=1000,
+        timeout=2000,
     )
-    first = tmp_path / "first" / "_retail_" / "Screenshots"
-    second = tmp_path / "second" / "_retail_" / "Screenshots"
-    first_started = threading.Event()
-    release_first = threading.Event()
-    calls: list[Path] = []
+    current_path = dialog.screenshots_edit.text().strip()
+    helper = tmp_path / "same_path_probe.py"
+    helper.write_text(
+        "\n".join(
+            (
+                "import json",
+                "from pathlib import Path",
+                "import sys",
+                "import tempfile",
+                "token = sys.argv[2]",
+                "result = Path(tempfile.gettempdir()) / f'applicant-scout-path-probe-{token}.json'",
+                "result.write_text(json.dumps({'warning': None}), encoding='utf-8')",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings_mod,
+        "_screenshots_path_probe_program_args",
+        lambda raw_path, token: (sys.executable, [str(helper), raw_path, token]),
+    )
+    monkeypatch.setattr(
+        settings_mod.QFileDialog,
+        "getExistingDirectory",
+        lambda *_args, **_kwargs: current_path,
+    )
     saved: list[str] = []
-
-    def probe(path: Path) -> str | None:
-        calls.append(path)
-        if path == first:
-            first_started.set()
-            if not release_first.wait(ASYNC_TEST_BLOCK_TIMEOUT):
-                raise RuntimeError("stale path probe timed out")
-            return "Screenshots folder warning: stale result."
-        return None
-
-    monkeypatch.setattr(settings_mod, "screenshots_path_health_warning", probe)
     dialog.valuesChanged.connect(lambda values: saved.append(values.screenshots_path))
-    fallback = _fallback_release(release_first)
-    try:
-        dialog.screenshots_edit.setText(str(first))
-        assert not dialog.flush_pending_values()
-        assert first_started.wait(1)
 
-        dialog.screenshots_edit.setText(str(second))
-        assert dialog._autosave_timer.isActive()
-        qtbot.waitUntil(lambda: saved == [str(second)], timeout=1000)
-        assert not dialog._autosave_timer.isActive()
-        qtbot.wait(750)
-        assert saved == [str(second)]
-
-        release_first.set()
-        qtbot.wait(100)
-        assert calls.count(first) == 1
-        assert calls.count(second) == 1
-        assert dialog.current_screenshots_warning() is None
-        assert "stale result" not in dialog.status_label.text()
-    finally:
-        release_first.set()
-        fallback.cancel()
+    dialog._browse_screenshots()
+    assert not dialog.flush_pending_values()
+    qtbot.waitUntil(lambda: saved == [current_path], timeout=2000)
 
 
-def test_settings_dialog_isolated_path_probes_supersede_stuck_workers(
+def test_settings_dialog_path_probes_supersede_stuck_same_volume_paths(
     qtbot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -528,11 +618,6 @@ def test_settings_dialog_isolated_path_probes_supersede_stuck_workers(
             )
         ),
         encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        settings_mod,
-        "_requires_isolated_screenshots_probe",
-        lambda _path: True,
     )
     monkeypatch.setattr(
         settings_mod,
@@ -575,10 +660,10 @@ def test_settings_dialog_isolated_path_probes_supersede_stuck_workers(
         qtbot.wait(100)
         assert saved == [str(valid)]
     finally:
-        dialog._cancel_isolated_screenshots_validation()
+        dialog._cancel_screenshots_validation_process()
 
 
-def test_settings_dialog_isolated_path_probe_timeout_is_determinate(
+def test_settings_dialog_path_probe_timeout_is_determinate(
     qtbot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -592,11 +677,6 @@ def test_settings_dialog_isolated_path_probe_timeout_is_determinate(
     )
     helper = tmp_path / "slow_path_probe.py"
     helper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
-    monkeypatch.setattr(
-        settings_mod,
-        "_requires_isolated_screenshots_probe",
-        lambda _path: True,
-    )
     monkeypatch.setattr(
         settings_mod,
         "_screenshots_path_probe_program_args",
@@ -620,7 +700,103 @@ def test_settings_dialog_isolated_path_probe_timeout_is_determinate(
         assert seen == []
         assert not dialog.prepare_quit()
     finally:
-        dialog._cancel_isolated_screenshots_validation()
+        dialog._cancel_screenshots_validation_process()
+
+
+def test_settings_dialog_reject_kills_path_probe_and_removes_result(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_ready_generation
+        == dialog._screenshots_validation_generation,
+        timeout=2000,
+    )
+    helper = tmp_path / "cleanup_probe.py"
+    token_marker = tmp_path / "cleanup-probe-token.txt"
+    helper.write_text(
+        "\n".join(
+            (
+                "from pathlib import Path",
+                "import sys",
+                "import tempfile",
+                "import time",
+                "token = sys.argv[3]",
+                "Path(sys.argv[2]).write_text(token, encoding='utf-8')",
+                "result = Path(tempfile.gettempdir()) / f'applicant-scout-path-probe-{token}.json'",
+                "result.write_text('partial', encoding='utf-8')",
+                "time.sleep(30)",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings_mod,
+        "_screenshots_path_probe_program_args",
+        lambda raw_path, token: (
+            sys.executable,
+            [str(helper), raw_path, str(token_marker), token],
+        ),
+    )
+
+    dialog.screenshots_edit.setText(
+        str(tmp_path / "offline" / "_retail_" / "Screenshots")
+    )
+    assert not dialog.flush_pending_values()
+    qtbot.waitUntil(token_marker.exists, timeout=2000)
+    token = token_marker.read_text(encoding="utf-8")
+    result_path = settings_mod._screenshots_path_probe_result_path(token)
+    qtbot.waitUntil(result_path.exists, timeout=1000)
+
+    dialog.reject()
+
+    assert dialog._screenshots_validation_process is None
+    assert not dialog._screenshots_validation_process_timeout.isActive()
+    assert not result_path.exists()
+
+
+def test_bounded_screenshots_path_probe_times_out_and_removes_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    helper = tmp_path / "bounded_probe.py"
+    token_marker = tmp_path / "bounded-probe-token.txt"
+    helper.write_text(
+        "\n".join(
+            (
+                "from pathlib import Path",
+                "import sys",
+                "import tempfile",
+                "import time",
+                "token = sys.argv[3]",
+                "Path(sys.argv[2]).write_text(token, encoding='utf-8')",
+                "result = Path(tempfile.gettempdir()) / f'applicant-scout-path-probe-{token}.json'",
+                "result.write_text('partial', encoding='utf-8')",
+                "time.sleep(30)",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings_mod,
+        "_screenshots_path_probe_program_args",
+        lambda raw_path, token: (
+            sys.executable,
+            [str(helper), raw_path, str(token_marker), token],
+        ),
+    )
+
+    warning = settings_mod.run_bounded_screenshots_path_probe(
+        tmp_path / "offline" / "_retail_" / "Screenshots",
+        timeout_ms=200,
+    )
+
+    assert warning == settings_mod.SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING
+    token = token_marker.read_text(encoding="utf-8")
+    assert not settings_mod._screenshots_path_probe_result_path(token).exists()
 
 
 def test_screenshots_path_probe_command_emits_strict_json(
@@ -703,28 +879,38 @@ def test_settings_dialog_slow_path_probe_keeps_gui_responsive(
         timeout=1000,
     )
     path = tmp_path / "sleeping-drive" / "_retail_" / "Screenshots"
-    probe_started = threading.Event()
-    release_probe = threading.Event()
+    helper = tmp_path / "responsive_probe.py"
+    marker = tmp_path / "responsive-probe.started"
+    helper.write_text(
+        "\n".join(
+            (
+                "from pathlib import Path",
+                "import sys",
+                "import time",
+                "Path(sys.argv[2]).write_text('started', encoding='utf-8')",
+                "time.sleep(30)",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings_mod,
+        "_screenshots_path_probe_program_args",
+        lambda raw_path, token: (
+            sys.executable,
+            [str(helper), raw_path, str(marker), token],
+        ),
+    )
     gui_ticks: list[bool] = []
-
-    def slow_probe(_path: Path) -> None:
-        probe_started.set()
-        if not release_probe.wait(ASYNC_TEST_BLOCK_TIMEOUT):
-            raise RuntimeError("slow path probe timed out")
-        return None
-
-    monkeypatch.setattr(settings_mod, "screenshots_path_health_warning", slow_probe)
-    fallback = _fallback_release(release_probe)
     try:
         dialog.screenshots_edit.setText(str(path))
         assert not dialog.flush_pending_values()
-        assert probe_started.wait(1)
+        qtbot.waitUntil(marker.exists, timeout=2000)
 
         settings_mod.QTimer.singleShot(0, lambda: gui_ticks.append(True))
         qtbot.waitUntil(lambda: gui_ticks == [True], timeout=500)
     finally:
-        release_probe.set()
-        fallback.cancel()
+        dialog._cancel_screenshots_validation_process()
 
 
 def test_settings_dialog_does_not_emit_values_changed_for_suspicious_screenshots_path(

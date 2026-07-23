@@ -131,10 +131,18 @@ def screenshots_path_validation_error(path: Path) -> str | None:
     return screenshots_path_health_warning(path)
 
 
+def screenshots_path_candidate(cfg: Config) -> Path:
+    """Derive the configured Screenshots path without touching the filesystem."""
+    if cfg.screenshots_path is not None:
+        return Path(cfg.screenshots_path)
+    retail_root = _retail_root_from_legacy_path(Path(cfg.chatlog_path))
+    return retail_root / "Screenshots"
+
+
 def resolve_screenshots_path(cfg: Config) -> Path:
     """Return the Screenshots directory without creating inferred bogus roots."""
     if cfg.screenshots_path is not None:
-        screenshots_path = Path(cfg.screenshots_path)
+        screenshots_path = screenshots_path_candidate(cfg)
         if screenshots_path.exists() and screenshots_path.is_file():
             raise ConfigError(
                 f"APSCOUT_SCREENSHOTS_PATH points to a file, not a folder: "
@@ -145,8 +153,8 @@ def resolve_screenshots_path(cfg: Config) -> Path:
             raise ConfigError(warning)
         return screenshots_path
 
-    legacy_path = Path(cfg.chatlog_path)
-    retail_root = _retail_root_from_legacy_path(legacy_path)
+    screenshots_path = screenshots_path_candidate(cfg)
+    retail_root = screenshots_path.parent
     if not retail_root.exists() or not retail_root.is_dir():
         raise ConfigError(
             _screenshots_setup_message(
@@ -159,7 +167,7 @@ def resolve_screenshots_path(cfg: Config) -> Path:
                 f"Inferred WoW retail root does not look like a WoW install: {retail_root}"
             )
         )
-    return retail_root / "Screenshots"
+    return screenshots_path
 
 
 def _user_data_dir() -> Path:

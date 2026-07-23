@@ -9,7 +9,7 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 import httpx
@@ -69,13 +69,13 @@ from .constants import (
     ROLE_LABELS,
     SPEC_SHORT_NAMES,
     MPLUS_ENCOUNTERS,
-    group_id_colour,
-    mplus_dungeon_name_for_activity_id,
     mplus_dungeon_name_for_challenge_map_id,
     percentile_colour,
     rio_score_colour,
 )
 from .compatibility import addon_version_warning
+from . import overlay_presenters as _presenters
+from . import overlay_rows as _overlay_rows
 from .metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
@@ -93,15 +93,12 @@ from .scoring import (
     MPLUS_LIMIT_WEAK_WCL,
     CandidateFit,
     PackageFit,
-    RAID_TARGET_BY_DIFFICULTY_ID,
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
     listing_dungeon_keys,
     mplus_metric_text,
-    mplus_dungeon_fit_rows,
     package_fit,
-    nonnegative_int,
     positive_int,
     role_mplus_view,
     safe_percent,
@@ -371,13 +368,7 @@ class _RaidBossFetchFailure:
     message: str = ""
 
 
-@dataclass(frozen=True)
-class _GroupMarker:
-    colour: str
-    first_visible: bool
-    last_visible: bool
-    position: int
-    size: int
+_GroupMarker = _overlay_rows.GroupMarker
 
 
 def _fetch_identity_for_applicant(
@@ -640,73 +631,29 @@ def _render_tooltip(parent_widget, tip: str, global_pos) -> bool:
 # Fetch states that count as terminal-bad (used as a sort tiebreak so
 # unfetchable applicants sink within their RIO bucket). Module-level frozenset
 # so the pure sort fn can see it without rebuilding per state change.
-_SUNK_STATES: frozenset[str] = frozenset({"error", "not_found"})
-_PROVISIONAL_STATES: frozenset[str] = frozenset({"loading", "pending"})
-_MPLUS_CATEGORY_ID = 2
+_SUNK_STATES = _overlay_rows._SUNK_STATES
+_PROVISIONAL_STATES = _overlay_rows._PROVISIONAL_STATES
+_MPLUS_CATEGORY_ID = _overlay_rows._MPLUS_CATEGORY_ID
 
 
 def _split_composite(composite_id: str) -> tuple[str, int]:
-    """Parse 'aid:m' → ('aid', m). Inverse of the composite-key construction
-    in __main__.StateMachine.apply_snapshot.
-
-    Defensive fallbacks on every edge — missing colon, non-numeric m, empty
-    parts, empty input — never raises. Lives in overlay.py because the only
-    consumers are the sort fn and the delegate-marker build (both overlay-
-    internal). state.py treats applicant_id as opaque; __main__ only constructs
-    it. Single parse point keeps the composite-format invariant local."""
-    if ":" not in composite_id:
-        return composite_id, 1
-    raw, m = composite_id.split(":", 1)
-    try:
-        return raw, int(m)
-    except ValueError:
-        return raw, 1
+    return _overlay_rows.split_composite(composite_id)
 
 
 def _application_count(applicant_ids: Iterable[str]) -> int:
-    """Count distinct Blizzard LFG applications, not rendered member rows."""
-    return len(
-        {
-            raw_aid
-            for applicant_id in applicant_ids
-            if (raw_aid := _split_composite(applicant_id)[0])
-        }
-    )
+    return _overlay_rows.application_count(applicant_ids)
 
 
 def _rio_display_text(applicant: Applicant) -> str:
-    if applicant.main_score > applicant.score and applicant.score:
-        return f"{applicant.score} [{applicant.main_score}]"
-    if applicant.main_score > applicant.score:
-        return f"[{applicant.main_score}]"
-    return str(applicant.score) if applicant.score else "—"
+    return _presenters.rio_display_text(applicant)
 
 
 def _rio_panel_text(applicant: Applicant) -> str:
-    if applicant.main_score > applicant.score and applicant.score:
-        return f"RIO {applicant.score} · main {applicant.main_score}"
-    if applicant.main_score > applicant.score:
-        return f"RIO main {applicant.main_score}"
-    return f"RIO {applicant.score}" if applicant.score else ""
+    return _presenters.rio_panel_text(applicant)
 
 
 def _mplus_fit_source_text(applicant: Applicant) -> str:
-    _metric_label, breakdown, _best, _median = role_mplus_view(applicant)
-    has_wcl = bool(breakdown)
-    has_rio = bool(
-        applicant.rio_profile
-        or applicant.rio_dungeons
-        or applicant.rio_best_key
-        or applicant.rio_timed_at_or_above
-        or effective_rio_score(applicant)
-    )
-    if has_wcl and has_rio:
-        return "WCL + RaiderIO"
-    if has_wcl:
-        return "WCL only"
-    if has_rio:
-        return "RaiderIO only"
-    return "score only"
+    return _presenters.mplus_fit_source_text(applicant)
 
 
 def _sort_applicants_grouped_with_package_fits(
@@ -716,110 +663,13 @@ def _sort_applicants_grouped_with_package_fits(
     package_fit_cache: dict[str, tuple[object, PackageFit]] | None = None,
     fit_cache_context: object = None,
 ) -> tuple[list[Applicant], dict[str, PackageFit], dict[str, CandidateFit]]:
-    """Sort applicants with multi-member group adjacency.
-
-    Unknown/no listing preserves the original max-RIO ordering. Known M+/raid
-    listings rank groups by package fit, not best-member fit, while keeping all
-    members adjacent and leader/member order stable.
-    """
-    apps = list(applicants)
-    package_fits: dict[str, PackageFit] = {}
-    candidate_fits: dict[str, CandidateFit] = {}
-    group_max: dict[str, int] = {}
-    group_fit: dict[str, float] = {}
-    group_confidence: dict[str, float] = {}
-    group_mplus_headline: dict[str, tuple[int, float]] = {}
-    group_has_ready: dict[str, bool] = {}
-    group_has_provisional: dict[str, bool] = {}
-    use_fit = detect_listing_context(listing) in (CONTEXT_MPLUS, CONTEXT_RAID)
-    use_mplus_headline = (
-        not use_fit
-        and listing is not None
-        and listing.category_id == _MPLUS_CATEGORY_ID
+    return _overlay_rows.sort_applicants_grouped_with_package_fits(
+        applicants,
+        listing,
+        package_fit_cache=package_fit_cache,
+        fit_cache_context=fit_cache_context,
+        package_fit_fn=package_fit,
     )
-    group_members: dict[str, list[Applicant]] = {}
-    for a in apps:
-        raw_aid, _ = _split_composite(a.applicant_id)
-        group_members.setdefault(raw_aid, []).append(a)
-        rio_score = effective_rio_score(a)
-        if rio_score > group_max.get(raw_aid, -1):
-            group_max[raw_aid] = rio_score
-        if a.fetch_status not in _SUNK_STATES:
-            group_has_ready[raw_aid] = True
-        if a.fetch_status in _PROVISIONAL_STATES:
-            group_has_provisional[raw_aid] = True
-    if package_fit_cache is not None:
-        for stale_raw_aid in set(package_fit_cache) - set(group_members):
-            package_fit_cache.pop(stale_raw_aid, None)
-    if use_fit:
-        for raw_aid, members in group_members.items():
-            # WHY: state rows mutate in place as WCL/RaiderIO data arrives;
-            # content keys make reuse independent of object and listing identity.
-            fit_cache_key = (
-                fit_cache_context,
-                _listing_render_key(listing),
-                tuple(_freeze_render_value(member) for member in members),
-            )
-            cached_fit = (
-                package_fit_cache.get(raw_aid)
-                if package_fit_cache is not None
-                else None
-            )
-            if cached_fit is not None and cached_fit[0] == fit_cache_key:
-                fit = cached_fit[1]
-            else:
-                fit = package_fit(members, listing)
-                if package_fit_cache is not None:
-                    package_fit_cache[raw_aid] = (fit_cache_key, fit)
-            package_fits[raw_aid] = fit
-            for member, member_fit in zip(members, fit.member_fits, strict=True):
-                candidate_fits[member.applicant_id] = member_fit
-            group_fit[raw_aid] = fit.score
-            group_confidence[raw_aid] = fit.confidence
-    elif use_mplus_headline:
-        for raw_aid, members in group_members.items():
-            group_mplus_headline[raw_aid] = min(
-                (_mplus_headline_sort_score(member) for member in members),
-                default=(0, 0.0),
-            )
-
-    def _key(a: Applicant):
-        raw_aid, member_idx = _split_composite(a.applicant_id)
-        gmax = group_max.get(raw_aid, 0)
-        gfit = group_fit.get(raw_aid, 0.0)
-        gconfidence = group_confidence.get(raw_aid, 0.0)
-        gheadline_key, gheadline_percent = group_mplus_headline.get(raw_aid, (0, 0.0))
-        all_sunk = not group_has_ready.get(raw_aid, False)
-        provisional = group_has_provisional.get(raw_aid, False)
-        sunk = a.fetch_status in _SUNK_STATES
-        if use_fit:
-            no_fit = gfit <= 0.0
-            return (
-                no_fit,
-                provisional if not no_fit else False,
-                all_sunk if no_fit else False,
-                -int(round(gfit)),
-                -gconfidence,
-                -gfit,
-                -gmax,
-                raw_aid,
-                member_idx,
-                sunk,
-            )
-        if use_mplus_headline:
-            return (
-                all_sunk,
-                gheadline_key <= 0,
-                -gheadline_key,
-                -gheadline_percent,
-                -gmax,
-                raw_aid,
-                member_idx,
-                sunk,
-            )
-        return (gmax == 0, -gmax, all_sunk, raw_aid, member_idx, sunk)
-
-    return sorted(apps, key=_key), package_fits, candidate_fits
 
 
 def sort_applicants_grouped(
@@ -835,83 +685,25 @@ def sort_applicants_grouped(
 
 
 def sort_roster_members(members: Iterable[Applicant]) -> list[Applicant]:
-    role_order = {"TANK": 0, "HEALER": 1, "DAMAGER": 2}
-    return sorted(
-        members,
-        key=lambda member: (
-            role_order.get(member.role, 3),
-            -effective_rio_score(member),
-            member.name.lower(),
-        ),
-    )
+    return _overlay_rows.sort_roster_members(members)
 
 
 def _freeze_render_value(value):
-    if is_dataclass(value) and not isinstance(value, type):
-        return tuple(
-            (field.name, _freeze_render_value(getattr(value, field.name)))
-            for field in fields(value)
-        )
-    if isinstance(value, Mapping):
-        return tuple(
-            sorted(
-                (
-                    (
-                        _freeze_render_value(key),
-                        _freeze_render_value(item_value),
-                    )
-                    for key, item_value in value.items()
-                ),
-                key=repr,
-            )
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze_render_value(item) for item in value)
-    if isinstance(value, set):
-        return tuple(sorted((_freeze_render_value(item) for item in value), key=repr))
-    return value
+    return _overlay_rows.freeze_render_value(value)
 
 
 def _listing_render_key(listing: Listing | None) -> object:
-    return _freeze_render_value(listing)
+    return _overlay_rows.listing_render_key(listing)
 
 
 def _mplus_headline_sort_score(applicant: Applicant) -> tuple[int, float]:
-    if applicant.fetch_status in _SUNK_STATES:
-        return (0, 0.0)
-    _metric_label, breakdown, best, _median = role_mplus_view(applicant)
-    return (_highest_mplus_key_level(breakdown), float(best or 0.0))
+    return _overlay_rows.mplus_headline_sort_score(applicant)
 
 
 def _build_group_markers(
     visible_id_by_row: Iterable[tuple[int, str]],
 ) -> dict[int, _GroupMarker]:
-    """Build visible-row grouping metadata for the table paint delegate.
-
-    Only rows whose raw applicant id appears at least twice get markers. The
-    caller passes visible rows so role filters can keep the bracket shape
-    aligned to what the user actually sees.
-    """
-    members_by_raw: dict[str, list[tuple[int, str]]] = {}
-    for row, applicant_id in visible_id_by_row:
-        raw_aid, _member_idx = _split_composite(applicant_id)
-        members_by_raw.setdefault(raw_aid, []).append((row, applicant_id))
-
-    markers: dict[int, _GroupMarker] = {}
-    for raw_aid, members in members_by_raw.items():
-        size = len(members)
-        if size < 2:
-            continue
-        colour = group_id_colour(raw_aid)
-        for position, (row, _applicant_id) in enumerate(members, start=1):
-            markers[row] = _GroupMarker(
-                colour=colour,
-                first_visible=position == 1,
-                last_visible=position == size,
-                position=position,
-                size=size,
-            )
-    return markers
+    return _overlay_rows.build_group_markers(visible_id_by_row)
 
 
 def _minimum_window_width_for_metrics(
@@ -1315,7 +1107,7 @@ class _TooltipTableWidget(QTableWidget):
 
 
 def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
-    return f"{count} {singular if count == 1 else plural or singular + 's'}"
+    return _presenters.count_phrase(count, singular, plural)
 
 
 def _widget_has_focus(widget: QWidget) -> bool:
@@ -1663,6 +1455,7 @@ class SourceTabBar(QWidget):
         layout.addStretch(1)
         self._applicant_count = 0
         self._party_count = 0
+        self._applicant_count_stale = False
         self._party_count_stale = False
         self._active_key = "applicants"
         self.set_counts(applicants=0, party=0)
@@ -1677,12 +1470,31 @@ class SourceTabBar(QWidget):
         self._party_count_stale = bool(stale)
         self._refresh_count_labels()
 
+    def set_applicant_count_stale(self, stale: bool) -> None:
+        self._applicant_count_stale = bool(stale)
+        self._refresh_count_labels()
+
     def _refresh_count_labels(self) -> None:
         applicants_button = self._buttons["applicants"]
-        applicants_button.setText(f"Applicants ({self._applicant_count})")
-        applicants_button.setAccessibleDescription(
-            f"Show {_count_phrase(self._applicant_count, 'application')} in the applicant table."
+        applicant_stale_marker = "?" if self._applicant_count_stale else ""
+        applicants_button.setText(
+            f"Applicants ({self._applicant_count}{applicant_stale_marker})"
         )
+        if self._applicant_count_stale:
+            applicants_button.setToolTip(
+                "The latest valid QR could not read the complete applicant list. "
+                "Showing the last known count for this listing."
+            )
+            applicants_button.setAccessibleDescription(
+                f"Show the last known {_count_phrase(self._applicant_count, 'application')}; "
+                "the latest snapshot did not contain a complete applicant list."
+            )
+        else:
+            applicants_button.setToolTip("")
+            applicants_button.setAccessibleDescription(
+                f"Show {_count_phrase(self._applicant_count, 'application')} "
+                "in the applicant table."
+            )
         stale_marker = "?" if self._party_count_stale else ""
         party_button = self._buttons["party"]
         party_button.setText(f"Party ({self._party_count}{stale_marker})")
@@ -3372,8 +3184,11 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time: float | None = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._last_decode_lfg_unavailable = False
+        self._last_decode_applicants_unavailable = False
         self._last_decode_roster_unavailable = False
         self._addon_version_warning: str | None = None
+        self._restored_listing_pending = False
         self._restored_applicants_pending = False
         self._restored_roster_pending = False
         self._restored_snapshot_saved_at: float | None = None
@@ -3990,12 +3805,22 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._last_decode_lfg_unavailable = bool(
+            getattr(snap, "lfg_unavailable", False)
+        )
+        self._last_decode_applicants_unavailable = (
+            self._last_decode_lfg_unavailable
+            or bool(getattr(snap, "applicants_unavailable", False))
+        )
         self._last_decode_roster_unavailable = bool(
             getattr(snap, "roster_unavailable", False)
         )
         version = getattr(snap, "version", None)
         self._addon_version_warning = addon_version_warning(
             getattr(version, "addon_version", None)
+        )
+        self._tab_bar.set_applicant_count_stale(
+            self._last_decode_applicants_unavailable
         )
         self._tab_bar.set_party_count_stale(self._last_decode_roster_unavailable)
         self._refresh_health_label()
@@ -4011,8 +3836,12 @@ class OverlayWindow(QMainWindow):
             return
 
         terminal_clear = bool(getattr(snap, "terminal_clear", False))
-        applicants_authoritative = terminal_clear or not bool(
+        listing_authoritative = terminal_clear or not bool(
             getattr(snap, "lfg_unavailable", False)
+        )
+        applicants_authoritative = terminal_clear or not (
+            bool(getattr(snap, "lfg_unavailable", False))
+            or bool(getattr(snap, "applicants_unavailable", False))
         )
         roster_authoritative = terminal_clear or not bool(
             getattr(snap, "roster_unavailable", False)
@@ -4028,6 +3857,8 @@ class OverlayWindow(QMainWindow):
             and not terminal_clear
         )
 
+        if listing_authoritative:
+            self._restored_listing_pending = False
         if applicants_authoritative:
             self._restored_applicants_pending = False
         if roster_authoritative:
@@ -4057,6 +3888,7 @@ class OverlayWindow(QMainWindow):
     ) -> None:
         """Mark a persisted snapshot as provisional until a fresh QR arrives."""
         now = time.time()
+        self._restored_listing_pending = True
         self._restored_applicants_pending = True
         self._restored_roster_pending = True
         self._restored_snapshot_saved_at = saved_at
@@ -4065,17 +3897,28 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._last_decode_lfg_unavailable = False
+        self._last_decode_applicants_unavailable = False
         self._last_decode_roster_unavailable = False
+        self._tab_bar.set_applicant_count_stale(False)
         self._tab_bar.set_party_count_stale(False)
         self._refresh_health_label()
 
     def restored_snapshot_pending(self) -> bool:
-        return self._restored_applicants_pending or self._restored_roster_pending
+        return (
+            self._restored_listing_pending
+            or self._restored_applicants_pending
+            or self._restored_roster_pending
+        )
 
     def restored_snapshot_pending_surfaces(self) -> tuple[bool, bool]:
         return self._restored_applicants_pending, self._restored_roster_pending
 
+    def restored_snapshot_listing_pending(self) -> bool:
+        return self._restored_listing_pending
+
     def note_restored_snapshot_expired(self) -> None:
+        self._restored_listing_pending = False
         self._restored_applicants_pending = False
         self._restored_roster_pending = False
         self._restored_snapshot_saved_at = None
@@ -4201,13 +4044,25 @@ class OverlayWindow(QMainWindow):
             self._health_label.setAccessibleDescription(self._addon_version_warning)
             return
         last = self._last_decode_time
-        if self._last_decode_roster_unavailable and last is not None:
+        if (
+            self._last_decode_applicants_unavailable
+            or self._last_decode_roster_unavailable
+        ) and last is not None:
             delta = max(0.0, time.time() - last)
             self._health_label.setText("Shot partial")
             self._set_status_chip_state(self._health_label, "warning")
+            stale_surfaces: list[str] = []
+            if self._last_decode_lfg_unavailable:
+                stale_surfaces.append("Group Finder listing and Applicants")
+            elif self._last_decode_applicants_unavailable:
+                stale_surfaces.append("Applicants")
+            if self._last_decode_roster_unavailable:
+                stale_surfaces.append("Party")
             detail = (
-                "The latest valid QR omitted the group roster; Party shows "
-                f"the last known members.\n{_format_age(delta)}"
+                "The latest valid QR could not provide complete "
+                + " and ".join(stale_surfaces)
+                + " data; last known state is retained.\n"
+                + _format_age(delta)
             )
             self._health_label.setToolTip(detail)
             self._health_label.setAccessibleDescription(detail)
@@ -4493,13 +4348,6 @@ class OverlayWindow(QMainWindow):
             return
         listing = self._state.listing
         self._tab_bar.set_target_key(listing.key_level if listing is not None else 0)
-
-    def _active_sorted_rows(self) -> list[Applicant]:
-        if self._active_tab == "party":
-            return sort_roster_members(self._state.party_members.values())
-        return sort_applicants_grouped(
-            self._state.applicants.values(), self._effective_listing()
-        )
 
     def _resolve_visible_id(self) -> str | None:
         """Resolve which row should feed the info panel.
@@ -5529,10 +5377,6 @@ class OverlayWindow(QMainWindow):
         self._discard_fetch_by_storage_key(identity.storage_key)
         self._fetches_in_flight[identity.storage_key] = identity
 
-    def _discard_fetch_if_current(self, identity: _FetchIdentity) -> None:
-        if self._fetches_in_flight.get(identity.storage_key) == identity:
-            self._discard_fetch_by_storage_key(identity.storage_key)
-
     def _discard_fetch_by_storage_key(self, storage_key: str) -> None:
         identity = self._fetches_in_flight.pop(storage_key, None)
         if identity is None:
@@ -6487,17 +6331,7 @@ def _clamp_geometry_to_screen(
 
 
 def _text_colour_for_bg(bg_hex: str | None) -> str:
-    """Return readable foreground for saturated percentile/class badges."""
-    if not bg_hex or len(bg_hex) != 7 or not bg_hex.startswith("#"):
-        return "#ffffff"
-    try:
-        red = int(bg_hex[1:3], 16)
-        green = int(bg_hex[3:5], 16)
-        blue = int(bg_hex[5:7], 16)
-    except ValueError:
-        return "#ffffff"
-    luminance = (0.299 * red) + (0.587 * green) + (0.114 * blue)
-    return "#000000" if luminance >= 145 else "#ffffff"
+    return _presenters.text_colour_for_bg(bg_hex)
 
 
 def _raid_dual_cell(
@@ -6533,75 +6367,21 @@ def _raid_cell_visuals(
     median: object,
     fetch_status: str,
 ) -> tuple[str, str | None, str | None]:
-    """Returns (text, foreground_hex|None, background_hex|None).
-    Pure function — no Qt dependency — keeps cell-rendering logic testable
-    and deterministic. None on fg/bg means "leave at default"."""
-    if fetch_status in {"pending", "loading"}:
-        return "…", "#888", None
-    if fetch_status == "error":
-        return "?", "#ff5555", None
-    if fetch_status == "not_found":
-        return "—", "#5d5d5d", None
-    best_pct = safe_percent(best)
-    median_pct = safe_percent(median)
-    if best_pct is None and median_pct is None:
-        return "—", "#5d5d5d", None
-
-    best_str = f"{int(round(best_pct))}" if best_pct is not None else "—"
-    # When median is missing (single-run, or only one encounter logged at this
-    # difficulty), the literal "/—" added visual noise without information
-    # ("89/—" reads like a broken value). Suppress the slash and second value
-    # entirely; row-hover panel carries the explanation.
-    if median_pct is None:
-        text = best_str if best_pct is not None else "—"
-    else:
-        text = f"{best_str}/{int(round(median_pct))}"
-    bg = percentile_colour(best_pct) if best_pct is not None else None
-    fg = _text_colour_for_bg(bg) if bg is not None else None
-    return text, fg, bg
+    return _presenters.raid_cell_visuals(best, median, fetch_status)
 
 
 def _raid_values_for_key(
     applicant: Applicant, key: str
 ) -> tuple[float | None, float | None]:
-    if key == "N":
-        return applicant.raid_normal, applicant.raid_normal_median
-    if key == "H":
-        return applicant.raid_heroic, applicant.raid_heroic_median
-    if key == "M":
-        return applicant.raid_mythic, applicant.raid_mythic_median
-    return None, None
+    return _presenters.raid_values_for_key(applicant, key)
 
 
 def _raid_metric_text_for_key(applicant: Applicant, key: str) -> str:
-    best, median = _raid_values_for_key(applicant, key)
-    text, _fg, _bg = _raid_cell_visuals(best, median, "ready")
-    return "" if text == "—" else text
+    return _presenters.raid_metric_text_for_key(applicant, key)
 
 
 def _raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> str:
-    if source == "raid_exact":
-        raw = _raid_metric_text_for_key(applicant, target)
-        return raw
-    order = ["N", "H", "M"]
-    target_idx = order.index(target) if target in order else -1
-    candidate_keys: list[str] = []
-    if source == "raid_higher_fallback" and target_idx >= 0:
-        candidate_keys = order[target_idx + 1 :]
-    elif source == "raid_lower_fallback" and target_idx >= 0:
-        candidate_keys = list(reversed(order[:target_idx]))
-    best_key = ""
-    best_score = -1.0
-    for key in candidate_keys:
-        best, median = _raid_values_for_key(applicant, key)
-        score = safe_percent(best)
-        if score is None:
-            score = safe_percent(median)
-        if score is not None and score > best_score:
-            best_key = key
-            best_score = score
-    raw = _raid_metric_text_for_key(applicant, best_key)
-    return f"{best_key} {raw}" if best_key and raw else ""
+    return _presenters.raid_fit_evidence_text(applicant, target, source)
 
 
 def _raid_fit_cell(
@@ -6669,9 +6449,7 @@ def _raid_package_cell(package: PackageFit) -> QTableWidgetItem:
 
 
 def _raid_target_key_for_listing(listing: Listing | None) -> str:
-    if detect_listing_context(listing) != CONTEXT_RAID or listing is None:
-        return ""
-    return RAID_TARGET_BY_DIFFICULTY_ID.get(listing.difficulty_id, "")
+    return _presenters.raid_target_key_for_listing(listing)
 
 
 def _raid_target_col_for_listing(listing: Listing | None) -> int | None:
@@ -6680,102 +6458,39 @@ def _raid_target_col_for_listing(listing: Listing | None) -> int | None:
 
 
 def _mplus_key_level(entry: object) -> int:
-    if not isinstance(entry, dict):
-        return 0
-    return positive_int(entry.get("key_level"))
+    return _overlay_rows.mplus_key_level(entry)
 
 
 def _mplus_run_count(entry: object) -> int:
-    if not isinstance(entry, dict):
-        return 0
-    return nonnegative_int(entry.get("run_count"))
+    return _presenters.mplus_run_count(entry)
 
 
 def _mplus_sort_key(entry: dict) -> tuple[int, str]:
-    name = entry.get("name")
-    return (-_mplus_key_level(entry), str(name or ""))
+    return _presenters.mplus_sort_key(entry)
 
 
 def _normalise_dungeon_name(value: object) -> str:
-    return " ".join(str(value or "").strip().casefold().split())
+    return _presenters.normalise_dungeon_name(value)
 
 
 def _rio_dungeon_row_key(name: str, listing: Listing | None) -> str:
-    row_key = _normalise_dungeon_name(name)
-    if listing is None:
-        return row_key
-    mapped_name = mplus_dungeon_name_for_activity_id(listing.activity_id)
-    mapped_key = _normalise_dungeon_name(mapped_name)
-    if mapped_key and row_key == _normalise_dungeon_name(listing.dungeon_name):
-        return mapped_key
-    return row_key
+    return _presenters.rio_dungeon_row_key(name, listing)
 
 
 def _rio_dungeon_rows_by_name(
     applicant: Applicant, listing: Listing | None
 ) -> dict[str, dict[str, object]]:
-    rows: dict[str, dict[str, object]] = {}
-    for entry in applicant.rio_dungeons:
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("name") or "").strip()
-        key = positive_int(entry.get("key_level"))
-        row_key = _rio_dungeon_row_key(name, listing)
-        if not name or not row_key or key <= 0:
-            continue
-        existing = rows.get(row_key)
-        if existing is None or key > positive_int(existing.get("key_level")):
-            rows[row_key] = {"name": name, "key_level": key}
-    return rows
+    return _presenters.rio_dungeon_rows_by_name(applicant, listing)
 
 
 def _wcl_dungeon_rows_by_name(
     applicant: Applicant, listing: Listing | None
 ) -> dict[str, dict[str, object]]:
-    rows: dict[str, dict[str, object]] = {}
-    if applicant.fetch_status != "ready":
-        return rows
-    fit_rows = mplus_dungeon_fit_rows(applicant, listing)
-    if fit_rows:
-        for row in fit_rows:
-            row_key = _normalise_dungeon_name(row.dungeon_name)
-            if row_key:
-                rows[row_key] = {
-                    "name": row.dungeon_name,
-                    "key_level": row.key_level,
-                    "text": row.text,
-                    "colour": row.colour,
-                }
-        return rows
-
-    _metric_label, breakdown, _best, _median = role_mplus_view(applicant)
-    for entry in sorted(
-        [entry for entry in breakdown if isinstance(entry, dict)],
-        key=_mplus_sort_key,
-    ):
-        name = str(entry.get("name") or "").strip()
-        row_key = _normalise_dungeon_name(name)
-        if not name or not row_key:
-            continue
-        best = safe_percent(entry.get("parse_percent"))
-        rows[row_key] = {
-            "name": name,
-            "key_level": _mplus_key_level(entry),
-            "text": _mplus_dungeon_metric_text(entry),
-            "colour": percentile_colour(best) if best is not None else "#2a2a33",
-        }
-    return rows
+    return _presenters.wcl_dungeon_rows_by_name(applicant, listing)
 
 
 def _enabled_raid_difficulty_keys(metric_preferences: MetricPreferences) -> list[str]:
-    keys: list[str] = []
-    if metric_preferences.raid_normal:
-        keys.append("N")
-    if metric_preferences.raid_heroic:
-        keys.append("H")
-    if metric_preferences.raid_mythic:
-        keys.append("M")
-    return keys
+    return _presenters.enabled_raid_difficulty_keys(metric_preferences)
 
 
 def _raid_boss_fetch_failure_key(
@@ -6797,127 +6512,29 @@ def _raid_boss_fetch_failure_key(
 def _raid_boss_rows_for_display(
     applicant: Applicant, difficulties: Iterable[str]
 ) -> list[dict[str, object]]:
-    difficulty_keys = [key for key in difficulties if key in {"M", "H", "N"}]
-    parse_rows_by_difficulty = {
-        key: _raid_boss_parse_rows_by_encounter(applicant, key)
-        for key in difficulty_keys
-    }
-    boss_kills_by_difficulty: dict[str, list[object]] = {}
-    for key in difficulty_keys:
-        progress = applicant.rio_raid_progress.get(key, {})
-        boss_kills = progress.get("boss_kills") if isinstance(progress, dict) else None
-        boss_kills_by_difficulty[key] = (
-            boss_kills if isinstance(boss_kills, list) else []
-        )
-    rows: list[dict[str, object]] = []
-    for idx, (_alias, encounter_id, name) in enumerate(CURRENT_RAID_ENCOUNTERS):
-        kill_parts: list[str] = []
-        parse_parts: list[str] = []
-        parse_segments: list[dict[str, str]] = []
-        colour_overalls: list[float] = []
-        for difficulty in difficulty_keys:
-            parse_rows = parse_rows_by_difficulty[difficulty]
-            boss_kills = boss_kills_by_difficulty[difficulty]
-            parse_row = parse_rows.get(encounter_id, {})
-            overall = safe_percent(parse_row.get("overall"))
-            ilvl = safe_percent(parse_row.get("ilvl"))
-            value = _raid_parse_pair_text(overall, ilvl)
-            kills = 0
-            if idx < len(boss_kills):
-                kills = nonnegative_int(boss_kills[idx])
-            if kills > 0:
-                kill_parts.append(f"{difficulty}{kills}")
-            if value:
-                text = f"{difficulty} {value}"
-                parse_parts.append(text)
-                parse_segments.append(
-                    {
-                        "text": text,
-                        "colour": (
-                            percentile_colour(overall)
-                            if overall is not None
-                            else "#2a2a33"
-                        ),
-                    }
-                )
-                if overall is not None:
-                    colour_overalls.append(overall)
-        colour = percentile_colour(max(colour_overalls)) if colour_overalls else ""
-        rows.append(
-            {
-                "name": name,
-                "rio_text": " · ".join(kill_parts),
-                "wcl_text": "WCL" if parse_parts else "",
-                "value": " · ".join(parse_parts),
-                "colour": colour,
-                "segments": parse_segments,
-            }
-        )
-    return rows
+    return _presenters.raid_boss_rows_for_display(applicant, difficulties)
 
 
 def _raid_boss_parse_rows_by_encounter(
     applicant: Applicant, difficulty: str
 ) -> dict[int, dict[str, object]]:
-    rows: dict[int, dict[str, object]] = {}
-    raw_rows = applicant.raid_boss_parses.get(difficulty, [])
-    if not isinstance(raw_rows, list):
-        return rows
-    for row in raw_rows:
-        if not isinstance(row, dict):
-            continue
-        encounter_id = positive_int(row.get("encounter_id"))
-        if encounter_id <= 0:
-            continue
-        rows[encounter_id] = row
-    return rows
+    return _presenters.raid_boss_parse_rows_by_encounter(applicant, difficulty)
 
 
 def _raid_parse_pair_text(overall: float | None, ilvl: float | None) -> str:
-    if overall is None and ilvl is None:
-        return ""
-    left = str(int(round(overall))) if overall is not None else "-"
-    right = str(int(round(ilvl))) if ilvl is not None else "-"
-    return f"{left}-{right}"
+    return _presenters.raid_parse_pair_text(overall, ilvl)
 
 
 def _raid_parse_segments_html(segments: list[object]) -> str:
-    parts: list[str] = []
-    for segment in segments:
-        if not isinstance(segment, dict):
-            continue
-        text = str(segment.get("text") or "").strip()
-        colour = str(segment.get("colour") or "#2a2a33")
-        if not text:
-            continue
-        parts.append(
-            "<span "
-            f'style="background-color: {html.escape(colour, quote=True)}; '
-            f"color: {_text_colour_for_bg(colour)}; "
-            'font-size: 11px; font-weight: bold;">'
-            f"{html.escape(text)}</span>"
-        )
-    return "&nbsp;".join(parts)
+    return _presenters.raid_parse_segments_html(segments)
 
 
 def _highest_mplus_key_level(breakdown: Iterable[object]) -> int:
-    highest = 0
-    for entry in breakdown:
-        highest = max(highest, _mplus_key_level(entry))
-    return highest
+    return _overlay_rows.highest_mplus_key_level(breakdown)
 
 
 def _mplus_breakdown_all_single_run(breakdown: Iterable[object]) -> bool:
-    seen_valid = False
-    for entry in breakdown:
-        if not isinstance(entry, dict):
-            continue
-        if safe_percent(entry.get("parse_percent")) is None:
-            continue
-        seen_valid = True
-        if _mplus_run_count(entry) != 1:
-            return False
-    return seen_valid
+    return _presenters.mplus_breakdown_all_single_run(breakdown)
 
 
 def _mplus_cell_visuals(
@@ -6967,13 +6584,7 @@ def _mplus_cell_visuals(
 
 
 def _mplus_dungeon_metric_text(entry: object) -> str:
-    if not isinstance(entry, dict):
-        return "—"
-    return mplus_metric_text(
-        entry.get("parse_percent"),
-        entry.get("median_percent"),
-        entry.get("run_count"),
-    )
+    return _presenters.mplus_dungeon_metric_text(entry)
 
 
 def _mplus_dual_cell(
@@ -7018,57 +6629,15 @@ def _mplus_group_cell(
 
 
 def _format_age(delta_sec: float) -> str:
-    """Formats "X ago" relative-time strings for the health indicator.
-
-    24h cap returns "—" so a forgotten companion left running overnight
-    doesn't display "27h ago" garbage — at that age the indicator is
-    meaningless. Bands are coarse on purpose: the goal is failure-mode
-    spotting (decode pipeline alive vs dead), not millisecond accuracy."""
-    if delta_sec >= 86400.0:  # 24h
-        return "—"
-    if delta_sec >= 3600.0:
-        return f"{int(delta_sec // 3600)}h ago"
-    if delta_sec >= 60.0:
-        return f"{int(delta_sec // 60)}m ago"
-    return f"{int(delta_sec)}s ago"
+    return _presenters.format_age(delta_sec)
 
 
 def _format_duration(delta_sec: float) -> str:
-    if delta_sec >= 86400.0:
-        return "24h+"
-    if delta_sec >= 3600.0:
-        return f"{int(delta_sec // 3600)}h"
-    if delta_sec >= 60.0:
-        return f"{int(delta_sec // 60)}m"
-    return f"{int(delta_sec)}s"
+    return _presenters.format_duration(delta_sec)
 
 
 def _format_listing_tooltip(listing: Listing | None) -> str:
-    """Composes the title-bar tooltip text from listing_name + comment.
-
-    Both fields come from the in-game LFG UI as user-typed strings — `<3`,
-    `<-->`, etc. are legitimate content. Qt's tooltip widget auto-detects
-    HTML mode by `<` presence, which would mangle plain-text comments.
-    html.escape forces plain-text rendering; literal `\\n` line breaks are
-    preserved (not converted to entities) so the two-line layout still works.
-
-    Dedup safety: some addons mirror comment into listing_name. When both
-    fields strip-equal we emit one line, not two."""
-    if listing is None:
-        return ""
-    name_raw = (listing.listing_name or "").strip()
-    comment_raw = (listing.comment or "").strip()
-    if not name_raw and not comment_raw:
-        return ""
-    name = html.escape(name_raw, quote=False)
-    comment = html.escape(comment_raw, quote=False)
-    if not name:
-        return comment
-    if not comment:
-        return name
-    if name_raw == comment_raw:
-        return name
-    return f"{name}\n\n{comment}"
+    return _presenters.format_listing_tooltip(listing)
 
 
 def _percent_text(value: object) -> str:

@@ -134,10 +134,14 @@ score/progress context.
 
 Before sharing support material publicly, redact `/apscout status` output,
 `/apscout taintcheck` output, companion logs, QR screenshots, manual decode
-output, `config.env`, `token.json`, and `character-cache.json`. These can
-include WCL Client ID/Secret, OAuth access token, character names, realm names,
-listing titles/comments, screenshots folder paths, keystone/listing metadata,
-and WCL/RaiderIO evidence.
+output, `config.env`, `token.json`, `character-cache.json`,
+`last-live-snapshot.json`, and `screenshot-manual-index-v2-*.json`. Treat the
+entire `%LOCALAPPDATA%\applicant-scout\config\` and
+`%LOCALAPPDATA%\applicant-scout\cache\` directories as private; do not attach
+either directory wholesale. These files can include WCL Client ID/Secret,
+OAuth access token, character names, realm names, applicant/roster snapshots,
+listing titles/comments, screenshots folder paths, absolute screenshot file
+paths, keystone/listing metadata, and WCL/RaiderIO evidence.
 
 QR screenshots may remain if the companion is absent, interrupted, pointed at
 the wrong folder, or the Screenshots folder is synced/shared before cleanup.
@@ -259,9 +263,10 @@ through the slash commands below.
 ## Version Compatibility
 
 ApplicantScout Companion supports the latest published ApplicantScout WoW addon
-release. This source tree supports complete logical APS1 snapshots through v9
-and bounded v10 overflow fragment envelopes. Fragmented snapshots are applied
-only after exact reassembly of the original v9 payload.
+release. This source tree supports ordinary logical APS1 snapshots through v9,
+applicant-partial authority frames on v11, and bounded v10 overflow fragment
+envelopes. Fragmented snapshots are applied only after exact reassembly of the
+complete inner logical payload.
 
 ## Development
 

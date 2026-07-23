@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
@@ -57,7 +58,7 @@ from . import __version__
 from .config import (
     Config,
     ConfigError,
-    resolve_screenshots_path,
+    screenshots_path_candidate,
     screenshots_path_health_warning,
 )
 from .metric_preferences import MetricPreferences
@@ -75,6 +76,7 @@ WCL_CREATE_CLIENT_EXAMPLE_PATH = (
 )
 WCL_CREATE_CLIENT_APP_NAME = "ApplicantScout"
 WCL_CREATE_CLIENT_REDIRECT_URL = "http://localhost"
+WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SUPPORT_URL = "https://ko-fi.com/antrakt92"
 APP_ICON_PATH = Path(__file__).with_name("assets") / "app_icon.ico"
 SUPPORT_TOOLTIP = "Support ApplicantScout on Ko-fi."
@@ -159,15 +161,6 @@ def _screenshots_path_probe_program_args(
     ]
 
 
-def _requires_isolated_screenshots_probe(path: Path) -> bool:
-    raw_path = str(path)
-    if raw_path.startswith((r"\\", "//")):
-        return True
-    anchor = path.anchor.casefold()
-    home_anchor = Path.home().anchor.casefold()
-    return bool(anchor and home_anchor and anchor != home_anchor)
-
-
 def _decode_screenshots_path_probe_output(raw: bytes) -> str | None:
     payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, dict) or set(payload) != {"warning"}:
@@ -176,6 +169,37 @@ def _decode_screenshots_path_probe_output(raw: bytes) -> str | None:
     if warning is not None and not isinstance(warning, str):
         raise ValueError("unexpected path probe warning")
     return warning
+
+
+def run_bounded_screenshots_path_probe(
+    path: Path,
+    *,
+    timeout_ms: int = SCREENSHOTS_PATH_PROBE_TIMEOUT_MS,
+) -> str | None:
+    """Validate a path in a killable child process and return its warning."""
+    token = uuid.uuid4().hex
+    result_path = _screenshots_path_probe_result_path(token)
+    program, arguments = _screenshots_path_probe_program_args(str(path), token)
+    try:
+        completed = subprocess.run(
+            [program, *arguments],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=max(timeout_ms, 1) / 1000,
+        )
+        if completed.returncode != 0:
+            return SCREENSHOTS_PATH_PROBE_FAILURE_WARNING
+        return _decode_screenshots_path_probe_output(result_path.read_bytes())
+    except subprocess.TimeoutExpired:
+        return SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
+        return SCREENSHOTS_PATH_PROBE_FAILURE_WARNING
+    finally:
+        try:
+            result_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _settings_window_title(*, first_run: bool) -> str:
@@ -278,7 +302,6 @@ class _ScreenshotsValidationResult:
     generation: int
     path: str
     warning: str | None
-    worker_counted: bool = True
 
 
 class ReleaseNotesDialog(QDialog):
@@ -318,14 +341,9 @@ def _initial_screenshots_path(cfg: Config) -> str:
     if cfg.screenshots_path is not None:
         return str(cfg.screenshots_path)
     try:
-        return str(resolve_screenshots_path(cfg))
+        return str(screenshots_path_candidate(cfg))
     except ConfigError:
-        pass
-    for retail_root in COMMON_WOW_RETAIL_ROOTS:
-        candidate = retail_root / "Screenshots"
-        if screenshots_path_health_warning(candidate) is None:
-            return str(candidate)
-    return ""
+        return str(COMMON_WOW_RETAIL_ROOTS[0] / "Screenshots")
 
 
 class SettingsDialog(QDialog):
@@ -338,8 +356,6 @@ class SettingsDialog(QDialog):
     updateCompleted = pyqtSignal()
     updateHandoffStarted = pyqtSignal(str, object)
     changelogRequested = pyqtSignal()
-    _screenshotsValidationFinished = pyqtSignal(object)
-
     def __init__(
         self,
         cfg: Config,
@@ -381,7 +397,6 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_ready_generation: int | None = None
         self._screenshots_validation_required_generation: int | None = None
         self._screenshots_validation_waiting_autosave = False
-        self._screenshots_validation_active_workers = 0
         self._screenshots_validation_process: QProcess | None = None
         self._screenshots_validation_process_generation: int | None = None
         self._screenshots_validation_process_path = ""
@@ -393,9 +408,6 @@ class SettingsDialog(QDialog):
         )
         self._screenshots_validation_process_timeout.timeout.connect(
             self._handle_screenshots_validation_timeout
-        )
-        self._screenshotsValidationFinished.connect(
-            self._finish_screenshots_validation
         )
         self._screenshots_warning_timer = QTimer(self)
         self._screenshots_warning_timer.setSingleShot(True)
@@ -432,11 +444,21 @@ class SettingsDialog(QDialog):
         wcl_link_layout = QHBoxLayout(wcl_link_row)
         wcl_link_layout.setContentsMargins(0, 0, 0, 0)
         wcl_link_layout.setSpacing(8)
-        self.wcl_clients_link = QLabel(
-            '<a href="https://www.warcraftlogs.com/api/clients/">Warcraft Logs API clients</a>'
-        )
+        self.wcl_clients_link = QPushButton("Warcraft Logs API clients")
         self.wcl_clients_link.setObjectName("wclClientsLink")
-        self.wcl_clients_link.setOpenExternalLinks(True)
+        self.wcl_clients_link.setFlat(True)
+        self.wcl_clients_link.setStyleSheet(
+            "QPushButton { color: #6ea8fe; text-decoration: underline; "
+            "background: transparent; border: 0; padding: 0; }"
+            "QPushButton:focus { color: #ffffff; "
+            "background: rgba(110, 168, 254, 64); border-radius: 3px; }"
+        )
+        self.wcl_clients_link.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.wcl_clients_link.setAccessibleName("Open Warcraft Logs API clients")
+        self.wcl_clients_link.setAccessibleDescription(
+            "Open the Warcraft Logs Create Client page in the default browser."
+        )
+        self.wcl_clients_link.clicked.connect(self._open_wcl_clients)
         wcl_link_layout.addWidget(self.wcl_clients_link)
         self.wcl_example_arrow = QLabel("→")
         self.wcl_example_arrow.setObjectName("wclClientsToExampleArrow")
@@ -940,6 +962,10 @@ class SettingsDialog(QDialog):
             return
         super().reject()
 
+    def done(self, result: int) -> None:  # type: ignore[override]
+        self._cancel_screenshots_validation_process()
+        super().done(result)
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self._cache_action_in_progress:
             event.ignore()
@@ -1172,38 +1198,14 @@ class SettingsDialog(QDialog):
         if self._screenshots_validation_started_generation == generation:
             return
         self._screenshots_warning_timer.stop()
-        if _requires_isolated_screenshots_probe(Path(path)):
-            self._start_isolated_screenshots_validation(generation, path)
-            return
-        self._cancel_isolated_screenshots_validation()
-        if self._screenshots_validation_active_workers >= 2:
-            return
-        self._screenshots_validation_started_generation = generation
-        self._screenshots_validation_active_workers += 1
+        self._start_screenshots_validation_process(generation, path)
 
-        def _worker() -> None:
-            try:
-                warning = _screenshots_path_warning(Path(path))
-            except Exception as exc:  # noqa: BLE001 - filesystem boundary
-                warning = f"Screenshots folder warning: could not check path: {exc}"
-            result = _ScreenshotsValidationResult(generation, path, warning)
-            try:
-                self._screenshotsValidationFinished.emit(result)
-            except RuntimeError:
-                pass
-
-        threading.Thread(
-            target=_worker,
-            name="ScreenshotsPathValidation",
-            daemon=True,
-        ).start()
-
-    def _start_isolated_screenshots_validation(
+    def _start_screenshots_validation_process(
         self,
         generation: int,
         path: str,
     ) -> None:
-        self._cancel_isolated_screenshots_validation()
+        self._cancel_screenshots_validation_process()
         process = QProcess(self)
         self._screenshots_validation_process = process
         self._screenshots_validation_process_generation = generation
@@ -1214,7 +1216,7 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_started_generation = generation
         process.finished.connect(
             lambda exit_code, exit_status, active_process=process, output=result_path: (
-                self._finish_isolated_screenshots_validation(
+                self._finish_screenshots_validation_process(
                     active_process,
                     output,
                     exit_code,
@@ -1224,7 +1226,7 @@ class SettingsDialog(QDialog):
         )
         process.errorOccurred.connect(
             lambda error, active_process=process, output=result_path: (
-                self._handle_isolated_screenshots_validation_error(
+                self._handle_screenshots_validation_process_error(
                     active_process,
                     output,
                     error,
@@ -1235,7 +1237,7 @@ class SettingsDialog(QDialog):
         process.start(program, arguments)
         self._screenshots_validation_process_timeout.start()
 
-    def _cancel_isolated_screenshots_validation(self) -> None:
+    def _cancel_screenshots_validation_process(self) -> None:
         process = self._screenshots_validation_process
         if process is None:
             return
@@ -1247,11 +1249,11 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_process_timeout.stop()
         if process.state() != QProcess.ProcessState.NotRunning:
             process.kill()
-        else:
-            process.deleteLater()
+            process.waitForFinished(1000)
+        process.deleteLater()
         self._remove_screenshots_validation_result(result_path)
 
-    def _take_isolated_screenshots_validation(
+    def _take_screenshots_validation_process(
         self,
         process: QProcess,
     ) -> tuple[int, str] | None:
@@ -1278,14 +1280,14 @@ class SettingsDialog(QDialog):
         except OSError:
             pass
 
-    def _finish_isolated_screenshots_validation(
+    def _finish_screenshots_validation_process(
         self,
         process: QProcess,
         result_path: Path,
         exit_code: int,
         exit_status: QProcess.ExitStatus,
     ) -> None:
-        request = self._take_isolated_screenshots_validation(process)
+        request = self._take_screenshots_validation_process(process)
         if request is None:
             process.deleteLater()
             self._remove_screenshots_validation_result(result_path)
@@ -1305,11 +1307,10 @@ class SettingsDialog(QDialog):
                 generation,
                 path,
                 warning,
-                worker_counted=False,
             )
         )
 
-    def _handle_isolated_screenshots_validation_error(
+    def _handle_screenshots_validation_process_error(
         self,
         process: QProcess,
         result_path: Path,
@@ -1317,7 +1318,7 @@ class SettingsDialog(QDialog):
     ) -> None:
         if error != QProcess.ProcessError.FailedToStart:
             return
-        request = self._take_isolated_screenshots_validation(process)
+        request = self._take_screenshots_validation_process(process)
         if request is None:
             process.deleteLater()
             self._remove_screenshots_validation_result(result_path)
@@ -1329,7 +1330,6 @@ class SettingsDialog(QDialog):
                 generation,
                 path,
                 SCREENSHOTS_PATH_PROBE_FAILURE_WARNING,
-                worker_counted=False,
             )
         )
 
@@ -1339,24 +1339,18 @@ class SettingsDialog(QDialog):
         path = self._screenshots_validation_process_path
         if process is None or generation is None:
             return
-        self._cancel_isolated_screenshots_validation()
+        self._cancel_screenshots_validation_process()
         self._finish_screenshots_validation(
             _ScreenshotsValidationResult(
                 generation,
                 path,
                 SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING,
-                worker_counted=False,
             )
         )
 
     def _finish_screenshots_validation(self, raw: object) -> None:
         if not isinstance(raw, _ScreenshotsValidationResult):
             return
-        if raw.worker_counted:
-            self._screenshots_validation_active_workers = max(
-                0,
-                self._screenshots_validation_active_workers - 1,
-            )
         if (
             raw.generation != self._screenshots_validation_generation
             or raw.path != self.screenshots_edit.text().strip()
@@ -1641,7 +1635,14 @@ class SettingsDialog(QDialog):
             self.screenshots_edit.text().strip(),
         )
         if selected:
-            self.screenshots_edit.setText(selected)
+            if selected == self.screenshots_edit.text().strip():
+                self._schedule_screenshots_warning(
+                    selected,
+                    require_before_save=True,
+                )
+                self._schedule_values_changed()
+            else:
+                self.screenshots_edit.setText(selected)
 
     def _test_credentials(self) -> None:
         if self._credential_tester is None:
@@ -1720,6 +1721,10 @@ class SettingsDialog(QDialog):
     def _open_support(self) -> None:
         if not QDesktopServices.openUrl(QUrl(SUPPORT_URL)):
             self._set_status("Could not open support link.", error=True)
+
+    def _open_wcl_clients(self) -> None:
+        if not QDesktopServices.openUrl(QUrl(WCL_CLIENTS_URL)):
+            self._set_status("Could not open Warcraft Logs API clients.", error=True)
 
 
 def open_folder(path: Path) -> bool:

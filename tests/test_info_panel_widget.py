@@ -3305,6 +3305,27 @@ def test_restored_partial_snapshots_release_only_authoritative_surface(
         assert launched == []
         assert window.restored_snapshot_pending_surfaces() == (True, True)
 
+        applicant_partial = Snapshot(
+            listing=DecodedListing(
+                activity_id=401,
+                key_level=14,
+                dungeon_name="Skyreach",
+                listing_name="+14",
+                comment="",
+                category_id=2,
+                difficulty_id=8,
+            ),
+            version=None,
+            applicants_unavailable=True,
+            roster_unavailable=True,
+        )
+        window.note_decode(applicant_partial)
+        window.note_snapshot_applied(applicant_partial)
+
+        assert launched == []
+        assert not window.restored_snapshot_listing_pending()
+        assert window.restored_snapshot_pending_surfaces() == (True, True)
+
         roster_only = Snapshot(
             listing=None,
             version=None,
@@ -3646,7 +3667,7 @@ def test_partial_group_roster_decode_marks_party_count_as_last_known(
         assert "last known Party count" in party_button.toolTip()
         assert window._health_label.text() == "Shot partial"
         assert window._health_label.property("statusState") == "warning"
-        assert "omitted the group roster" in window._health_label.toolTip()
+        assert "complete Party data" in window._health_label.toolTip()
         assert "raid roster" not in party_button.toolTip()
         assert "raid roster" not in window._health_label.toolTip()
 
@@ -5321,6 +5342,52 @@ def test_default_launcher_position_uses_window_top_right_when_in_bounds(qtbot, t
         pos = window._default_launcher_position()
 
         assert pos == QPoint(window.geometry().x() + 320 - LAUNCHER_SIZE, window.geometry().y())
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    ("applicant_partial", "roster_partial", "expected_applicants", "expected_party"),
+    [
+        (True, False, "Applicants (3?)", "Party (5)"),
+        (True, True, "Applicants (3?)", "Party (5?)"),
+    ],
+)
+def test_partial_applicant_surface_marks_accessible_tab_and_health(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+    applicant_partial,
+    roster_partial,
+    expected_applicants,
+    expected_party,
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
+        window._tab_bar.set_counts(applicants=3, party=5)
+        window.note_decode(
+            Snapshot(
+                listing=None,
+                version=None,
+                applicants_unavailable=applicant_partial,
+                roster_unavailable=roster_partial,
+            )
+        )
+
+        applicants_button = window._tab_bar._buttons["applicants"]
+        party_button = window._tab_bar._buttons["party"]
+        assert applicants_button.text() == expected_applicants
+        assert party_button.text() == expected_party
+        assert "last known count" in applicants_button.toolTip()
+        assert "complete applicant list" in applicants_button.accessibleDescription()
+        assert window._health_label.text() == "Shot partial"
+        assert "Applicants" in window._health_label.toolTip()
     finally:
         client.close()
 

@@ -657,6 +657,7 @@ def test_wire_versions_supported_pin():
     assert 0x08 in WIRE_VERSIONS_SUPPORTED
     assert 0x09 in WIRE_VERSIONS_SUPPORTED
     assert 0x0A in WIRE_VERSIONS_SUPPORTED
+    assert 0x0B in WIRE_VERSIONS_SUPPORTED
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
@@ -825,6 +826,61 @@ def test_v9_payload_parses_roster_unavailable_flag():
     assert snap.lfg_unavailable is False
     assert snap.roster_unavailable is True
     assert [app.name for app in snap.applicants] == ["Fresh-Realm"]
+
+
+def test_v9_allows_simultaneous_lfg_and_roster_unavailable():
+    raw = _wrap_payload(_build_body_v7([], []), wire_ver=0x09, flags=0x06)
+
+    snap, error = _try_parse_appscout_payload(raw)
+
+    assert error is None
+    assert snap is not None
+    assert snap.lfg_unavailable
+    assert snap.roster_unavailable
+
+
+@pytest.mark.parametrize("flags", [0x08, 0x0C])
+def test_v11_parses_applicant_authority_flags_and_discards_flagged_rows(flags: int):
+    body = _build_body_v7(
+        [
+            _build_applicant_block(
+                aid=42,
+                member_idx=1,
+                class_id=8,
+                spec_id=64,
+                ilvl=281,
+                score=2444,
+                role=2,
+                name="Partial-Realm",
+                version=5,
+            )
+        ],
+        [],
+    )
+
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(body, wire_ver=0x0B, flags=flags)
+    )
+
+    assert error is None
+    assert snap is not None
+    assert snap.applicants_unavailable
+    assert snap.roster_unavailable is bool(flags & 0x04)
+    assert snap.applicants == []
+
+
+def test_v9_rejects_v11_applicant_flag_and_v11_rejects_terminal_partial():
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(_build_body_v7([], []), wire_ver=0x09, flags=0x08)
+    )
+    assert snap is None
+    assert error == "unsupported APS1 v9 flags 0x08"
+
+    snap, error = _try_parse_appscout_payload(
+        _wrap_payload(_build_body_v7([], []), wire_ver=0x0B, flags=0x09)
+    )
+    assert snap is None
+    assert error == "terminal and partial-unavailable flags are mutually exclusive"
 
 
 def test_v8_payload_rejects_unknown_or_conflicting_flags():
@@ -1244,7 +1300,8 @@ def test_crc_valid_payload_skips_placeholder_applicants_before_duplicate_validat
 
     assert error is None
     assert snap is not None
-    assert [applicant.name for applicant in snap.applicants] == ["Solo-Realm"]
+    assert snap.applicants_unavailable
+    assert snap.applicants == []
 
 
 def test_crc_valid_payload_preserves_non_placeholder_unknown_prefix_applicant():
@@ -1392,7 +1449,8 @@ def test_crc_valid_payload_skips_placeholder_roster_identities_before_duplicate_
 
     assert error is None
     assert snap is not None
-    assert [member.name for member in snap.roster] == ["Host-Realm"]
+    assert snap.roster_unavailable
+    assert snap.roster == []
 
 
 def test_crc_valid_payload_skips_unqualified_placeholder_roster_identity():
@@ -1442,7 +1500,8 @@ def test_crc_valid_payload_skips_unqualified_placeholder_roster_identity():
 
     assert error is None
     assert snap is not None
-    assert [member.name for member in snap.roster] == ["Host-Realm"]
+    assert snap.roster_unavailable
+    assert snap.roster == []
 
 
 def test_crc_valid_payload_preserves_non_placeholder_unknown_prefix_roster_identity():
@@ -2898,6 +2957,27 @@ def test_fragment_assembler_matches_metadata_crc_to_inner_v9_trailer():
     assert outcome is not None
     assert outcome.snapshot is None
     assert outcome.error_reason == "assembled v10 inner CRC trailer mismatch"
+
+
+def test_fragment_assembler_accepts_flagged_inner_v11_payload():
+    v9 = _large_v9_payload()
+    inner = _wrap_payload(v9[9:-4], wire_ver=0x0B, flags=0x08)
+    fragments = [_parse_fragment(frame) for frame in _wrap_fragments(inner)]
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    outcome = None
+
+    for index, fragment in enumerate(fragments):
+        path = Path(f"v11-{index}.jpg")
+        outcome = assembler.accept_fragment(
+            _fragment_with_source(fragment, path=path, mtime_ns=100 + index),
+            path,
+        )
+
+    assert outcome is not None
+    assert outcome.error_reason is None
+    assert outcome.snapshot is not None
+    assert outcome.snapshot.applicants_unavailable
+    assert outcome.snapshot.applicants == []
 
 
 def test_fragment_assembler_newer_generation_supersedes_incomplete_old():

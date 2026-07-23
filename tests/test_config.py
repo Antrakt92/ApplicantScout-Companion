@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 import logging
 from pathlib import Path
 import shutil
@@ -19,6 +20,7 @@ import applicant_scout.screenshot as screenshot_mod
 from applicant_scout.live_snapshot_cache import (
     LIVE_SNAPSHOT_CACHE_FILENAME,
     LiveSnapshotCacheWriter,
+    live_snapshot_source_identity,
     load_live_snapshot,
     save_live_snapshot,
 )
@@ -1710,7 +1712,7 @@ def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
     assert calls == ["persist-new", "rollback-old"]
 
 
-def test_settings_change_validates_screenshots_before_wow_sync_runtime(
+def test_settings_change_derives_screenshots_before_wow_sync_runtime(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     cfg = _cfg(tmp_path, screenshots_path=None)
@@ -1727,7 +1729,7 @@ def test_settings_change_validates_screenshots_before_wow_sync_runtime(
 
     monkeypatch.setattr(
         main_mod,
-        "resolve_screenshots_path",
+        "screenshots_path_candidate",
         lambda _cfg: (_ for _ in ()).throw(ConfigError("screenshots invalid")),
     )
     monkeypatch.setattr(
@@ -2018,7 +2020,7 @@ def test_settings_apply_respects_process_env_overrides_for_runtime(
     assert calls == []
 
 
-def test_settings_change_rejects_explicit_suspicious_screenshots_before_persist_or_runtime(
+def test_settings_change_reuses_prevalidated_path_without_sync_probe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     cfg = _cfg(tmp_path, screenshots_path=tmp_path / "old" / "Screenshots")
@@ -2049,31 +2051,95 @@ def test_settings_change_rejects_explicit_suspicious_screenshots_before_persist_
         "_replace_screenshots_runtime",
         lambda *_args, **_kwargs: calls.append("replace") or object(),
     )
+    monkeypatch.setattr(
+        main_mod,
+        "resolve_screenshots_path",
+        lambda _cfg: (_ for _ in ()).throw(
+            AssertionError("modeless apply must not synchronously re-probe storage")
+        ),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_screenshots_path_probe",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("Settings already owns the exact-path probe")
+        ),
+    )
 
-    with pytest.raises(ConfigError, match="Screenshots folder warning"):
-        main_mod._apply_settings_change(
-            app=object(),
-            cfg=cfg,
-            values=values,
-            apply_credentials=False,
-            auth=object(),
-            wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
-            region_runtime=main_mod._WCLRegionRuntime(cfg.region),
-            window=SimpleNamespace(
-                apply_metric_preferences=lambda *_args, **_kwargs: None,
-                bump_wcl_runtime_generation=lambda: None,
-            ),
-            watcher=object(),
-            current_screenshots_dir=cfg.screenshots_path,
-            machine=object(),
-            decode_failed_callback=lambda *_args: None,
-            signal_gate=main_mod._WatcherSignalGate(),
-            wow_exit_timer=None,
-            quit_app=lambda: None,
-            can_quit=lambda: True,
-        )
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=False,
+        auth=object(),
+        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda *_args, **_kwargs: None,
+            bump_wcl_runtime_generation=lambda: None,
+        ),
+        watcher=object(),
+        current_screenshots_dir=cfg.screenshots_path,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=None,
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
 
-    assert calls == []
+    assert result.current_screenshots_dir == suspicious_path
+    assert calls == ["persist", "replace"]
+
+
+def test_settings_change_retries_same_path_when_watcher_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "World of Warcraft" / "_retail_" / "Screenshots"
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(screenshots),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    replacement = object()
+    calls: list[Path] = []
+
+    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_replace_screenshots_runtime",
+        lambda _watcher, path, *_args, **_kwargs: calls.append(path) or replacement,
+    )
+
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=False,
+        auth=object(),
+        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(
+            apply_metric_preferences=lambda *_args, **_kwargs: None,
+            bump_wcl_runtime_generation=lambda: None,
+        ),
+        watcher=None,
+        current_screenshots_dir=screenshots,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=None,
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert calls == [screenshots]
+    assert result.watcher is replacement
 
 
 def test_load_config_uses_legacy_env_only_when_user_config_is_absent(
@@ -2242,6 +2308,31 @@ def test_malformed_legacy_path_outside_retail_logs_raises(tmp_path: Path):
 
     with pytest.raises(ConfigError, match="not under a _retail_ folder"):
         resolve_screenshots_path(_cfg(tmp_path, chatlog_path=chatlog))
+
+
+def test_screenshots_path_candidate_does_not_touch_configured_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = Path(r"\\offline-server\wow\_retail_\Screenshots")
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("candidate derivation must not touch storage")
+        ),
+    )
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("candidate derivation must not touch storage")
+        ),
+    )
+
+    assert config_mod.screenshots_path_candidate(cfg) == screenshots
 
 
 def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
@@ -2797,6 +2888,147 @@ def test_send_control_command_reports_ok_response(monkeypatch: pytest.MonkeyPatc
     ]
 
 
+def test_control_server_name_is_user_scoped_without_exposing_identity():
+    alice = main_mod._scoped_control_server_name("DOMAIN\\Alice")
+    bob = main_mod._scoped_control_server_name("DOMAIN\\Bob")
+
+    assert alice.startswith(f"{main_mod.CONTROL_SERVER_BASENAME}.")
+    assert bob.startswith(f"{main_mod.CONTROL_SERVER_BASENAME}.")
+    assert alice != bob
+    assert "alice" not in alice.casefold()
+    assert "bob" not in bob.casefold()
+    assert main_mod.CONTROL_OWNER_NAME == (
+        f"Global\\{main_mod.CONTROL_SERVER_NAME}.Owner"
+    )
+
+
+def test_send_control_command_falls_back_to_legacy_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.server_name = ""
+
+        def connectToServer(self, server_name: str) -> None:
+            self.server_name = server_name
+            calls.append(f"connect:{server_name}")
+
+        def waitForConnected(self, _timeout_ms: int) -> bool:
+            return self.server_name == main_mod.LEGACY_CONTROL_SERVER_NAME
+
+        def write(self, _value: bytes) -> None:
+            pass
+
+        def waitForBytesWritten(self, _timeout_ms: int) -> bool:
+            return True
+
+        def waitForReadyRead(self, _timeout_ms: int) -> bool:
+            return True
+
+        def readAll(self):
+            return SimpleNamespace(data=lambda: b"ok\n")
+
+        def disconnectFromServer(self) -> None:
+            pass
+
+        def errorString(self) -> str:
+            return "not connected"
+
+    monkeypatch.setattr(main_mod, "QLocalSocket", FakeSocket)
+
+    result = main_mod._send_control_command(main_mod.CONTROL_QUIT_COMMAND)
+
+    assert result.response == b"ok"
+    assert calls == [
+        f"connect:{main_mod.CONTROL_SERVER_NAME}",
+        f"connect:{main_mod.LEGACY_CONTROL_SERVER_NAME}",
+    ]
+
+
+@pytest.mark.skipif(main_mod.sys.platform != "win32", reason="Windows mutex contract")
+def test_windows_runtime_owner_allows_exactly_one_concurrent_contender():
+    owner_name = f"Global\\{main_mod.CONTROL_SERVER_BASENAME}.Test.{time.time_ns()}"
+    start = threading.Barrier(3)
+    release = threading.Barrier(3)
+
+    def contend() -> bool:
+        start.wait()
+        owner = main_mod._acquire_runtime_owner(owner_name)
+        release.wait()
+        if owner is not None:
+            owner.close()
+            return True
+        return False
+
+    results: list[bool] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(contend()))
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    release.wait()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(results) == [False, True]
+    replacement = main_mod._acquire_runtime_owner(owner_name)
+    assert replacement is not None
+    replacement.close()
+
+
+def test_control_server_sets_user_only_socket_option_before_listen(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            pass
+
+    class FakeOwner:
+        def close(self) -> None:
+            calls.append("owner-close")
+
+    class FakeServer:
+        newConnection = FakeSignal()
+
+        def __init__(self, _app) -> None:
+            pass
+
+        def setSocketOptions(self, option: object) -> None:
+            calls.append(f"option:{option}")
+
+        def listen(self, name: str) -> bool:
+            calls.append(f"listen:{name}")
+            return True
+
+    class FakeLocalServer:
+        SocketOption = SimpleNamespace(UserAccessOption="user-only")
+
+        def __call__(self, app):
+            return FakeServer(app)
+
+    app = SimpleNamespace(aboutToQuit=FakeSignal())
+    monkeypatch.setattr(main_mod, "QLocalServer", FakeLocalServer())
+    monkeypatch.setattr(main_mod, "_acquire_runtime_owner", lambda: FakeOwner())
+
+    server = main_mod._create_control_server(
+        app,
+        quit_app=lambda: None,
+        show_settings=lambda: None,
+    )
+
+    assert calls[:2] == [
+        "option:user-only",
+        f"listen:{main_mod.CONTROL_SERVER_NAME}",
+    ]
+    assert getattr(server, "_applicant_scout_runtime_owner") is not None
+
+
 def test_shutdown_running_instance_reports_blocked_quit(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -3328,8 +3560,8 @@ def test_load_startup_config_marks_whether_first_run_setup_was_shown(
     )
     monkeypatch.setattr(
         main_mod,
-        "resolve_screenshots_path",
-        lambda _cfg: tmp_path / "Screenshots",
+        "run_bounded_screenshots_path_probe",
+        lambda path: calls.append(f"probe:{path}") or None,
     )
 
     loaded = main_mod._load_startup_config(
@@ -3337,7 +3569,48 @@ def test_load_startup_config_marks_whether_first_run_setup_was_shown(
     )
 
     assert loaded == (ready_cfg, tmp_path / "Screenshots", True)
-    assert calls == ["settings"]
+    assert calls == ["settings", f"probe:{tmp_path / 'Screenshots'}"]
+
+
+def test_load_startup_config_routes_disconnected_storage_through_bounded_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = Path(r"\\offline-server\wow\_retail_\Screenshots")
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    calls: list[str] = []
+
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_screenshots_path_probe",
+        lambda path: calls.append(f"probe:{path}")
+        or "Screenshots folder warning: path check timed out.",
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "resolve_screenshots_path",
+        lambda _cfg: (_ for _ in ()).throw(
+            AssertionError("startup must not synchronously probe configured storage")
+        ),
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda *_args: calls.append("warning"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_run_settings_dialog",
+        lambda *_args, **_kwargs: calls.append("settings") or False,
+    )
+
+    loaded = main_mod._load_startup_config(
+        update_quit_gate=_active_update_quit_gate()
+    )
+
+    assert loaded is None
+    assert calls == [f"probe:{screenshots}", "warning", "settings"]
 
 
 def test_load_startup_config_prompts_for_saved_suspicious_screenshots_override(
@@ -3361,13 +3634,28 @@ def test_load_startup_config_prompts_for_saved_suspicious_screenshots_override(
         "warning",
         lambda *_args, **_kwargs: calls.append("warning"),
     )
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_screenshots_path_probe",
+        lambda path: calls.append(f"probe:{path}")
+        or (
+            "Screenshots folder warning: invalid saved path."
+            if path == bad_cfg.screenshots_path
+            else None
+        ),
+    )
 
     loaded = main_mod._load_startup_config(
         update_quit_gate=_active_update_quit_gate()
     )
 
     assert loaded == (ready_cfg, root / "Screenshots", True)
-    assert calls == ["warning", "settings"]
+    assert calls == [
+        f"probe:{bad_cfg.screenshots_path}",
+        "warning",
+        "settings",
+        f"probe:{ready_cfg.screenshots_path}",
+    ]
 
 
 def test_load_startup_config_rejects_suspicious_process_env_override_without_prompt(
@@ -3388,6 +3676,11 @@ def test_load_startup_config_rejects_suspicious_process_env_override_without_pro
         main_mod,
         "_show_config_error",
         lambda message: calls.append(message),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_screenshots_path_probe",
+        lambda _path: "Screenshots folder warning: invalid environment path.",
     )
 
     loaded = main_mod._load_startup_config(
@@ -3420,6 +3713,11 @@ def test_load_startup_config_rejects_nested_process_env_override_without_prompt(
         main_mod,
         "_show_config_error",
         lambda message: calls.append(message),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_screenshots_path_probe",
+        lambda _path: "Screenshots folder warning: invalid environment path.",
     )
 
     loaded = main_mod._load_startup_config(
@@ -5179,6 +5477,49 @@ def test_replace_screenshot_watcher_keeps_old_watcher_when_new_start_fails(
     assert calls == ["start:new", "stop:new"]
 
 
+def test_initial_screenshot_watcher_failure_opens_recovery_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    stop_calls: list[str] = []
+
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            pass
+
+    class FakeWatcher:
+        def __init__(self, _path: Path, *, cache_dir: Path | None = None) -> None:
+            self.cache_dir = cache_dir
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            raise OSError("storage disappeared")
+
+        def stop(self) -> None:
+            stop_calls.append("stop")
+
+    recovery_messages: list[str] = []
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+
+    watcher = main_mod._start_initial_screenshot_watcher(
+        tmp_path / "_retail_" / "Screenshots",
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        lambda *_args: None,
+        cache_dir=tmp_path / "cache",
+        signal_gate=main_mod._WatcherSignalGate(),
+        live_snapshot_cache_writer=None,
+        show_recovery=recovery_messages.append,
+    )
+
+    assert watcher is None
+    assert stop_calls == ["stop"]
+    assert len(recovery_messages) == 1
+    assert "Re-select the current folder" in recovery_messages[0]
+    assert "storage disappeared" in recovery_messages[0]
+
+
 def test_replace_screenshot_watcher_passes_cache_dir_to_persistent_backlog_index(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6191,7 +6532,56 @@ def test_snapshot_apply_queue_persists_real_full_before_partial(
     assert restored.snapshot == full
 
 
-def test_snapshot_apply_queue_uses_latest_identity_and_leader_context_once():
+@pytest.mark.parametrize("same_context", [True, False])
+def test_snapshot_apply_queue_scopes_applicant_authority_to_listing(
+    same_context: bool,
+    tmp_path: Path,
+):
+    state = AppState()
+    machine = main_mod.StateMachine(state)
+    callbacks: list[object] = []
+    full = _live_snapshot()
+    partial = replace(
+        _live_snapshot(),
+        listing=(
+            full.listing
+            if same_context
+            else replace(full.listing, key_level=full.listing.key_level + 1)
+        ),
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+    queue = main_mod._SnapshotApplyQueue(
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        live_snapshot_cache_writer=writer,
+        scheduler=callbacks.append,
+    )
+
+    queue.enqueue_snapshot(full)
+    queue.enqueue_snapshot(partial)
+    callbacks.pop(0)()
+
+    assert state.listing is not None
+    assert state.listing.key_level == partial.listing.key_level
+    if same_context:
+        assert {row.name for row in state.applicants.values()} == {"Healer-Realm"}
+    else:
+        assert state.applicants == {}
+    assert writer.close()
+    restored = load_live_snapshot(tmp_path)
+    if same_context:
+        assert restored is not None
+        assert restored.snapshot == full
+    else:
+        assert restored is None
+
+
+def test_snapshot_apply_queue_does_not_merge_authority_across_producers(tmp_path: Path):
     state = AppState()
     machine = main_mod.StateMachine(state)
     callbacks: list[object] = []
@@ -6199,6 +6589,11 @@ def test_snapshot_apply_queue_uses_latest_identity_and_leader_context_once():
     applicant_adds: list[str] = []
     machine.versionUpdated.connect(version_updates.append)
     machine.applicantAdded.connect(lambda row: applicant_adds.append(row.name))
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
     older_full = _live_snapshot()
     older_full.version = DecodedVersion(
         addon_version="0.4.3",
@@ -6233,6 +6628,7 @@ def test_snapshot_apply_queue_uses_latest_identity_and_leader_context_once():
         lambda *_args: None,
         signal_gate=main_mod._WatcherSignalGate(),
         generation=0,
+        live_snapshot_cache_writer=writer,
         scheduler=callbacks.append,
     )
 
@@ -6242,8 +6638,14 @@ def test_snapshot_apply_queue_uses_latest_identity_and_leader_context_once():
 
     assert version_updates == [1]
     assert state.player.full_name == "Host-NewRealm"
-    assert applicant_adds == ["Healer-Realm"]
-    assert state.applicants["42:1"].rio_summary_target_key == 20
+    assert state.listing is None
+    assert applicant_adds == []
+    assert state.applicants == {}
+    assert {row.name for row in state.party_members.values()} == {"Host-NewRealm"}
+    assert state.leader_key is not None
+    assert state.leader_key.key_level == 20
+    assert writer.close()
+    assert load_live_snapshot(tmp_path) is None
 
 
 def test_snapshot_apply_queue_preserves_positive_leader_before_zero_partial():
@@ -6567,6 +6969,10 @@ def test_application_event_loop_reconciles_wow_startup_before_runtime_shutdown(
         def close(self) -> None:
             events.append("close")
 
+    class FakeOwner:
+        def close(self) -> None:
+            events.append("owner-close")
+
     monkeypatch.setattr(
         main_mod,
         "_shutdown_runtime",
@@ -6577,15 +6983,139 @@ def test_application_event_loop_reconciles_wow_startup_before_runtime_shutdown(
         FakeApp(),  # type: ignore[arg-type]
         wow_sync_startup_configurator=FakeConfigurator(),  # type: ignore[arg-type]
         sync_with_wow=True,
-        watcher=object(),  # type: ignore[arg-type]
+        watcher_getter=lambda: object(),  # type: ignore[return-value]
         window=object(),  # type: ignore[arg-type]
         cache=object(),  # type: ignore[arg-type]
         live_snapshot_writer=object(),  # type: ignore[arg-type]
         wcl_client=object(),  # type: ignore[arg-type]
+        runtime_owner=FakeOwner(),  # type: ignore[arg-type]
     )
 
     assert result == 17
-    assert events == ["request:True", "exec", "close", "shutdown"]
+    assert events == ["request:True", "exec", "close", "shutdown", "owner-close"]
+
+
+@pytest.mark.skipif(main_mod.sys.platform != "win32", reason="Windows mutex contract")
+def test_application_event_loop_holds_runtime_owner_through_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    owner_name = (
+        f"Global\\{main_mod.CONTROL_SERVER_BASENAME}.Shutdown.{time.time_ns()}"
+    )
+    owner = main_mod._acquire_runtime_owner(owner_name)
+    assert owner is not None
+
+    class FakeApp:
+        def exec(self) -> int:
+            return 0
+
+    class FakeConfigurator:
+        def request(self, _enabled: bool) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def assert_owner_still_held(*_args) -> None:
+        assert main_mod._acquire_runtime_owner(owner_name) is None
+
+    monkeypatch.setattr(main_mod, "_shutdown_runtime", assert_owner_still_held)
+
+    main_mod._run_application_event_loop(
+        FakeApp(),  # type: ignore[arg-type]
+        wow_sync_startup_configurator=FakeConfigurator(),  # type: ignore[arg-type]
+        sync_with_wow=False,
+        watcher_getter=lambda: None,
+        window=object(),  # type: ignore[arg-type]
+        cache=object(),  # type: ignore[arg-type]
+        live_snapshot_writer=None,
+        wcl_client=object(),  # type: ignore[arg-type]
+        runtime_owner=owner,
+    )
+
+    replacement = main_mod._acquire_runtime_owner(owner_name)
+    assert replacement is not None
+    replacement.close()
+
+
+def test_run_application_event_loop_resolves_current_watcher_at_shutdown(
+):
+    pending_retirement: list[Callable[[], None]] = []
+
+    class RetiredWatcher:
+        request_stop_calls = 0
+        stop_calls = 0
+
+        def request_stop(self) -> None:
+            self.request_stop_calls += 1
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    class CurrentWatcher:
+        stop_calls = 0
+        index_flush_calls = 0
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+            self.index_flush_calls += 1
+
+    initial_watcher = RetiredWatcher()
+    replacement_watcher = CurrentWatcher()
+    retired_watchers = main_mod._RetiredScreenshotWatchers()
+    retired_watchers.retire(
+        initial_watcher,  # type: ignore[arg-type]
+        stop_runner=pending_retirement.append,
+    )
+    setattr(
+        replacement_watcher,
+        main_mod._RETIRED_WATCHER_TRACKER_ATTR,
+        retired_watchers,
+    )
+    current = {"watcher": initial_watcher}
+
+    class FakeApp:
+        def exec(self) -> int:
+            current["watcher"] = replacement_watcher
+            return 0
+
+    class FakeConfigurator:
+        def request(self, _enabled: bool) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeWindow:
+        def shutdown_fetches(self) -> bool:
+            return True
+
+    class FakeCache:
+        def close(self) -> bool:
+            return True
+
+    class FakeClient:
+        def close(self) -> None:
+            pass
+
+    main_mod._run_application_event_loop(
+        FakeApp(),  # type: ignore[arg-type]
+        wow_sync_startup_configurator=FakeConfigurator(),  # type: ignore[arg-type]
+        sync_with_wow=False,
+        watcher_getter=lambda: current["watcher"],  # type: ignore[return-value]
+        window=FakeWindow(),  # type: ignore[arg-type]
+        cache=FakeCache(),  # type: ignore[arg-type]
+        live_snapshot_writer=None,
+        wcl_client=FakeClient(),  # type: ignore[arg-type]
+    )
+
+    assert replacement_watcher.stop_calls == 1
+    assert replacement_watcher.index_flush_calls == 1
+    assert initial_watcher.request_stop_calls == 2
+    assert initial_watcher.stop_calls == 1
+
+    pending_retirement[0]()
+    assert initial_watcher.stop_calls == 1
 
 
 def test_shutdown_runtime_orders_fetch_drain_before_cache_and_client_close():
@@ -6838,6 +7368,378 @@ def test_replace_screenshot_watcher_keeps_old_signals_current_until_new_start_su
         )
 
     assert machine.snapshots == ["old-during-new-start"]
+
+
+class _SourceTransitionSignal:
+    def __init__(self) -> None:
+        self._callbacks: list[Callable[..., None]] = []
+
+    def connect(self, callback: Callable[..., None]) -> None:
+        self._callbacks.append(callback)
+
+    def emit(self, *args: object) -> None:
+        for callback in list(self._callbacks):
+            callback(*args)
+
+
+class _SourceTransitionReader:
+    def lookup_profile(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def preload_region_async(
+        self,
+        _region: str | None,
+        on_loaded: Callable[[], None] | None = None,
+    ) -> None:
+        if on_loaded is not None:
+            on_loaded()
+
+
+class _SourceTransitionWindow:
+    def __init__(self) -> None:
+        self.decoded: list[object] = []
+        self.applied: list[object] = []
+        self.restore_pending = False
+        self.restore_expired_calls = 0
+
+    def note_decode(self, snap: object) -> None:
+        self.decoded.append(snap)
+
+    def note_decode_failed(self, _path: str, _reason: str) -> None:
+        pass
+
+    def note_snapshot_applied(self, snap: object) -> None:
+        self.applied.append(snap)
+
+    def note_restored_snapshot(self, *_args: object) -> None:
+        self.restore_pending = True
+
+    def restored_snapshot_pending(self) -> bool:
+        return self.restore_pending
+
+    def restored_snapshot_pending_surfaces(self) -> tuple[bool, bool]:
+        return True, True
+
+    def restored_snapshot_listing_pending(self) -> bool:
+        return True
+
+    def note_restored_snapshot_expired(self) -> None:
+        self.restore_pending = False
+        self.restore_expired_calls += 1
+
+
+def test_screenshot_runtime_source_switch_without_frame_retires_old_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    source_a_path = tmp_path / "A" / "Screenshots"
+    source_b_path = tmp_path / "B" / "Screenshots"
+    source_a = live_snapshot_source_identity(source_a_path)
+    source_b = live_snapshot_source_identity(source_b_path)
+    snapshot_a = replace(
+        _live_snapshot(),
+        roster=[_live_roster_member("Host-Realm")],
+    )
+    state = AppState()
+    old_reader = _SourceTransitionReader()
+    next_reader = _SourceTransitionReader()
+    machine = main_mod.StateMachine(state, rio_reader=old_reader)
+    machine.apply_snapshot(snapshot_a)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path / "cache",
+        source_id=source_a,
+        defer_saves=False,
+    )
+    writer.submit(snapshot_a, now=100.0)
+    window = _SourceTransitionWindow()
+
+    class FakeWatcher:
+        def __init__(self, path: Path, **_kwargs: object) -> None:
+            self.path = path
+            self.snapshotReceived = _SourceTransitionSignal()
+            self.decodeFailed = _SourceTransitionSignal()
+            self.stop_calls = 0
+
+        def start(self) -> None:
+            pass
+
+        def request_stop(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    old_watcher = FakeWatcher(source_a_path)
+    setattr(old_watcher, "_applicant_scout_source_id", source_a)
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(
+        main_mod,
+        "_raiderio_reader_for_screenshots_path",
+        lambda *_args, **_kwargs: next_reader,
+    )
+
+    new_watcher = main_mod._replace_screenshots_runtime(
+        old_watcher,  # type: ignore[arg-type]
+        source_b_path,
+        machine,
+        window,  # type: ignore[arg-type]
+        lambda *_args: None,
+        cache_dir=tmp_path / "cache",
+        signal_gate=main_mod._WatcherSignalGate(),
+        live_snapshot_cache_writer=writer,
+        stop_runner=lambda worker: worker(),
+    )
+
+    assert new_watcher.path == source_b_path  # type: ignore[attr-defined]
+    assert machine._rio_reader is next_reader
+    assert writer.source_id == source_b
+    assert state.player.full_name == ""
+    assert state.listing is None
+    assert state.leader_key is None
+    assert state.applicants == {}
+    assert state.party_members == {}
+    assert window.restore_expired_calls == 1
+    assert load_live_snapshot(
+        tmp_path / "cache",
+        expected_source_id=source_b,
+        now=101.0,
+    ) is None
+
+
+def test_screenshot_runtime_failed_source_start_discards_precommit_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    source_a_path = tmp_path / "A" / "Screenshots"
+    source_b_path = tmp_path / "B" / "Screenshots"
+    source_a = live_snapshot_source_identity(source_a_path)
+    snapshot_a = replace(
+        _live_snapshot(),
+        roster=[_live_roster_member("Host-Realm")],
+    )
+    snapshot_b = replace(
+        snapshot_a,
+        listing=replace(snapshot_a.listing, key_level=20),
+        version=replace(snapshot_a.version, player_name="Alt-Realm"),
+        applicants=[
+            replace(snapshot_a.applicants[0], name="AltApplicant-Realm")
+        ],
+    )
+    state = AppState()
+    old_reader = _SourceTransitionReader()
+    next_reader = _SourceTransitionReader()
+    machine = main_mod.StateMachine(state, rio_reader=old_reader)
+    machine.apply_snapshot(snapshot_a)
+    cache_dir = tmp_path / "cache"
+    writer = LiveSnapshotCacheWriter(
+        cache_dir,
+        source_id=source_a,
+        defer_saves=False,
+    )
+    writer.submit(snapshot_a, now=100.0)
+    window = _SourceTransitionWindow()
+
+    class FakeWatcher:
+        def __init__(self, path: Path, **_kwargs: object) -> None:
+            self.path = path
+            self.snapshotReceived = _SourceTransitionSignal()
+            self.decodeFailed = _SourceTransitionSignal()
+            self.stop_calls = 0
+
+        def start(self) -> None:
+            self.snapshotReceived.emit(snapshot_b)
+            raise RuntimeError("cannot watch B")
+
+        def request_stop(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    old_watcher = FakeWatcher(source_a_path)
+    setattr(old_watcher, "_applicant_scout_source_id", source_a)
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(
+        main_mod,
+        "_raiderio_reader_for_screenshots_path",
+        lambda *_args, **_kwargs: next_reader,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot watch B"):
+        main_mod._replace_screenshots_runtime(
+            old_watcher,  # type: ignore[arg-type]
+            source_b_path,
+            machine,
+            window,  # type: ignore[arg-type]
+            lambda *_args: None,
+            cache_dir=cache_dir,
+            signal_gate=main_mod._WatcherSignalGate(),
+            live_snapshot_cache_writer=writer,
+        )
+
+    assert machine._rio_reader is old_reader
+    assert writer.source_id == source_a
+    assert state.player.full_name == "Host-Realm"
+    assert state.listing is not None and state.listing.key_level == 14
+    assert set(state.applicants) == {"42:1"}
+    assert set(state.party_members) == {"host-realm"}
+    assert window.decoded == []
+    restored = load_live_snapshot(
+        cache_dir,
+        expected_source_id=source_a,
+        now=101.0,
+    )
+    assert restored is not None
+    assert restored.snapshot.version == snapshot_a.version
+
+
+def test_screenshot_runtime_commits_source_before_draining_fresh_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    source_a_path = tmp_path / "A" / "Screenshots"
+    source_b_path = tmp_path / "B" / "Screenshots"
+    source_a = live_snapshot_source_identity(source_a_path)
+    source_b = live_snapshot_source_identity(source_b_path)
+    snapshot_a = replace(
+        _live_snapshot(),
+        roster=[_live_roster_member("Host-Realm")],
+    )
+    snapshot_b = replace(
+        snapshot_a,
+        listing=replace(snapshot_a.listing, key_level=20),
+        version=replace(snapshot_a.version, player_name="Alt-Realm"),
+        applicants=[replace(snapshot_a.applicants[0], name="AltApplicant-Realm")],
+        roster=[_live_roster_member("Alt-Realm")],
+    )
+    cache_dir = tmp_path / "cache"
+    assert save_live_snapshot(
+        cache_dir,
+        snapshot_a,
+        source_id=source_a,
+        now=time.time(),
+    )
+    state = AppState()
+    machine = main_mod.StateMachine(state, rio_reader=_SourceTransitionReader())
+    window = _SourceTransitionWindow()
+    restore_callbacks: list[Callable[[], None]] = []
+    monkeypatch.setattr(
+        main_mod.QTimer,
+        "singleShot",
+        lambda _milliseconds, callback: restore_callbacks.append(callback),
+    )
+    assert main_mod._restore_live_snapshot_cache(
+        cache_dir,
+        machine,
+        window,  # type: ignore[arg-type]
+        expected_source_id=source_a,
+    )
+    writer = LiveSnapshotCacheWriter(
+        cache_dir,
+        source_id=source_a,
+        defer_saves=False,
+    )
+    next_reader = _SourceTransitionReader()
+
+    class FakeWatcher:
+        def __init__(self, path: Path, **_kwargs: object) -> None:
+            self.path = path
+            self.snapshotReceived = _SourceTransitionSignal()
+            self.decodeFailed = _SourceTransitionSignal()
+
+        def start(self) -> None:
+            self.snapshotReceived.emit(snapshot_b)
+
+        def request_stop(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    old_watcher = FakeWatcher(source_a_path)
+    setattr(old_watcher, "_applicant_scout_source_id", source_a)
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(
+        main_mod,
+        "_raiderio_reader_for_screenshots_path",
+        lambda *_args, **_kwargs: next_reader,
+    )
+
+    main_mod._replace_screenshots_runtime(
+        old_watcher,  # type: ignore[arg-type]
+        source_b_path,
+        machine,
+        window,  # type: ignore[arg-type]
+        lambda *_args: None,
+        cache_dir=cache_dir,
+        signal_gate=main_mod._WatcherSignalGate(),
+        live_snapshot_cache_writer=writer,
+        stop_runner=lambda worker: worker(),
+    )
+
+    assert machine._rio_reader is next_reader
+    assert state.player.full_name == "Alt-Realm"
+    assert state.listing is not None and state.listing.key_level == 20
+    assert {row.name for row in state.applicants.values()} == {
+        "AltApplicant-Realm"
+    }
+    assert set(state.party_members) == {"alt-realm"}
+    assert window.decoded == [snapshot_b]
+    assert window.applied == [snapshot_b]
+    restored = load_live_snapshot(
+        cache_dir,
+        expected_source_id=source_b,
+    )
+    assert restored is not None
+    assert restored.snapshot == replace(snapshot_b, source=None)
+
+    restore_callbacks[0]()
+    assert state.player.full_name == "Alt-Realm"
+    assert state.listing is not None and state.listing.key_level == 20
+    assert load_live_snapshot(
+        cache_dir,
+        expected_source_id=source_b,
+    ) is not None
+
+
+def test_restore_rejects_config_cache_when_process_env_selects_another_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    configured_source = tmp_path / "configured" / "_retail_" / "Screenshots"
+    environment_source = tmp_path / "environment" / "_retail_" / "Screenshots"
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        screenshots_path=str(configured_source),
+    )
+    configured_source_id = live_snapshot_source_identity(configured_source)
+    cache_dir = main_mod.load_config().cache_dir
+    assert save_live_snapshot(
+        cache_dir,
+        _live_snapshot(),
+        source_id=configured_source_id,
+        now=time.time(),
+    )
+    monkeypatch.setenv("APSCOUT_SCREENSHOTS_PATH", str(environment_source))
+    effective_cfg = main_mod.load_config()
+    effective_source_id = live_snapshot_source_identity(
+        main_mod.screenshots_path_candidate(effective_cfg)
+    )
+
+    class RejectApplyMachine:
+        def apply_snapshot(self, _snap: Snapshot) -> None:
+            pytest.fail("mismatched cache must not be applied")
+
+    assert not main_mod._restore_live_snapshot_cache(
+        effective_cfg.cache_dir,
+        RejectApplyMachine(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        expected_source_id=effective_source_id,
+    )
+    assert not (effective_cfg.cache_dir / LIVE_SNAPSHOT_CACHE_FILENAME).exists()
 
 
 def test_screenshot_runtime_sets_rio_reader_before_watcher_backlog(
@@ -7446,7 +8348,11 @@ def test_raiderio_reader_for_screenshots_path_passes_cache_dir(
 def test_settings_saved_status_preserves_screenshots_path_warning(tmp_path: Path):
     values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
 
-    text, is_error = main_mod._settings_saved_status(values, [])
+    text, is_error = main_mod._settings_saved_status(
+        values,
+        [],
+        path_warning="Screenshots folder warning: cached invalid path.",
+    )
 
     assert is_error
     assert "Screenshots folder warning" in text
@@ -7460,7 +8366,11 @@ def test_settings_autosave_status_reports_pending_wcl_validation(tmp_path: Path)
     cfg.draft_wcl_client_id = "draft-client"
     cfg.draft_wcl_client_secret = "draft-secret"
 
-    text, is_error, is_warning = main_mod._settings_autosave_status(values, [], cfg)
+    text, is_error, is_warning = main_mod._settings_autosave_status(
+        values,
+        [],
+        cfg,
+    )
 
     assert not is_error
     assert is_warning
@@ -7511,7 +8421,12 @@ def test_settings_autosave_status_combines_pending_validation_with_screenshots_w
     cfg = _cfg(tmp_path)
     cfg.draft_wcl_client_secret = "draft-secret"
 
-    text, is_error, is_warning = main_mod._settings_autosave_status(values, [], cfg)
+    text, is_error, is_warning = main_mod._settings_autosave_status(
+        values,
+        [],
+        cfg,
+        path_warning="Screenshots folder warning: cached invalid path.",
+    )
 
     assert is_error
     assert not is_warning
@@ -7520,16 +8435,10 @@ def test_settings_autosave_status_combines_pending_validation_with_screenshots_w
 
 
 def test_settings_autosave_status_accepts_cached_screenshots_warning_without_recheck(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
     values = SimpleNamespace(screenshots_path=str(tmp_path / "sleeping-drive"))
     cfg = _cfg(tmp_path)
-
-    def fail_health_check(_path: Path) -> str | None:
-        raise AssertionError("autosave status should not probe path health")
-
-    monkeypatch.setattr(main_mod, "screenshots_path_health_warning", fail_health_check)
 
     text, is_error, is_warning = main_mod._settings_autosave_status(
         values,
@@ -7575,7 +8484,11 @@ def test_settings_wcl_test_success_status_keeps_override_warning(tmp_path: Path)
 def test_settings_wcl_test_success_status_keeps_screenshots_warning(tmp_path: Path):
     values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
 
-    text, is_error = main_mod._settings_wcl_test_success_status(values, [])
+    text, is_error = main_mod._settings_wcl_test_success_status(
+        values,
+        [],
+        path_warning="Screenshots folder warning: cached invalid path.",
+    )
 
     assert is_error
     assert text.startswith("WCL credentials are valid.")
@@ -8323,15 +9236,15 @@ def test_restore_live_snapshot_expiry_clears_matching_disk_cache(
     class FakeMachine:
         def __init__(self) -> None:
             self.snapshots: list[Snapshot] = []
-            self.expired_surfaces: list[tuple[bool, bool]] = []
+            self.expired_surfaces: list[tuple[bool, bool, bool]] = []
 
         def apply_snapshot(self, snap: Snapshot) -> None:
             self.snapshots.append(snap)
 
         def expire_restored_snapshot_surfaces(
-            self, *, applicants: bool, roster: bool
+            self, *, applicants: bool, roster: bool, listing: bool
         ) -> None:
-            self.expired_surfaces.append((applicants, roster))
+            self.expired_surfaces.append((applicants, roster, listing))
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -8361,7 +9274,7 @@ def test_restore_live_snapshot_expiry_clears_matching_disk_cache(
     callbacks[0][1]()
 
     assert window.expired
-    assert machine.expired_surfaces == [(True, True)]
+    assert machine.expired_surfaces == [(True, True, True)]
     assert not (cache_dir / LIVE_SNAPSHOT_CACHE_FILENAME).exists()
 
 
@@ -8385,7 +9298,7 @@ def test_restore_live_snapshot_expiry_preserves_newer_disk_cache(
             pass
 
         def expire_restored_snapshot_surfaces(
-            self, *, applicants: bool, roster: bool
+            self, *, applicants: bool, roster: bool, listing: bool
         ) -> None:
             pass
 
@@ -8431,15 +9344,15 @@ def test_restore_live_snapshot_expiry_clears_only_provisional_surface(
     class FakeMachine:
         def __init__(self) -> None:
             self.snapshots: list[Snapshot] = []
-            self.expired_surfaces: list[tuple[bool, bool]] = []
+            self.expired_surfaces: list[tuple[bool, bool, bool]] = []
 
         def apply_snapshot(self, snap: Snapshot) -> None:
             self.snapshots.append(snap)
 
         def expire_restored_snapshot_surfaces(
-            self, *, applicants: bool, roster: bool
+            self, *, applicants: bool, roster: bool, listing: bool
         ) -> None:
-            self.expired_surfaces.append((applicants, roster))
+            self.expired_surfaces.append((applicants, roster, listing))
 
     class FakeWindow:
         def note_restored_snapshot(self, *_args) -> None:
@@ -8459,7 +9372,9 @@ def test_restore_live_snapshot_expiry_clears_only_provisional_surface(
 
     callbacks[0]()
 
-    assert machine.expired_surfaces == [pending_surfaces]
+    assert machine.expired_surfaces == [
+        (pending_surfaces[0], pending_surfaces[1], pending_surfaces[0])
+    ]
 
 
 def test_clear_cache_dir_preserves_update_downloads_and_clears_character_cache(

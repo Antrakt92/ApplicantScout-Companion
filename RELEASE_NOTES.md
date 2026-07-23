@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## 0.12.0 - 23-Jul-2026
+
+Paired release with ApplicantScout addon `0.8.0`. This release keeps incomplete
+applicant and Party reads from erasing the last complete overlay state, and
+binds restored data to the exact screenshot source, player, and listing that
+produced it.
+
+### Fixed
+
+- Applicant-partial APS1 v11 frames preserve the last complete applicant surface
+  only for the same source and listing, while full recovery, identity changes,
+  terminal clears, and simultaneous applicant/roster partials retire exactly the
+  domains they own.
+- Screenshot-folder changes now commit the new watcher and source identity
+  transactionally. Failed starts cannot leak pre-commit frames or retire the
+  working watcher, and restored cache data from another source is rejected.
+- Persisted live snapshots record canonical source and producer context;
+  deferred writes, source rebinds, and process-environment overrides cannot
+  resurrect stale applicants or Party data from another WoW session.
+- Windows startup holds one user-scoped runtime owner through shutdown and
+  keeps legacy local-control compatibility, preventing concurrent launches from
+  opening duplicate overlays.
+- Screenshot-path validation runs in a bounded child process that is terminated
+  on timeout, replacement, or dialog close, so disconnected paths cannot leave
+  Settings or startup work stuck.
+- Retired Warcraft Logs OAuth work can no longer overwrite or delete credentials
+  owned by a newer client after a settings or identity change.
+
+### Improved
+
+- Partial applicant state is exposed consistently in overlay health and
+  accessibility text, and the Warcraft Logs client link is keyboard focusable.
+- Runtime ownership, snapshot merging, row grouping, and presentation logic are
+  isolated behind focused modules with regression coverage for source changes,
+  shutdown ordering, partial authority, and cache persistence.
+- Public support guidance now treats the complete local config/cache directories
+  and live-snapshot/manual-index files as private diagnostic data.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.8.0`.
+- Installer: `ApplicantScoutCompanionSetup-0.12.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.12.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.12.0-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.12.0-release-manifest.json`
+
 ## 0.11.1 - 20-Jul-2026
 
 Paired release with ApplicantScout addon `0.7.1`. This patch restores automatic

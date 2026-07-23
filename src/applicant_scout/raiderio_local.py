@@ -1055,15 +1055,6 @@ def _parse_dungeon_names(text: str) -> list[str]:
     return re.findall(r'\["name"\]\s*=\s*"([^"]+)"', text)
 
 
-def _parse_realm_data(text: str, realm: str) -> _RealmData | None:
-    lookup_key = _realm_lookup_key(realm)
-    return _parse_all_realm_data(text).get(lookup_key)
-
-
-def _parse_all_realm_data(text: str) -> dict[str, _RealmData]:
-    return _parse_character_layout(text, 1).realms
-
-
 def _decode_profile(
     record: bytes, encoding_order: tuple[int, ...], dungeon_names: list[str]
 ) -> RaiderIOLocalProfile:

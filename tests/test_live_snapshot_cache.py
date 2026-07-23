@@ -13,6 +13,7 @@ from applicant_scout.live_snapshot_cache import (
     LIVE_SNAPSHOT_CACHE_TTL_SECONDS,
     LiveSnapshotCacheWriter,
     clear_live_snapshot_if_saved_at,
+    live_snapshot_source_identity,
     load_live_snapshot,
     save_live_snapshot,
 )
@@ -116,6 +117,100 @@ def test_save_and_load_live_snapshot_round_trips_without_source(tmp_path):
     assert not restored.snapshot.terminal_clear
     assert not restored.snapshot.lfg_unavailable
     assert not restored.snapshot.roster_unavailable
+    assert not restored.snapshot.applicants_unavailable
+
+
+def test_live_snapshot_source_identity_is_lexical_and_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        type(tmp_path),
+        "resolve",
+        lambda *_args, **_kwargs: pytest.fail("source identity must not resolve paths"),
+    )
+    canonical = tmp_path / "WoW" / "_retail_" / "Screenshots"
+    equivalent = canonical / ".." / "Screenshots"
+
+    assert live_snapshot_source_identity(equivalent) == live_snapshot_source_identity(
+        canonical
+    )
+
+
+def test_load_live_snapshot_rejects_mismatched_source_and_unscoped_schema(
+    tmp_path,
+):
+    source_a = live_snapshot_source_identity(tmp_path / "A" / "Screenshots")
+    source_b = live_snapshot_source_identity(tmp_path / "B" / "Screenshots")
+    assert save_live_snapshot(
+        tmp_path,
+        _live_snapshot(),
+        source_id=source_a,
+        now=100.0,
+    )
+
+    assert (
+        load_live_snapshot(
+            tmp_path,
+            expected_source_id=source_b,
+            now=101.0,
+        )
+        is None
+    )
+    assert not _cache_path(tmp_path).exists()
+
+    assert save_live_snapshot(
+        tmp_path,
+        _live_snapshot(),
+        source_id=source_a,
+        now=102.0,
+    )
+    payload = json.loads(_cache_path(tmp_path).read_text(encoding="utf-8"))
+    payload["schema"] = 1
+    payload.pop("source_id")
+    _write_cache_payload(tmp_path, payload)
+
+    assert (
+        load_live_snapshot(
+            tmp_path,
+            expected_source_id=source_a,
+            now=103.0,
+        )
+        is None
+    )
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_partial_snapshot_from_new_player_cannot_preserve_old_player_cache(tmp_path):
+    source_id = live_snapshot_source_identity(tmp_path / "Screenshots")
+    original = _live_snapshot()
+    assert save_live_snapshot(
+        tmp_path,
+        original,
+        source_id=source_id,
+        now=100.0,
+    )
+    partial = replace(
+        original,
+        version=replace(original.version, player_name="Alt-Realm"),
+        applicants=[],
+        applicants_unavailable=True,
+    )
+
+    assert save_live_snapshot(
+        tmp_path,
+        partial,
+        source_id=source_id,
+        now=101.0,
+    )
+    assert (
+        load_live_snapshot(
+            tmp_path,
+            expected_source_id=source_id,
+            now=102.0,
+        )
+        is None
+    )
 
 
 def test_restored_snapshot_reenrichment_uses_cached_transport_provenance(tmp_path):
@@ -222,6 +317,53 @@ def test_save_live_snapshot_ignores_roster_unavailable_without_clearing_previous
     assert restored.snapshot.applicants[0].name == "Healer-Realm"
 
 
+def test_applicant_partial_preserves_only_same_listing_cache_context(tmp_path):
+    original = _live_snapshot()
+    save_live_snapshot(tmp_path, original, now=100.0)
+    same_context = Snapshot(
+        listing=original.listing,
+        version=original.version,
+        applicants_unavailable=True,
+    )
+
+    assert save_live_snapshot(tmp_path, same_context, now=110.0)
+    restored = load_live_snapshot(tmp_path, now=111.0)
+    assert restored is not None
+    assert restored.saved_at == 100.0
+
+    changed_listing = replace(original.listing, key_level=15)
+    changed_context = replace(same_context, listing=changed_listing)
+
+    assert save_live_snapshot(tmp_path, changed_context, now=112.0)
+    assert load_live_snapshot(tmp_path, now=113.0) is None
+
+
+def test_deferred_writer_context_checks_preserve_clear_and_matching_save(tmp_path):
+    original = _live_snapshot()
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    same_context_partial = Snapshot(
+        listing=original.listing,
+        version=original.version,
+        applicants_unavailable=True,
+    )
+
+    writer.submit(original, now=100.0)
+    writer.submit(same_context_partial, now=101.0)
+    assert writer.flush()
+    restored = load_live_snapshot(tmp_path, now=102.0)
+    assert restored is not None
+    assert restored.saved_at == 100.0
+
+    writer.submit(Snapshot(listing=None, version=None, terminal_clear=True), now=103.0)
+    writer.submit(same_context_partial, now=104.0)
+    assert writer.flush()
+    assert load_live_snapshot(tmp_path, now=105.0) is None
+
+
 def test_save_live_snapshot_clears_on_terminal_clear_or_no_listing(tmp_path):
     save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
     save_live_snapshot(
@@ -326,7 +468,7 @@ def test_load_live_snapshot_rejects_malformed_rio_dungeons_from_disk(tmp_path):
     assert not _cache_path(tmp_path).exists()
 
 
-def test_load_live_snapshot_filters_placeholder_identities_before_restore(tmp_path):
+def test_load_live_snapshot_rejects_placeholder_partial_surfaces(tmp_path):
     snap = _live_snapshot()
     placeholder_applicant = replace(
         snap.applicants[0],
@@ -348,9 +490,8 @@ def test_load_live_snapshot_filters_placeholder_identities_before_restore(tmp_pa
     save_live_snapshot(tmp_path, snap, now=100.0)
     restored = load_live_snapshot(tmp_path, now=101.0)
 
-    assert restored is not None
-    assert restored.snapshot.applicants == [snap.applicants[0]]
-    assert restored.snapshot.roster == [snap.roster[0]]
+    assert restored is None
+    assert not _cache_path(tmp_path).exists()
 
 
 def test_load_live_snapshot_rejects_duplicate_real_identities(tmp_path):
@@ -444,6 +585,80 @@ def test_live_snapshot_writer_duplicate_suppression_resets_after_clear_and_inval
     assert save_times == [100.0, 100.2, 100.3]
 
 
+def test_live_snapshot_writer_rebind_drops_pending_old_source_and_resets_dedup(
+    tmp_path,
+):
+    source_a = live_snapshot_source_identity(tmp_path / "A" / "Screenshots")
+    source_b = live_snapshot_source_identity(tmp_path / "B" / "Screenshots")
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        source_id=source_a,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    snapshot = _live_snapshot()
+    writer.submit(snapshot, now=100.0)
+
+    assert writer.rebind_source(source_b)
+    assert writer.source_id == source_b
+    assert writer.flush()
+    assert not _cache_path(tmp_path).exists()
+
+    writer.submit(snapshot, now=100.1)
+    assert writer.flush()
+    restored = load_live_snapshot(
+        tmp_path,
+        expected_source_id=source_b,
+        now=101.0,
+    )
+    assert restored is not None
+    assert restored.source_id == source_b
+
+
+def test_live_snapshot_writer_rebind_waits_for_in_flight_old_source_then_clears(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    source_a = live_snapshot_source_identity(tmp_path / "A" / "Screenshots")
+    source_b = live_snapshot_source_identity(tmp_path / "B" / "Screenshots")
+    started = threading.Event()
+    release = threading.Event()
+    rebound = threading.Event()
+    original_save = cache_mod._save_live_snapshot_content
+
+    def slow_save(cache_dir, content, *, saved_at):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return original_save(cache_dir, content, saved_at=saved_at)
+
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", slow_save)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        source_id=source_a,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(_live_snapshot(), now=100.0)
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    rebind_thread = threading.Thread(
+        target=lambda: (writer.rebind_source(source_b), rebound.set())
+    )
+    rebind_thread.start()
+    assert not rebound.wait(timeout=0.05)
+    release.set()
+    flush_thread.join(timeout=2.0)
+    rebind_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert not rebind_thread.is_alive()
+    assert rebound.is_set()
+    assert writer.source_id == source_b
+    assert not _cache_path(tmp_path).exists()
+
+
 def test_live_snapshot_writer_partial_snapshot_does_not_cancel_pending_full_save(tmp_path):
     writer = LiveSnapshotCacheWriter(
         tmp_path,
@@ -465,6 +680,25 @@ def test_live_snapshot_writer_partial_snapshot_does_not_cancel_pending_full_save
 
     assert restored is not None
     assert restored.saved_at == 100.0
+
+
+def test_live_snapshot_writer_identity_changing_partial_clears_old_producer(
+    tmp_path,
+):
+    assert save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+    writer.submit(
+        Snapshot(
+            listing=None,
+            version=DecodedVersion("0.4.3", "12.0.5", 3, "Host-OtherRealm"),
+            lfg_unavailable=True,
+            roster_unavailable=True,
+            applicants_unavailable=True,
+        ),
+        now=101.0,
+    )
+
+    assert load_live_snapshot(tmp_path, now=102.0) is None
 
 
 def test_live_snapshot_writer_clear_wins_over_pending_save(tmp_path):

@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass, asdict, field, replace
@@ -352,11 +353,25 @@ def _client_fingerprint(client_id: str, client_secret: str) -> str:
 class WCLAuth:
     """Manages OAuth client_credentials token, refreshes when near expiry."""
 
+    _cache_ownership_lock = threading.Lock()
+    _cache_owner_generation_by_path: dict[str, int] = {}
+
     def __init__(self, client_id: str, client_secret: str, cache_dir: Path):
         self._client_id = client_id
         self._client_secret = client_secret
         self._client_fingerprint = _client_fingerprint(client_id, client_secret)
         self._token_path = cache_dir / "token.json"
+        self._token_cache_key = os.path.normcase(
+            os.path.abspath(os.fspath(self._token_path))
+        )
+        with self._cache_ownership_lock:
+            self._cache_owner_generation = (
+                self._cache_owner_generation_by_path.get(self._token_cache_key, 0)
+                + 1
+            )
+            self._cache_owner_generation_by_path[self._token_cache_key] = (
+                self._cache_owner_generation
+            )
         if self._token_path.exists():
             apply_private_file_mode(self._token_path)
         self._token: Optional[_Token] = self._load_cached()
@@ -398,6 +413,7 @@ class WCLAuth:
                 not isinstance(client_fingerprint, str)
                 or client_fingerprint != self._client_fingerprint
             ):
+                self._delete_cached_token()
                 return None
             return _Token(
                 access_token=access_token.strip(),
@@ -413,14 +429,20 @@ class WCLAuth:
         # one extra OAuth refresh on next process start (~1s). Better than
         # propagating OSError up through fetch_character_ranks and surfacing
         # "Permission denied: token.json" to the user as a WCL fetch error.
-        try:
-            atomic_write_text(
-                self._token_path,
-                json.dumps(asdict(token)),
-                private=True,
-            )
-        except OSError as e:
-            _log.warning("Could not persist OAuth token cache: %s", e)
+        with self._cache_ownership_lock:
+            if (
+                self._cache_owner_generation_by_path.get(self._token_cache_key)
+                != self._cache_owner_generation
+            ):
+                return
+            try:
+                atomic_write_text(
+                    self._token_path,
+                    json.dumps(asdict(token)),
+                    private=True,
+                )
+            except OSError as e:
+                _log.warning("Could not persist OAuth token cache: %s", e)
 
     def get_token(self) -> str:
         """Returns valid access token, refreshing if within 60s of expiry."""
@@ -526,11 +548,17 @@ class WCLAuth:
         )
 
     def _delete_cached_token(self) -> None:
-        if self._token_path.exists():
-            try:
-                self._token_path.unlink()
-            except OSError:
-                pass
+        with self._cache_ownership_lock:
+            if (
+                self._cache_owner_generation_by_path.get(self._token_cache_key)
+                != self._cache_owner_generation
+            ):
+                return
+            if self._token_path.exists():
+                try:
+                    self._token_path.unlink()
+                except OSError:
+                    pass
 
 
 class WCLAuthError(Exception):

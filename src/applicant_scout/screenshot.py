@@ -12,7 +12,7 @@ Complete logical snapshots mirror `ApplicantScout.lua::BuildPayload`
 byte-for-byte: header "APS1" + version + uint16 length + flags/reserved bytes,
 then listing block + version block + applicant array + CRC32 trailer. Oversized
 snapshots use bounded APS1 v10 fragment envelopes and are emitted only after
-the original v1-v9 payload has been reassembled and validated. Pure binary,
+the original logical payload has been reassembled and validated. Pure binary,
 big-endian, see addon for spec.
 QR is purely a transport layer over those bytes — Reed-Solomon ECC built into
 QR handles JPG quantization noise, partial occlusion, and rotation. Current
@@ -74,8 +74,11 @@ MAGIC = b"APS1"
 # v0x07 = adds current group leader keystone context.
 # v0x08 = adds terminal/LFG-unavailable partial flags.
 # v0x09 = adds roster-unavailable partial flag for QR-overflow fallback.
-# v0x0A = bounded transport fragment containing one slice of a complete v1-v9
+# v0x0A = bounded transport fragment containing one slice of a complete logical
 # payload. Fragments are assembled before any Snapshot reaches application code.
+# v0x0B = v9 body plus an applicant-surface-unavailable flag. Producers retain
+# v9 for ordinary frames so mixed-version rollout fails closed only on the new
+# applicant-partial generations.
 # Set, not a min/max range — future versions may be incompatible with v1 but compatible
 # with v2; explicit allow-list is the cleanest contract.
 WIRE_VERSIONS_SUPPORTED = {
@@ -89,13 +92,16 @@ WIRE_VERSIONS_SUPPORTED = {
     0x08,
     0x09,
     0x0A,
+    0x0B,
 }
-LOGICAL_WIRE_VERSIONS_SUPPORTED = frozenset(range(0x01, 0x0A))
+LOGICAL_WIRE_VERSIONS_SUPPORTED = frozenset((*range(0x01, 0x0A), 0x0B))
 APS1_FLAG_TERMINAL_CLEAR = 0x01
 APS1_FLAG_LFG_UNAVAILABLE = 0x02
 APS1_FLAG_ROSTER_UNAVAILABLE = 0x04
+APS1_FLAG_APPLICANTS_UNAVAILABLE = 0x08
 APS1_KNOWN_V8_FLAGS = APS1_FLAG_TERMINAL_CLEAR | APS1_FLAG_LFG_UNAVAILABLE
 APS1_KNOWN_V9_FLAGS = APS1_KNOWN_V8_FLAGS | APS1_FLAG_ROSTER_UNAVAILABLE
+APS1_KNOWN_V11_FLAGS = APS1_KNOWN_V9_FLAGS | APS1_FLAG_APPLICANTS_UNAVAILABLE
 APS1_FRAGMENT_VERSION = 0x0A
 APS1_FRAGMENT_CHUNK_BYTES = 640
 APS1_FRAGMENT_MIN_CHUNKS = 2
@@ -243,12 +249,13 @@ class Snapshot:
     terminal_clear: bool = False
     lfg_unavailable: bool = False
     roster_unavailable: bool = False
+    applicants_unavailable: bool = False
     source: SnapshotSource | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
 class SnapshotFragment:
-    """One bounded v10 slice of a complete inner v1-v9 APS1 snapshot."""
+    """One bounded v10 slice of a complete logical APS1 snapshot."""
 
     stream_id: int
     generation: int
@@ -666,16 +673,24 @@ def _try_parse_appscout_candidate(
                 f"unsupported APS1 v10 reserved bytes 0x{flags:02x} 0x{reserved2:02x}",
             )
     elif wire_ver >= 0x08:
-        known_flags = APS1_KNOWN_V9_FLAGS if wire_ver >= 0x09 else APS1_KNOWN_V8_FLAGS
+        known_flags = (
+            APS1_KNOWN_V11_FLAGS
+            if wire_ver == 0x0B
+            else APS1_KNOWN_V9_FLAGS
+            if wire_ver >= 0x09
+            else APS1_KNOWN_V8_FLAGS
+        )
         unknown_flags = flags & ~known_flags
         if unknown_flags:
             return None, f"unsupported APS1 v{wire_ver} flags 0x{unknown_flags:02x}"
         if flags & APS1_FLAG_TERMINAL_CLEAR and flags & APS1_FLAG_LFG_UNAVAILABLE:
             return None, "terminal and LFG-unavailable flags are mutually exclusive"
-        if flags & APS1_FLAG_LFG_UNAVAILABLE and flags & APS1_FLAG_ROSTER_UNAVAILABLE:
+        if flags & APS1_FLAG_TERMINAL_CLEAR and flags & (
+            APS1_FLAG_ROSTER_UNAVAILABLE | APS1_FLAG_APPLICANTS_UNAVAILABLE
+        ):
             return (
                 None,
-                "LFG-unavailable and roster-unavailable flags are mutually exclusive",
+                "terminal and partial-unavailable flags are mutually exclusive",
             )
         if reserved2:
             return None, f"unsupported APS1 v{wire_ver} reserved byte 0x{reserved2:02x}"
@@ -772,6 +787,7 @@ def _try_parse_appscout_candidate(
             terminal_clear=bool(flags & APS1_FLAG_TERMINAL_CLEAR),
             lfg_unavailable=bool(flags & APS1_FLAG_LFG_UNAVAILABLE),
             roster_unavailable=bool(flags & APS1_FLAG_ROSTER_UNAVAILABLE),
+            applicants_unavailable=bool(flags & APS1_FLAG_APPLICANTS_UNAVAILABLE),
         )  # skip 9-byte header
         snap = validate_snapshot_for_application(snap)
     except (IndexError, UnicodeDecodeError, struct.error, ValueError) as e:
@@ -780,7 +796,7 @@ def _try_parse_appscout_candidate(
 
 
 def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optional[str]]:
-    """Parse one complete logical snapshot while preserving the v1-v9 API."""
+    """Parse one complete logical snapshot while preserving the legacy API."""
     parsed, error = _try_parse_appscout_candidate(raw)
     if isinstance(parsed, SnapshotFragment):
         return None, "v10 fragment requires watcher assembly"
@@ -803,8 +819,6 @@ def is_placeholder_transport_identity(name: str) -> bool:
 
 
 def _without_placeholder_transport_identities(snap: Snapshot) -> Snapshot:
-    if not snap.applicants and not snap.roster:
-        return snap
     applicants = [
         applicant
         for applicant in snap.applicants
@@ -815,9 +829,28 @@ def _without_placeholder_transport_identities(snap: Snapshot) -> Snapshot:
         for member in snap.roster
         if not is_placeholder_transport_identity(member.name)
     ]
-    if len(applicants) == len(snap.applicants) and len(roster) == len(snap.roster):
+    applicants_unavailable = (
+        snap.applicants_unavailable or len(applicants) != len(snap.applicants)
+    )
+    roster_unavailable = (
+        snap.roster_unavailable or len(roster) != len(snap.roster)
+    )
+    normalized_applicants = [] if applicants_unavailable else applicants
+    normalized_roster = [] if roster_unavailable else roster
+    if (
+        normalized_applicants == snap.applicants
+        and normalized_roster == snap.roster
+        and applicants_unavailable == snap.applicants_unavailable
+        and roster_unavailable == snap.roster_unavailable
+    ):
         return snap
-    return replace(snap, applicants=applicants, roster=roster)
+    return replace(
+        snap,
+        applicants=normalized_applicants,
+        roster=normalized_roster,
+        applicants_unavailable=applicants_unavailable,
+        roster_unavailable=roster_unavailable,
+    )
 
 
 def _validate_snapshot_applicant_shapes(snap: Snapshot) -> None:
@@ -913,6 +946,7 @@ def _parse_payload(
     terminal_clear: bool = False,
     lfg_unavailable: bool = False,
     roster_unavailable: bool = False,
+    applicants_unavailable: bool = False,
 ) -> Snapshot:
     """Cursor-based parse of body (already past 9-byte header). Returns Snapshot.
     Raises IndexError if buf truncated (caught by caller as decode failure).
@@ -926,8 +960,8 @@ def _parse_payload(
       * v0x06: adds current party/raid roster after applicants.
       * v0x07: adds optional leader keystone context after version block.
       * v0x08: adds header flags for terminal clear and partial LFG snapshots.
-      * v0x09: adds a header flag for applicant snapshots that omitted the
-        roster block to stay inside the QR render budget.
+      * v0x09: adds a header flag for snapshots that omitted the roster block.
+      * v0x0B: adds an applicant-surface flag while retaining the v9 body.
     """
     cursor = 0
     listing: Optional[DecodedListing] = None
@@ -1187,6 +1221,7 @@ def _parse_payload(
         terminal_clear=terminal_clear,
         lfg_unavailable=lfg_unavailable,
         roster_unavailable=roster_unavailable,
+        applicants_unavailable=applicants_unavailable,
     )
 
 

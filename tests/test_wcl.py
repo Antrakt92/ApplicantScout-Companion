@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import stat
 import threading
 import time
@@ -4350,6 +4351,114 @@ def test_oauth_invalidate_after_parallel_refresh_forces_next_refresh(
     assert posts == [0, 1]
 
 
+def test_retired_oauth_refresh_cannot_overwrite_new_owner_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    old_started = threading.Event()
+    release_old = threading.Event()
+    old_auth = WCLAuth("old-client", "old-secret", tmp_path)
+
+    def old_request() -> wcl_mod._Token:
+        old_started.set()
+        assert release_old.wait(timeout=2.0)
+        return wcl_mod._Token(
+            "old-token",
+            time.time() + 3600,
+            wcl_mod._client_fingerprint("old-client", "old-secret"),
+        )
+
+    monkeypatch.setattr(old_auth, "_request_token", old_request)
+    old_result: list[str] = []
+    old_thread = threading.Thread(
+        target=lambda: old_result.append(old_auth.get_token())
+    )
+    old_thread.start()
+    assert old_started.wait(timeout=2.0)
+
+    new_auth = WCLAuth("new-client", "new-secret", tmp_path)
+    monkeypatch.setattr(
+        new_auth,
+        "_request_token",
+        lambda: wcl_mod._Token(
+            "new-token",
+            time.time() + 3600,
+            wcl_mod._client_fingerprint("new-client", "new-secret"),
+        ),
+    )
+    assert new_auth.get_token() == "new-token"
+
+    release_old.set()
+    old_thread.join(timeout=2.0)
+    assert not old_thread.is_alive()
+    assert old_result == ["old-token"]
+    saved = json.loads((tmp_path / "token.json").read_text(encoding="utf-8"))
+    assert saved["access_token"] == "new-token"
+    assert saved["client_fingerprint"] == wcl_mod._client_fingerprint(
+        "new-client",
+        "new-secret",
+    )
+
+
+def test_retired_oauth_invalidation_cannot_delete_new_owner_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    old_auth = WCLAuth("old-client", "old-secret", tmp_path)
+    new_auth = WCLAuth("new-client", "new-secret", tmp_path)
+    monkeypatch.setattr(
+        new_auth,
+        "_request_token",
+        lambda: wcl_mod._Token(
+            "new-token",
+            time.time() + 3600,
+            wcl_mod._client_fingerprint("new-client", "new-secret"),
+        ),
+    )
+    assert new_auth.get_token() == "new-token"
+
+    old_auth.invalidate()
+
+    saved = json.loads((tmp_path / "token.json").read_text(encoding="utf-8"))
+    assert saved["access_token"] == "new-token"
+
+
+def test_new_oauth_owner_can_save_after_retired_owner_invalidates_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    new_started = threading.Event()
+    release_new = threading.Event()
+    old_auth = WCLAuth("old-client", "old-secret", tmp_path)
+    new_auth = WCLAuth("new-client", "new-secret", tmp_path)
+
+    def new_request() -> wcl_mod._Token:
+        new_started.set()
+        assert release_new.wait(timeout=2.0)
+        return wcl_mod._Token(
+            "new-token",
+            time.time() + 3600,
+            wcl_mod._client_fingerprint("new-client", "new-secret"),
+        )
+
+    monkeypatch.setattr(new_auth, "_request_token", new_request)
+    new_result: list[str] = []
+    new_thread = threading.Thread(
+        target=lambda: new_result.append(new_auth.get_token())
+    )
+    new_thread.start()
+    assert new_started.wait(timeout=2.0)
+
+    old_auth.invalidate()
+    release_new.set()
+    new_thread.join(timeout=2.0)
+
+    assert not new_thread.is_alive()
+    assert new_result == ["new-token"]
+    saved = json.loads((tmp_path / "token.json").read_text(encoding="utf-8"))
+    assert saved["access_token"] == "new-token"
+
+
 def test_oauth_auth_applies_private_mode_to_existing_token_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
@@ -4441,6 +4550,28 @@ def test_oauth_cached_token_ignored_for_different_client_fingerprint(
     auth = WCLAuth("new-client", "secret", tmp_path)
 
     assert auth.get_token() == "fresh-token"
+
+
+def test_oauth_new_owner_removes_retired_credential_token_without_refresh(tmp_path):
+    token_path = tmp_path / "token.json"
+    token_path.write_text(
+        json.dumps(
+            {
+                "access_token": "old-token",
+                "expires_at": time.time() + 3600,
+                "client_fingerprint": wcl_mod._client_fingerprint(
+                    "old-client",
+                    "old-secret",
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    auth = WCLAuth("new-client", "new-secret", tmp_path)
+
+    assert auth._token is None
+    assert not token_path.exists()
 
 
 def test_oauth_cached_token_ignored_for_same_client_different_secret(

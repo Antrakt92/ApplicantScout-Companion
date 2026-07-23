@@ -2879,9 +2879,13 @@ def test_companion_gitignore_does_not_hide_public_release_or_doc_inputs():
 def test_readme_documents_current_wire_support():
     readme = _read_repo_text("README.md")
 
-    assert "complete logical APS1 snapshots through v9" in readme
-    assert "bounded v10 overflow fragment envelopes" in readme
-    assert "only after exact reassembly of the original v9 payload" in readme
+    assert "ordinary logical APS1 snapshots through v9" in readme
+    assert "applicant-partial authority frames on v11" in readme
+    assert "bounded v10 overflow fragment" in readme
+    _assert_copy_contains(
+        readme,
+        "exact reassembly of the complete inner logical payload",
+    )
     assert "wire payloads through v5" not in readme
 
 
@@ -2919,6 +2923,11 @@ def test_readme_documents_support_output_redaction():
         "config.env",
         "token.json",
         "character-cache.json",
+        "last-live-snapshot.json",
+        "screenshot-manual-index-v2-*.json",
+        "%LOCALAPPDATA%\\applicant-scout\\config\\",
+        "%LOCALAPPDATA%\\applicant-scout\\cache\\",
+        "do not attach either directory wholesale",
     ):
         _assert_copy_contains(readme, sensitive_surface)
 
@@ -2927,8 +2936,10 @@ def test_readme_documents_support_output_redaction():
         "OAuth access token",
         "character names",
         "realm names",
+        "applicant/roster snapshots",
         "listing titles/comments",
         "screenshots folder paths",
+        "absolute screenshot file paths",
     ):
         _assert_copy_contains(readme, private_detail)
 

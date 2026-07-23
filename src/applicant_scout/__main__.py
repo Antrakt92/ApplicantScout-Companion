@@ -24,6 +24,8 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import __version__
+from . import runtime_control as _runtime_control
+from . import snapshot_pipeline as _snapshot_pipeline
 from .atomic_io import apply_private_directory_mode, apply_private_file_mode
 from .config import (
     Config,
@@ -35,7 +37,7 @@ from .config import (
     read_user_config_values,
     resolve_screenshots_path,
     save_config_values,
-    screenshots_path_health_warning,
+    screenshots_path_candidate,
     user_log_dir,
     validate_metric_preferences,
 )
@@ -44,6 +46,7 @@ from .live_snapshot_cache import (
     LIVE_SNAPSHOT_RESTORE_GRACE_SECONDS,
     LiveSnapshotCacheWriter,
     clear_live_snapshot_if_saved_at,
+    live_snapshot_source_identity,
     load_live_snapshot,
 )
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
@@ -70,6 +73,7 @@ from .settings_dialog import (
     SettingsDialog,
     SettingsUpdateResult,
     open_folder,
+    run_bounded_screenshots_path_probe,
     run_screenshots_path_probe_command,
 )
 from .state import Applicant, AppState, LeaderKey, Listing, RosterMember, WoWPlayer
@@ -104,11 +108,24 @@ _RIO_LOOKUP_FAILED = object()
 RIO_PRELOAD_REFRESH_INTERVAL_SECONDS = 30.0
 APP_ICON_PATH = Path(__file__).with_name("assets") / "app_icon.ico"
 APP_USER_MODEL_ID = "Antrakt.ApplicantScout.Companion"
-CONTROL_SERVER_NAME = "Antrakt.ApplicantScout.Companion.Control"
+CONTROL_SERVER_BASENAME = _runtime_control.CONTROL_SERVER_BASENAME
+
+
+def _scoped_control_server_name(user_identity: str) -> str:
+    return _runtime_control.scoped_control_server_name(user_identity)
+
+
+def _runtime_user_identity() -> str:
+    return _runtime_control.runtime_user_identity()
+
+
+CONTROL_SERVER_NAME = _runtime_control.CONTROL_SERVER_NAME
+LEGACY_CONTROL_SERVER_NAME = _runtime_control.LEGACY_CONTROL_SERVER_NAME
+CONTROL_OWNER_NAME = _runtime_control.CONTROL_OWNER_NAME
 CONTROL_SHUTDOWN_ARG = "--shutdown-running-instance"
 SHOW_SETTINGS_ARG = "--show-settings"
-CONTROL_QUIT_COMMAND = b"quit"
-CONTROL_SHOW_SETTINGS_COMMAND = b"show-settings"
+CONTROL_QUIT_COMMAND = _runtime_control.CONTROL_QUIT_COMMAND
+CONTROL_SHOW_SETTINGS_COMMAND = _runtime_control.CONTROL_SHOW_SETTINGS_COMMAND
 UPDATE_QUIT_BLOCKED_MESSAGE = "Update is installing. Wait for it to finish before quitting."
 WOW_EXIT_POLL_MS = 5000
 WOW_EXIT_MISSES_BEFORE_QUIT = 3
@@ -131,20 +148,14 @@ _QT_APPLICATION_CLASS = QApplication
 UPDATE_DOWNLOADS_DIR_NAME = "updates"
 
 
-@dataclass(frozen=True)
-class _ControlCommandResult:
-    connected: bool
-    written: bool
-    response: bytes | None = None
-    error: str | None = None
+_ControlCommandResult = _runtime_control.ControlCommandResult
+_DuplicateInstanceFound = _runtime_control.DuplicateInstanceFound
+_ControlServerUnavailable = _runtime_control.ControlServerUnavailable
+_RuntimeOwner = _runtime_control.RuntimeOwner
 
 
-class _DuplicateInstanceFound(RuntimeError):
-    pass
-
-
-class _ControlServerUnavailable(RuntimeError):
-    pass
+def _acquire_runtime_owner(owner_name: str = CONTROL_OWNER_NAME) -> _RuntimeOwner | None:
+    return _runtime_control.acquire_runtime_owner(owner_name)
 
 
 class _DeferredGuiAction:
@@ -354,58 +365,31 @@ def _set_windows_app_user_model_id() -> None:
 def _send_control_command(
     command: bytes, *, timeout_ms: int = 2000
 ) -> _ControlCommandResult:
-    socket = QLocalSocket()
-    socket.connectToServer(CONTROL_SERVER_NAME)
-    if not socket.waitForConnected(timeout_ms):
-        return _ControlCommandResult(
-            connected=False,
-            written=False,
-            error=socket.errorString(),
-        )
-    payload = command.rstrip() + b"\n"
-    socket.write(payload)
-    if not socket.waitForBytesWritten(timeout_ms):
-        error = socket.errorString()
-        socket.disconnectFromServer()
-        return _ControlCommandResult(connected=True, written=False, error=error)
-    response = None
-    if socket.waitForReadyRead(500):
-        response = socket.readAll().data().strip().lower()
-    socket.disconnectFromServer()
-    return _ControlCommandResult(connected=True, written=True, response=response)
+    return _runtime_control.send_control_command(
+        command,
+        timeout_ms=timeout_ms,
+        socket_factory=QLocalSocket,
+        server_names=(CONTROL_SERVER_NAME, LEGACY_CONTROL_SERVER_NAME),
+    )
 
 
 def _shutdown_running_instance(timeout_ms: int = 2000) -> int:
-    result = _send_control_command(CONTROL_QUIT_COMMAND, timeout_ms=timeout_ms)
-    if not result.connected:
-        log.info("No running ApplicantScout instance accepted the shutdown command.")
-        return 0
-    if not result.written:
-        log.warning("Could not send shutdown command: %s", result.error or "unknown error")
-        return 1
-    if result.response == b"blocked":
-        log.warning("Running ApplicantScout instance refused the shutdown command.")
-        return 1
-    if result.response != b"ok":
-        log.warning(
-            "Running ApplicantScout instance did not acknowledge shutdown: %r",
-            result.response,
-        )
-        return 1
-    return 0
+    return _runtime_control.shutdown_running_instance(
+        timeout_ms=timeout_ms,
+        send_command=_send_control_command,
+    )
 
 
 def _control_command_acknowledged(result: _ControlCommandResult) -> bool:
-    return result.connected and result.written and result.response == b"ok"
+    return _runtime_control.control_command_acknowledged(result)
 
 
 def _has_running_instance(timeout_ms: int = 200) -> bool:
-    socket = QLocalSocket()
-    socket.connectToServer(CONTROL_SERVER_NAME)
-    if not socket.waitForConnected(timeout_ms):
-        return False
-    socket.disconnectFromServer()
-    return True
+    return _runtime_control.has_running_instance(
+        timeout_ms=timeout_ms,
+        socket_factory=QLocalSocket,
+        server_names=(CONTROL_SERVER_NAME, LEGACY_CONTROL_SERVER_NAME),
+    )
 
 
 def _create_control_server(
@@ -417,32 +401,20 @@ def _create_control_server(
     prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
 ) -> QLocalServer:
-    server = QLocalServer(app)
-    if not server.listen(CONTROL_SERVER_NAME):
-        active_owner = _send_control_command(CONTROL_SHOW_SETTINGS_COMMAND, timeout_ms=200)
-        if _control_command_acknowledged(active_owner):
-            raise _DuplicateInstanceFound
-        if active_owner.connected and active_owner.written:
-            log.warning(
-                "Control server owner returned unexpected response while probing: %r",
-                active_owner.response,
-            )
-            raise _DuplicateInstanceFound
-        QLocalServer.removeServer(CONTROL_SERVER_NAME)
-        if not server.listen(CONTROL_SERVER_NAME):
-            raise _ControlServerUnavailable(server.errorString())
-
-    server.newConnection.connect(
-        lambda: _drain_control_connections(
-            server,
-            quit_app,
-            show_settings,
-            can_quit=can_quit,
-            prepare_quit=prepare_quit,
-            quit_blocked=quit_blocked,
-        )
+    return _runtime_control.create_control_server(
+        app,
+        quit_app=quit_app,
+        show_settings=show_settings,
+        can_quit=can_quit,
+        prepare_quit=prepare_quit,
+        quit_blocked=quit_blocked,
+        acquire_owner=_acquire_runtime_owner,
+        send_command=_send_control_command,
+        local_server_type=QLocalServer,
+        server_name=CONTROL_SERVER_NAME,
+        show_settings_command=CONTROL_SHOW_SETTINGS_COMMAND,
+        drain_connections=_drain_control_connections,
     )
-    return server
 
 
 def _drain_control_connections(
@@ -454,30 +426,15 @@ def _drain_control_connections(
     prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
 ) -> None:
-    while server.hasPendingConnections():
-        socket = server.nextPendingConnection()
-        if socket is None:
-            continue
-        socket.readyRead.connect(
-            lambda _socket=socket: _handle_control_command(
-                _socket,
-                quit_app,
-                show_settings,
-                can_quit=can_quit,
-                prepare_quit=prepare_quit,
-                quit_blocked=quit_blocked,
-            )
-        )
-        socket.disconnected.connect(socket.deleteLater)
-        if socket.bytesAvailable() > 0:
-            _handle_control_command(
-                socket,
-                quit_app,
-                show_settings,
-                can_quit=can_quit,
-                prepare_quit=prepare_quit,
-                quit_blocked=quit_blocked,
-            )
+    _runtime_control.drain_control_connections(
+        server,
+        quit_app,
+        show_settings,
+        can_quit=can_quit,
+        prepare_quit=prepare_quit,
+        quit_blocked=quit_blocked,
+        handle_command=_handle_control_command,
+    )
 
 
 def _handle_control_command(
@@ -489,38 +446,15 @@ def _handle_control_command(
     prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
 ) -> None:
-    command = socket.readAll().data().strip().lower()
-    if command == CONTROL_QUIT_COMMAND:
-        if can_quit is not None and not can_quit():
-            socket.write(b"blocked\n")
-            socket.flush()
-            socket.waitForBytesWritten(100)
-            socket.disconnectFromServer()
-            if quit_blocked is not None:
-                QTimer.singleShot(0, quit_blocked)
-            return
-        if prepare_quit is not None and not prepare_quit():
-            socket.write(b"blocked\n")
-            socket.flush()
-            socket.waitForBytesWritten(100)
-            socket.disconnectFromServer()
-            return
-        socket.write(b"ok\n")
-        socket.flush()
-        socket.waitForBytesWritten(100)
-        socket.disconnectFromServer()
-        QTimer.singleShot(0, quit_app)
-        return
-    if command == CONTROL_SHOW_SETTINGS_COMMAND and show_settings is not None:
-        socket.write(b"ok\n")
-        socket.flush()
-        socket.waitForBytesWritten(100)
-        socket.disconnectFromServer()
-        QTimer.singleShot(0, show_settings)
-        return
-    socket.write(b"unknown\n")
-    socket.flush()
-    socket.disconnectFromServer()
+    _runtime_control.handle_control_command(
+        socket,
+        quit_app,
+        show_settings,
+        can_quit=can_quit,
+        prepare_quit=prepare_quit,
+        quit_blocked=quit_blocked,
+        schedule=lambda callback: QTimer.singleShot(0, callback),
+    )
 
 
 def _create_tray_controller(
@@ -602,6 +536,12 @@ class StateMachine(QObject):
         self._rio_preload_active: tuple[int, str, int] | None = None
         self._rio_preload_completed_key: tuple[int, str] | None = None
         self._rio_preload_refresh_after = 0.0
+        initial_identity = state.player.full_name.strip().casefold()
+        self._producer_player_name, separator, initial_realm = (
+            initial_identity.partition("-")
+        )
+        self._producer_player_realm = initial_realm if separator else ""
+        self._producer_region = REGION_ID_TO_WCL.get(state.player.region_id)
         self._rioPreloadCompleted.connect(self._on_rio_preload_completed)
 
     def set_rio_reader(self, rio_reader: Any | None) -> None:
@@ -1085,24 +1025,79 @@ class StateMachine(QObject):
         *,
         applicants: bool,
         roster: bool,
+        listing: bool | None = None,
     ) -> None:
         """Discard restored domains that never received fresh transport proof."""
-        if applicants:
+        if listing is None:
+            listing = applicants
+        if listing:
+            applicants = True
+        if applicants or listing:
             old_listing = self._state.listing
             old_leader_key = self._state.leader_key
             had_applicants = bool(self._state.applicants)
-            self._state.listing = None
-            self._state.leader_key = None
+            if listing:
+                self._state.listing = None
+                self._state.leader_key = None
             self._state.clear_all()
-            if old_listing is not None or old_leader_key is not None:
+            if listing and (old_listing is not None or old_leader_key is not None):
                 self.listingChanged.emit()
-            if old_listing is not None or had_applicants:
+            if (listing and old_listing is not None) or had_applicants:
                 self.cleared.emit()
 
         if roster and self._apply_roster_snapshot([], emit_signal=False):
             self.rosterChanged.emit()
 
+    def retire_screenshot_source(self) -> None:
+        """Retire every transport-derived domain before a new source is live."""
+        old_listing = self._state.listing
+        old_leader_key = self._state.leader_key
+        had_applicants = bool(self._state.applicants)
+        self._state.listing = None
+        self._state.leader_key = None
+        self._state.player = WoWPlayer()
+        self._producer_player_name = ""
+        self._producer_player_realm = ""
+        self._producer_region = None
+        self._state.clear_all()
+        roster_changed = self._apply_roster_snapshot([], emit_signal=False)
+        if old_listing is not None or old_leader_key is not None:
+            self.listingChanged.emit()
+        if old_listing is not None or had_applicants:
+            self.cleared.emit()
+        if roster_changed:
+            self.rosterChanged.emit()
+
     def apply_snapshot(self, snap: Snapshot) -> None:
+        incoming_player_identity = (
+            snap.version.player_name.strip().casefold()
+            if snap.version is not None
+            else ""
+        )
+        incoming_player_name, _, incoming_player_realm = (
+            incoming_player_identity.partition("-")
+        )
+        current_player_name = self._producer_player_name
+        current_player_realm = self._producer_player_realm
+        incoming_region = (
+            REGION_ID_TO_WCL.get(snap.version.region_id)
+            if snap.version is not None
+            else None
+        )
+        current_region = self._producer_region
+        player_identity_changed = bool(
+            incoming_player_name
+            and current_player_name
+            and (
+                incoming_player_name != current_player_name
+                or (
+                    incoming_player_realm
+                    and current_player_realm
+                    and incoming_player_realm != current_player_realm
+                )
+                or (incoming_region is not None and incoming_region != current_region)
+            )
+        )
         region_identity_changed = False
         default_realm_changed = False
         # ─── Version ───
@@ -1134,6 +1129,23 @@ class StateMachine(QObject):
                 # before local-RIO preload because supported readers may invoke
                 # their completion callback before preload_region_async returns.
                 self.versionUpdated.emit(snap.version.region_id)
+            if player_identity_changed:
+                # A shared WoW Screenshots folder can outlive an account or
+                # character switch. Retire stale transport domains after the
+                # region consumer moves, then restore the authoritative player.
+                self.retire_screenshot_source()
+                self._state.player = new_player
+            if incoming_player_name:
+                if player_identity_changed or incoming_player_name != current_player_name:
+                    self._producer_player_name = incoming_player_name
+                    self._producer_player_realm = incoming_player_realm
+                    self._producer_region = incoming_region
+                else:
+                    self._producer_player_name = incoming_player_name
+                    if incoming_player_realm:
+                        self._producer_player_realm = incoming_player_realm
+                    if incoming_region is not None:
+                        self._producer_region = incoming_region
             try:
                 self._preload_local_rio_region(new_region_token)
             except Exception as exc:  # noqa: BLE001 - snapshot remains authoritative
@@ -1285,6 +1297,27 @@ class StateMachine(QObject):
         elif new_listing.key_level > 0:
             rio_summary_target_key = new_listing.key_level
 
+        # The producer discards the entire applicant block when any declared
+        # member is missing. Preserve prior rows only for the exact same listing;
+        # a changed listing must not inherit applicants from another context.
+        if snap.applicants_unavailable and new_listing == old_listing:
+            if not snap.roster_unavailable:
+                self._apply_roster_snapshot(
+                    snap.roster,
+                    region_identity_changed=region_identity_changed,
+                    default_realm_changed=default_realm_changed,
+                    rio_summary_target_key=rio_summary_target_key,
+                )
+            self._refresh_preserved_identity_rows(
+                applicants=True,
+                roster=snap.roster_unavailable,
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+            )
+            if leader_key_changed:
+                self.listingChanged.emit()
+            return
+
         # Listing changed (dungeon/key/comment) — fire signal so overlay re-titles
         if new_listing != old_listing:
             self._state.listing = new_listing
@@ -1306,8 +1339,9 @@ class StateMachine(QObject):
         # all sharing applicant_id but with distinct member_idx 1..N). Solo
         # apps + legacy v0x01 payloads decode with member_idx=1, producing
         # keys like "42:1" — same shape, no special-casing needed.
+        applicant_rows = [] if snap.applicants_unavailable else snap.applicants
         valid_applicants = [
-            a for a in snap.applicants
+            a for a in applicant_rows
             if (name := a.name.strip()) and not is_placeholder_transport_identity(name)
         ]
         new_by_id = {f"{a.applicant_id}:{a.member_idx}": a for a in valid_applicants}
@@ -2149,6 +2183,43 @@ class _WatcherSignalGate:
         return generation == self._generation or generation == self._pending_generation
 
 
+class _PreparedWatcherSignalScheduler:
+    """Buffer a prepared watcher's GUI work until its source commit succeeds."""
+
+    def __init__(
+        self,
+        scheduler: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
+        self._scheduler = scheduler or _schedule_snapshot_apply
+        self._lock = threading.Lock()
+        self._pending: list[Callable[[], None]] = []
+        self._state: Literal["prepared", "committed", "cancelled"] = "prepared"
+
+    def schedule(self, callback: Callable[[], None]) -> None:
+        with self._lock:
+            if self._state == "cancelled":
+                return
+            if self._state == "prepared":
+                self._pending.append(callback)
+                return
+        self._scheduler(callback)
+
+    def commit(self) -> None:
+        with self._lock:
+            if self._state != "prepared":
+                return
+            self._state = "committed"
+            callbacks, self._pending = self._pending, []
+        for callback in callbacks:
+            self._scheduler(callback)
+
+    def cancel(self) -> None:
+        with self._lock:
+            if self._state == "prepared":
+                self._state = "cancelled"
+                self._pending = []
+
+
 class _SnapshotSourceGate:
     def __init__(self) -> None:
         self._latest_mtime_ns: int | None = None
@@ -2508,263 +2579,48 @@ def _run_application_event_loop(
     *,
     wow_sync_startup_configurator: _WowSyncStartupConfigurator,
     sync_with_wow: bool,
-    watcher: ScreenshotWatcher | None,
+    watcher_getter: Callable[[], ScreenshotWatcher | None],
     window: OverlayWindow,
     cache: CharacterCache,
     live_snapshot_writer: LiveSnapshotCacheWriter | None,
     wcl_client: WCLClient,
+    runtime_owner: _RuntimeOwner | None = None,
 ) -> int:
     try:
         wow_sync_startup_configurator.request(sync_with_wow)
     except RuntimeError as exc:
         log.warning("Could not schedule WoW lifecycle startup reconciliation: %s", exc)
-    rc = app.exec()
-    wow_sync_startup_configurator.close()
-    _shutdown_runtime(watcher, window, cache, live_snapshot_writer, wcl_client)
-    return rc
-
-
-_SNAPSHOT_AUTHORITY_LFG = 1 << 0
-_SNAPSHOT_AUTHORITY_ROSTER = 1 << 1
-_SNAPSHOT_AUTHORITY_VERSION = 1 << 2
-_SNAPSHOT_AUTHORITY_LEADER = 1 << 3
-_SNAPSHOT_AUTHORITY_LISTING_SEED = 1 << 4
-
-
-def _snapshot_carries_leader_update(snap: object) -> bool:
-    if bool(getattr(snap, "terminal_clear", False)) or not bool(
-        getattr(snap, "lfg_unavailable", False)
-    ):
-        return True
-    leader_key = getattr(snap, "leader_key", None)
-    key_level = getattr(leader_key, "key_level", None)
-    return isinstance(key_level, int) and key_level > 0
-
-
-def _snapshot_authority_mask(snap: object) -> int:
-    terminal_clear = bool(getattr(snap, "terminal_clear", False))
-    lfg_unavailable = bool(getattr(snap, "lfg_unavailable", False))
-    roster_unavailable = bool(getattr(snap, "roster_unavailable", False))
-    authority = 0
-    if terminal_clear or not lfg_unavailable:
-        authority |= (
-            _SNAPSHOT_AUTHORITY_LFG
-            | _SNAPSHOT_AUTHORITY_LEADER
-            | _SNAPSHOT_AUTHORITY_LISTING_SEED
+    try:
+        rc = app.exec()
+        wow_sync_startup_configurator.close()
+        _shutdown_runtime(
+            watcher_getter(),
+            window,
+            cache,
+            live_snapshot_writer,
+            wcl_client,
         )
-    else:
-        # A restricted LFG read can still carry independently useful context.
-        if _snapshot_carries_leader_update(snap):
-            authority |= _SNAPSHOT_AUTHORITY_LEADER
-        if getattr(snap, "listing", None) is not None:
-            authority |= _SNAPSHOT_AUTHORITY_LISTING_SEED
-    if terminal_clear or not roster_unavailable:
-        authority |= _SNAPSHOT_AUTHORITY_ROSTER
-    if getattr(snap, "version", None) is not None:
-        authority |= _SNAPSHOT_AUTHORITY_VERSION
-    return authority
+        return rc
+    finally:
+        if runtime_owner is not None:
+            runtime_owner.close()
 
 
-def _compact_snapshot_segment(snapshots: tuple[object, ...]) -> tuple[object, ...]:
-    """Keep the newest observation plus each older snapshot with unique authority."""
-    covered = 0
-    retained_reversed: list[object] = []
-    for snap in reversed(snapshots):
-        authority = _snapshot_authority_mask(snap)
-        if not retained_reversed or authority & ~covered:
-            retained_reversed.append(snap)
-            covered |= authority
-    retained_reversed.reverse()
-    return tuple(retained_reversed)
+_snapshot_carries_leader_update = _snapshot_pipeline.snapshot_carries_leader_update
+_snapshot_authority_mask = _snapshot_pipeline.snapshot_authority_mask
+_compact_snapshot_segment = _snapshot_pipeline.compact_snapshot_segment
+_append_pending_snapshot = _snapshot_pipeline.append_pending_snapshot
+_version_producer_identity = _snapshot_pipeline.version_producer_identity
+_producer_identities_conflict = _snapshot_pipeline.producer_identities_conflict
+_producer_identity_matches = _snapshot_pipeline.producer_identity_matches
 
 
-def _append_pending_snapshot(
-    pending: tuple[object, ...],
-    snap: object,
-) -> tuple[object, ...]:
-    # A clear invalidates every earlier state event, but must itself survive a
-    # later partial/full frame so listing-session and waiter cleanup still runs.
-    if bool(getattr(snap, "terminal_clear", False)):
-        return (snap,)
-    if pending and bool(getattr(pending[0], "terminal_clear", False)):
-        return (pending[0],) + _compact_snapshot_segment(pending[1:] + (snap,))
-    return _compact_snapshot_segment(pending + (snap,))
+_latest_producer_segment = _snapshot_pipeline.latest_producer_segment
+_merge_snapshot_segment = _snapshot_pipeline.merge_snapshot_segment
+_snapshot_application_plan = _snapshot_pipeline.snapshot_application_plan
 
 
-def _merge_snapshot_segment(snapshots: tuple[Snapshot, ...]) -> Snapshot:
-    """Compose final in-memory authority without fabricating a cache snapshot."""
-    latest = snapshots[-1]
-    lfg_source = next(
-        (snap for snap in reversed(snapshots) if not snap.lfg_unavailable),
-        None,
-    )
-    roster_source = next(
-        (snap for snap in reversed(snapshots) if not snap.roster_unavailable),
-        None,
-    )
-    version = next(
-        (snap.version for snap in reversed(snapshots) if snap.version is not None),
-        None,
-    )
-    leader_source = next(
-        (
-            snap
-            for snap in reversed(snapshots)
-            if _snapshot_carries_leader_update(snap)
-        ),
-        None,
-    )
-    listing_seed_source = None
-    if lfg_source is None:
-        listing_seed_source = next(
-            (snap for snap in reversed(snapshots) if snap.listing is not None),
-            None,
-        )
-    return replace(
-        latest,
-        listing=(
-            lfg_source.listing
-            if lfg_source is not None
-            else (
-                listing_seed_source.listing
-                if listing_seed_source is not None
-                else None
-            )
-        ),
-        version=version,
-        leader_key=(leader_source.leader_key if leader_source is not None else None),
-        applicants=list(lfg_source.applicants) if lfg_source is not None else [],
-        roster=list(roster_source.roster) if roster_source is not None else [],
-        terminal_clear=False,
-        lfg_unavailable=lfg_source is None,
-        roster_unavailable=roster_source is None,
-    )
-
-
-def _snapshot_application_plan(
-    snapshots: tuple[object, ...],
-    cache_snapshots: tuple[Snapshot, ...],
-) -> tuple[tuple[object, tuple[object, ...]], ...]:
-    """Build state-application steps while retaining original cache inputs."""
-    typed_snapshots = tuple(
-        snap for snap in snapshots if isinstance(snap, Snapshot)
-    )
-    if len(typed_snapshots) != len(snapshots):
-        return tuple((snap, (snap,)) for snap in snapshots)
-
-    steps: list[tuple[object, tuple[object, ...]]] = []
-    segment = typed_snapshots
-    cache_segment = cache_snapshots
-    if segment and segment[0].terminal_clear:
-        terminal = segment[0]
-        segment = segment[1:]
-        cache_terminal: tuple[object, ...] = ()
-        if cache_segment and cache_segment[0].terminal_clear:
-            cache_terminal = (cache_segment[0],)
-            cache_segment = cache_segment[1:]
-        planned_terminal = terminal
-        if segment and any(snap.version is not None for snap in segment):
-            planned_terminal = replace(terminal, version=None)
-        steps.append((planned_terminal, cache_terminal))
-    if segment:
-        steps.append((_merge_snapshot_segment(segment), tuple(cache_segment)))
-    return tuple(steps)
-
-
-class _SnapshotApplyQueue:
-    def __init__(
-        self,
-        machine: _SnapshotApplier,
-        window: OverlayWindow,
-        decode_failed_callback: Callable[[str, str], None],
-        *,
-        signal_gate: _WatcherSignalGate,
-        generation: int,
-        live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
-        scheduler: Callable[[Callable[[], None]], None] | None = None,
-    ) -> None:
-        self._machine = machine
-        self._window = window
-        self._decode_failed_callback = decode_failed_callback
-        self._signal_gate = signal_gate
-        self._generation = generation
-        self._live_snapshot_cache_writer = live_snapshot_cache_writer
-        self._scheduler = scheduler or _schedule_snapshot_apply
-        self._pending: tuple[str, tuple[object, ...]] | None = None
-        self._pending_cache_snapshots: tuple[Snapshot, ...] = ()
-        self._flush_pending = False
-
-    def enqueue_snapshot(self, snap: object) -> None:
-        pending_snapshots: tuple[object, ...] = ()
-        if self._pending is not None and self._pending[0] == "snapshot":
-            pending_snapshots = self._pending[1]
-        else:
-            self._pending_cache_snapshots = ()
-        if isinstance(snap, Snapshot):
-            if snap.terminal_clear:
-                self._pending_cache_snapshots = (snap,)
-            else:
-                self._pending_cache_snapshots += (snap,)
-        self._pending = (
-            "snapshot",
-            _append_pending_snapshot(pending_snapshots, snap),
-        )
-        self._schedule_flush()
-
-    def enqueue_decode_failed(self, path: str, reason: str) -> None:
-        # WHY: a decode failure has no usable state. If a valid snapshot is
-        # already waiting for the GUI flush, keep it rather than turning a
-        # good-frame-plus-bad-frame burst into no state update.
-        if self._pending is not None and self._pending[0] == "snapshot":
-            return
-        self._pending = ("decode_failed", (path, reason))
-        self._schedule_flush()
-
-    def _schedule_flush(self) -> None:
-        if self._flush_pending:
-            return
-        self._flush_pending = True
-        self._scheduler(self.flush)
-
-    def flush(self) -> None:
-        if self._pending is None:
-            self._flush_pending = False
-            return
-        kind, args = self._pending
-        cache_snapshots = self._pending_cache_snapshots
-        self._pending = None
-        self._pending_cache_snapshots = ()
-        self._flush_pending = False
-        if not self._signal_gate.is_current(self._generation):
-            return
-        if kind == "snapshot":
-            latest_snap = args[-1]
-            getattr(self._window, "note_decode", lambda *_args: None)(latest_snap)
-            for snap, step_cache_snapshots in _snapshot_application_plan(
-                args,
-                cache_snapshots,
-            ):
-                if not self._signal_gate.is_current(self._generation):
-                    return
-                getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
-                if not self._signal_gate.is_current(self._generation):
-                    return
-                if self._live_snapshot_cache_writer is not None:
-                    for cache_snap in step_cache_snapshots:
-                        if isinstance(cache_snap, Snapshot):
-                            self._live_snapshot_cache_writer.submit(cache_snap)
-                getattr(
-                    self._window,
-                    "note_snapshot_applied",
-                    lambda *_args: None,
-                )(snap)
-            return
-        path, reason = args
-        self._decode_failed_callback(str(path), str(reason))
-        getattr(self._window, "note_decode_failed", lambda *_args: None)(
-            str(path),
-            str(reason),
-        )
+_SnapshotApplyQueue = _snapshot_pipeline.SnapshotApplyQueue
 
 
 def _connect_screenshot_watcher(
@@ -2786,7 +2642,7 @@ def _connect_screenshot_watcher(
         signal_gate=signal_gate,
         generation=generation,
         live_snapshot_cache_writer=live_snapshot_cache_writer,
-        scheduler=scheduler,
+        scheduler=scheduler or _schedule_snapshot_apply,
     )
 
     def _snapshot_if_current(snap: object) -> None:
@@ -2823,6 +2679,7 @@ def _replace_screenshot_watcher(
     signal_gate: _WatcherSignalGate,
     live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
     stop_runner: Callable[[Callable[[], None]], None] | None = None,
+    on_committed: Callable[[ScreenshotWatcher], None] | None = None,
 ) -> ScreenshotWatcher:
     previous_generation = signal_gate.generation
     retired_watchers = getattr(
@@ -2839,6 +2696,7 @@ def _replace_screenshot_watcher(
     setattr(new_watcher, _RETIRED_WATCHER_TRACKER_ATTR, retired_watchers)
     generation = signal_gate.prepare_next()
     source_gate = _SnapshotSourceGate()
+    prepared_scheduler = _PreparedWatcherSignalScheduler()
     apply_queue = _connect_screenshot_watcher(
         new_watcher,
         machine,
@@ -2848,11 +2706,18 @@ def _replace_screenshot_watcher(
         source_gate=source_gate,
         generation=generation,
         live_snapshot_cache_writer=live_snapshot_cache_writer,
+        scheduler=prepared_scheduler.schedule,
     )
     setattr(new_watcher, "_applicant_scout_apply_queue", apply_queue)
+    setattr(
+        new_watcher,
+        "_applicant_scout_source_id",
+        live_snapshot_source_identity(screenshots_dir),
+    )
     try:
         new_watcher.start()
     except Exception:
+        prepared_scheduler.cancel()
         signal_gate.restore(previous_generation)
         try:
             new_watcher.stop()
@@ -2860,11 +2725,45 @@ def _replace_screenshot_watcher(
             log.warning("Could not clean up failed screenshot watcher: %s", cleanup_exc)
         raise
     signal_gate.commit(generation)
+    if on_committed is not None:
+        on_committed(new_watcher)
+    prepared_scheduler.commit()
     if current_watcher is not None:
         # WHY: watchdog Observer.stop()+join can block for seconds on Windows
         # storage paths. The generation gate above already ignores stale signals.
         retired_watchers.retire(current_watcher, stop_runner=stop_runner)
     return new_watcher
+
+
+def _start_initial_screenshot_watcher(
+    screenshots_dir: Path,
+    machine: _SnapshotApplier,
+    window: OverlayWindow,
+    decode_failed_callback: Callable[[str, str], None],
+    *,
+    cache_dir: Path,
+    signal_gate: _WatcherSignalGate,
+    live_snapshot_cache_writer: LiveSnapshotCacheWriter | None,
+    show_recovery: Callable[[str], None],
+) -> ScreenshotWatcher | None:
+    try:
+        return _replace_screenshot_watcher(
+            None,
+            screenshots_dir,
+            machine,
+            window,
+            decode_failed_callback,
+            cache_dir=cache_dir,
+            signal_gate=signal_gate,
+            live_snapshot_cache_writer=live_snapshot_cache_writer,
+        )
+    except Exception as exc:  # noqa: BLE001 - recover through modeless Settings
+        log.warning("Could not start screenshot watcher: %s", exc)
+        show_recovery(
+            "Could not start the Screenshots watcher. Re-select the current "
+            f"folder or choose another one to retry: {exc}"
+        )
+        return None
 
 
 def _replace_screenshots_runtime(
@@ -2879,6 +2778,15 @@ def _replace_screenshots_runtime(
     live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
     stop_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> ScreenshotWatcher:
+    next_source_id = live_snapshot_source_identity(screenshots_dir)
+    current_source_id = (
+        live_snapshot_cache_writer.source_id
+        if live_snapshot_cache_writer is not None
+        else getattr(current_watcher, "_applicant_scout_source_id", None)
+    )
+    source_changed = (
+        isinstance(current_source_id, str) and current_source_id != next_source_id
+    )
     if cache_dir is None:
         next_reader = _raiderio_reader_for_screenshots_path(screenshots_dir)
     else:
@@ -2886,6 +2794,24 @@ def _replace_screenshots_runtime(
             screenshots_dir,
             cache_dir=cache_dir,
         )
+    def _commit_runtime_source(_new_watcher: ScreenshotWatcher) -> None:
+        nonlocal source_changed
+        if live_snapshot_cache_writer is not None:
+            source_changed = (
+                live_snapshot_cache_writer.rebind_source(next_source_id)
+                or source_changed
+            )
+        machine.set_rio_reader(next_reader)
+        if source_changed:
+            retire_source = getattr(machine, "retire_screenshot_source", None)
+            if callable(retire_source):
+                retire_source()
+            getattr(
+                window,
+                "note_restored_snapshot_expired",
+                lambda: None,
+            )()
+
     watcher = _replace_screenshot_watcher(
         current_watcher,
         screenshots_dir,
@@ -2896,8 +2822,8 @@ def _replace_screenshots_runtime(
         signal_gate=signal_gate,
         live_snapshot_cache_writer=live_snapshot_cache_writer,
         stop_runner=stop_runner,
+        on_committed=_commit_runtime_source,
     )
-    machine.set_rio_reader(next_reader)
     try:
         _preload_machine_rio_region(machine)
     except Exception as exc:  # noqa: BLE001 - committed watcher keeps lazy retry path
@@ -2954,9 +2880,13 @@ def _restore_live_snapshot_cache(
     machine: StateMachine,
     window: OverlayWindow,
     *,
+    expected_source_id: str | None = None,
     grace_seconds: float = LIVE_SNAPSHOT_RESTORE_GRACE_SECONDS,
 ) -> bool:
-    restored = load_live_snapshot(cache_dir)
+    restored = load_live_snapshot(
+        cache_dir,
+        expected_source_id=expected_source_id,
+    )
     if restored is None:
         return False
     getattr(window, "note_restored_snapshot", lambda *_args: None)(
@@ -2975,9 +2905,20 @@ def _restore_live_snapshot_cache(
         machine.expire_restored_snapshot_surfaces(
             applicants=bool(applicants_pending),
             roster=bool(roster_pending),
+            listing=bool(
+                getattr(
+                    window,
+                    "restored_snapshot_listing_pending",
+                    lambda: applicants_pending,
+                )()
+            ),
         )
         getattr(window, "note_restored_snapshot_expired", lambda: None)()
-        clear_live_snapshot_if_saved_at(cache_dir, restored.saved_at)
+        clear_live_snapshot_if_saved_at(
+            cache_dir,
+            restored.saved_at,
+            expected_source_id=restored.source_id,
+        )
 
     QTimer.singleShot(max(0, int(grace_seconds * 1000)), _expire_restored_snapshot)
     return True
@@ -3129,35 +3070,22 @@ def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
     )
 
 
-_PATH_WARNING_UNSET = object()
-
-
 def _settings_saved_status(
     values,
     override_keys: list[str],
     *,
-    path_warning: str | None | object = _PATH_WARNING_UNSET,
+    path_warning: str | None = None,
 ) -> tuple[str, bool]:
-    if path_warning is _PATH_WARNING_UNSET:
-        resolved_path_warning = (
-            screenshots_path_health_warning(Path(values.screenshots_path))
-            if values.screenshots_path
-            else None
-        )
-    elif isinstance(path_warning, str):
-        resolved_path_warning = path_warning
-    else:
-        resolved_path_warning = None
     if override_keys:
         message = (
             "Saved for this app session, but environment overrides are active: "
             + ", ".join(override_keys)
         )
-        if resolved_path_warning:
-            message = f"{message}. {resolved_path_warning}"
+        if path_warning:
+            message = f"{message}. {path_warning}"
         return message, True
-    if resolved_path_warning:
-        return resolved_path_warning, True
+    if path_warning:
+        return path_warning, True
     return "Saved.", False
 
 
@@ -3170,7 +3098,7 @@ def _settings_autosave_status(
     override_keys: list[str],
     cfg: Config,
     *,
-    path_warning: str | None | object = _PATH_WARNING_UNSET,
+    path_warning: str | None = None,
 ) -> tuple[str, bool, bool]:
     saved_text, saved_error = _settings_saved_status(
         values,
@@ -3190,7 +3118,7 @@ def _settings_wcl_test_success_status(
     values,
     override_keys: list[str],
     *,
-    path_warning: str | None | object = _PATH_WARNING_UNSET,
+    path_warning: str | None = None,
 ) -> tuple[str, bool]:
     saved_text, saved_error = _settings_saved_status(
         values,
@@ -3427,7 +3355,7 @@ def _apply_settings_change(
         apply_credentials=apply_credentials,
     )
     new_cfg = _apply_process_env_overrides_to_config(new_cfg)
-    new_screenshots_dir = resolve_screenshots_path(new_cfg)
+    new_screenshots_dir = screenshots_path_candidate(new_cfg)
     _persist_settings_values(
         old_cfg,
         values,
@@ -3447,7 +3375,7 @@ def _apply_settings_change(
                 prepare_quit=prepare_quit,
                 configure_startup=False,
             )
-        if new_screenshots_dir != current_screenshots_dir:
+        if watcher is None or new_screenshots_dir != current_screenshots_dir:
             new_watcher = _replace_screenshots_runtime(
                 watcher,
                 new_screenshots_dir,
@@ -3656,7 +3584,11 @@ def _load_startup_config(
                 return None
             continue
         try:
-            return cfg, resolve_screenshots_path(cfg), startup_settings_shown
+            screenshots_dir = screenshots_path_candidate(cfg)
+            warning = run_bounded_screenshots_path_probe(screenshots_dir)
+            if warning is not None:
+                raise ConfigError(warning)
+            return cfg, screenshots_dir, startup_settings_shown
         except ConfigError as exc:
             if os.environ.get("APSCOUT_SCREENSHOTS_PATH") is not None:
                 _show_config_error(
@@ -3874,18 +3806,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     setattr(app, "_applicant_scout_control_server", control_server)
+    runtime_owner = getattr(
+        control_server,
+        "_applicant_scout_runtime_owner",
+        None,
+    )
 
     loaded = _load_startup_config(update_quit_gate=update_quit_gate)
     if loaded is None:
+        if isinstance(runtime_owner, _RuntimeOwner):
+            runtime_owner.close()
         return 1
 
     cfg, screenshots_dir, startup_settings_shown = loaded
     region = cfg.region or REGION_ID_TO_WCL.get(3, "EU")  # default EU
     region_runtime = _WCLRegionRuntime(region)
     log.info("Screenshots: %s", screenshots_dir)
-    path_warning = screenshots_path_health_warning(screenshots_dir)
-    if path_warning:
-        log.warning(path_warning)
     log.info("Region: %s (overridden by addon's VERSION snapshot if different)", region)
     log.info("Logs: %s", cfg.log_dir or user_log_dir())
     log.info("WCL metric preferences: %s", cfg.metric_preferences.cache_key())
@@ -3896,7 +3832,12 @@ def main(argv: list[str] | None = None) -> int:
         ttl_seconds=cfg.cache_ttl_seconds,
         defer_saves=True,
     )
-    live_snapshot_writer = LiveSnapshotCacheWriter(cfg.cache_dir, defer_saves=True)
+    live_snapshot_source_id = live_snapshot_source_identity(screenshots_dir)
+    live_snapshot_writer = LiveSnapshotCacheWriter(
+        cfg.cache_dir,
+        source_id=live_snapshot_source_id,
+        defer_saves=True,
+    )
     wcl_client = WCLClient(
         auth,
         region=region_runtime.effective_region,
@@ -4299,15 +4240,27 @@ def main(argv: list[str] | None = None) -> int:
     def _log_decode_failed(path: str, reason: str) -> None:
         log.warning("decode failed for %s: %s", path, reason)
 
-    if _restore_live_snapshot_cache(cfg.cache_dir, machine, window):
+    if _restore_live_snapshot_cache(
+        cfg.cache_dir,
+        machine,
+        window,
+        expected_source_id=live_snapshot_source_id,
+    ):
         log.info("Restored last live ApplicantScout snapshot; waiting for fresh QR.")
 
     # Start screenshot watcher: it scans recent backlog (last 60s of WoWScrnShot
     # files) on start and applies the most recent valid snapshot — handles the
     # "companion started mid-session" case. Then watches Screenshots/ folder
     # via watchdog Observer for new files.
-    watcher = _replace_screenshot_watcher(
-        None,
+    def _queue_screenshots_recovery(recovery_message: str) -> None:
+        def _show_screenshots_recovery() -> None:
+            _show_settings()
+            if settings_dialog is not None:
+                settings_dialog.set_status(recovery_message, error=True)
+
+        QTimer.singleShot(0, _show_screenshots_recovery)
+
+    watcher = _start_initial_screenshot_watcher(
         screenshots_dir,
         machine,
         window,
@@ -4315,19 +4268,23 @@ def main(argv: list[str] | None = None) -> int:
         cache_dir=cfg.cache_dir,
         signal_gate=watcher_signal_gate,
         live_snapshot_cache_writer=live_snapshot_writer,
+        show_recovery=_queue_screenshots_recovery,
     )
-
-    log.info("Ready. Overlay will appear when applicants are present.")
+    if watcher is not None:
+        log.info("Ready. Overlay will appear when applicants are present.")
 
     return _run_application_event_loop(
         app,
         wow_sync_startup_configurator=wow_sync_startup_configurator,
         sync_with_wow=cfg.sync_with_wow,
-        watcher=watcher,
+        watcher_getter=lambda: watcher,
         window=window,
         cache=cache,
         live_snapshot_writer=live_snapshot_writer,
         wcl_client=wcl_client,
+        runtime_owner=(
+            runtime_owner if isinstance(runtime_owner, _RuntimeOwner) else None
+        ),
     )
 
 
