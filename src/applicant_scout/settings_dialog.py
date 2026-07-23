@@ -409,6 +409,9 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_process_timeout.timeout.connect(
             self._handle_screenshots_validation_timeout
         )
+        self.destroyed.connect(
+            lambda _object=None: self._cancel_screenshots_validation_process()
+        )
         self._screenshots_warning_timer = QTimer(self)
         self._screenshots_warning_timer.setSingleShot(True)
         self._screenshots_warning_timer.setInterval(SCREENSHOTS_WARNING_DEBOUNCE_MS)
@@ -1246,12 +1249,32 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_process_path = ""
         result_path = self._screenshots_validation_process_result_path
         self._screenshots_validation_process_result_path = None
-        self._screenshots_validation_process_timeout.stop()
-        if process.state() != QProcess.ProcessState.NotRunning:
-            process.kill()
-            process.waitForFinished(1000)
-        process.deleteLater()
+        self._stop_screenshots_validation_timeout()
+        try:
+            if process.state() != QProcess.ProcessState.NotRunning:
+                process.kill()
+                process.waitForFinished(1000)
+            process.deleteLater()
+        except RuntimeError:
+            # The dialog's QObject teardown can delete child wrappers before a
+            # queued QProcess callback reaches Python. State was cleared above.
+            pass
         self._remove_screenshots_validation_result(result_path)
+
+    def _stop_screenshots_validation_timeout(self) -> None:
+        try:
+            self._screenshots_validation_process_timeout.stop()
+        except RuntimeError:
+            # The timeout is a QObject child and may already be gone while the
+            # process emits its final queued signal during dialog destruction.
+            pass
+
+    @staticmethod
+    def _delete_screenshots_validation_process_later(process: QProcess) -> None:
+        try:
+            process.deleteLater()
+        except RuntimeError:
+            pass
 
     def _take_screenshots_validation_process(
         self,
@@ -1267,8 +1290,8 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_process_generation = None
         self._screenshots_validation_process_path = ""
         self._screenshots_validation_process_result_path = None
-        self._screenshots_validation_process_timeout.stop()
-        process.deleteLater()
+        self._stop_screenshots_validation_timeout()
+        self._delete_screenshots_validation_process_later(process)
         return generation, path
 
     @staticmethod
@@ -1289,7 +1312,7 @@ class SettingsDialog(QDialog):
     ) -> None:
         request = self._take_screenshots_validation_process(process)
         if request is None:
-            process.deleteLater()
+            self._delete_screenshots_validation_process_later(process)
             self._remove_screenshots_validation_result(result_path)
             return
         generation, path = request
@@ -1320,7 +1343,7 @@ class SettingsDialog(QDialog):
             return
         request = self._take_screenshots_validation_process(process)
         if request is None:
-            process.deleteLater()
+            self._delete_screenshots_validation_process_later(process)
             self._remove_screenshots_validation_result(result_path)
             return
         generation, path = request

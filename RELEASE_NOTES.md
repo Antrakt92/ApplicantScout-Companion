@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.12.0 - 23-Jul-2026
+## 0.12.1 - 23-Jul-2026
 
-Paired release with ApplicantScout addon `0.8.0`. This release keeps incomplete
+Paired release with ApplicantScout addon `0.8.1`. This release keeps incomplete
 applicant and Party reads from erasing the last complete overlay state, and
 binds restored data to the exact screenshot source, player, and listing that
 produced it.
@@ -27,6 +27,9 @@ produced it.
 - Screenshot-path validation runs in a bounded child process that is terminated
   on timeout, replacement, or dialog close, so disconnected paths cannot leave
   Settings or startup work stuck.
+- Destroying Settings now cancels an active screenshot-path helper before Qt
+  deletes its child timer, preventing a late process callback from escaping the
+  dialog lifecycle.
 - Retired Warcraft Logs OAuth work can no longer overwrite or delete credentials
   owned by a newer client after a settings or identity change.
 
@@ -42,11 +45,11 @@ produced it.
 
 ### Release Assets
 
-- Requires the ApplicantScout WoW addon `0.8.0`.
-- Installer: `ApplicantScoutCompanionSetup-0.12.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.12.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.12.0-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.12.0-release-manifest.json`
+- Requires the ApplicantScout WoW addon `0.8.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.12.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.12.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.12.1-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.12.1-release-manifest.json`
 
 ## 0.11.1 - 20-Jul-2026
 

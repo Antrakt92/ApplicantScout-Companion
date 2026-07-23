@@ -758,6 +758,42 @@ def test_settings_dialog_reject_kills_path_probe_and_removes_result(
     assert not result_path.exists()
 
 
+def test_settings_dialog_destroy_cancels_active_path_probe(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_ready_generation
+        == dialog._screenshots_validation_generation,
+        timeout=1000,
+    )
+    helper = tmp_path / "destroyed_path_probe.py"
+    helper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    monkeypatch.setattr(
+        settings_mod,
+        "_screenshots_path_probe_program_args",
+        lambda path, token: (sys.executable, [str(helper), path, token]),
+    )
+
+    dialog.screenshots_edit.setText(
+        str(tmp_path / "offline" / "_retail_" / "Screenshots")
+    )
+    assert not dialog.flush_pending_values()
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_process is not None,
+        timeout=1000,
+    )
+
+    dialog.deleteLater()
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_process is None,
+        timeout=1000,
+    )
+
+
 def test_bounded_screenshots_path_probe_times_out_and_removes_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
