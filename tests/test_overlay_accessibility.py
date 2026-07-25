@@ -201,6 +201,45 @@ def test_overlay_exposes_named_controls_without_weakening_passive_show(qtbot, tm
         client.close()
 
 
+def test_title_accessibility_context_tracks_both_source_tabs(qtbot, tmp_path):
+    window, client = _build_window(tmp_path, qtbot)
+    try:
+        title_label = window._title_bar.title_label
+        assert title_label.accessibleDescription() == "+12 Skyreach\n\nBring interrupts"
+
+        window._state.listing = None
+        qtbot.mouseClick(
+            window._tab_bar._buttons["party"],
+            Qt.MouseButton.LeftButton,
+        )
+
+        assert window._active_tab == "party"
+        assert title_label.text() == "Party (1)"
+        assert title_label.toolTip() == ""
+        assert title_label.accessibleDescription() == ""
+
+        window._state.listing = Listing(
+            activity_id=402,
+            dungeon_name="The Rookery",
+            listing_name="R&D <push>",
+            comment="Use > 2 stops",
+            key_level=14,
+            category_id=2,
+            difficulty_id=8,
+        )
+        qtbot.mouseClick(
+            window._tab_bar._buttons["applicants"],
+            Qt.MouseButton.LeftButton,
+        )
+
+        assert window._active_tab == "applicants"
+        assert "R&amp;D &lt;push&gt;" in title_label.toolTip()
+        assert title_label.accessibleDescription() == "R&D <push>\n\nUse > 2 stops"
+    finally:
+        window.close()
+        client.close()
+
+
 def test_keyboard_controls_use_standard_widget_actions(qtbot, tmp_path):
     window, client = _build_window(tmp_path, qtbot)
     try:

@@ -1167,8 +1167,10 @@ class TitleBar(QWidget):
         self.hide_button.clicked.connect(self.hideClicked.emit)
         layout.addWidget(self.hide_button)
 
-    def setTitleText(self, text: str) -> None:
+    def setTitleContext(self, text: str, tooltip: str) -> None:
         self.title_label.setText(text)
+        self.title_label.setToolTip(tooltip)
+        self.title_label.setAccessibleDescription(html.unescape(tooltip))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -6066,12 +6068,12 @@ class OverlayWindow(QMainWindow):
                     )
                 )
                 if generic:
-                    self._title_bar.setTitleText(f"Party{level} {count_str}")
+                    title = f"Party{level} {count_str}"
                 else:
-                    self._title_bar.setTitleText(f"Party — {dn}{level} {count_str}")
+                    title = f"Party — {dn}{level} {count_str}"
             else:
-                self._title_bar.setTitleText(f"Party {count_str}")
-            self._title_bar.title_label.setToolTip(_format_listing_tooltip(listing))
+                title = f"Party {count_str}"
+            self._title_bar.setTitleContext(title, _format_listing_tooltip(listing))
             return
         listing = self._effective_listing()
         n = _application_count(self._state.applicants)
@@ -6103,20 +6105,15 @@ class OverlayWindow(QMainWindow):
             dn = listing.dungeon_name
             generic = (not dn) or dn == "?" or dn.lower() in ("mythic+", "mythic plus")
             if generic:
-                self._title_bar.setTitleText(f"{title_prefix}{level} {count_str}")
+                title = f"{title_prefix}{level} {count_str}"
             else:
-                self._title_bar.setTitleText(
-                    f"{title_prefix} — {dn}{level} {count_str}"
-                )
+                title = f"{title_prefix} — {dn}{level} {count_str}"
         else:
-            self._title_bar.setTitleText(f"M+ Applicants {count_str}")
+            title = f"M+ Applicants {count_str}"
         # Listing tooltip — host's listing_name + comment from in-game LFG UI.
         # Read by eventFilter title-label branch on hover.
         listing_tooltip = _format_listing_tooltip(listing)
-        self._title_bar.title_label.setToolTip(listing_tooltip)
-        self._title_bar.title_label.setAccessibleDescription(
-            html.unescape(listing_tooltip)
-        )
+        self._title_bar.setTitleContext(title, listing_tooltip)
 
     def _persist_geometry(self) -> None:
         g = self.geometry()
