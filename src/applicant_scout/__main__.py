@@ -456,6 +456,7 @@ def _handle_control_command(
     can_quit: Callable[[], bool] | None = None,
     prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
+    command: bytes | None = None,
 ) -> None:
     _runtime_control.handle_control_command(
         socket,
@@ -465,6 +466,7 @@ def _handle_control_command(
         prepare_quit=prepare_quit,
         quit_blocked=quit_blocked,
         schedule=lambda callback: QTimer.singleShot(0, callback),
+        command=command,
     )
 
 

@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import sys
+import time
 from typing import Any
 
 from PyQt6.QtCore import QTimer
@@ -41,6 +42,16 @@ LEGACY_CONTROL_SERVER_NAME = CONTROL_SERVER_BASENAME
 CONTROL_OWNER_NAME = f"Global\\{CONTROL_SERVER_NAME}.Owner"
 CONTROL_QUIT_COMMAND = b"quit"
 CONTROL_SHOW_SETTINGS_COMMAND = b"show-settings"
+CONTROL_FRAME_MAX_BYTES = 64
+CONTROL_RESPONSE_TIMEOUT_MS = 500
+
+
+def _read_socket_bytes(socket: Any, max_bytes: int) -> bytes:
+    read = getattr(socket, "read", None)
+    value: Any = read(max_bytes) if callable(read) else socket.readAll()
+    data: Any = getattr(value, "data", None)
+    raw: Any = data() if callable(data) else value
+    return bytes(raw)
 
 
 @dataclass(frozen=True)
@@ -127,10 +138,42 @@ def send_control_command(
             socket.disconnectFromServer()
             return ControlCommandResult(connected=True, written=False, error=error)
         response = None
-        if socket.waitForReadyRead(500):
-            response = socket.readAll().data().strip().lower()
+        response_error = None
+        response_buffer = bytearray()
+        response_started = time.monotonic()
+        response_wait_ms = CONTROL_RESPONSE_TIMEOUT_MS
+        while socket.waitForReadyRead(response_wait_ms):
+            remaining = CONTROL_FRAME_MAX_BYTES + 2 - len(response_buffer)
+            response_buffer.extend(_read_socket_bytes(socket, remaining))
+            newline_at = response_buffer.find(b"\n")
+            if newline_at >= 0:
+                if newline_at > CONTROL_FRAME_MAX_BYTES:
+                    response_error = "control response frame exceeded the size limit"
+                elif len(response_buffer) != newline_at + 1:
+                    response_error = "control response frame contained trailing bytes"
+                else:
+                    response = bytes(response_buffer[:newline_at]).strip().lower()
+                break
+            if len(response_buffer) > CONTROL_FRAME_MAX_BYTES:
+                response_error = "control response frame exceeded the size limit"
+                break
+            elapsed_ms = int((time.monotonic() - response_started) * 1000)
+            response_wait_ms = CONTROL_RESPONSE_TIMEOUT_MS - elapsed_ms
+            if response_wait_ms <= 0:
+                break
+        if response is None and response_error is None:
+            response_error = (
+                "control response ended before a complete newline frame"
+                if response_buffer
+                else "control response was not received"
+            )
         socket.disconnectFromServer()
-        return ControlCommandResult(connected=True, written=True, response=response)
+        return ControlCommandResult(
+            connected=True,
+            written=True,
+            response=response,
+            error=response_error,
+        )
     return ControlCommandResult(
         connected=False,
         written=False,
@@ -254,6 +297,32 @@ def create_control_server(
     return server
 
 
+class _ControlFrameReader:
+    def __init__(self, socket: Any, dispatch: Callable[[bytes], None]) -> None:
+        self._socket = socket
+        self._dispatch = dispatch
+        self._buffer = bytearray()
+        self._complete = False
+
+    def __call__(self) -> None:
+        if self._complete:
+            return
+        remaining = CONTROL_FRAME_MAX_BYTES + 2 - len(self._buffer)
+        self._buffer.extend(_read_socket_bytes(self._socket, remaining))
+        newline_at = self._buffer.find(b"\n")
+        if newline_at < 0 and len(self._buffer) <= CONTROL_FRAME_MAX_BYTES:
+            return
+        self._complete = True
+        if (
+            newline_at < 0
+            or newline_at > CONTROL_FRAME_MAX_BYTES
+            or len(self._buffer) != newline_at + 1
+        ):
+            self._dispatch(b"")
+            return
+        self._dispatch(bytes(self._buffer[:newline_at]))
+
+
 def drain_control_connections(
     server: Any,
     quit_app: Callable[[], None],
@@ -270,26 +339,23 @@ def drain_control_connections(
         socket = server.nextPendingConnection()
         if socket is None:
             continue
-        socket.readyRead.connect(
-            lambda _socket=socket: handle_command(
+
+        def dispatch_frame(command: bytes, _socket: Any = socket) -> None:
+            handle_command(
                 _socket,
                 quit_app,
                 show_settings,
                 can_quit=can_quit,
                 prepare_quit=prepare_quit,
                 quit_blocked=quit_blocked,
+                command=command,
             )
-        )
+
+        consume_frame = _ControlFrameReader(socket, dispatch_frame)
+        socket.readyRead.connect(consume_frame)
         socket.disconnected.connect(socket.deleteLater)
         if socket.bytesAvailable() > 0:
-            handle_command(
-                socket,
-                quit_app,
-                show_settings,
-                can_quit=can_quit,
-                prepare_quit=prepare_quit,
-                quit_blocked=quit_blocked,
-            )
+            consume_frame()
 
 
 def handle_control_command(
@@ -301,13 +367,16 @@ def handle_control_command(
     prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
     schedule: Callable[[Callable[[], None]], None] | None = None,
+    command: bytes | None = None,
 ) -> None:
     schedule_callback = schedule
     if schedule_callback is None:
         def _schedule(callback: Callable[[], None]) -> None:
             QTimer.singleShot(0, callback)
         schedule_callback = _schedule
-    command = socket.readAll().data().strip().lower()
+    if command is None:
+        command = bytes(socket.readAll().data())
+    command = command.strip().lower()
     if command == CONTROL_QUIT_COMMAND:
         if can_quit is not None and not can_quit():
             socket.write(b"blocked\n")
