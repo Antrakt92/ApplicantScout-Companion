@@ -26,7 +26,11 @@ from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTr
 from . import __version__
 from . import runtime_control as _runtime_control
 from . import snapshot_pipeline as _snapshot_pipeline
-from .atomic_io import apply_private_directory_mode, apply_private_file_mode
+from .atomic_io import (
+    apply_private_directory_mode,
+    apply_private_file_mode,
+    atomic_write_bytes,
+)
 from .config import (
     Config,
     ConfigError,
@@ -38,6 +42,7 @@ from .config import (
     resolve_screenshots_path,
     save_config_values,
     screenshots_path_candidate,
+    user_config_path,
     user_log_dir,
     validate_metric_preferences,
 )
@@ -213,6 +218,12 @@ class _SettingsApplyResult:
     current_screenshots_dir: Path
     wow_exit_timer: Any
     overrides: list[str]
+
+
+@dataclass(frozen=True)
+class _PersistedConfigSnapshot:
+    path: Path
+    contents: bytes | None
 
 
 class TrayController:
@@ -3262,25 +3273,25 @@ def _persist_settings_values(
     )
 
 
-def _persist_config_snapshot(cfg: Config) -> Path:
-    saved_values = read_user_config_values(cfg.config_path) if cfg.config_path else {}
-    cache_ttl_seconds = _saved_config_cache_ttl_for_process_override(
-        saved_values,
-        cfg.cache_ttl_seconds,
-    )
-    return save_config_values(
-        wcl_client_id=cfg.wcl_client_id,
-        wcl_client_secret=cfg.wcl_client_secret,
-        draft_wcl_client_id=cfg.draft_wcl_client_id,
-        draft_wcl_client_secret=cfg.draft_wcl_client_secret,
-        region=cfg.region,
-        screenshots_path=str(cfg.screenshots_path) if cfg.screenshots_path else "",
-        cache_ttl_seconds=cache_ttl_seconds,
-        metric_preferences=cfg.metric_preferences,
-        sync_with_wow=cfg.sync_with_wow,
-        chatlog_path="" if cfg.screenshots_path else str(cfg.chatlog_path),
-        config_path=cfg.config_path,
-    )
+def _capture_persisted_config_snapshot(cfg: Config) -> _PersistedConfigSnapshot:
+    path = cfg.config_path or user_config_path()
+    try:
+        contents = path.read_bytes()
+    except FileNotFoundError:
+        contents = None
+    return _PersistedConfigSnapshot(path=path, contents=contents)
+
+
+def _restore_persisted_config_snapshot(snapshot: _PersistedConfigSnapshot) -> None:
+    if snapshot.contents is None:
+        try:
+            snapshot.path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+
+    path = snapshot.path
+    atomic_write_bytes(path, snapshot.contents, private=True)
 
 
 def _settings_values_to_config(
@@ -3356,6 +3367,7 @@ def _apply_settings_change(
     )
     new_cfg = _apply_process_env_overrides_to_config(new_cfg)
     new_screenshots_dir = screenshots_path_candidate(new_cfg)
+    persisted_snapshot = _capture_persisted_config_snapshot(old_cfg)
     _persist_settings_values(
         old_cfg,
         values,
@@ -3401,7 +3413,7 @@ def _apply_settings_change(
             except Exception as rollback_exc:  # noqa: BLE001
                 log.warning("Could not roll back WoW sync runtime: %s", rollback_exc)
         try:
-            _persist_config_snapshot(old_cfg)
+            _restore_persisted_config_snapshot(persisted_snapshot)
         except Exception as rollback_exc:  # noqa: BLE001
             log.warning("Could not roll back settings file: %s", rollback_exc)
         raise

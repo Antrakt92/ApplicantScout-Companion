@@ -62,6 +62,7 @@ def _cfg(
         cache_dir=tmp_path / "cache",
         config_dir=tmp_path / "config",
         screenshots_path=screenshots_path,
+        config_path=tmp_path / "config" / "config.env",
     )
 
 
@@ -1505,8 +1506,8 @@ def test_settings_change_rolls_back_config_when_screenshot_runtime_fails(
     )
     monkeypatch.setattr(
         main_mod,
-        "_persist_config_snapshot",
-        lambda _cfg: calls.append("rollback-old"),
+        "_restore_persisted_config_snapshot",
+        lambda _snapshot: calls.append("rollback-old"),
     )
 
     with pytest.raises(RuntimeError, match="watch failed"):
@@ -1618,8 +1619,8 @@ def test_settings_change_keeps_committed_watcher_when_rio_preload_fails(
     )
     monkeypatch.setattr(
         main_mod,
-        "_persist_config_snapshot",
-        lambda _cfg: calls.append("rollback-old"),
+        "_restore_persisted_config_snapshot",
+        lambda _snapshot: calls.append("rollback-old"),
     )
 
     result = main_mod._apply_settings_change(
@@ -1682,8 +1683,8 @@ def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
     )
     monkeypatch.setattr(
         main_mod,
-        "_persist_config_snapshot",
-        lambda _cfg: calls.append("rollback-old"),
+        "_restore_persisted_config_snapshot",
+        lambda _snapshot: calls.append("rollback-old"),
     )
 
     with pytest.raises(RuntimeError, match="shortcut failed"):
@@ -1710,6 +1711,135 @@ def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
         )
 
     assert calls == ["persist-new", "rollback-old"]
+
+
+@pytest.mark.parametrize("failure_path", ["screenshots", "wow_sync"])
+@pytest.mark.parametrize("path_override", ["screenshots", "chatlog"])
+@pytest.mark.parametrize("config_exists", [False, True])
+def test_settings_change_failure_restores_exact_persisted_config_without_env_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_path: str,
+    path_override: str,
+    config_exists: bool,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    config_path = user_config_path()
+    original = (
+        b"# Keep comments and unknown keys byte-for-byte.\r\n"
+        b'WCL_CLIENT_ID="saved-client"\r\n'
+        b'APSCOUT_REGION="US"\r\n'
+        b'FUTURE_SETTING="keep-me"\r\n'
+    )
+    if config_exists:
+        config_path.parent.mkdir(parents=True)
+        config_path.write_bytes(original)
+
+    screenshots = _valid_screenshots_dir(tmp_path)
+    chatlog = screenshots.parent / "Logs" / "WoWChatLog.txt"
+    env_overrides = {
+        "WCL_CLIENT_ID": "env-client",
+        "WCL_CLIENT_SECRET": "env-secret",
+        "APSCOUT_DRAFT_WCL_CLIENT_ID": "env-draft-client",
+        "APSCOUT_DRAFT_WCL_CLIENT_SECRET": "env-draft-secret",
+        "APSCOUT_REGION": "KR",
+        "APSCOUT_CHATLOG_PATH": str(chatlog),
+        "APSCOUT_SCREENSHOTS_PATH": str(screenshots)
+        if path_override == "screenshots"
+        else "",
+        "APSCOUT_FETCH_MPLUS": "0",
+        "APSCOUT_FETCH_RAID_NORMAL": "0",
+        "APSCOUT_FETCH_RAID_HEROIC": "1",
+        "APSCOUT_FETCH_RAID_MYTHIC": "0",
+        "APSCOUT_CACHE_TTL_SECONDS": "123",
+        "APSCOUT_SYNC_WITH_WOW": "1",
+    }
+    for key, value in env_overrides.items():
+        monkeypatch.setenv(key, value)
+
+    cfg = load_config()
+    assert cfg.wcl_client_secret == "env-secret"
+    assert cfg.draft_wcl_client_secret == "env-draft-secret"
+    assert cfg.chatlog_path == chatlog
+    assert cfg.screenshots_path == (
+        screenshots if path_override == "screenshots" else None
+    )
+    assert cfg.cache_ttl_seconds == 123
+    assert cfg.metric_preferences == MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    assert cfg.sync_with_wow is True
+
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region="EU",
+        screenshots_path=str(screenshots),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    watcher = object()
+    if failure_path == "screenshots":
+        watcher = None
+        monkeypatch.setattr(
+            main_mod,
+            "_replace_screenshots_runtime",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("watch failed")
+            ),
+        )
+        expected_error = "watch failed"
+    else:
+        monkeypatch.delenv("APSCOUT_SYNC_WITH_WOW")
+        values.sync_with_wow = False
+        monkeypatch.setattr(
+            main_mod,
+            "_apply_wow_sync_runtime",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("shortcut failed")
+            ),
+        )
+        expected_error = "shortcut failed"
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        main_mod._apply_settings_change(
+            app=object(),
+            cfg=cfg,
+            values=values,
+            apply_credentials=False,
+            auth=object(),
+            wcl_client=SimpleNamespace(
+                region=cfg.region,
+                reconfigure_auth=lambda _auth: None,
+            ),
+            region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+            window=SimpleNamespace(
+                apply_metric_preferences=lambda *_args, **_kwargs: None,
+                bump_wcl_runtime_generation=lambda: None,
+            ),
+            watcher=watcher,
+            current_screenshots_dir=screenshots,
+            machine=object(),
+            decode_failed_callback=lambda *_args: None,
+            signal_gate=main_mod._WatcherSignalGate(),
+            wow_exit_timer=None,
+            quit_app=lambda: None,
+            can_quit=lambda: True,
+        )
+
+    if config_exists:
+        assert config_path.read_bytes() == original
+    else:
+        assert not config_path.exists()
+    restored = config_path.read_bytes() if config_path.exists() else b""
+    assert b"env-secret" not in restored
+    assert b"env-draft-secret" not in restored
+    assert str(chatlog).encode() not in restored
+    assert str(screenshots).encode() not in restored
 
 
 def test_settings_change_derives_screenshots_before_wow_sync_runtime(
@@ -1744,8 +1874,8 @@ def test_settings_change_derives_screenshots_before_wow_sync_runtime(
     )
     monkeypatch.setattr(
         main_mod,
-        "_persist_config_snapshot",
-        lambda _cfg: calls.append("rollback"),
+        "_restore_persisted_config_snapshot",
+        lambda _snapshot: calls.append("rollback"),
     )
 
     with pytest.raises(ConfigError, match="screenshots invalid"):
@@ -4075,29 +4205,18 @@ def test_persist_settings_values_does_not_persist_env_only_cache_ttl(
     assert "APSCOUT_CACHE_TTL_SECONDS" not in saved
 
 
-def test_persist_config_snapshot_preserves_saved_cache_ttl_when_env_override_active(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
-    config_path = save_config_values(
-        wcl_client_id="client",
-        wcl_client_secret="secret",
-        region="EU",
-        cache_ttl_seconds=43200,
-        metric_preferences=MetricPreferences(
-            mplus=True,
-            raid_normal=False,
-            raid_heroic=False,
-            raid_mythic=False,
-        ),
-    )
-    monkeypatch.setenv("APSCOUT_CACHE_TTL_SECONDS", "60")
-    cfg = load_config()
+def test_persisted_config_snapshot_restores_exact_bytes(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    original = b'# comment\r\nAPSCOUT_CACHE_TTL_SECONDS="43200"\r\n'
+    assert cfg.config_path is not None
+    cfg.config_path.parent.mkdir(parents=True)
+    cfg.config_path.write_bytes(original)
+    snapshot = main_mod._capture_persisted_config_snapshot(cfg)
+    cfg.config_path.write_bytes(b'APSCOUT_CACHE_TTL_SECONDS="60"\n')
 
-    main_mod._persist_config_snapshot(cfg)
-    saved = config_mod._read_env_file(config_path)
+    main_mod._restore_persisted_config_snapshot(snapshot)
 
-    assert saved["APSCOUT_CACHE_TTL_SECONDS"] == "43200"
+    assert cfg.config_path.read_bytes() == original
 
 
 def test_persist_settings_values_repairs_invalid_saved_cache_ttl_masked_by_env(
@@ -4790,8 +4909,8 @@ def test_settings_change_disable_wow_sync_keeps_saved_config_when_helper_stop_fa
     monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: calls.append("persist-new"))
     monkeypatch.setattr(
         main_mod,
-        "_persist_config_snapshot",
-        lambda _cfg: calls.append("rollback-old"),
+        "_restore_persisted_config_snapshot",
+        lambda _snapshot: calls.append("rollback-old"),
     )
     monkeypatch.setattr(
         main_mod,

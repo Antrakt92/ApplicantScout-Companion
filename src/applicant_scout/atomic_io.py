@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Callable
 import io
 import os
 import stat
@@ -172,13 +173,13 @@ def apply_private_directory_mode(path: Path) -> bool:
     return _apply_private_path_mode(path, mode=_PRIVATE_DIR_MODE, directory=True)
 
 
-def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
-    """Replace ``path`` with complete UTF-8 text or leave the old file intact.
-
-    The temp file is created in the target directory so ``os.replace`` remains
-    same-volume atomic. ``mkstemp`` avoids Windows open-handle replacement traps
-    that come with NamedTemporaryFile.
-    """
+def _atomic_write(
+    path: Path,
+    *,
+    private: bool,
+    text_mode: bool,
+    write_contents: Callable[[int], None],
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     parent_private_ready = False
     if private:
@@ -190,7 +191,7 @@ def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
             prefix=f".{path.name}.",
             suffix=".tmp",
             dir=path.parent,
-            text=True,
+            text=text_mode,
         )
         temp_path = Path(temp_name)
         # WHY: on Windows, once the target directory has private inheritable
@@ -199,11 +200,8 @@ def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
         # settings autosave into a subprocess storm on the GUI path.
         if private and not (_is_windows() and parent_private_ready):
             apply_private_file_mode(temp_path)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = -1
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
+        write_contents(fd)
+        fd = -1
         os.replace(temp_path, path)
         temp_path = None
         if private and not (_is_windows() and parent_private_ready):
@@ -220,3 +218,42 @@ def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
             except OSError:
                 pass
         raise
+
+
+def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
+    """Replace ``path`` with complete UTF-8 text or leave the old file intact.
+
+    The temp file is created in the target directory so ``os.replace`` remains
+    same-volume atomic. ``mkstemp`` avoids Windows open-handle replacement traps
+    that come with NamedTemporaryFile.
+    """
+
+    def _write(fd: int) -> None:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    _atomic_write(
+        path,
+        private=private,
+        text_mode=True,
+        write_contents=_write,
+    )
+
+
+def atomic_write_bytes(path: Path, contents: bytes, *, private: bool = False) -> None:
+    """Replace ``path`` with exact bytes or leave the old file intact."""
+
+    def _write(fd: int) -> None:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    _atomic_write(
+        path,
+        private=private,
+        text_mode=False,
+        write_contents=_write,
+    )

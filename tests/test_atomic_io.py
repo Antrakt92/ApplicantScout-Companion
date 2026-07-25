@@ -13,6 +13,7 @@ from applicant_scout import atomic_io
 from applicant_scout.atomic_io import (
     apply_private_directory_mode,
     apply_private_file_mode,
+    atomic_write_bytes,
     atomic_write_text,
 )
 
@@ -52,6 +53,15 @@ def test_atomic_write_text_creates_parent_directory(tmp_path: Path):
     atomic_write_text(target, "WCL_CLIENT_ID=client\n")
 
     assert target.read_text(encoding="utf-8") == "WCL_CLIENT_ID=client\n"
+
+
+def test_atomic_write_bytes_preserves_exact_contents(tmp_path: Path):
+    target = tmp_path / "config.env"
+    contents = b'# comment\r\nWCL_CLIENT_SECRET="secret"\r\n'
+
+    atomic_write_bytes(target, contents)
+
+    assert target.read_bytes() == contents
 
 
 def test_atomic_write_text_failed_replace_preserves_old_file_and_cleans_temp(
