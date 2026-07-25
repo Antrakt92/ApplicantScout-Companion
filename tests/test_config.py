@@ -4918,12 +4918,35 @@ def test_wow_sync_runtime_apply_rolls_back_startup_when_watcher_start_fails(
     assert calls == ["shortcut:True", "watcher:False", "shortcut:False"]
 
 
+@pytest.fixture
+def _install_fake_wow_watcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Callable[[list[str]], None]]:
+    popen_calls: list[object] = []
+
+    def forbid_real_popen(*args, **_kwargs):
+        popen_calls.append(args)
+        raise AssertionError("unit test attempted to launch a real WoW watcher")
+
+    def install(lifecycle_calls: list[str]) -> None:
+        def start_watcher(*, check_existing: bool) -> None:
+            lifecycle_calls.append(f"watcher:{check_existing}")
+
+        monkeypatch.setattr(main_mod, "start_wow_sync_watcher", start_watcher)
+
+    monkeypatch.setattr(wow_lifecycle_mod.subprocess, "Popen", forbid_real_popen)
+    yield install
+    assert popen_calls == []
+    assert wow_lifecycle_mod._CURRENT_SESSION_WATCHER is None
+
+
 def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
     monkeypatch: pytest.MonkeyPatch,
+    _install_fake_wow_watcher: Callable[[list[str]], None],
 ):
     callbacks = []
     states = iter([False, True, False, False, False])
-    quit_calls: list[str] = []
+    lifecycle_calls: list[str] = []
 
     class FakeTimer:
         def __init__(self, _parent) -> None:
@@ -4937,10 +4960,11 @@ def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
 
     class FakeApp:
         def quit(self) -> None:
-            quit_calls.append("quit")
+            lifecycle_calls.append("quit")
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
     monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: next(states))
+    _install_fake_wow_watcher(lifecycle_calls)
 
     main_mod._start_wow_lifecycle_timer(
         FakeApp(),
@@ -4953,11 +4977,11 @@ def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
     callbacks[0]()
     callbacks[0]()
 
-    assert quit_calls == []
+    assert lifecycle_calls == []
 
     callbacks[0]()
 
-    assert quit_calls == ["quit"]
+    assert lifecycle_calls == ["watcher:True", "quit"]
 
 
 def test_wow_lifecycle_timer_does_not_run_process_scan_on_gui_tick(
@@ -5051,6 +5075,7 @@ def test_wow_lifecycle_timer_waits_for_consecutive_missing_wow_scans(
 
 def test_wow_lifecycle_timer_resets_missing_streak_after_unknown_scan(
     monkeypatch: pytest.MonkeyPatch,
+    _install_fake_wow_watcher: Callable[[list[str]], None],
 ):
     callbacks = []
     workers = []
@@ -5072,6 +5097,7 @@ def test_wow_lifecycle_timer_resets_missing_streak_after_unknown_scan(
             calls.append("quit")
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    _install_fake_wow_watcher(calls)
 
     main_mod._start_wow_lifecycle_timer(
         FakeApp(),
@@ -5087,11 +5113,12 @@ def test_wow_lifecycle_timer_resets_missing_streak_after_unknown_scan(
 
     callbacks[0]()
     workers[4]()
-    assert calls == ["quit"]
+    assert calls == ["watcher:True", "quit"]
 
 
 def test_wow_lifecycle_timer_retries_after_process_scan_failure(
     monkeypatch: pytest.MonkeyPatch,
+    _install_fake_wow_watcher: Callable[[list[str]], None],
 ):
     callbacks = []
     workers = []
@@ -5119,6 +5146,7 @@ def test_wow_lifecycle_timer_retries_after_process_scan_failure(
         return state
 
     monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    _install_fake_wow_watcher(calls)
 
     main_mod._start_wow_lifecycle_timer(
         FakeApp(),
@@ -5142,7 +5170,7 @@ def test_wow_lifecycle_timer_retries_after_process_scan_failure(
 
     callbacks[0]()
     workers[1 + main_mod.WOW_EXIT_MISSES_BEFORE_QUIT]()
-    assert calls == ["quit"]
+    assert calls == ["watcher:True", "quit"]
 
 
 def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
