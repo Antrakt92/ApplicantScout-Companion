@@ -793,6 +793,15 @@ class StateMachine(QObject):
     def _roster_key(name: str) -> str:
         return name.strip().lower()
 
+    def _applicant_character_identity(self, name: str) -> tuple[str, str, str | None]:
+        default_realm = default_realm_from_player(self._state.player.full_name)
+        character_name, realm = split_name_realm(name, default_realm)
+        return (
+            character_name.strip().casefold(),
+            derive_server_slug(realm),
+            REGION_ID_TO_WCL.get(self._state.player.region_id),
+        )
+
     @staticmethod
     def _copy_wcl_data(source: Applicant, target: Applicant) -> None:
         target.fetch_status = source.fetch_status
@@ -859,15 +868,17 @@ class StateMachine(QObject):
                 for difficulty, data in rio_raid_progress.items()
             }
 
-    @staticmethod
     def _local_rio_identity_stable(
+        self,
         source_name: str,
         target_name: str,
         *,
         region_identity_changed: bool,
         default_realm_changed: bool,
     ) -> bool:
-        if source_name != target_name:
+        if self._applicant_character_identity(
+            source_name
+        ) != self._applicant_character_identity(target_name):
             return False
         return not StateMachine._identity_context_changed(
             target_name,
@@ -1375,9 +1386,18 @@ class StateMachine(QObject):
                 )
         old_ids = set(self._state.applicants.keys())
         new_ids = set(new_by_id.keys())
+        replaced_ids = {
+            aid
+            for aid in old_ids & new_ids
+            if self._applicant_character_identity(self._state.applicants[aid].name)
+            != self._applicant_character_identity(new_by_id[aid].name)
+        }
 
-        # Removed
-        for aid in old_ids - new_ids:
+        # A group-compaction slot can keep the same composite transport key while
+        # changing character. Treat that as a remove/add lifecycle so every
+        # consumer can retire interaction state and in-flight enrichment owned by
+        # the previous person instead of silently transferring it to the new row.
+        for aid in (old_ids - new_ids) | replaced_ids:
             self._state.remove(aid)
             self.applicantRemoved.emit(aid)
 
@@ -1455,13 +1475,8 @@ class StateMachine(QObject):
                 incoming_ilvl = da.ilvl if da.ilvl > 0 else existing.ilvl
                 needs_refetch = (
                     existing.spec_id != incoming_spec_id
-                    or existing.name != da.name
+                    or not local_rio_identity_stable
                     or wcl_metric_role(existing.role) != wcl_metric_role(role_name)
-                    or self._identity_context_changed(
-                        da.name,
-                        region_identity_changed=region_identity_changed,
-                        default_realm_changed=default_realm_changed,
-                    )
                 )
                 existing.name = da.name
                 existing.cls = cls_name

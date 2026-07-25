@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFontMetrics
 
@@ -305,6 +307,102 @@ def test_tabs_preserve_pins_independently(qtbot, tmp_path):
     assert win._pinned_by_tab["applicants"] == "7:1"
     assert win._pinned_by_tab["party"] == "host-realm"
     assert win._pinned_id == "7:1"
+
+
+@pytest.mark.parametrize("interaction", ["hover", "pin", "keyboard"])
+@pytest.mark.parametrize("applicants_active", [True, False])
+def test_slot_identity_replacement_clears_applicant_interaction_state(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+    interaction,
+    applicants_active,
+):
+    state = AppState()
+    machine = StateMachine(state)
+    machine.apply_snapshot(
+        Snapshot(
+            listing=DecodedListing(
+                activity_id=401,
+                dungeon_name="Pit of Saron",
+                listing_name="+14",
+                comment="",
+                key_level=14,
+                category_id=2,
+            ),
+            version=_version(),
+            applicants=[
+                _decoded_applicant(42, 1, "First-Realm"),
+                _decoded_applicant(99, 1, "Stable-Realm"),
+            ],
+            roster=[_decoded_roster("Host-Realm")],
+        )
+    )
+    win = _window(tmp_path, qtbot, state)
+    machine.applicantAdded.connect(win.on_applicant_added)
+    machine.applicantUpdated.connect(win.on_applicant_updated)
+    machine.applicantRemoved.connect(win.on_applicant_removed)
+    win._refresh_table()
+    monkeypatch.setattr(win, "_resolve_hover_from_cursor", lambda: None)
+    target_row = win._row_for_id["42:1"]
+
+    if interaction == "hover":
+        win._on_cell_entered(target_row, 0)
+    elif interaction == "pin":
+        win._on_cell_clicked(target_row, 0)
+    else:
+        win._on_table_keyboard_navigated(target_row)
+
+    if not applicants_active:
+        qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+        win._on_cell_clicked(0, 0)
+        assert win._active_tab == "party"
+        assert not win._party_tab_auto_selected
+        assert win._pinned_id == "host-realm"
+        assert win._pinned_by_tab["party"] == "host-realm"
+
+    machine.apply_snapshot(
+        Snapshot(
+            listing=DecodedListing(
+                activity_id=401,
+                dungeon_name="Pit of Saron",
+                listing_name="+14",
+                comment="",
+                key_level=14,
+                category_id=2,
+            ),
+            version=_version(),
+            applicants=[
+                _decoded_applicant(42, 1, "Second-Realm"),
+                _decoded_applicant(99, 1, "Stable-Realm"),
+            ],
+            roster=[_decoded_roster("Host-Realm")],
+        )
+    )
+    if not applicants_active:
+        assert win._active_tab == "party"
+        assert win._pinned_id == "host-realm"
+    win._flush_overlay_refresh()
+
+    interaction_cache = {
+        "hover": win._hover_by_tab,
+        "pin": win._pinned_by_tab,
+        "keyboard": win._keyboard_by_tab,
+    }[interaction]
+    assert interaction_cache["applicants"] is None
+    if applicants_active:
+        active_value = {
+            "hover": win._hover_id,
+            "pin": win._pinned_id,
+            "keyboard": win._keyboard_id,
+        }[interaction]
+        assert active_value is None
+        if interaction == "keyboard":
+            assert not win._keyboard_preview_active
+    else:
+        assert win._active_tab == "party"
+        assert win._pinned_id == "host-realm"
+        assert win._pinned_by_tab["party"] == "host-realm"
 
 
 def test_hide_show_clears_inactive_tab_hover_cache(qtbot, tmp_path, monkeypatch):

@@ -1653,10 +1653,11 @@ def test_name_change_at_same_composite_key_wipes_wcl_data():
         ],
     )
     sm.apply_snapshot(snap1)
-    state.applicants["42:1"].fetch_status = "ready"
-    state.applicants["42:1"].mplus_dps = 88.5
-    state.applicants["42:1"].raid_heroic = 92.0
-    state.applicants["42:1"].mplus_dps_breakdown = [
+    original = state.applicants["42:1"]
+    original.fetch_status = "ready"
+    original.mplus_dps = 88.5
+    original.raid_heroic = 92.0
+    original.mplus_dps_breakdown = [
         {
             "name": "X",
             "parse_percent": 80.0,
@@ -1665,6 +1666,14 @@ def test_name_change_at_same_composite_key_wipes_wcl_data():
             "run_count": 3,
         }
     ]
+    events: list[tuple[str, str]] = []
+    sm.applicantRemoved.connect(lambda applicant_id: events.append(("removed", applicant_id)))
+    sm.applicantAdded.connect(
+        lambda applicant: events.append(("added", applicant.applicant_id))
+    )
+    sm.applicantUpdated.connect(
+        lambda applicant: events.append(("updated", applicant.applicant_id))
+    )
 
     # Snap 2: leader gone. The OTHER Frost Mage (was member 2) is now the new
     # leader at member_idx=1. Same composite, same spec, DIFFERENT name.
@@ -1677,11 +1686,50 @@ def test_name_change_at_same_composite_key_wipes_wcl_data():
     )
     sm.apply_snapshot(snap2)
     a = state.applicants["42:1"]
+    assert a is not original
     assert a.name == "OtherFrost-TN"
     assert a.fetch_status == "pending"  # name-change triggered refetch
     assert a.mplus_dps is None  # WCL wiped
     assert a.raid_heroic is None  # WCL wiped
     assert a.mplus_dps_breakdown == []  # WCL wiped
+    assert events == [("removed", "42:1"), ("added", "42:1")]
+
+
+def test_explicit_default_realm_does_not_replace_same_character_slot():
+    state = AppState()
+    state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=None,
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout", spec_id=71)],
+        )
+    )
+    original = state.applicants["42:1"]
+    events: list[str] = []
+    sm.applicantRemoved.connect(lambda _applicant_id: events.append("removed"))
+    sm.applicantAdded.connect(lambda _applicant: events.append("added"))
+    sm.applicantUpdated.connect(lambda _applicant: events.append("updated"))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=None,
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Scout-RealmA",
+                    spec_id=71,
+                    ilvl=701,
+                )
+            ],
+        )
+    )
+
+    assert state.applicants["42:1"] is original
+    assert events == ["updated"]
 
 
 def test_clear_wcl_data_removes_raid_boss_parses_but_preserves_rio_progress():

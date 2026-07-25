@@ -2551,6 +2551,75 @@ def test_stale_fetch_generation_does_not_apply(qtbot, tmp_path):
         client.close()
 
 
+def test_late_fetch_for_replaced_member_slot_cannot_update_new_character(
+    qtbot,
+    tmp_path,
+):
+    state = AppState()
+    machine = StateMachine(state)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+    machine.applicantAdded.connect(window.on_applicant_added)
+    machine.applicantUpdated.connect(window.on_applicant_updated)
+    machine.applicantRemoved.connect(window.on_applicant_removed)
+
+    def snapshot(name: str) -> Snapshot:
+        return Snapshot(
+            listing=DecodedListing(
+                activity_id=401,
+                dungeon_name="Pit of Saron",
+                listing_name="+14",
+                comment="",
+                key_level=14,
+                category_id=2,
+            ),
+            version=DecodedVersion(
+                addon_version="1.0.0",
+                game_version="12.0.0",
+                region_id=3,
+                player_name="Host-RealmA",
+            ),
+            applicants=[
+                DecodedApplicant(
+                    applicant_id=42,
+                    member_idx=1,
+                    class_id=1,
+                    spec_id=71,
+                    ilvl=480,
+                    score=2400,
+                    role=2,
+                    name=name,
+                )
+            ],
+        )
+
+    try:
+        machine.apply_snapshot(snapshot("First-RealmA"))
+        original = state.applicants["42:1"]
+        stale_identity = queued_pool.tasks[-1]._identity
+
+        machine.apply_snapshot(snapshot("Second-RealmA"))
+        replacement = state.applicants["42:1"]
+        current_identity = queued_pool.tasks[-1]._identity
+
+        assert replacement is not original
+        assert current_identity != stale_identity
+        assert window._fetches_in_flight["42:1"] == current_identity
+
+        window._on_fetch_done(stale_identity, _ranks())
+
+        assert replacement.fetch_status == "loading"
+        assert replacement.mplus_dps is None
+        assert window._fetches_in_flight["42:1"] == current_identity
+
+        window._on_fetch_done(current_identity, _ranks())
+        assert replacement.fetch_status == "ready"
+        assert replacement.mplus_dps == 77.0
+    finally:
+        client.close()
+
+
 def test_listing_clear_roster_snapshot_does_not_requeue_stale_party_fetch(
     qtbot,
     tmp_path,

@@ -2909,6 +2909,7 @@ class OverlayWindow(QMainWindow):
             "applicants": None,
             "party": None,
         }
+        self._pending_removed_applicant_ids: set[str] = set()
         self._keyboard_id: str | None = None
         self._keyboard_preview_active = False
         self._manual_target_key: int | None = None
@@ -3253,6 +3254,7 @@ class OverlayWindow(QMainWindow):
         self._refresh_needs_show = False
         self._apply_metric_column_visibility()
         self._refresh_table()
+        self._pending_removed_applicant_ids.clear()
         if update_title:
             self._update_title()
         if maybe_show and (
@@ -3592,6 +3594,14 @@ class OverlayWindow(QMainWindow):
         )
 
     def on_applicant_added(self, applicant: Applicant) -> None:
+        if applicant.applicant_id in self._pending_removed_applicant_ids:
+            self._pending_removed_applicant_ids.discard(applicant.applicant_id)
+            if (
+                self._active_tab == "applicants"
+                and self._keyboard_id == applicant.applicant_id
+            ):
+                self._keyboard_id = None
+                self._keyboard_preview_active = False
         self._restore_applicants_after_party_fallback()
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
         # "loading" before _refresh_table reads it. Otherwise the cell briefly
@@ -3622,14 +3632,28 @@ class OverlayWindow(QMainWindow):
         self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_removed(self, applicant_id: str) -> None:
-        # Clear hover/pin if THIS removed applicant was the one we were
-        # showing — _refresh_table also preserves-by-id (so an unrelated
-        # remove doesn't clobber pin), but we still need to NULL the field
-        # for the removed-id case so panel hides instead of orphaning.
-        if applicant_id == self._hover_id:
-            self._hover_id = None
-        if applicant_id == self._pinned_id:
-            self._pinned_id = None
+        # A composite member slot may be removed and immediately re-added for a
+        # different character. Clear every Applicants-tab interaction cache now;
+        # preserving the slot id would transfer hover, pin, or keyboard preview
+        # to the replacement person, including while the tab is inactive.
+        if self._hover_by_tab["applicants"] == applicant_id:
+            self._hover_by_tab["applicants"] = None
+        if self._pinned_by_tab["applicants"] == applicant_id:
+            self._pinned_by_tab["applicants"] = None
+        if self._keyboard_by_tab["applicants"] == applicant_id:
+            self._keyboard_by_tab["applicants"] = None
+        self._pending_removed_applicant_ids.add(applicant_id)
+        if self._active_tab == "applicants":
+            if applicant_id == self._hover_id:
+                self._hover_id = None
+            if applicant_id == self._pinned_id:
+                self._pinned_id = None
+            # Keep an ordinary removal as the previous-row anchor until refresh;
+            # _reconcile_keyboard_current moves it to the nearest survivor. A
+            # synchronous remove/add of this same slot is cleared by
+            # on_applicant_added before the queued refresh runs.
+        self._discard_fetch_by_storage_key(applicant_id)
+        self._discard_raid_boss_fetch_by_storage_key(applicant_id)
         self._schedule_overlay_refresh()
         if self._state.count() == 0:
             has_party = len(self._state.party_members) > 0
@@ -3637,8 +3661,11 @@ class OverlayWindow(QMainWindow):
             # on_cleared), (b) host invited everyone, listing still active.
             # Defensive: clear applicant hover/pin state so an empty search does
             # not keep showing panel content from a stale applicant id.
-            self._hover_id = None
-            self._pinned_id = None
+            if self._active_tab == "applicants":
+                self._hover_id = None
+                self._pinned_id = None
+                self._keyboard_id = None
+                self._keyboard_preview_active = False
             self._hover_by_tab["applicants"] = None
             self._pinned_by_tab["applicants"] = None
             self._keyboard_by_tab["applicants"] = None
@@ -3717,6 +3744,7 @@ class OverlayWindow(QMainWindow):
         self._hover_by_tab["applicants"] = None
         self._pinned_by_tab["applicants"] = None
         self._keyboard_by_tab["applicants"] = None
+        self._pending_removed_applicant_ids.clear()
         if self._active_tab == "applicants":
             self._keyboard_id = None
             self._keyboard_preview_active = False
