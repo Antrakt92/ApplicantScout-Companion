@@ -3717,17 +3717,78 @@ class OverlayWindow(QMainWindow):
         if self._state.count() > 0:
             self._maybe_show()
 
+    def _rebind_unchanged_party_fetch_state(
+        self,
+        in_flight: Mapping[str, _FetchIdentity],
+        waiters_by_target: Mapping[str, Mapping[str, _FetchIdentity]],
+        metric_preferences: MetricPreferences,
+    ) -> tuple[
+        dict[str, _FetchIdentity],
+        dict[str, dict[str, _FetchIdentity]],
+    ]:
+        rebound_in_flight: dict[str, _FetchIdentity] = {}
+        rebound_waiters: dict[str, dict[str, _FetchIdentity]] = {}
+        for worker_network_key, waiters in waiters_by_target.items():
+            rebound_for_worker: dict[str, _FetchIdentity] = {}
+            for identity in waiters.values():
+                if (
+                    identity.row_source != "party"
+                    or in_flight.get(identity.storage_key) != identity
+                ):
+                    continue
+                member = self._state.party_members.get(identity.applicant_id)
+                if member is None:
+                    continue
+                current = _fetch_identity_for_applicant(
+                    member,
+                    self._state.player.full_name,
+                    self._wcl_client.region,
+                    metric_preferences,
+                    self._wcl_runtime_generation,
+                    self._listing_session_generation,
+                    row_source="party",
+                )
+                if current is None:
+                    continue
+                current_identity, _ = current
+                rebound = replace(
+                    identity,
+                    listing_session_generation=self._listing_session_generation,
+                )
+                if rebound != current_identity:
+                    continue
+                rebound_in_flight[rebound.storage_key] = rebound
+                rebound_for_worker[rebound.storage_key] = rebound
+            if rebound_for_worker:
+                # The running worker still emits its original identity. Keep its
+                # old network key as the completion route while the waiter values
+                # carry the current listing generation used for result validation.
+                rebound_waiters[worker_network_key] = rebound_for_worker
+        return rebound_in_flight, rebound_waiters
+
     def on_cleared(self) -> None:
-        self._listing_session_generation += 1
-        party_fetches_to_restore = [
-            identity
+        party_fetches_to_restore = {
+            identity.applicant_id
             for identity in self._fetches_in_flight.values()
             if identity.row_source == "party"
-        ]
-        self._fetches_in_flight.clear()
-        self._fetch_waiters_by_target.clear()
-        self._raid_boss_fetches_in_flight.clear()
-        self._raid_boss_fetch_waiters_by_target.clear()
+        }
+        self._listing_session_generation += 1
+        (
+            self._fetches_in_flight,
+            self._fetch_waiters_by_target,
+        ) = self._rebind_unchanged_party_fetch_state(
+            self._fetches_in_flight,
+            self._fetch_waiters_by_target,
+            self._metric_preferences,
+        )
+        (
+            self._raid_boss_fetches_in_flight,
+            self._raid_boss_fetch_waiters_by_target,
+        ) = self._rebind_unchanged_party_fetch_state(
+            self._raid_boss_fetches_in_flight,
+            self._raid_boss_fetch_waiters_by_target,
+            self._raid_detail_preferences(),
+        )
         self._raid_boss_fetch_failures.clear()
         self._clear_role_filter()
         self._refresh_flush_pending = False
@@ -3751,8 +3812,8 @@ class OverlayWindow(QMainWindow):
         self._sync_delegate_and_panel()
         self._update_title()
         if self._state.party_members:
-            for identity in party_fetches_to_restore:
-                member = self._state.party_members.get(identity.applicant_id)
+            for applicant_id in party_fetches_to_restore:
+                member = self._state.party_members.get(applicant_id)
                 if member is not None and member.fetch_status in {"pending", "loading"}:
                     self._launch_fetch(member)
             self._select_tab_state("party", auto_selected=True)

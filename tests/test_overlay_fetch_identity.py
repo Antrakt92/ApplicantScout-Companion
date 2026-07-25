@@ -2798,7 +2798,7 @@ def test_lfg_unavailable_roster_snapshot_does_not_bump_generation_or_drop_fetch(
         client.close()
 
 
-def test_listing_clear_with_unchanged_party_roster_does_not_leave_loading_without_inflight(
+def test_listing_clear_rebinds_unchanged_party_fetch_across_repeated_clears(
     qtbot,
     tmp_path,
     monkeypatch,
@@ -2872,10 +2872,234 @@ def test_listing_clear_with_unchanged_party_roster_does_not_leave_loading_withou
         member = state.party_members["host-realma"]
         assert launcher_calls == []
         assert member.fetch_status == "loading"
-        assert len(queued_pool.tasks) == 2
+        assert len(queued_pool.tasks) == 1
         assert len(window._fetches_in_flight) == 1
-        identity = queued_pool.tasks[-1]._identity
-        assert identity.row_source == "party"
-        assert identity.listing_session_generation == 1
+        worker_identity = queued_pool.tasks[0]._identity
+        rebound_identity = next(iter(window._fetches_in_flight.values()))
+        assert worker_identity.row_source == "party"
+        assert worker_identity.listing_session_generation == 0
+        assert rebound_identity.listing_session_generation == 1
+        assert worker_identity.network_key in window._fetch_waiters_by_target
+
+        window.on_cleared()
+
+        assert len(queued_pool.tasks) == 1
+        rebound_identity = next(iter(window._fetches_in_flight.values()))
+        assert rebound_identity.listing_session_generation == 2
+        assert worker_identity.network_key in window._fetch_waiters_by_target
+
+        window._on_fetch_done(worker_identity, _ranks())
+
+        assert member.fetch_status == "ready"
+        assert member.mplus_dps == 77.0
+        assert window._fetches_in_flight == {}
+        assert window._fetch_waiters_by_target == {}
+    finally:
+        client.close()
+
+
+def test_listing_clear_preserves_shared_party_waiters_on_one_worker(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    state.listing = Listing(
+        activity_id=401,
+        dungeon_name="Pit of Saron",
+        listing_name="+14",
+        comment="",
+        key_level=14,
+        category_id=2,
+    )
+    first = _member(applicant_id="party-one")
+    second = _member(applicant_id="party-two")
+    state.add_or_update_party_member(first)
+    state.add_or_update_party_member(second)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(first)
+        window._launch_fetch(second)
+
+        assert len(queued_pool.tasks) == 1
+        worker_identity = queued_pool.tasks[0]._identity
+        assert len(window._fetches_in_flight) == 2
+        assert len(window._fetch_waiters_by_target[worker_identity.network_key]) == 2
+
+        state.listing = None
+        state.clear_all()
+        window.on_listing_changed()
+        window.on_cleared()
+
+        assert len(queued_pool.tasks) == 1
+        assert len(window._fetches_in_flight) == 2
+        rebound_waiters = window._fetch_waiters_by_target[worker_identity.network_key]
+        assert len(rebound_waiters) == 2
+        assert {
+            identity.listing_session_generation
+            for identity in rebound_waiters.values()
+        } == {1}
+
+        window._on_fetch_done(worker_identity, _ranks())
+
+        assert first.fetch_status == "ready"
+        assert second.fetch_status == "ready"
+        assert first.raid_heroic == 22.0
+        assert second.raid_heroic == 22.0
+        assert window._fetches_in_flight == {}
+        assert window._fetch_waiters_by_target == {}
+    finally:
+        client.close()
+
+
+def test_listing_clear_preserves_party_waiter_when_worker_origin_was_applicant(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    state.listing = Listing(
+        activity_id=401,
+        dungeon_name="Pit of Saron",
+        listing_name="+14",
+        comment="",
+        key_level=14,
+        category_id=2,
+    )
+    applicant = _app(applicant_id="42:1")
+    member = _member()
+    state.add_or_update(applicant)
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(applicant)
+        window._launch_fetch(member)
+
+        assert len(queued_pool.tasks) == 1
+        worker_identity = queued_pool.tasks[0]._identity
+        assert worker_identity.row_source == "applicants"
+        assert len(window._fetch_waiters_by_target[worker_identity.network_key]) == 2
+
+        state.listing = None
+        state.clear_all()
+        window.on_listing_changed()
+        window.on_cleared()
+
+        assert set(window._fetches_in_flight) == {"party:scout-realma"}
+        rebound_waiters = window._fetch_waiters_by_target[worker_identity.network_key]
+        assert set(rebound_waiters) == {"party:scout-realma"}
+
+        window._on_fetch_done(worker_identity, _ranks())
+
+        assert member.fetch_status == "ready"
+        assert member.mplus_dps == 77.0
+        assert window._fetches_in_flight == {}
+        assert window._fetch_waiters_by_target == {}
+    finally:
+        client.close()
+
+
+def test_listing_clear_does_not_fetch_unconfirmed_restored_roster(qtbot, tmp_path):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    member = _member(fetch_status="pending")
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+    window._restored_roster_pending = True
+
+    try:
+        window.on_cleared()
+
+        assert queued_pool.tasks == []
+        assert member.fetch_status == "pending"
+        assert window._fetches_in_flight == {}
+        assert window._fetch_waiters_by_target == {}
+    finally:
+        client.close()
+
+
+def test_listing_clear_invalidates_changed_party_identity_and_rejects_old_result(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    member = _member()
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(member)
+        stale_identity = queued_pool.tasks[0]._identity
+
+        member.name = "Changed-RealmA"
+        window.on_cleared()
+
+        assert len(queued_pool.tasks) == 2
+        current_identity = window._fetches_in_flight["party:scout-realma"]
+        assert current_identity.charname_key == "changed"
+        assert current_identity != stale_identity
+
+        window._on_fetch_done(stale_identity, _ranks())
+
+        assert member.fetch_status == "loading"
+        assert member.mplus_dps is None
+        assert window._fetches_in_flight["party:scout-realma"] == current_identity
+
+        window._on_fetch_done(current_identity, _ranks())
+
+        assert member.fetch_status == "ready"
+        assert member.mplus_dps == 77.0
+    finally:
+        client.close()
+
+
+def test_listing_clear_invalidates_party_fetch_after_preferences_change(
+    qtbot, tmp_path
+):
+    narrow = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    member = _member()
+    state.add_or_update_party_member(member)
+    window, client = _window(qtbot, tmp_path, state)
+    queued_pool = _QueuedPool()
+    window._pool = queued_pool
+
+    try:
+        window._launch_fetch(member)
+        stale_identity = queued_pool.tasks[0]._identity
+
+        window.apply_metric_preferences(narrow)
+        assert len(queued_pool.tasks) == 1
+
+        window.on_cleared()
+
+        assert len(queued_pool.tasks) == 2
+        current_identity = window._fetches_in_flight["party:scout-realma"]
+        assert current_identity.metric_preferences == narrow
+        assert current_identity != stale_identity
+
+        window._on_fetch_done(stale_identity, _ranks())
+
+        assert member.fetch_status == "loading"
+        assert member.raid_heroic is None
+        assert window._fetches_in_flight["party:scout-realma"] == current_identity
+
+        window._on_fetch_done(current_identity, _ranks())
+
+        assert member.fetch_status == "ready"
+        assert member.raid_heroic == 22.0
+        assert member.mplus_dps is None
     finally:
         client.close()

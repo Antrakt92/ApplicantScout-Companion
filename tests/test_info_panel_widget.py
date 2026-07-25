@@ -1163,6 +1163,70 @@ def test_raid_detail_loading_status_shows_without_changing_fetch_status(
         window.close()
 
 
+def test_party_raid_detail_completion_survives_listing_clear(qtbot, tmp_path):
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth, metric_preferences=prefs)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    member = _member("party-scout", "Scout-Ravencrest")
+    member.raid_boss_parses = {}
+    state.add_or_update_party_member(member)
+    window = OverlayWindow(state, client, cache, tmp_path, metric_preferences=prefs)
+    qtbot.addWidget(window)
+    queued_pool = _QueuedPool()
+
+    try:
+        window._pool = queued_pool
+        window._select_tab_state("party", auto_selected=False)
+        window._refresh_table()
+        window._hover_id = member.applicant_id
+        window._sync_delegate_and_panel()
+        _request_visible_raid_boss_details(window)
+
+        assert len(queued_pool.tasks) == 1
+        worker_identity = queued_pool.tasks[0]._identity
+        assert isinstance(queued_pool.tasks[0], _RaidBossFetchTask)
+
+        state.listing = None
+        state.clear_all()
+        window.on_listing_changed()
+        window.on_cleared()
+        window.on_cleared()
+
+        assert len(queued_pool.tasks) == 1
+        rebound_identity = window._raid_boss_fetches_in_flight[
+            "party:party-scout"
+        ]
+        assert rebound_identity.listing_session_generation == 2
+        assert worker_identity.network_key in window._raid_boss_fetch_waiters_by_target
+
+        rows = {
+            "M": [
+                {
+                    "boss_name": "Dimensius",
+                    "rank_percent": 81.0,
+                    "median_percent": 74.0,
+                    "kills": 3,
+                }
+            ]
+        }
+        window._on_raid_boss_fetch_done(worker_identity, rows, "")
+
+        assert member.raid_boss_parses == rows
+        assert window._raid_boss_fetches_in_flight == {}
+        assert window._raid_boss_fetch_waiters_by_target == {}
+    finally:
+        client.close()
+
+
 def test_refresh_panel_renders_once_when_raid_detail_fetch_starts(
     qtbot, tmp_path, monkeypatch
 ):
