@@ -52,9 +52,17 @@ Filename: "{app}\ApplicantScout.exe"; Parameters: "--show-settings"; Description
 Filename: "{app}\ApplicantScout.exe"; Parameters: "--show-settings"; Flags: nowait skipifnotsilent; Check: ShouldRelaunchAfterInstall
 
 [Code]
+const
+  ProcessProbeFailed = -1;
+  ProcessAbsent = 0;
+  ProcessRunning = 1;
+  ProcessExitPollAttempts = 10;
+  ProcessExitPollMilliseconds = 500;
+
 var
   CompanionWasRunning: Boolean;
   SelfUpdateWasRequested: Boolean;
+  ShutdownWasConfirmed: Boolean;
 
 function PowerShellSingleQuoted(Value: String): String;
 begin
@@ -70,16 +78,24 @@ begin
   Target := PowerShellSingleQuoted(ExpandConstant('{app}\ApplicantScout.exe'));
   Result :=
     '-NoProfile -ExecutionPolicy Bypass -Command "' +
+    '$ErrorActionPreference = ''Stop''; try { ' +
     '$target = ' + Target + '; ' +
-    '$procs = Get-CimInstance Win32_Process | Where-Object { ' +
-    '$_.Name -ieq ''ApplicantScout.exe'' -and $_.ExecutablePath -and ' +
-    '([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq [System.IO.Path]::GetFullPath($target)) ' +
-    '}; ';
+    '$fullTarget = [System.IO.Path]::GetFullPath($target); ' +
+    '$candidates = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 | Where-Object { ' +
+    '$_.Name -ieq ''ApplicantScout.exe'' }); ' +
+    'if ($candidates | Where-Object { -not $_.ExecutablePath }) { exit 2 }; ' +
+    '$procs = @($candidates | Where-Object { ' +
+    '([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $fullTarget) ' +
+    '}); ';
   if Terminate then begin
     Result := Result +
-      'foreach ($p in $procs) { Invoke-CimMethod -InputObject $p -MethodName Terminate | Out-Null }; exit 0"';
+      'foreach ($p in $procs) { ' +
+      '$terminateResult = Invoke-CimMethod -InputObject $p -MethodName Terminate -OperationTimeoutSec 5; ' +
+      'if ($terminateResult.ReturnValue -ne 0) { exit 3 } }; ' +
+      'exit 0 } catch { exit 2 }"';
   end else begin
-    Result := Result + 'if ($procs) { exit 0 } else { exit 1 }"';
+    Result := Result +
+      'if ($procs) { exit 0 } else { exit 1 } } catch { exit 2 }"';
   end;
 end;
 
@@ -107,43 +123,117 @@ begin
   SourcePid := IntToStr(SelfUpdateSourcePid());
   Result :=
     '-NoProfile -ExecutionPolicy Bypass -Command "' +
+    '$ErrorActionPreference = ''Stop''; try { ' +
     '$target = ' + SourcePath + '; ' +
     '$sourcePid = ' + SourcePid + '; ' +
-    'if ($sourcePid -le 0 -or [string]::IsNullOrWhiteSpace($target)) { exit 1 }; ' +
+    'if ($sourcePid -le 0 -or [string]::IsNullOrWhiteSpace($target)) { exit 2 }; ' +
     '$fullTarget = [System.IO.Path]::GetFullPath($target); ' +
-    '$procs = Get-CimInstance Win32_Process | Where-Object { ' +
-    '$_.ProcessId -eq $sourcePid -and $_.ExecutablePath -and ' +
+    '$candidates = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 | Where-Object { ' +
+    '$_.ProcessId -eq $sourcePid }); ' +
+    'if ($candidates | Where-Object { -not $_.ExecutablePath }) { exit 2 }; ' +
+    '$procs = @($candidates | Where-Object { ' +
     '([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $fullTarget) ' +
-    '}; ';
+    '}); ';
   if Terminate then begin
     Result := Result +
-      'foreach ($p in $procs) { Invoke-CimMethod -InputObject $p -MethodName Terminate | Out-Null }; exit 0"';
+      'foreach ($p in $procs) { ' +
+      '$terminateResult = Invoke-CimMethod -InputObject $p -MethodName Terminate -OperationTimeoutSec 5; ' +
+      'if ($terminateResult.ReturnValue -ne 0) { exit 3 } }; ' +
+      'exit 0 } catch { exit 2 }"';
   end else begin
-    Result := Result + 'if ($procs) { exit 0 } else { exit 1 }"';
+    Result := Result +
+      'if ($procs) { exit 0 } else { exit 1 } } catch { exit 2 }"';
   end;
 end;
 
-function IsCompanionRunning(): Boolean;
+function ExecuteProcessProbe(Parameters: String): Integer;
 var
   ResultCode: Integer;
 begin
-  Exec(
+  if not Exec(
     ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    CompanionProcessScript(False),
+    Parameters,
     '',
     SW_HIDE,
     ewWaitUntilTerminated,
     ResultCode
-  );
+  ) then begin
+    Result := ProcessProbeFailed;
+    Exit;
+  end;
+  if ResultCode = 0 then begin
+    Result := ProcessRunning;
+  end else if ResultCode = 1 then begin
+    Result := ProcessAbsent;
+  end else begin
+    Result := ProcessProbeFailed;
+  end;
+end;
+
+function ExecuteProcessTermination(Parameters: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  if not Exec(
+    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    Parameters,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then begin
+    Result := False;
+    Exit;
+  end;
   Result := ResultCode = 0;
 end;
 
-procedure CloseSelfUpdateSource();
+function ProbeCompanionProcess(): Integer;
+begin
+  Result := ExecuteProcessProbe(CompanionProcessScript(False));
+end;
+
+function ProbeSelfUpdateProcess(): Integer;
+begin
+  Result := ExecuteProcessProbe(SelfUpdateProcessScript(False));
+end;
+
+function WaitForCompanionExit(): Integer;
 var
-  ResultCode: Integer;
   Attempt: Integer;
 begin
+  for Attempt := 1 to ProcessExitPollAttempts do begin
+    Sleep(ProcessExitPollMilliseconds);
+    Result := ProbeCompanionProcess();
+    if Result <> ProcessRunning then begin
+      Exit;
+    end;
+  end;
+  Result := ProcessRunning;
+end;
+
+function WaitForSelfUpdateSourceExit(): Integer;
+var
+  Attempt: Integer;
+begin
+  for Attempt := 1 to ProcessExitPollAttempts do begin
+    Sleep(ProcessExitPollMilliseconds);
+    Result := ProbeSelfUpdateProcess();
+    if Result <> ProcessRunning then begin
+      Exit;
+    end;
+  end;
+  Result := ProcessRunning;
+end;
+
+function CloseSelfUpdateSource(): Boolean;
+var
+  ResultCode: Integer;
+  State: Integer;
+begin
+  Result := False;
   if not SelfUpdateRequested() then begin
+    Result := True;
     Exit;
   end;
   if SelfUpdateSourcePid() <= 0 then begin
@@ -153,52 +243,63 @@ begin
     Exit;
   end;
 
-  { WHY: Self-update may come from a portable or legacy path. Ask that exact
-     source process to quit, then poll the original PID/path before fallback. }
-  Exec(
-    SelfUpdateSourcePath(),
-    '--shutdown-running-instance',
-    '',
-    SW_HIDE,
-    ewNoWait,
-    ResultCode
-  );
-
-  for Attempt := 1 to 10 do begin
-    Sleep(500);
-    Exec(
-      ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-      SelfUpdateProcessScript(False),
-      '',
-      SW_HIDE,
-      ewWaitUntilTerminated,
-      ResultCode
-    );
-    if ResultCode <> 0 then begin
-      Exit;
-    end;
+  State := ProbeSelfUpdateProcess();
+  if State = ProcessProbeFailed then begin
+    Exit;
+  end;
+  if State = ProcessAbsent then begin
+    Result := True;
+    Exit;
   end;
 
-  Exec(
-    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    SelfUpdateProcessScript(True),
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  );
-  Sleep(500);
+  { WHY: Self-update may come from a portable or legacy path. Ask that exact
+     source process to quit, then poll the original PID/path before fallback. }
+  if FileExists(SelfUpdateSourcePath()) then begin
+    Exec(
+      SelfUpdateSourcePath(),
+      '--shutdown-running-instance',
+      '',
+      SW_HIDE,
+      ewNoWait,
+      ResultCode
+    );
+  end;
+
+  State := WaitForSelfUpdateSourceExit();
+  if State = ProcessAbsent then begin
+    Result := True;
+    Exit;
+  end;
+  if State = ProcessProbeFailed then begin
+    Exit;
+  end;
+  if not ExecuteProcessTermination(SelfUpdateProcessScript(True)) then begin
+    Exit;
+  end;
+  Result := WaitForSelfUpdateSourceExit() = ProcessAbsent;
 end;
 
-procedure CloseRunningCompanion();
+function CloseRunningCompanion(): Boolean;
 var
   ResultCode: Integer;
+  State: Integer;
 begin
+  Result := False;
+  State := ProbeCompanionProcess();
+  if State = ProcessProbeFailed then begin
+    Exit;
+  end;
+  if State = ProcessAbsent then begin
+    Result := True;
+    Exit;
+  end;
+  CompanionWasRunning := True;
+
   { WHY: The tray app may keep ApplicantScout.exe running with no visible window;
      Inno Restart Manager then shows a confusing manual-close prompt. }
   if FileExists(ExpandConstant('{app}\ApplicantScout.exe')) then begin
     { WARNING: Do not wait here. Older builds treat the shutdown flag as a
-      normal app launch and would block the installer until taskkill runs. }
+      normal app launch and would block the installer until fallback runs. }
     Exec(
       ExpandConstant('{app}\ApplicantScout.exe'),
       '--shutdown-running-instance',
@@ -207,22 +308,20 @@ begin
       ewNoWait,
       ResultCode
     );
-    Sleep(1500);
   end;
 
-  if not IsCompanionRunning() then begin
+  State := WaitForCompanionExit();
+  if State = ProcessAbsent then begin
+    Result := True;
     Exit;
   end;
-
-  Exec(
-    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    CompanionProcessScript(True),
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  );
-  Sleep(500);
+  if State = ProcessProbeFailed then begin
+    Exit;
+  end;
+  if not ExecuteProcessTermination(CompanionProcessScript(True)) then begin
+    Exit;
+  end;
+  Result := WaitForCompanionExit() = ProcessAbsent;
 end;
 
 procedure RemoveLegacyPerMachineShortcuts();
@@ -238,25 +337,31 @@ end;
 
 function ShouldRelaunchAfterInstall(): Boolean;
 begin
-  Result := CompanionWasRunning or SelfUpdateWasRequested;
+  Result := ShutdownWasConfirmed and (CompanionWasRunning or SelfUpdateWasRequested);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  Result := '';
+  CompanionWasRunning := False;
+  ShutdownWasConfirmed := False;
   SelfUpdateWasRequested := SelfUpdateRequested();
   if SelfUpdateWasRequested then begin
-    CloseSelfUpdateSource();
+    if not CloseSelfUpdateSource() then begin
+      Result := 'Could not verify that the self-update source stopped. Close ApplicantScout Companion and try again.';
+      Exit;
+    end;
   end;
-  CompanionWasRunning := IsCompanionRunning();
-  if CompanionWasRunning then begin
-    CloseRunningCompanion();
+  if not CloseRunningCompanion() then begin
+    Result := 'Could not verify that the installed ApplicantScout Companion stopped. Close it and try again.';
+    Exit;
   end;
   RemoveLegacyPerMachineShortcuts();
-  Result := '';
+  ShutdownWasConfirmed := True;
 end;
 
 function InitializeUninstall(): Boolean;
 begin
-  CloseRunningCompanion();
-  Result := True;
+  CompanionWasRunning := False;
+  Result := CloseRunningCompanion();
 end;

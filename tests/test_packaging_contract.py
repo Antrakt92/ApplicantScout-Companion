@@ -652,17 +652,17 @@ def test_installer_closes_running_companion_without_restart_manager_prompt():
     assert "function PrepareToInstall(var NeedsRestart: Boolean): String;" in inno_script
     assert "function InitializeUninstall(): Boolean;" in inno_script
     assert "function ShouldRelaunchAfterInstall(): Boolean;" in inno_script
+    assert "function CloseRunningCompanion(): Boolean;" in inno_script
     assert "--shutdown-running-instance" in inno_script
     assert "ewNoWait" in inno_script
     assert "taskkill /IM ApplicantScout.exe" not in inno_script
     assert "Win32_Process" in inno_script
     assert "ExecutablePath" in inno_script
     assert "{app}\\ApplicantScout.exe" in inno_script
-    assert "function IsCompanionRunning(): Boolean;" in inno_script
+    assert "function ProbeCompanionProcess(): Integer;" in inno_script
     assert "ewWaitUntilTerminated" in inno_script
     assert "skipifnotsilent" in inno_script
     assert "Check: ShouldRelaunchAfterInstall" in inno_script
-    assert "Result := ''" in inno_script
 
 
 def test_installer_accepts_self_update_context_for_portable_or_legacy_paths():
@@ -675,15 +675,19 @@ def test_installer_accepts_self_update_context_for_portable_or_legacy_paths():
     assert "function SelfUpdateRequested(): Boolean;" in inno_script
     assert "function SelfUpdateSourcePid(): Integer;" in inno_script
     assert "function SelfUpdateProcessScript(Terminate: Boolean): String;" in inno_script
-    assert "procedure CloseSelfUpdateSource();" in inno_script
-    assert "CloseSelfUpdateSource();" in inno_script
-    assert "CompanionWasRunning or SelfUpdateWasRequested" in inno_script
+    assert "function ProbeSelfUpdateProcess(): Integer;" in inno_script
+    assert "function CloseSelfUpdateSource(): Boolean;" in inno_script
+    assert "CloseSelfUpdateSource()" in inno_script
+    assert (
+        "ShutdownWasConfirmed and (CompanionWasRunning or SelfUpdateWasRequested)"
+        in inno_script
+    )
 
 
 def test_installer_self_update_uses_control_shutdown_before_cim_fallback():
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
     match = re.search(
-        r"(?ms)^procedure CloseSelfUpdateSource\(\);\n(?P<body>.*?)(?=^procedure CloseRunningCompanion\(\);)",
+        r"(?ms)^function CloseSelfUpdateSource\(\): Boolean;\n(?P<body>.*?)(?=^function CloseRunningCompanion\(\): Boolean;)",
         inno_script,
     )
 
@@ -691,13 +695,90 @@ def test_installer_self_update_uses_control_shutdown_before_cim_fallback():
     body = match.group("body")
     assert "SelfUpdateSourcePath()" in body
     assert "'--shutdown-running-instance'" in body
-    assert re.search(r"for\s+\w+\s*:=\s*1\s+to\s+\d+\s+do", body, re.I)
 
     graceful_idx = body.index("'--shutdown-running-instance'")
-    probe_idx = body.index("SelfUpdateProcessScript(False)", graceful_idx)
+    probe_idx = body.index("WaitForSelfUpdateSourceExit()", graceful_idx)
     fallback_idx = body.index("SelfUpdateProcessScript(True)", probe_idx)
 
     assert graceful_idx < probe_idx < fallback_idx
+    wait_for_exit = re.search(
+        r"(?ms)^function WaitForSelfUpdateSourceExit\(\): Integer;\n(?P<body>.*?)(?=^function CloseSelfUpdateSource)",
+        inno_script,
+    )
+    assert wait_for_exit is not None
+    wait_body = wait_for_exit.group("body")
+    assert "for Attempt := 1 to ProcessExitPollAttempts do begin" in wait_body
+    assert "Sleep(ProcessExitPollMilliseconds);" in wait_body
+    assert "ProbeSelfUpdateProcess();" in wait_body
+
+
+def test_installer_process_control_reports_probe_and_termination_failures():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "$ErrorActionPreference = ''Stop''" in inno_script
+    assert "catch { exit 2 }" in inno_script
+    assert "$terminateResult = Invoke-CimMethod" in inno_script
+    assert "if ($terminateResult.ReturnValue -ne 0) { exit 3 }" in inno_script
+    assert inno_script.count("Get-CimInstance Win32_Process -OperationTimeoutSec 5") == 2
+    assert inno_script.count("-MethodName Terminate -OperationTimeoutSec 5") == 2
+    assert inno_script.count(
+        "if ($candidates | Where-Object { -not $_.ExecutablePath }) { exit 2 }"
+    ) == 2
+    assert "ProcessProbeFailed = -1;" in inno_script
+    assert "ProcessAbsent = 0;" in inno_script
+    assert "ProcessRunning = 1;" in inno_script
+
+    process_probe = re.search(
+        r"(?ms)^function ExecuteProcessProbe\(Parameters: String\): Integer;\n(?P<body>.*?)(?=^function ExecuteProcessTermination)",
+        inno_script,
+    )
+
+    assert process_probe is not None
+    probe_body = process_probe.group("body")
+    assert "if not Exec(" in probe_body
+    assert probe_body.count("Result := ProcessProbeFailed") >= 2
+    assert "ResultCode = 0" in probe_body
+    assert "ResultCode = 1" in probe_body
+    assert "ExecuteProcessProbe(CompanionProcessScript(False))" in inno_script
+    assert "ExecuteProcessProbe(SelfUpdateProcessScript(False))" in inno_script
+    assert "foreach ($p in $procs)" in inno_script
+    assert "Result := WaitForCompanionExit() = ProcessAbsent;" in inno_script
+    assert "Result := WaitForSelfUpdateSourceExit() = ProcessAbsent;" in inno_script
+
+
+def test_installer_blocks_mutation_uninstall_and_relaunch_without_exit_proof():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    prepare = re.search(
+        r"(?ms)^function PrepareToInstall\(var NeedsRestart: Boolean\): String;\n(?P<body>.*?)(?=^function InitializeUninstall\(\): Boolean;)",
+        inno_script,
+    )
+    uninstall = re.search(
+        r"(?ms)^function InitializeUninstall\(\): Boolean;\n(?P<body>.*)\Z",
+        inno_script,
+    )
+    relaunch = re.search(
+        r"(?ms)^function ShouldRelaunchAfterInstall\(\): Boolean;\n(?P<body>.*?)(?=^function PrepareToInstall)",
+        inno_script,
+    )
+
+    assert prepare is not None
+    assert uninstall is not None
+    assert relaunch is not None
+    prepare_body = prepare.group("body")
+    assert "if not CloseSelfUpdateSource() then begin" in prepare_body
+    assert "if not CloseRunningCompanion() then begin" in prepare_body
+    assert prepare_body.count("Exit;") >= 2
+    assert "Result := '';" in prepare_body
+    assert "ShutdownWasConfirmed := True;" in prepare_body
+    assert prepare_body.index("CloseSelfUpdateSource()") < prepare_body.index(
+        "RemoveLegacyPerMachineShortcuts();"
+    )
+    assert prepare_body.index("CloseRunningCompanion()") < prepare_body.index(
+        "RemoveLegacyPerMachineShortcuts();"
+    )
+    assert "Result := CloseRunningCompanion();" in uninstall.group("body")
+    assert "Result := True;" not in uninstall.group("body")
+    assert "ShutdownWasConfirmed and" in relaunch.group("body")
 
 
 def test_interactive_and_silent_update_relaunch_open_settings():
