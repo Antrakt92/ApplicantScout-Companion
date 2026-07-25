@@ -177,6 +177,18 @@ def _mark_test_db_changed(root: Path) -> None:
     path.write_text(path.read_text(encoding="utf-8") + "\n-- changed\n", encoding="utf-8")
 
 
+def _set_provider_region(root: Path, family: str, region: str) -> None:
+    db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
+    for suffix in ("characters", "lookup"):
+        path = db / f"db_{family}_eu_{suffix}.lua"
+        text = path.read_text(encoding="utf-8")
+        assert text.count('region="eu"') == 1
+        path.write_text(
+            text.replace('region="eu"', f'region="{region}"', 1),
+            encoding="utf-8",
+        )
+
+
 def _replace_encoded_payload_preserving_size_and_mtime(
     path: Path,
     old_payload: bytes,
@@ -1207,6 +1219,68 @@ def test_reader_rejects_reordered_dungeon_contract_but_keeps_raid_only(
     assert profile is not None
     assert not profile.has_mplus_profile
     assert bool(profile.raid_progress)
+
+
+@pytest.mark.parametrize(
+    ("family", "expect_mplus", "expect_raid"),
+    [
+        ("mythicplus", False, True),
+        ("raiding", True, False),
+    ],
+)
+def test_reader_rejects_coherent_provider_pair_for_wrong_region(
+    tmp_path: Path,
+    family: str,
+    expect_mplus: bool,
+    expect_raid: bool,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    _write_raid_generation(tmp_path, (2, 0, 1))
+    _set_provider_region(tmp_path, family, "us")
+
+    profile = RaiderIOLocalReader(tmp_path).lookup_profile(
+        "Chinie",
+        "Ragnaros",
+        "EU",
+    )
+
+    assert profile is not None
+    assert profile.has_mplus_profile is expect_mplus
+    assert bool(profile.raid_progress) is expect_raid
+
+
+def test_reader_accepts_case_normalized_provider_region(tmp_path: Path):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    _write_raid_generation(tmp_path, (2, 0, 1))
+    _set_provider_region(tmp_path, "mythicplus", "EU")
+    _set_provider_region(tmp_path, "raiding", "EU")
+
+    profile = RaiderIOLocalReader(tmp_path).lookup_profile(
+        "Chinie",
+        "Ragnaros",
+        "eu",
+    )
+
+    assert profile is not None
+    assert profile.has_mplus_profile
+    assert bool(profile.raid_progress)
+
+
+def test_reader_keeps_previous_db_when_all_replacements_have_wrong_region(
+    tmp_path: Path,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    _write_raid_generation(tmp_path, (2, 0, 1))
+    reader = RaiderIOLocalReader(tmp_path)
+    previous = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert previous is not None
+
+    _write_mplus_generation(tmp_path, 3333, 16)
+    _write_raid_generation(tmp_path, (1, 1, 0))
+    _set_provider_region(tmp_path, "mythicplus", "us")
+    _set_provider_region(tmp_path, "raiding", "us")
+
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == previous
 
 
 def test_reader_rejects_invalid_utf8_escaped_in_raid_metadata(tmp_path: Path):

@@ -349,6 +349,7 @@ class _RegionDB:
                     mplus_characters_text,
                     lookup_text,
                     "M+",
+                    expected_region=token,
                 )
                 mplus_meta = _parse_provider_meta(lookup_text)
                 dungeons = _parse_dungeon_names(
@@ -395,6 +396,7 @@ class _RegionDB:
                     raid_characters_text,
                     raid_lookup_text,
                     "raid",
+                    expected_region=token,
                 )
                 raid_meta = _parse_provider_meta(raid_lookup_text)
                 current_raids = _parse_provider_raids(raid_lookup_text, "currentRaids")
@@ -625,11 +627,25 @@ def _validate_provider_identity_pair(
     characters_text: str,
     lookup_text: str,
     label: str,
+    *,
+    expected_region: str,
 ) -> None:
-    characters_identity = _parse_provider_identity(characters_text)
-    lookup_identity = _parse_provider_identity(lookup_text)
+    characters_identity = _normalized_provider_identity(characters_text)
+    lookup_identity = _normalized_provider_identity(lookup_text)
     if characters_identity != lookup_identity:
         raise ValueError(f"RaiderIO {label} provider generation mismatch")
+    if characters_identity.region != expected_region.casefold():
+        raise ValueError(f"RaiderIO {label} provider region mismatch")
+
+
+def _normalized_provider_identity(text: str) -> _ProviderIdentity:
+    identity = _parse_provider_identity(text)
+    return _ProviderIdentity(
+        data=identity.data,
+        region=identity.region.casefold(),
+        date=identity.date,
+        num_characters=identity.num_characters,
+    )
 
 
 def _parse_provider_identity(text: str) -> _ProviderIdentity:
