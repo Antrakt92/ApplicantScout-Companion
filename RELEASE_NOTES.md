@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+## 0.13.0 - 25-Jul-2026
+
+Paired release with ApplicantScout addon `0.9.0`. This release prevents stale
+or misattributed enrichment from surviving identity, region, cache, and window
+lifecycle changes, while making updater and publication failures fail closed.
+
+### Fixed
+
+- RaiderIO data is accepted only when its dungeon ordering matches the shipped
+  seasonal contract, and every provider is bound to the requested region so a
+  fallback cannot silently return another region's character data.
+- Expired RaiderIO data has a bounded stale-cache grace period instead of
+  remaining reusable indefinitely during repeated refresh failures.
+- Failed configuration saves restore the exact persisted configuration and
+  in-memory state, without leaving a partially normalized replacement behind.
+- Deferred live-snapshot cache writes and deletes preserve call order, so an
+  older pending operation cannot overwrite or remove newer accepted state.
+- Runtime-control frames received before GUI handlers are ready are buffered
+  and replayed instead of dropping early focus, settings, or shutdown requests.
+- Later screenshot decode failures retain their own diagnostics and cannot be
+  overwritten by an older worker finishing out of order.
+- Warcraft Logs responses that omit the requested character are rejected
+  instead of being cached as a valid empty result.
+- Overlay fetches and detail state are bound to stable row identity, preventing
+  a reused table row from displaying enrichment requested for another player.
+- Clearing unchanged Party state no longer cancels the valid in-flight or
+  completed enrichment that still belongs to the same group.
+- Accessibility titles refresh with current row and status context, and
+  frameless overlay and Settings windows are clamped after runtime move,
+  resize, and display-geometry changes.
+- The Windows installer stops rather than replacing files if a running
+  Companion process remains after the bounded close request.
+
+### Improved
+
+- Published-release verification can be rerun safely without re-entering the
+  immutable writer after delayed GitHub propagation or a transient read error.
+- Watcher shutdown coverage proves that failed screenshot-path validation
+  cannot leak a replacement watcher into later configuration work.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.0`.
+- Installer: `ApplicantScoutCompanionSetup-0.13.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.13.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.13.0-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.13.0-release-manifest.json`
+
 ## 0.12.1 - 23-Jul-2026
 
 Paired release with ApplicantScout addon `0.8.1`. This release keeps incomplete
