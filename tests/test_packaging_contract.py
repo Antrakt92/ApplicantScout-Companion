@@ -1963,6 +1963,7 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     workflow = _read_repo_text(".github/workflows/publish-release.yml")
     verify = _job_block(workflow, "verify")
     publish = _job_block(workflow, "publish")
+    verify_published = _job_block(workflow, "verify_published")
 
     assert "workflow_dispatch:" in workflow
     assert "tag:" in workflow
@@ -1980,6 +1981,8 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     assert "contents: read" in verify
     assert "contents: write" not in verify
     assert "contents: write" in publish
+    assert "contents: read" in verify_published
+    assert "contents: write" not in verify_published
     assert "gh release download $env:RELEASE_TAG" not in verify
     assert "-RequireDraftReleaseAssets" not in verify
 
@@ -1989,7 +1992,7 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     manifest_check = _step_block(verify, "Verify authoritative exact-tag manifest")
     attestation = _step_block(verify, "Validate smoke attestation")
     publish_step = _step_block(publish, "Revalidate exact bytes and publish release")
-    published_check = _step_block(publish, "Verify published release assets")
+    published_check = _step_block(verify_published, "Verify published release assets")
 
     assert "ref: ${{ inputs.tag }}" in checkout
     assert '"$env:RELEASE_TAG^{commit}"' in ancestry
@@ -2034,6 +2037,7 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     assert 'X-GitHub-Api-Version: 2026-03-10' in published_check
     assert "did not become immutable" in published_check
     assert "authoritative copy and asset contract" in published_check
+    assert "GH_TOKEN: ${{ github.token }}" in published_check
     _assert_order(
         verify,
         "Checkout companion",
@@ -2042,11 +2046,6 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
         "Download authoritative release assets",
         "Verify authoritative exact-tag manifest",
         "Validate smoke attestation",
-    )
-    _assert_order(
-        publish,
-        "Revalidate exact bytes and publish release",
-        "Verify published release assets",
     )
 
 
@@ -2094,8 +2093,8 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
         writer,
         "-Repo $env:GITHUB_REPOSITORY",
         '-Repo "Antrakt92/ApplicantScout-Addon"',
-        "releases/latest",
         "gh release view $env:RELEASE_TAG",
+        "releases/latest",
         "gh release download $env:RELEASE_TAG",
         "IsNullOrWhiteSpace($env:RELEASE_SETTINGS_READ_TOKEN)",
         "$env:GH_TOKEN = $env:RELEASE_SETTINGS_READ_TOKEN",
@@ -2115,8 +2114,9 @@ def test_publish_release_workflow_verifies_exact_tag_manifest_before_publish():
 def test_publish_release_workflow_restores_mutated_draft_copy_before_publication():
     workflow = _read_repo_text(".github/workflows/publish-release.yml")
     publish = _job_block(workflow, "publish")
+    verify_published = _job_block(workflow, "verify_published")
     writer = _step_block(publish, "Revalidate exact bytes and publish release")
-    published_check = _step_block(publish, "Verify published release assets")
+    published_check = _step_block(verify_published, "Verify published release assets")
 
     assert "$ExpectedReleaseTitle = [string]$Manifest.releaseCopy.title" in writer
     assert "$Manifest.releaseCopy.body.contentBase64" in writer
@@ -2136,6 +2136,52 @@ def test_publish_release_workflow_restores_mutated_draft_copy_before_publication
     assert "$Release.name -ceq $ExpectedReleaseTitle" in published_check
     assert "$Release.body -ceq $ExpectedReleaseBody" in published_check
     assert "copy and assets match the authoritative Actions artifact" in published_check
+
+
+def test_publish_release_writer_skips_mutation_for_an_already_public_release():
+    workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    publish = _job_block(workflow, "publish")
+    writer = _step_block(publish, "Revalidate exact bytes and publish release")
+
+    assert workflow.count("gh release edit $env:RELEASE_TAG") == 1
+    assert "Could not resolve the exact-tag release state before publication" in writer
+    assert "if (-not [bool]$Release.isDraft)" in writer
+    assert "already public; skipping mutation" in writer
+    assert "verify_published owns acceptance" in writer
+    _assert_order(
+        writer,
+        "gh release view $env:RELEASE_TAG",
+        "if (-not [bool]$Release.isDraft)",
+        "already public; skipping mutation",
+        "exit 0",
+        "releases/latest",
+        "immutable-releases",
+        "gh release edit $env:RELEASE_TAG",
+    )
+
+
+def test_publish_release_verifier_is_read_only_and_rerunnable_after_writer():
+    workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    publish = _job_block(workflow, "publish")
+    verify_published = _job_block(workflow, "verify_published")
+    published_check = _step_block(verify_published, "Verify published release assets")
+
+    assert "needs: [verify, publish]" in verify_published
+    assert "always() && needs.verify.result == 'success'" in verify_published
+    assert "contents: read" in verify_published
+    assert "contents: write" not in verify_published
+    assert "GH_TOKEN: ${{ github.token }}" in verify_published
+    assert "secrets.GITHUB_TOKEN" not in verify_published
+    assert "RELEASE_SETTINGS_READ_TOKEN" not in verify_published
+    assert "gh release edit" not in verify_published
+    assert "Verify published release assets" not in publish
+    assert "releases/tags/$env:RELEASE_TAG" in published_check
+    assert "$Release.immutable -is [bool]" in published_check
+    assert "$Release.name -ceq $ExpectedReleaseTitle" in published_check
+    assert "$Release.body -ceq $ExpectedReleaseBody" in published_check
+    assert "$Assets.Count -eq $Expected.Count" in published_check
+    assert "[long]$Matches[0].size" in published_check
+    assert "[string]$Matches[0].digest" in published_check
 
 
 def test_publish_release_workflow_pins_external_actions_to_commit_shas():
@@ -3409,6 +3455,11 @@ def test_release_checklist_uses_policy_placeholders_not_stale_versions():
     assert "authoritative manifest" in checklist
     assert "Re-run failed jobs" in checklist
     assert "Do not rerun all jobs after a draft exists" in " ".join(checklist.split())
+    assert "verify_published" in checklist
+    assert "Do not use **Re-run all jobs**" in checklist
+    assert "zero-write recovery branch" in checklist
+    assert "Never mutate an already-public release" in checklist
+    assert "blocks paired marketplace completion" in checklist
     assert "recover forward with a" in checklist
     assert "new PATCH release" in checklist
     assert "verified draft" in checklist.lower()

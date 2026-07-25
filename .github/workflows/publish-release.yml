@@ -283,7 +283,9 @@ jobs:
 
   # WHY: GitHub hides drafts from the read-only workflow token. Keep the verify
   # job credentialless and validate the exact remote bytes inside the narrow
-  # writer immediately before making the release public.
+  # writer immediately before making the release public. The writer also treats
+  # an already-public exact tag as a no-op so a rerun cannot mutate it after an
+  # ambiguous publication response.
   publish:
     needs: verify
     runs-on: windows-2022
@@ -345,6 +347,21 @@ jobs:
           if ($CurrentAddonCommit -ne $env:PAIRED_ADDON_COMMIT) {
             throw "Paired addon tag moved after verification."
           }
+
+          $Release = gh release view $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --json name,body,isDraft,isPrerelease,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $null -eq $Release) {
+            throw "Could not resolve the exact-tag release state before publication."
+          }
+          if ([bool]$Release.isPrerelease) {
+            throw "Release is no longer the expected stable draft."
+          }
+          if (-not [bool]$Release.isDraft) {
+            Write-Host "Release is already public; skipping mutation so verify_published owns acceptance."
+            exit 0
+          }
+
           $CurrentLatestTag = (gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name).Trim()
           if ($LASTEXITCODE -ne 0 -or $CurrentLatestTag -ne $env:EXPECTED_LATEST_PUBLISHED_TAG) {
             throw "Latest stable release changed after smoke verification."
@@ -392,12 +409,6 @@ jobs:
             throw "Smoke-tested installer digest changed before publication."
           }
 
-          $Release = gh release view $env:RELEASE_TAG `
-            --repo $env:GITHUB_REPOSITORY `
-            --json name,body,isDraft,isPrerelease,assets | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not [bool]$Release.isDraft -or [bool]$Release.isPrerelease) {
-            throw "Release is no longer the expected stable draft."
-          }
           $Assets = @($Release.assets)
           if ($Assets.Count -ne $Expected.Count) {
             throw "Draft release asset count changed before publication."
@@ -480,10 +491,26 @@ jobs:
             throw "GitHub refused to publish $env:RELEASE_TAG."
           }
 
+  # WHY: publication is irreversible, while immutable propagation can be
+  # delayed. Keep acceptance in a separate read-only job so verification-only
+  # failures can be rerun without re-entering the writer.
+  verify_published:
+    needs: [verify, publish]
+    if: ${{ always() && needs.verify.result == 'success' }}
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      TAG_VERSION: ${{ needs.verify.outputs.tag_version }}
+      EXPECTED_MANIFEST_B64: ${{ needs.verify.outputs.manifest_b64 }}
+      EXPECTED_MANIFEST_SHA256: ${{ needs.verify.outputs.manifest_sha256 }}
+      EXPECTED_MANIFEST_SIZE: ${{ needs.verify.outputs.manifest_size }}
+    steps:
       - name: Verify published release assets
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $Manifest = [System.Text.Encoding]::UTF8.GetString(
             [Convert]::FromBase64String($env:EXPECTED_MANIFEST_B64)

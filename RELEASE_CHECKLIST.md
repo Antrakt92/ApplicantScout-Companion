@@ -4,7 +4,8 @@ Use this checklist for public companion releases. The tag push starts the gated
 GitHub Actions workflow; the workflow builds, validates, uploads, and leaves a
 verified draft GitHub Release with the matching installer assets. The separate
 manual `Publish release` workflow makes that draft public only after the
-checksum-gated updater smoke has been attested.
+checksum-gated updater smoke has been attested, then a separate read-only job
+proves the immutable public copy and assets.
 
 ## Prepare
 
@@ -87,11 +88,12 @@ the companion repository's release settings. Configure the repository secret
 `RELEASE_SETTINGS_READ_TOKEN` as a fine-grained token limited to this repository
 with **Administration: read** and **Metadata: read**, and no write permission.
 The manual publish workflow uses it only to read the immutable-release setting
-immediately before making the draft public, restores the normal workflow token
-for publication, and accepts the result only after GitHub reports the published
-release as immutable with the exact authoritative assets. Enabling the setting
-does not retrofit existing releases; the next published release is the first
-live immutability proof.
+immediately before making the draft public and restores the normal workflow
+token for publication. A separate `verify_published` job has read-only contents
+permission and accepts the result only after GitHub reports the published
+release as immutable with the exact authoritative copy and assets. Enabling the
+setting does not retrofit existing releases; the next published release is the
+first live immutability proof.
 
 Manual publish dispatches share one non-cancelling repository queue. Each run
 starts verification only after the preceding run finishes and rechecks the
@@ -149,6 +151,23 @@ the queue to publish multiple drafts.
    - `smoke_tested_installer_sha256`: the 64-character lowercase SHA-256 of the
      exact candidate installer used by the smoke test
    - `confirm_checksum_gated_update_smoke`: checked
+   Treat `verify_published`, not the write step alone, as publication
+   acceptance. If the writer is green and only this read-only proof times out
+   or encounters a transient API failure, use **Re-run failed jobs** on the
+   original workflow run; this reruns the verifier without re-entering the
+   writer. Do not use **Re-run all jobs** and do not start a new publish
+   dispatch after the release is public, because its pre-publication smoke
+   baseline is intentionally tied to the previous latest release.
+
+   If the writer reports failure around `gh release edit`, the release state is
+   ambiguous until `verify_published` finishes. The verifier runs even after a
+   writer failure. Use **Re-run failed jobs** only on that original run: an
+   already-public stable tag takes the writer's zero-write recovery branch,
+   while an exact draft is fully revalidated before another publication
+   attempt. Never mutate an already-public release to make verification pass.
+   A public prerelease, mutable release, copy mismatch, asset mismatch, or
+   unavailable proof blocks paired marketplace completion and requires
+   reviewed forward recovery with a new PATCH release.
 5. Confirm the companion GitHub Release is public with all expected assets
    before the paired addon `Package and release` workflow reaches marketplace
    publishing.
