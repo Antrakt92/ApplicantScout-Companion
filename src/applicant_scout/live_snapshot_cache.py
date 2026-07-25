@@ -319,6 +319,9 @@ class LiveSnapshotCacheWriter:
         self._generation = 0
         self._last_saved_content: dict[str, Any] | None = None
         self._last_saved_at: float | None = None
+        self._latest_logical_operation: (
+            _PendingLiveSnapshotCacheOperation | None
+        ) = None
 
     @property
     def source_id(self) -> str:
@@ -338,6 +341,9 @@ class LiveSnapshotCacheWriter:
                 self._pending = None
                 self._last_saved_content = None
                 self._last_saved_at = None
+                self._latest_logical_operation = (
+                    _PendingLiveSnapshotCacheOperation("clear", next_source_id)
+                )
             if not clear_live_snapshot(self._cache_dir):
                 _log.warning(
                     "Could not remove the previous source's live snapshot cache."
@@ -356,11 +362,13 @@ class LiveSnapshotCacheWriter:
                 return
             if operation.source_id != self._source_id:
                 return
-            if self._preserves_pending_context_locked(operation):
+            operation = self._coalesce_operation_locked(operation)
+            if operation is None:
                 return
             if self._is_recent_duplicate_locked(operation):
                 return
             self._pending = operation
+            self._latest_logical_operation = operation
             if self._defer_saves:
                 self._schedule_locked()
             else:
@@ -399,6 +407,7 @@ class LiveSnapshotCacheWriter:
             self._pending = None
             self._last_saved_content = None
             self._last_saved_at = None
+            self._latest_logical_operation = None
         with self._write_lock:
             pass
 
@@ -482,54 +491,61 @@ class LiveSnapshotCacheWriter:
             )
         return True
 
-    def _preserves_pending_context_locked(
+    def _coalesce_operation_locked(
         self,
         operation: _PendingLiveSnapshotCacheOperation,
-    ) -> bool:
+    ) -> _PendingLiveSnapshotCacheOperation | None:
         if operation.kind not in {
             "clear_if_context_differs",
             "clear_if_producer_differs",
         }:
-            return False
+            return operation
         if self._pending is not None and self._pending.kind == "clear":
-            return True
-        if operation.kind == "clear_if_producer_differs":
-            for candidate in (self._pending,):
-                if (
-                    candidate is not None
-                    and candidate.kind == "save"
-                    and candidate.content is not None
-                    and candidate.source_id == operation.source_id
-                    and not _producer_contexts_conflict(
-                        _saved_content_producer_context(candidate.content),
-                        operation.content,
-                    )
-                ):
-                    return True
-            return bool(
-                self._pending is None
-                and self._last_saved_content is not None
-                and not _producer_contexts_conflict(
-                    _saved_content_producer_context(self._last_saved_content),
+            return None
+        latest = self._latest_logical_operation
+        if latest is None or latest.source_id != operation.source_id:
+            return operation
+        if latest.kind == "clear":
+            return None
+        if latest.kind == "save" and latest.content is not None:
+            if operation.kind == "clear_if_producer_differs":
+                conflicts = _producer_contexts_conflict(
+                    _saved_content_producer_context(latest.content),
                     operation.content,
                 )
+                return (
+                    _PendingLiveSnapshotCacheOperation("clear", operation.source_id)
+                    if conflicts
+                    else None
+                )
+            if operation.content is None:
+                return operation
+            return (
+                None
+                if _saved_content_context(latest.content) == operation.content
+                else _PendingLiveSnapshotCacheOperation("clear", operation.source_id)
             )
-        if operation.content is None:
-            return False
-        for candidate in (self._pending,):
-            if (
-                candidate is not None
-                and candidate.kind == "save"
-                and candidate.content is not None
-                and candidate.source_id == operation.source_id
-                and _saved_content_context(candidate.content) == operation.content
-            ):
-                return True
-        return (
-            self._pending is None
-            and self._last_saved_content is not None
-            and _saved_content_context(self._last_saved_content) == operation.content
-        )
+        if latest.kind != operation.kind:
+            return _PendingLiveSnapshotCacheOperation("clear", operation.source_id)
+        if latest.kind == "clear_if_context_differs":
+            return (
+                None
+                if latest.content == operation.content
+                else _PendingLiveSnapshotCacheOperation("clear", operation.source_id)
+            )
+        if latest.kind == "clear_if_producer_differs":
+            if latest.content == operation.content:
+                return None
+            conflicts = _producer_contexts_conflict(
+                latest.content,
+                operation.content,
+            )
+            return (
+                _PendingLiveSnapshotCacheOperation("clear", operation.source_id)
+                if conflicts
+                else operation
+            )
+        return operation
 
     def _is_recent_duplicate_locked(
         self,
@@ -541,6 +557,13 @@ class LiveSnapshotCacheWriter:
         if self._pending is not None or operation.kind != "save":
             return False
         if operation.content is None or operation.saved_at is None:
+            return False
+        latest = self._latest_logical_operation
+        if (
+            latest is None
+            or latest.kind != "save"
+            or latest.content != operation.content
+        ):
             return False
         if self._last_saved_content != operation.content:
             return False

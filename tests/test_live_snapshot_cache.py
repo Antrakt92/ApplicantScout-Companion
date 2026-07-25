@@ -682,6 +682,360 @@ def test_live_snapshot_writer_partial_snapshot_does_not_cancel_pending_full_save
     assert restored.saved_at == 100.0
 
 
+def test_live_snapshot_writer_context_conflict_clears_older_disk_cache(
+    tmp_path,
+):
+    disk_snapshot = _live_snapshot()
+    assert save_live_snapshot(tmp_path, disk_snapshot, now=100.0)
+    assert disk_snapshot.listing is not None
+    pending_snapshot = replace(
+        disk_snapshot,
+        listing=replace(
+            disk_snapshot.listing,
+            key_level=15,
+            listing_name="+15 push",
+        ),
+    )
+    partial_disk_context = replace(
+        disk_snapshot,
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(pending_snapshot, now=110.0)
+    writer.submit(partial_disk_context, now=120.0)
+
+    assert writer.flush()
+    assert load_live_snapshot(tmp_path, now=121.0) is None
+
+
+def test_live_snapshot_writer_producer_conflict_clears_older_disk_cache(
+    tmp_path,
+):
+    disk_snapshot = _live_snapshot()
+    assert save_live_snapshot(tmp_path, disk_snapshot, now=100.0)
+    assert disk_snapshot.version is not None
+    pending_snapshot = replace(
+        disk_snapshot,
+        version=replace(disk_snapshot.version, player_name="Alt-Realm"),
+    )
+    partial_disk_producer = replace(
+        disk_snapshot,
+        applicants=[],
+        roster=[],
+        lfg_unavailable=True,
+        applicants_unavailable=True,
+        roster_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(pending_snapshot, now=110.0)
+    writer.submit(partial_disk_producer, now=120.0)
+
+    assert writer.flush()
+    assert load_live_snapshot(tmp_path, now=121.0) is None
+
+
+def test_live_snapshot_writer_same_context_partial_preserves_pending_full_save(
+    tmp_path,
+):
+    pending_snapshot = _live_snapshot()
+    partial_same_context = replace(
+        pending_snapshot,
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(pending_snapshot, now=100.0)
+    writer.submit(partial_same_context, now=110.0)
+
+    assert writer.flush()
+    restored = load_live_snapshot(tmp_path, now=111.0)
+    assert restored is not None
+    assert restored.saved_at == 100.0
+    assert restored.snapshot.applicants == pending_snapshot.applicants
+
+
+def test_live_snapshot_writer_context_checks_cannot_restore_older_context(
+    tmp_path,
+):
+    disk_snapshot = _live_snapshot()
+    assert save_live_snapshot(tmp_path, disk_snapshot, now=100.0)
+    assert disk_snapshot.listing is not None
+    partial_new_context = replace(
+        disk_snapshot,
+        listing=replace(
+            disk_snapshot.listing,
+            key_level=15,
+            listing_name="+15 push",
+        ),
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    partial_disk_context = replace(
+        disk_snapshot,
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(partial_new_context, now=110.0)
+    writer.submit(partial_disk_context, now=120.0)
+
+    assert writer.flush()
+    assert load_live_snapshot(tmp_path, now=121.0) is None
+
+
+def test_live_snapshot_writer_producer_checks_cannot_restore_older_producer(
+    tmp_path,
+):
+    disk_snapshot = _live_snapshot()
+    assert save_live_snapshot(tmp_path, disk_snapshot, now=100.0)
+    assert disk_snapshot.version is not None
+    partial_new_producer = replace(
+        disk_snapshot,
+        listing=None,
+        version=replace(disk_snapshot.version, player_name="Alt-Realm"),
+        applicants=[],
+        roster=[],
+        lfg_unavailable=True,
+        applicants_unavailable=True,
+        roster_unavailable=True,
+    )
+    partial_disk_producer = replace(
+        partial_new_producer,
+        version=disk_snapshot.version,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(partial_new_producer, now=110.0)
+    writer.submit(partial_disk_producer, now=120.0)
+
+    assert writer.flush()
+    assert load_live_snapshot(tmp_path, now=121.0) is None
+
+
+def test_live_snapshot_writer_repeated_same_context_check_preserves_disk_cache(
+    tmp_path,
+):
+    disk_snapshot = _live_snapshot()
+    assert save_live_snapshot(tmp_path, disk_snapshot, now=100.0)
+    partial_same_context = replace(
+        disk_snapshot,
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(partial_same_context, now=110.0)
+    writer.submit(partial_same_context, now=120.0)
+
+    assert writer.flush()
+    restored = load_live_snapshot(tmp_path, now=121.0)
+    assert restored is not None
+    assert restored.saved_at == 100.0
+
+
+def test_live_snapshot_writer_mixed_partial_guards_clear_unproven_disk_cache(
+    tmp_path,
+):
+    disk_snapshot = _live_snapshot()
+    assert save_live_snapshot(tmp_path, disk_snapshot, now=100.0)
+    partial_same_context = replace(
+        disk_snapshot,
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    partial_same_producer = replace(
+        disk_snapshot,
+        listing=None,
+        applicants=[],
+        roster=[],
+        lfg_unavailable=True,
+        applicants_unavailable=True,
+        roster_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(partial_same_context, now=110.0)
+    writer.submit(partial_same_producer, now=120.0)
+
+    assert writer.flush()
+    assert load_live_snapshot(tmp_path, now=121.0) is None
+
+
+@pytest.mark.parametrize("save_succeeds", [False, True])
+def test_live_snapshot_writer_in_flight_save_then_context_conflict_clears(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    save_succeeds: bool,
+):
+    disk_snapshot = _live_snapshot()
+    assert disk_snapshot.listing is not None
+    pending_snapshot = replace(
+        disk_snapshot,
+        listing=replace(
+            disk_snapshot.listing,
+            key_level=15,
+            listing_name="+15 push",
+        ),
+    )
+    partial_disk_context = replace(
+        disk_snapshot,
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    started = threading.Event()
+    release = threading.Event()
+    original_save = cache_mod._save_live_snapshot_content
+
+    def blocked_save(cache_dir, content, *, saved_at):
+        started.set()
+        assert release.wait(timeout=2.0)
+        if not save_succeeds:
+            return False
+        return original_save(cache_dir, content, saved_at=saved_at)
+
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(disk_snapshot, now=100.0)
+    assert writer.flush()
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", blocked_save)
+    writer.submit(pending_snapshot, now=110.0)
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    writer.submit(partial_disk_context, now=120.0)
+    release.set()
+    flush_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert writer.flush()
+    assert load_live_snapshot(tmp_path, now=121.0) is None
+
+
+def test_live_snapshot_writer_in_flight_save_does_not_hide_newer_full_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    disk_snapshot = _live_snapshot()
+    assert disk_snapshot.listing is not None
+    in_flight_snapshot = replace(
+        disk_snapshot,
+        listing=replace(
+            disk_snapshot.listing,
+            key_level=15,
+            listing_name="+15 push",
+        ),
+    )
+    started = threading.Event()
+    release = threading.Event()
+    original_save = cache_mod._save_live_snapshot_content
+
+    def blocked_save(cache_dir, content, *, saved_at):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return original_save(cache_dir, content, saved_at=saved_at)
+
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(disk_snapshot, now=100.0)
+    assert writer.flush()
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", blocked_save)
+    writer.submit(in_flight_snapshot, now=100.5)
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    writer.submit(disk_snapshot, now=101.0)
+    release.set()
+    flush_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert writer.flush()
+    restored = load_live_snapshot(tmp_path, now=102.0)
+    assert restored is not None
+    assert restored.saved_at == 101.0
+    assert restored.snapshot.listing == disk_snapshot.listing
+
+
+def test_live_snapshot_writer_valid_recovery_replaces_conflict_clear(
+    tmp_path,
+):
+    disk_snapshot = _live_snapshot()
+    assert save_live_snapshot(tmp_path, disk_snapshot, now=100.0)
+    assert disk_snapshot.listing is not None
+    pending_snapshot = replace(
+        disk_snapshot,
+        listing=replace(
+            disk_snapshot.listing,
+            key_level=15,
+            listing_name="+15 push",
+        ),
+    )
+    partial_disk_context = replace(
+        disk_snapshot,
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    recovered_snapshot = replace(
+        disk_snapshot,
+        applicants=[replace(disk_snapshot.applicants[0], name="Fresh-Realm")],
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(pending_snapshot, now=110.0)
+    writer.submit(partial_disk_context, now=120.0)
+    writer.submit(recovered_snapshot, now=130.0)
+
+    assert writer.flush()
+    restored = load_live_snapshot(tmp_path, now=131.0)
+    assert restored is not None
+    assert restored.saved_at == 130.0
+    assert restored.snapshot.applicants[0].name == "Fresh-Realm"
+
+
 def test_live_snapshot_writer_identity_changing_partial_clears_old_producer(
     tmp_path,
 ):
