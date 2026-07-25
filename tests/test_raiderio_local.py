@@ -1696,6 +1696,139 @@ def test_positive_cache_reload_failure_keeps_previous_working_db(tmp_path: Path)
     assert fallback.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
 
 
+def test_positive_cache_reload_failure_grace_does_not_renew(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    clock = [100.0]
+    monkeypatch.setattr(raiderio_local_mod.time, "monotonic", lambda: clock[0])
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    successful_fingerprint = reader._cache["eu"].db_fingerprint
+
+    for path in raiderio_local_mod._region_db_paths(tmp_path, "eu"):
+        path.unlink(missing_ok=True)
+    clock[0] = 110.0
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == first
+    failed_entry = reader._cache["eu"]
+    assert failed_entry.db_fingerprint == successful_fingerprint
+    assert failed_entry.observed_fingerprint != successful_fingerprint
+    assert failed_entry.fallback_since == 110.0
+
+    for changed_at, score in ((120.0, 3333), (130.0, 3555)):
+        clock[0] = changed_at
+        _write_test_db(
+            tmp_path,
+            _record(3200, 15, 14, 1, 0) + _record(score, 0, 16, 0, 1),
+            encoding_order=(1, 99, 10),
+        )
+        assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == first
+        churned_entry = reader._cache["eu"]
+        assert churned_entry.db_fingerprint == successful_fingerprint
+        assert churned_entry.fallback_since == 110.0
+
+    clock[0] = 140.0
+
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") is None
+    assert reader._cache["eu"].db is None
+
+    clock[0] = 150.0
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3444, 0, 17, 0, 1),
+    )
+    recovered = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert recovered is not None
+    assert recovered.current_score == 3444
+    assert recovered.dungeons == [{"name": "Pit of Saron", "key_level": 17}]
+
+    for path in raiderio_local_mod._region_db_paths(tmp_path, "eu"):
+        path.unlink(missing_ok=True)
+    clock[0] = 160.0
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == recovered
+    assert reader._cache["eu"].fallback_since == 160.0
+
+
+def test_expired_positive_reload_fallback_is_not_used_by_hot_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    clock = [100.0]
+    monkeypatch.setattr(raiderio_local_mod.time, "monotonic", lambda: clock[0])
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    for path in raiderio_local_mod._region_db_paths(tmp_path, "eu"):
+        path.unlink(missing_ok=True)
+    clock[0] = 110.0
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == first
+
+    clock[0] = 140.0
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_region_db_fingerprint",
+        lambda *_args: pytest.fail("hot lookup must not fingerprint provider files"),
+    )
+    monkeypatch.setattr(
+        raiderio_local_mod._RegionDB,
+        "load",
+        lambda *_args, **_kwargs: pytest.fail("hot lookup must not load provider files"),
+    )
+
+    assert (
+        reader.lookup_profile(
+            "Chinie",
+            "Ragnaros",
+            "EU",
+            allow_load=False,
+        )
+        is None
+    )
+
+
+def test_positive_cache_reload_recovers_within_failure_grace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    clock = [100.0]
+    monkeypatch.setattr(raiderio_local_mod.time, "monotonic", lambda: clock[0])
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    for path in raiderio_local_mod._region_db_paths(tmp_path, "eu"):
+        path.unlink(missing_ok=True)
+    clock[0] = 110.0
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == first
+
+    clock[0] = 120.0
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+    )
+
+    recovered = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert recovered is not None
+    assert recovered.current_score == 3333
+    assert recovered.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
+    recovered_entry = reader._cache["eu"]
+    assert recovered_entry.db_fingerprint == recovered_entry.observed_fingerprint
+    assert recovered_entry.last_attempt_at == 120.0
+    assert recovered_entry.fallback_since is None
+
+
 def test_failed_concurrent_positive_reload_does_not_overwrite_newer_good_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1722,8 +1855,9 @@ def test_failed_concurrent_positive_reload_does_not_overwrite_newer_good_cache(
         with reader._lock:
             reader._cache["eu"] = raiderio_local_mod._RegionCacheEntry(
                 db=new_db,
-                fingerprint=fingerprint,
-                cached_at=raiderio_local_mod.time.monotonic(),
+                db_fingerprint=fingerprint,
+                observed_fingerprint=fingerprint,
+                last_attempt_at=raiderio_local_mod.time.monotonic(),
             )
         return None
 
@@ -1772,8 +1906,9 @@ def test_failed_positive_reload_does_not_overwrite_newer_fingerprint_cache(
         with reader._lock:
             reader._cache["eu"] = raiderio_local_mod._RegionCacheEntry(
                 db=newer_db,
-                fingerprint=newer_fingerprint,
-                cached_at=raiderio_local_mod.time.monotonic(),
+                db_fingerprint=newer_fingerprint,
+                observed_fingerprint=newer_fingerprint,
+                last_attempt_at=raiderio_local_mod.time.monotonic(),
             )
         return None
 

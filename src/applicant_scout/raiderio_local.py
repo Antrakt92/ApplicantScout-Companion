@@ -30,6 +30,7 @@ _REGION_FILE_TOKENS = {
 
 _DUNGEON_LEVELS_FIELD = 10
 _NEGATIVE_CACHE_TTL_SECONDS = 30.0
+_POSITIVE_CACHE_FAILURE_GRACE_SECONDS = 30.0
 _REGION_LOAD_ATTEMPTS = 2
 _LOOKUP_PAYLOAD_CACHE_DIR = "raiderio-local"
 _LOOKUP_PAYLOAD_CACHE_VERSION = 2
@@ -125,9 +126,10 @@ class _CharacterLayout:
 @dataclass(frozen=True)
 class _RegionCacheEntry:
     db: _RegionDB | None
-    fingerprint: _RegionDBFingerprint
-    cached_at: float
-    refresh_failed: bool = False
+    db_fingerprint: _RegionDBFingerprint | None
+    observed_fingerprint: _RegionDBFingerprint
+    last_attempt_at: float
+    fallback_since: float | None = None
 
 
 class RaiderIOLocalReader:
@@ -159,7 +161,15 @@ class RaiderIOLocalReader:
         else:
             with self._lock:
                 entry = self._cache.get(token)
-                db = entry.db if entry is not None else None
+                db = (
+                    entry.db
+                    if entry is not None
+                    and not _positive_fallback_grace_expired(
+                        entry,
+                        time.monotonic(),
+                    )
+                    else None
+                )
         if db is None:
             return None
         return db.lookup_profile(name, realm)
@@ -228,20 +238,40 @@ class RaiderIOLocalReader:
                     current_entry is not None
                     and current_entry is not previous_entry
                     and current_entry.db is not None
-                    and not current_entry.refresh_failed
+                    and current_entry.fallback_since is None
                 ):
                     return current_entry.db
+                fallback_since = previous_entry.fallback_since
+                if fallback_since is None:
+                    fallback_since = now
+                if (
+                    now - fallback_since
+                    >= _POSITIVE_CACHE_FAILURE_GRACE_SECONDS
+                ):
+                    self._cache[token] = _RegionCacheEntry(
+                        db=None,
+                        db_fingerprint=None,
+                        observed_fingerprint=fingerprint,
+                        last_attempt_at=now,
+                    )
+                    return None
                 self._cache[token] = _RegionCacheEntry(
                     db=previous_entry.db,
-                    fingerprint=fingerprint,
-                    cached_at=now,
-                    refresh_failed=True,
+                    db_fingerprint=(
+                        previous_entry.db_fingerprint
+                        if previous_entry.db_fingerprint is not None
+                        else previous_entry.observed_fingerprint
+                    ),
+                    observed_fingerprint=fingerprint,
+                    last_attempt_at=now,
+                    fallback_since=fallback_since,
                 )
                 return previous_entry.db
             self._cache[token] = _RegionCacheEntry(
                 db=loaded,
-                fingerprint=fingerprint,
-                cached_at=now,
+                db_fingerprint=fingerprint if loaded is not None else None,
+                observed_fingerprint=fingerprint,
+                last_attempt_at=now,
             )
         return loaded
 
@@ -555,13 +585,28 @@ def _cache_entry_is_stale(
     now: float,
 ) -> bool:
     if entry.db is not None:
-        return entry.fingerprint != fingerprint or (
-            entry.refresh_failed
-            and now - entry.cached_at >= _NEGATIVE_CACHE_TTL_SECONDS
+        return entry.observed_fingerprint != fingerprint or (
+            entry.fallback_since is not None
+            and (
+                now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
+                or _positive_fallback_grace_expired(entry, now)
+            )
         )
     return (
-        entry.fingerprint != fingerprint
-        or now - entry.cached_at >= _NEGATIVE_CACHE_TTL_SECONDS
+        entry.observed_fingerprint != fingerprint
+        or now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
+    )
+
+
+def _positive_fallback_grace_expired(
+    entry: _RegionCacheEntry,
+    now: float,
+) -> bool:
+    return (
+        entry.db is not None
+        and entry.fallback_since is not None
+        and now - entry.fallback_since
+        >= _POSITIVE_CACHE_FAILURE_GRACE_SECONDS
     )
 
 
