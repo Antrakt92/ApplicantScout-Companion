@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from .atomic_io import apply_private_directory_mode, apply_private_file_mode
+from .constants import MPLUS_RAIDERIO_DUNGEON_ORDER
 
 
 _log = logging.getLogger("applicant_scout.raiderio_local")
@@ -35,6 +36,7 @@ _LOOKUP_PAYLOAD_CACHE_VERSION = 2
 _LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
 _LOOKUP_PAYLOAD_CACHE_LOCK = threading.Lock()
 _LOOKUP_PAYLOAD_CACHE_GENERATIONS: dict[Path, int] = {}
+_EXPECTED_RAIDERIO_DUNGEON_ORDER = MPLUS_RAIDERIO_DUNGEON_ORDER
 _FileFingerprint = tuple[str, bool, int, int, str]
 _RegionDBFingerprint = tuple[_FileFingerprint, ...]
 
@@ -352,6 +354,7 @@ class _RegionDB:
                 dungeons = _parse_dungeon_names(
                     dungeons_path.read_text(encoding="utf-8")
                 )
+                _validate_dungeon_order(dungeons)
                 _validate_encoding_plan(mplus_meta, len(dungeons))
                 mplus_layout = _parse_character_layout(
                     mplus_characters_text,
@@ -1053,6 +1056,14 @@ def _decode_lua_string_bytes(value: str) -> bytes:
 def _parse_dungeon_names(text: str) -> list[str]:
     text = text.split("-- Dungeon for this entire expansion", 1)[0]
     return re.findall(r'\["name"\]\s*=\s*"([^"]+)"', text)
+
+
+def _validate_dungeon_order(dungeon_names: list[str]) -> None:
+    expected = list(_EXPECTED_RAIDERIO_DUNGEON_ORDER)
+    if dungeon_names != expected:
+        raise ValueError(
+            "RaiderIO M+ dungeon order does not match the current season contract"
+        )
 
 
 def _decode_profile(

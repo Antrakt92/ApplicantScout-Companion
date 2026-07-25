@@ -45,6 +45,9 @@ checksum-gated updater smoke has been attested.
    and `MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME` against Wago's
    MythicPlusSeasonTrackedMap / MapChallengeMode data before seasonal release
    prep relies on the shipped localized-listing or Party leader-key fallback.
+   Also compare `MPLUS_RAIDERIO_DUNGEON_ORDER` with
+   `RaiderIO/db/db_dungeons.lua::ns.dungeons`; packed RaiderIO key levels are
+   positional, so a same-count reorder must not ship unnoticed.
    `-SeasonalWCLChecks` is an explicit quota-spend acknowledgment: it makes one
    authenticated Warcraft Logs GraphQL request, validates the shipped M+ and
    raid zone/encounter constants, reports the post-query quota snapshot, and

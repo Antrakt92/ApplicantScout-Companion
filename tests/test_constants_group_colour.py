@@ -9,6 +9,7 @@ from applicant_scout.constants import (
     MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME,
     MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME,
     MPLUS_ENCOUNTERS,
+    MPLUS_RAIDERIO_DUNGEON_ORDER,
     SPEC_ID_TO_WCL_NAME,
     SPEC_SHORT_NAMES,
     group_id_colour,
@@ -108,6 +109,13 @@ def test_each_current_mplus_encounter_has_activity_id_mapping():
     mapped_names = set(MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME.values())
 
     assert encounter_names <= mapped_names
+
+
+def test_raiderio_dungeon_order_covers_each_current_mplus_encounter_once():
+    encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
+
+    assert len(MPLUS_RAIDERIO_DUNGEON_ORDER) == len(encounter_names)
+    assert set(MPLUS_RAIDERIO_DUNGEON_ORDER) == encounter_names
 
 
 def test_mplus_activity_id_mapping_rejects_non_numeric_values():

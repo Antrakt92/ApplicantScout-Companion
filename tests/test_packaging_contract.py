@@ -1002,6 +1002,9 @@ def test_release_checklist_requires_local_strict_visual_and_media_export_gate():
     assert "MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME" in checklist
     assert "MythicPlusSeasonTrackedMap" in checklist
     assert "MapChallengeMode" in checklist
+    assert "MPLUS_RAIDERIO_DUNGEON_ORDER" in checklist
+    assert "RaiderIO/db/db_dungeons.lua::ns.dungeons" in checklist
+    assert "packed RaiderIO key levels are" in checklist
     assert "authenticated Warcraft Logs GraphQL request" in checklist
     assert "fewer than 50 points remain" in checklist
     assert "Do not use `-VisualMode Smoke` for this local release gate" in checklist

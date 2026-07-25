@@ -10,6 +10,17 @@ import applicant_scout.raiderio_local as raiderio_local_mod
 from applicant_scout.raiderio_local import RaiderIOLocalProfile, RaiderIOLocalReader
 
 
+@pytest.fixture(autouse=True)
+def _use_compact_test_dungeon_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_EXPECTED_RAIDERIO_DUNGEON_ORDER",
+        ("Skyreach", "Pit of Saron"),
+    )
+
+
 def _write_test_db(
     root: Path,
     lookup_payload: bytes,
@@ -1158,6 +1169,44 @@ def test_reader_rejects_stable_cross_generation_provider_pairs(
     assert profile is not None
     assert profile.has_mplus_profile is expect_mplus
     assert bool(profile.raid_progress) is expect_raid
+
+
+def test_reader_rejects_reordered_dungeon_contract_and_keeps_previous_db(
+    tmp_path: Path,
+):
+    _write_mplus_generation(tmp_path, 3074, 12)
+    reader = RaiderIOLocalReader(tmp_path)
+    previous = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert previous is not None
+
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3333, 0, 16, 0, 1),
+        dungeons=("Pit of Saron", "Skyreach"),
+    )
+
+    assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == previous
+
+
+def test_reader_rejects_reordered_dungeon_contract_but_keeps_raid_only(
+    tmp_path: Path,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+        dungeons=("Pit of Saron", "Skyreach"),
+    )
+    _write_raid_generation(tmp_path, (2, 0, 1))
+
+    profile = RaiderIOLocalReader(tmp_path).lookup_profile(
+        "Chinie",
+        "Ragnaros",
+        "EU",
+    )
+
+    assert profile is not None
+    assert not profile.has_mplus_profile
+    assert bool(profile.raid_progress)
 
 
 def test_reader_rejects_invalid_utf8_escaped_in_raid_metadata(tmp_path: Path):

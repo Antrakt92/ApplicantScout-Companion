@@ -283,6 +283,22 @@ MPLUS_ENCOUNTERS: list[tuple[str, int, str]] = [
     ("ws", 12805, "Windrunner Spire"),
 ]
 
+# RaiderIO packs dungeon levels in the exact order of ns.dungeons from its
+# generated db_dungeons.lua (sorted by RaiderIO dungeon id, not display name or
+# ChallengeMapID). A same-sized table from another season is structurally valid
+# but would relabel every packed level, so keep this contract explicit.
+# SYNC: refresh alongside MPLUS_ENCOUNTERS during the seasonal data update.
+MPLUS_RAIDERIO_DUNGEON_ORDER: tuple[str, ...] = (
+    "Pit of Saron",
+    "Skyreach",
+    "Seat of the Triumvirate",
+    "Algeth'ar Academy",
+    "Windrunner Spire",
+    "Magisters' Terrace",
+    "Maisara Caverns",
+    "Nexus-Point Xenas",
+)
+
 # WoW LFG activity IDs for the current season's Mythic+ listings. The addon
 # emits the raw activityID from C_LFGList; using it as a companion-side fallback
 # keeps same-dungeon scoring and target-row ordering stable on localized clients
