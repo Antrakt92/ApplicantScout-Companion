@@ -3966,6 +3966,35 @@ def test_fetch_character_raid_boss_details_character_not_found_without_data_retu
     assert result == {}
 
 
+def test_fetch_character_raid_boss_details_rejects_missing_character_key():
+    payload = _wcl_payload(None)
+    del payload["data"]["characterData"]["character"]
+    client, _http = _client_for_payload(payload)
+
+    with pytest.raises(WCLApiError, match="character key is missing") as exc:
+        client.fetch_character_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+        )
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_fetch_character_raid_boss_details_allows_explicit_character_null():
+    client, _http = _client_for_payload(_wcl_payload(None))
+
+    result = client.fetch_character_raid_boss_details(
+        "Scout",
+        "ravencrest",
+        spec_id=71,
+        metric_preferences=MetricPreferences(mplus=False, raid_mythic=True),
+    )
+
+    assert result == {}
+
+
 def test_fetch_character_raid_boss_details_rejects_missing_enabled_alias():
     character = _character_with_empty_raid_boss_details("M")
     del character["raid_m_ia_overall"]

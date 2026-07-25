@@ -1388,6 +1388,11 @@ class WCLClient:
                     "Malformed WCL response: characterData is not an object",
                     error_kind=WCL_ERROR_MALFORMED,
                 )
+            if "character" not in character_data:
+                raise WCLApiError(
+                    "Malformed WCL response: character key is missing",
+                    error_kind=WCL_ERROR_MALFORMED,
+                )
             char = character_data.get("character")
             if char is None:
                 return {}

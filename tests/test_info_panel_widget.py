@@ -67,7 +67,13 @@ from applicant_scout.state import (
     Listing,
     RosterMember,
 )
-from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
+from applicant_scout.wcl import (
+    WCL_ERROR_MALFORMED,
+    CharacterCache,
+    WCLApiError,
+    WCLAuth,
+    WCLClient,
+)
 
 
 class _QueuedPool:
@@ -706,6 +712,62 @@ def test_raid_boss_fetch_task_started_before_clear_does_not_repopulate_cache(
 
     assert seen
     assert seen[0][1]["M"][0]["overall"] == 46.0
+    assert (
+        cache.get_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            "DPS",
+            metric_preferences=prefs,
+        )
+        is None
+    )
+
+
+def test_raid_boss_fetch_task_does_not_cache_malformed_character_response(
+    qtbot, tmp_path
+):
+    prefs = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    cache = CharacterCache(tmp_path)
+    identity = overlay_mod._FetchIdentity(
+        applicant_id="42",
+        charname_key="scout",
+        server_slug="ravencrest",
+        region="EU",
+        spec_id=71,
+        metric_role="DPS",
+        metric_preferences=prefs,
+    )
+
+    class _Client:
+        def fetch_character_raid_boss_details(self, *_args, **_kwargs):
+            raise WCLApiError(
+                "Malformed WCL response: character key is missing",
+                error_kind=WCL_ERROR_MALFORMED,
+            )
+
+    task = _RaidBossFetchTask(identity, "Scout", _Client(), cache)
+    network_results: list[tuple[object, object, object, object]] = []
+    done_results: list[tuple[object, object, object, object]] = []
+    task.signals.networkDone.connect(lambda *args: network_results.append(args))
+    task.signals.done.connect(lambda *args: done_results.append(args))
+
+    task.run()
+
+    expected = (
+        identity,
+        {},
+        "Malformed WCL response: character key is missing",
+        WCL_ERROR_MALFORMED,
+    )
+    assert network_results == [expected]
+    assert done_results == [expected]
     assert (
         cache.get_raid_boss_details(
             "Scout",
