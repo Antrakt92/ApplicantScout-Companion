@@ -263,6 +263,9 @@ class SnapshotApplyQueue:
         self._scheduler = scheduler
         self._pending: tuple[str, tuple[object, ...]] | None = None
         self._pending_cache_snapshots: tuple[Snapshot, ...] = ()
+        self._retained_decode_failure: tuple[str, str, object | None] | None = None
+        self._last_applied_source_key: tuple[int, str, int] | None = None
+        self._last_reported_failure_key: tuple[int, str, int] | None = None
         self._flush_pending = False
 
     def enqueue_snapshot(self, snap: object) -> None:
@@ -282,13 +285,57 @@ class SnapshotApplyQueue:
         )
         self._schedule_flush()
 
-    def enqueue_decode_failed(self, path: str, reason: str) -> None:
+    @staticmethod
+    def _source_order_key(
+        source: object | None,
+    ) -> tuple[int, str, int] | None:
+        mtime_ns = getattr(source, "mtime_ns", None)
+        file_id = getattr(source, "file_id", None)
+        size = getattr(source, "size", None)
+        if (
+            not isinstance(mtime_ns, int)
+            or not isinstance(file_id, str)
+            or not isinstance(size, int)
+        ):
+            return None
+        return mtime_ns, file_id, size
+
+    @classmethod
+    def _failure_is_newer_than_snapshot(
+        cls,
+        failure: tuple[str, str, object | None],
+        snap: object,
+    ) -> bool:
+        failure_key = cls._source_order_key(failure[2])
+        snapshot_key = cls._source_order_key(getattr(snap, "source", None))
+        return bool(
+            failure_key is not None
+            and snapshot_key is not None
+            and failure_key > snapshot_key
+        )
+
+    def enqueue_decode_failed(
+        self,
+        path: str,
+        reason: str,
+        source: object | None = None,
+    ) -> None:
         # WHY: a decode failure has no usable state. If a valid snapshot is
-        # already waiting for the GUI flush, keep it rather than turning a
-        # good-frame-plus-bad-frame burst into no state update.
+        # already waiting for the GUI flush, keep that state update and retain
+        # only a source-stamped failure that may prove newer after apply.
+        failure = (path, reason, source)
+        failure_key = self._source_order_key(source)
+        retained = self._retained_decode_failure
+        retained_key = (
+            self._source_order_key(retained[2]) if retained is not None else None
+        )
+        if failure_key is not None and (
+            retained_key is None or failure_key >= retained_key
+        ):
+            self._retained_decode_failure = failure
         if self._pending is not None and self._pending[0] == "snapshot":
             return
-        self._pending = ("decode_failed", (path, reason))
+        self._pending = ("decode_failed", (path, reason, source))
         self._schedule_flush()
 
     def _schedule_flush(self) -> None:
@@ -329,8 +376,52 @@ class SnapshotApplyQueue:
                     "note_snapshot_applied",
                     lambda *_args: None,
                 )(snap)
+            if not self._signal_gate.is_current(self._generation):
+                return
+            latest_source_key = self._source_order_key(
+                getattr(latest_snap, "source", None)
+            )
+            if latest_source_key is not None and (
+                self._last_applied_source_key is None
+                or latest_source_key > self._last_applied_source_key
+            ):
+                self._last_applied_source_key = latest_source_key
+            retained = self._retained_decode_failure
+            if retained is None:
+                return
+            if self._failure_is_newer_than_snapshot(retained, latest_snap):
+                self._report_decode_failure(retained)
+                return
+            self._retained_decode_failure = None
+            self._last_reported_failure_key = None
             return
-        path, reason = args
+        event_failure = (str(args[0]), str(args[1]), args[2])
+        event_key = self._source_order_key(event_failure[2])
+        if event_key is None:
+            self._report_decode_failure(event_failure)
+            return
+        retained = self._retained_decode_failure
+        retained_key = (
+            self._source_order_key(retained[2]) if retained is not None else None
+        )
+        if retained is None or retained_key is None:
+            return
+        if (
+            self._last_applied_source_key is not None
+            and retained_key <= self._last_applied_source_key
+        ):
+            self._retained_decode_failure = None
+            self._last_reported_failure_key = None
+            return
+        if retained_key != self._last_reported_failure_key:
+            self._report_decode_failure(retained)
+
+    def _report_decode_failure(
+        self,
+        failure: tuple[str, str, object | None],
+    ) -> None:
+        path, reason, _source = failure
+        self._last_reported_failure_key = self._source_order_key(_source)
         self._decode_failed_callback(str(path), str(reason))
         getattr(self._window, "note_decode_failed", lambda *_args: None)(
             str(path),

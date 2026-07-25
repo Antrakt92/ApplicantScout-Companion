@@ -2672,7 +2672,7 @@ def _connect_screenshot_watcher(
             return
         if not source_gate.accept(source, advance=False):
             return
-        apply_queue.enqueue_decode_failed(path, reason)
+        apply_queue.enqueue_decode_failed(path, reason, source)
 
     watcher.snapshotReceived.connect(_snapshot_if_current)
     watcher.decodeFailed.connect(_decode_failed_if_current)

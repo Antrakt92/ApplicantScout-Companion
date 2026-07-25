@@ -6096,7 +6096,7 @@ def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_sna
     assert window.failures == []
 
 
-def test_connect_screenshot_watcher_newer_decode_failure_does_not_block_older_valid_snapshot():
+def test_connect_screenshot_watcher_applies_older_snapshot_before_newer_decode_failure():
     class FakeSignal:
         def __init__(self) -> None:
             self._callbacks = []
@@ -6159,8 +6159,8 @@ def test_connect_screenshot_watcher_newer_decode_failure_does_not_block_older_va
 
     assert machine.snapshots == [older_snapshot]
     assert window.decoded == [older_snapshot]
-    assert failures == []
-    assert window.failures == []
+    assert failures == [("bad.jpg", "CRC mismatch")]
+    assert window.failures == [("bad.jpg", "CRC mismatch")]
 
 
 def test_connect_screenshot_watcher_coalesces_snapshot_burst_to_latest():
@@ -6230,7 +6230,7 @@ def test_connect_screenshot_watcher_coalesces_snapshot_burst_to_latest():
     assert window.decoded == [third]
 
 
-def test_connect_screenshot_watcher_keeps_snapshot_when_newer_decode_failure_waits_for_flush():
+def test_connect_screenshot_watcher_retains_newer_decode_failure_after_pending_snapshot():
     class FakeSignal:
         def __init__(self) -> None:
             self._callbacks = []
@@ -6294,8 +6294,208 @@ def test_connect_screenshot_watcher_keeps_snapshot_when_newer_decode_failure_wai
 
     assert machine.snapshots == [snapshot]
     assert window.decoded == [snapshot]
+    assert failures == [("bad.jpg", "CRC mismatch")]
+    assert window.failures == [("bad.jpg", "CRC mismatch")]
+
+
+def test_connect_screenshot_watcher_drops_older_failure_before_newer_snapshot():
+    class FakeSignal:
+        def __init__(self) -> None:
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, *args) -> None:
+            for callback in list(self._callbacks):
+                callback(*args)
+
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+    class FakeMachine:
+        def __init__(self) -> None:
+            self.snapshots: list[object] = []
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.snapshots.append(snap)
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.decoded: list[object] = []
+            self.failures: list[tuple[str, str]] = []
+
+        def note_decode(self, snap: object) -> None:
+            self.decoded.append(snap)
+            self.failures.clear()
+
+        def note_decode_failed(self, path: str, reason: str) -> None:
+            self.failures.append((path, reason))
+
+    callbacks = []
+    failures: list[tuple[str, str]] = []
+    watcher = FakeWatcher()
+    machine = FakeMachine()
+    window = FakeWindow()
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        machine,
+        window,
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    older_failure_source = SimpleNamespace(mtime_ns=100, file_id="bad.jpg", size=10)
+    newer_snapshot = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=200, file_id="good.jpg", size=10)
+    )
+
+    watcher.decodeFailed.emit("bad.jpg", "CRC mismatch", older_failure_source)
+    watcher.snapshotReceived.emit(newer_snapshot)
+
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+
+    assert machine.snapshots == [newer_snapshot]
+    assert window.decoded == [newer_snapshot]
     assert failures == []
     assert window.failures == []
+
+
+def test_snapshot_apply_queue_reemits_newer_failure_after_older_snapshot_flush():
+    callbacks: list[object] = []
+    events: list[str] = []
+
+    class FakeMachine:
+        def apply_snapshot(self, _snap: object) -> None:
+            events.append("apply")
+
+    class FakeWindow:
+        failed = False
+
+        def note_decode(self, _snap: object) -> None:
+            events.append("decode")
+            self.failed = False
+
+        def note_decode_failed(self, _path: str, _reason: str) -> None:
+            events.append("window-failure")
+            self.failed = True
+
+    window = FakeWindow()
+    queue = main_mod._SnapshotApplyQueue(
+        FakeMachine(),
+        window,
+        lambda *_args: events.append("callback-failure"),
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    failure_source = SimpleNamespace(mtime_ns=300, file_id="bad.jpg", size=10)
+
+    queue.enqueue_decode_failed("bad.jpg", "CRC mismatch", failure_source)
+    callbacks.pop(0)()
+    assert events == ["callback-failure", "window-failure"]
+    assert window.failed
+
+    queue.enqueue_snapshot(
+        SimpleNamespace(
+            source=SimpleNamespace(mtime_ns=100, file_id="older.jpg", size=10)
+        )
+    )
+    callbacks.pop(0)()
+    assert events[-4:] == [
+        "decode",
+        "apply",
+        "callback-failure",
+        "window-failure",
+    ]
+    assert window.failed
+
+    queue.enqueue_snapshot(
+        SimpleNamespace(
+            source=SimpleNamespace(mtime_ns=300, file_id="bad.jpg", size=10)
+        )
+    )
+    callbacks.pop(0)()
+    assert events[-2:] == ["decode", "apply"]
+    assert not window.failed
+
+
+def test_snapshot_apply_queue_retains_newest_failure_by_source_order():
+    callbacks: list[object] = []
+    failures: list[tuple[str, str]] = []
+    queue = main_mod._SnapshotApplyQueue(
+        object(),
+        object(),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+
+    queue.enqueue_decode_failed(
+        "newest.jpg",
+        "newest failure",
+        SimpleNamespace(mtime_ns=300, file_id="newest.jpg", size=10),
+    )
+    queue.enqueue_decode_failed(
+        "older.jpg",
+        "older failure",
+        SimpleNamespace(mtime_ns=200, file_id="older.jpg", size=10),
+    )
+    callbacks.pop(0)()
+
+    assert failures == [("newest.jpg", "newest failure")]
+
+
+def test_snapshot_apply_queue_does_not_reemit_failure_after_generation_invalidates():
+    callbacks: list[object] = []
+    failures: list[tuple[str, str]] = []
+    window_failures: list[tuple[str, str]] = []
+    gate = main_mod._WatcherSignalGate()
+
+    class InvalidatingMachine:
+        def apply_snapshot(self, _snap: object) -> None:
+            gate.invalidate()
+
+    class FakeWindow:
+        def note_decode(self, _snap: object) -> None:
+            pass
+
+        def note_decode_failed(self, path: str, reason: str) -> None:
+            window_failures.append((path, reason))
+
+    queue = main_mod._SnapshotApplyQueue(
+        InvalidatingMachine(),
+        FakeWindow(),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=gate,
+        generation=0,
+        scheduler=callbacks.append,
+    )
+
+    queue.enqueue_decode_failed(
+        "bad.jpg",
+        "CRC mismatch",
+        SimpleNamespace(mtime_ns=300, file_id="bad.jpg", size=10),
+    )
+    callbacks.pop(0)()
+    assert failures == [("bad.jpg", "CRC mismatch")]
+    assert window_failures == [("bad.jpg", "CRC mismatch")]
+
+    queue.enqueue_snapshot(
+        SimpleNamespace(
+            source=SimpleNamespace(mtime_ns=100, file_id="older.jpg", size=10)
+        )
+    )
+    callbacks.pop(0)()
+
+    assert failures == [("bad.jpg", "CRC mismatch")]
+    assert window_failures == [("bad.jpg", "CRC mismatch")]
 
 
 def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():
