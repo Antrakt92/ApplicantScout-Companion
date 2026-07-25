@@ -76,6 +76,7 @@ from .constants import (
 from .compatibility import addon_version_warning
 from . import overlay_presenters as _presenters
 from . import overlay_rows as _overlay_rows
+from . import window_geometry as _window_geometry
 from .metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
@@ -117,6 +118,7 @@ from .state import (
     load_launcher_position,
     save_launcher_position,
 )
+from .window_geometry import clamp_geometry_to_screens
 from .wcl import (
     WCLClient,
     WCLApiError,
@@ -139,6 +141,9 @@ from .wcl import (
 
 
 _log = logging.getLogger("applicant_scout.overlay")
+# Backward-compatible test/public helper name; implementation is shared with
+# the frameless Settings dialog.
+_clamp_rect_to_bounds = _window_geometry.clamp_rect_to_bounds
 
 
 # Compact column layout. Name can grow a little for real applicants, but is
@@ -1122,6 +1127,7 @@ def _widget_has_focus(widget: QWidget) -> bool:
 class TitleBar(QWidget):
     hideClicked = pyqtSignal()
     settingsClicked = pyqtSignal()
+    dragFinished = pyqtSignal()
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
@@ -1194,7 +1200,10 @@ class TitleBar(QWidget):
             event.accept()
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
+        was_dragging = self._drag_offset is not None
         self._drag_offset = None
+        if was_dragging:
+            self.dragFinished.emit()
 
 
 class OverlayLauncher(_KeyboardButton):
@@ -2893,6 +2902,7 @@ class OverlayWindow(QMainWindow):
 
         self._title_bar = TitleBar(container)
         self._title_bar.hideClicked.connect(self.collapse_to_launcher)
+        self._title_bar.dragFinished.connect(self._clamp_runtime_geometry)
         if self._show_settings is not None:
             self._title_bar.settingsClicked.connect(self._show_settings)
         layout.addWidget(self._title_bar)
@@ -3111,6 +3121,10 @@ class OverlayWindow(QMainWindow):
         self._save_timer.setInterval(500)
         self._save_timer.timeout.connect(self._persist_geometry)
         self._suppress_geometry_persist = False
+        gui_app = QGuiApplication.instance()
+        if isinstance(gui_app, QGuiApplication):
+            gui_app.screenRemoved.connect(self._on_screen_topology_changed)
+            gui_app.primaryScreenChanged.connect(self._on_screen_topology_changed)
         self._panel_anchor_extra_height = 0
         self._panel_anchor_y_offset = 0
         self._panel_render_key: tuple | None = None
@@ -4629,6 +4643,28 @@ class OverlayWindow(QMainWindow):
             self.setGeometry(x, y, w, h)
         finally:
             self._suppress_geometry_persist = False
+
+    def _clamp_runtime_geometry(self) -> None:
+        geometry = self.geometry()
+        clamped = _clamp_geometry_to_screen(
+            geometry.x(),
+            geometry.y(),
+            geometry.width(),
+            geometry.height(),
+            preserve_grabbable_geometry=True,
+            grabbable_height_px=self._title_bar.height(),
+        )
+        if clamped != (
+            geometry.x(),
+            geometry.y(),
+            geometry.width(),
+            geometry.height(),
+        ):
+            self.setGeometry(*clamped)
+
+    def _on_screen_topology_changed(self, _screen: object | None = None) -> None:
+        # Defer until Qt has published the replacement screens/primary screen.
+        QTimer.singleShot(0, self._clamp_runtime_geometry)
 
     def _sync_delegate_and_panel(self) -> None:
         """Single bookkeeping point for (delegate hover/pin row caches →
@@ -6234,6 +6270,7 @@ class OverlayWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def showEvent(self, event):  # type: ignore[override]
+        self._clamp_runtime_geometry()
         self._collapsed_to_launcher = False
         self._launcher.hide()
         super().showEvent(event)
@@ -6335,26 +6372,6 @@ def _normalize_loaded_geometry(geo: WindowGeometry) -> WindowGeometry:
     return WindowGeometry(geo.x, geo.y, geo.w, geo.h, WINDOW_GEOMETRY_LAYOUT_VERSION)
 
 
-def _clamp_rect_to_bounds(
-    x: int,
-    y: int,
-    w: int,
-    h: int,
-    bounds: QRect,
-) -> tuple[int, int, int, int]:
-    if bounds.width() <= 0 or bounds.height() <= 0:
-        return (x, y, w, h)
-    cw = min(max(1, w), bounds.width())
-    ch = min(max(1, h), bounds.height())
-    min_x = bounds.x()
-    min_y = bounds.y()
-    max_x = bounds.x() + bounds.width() - cw
-    max_y = bounds.y() + bounds.height() - ch
-    cx = min(max(x, min_x), max_x)
-    cy = min(max(y, min_y), max_y)
-    return (cx, cy, cw, ch)
-
-
 def _native_left_mouse_button_down() -> bool:
     if sys.platform != "win32":
         return False
@@ -6366,12 +6383,6 @@ def _native_left_mouse_button_down() -> bool:
     return bool(state & 0x8000)
 
 
-def _screen_bounds(screen, *, use_available_geometry: bool) -> QRect:
-    if use_available_geometry:
-        return screen.availableGeometry()
-    return screen.geometry()
-
-
 def _clamp_geometry_to_screen(
     x: int,
     y: int,
@@ -6380,6 +6391,8 @@ def _clamp_geometry_to_screen(
     *,
     min_visible_px: int = 80,
     use_available_geometry: bool = True,
+    preserve_grabbable_geometry: bool = False,
+    grabbable_height_px: int = 28,
 ) -> tuple[int, int, int, int]:
     """Clamp window rect to a visible screen. Picks first screen whose
     geometry intersects the saved rect by ≥80px on each axis (ensures the
@@ -6390,26 +6403,18 @@ def _clamp_geometry_to_screen(
     far off the visible desktop (e.g. (3000, 0) when a previous monitor at
     that position is now disconnected). The window would render but be
     invisible — looks identical to "overlay broken" from user's POV."""
-    screens = QGuiApplication.screens()
-    if not screens:
-        return (x, y, w, h)
-    for s in screens:
-        sg = _screen_bounds(s, use_available_geometry=use_available_geometry)
-        # Visible overlap on each axis
-        ox = max(0, min(x + w, sg.x() + sg.width()) - max(x, sg.x()))
-        oy = max(0, min(y + h, sg.y() + sg.height()) - max(y, sg.y()))
-        if ox >= min_visible_px and oy >= min_visible_px:
-            return _clamp_rect_to_bounds(x, y, w, h, sg)
-    # No good intersection — center on primary
-    primary = QGuiApplication.primaryScreen()
-    if primary is None:
-        return (x, y, w, h)
-    pg = _screen_bounds(primary, use_available_geometry=use_available_geometry)
-    cw = min(w, pg.width())
-    ch = min(h, pg.height())
-    cx = pg.x() + (pg.width() - cw) // 2
-    cy = pg.y() + (pg.height() - ch) // 2
-    return _clamp_rect_to_bounds(cx, cy, cw, ch, pg)
+    return clamp_geometry_to_screens(
+        x,
+        y,
+        w,
+        h,
+        screens=QGuiApplication.screens(),
+        primary_screen=QGuiApplication.primaryScreen(),
+        min_visible_px=min_visible_px,
+        use_available_geometry=use_available_geometry,
+        preserve_grabbable_geometry=preserve_grabbable_geometry,
+        grabbable_height_px=grabbable_height_px,
+    )
 
 
 # ───────────────────────────────────────────────────────────────────

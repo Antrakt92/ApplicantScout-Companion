@@ -62,6 +62,7 @@ from .config import (
     screenshots_path_health_warning,
 )
 from .metric_preferences import MetricPreferences
+from .window_geometry import clamp_geometry_to_screens
 
 
 CredentialTester = Callable[[str, str, str], str]
@@ -385,6 +386,10 @@ class SettingsDialog(QDialog):
         self._signals = _AsyncSignals(self)
         self._signals.finished.connect(self._finish_async_action)
         self._title_drag_offset: QPoint | None = None
+        gui_app = QApplication.instance()
+        if isinstance(gui_app, QApplication):
+            gui_app.screenRemoved.connect(self._on_screen_topology_changed)
+            gui_app.primaryScreenChanged.connect(self._on_screen_topology_changed)
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(700)
@@ -846,8 +851,39 @@ class SettingsDialog(QDialog):
                 event.accept()
                 return True
             if event.type() == QEvent.Type.MouseButtonRelease:
+                was_dragging = self._title_drag_offset is not None
                 self._title_drag_offset = None
+                if was_dragging:
+                    self._clamp_runtime_geometry()
         return super().eventFilter(watched, event)
+
+    def _clamp_runtime_geometry(self) -> None:
+        geometry = self.geometry()
+        clamped = clamp_geometry_to_screens(
+            geometry.x(),
+            geometry.y(),
+            geometry.width(),
+            geometry.height(),
+            screens=QApplication.screens(),
+            primary_screen=QApplication.primaryScreen(),
+            preserve_grabbable_geometry=True,
+            grabbable_height_px=self.title_bar.height(),
+        )
+        if clamped != (
+            geometry.x(),
+            geometry.y(),
+            geometry.width(),
+            geometry.height(),
+        ):
+            self.setGeometry(*clamped)
+
+    def _on_screen_topology_changed(self, _screen: object | None = None) -> None:
+        # Defer until Qt has published the replacement screens/primary screen.
+        QTimer.singleShot(0, self._clamp_runtime_geometry)
+
+    def showEvent(self, event):  # type: ignore[override]
+        self._clamp_runtime_geometry()
+        super().showEvent(event)
 
     def values(self) -> SettingsValues:
         return SettingsValues(
