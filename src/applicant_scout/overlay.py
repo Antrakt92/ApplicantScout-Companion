@@ -76,7 +76,6 @@ from .constants import (
 from .compatibility import addon_version_warning
 from . import overlay_presenters as _presenters
 from . import overlay_rows as _overlay_rows
-from . import window_geometry as _window_geometry
 from .metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
@@ -102,7 +101,6 @@ from .scoring import (
     package_fit,
     positive_int,
     role_mplus_view,
-    safe_percent,
 )
 from .state import (
     Applicant,
@@ -141,9 +139,6 @@ from .wcl import (
 
 
 _log = logging.getLogger("applicant_scout.overlay")
-# Backward-compatible test/public helper name; implementation is shared with
-# the frameless Settings dialog.
-_clamp_rect_to_bounds = _window_geometry.clamp_rect_to_bounds
 
 
 # Compact column layout. Name can grow a little for real applicants, but is
@@ -304,7 +299,7 @@ HEADER_TOOLTIPS: list[str] = [
     # M+
     "Mythic+ fit for the current listing when the companion knows your\n"
     "hosted key level or manual Party target key.\n\n"
-    "Metric: DPS for tank / damage applicants, HPS for healers.\n"
+    "Metric: DPS for every role; raid healer rankings continue to use HPS.\n"
     "N=1 marks a single logged run at that key, so there is no median signal.\n"
     "Fit labels combine relevant WCL bracket performance, RaiderIO completion\n"
     "evidence, key-level context, same-dungeon evidence, and profile\n"
@@ -699,10 +694,6 @@ def _freeze_render_value(value):
 
 def _listing_render_key(listing: Listing | None) -> object:
     return _overlay_rows.listing_render_key(listing)
-
-
-def _mplus_headline_sort_score(applicant: Applicant) -> tuple[int, float]:
-    return _overlay_rows.mplus_headline_sort_score(applicant)
 
 
 def _build_group_markers(
@@ -1925,6 +1916,10 @@ class ApplicantInfoPanel(QFrame):
         row_target = INFO_PANEL_PREFERRED_HEIGHT + (
             extra_rows * INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT
         )
+        # Qt can retain a stale height-for-width result after a wrapped badge
+        # changes and the native Windows backend widens the panel. Recompute the
+        # layout contract before shrinking, otherwise detail rows can be clipped.
+        self._outer_layout.invalidate()
         content_target = self.heightForWidth(max(self.width(), 1))
         if content_target < 0:
             return row_target
@@ -2131,29 +2126,30 @@ class ApplicantInfoPanel(QFrame):
         bg = package.colour or "#2a2a33"
         self._set_badge(self._package_label, text, bg, _text_colour_for_bg(bg))
 
-        def count_phrase(count: int, singular: str, plural: str | None = None) -> str:
-            return f"{count} {singular if count == 1 else plural or singular + 's'}"
-
         description_parts = []
         if role_total > 0:
             roles = [
-                count_phrase(package.tank_count, "tank"),
-                count_phrase(package.healer_count, "healer"),
-                count_phrase(package.dps_count, "damage dealer"),
+                _count_phrase(package.tank_count, "tank"),
+                _count_phrase(package.healer_count, "healer"),
+                _count_phrase(package.dps_count, "damage dealer"),
             ]
             if package.unknown_role_count > 0:
-                roles.append(count_phrase(package.unknown_role_count, "unknown role"))
+                roles.append(_count_phrase(package.unknown_role_count, "unknown role"))
             description_parts.append(f"Group composition: {', '.join(roles)}.")
         data_status = []
         if package.loading_count > 0:
             data_status.append(
-                count_phrase(package.loading_count, "member loading", "members loading")
+                _count_phrase(
+                    package.loading_count,
+                    "member loading",
+                    "members loading",
+                )
             )
         if package.error_count > 0:
-            data_status.append(count_phrase(package.error_count, "WCL error"))
+            data_status.append(_count_phrase(package.error_count, "WCL error"))
         if package.not_found_count > 0:
             data_status.append(
-                count_phrase(
+                _count_phrase(
                     package.not_found_count,
                     "member not found on WCL",
                     "members not found on WCL",
@@ -6467,10 +6463,6 @@ def _raid_values_for_key(
     return _presenters.raid_values_for_key(applicant, key)
 
 
-def _raid_metric_text_for_key(applicant: Applicant, key: str) -> str:
-    return _presenters.raid_metric_text_for_key(applicant, key)
-
-
 def _raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> str:
     return _presenters.raid_fit_evidence_text(applicant, target, source)
 
@@ -6548,26 +6540,6 @@ def _raid_target_col_for_listing(listing: Listing | None) -> int | None:
     return RAID_COL_BY_TARGET.get(target)
 
 
-def _mplus_key_level(entry: object) -> int:
-    return _overlay_rows.mplus_key_level(entry)
-
-
-def _mplus_run_count(entry: object) -> int:
-    return _presenters.mplus_run_count(entry)
-
-
-def _mplus_sort_key(entry: dict) -> tuple[int, str]:
-    return _presenters.mplus_sort_key(entry)
-
-
-def _normalise_dungeon_name(value: object) -> str:
-    return _presenters.normalise_dungeon_name(value)
-
-
-def _rio_dungeon_row_key(name: str, listing: Listing | None) -> str:
-    return _presenters.rio_dungeon_row_key(name, listing)
-
-
 def _rio_dungeon_rows_by_name(
     applicant: Applicant, listing: Listing | None
 ) -> dict[str, dict[str, object]]:
@@ -6604,16 +6576,6 @@ def _raid_boss_rows_for_display(
     applicant: Applicant, difficulties: Iterable[str]
 ) -> list[dict[str, object]]:
     return _presenters.raid_boss_rows_for_display(applicant, difficulties)
-
-
-def _raid_boss_parse_rows_by_encounter(
-    applicant: Applicant, difficulty: str
-) -> dict[int, dict[str, object]]:
-    return _presenters.raid_boss_parse_rows_by_encounter(applicant, difficulty)
-
-
-def _raid_parse_pair_text(overall: float | None, ilvl: float | None) -> str:
-    return _presenters.raid_parse_pair_text(overall, ilvl)
 
 
 def _raid_parse_segments_html(segments: list[object]) -> str:
@@ -6674,10 +6636,6 @@ def _mplus_cell_visuals(
     return text, fg, bg
 
 
-def _mplus_dungeon_metric_text(entry: object) -> str:
-    return _presenters.mplus_dungeon_metric_text(entry)
-
-
 def _mplus_dual_cell(
     applicant: Applicant,
     listing: Listing | None = None,
@@ -6729,22 +6687,6 @@ def _format_duration(delta_sec: float) -> str:
 
 def _format_listing_tooltip(listing: Listing | None) -> str:
     return _presenters.format_listing_tooltip(listing)
-
-
-def _percent_text(value: object) -> str:
-    pct = safe_percent(value)
-    return "—" if pct is None else str(int(round(pct)))
-
-
-def _metric_text(best: object, median: object) -> str:
-    best_pct = safe_percent(best)
-    median_pct = safe_percent(median)
-    if best_pct is None and median_pct is None:
-        return "—"
-    best_text = _percent_text(best_pct)
-    if median_pct is None:
-        return best_text
-    return f"{best_text}/{_percent_text(median_pct)}"
 
 
 # ───────────────────────────────────────────────────────────────────

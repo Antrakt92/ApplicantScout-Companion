@@ -2140,7 +2140,7 @@ def test_panel_hides_group_package_line_for_solo(qtbot):
     assert panel._package_label.isHidden()
 
 
-def test_healer_panel_uses_hps_breakdown_and_ignores_dps(qtbot):
+def test_healer_panel_uses_dps_breakdown_and_ignores_legacy_hps(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     healer = _app(
@@ -2171,8 +2171,8 @@ def test_healer_panel_uses_hps_breakdown_and_ignores_dps(qtbot):
 
     panel.setApplicantData(healer)
 
-    assert panel._metric_labels["M+"].text() == "M+ HPS 85/70 +12"
-    assert panel._dungeon_rows[0][0].text() == "Healing Dungeon"
+    assert panel._metric_labels["M+"].text() == "M+ DPS 99/88 +20"
+    assert panel._dungeon_rows[0][0].text() == "Damage Dungeon"
 
 
 def test_malformed_mplus_breakdown_renders_safe_fallbacks(qtbot):

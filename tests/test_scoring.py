@@ -278,7 +278,7 @@ def test_mplus_mostly_grey_healer_is_not_rescued_by_main_rio():
         role="HEALER",
         score=3381,
         main_score=3596,
-        hps_breakdown=[
+        dps_breakdown=[
             _dungeon("Windrunner Spire", [(16, 47.0, 47.0, 1)]),
             _dungeon("Nexus-Point Xenas", [(16, 24.0, 24.0, 1)]),
             _dungeon("Maisara Caverns", [(16, 10.0, 10.0, 1)]),
@@ -686,12 +686,12 @@ def test_mplus_single_target_minus_one_parse_does_not_overpromote():
     assert fit.score < 55.0
 
 
-def test_mplus_healer_uses_hps_breakdown_and_ignores_dps():
+def test_mplus_healer_uses_dps_breakdown_and_ignores_legacy_hps():
     target = _listing(key_level=16)
     healer = _app(
         role="HEALER",
-        dps_breakdown=[_dungeon("Skyreach", [(20, 99.0, 99.0, 3)])],
-        hps_breakdown=[_dungeon("Skyreach", [(16, 60.0, 50.0, 2)])],
+        dps_breakdown=[_dungeon("Skyreach", [(16, 60.0, 50.0, 2)])],
+        hps_breakdown=[_dungeon("Skyreach", [(20, 99.0, 99.0, 3)])],
         score=3300,
     )
 
@@ -710,7 +710,7 @@ def test_mplus_partial_rio_rows_do_not_discard_wcl_key_readiness():
             {"name": "Magisters' Terrace", "key_level": 11},
             {"name": "Maisara Caverns", "key_level": 10},
         ],
-        hps_breakdown=[
+        dps_breakdown=[
             _dungeon("Algeth'ar Academy", [(12, 37.0, 37.0, 1)]),
             _dungeon("Pit of Saron", [(12, 84.0, 84.0, 1)]),
             _dungeon("Magisters' Terrace", [(10, 84.0, 84.0, 1)]),
@@ -1729,13 +1729,13 @@ def test_mplus_broad_rio_with_bad_representative_wcl_stays_risky_not_zero():
     assert fit.score < 40.0
 
 
-def test_mplus_healer_broad_rio_low_hps_is_warning_not_hard_veto():
+def test_mplus_healer_broad_rio_low_dps_is_warning_not_hard_veto():
     target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
     healer = _app(
         role="HEALER",
         score=3552,
         **_rio_profile([18, 17, 17, 17, 17, 17, 17, 17], target_key=18),
-        hps_breakdown=[
+        dps_breakdown=[
             _dungeon("Windrunner Spire", [(18, 1.0, 1.0, 1)]),
             _dungeon("Pit of Saron", [(17, 3.0, 3.0, 1)]),
             _dungeon("Magisters' Terrace", [(17, 18.0, 18.0, 1)]),

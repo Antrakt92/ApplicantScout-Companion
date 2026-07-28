@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import struct
+import threading
 import zlib
 from collections.abc import Callable
 from dataclasses import replace
@@ -2677,6 +2678,34 @@ def test_cleanup_delete_removes_parse_failed_marker(
     assert not image_path.exists()
 
 
+def test_cleanup_delete_preserves_same_path_replacement_created_during_decode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"old-transport")
+    os.utime(image_path, ns=(1_000_000_000, 1_000_000_000))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+
+    def replace_during_decode(path: Path) -> screenshot_mod.DecodeResult:
+        path.write_bytes(b"replacement-manual-screenshot")
+        os.utime(path, ns=(2_000_000_000, 2_000_000_000))
+        return screenshot_mod.DecodeResult(None, True, "old generation failed")
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        replace_during_decode,
+    )
+
+    summary = screenshot_mod.cleanup_appscout_screenshots(tmp_path, delete=True)
+
+    assert summary.markers_found == 1
+    assert summary.deleted == 0
+    assert summary.preserved == 1
+    assert image_path.read_bytes() == b"replacement-manual-screenshot"
+
+
 def test_cleanup_preserves_unreadable_file_when_ownership_not_proven(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -3189,6 +3218,151 @@ def test_watcher_stop_suppresses_direct_file_signals(monkeypatch, tmp_path: Path
     assert image_path.exists()
 
 
+def test_watcher_callback_exception_is_contained(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    watcher = ScreenshotWatcher(tmp_path)
+    calls = 0
+
+    def fail_once(_path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("decode callback exploded")
+
+    monkeypatch.setattr(watcher, "_on_new_file_guarded", fail_once)
+    caplog.set_level(logging.ERROR, logger="applicant_scout.screenshot")
+
+    watcher._on_new_file(tmp_path / "WoWScrnShot_0001.jpg")
+
+    assert calls == 1
+    assert "watcher remains active" in caplog.text
+    assert "decode callback exploded" in caplog.text
+
+
+def test_watcher_supervisor_restarts_dead_observer_and_rescans_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeObserver:
+        def __init__(self, *, alive: bool) -> None:
+            self.alive = alive
+            self.scheduled = 0
+            self.stopped = 0
+
+        def schedule(self, *_args, **_kwargs) -> None:
+            self.scheduled += 1
+
+        def start(self) -> None:
+            self.alive = True
+
+        def stop(self) -> None:
+            self.stopped += 1
+            self.alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+    dead = FakeObserver(alive=False)
+    replacement = FakeObserver(alive=False)
+    watcher = ScreenshotWatcher(tmp_path)
+    watcher._stopped.clear()
+    watcher._observer = dead
+    backlog_scans = threading.Event()
+    monkeypatch.setattr(screenshot_mod, "Observer", lambda: replacement)
+    monkeypatch.setattr(watcher, "_scan_recent_backlog", backlog_scans.set)
+
+    assert watcher.ensure_running() is True
+    assert replacement.scheduled == 1
+    assert replacement.is_alive()
+    assert watcher._observer_restart_count == 1
+    assert backlog_scans.wait(timeout=1)
+
+    watcher.stop()
+    assert watcher.ensure_running() is False
+
+
+def test_watcher_coalesces_backlog_rescan_requests_into_one_worker(tmp_path: Path):
+    watcher = ScreenshotWatcher(tmp_path)
+    first_scan_entered = threading.Event()
+    allow_first_scan_to_finish = threading.Event()
+    scans_finished = threading.Event()
+    state_lock = threading.Lock()
+    calls = 0
+    concurrent = 0
+    max_concurrent = 0
+
+    def scan() -> None:
+        nonlocal calls, concurrent, max_concurrent
+        with state_lock:
+            calls += 1
+            call_number = calls
+            concurrent += 1
+            max_concurrent = max(max_concurrent, concurrent)
+        try:
+            if call_number == 1:
+                first_scan_entered.set()
+                assert allow_first_scan_to_finish.wait(timeout=2)
+            else:
+                scans_finished.set()
+        finally:
+            with state_lock:
+                concurrent -= 1
+
+    watcher._scan_recent_backlog = scan  # type: ignore[method-assign]
+    with watcher._observer_lock:
+        watcher._request_backlog_scan_locked()
+        worker = watcher._backlog_thread
+    assert worker is not None
+    assert first_scan_entered.wait(timeout=2)
+
+    with watcher._observer_lock:
+        watcher._request_backlog_scan_locked()
+        assert watcher._backlog_thread is worker
+    allow_first_scan_to_finish.set()
+
+    assert scans_finished.wait(timeout=2)
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert calls == 2
+    assert max_concurrent == 1
+    assert watcher._backlog_thread is None
+
+
+def test_watcher_stop_discards_queued_backlog_rescan(tmp_path: Path):
+    watcher = ScreenshotWatcher(tmp_path)
+    first_scan_entered = threading.Event()
+    allow_first_scan_to_finish = threading.Event()
+    calls = 0
+
+    def scan() -> None:
+        nonlocal calls
+        calls += 1
+        first_scan_entered.set()
+        assert allow_first_scan_to_finish.wait(timeout=2)
+
+    watcher._scan_recent_backlog = scan  # type: ignore[method-assign]
+    with watcher._observer_lock:
+        watcher._request_backlog_scan_locked()
+        worker = watcher._backlog_thread
+    assert worker is not None
+    assert first_scan_entered.wait(timeout=2)
+    with watcher._observer_lock:
+        watcher._request_backlog_scan_locked()
+
+    watcher.request_stop()
+    allow_first_scan_to_finish.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert calls == 1
+    assert watcher._backlog_thread is None
+
+
 def test_watcher_emits_decode_failed_for_marker_parse_failure(
     monkeypatch, tmp_path: Path
 ):
@@ -3370,6 +3544,37 @@ def test_watcher_stop_during_fragment_completion_preserves_all_chunk_files(
     paths[-1].write_bytes(b"x")
     watcher._on_new_file(paths[-1])
 
+    assert all(path.exists() for path in paths)
+
+
+def test_watcher_real_fragment_snapshot_callback_stop_preserves_all_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    fragments = [
+        _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())
+    ]
+    paths = [
+        tmp_path / f"WoWScrnShot_{index:04d}.jpg" for index in range(len(fragments))
+    ]
+    watcher = ScreenshotWatcher(tmp_path)
+    watcher.snapshotReceived.connect(lambda _snap: watcher.request_stop())
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    by_path = {
+        path: screenshot_mod.DecodeResult(None, True, fragment=fragment)
+        for path, fragment in zip(paths, fragments, strict=True)
+    }
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: by_path[path],
+    )
+
+    for path in paths:
+        path.write_bytes(b"fragment")
+        watcher._on_new_file(path)
+
+    assert watcher._stopped.is_set()
     assert all(path.exists() for path in paths)
 
 
@@ -3650,6 +3855,53 @@ def test_watcher_stop_during_snapshot_emit_preserves_marker_file(
     watcher._on_new_file(image_path)
 
     assert snapshots == []
+    assert image_path.exists()
+
+
+def test_watcher_real_snapshot_callback_stop_preserves_marker_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    watcher.snapshotReceived.connect(lambda _snap: watcher.request_stop())
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None),
+            True,
+        ),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert watcher._stopped.is_set()
+    assert image_path.exists()
+
+
+def test_watcher_real_failure_callback_stop_preserves_marker_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    watcher.decodeFailed.connect(
+        lambda _path, _reason, _source: watcher.request_stop()
+    )
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(None, True, "CRC mismatch"),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert watcher._stopped.is_set()
     assert image_path.exists()
 
 
@@ -4101,6 +4353,45 @@ def test_backlog_stop_during_snapshot_emit_preserves_marker_file(
     assert image_path.exists()
 
 
+def test_backlog_retries_replacement_created_during_snapshot_callback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    now = 1_000.0
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"old-transport")
+    os.utime(image_path, (now, now))
+    watcher = ScreenshotWatcher(tmp_path)
+    decoded_contents: list[bytes] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        contents = path.read_bytes()
+        decoded_contents.append(contents)
+        if contents == b"old-transport":
+            return screenshot_mod.DecodeResult(
+                Snapshot(listing=None, version=None),
+                True,
+            )
+        return screenshot_mod.DecodeResult(None, False)
+
+    def replace_after_snapshot(_snapshot: Snapshot) -> None:
+        image_path.write_bytes(b"replacement-manual-screenshot")
+        os.utime(image_path, (now + 1, now + 1))
+
+    watcher.snapshotReceived.connect(replace_after_snapshot)
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: now)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._scan_recent_backlog()
+
+    assert decoded_contents == [
+        b"old-transport",
+        b"replacement-manual-screenshot",
+    ]
+    assert image_path.read_bytes() == b"replacement-manual-screenshot"
+
+
 def test_watcher_stop_suppresses_backlog_signals(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     image_path.write_bytes(b"x")
@@ -4337,4 +4628,41 @@ def test_watcher_retries_changed_generation_without_deleting_replacement(
         b"replacement-manual-screenshot",
     ]
     assert failures == []
+    assert image_path.read_bytes() == b"replacement-manual-screenshot"
+
+
+def test_watcher_retries_replacement_created_during_snapshot_callback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"old-transport")
+    os.utime(image_path, ns=(1_000_000_000, 1_000_000_000))
+    watcher = ScreenshotWatcher(tmp_path)
+    decoded_contents: list[bytes] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        contents = path.read_bytes()
+        decoded_contents.append(contents)
+        if contents == b"old-transport":
+            return screenshot_mod.DecodeResult(
+                Snapshot(listing=None, version=None),
+                True,
+            )
+        return screenshot_mod.DecodeResult(None, False)
+
+    def replace_after_snapshot(_snapshot: Snapshot) -> None:
+        image_path.write_bytes(b"replacement-manual-screenshot")
+        os.utime(image_path, ns=(2_000_000_000, 2_000_000_000))
+
+    watcher.snapshotReceived.connect(replace_after_snapshot)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._on_new_file(image_path)
+
+    assert decoded_contents == [
+        b"old-transport",
+        b"replacement-manual-screenshot",
+    ]
     assert image_path.read_bytes() == b"replacement-manual-screenshot"

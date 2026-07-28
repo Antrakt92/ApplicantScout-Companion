@@ -32,7 +32,7 @@ _DUNGEON_LEVELS_FIELD = 10
 _NEGATIVE_CACHE_TTL_SECONDS = 30.0
 _POSITIVE_CACHE_FAILURE_GRACE_SECONDS = 30.0
 _REGION_LOAD_ATTEMPTS = 2
-_LOOKUP_PAYLOAD_CACHE_DIR = "raiderio-local"
+LOOKUP_PAYLOAD_CACHE_DIR_NAME = "raiderio-local"
 _LOOKUP_PAYLOAD_CACHE_VERSION = 2
 _LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
 _LOOKUP_PAYLOAD_CACHE_LOCK = threading.Lock()
@@ -47,7 +47,7 @@ def _lookup_payload_cache_key(cache_dir: Path) -> Path:
 
 
 def _lookup_payload_cache_root(cache_dir: Path) -> Path:
-    return Path(cache_dir) / _LOOKUP_PAYLOAD_CACHE_DIR
+    return Path(cache_dir) / LOOKUP_PAYLOAD_CACHE_DIR_NAME
 
 
 def _lookup_payload_cache_generation(cache_dir: Path | None) -> int | None:
@@ -106,7 +106,6 @@ class _ProviderIdentity:
 @dataclass(frozen=True)
 class _RaidInfo:
     name: str
-    short_name: str
     boss_count: int
 
 
@@ -138,7 +137,7 @@ class RaiderIOLocalReader:
     def __init__(self, retail_root: Path, *, cache_dir: Path | None = None):
         self._retail_root = Path(retail_root)
         self._payload_cache_dir = (
-            Path(cache_dir) / _LOOKUP_PAYLOAD_CACHE_DIR
+            Path(cache_dir) / LOOKUP_PAYLOAD_CACHE_DIR_NAME
             if cache_dir is not None
             else None
         )
@@ -312,11 +311,9 @@ class _RegionDB:
     def __init__(
         self,
         *,
-        mplus_characters_path: Path | None,
         mplus_lookup_payload: bytes | None,
         mplus_meta: _ProviderMeta | None,
         dungeons: list[str],
-        raid_characters_path: Path | None,
         raid_lookup_payload: bytes | None,
         raid_meta: _ProviderMeta | None,
         current_raids: list[_RaidInfo],
@@ -324,11 +321,9 @@ class _RegionDB:
         mplus_realm_cache: dict[str, _RealmData] | None = None,
         raid_realm_cache: dict[str, _RealmData] | None = None,
     ):
-        self._mplus_characters_path = mplus_characters_path
         self._mplus_lookup_payload = mplus_lookup_payload
         self._mplus_meta = mplus_meta
         self._dungeons = dungeons
-        self._raid_characters_path = raid_characters_path
         self._raid_lookup_payload = raid_lookup_payload
         self._raid_meta = raid_meta
         self._current_raids = current_raids
@@ -460,11 +455,9 @@ class _RegionDB:
         if not has_mplus and not has_raid:
             return None
         return cls(
-            mplus_characters_path=mplus_characters_path if has_mplus else None,
             mplus_lookup_payload=mplus_lookup_payload,
             mplus_meta=mplus_meta,
             dungeons=dungeons,
-            raid_characters_path=raid_characters_path if has_raid else None,
             raid_lookup_payload=raid_lookup_payload,
             raid_meta=raid_meta,
             current_raids=current_raids,
@@ -480,12 +473,10 @@ class _RegionDB:
             return None
         mplus_profile: RaiderIOLocalProfile | None = None
         if (
-            self._mplus_characters_path is not None
-            and self._mplus_lookup_payload is not None
+            self._mplus_lookup_payload is not None
             and self._mplus_meta is not None
         ):
             record = self._record_for(
-                self._mplus_characters_path,
                 self._mplus_lookup_payload,
                 self._mplus_meta,
                 self._mplus_realm_cache,
@@ -506,12 +497,10 @@ class _RegionDB:
                     )
         raid_progress: dict[str, dict] = {}
         if (
-            self._raid_characters_path is not None
-            and self._raid_lookup_payload is not None
+            self._raid_lookup_payload is not None
             and self._raid_meta is not None
         ):
             record = self._record_for(
-                self._raid_characters_path,
                 self._raid_lookup_payload,
                 self._raid_meta,
                 self._raid_realm_cache,
@@ -548,16 +537,15 @@ class _RegionDB:
             raid_progress=raid_progress,
         )
 
+    @staticmethod
     def _record_for(
-        self,
-        characters_path: Path,
         lookup_payload: bytes,
         meta: _ProviderMeta,
         realm_cache: dict[str, _RealmData],
         name: str,
         realm: str,
     ) -> bytes | None:
-        realm_data = self._realm_data(characters_path, realm_cache, realm)
+        realm_data = realm_cache.get(_realm_lookup_key(realm))
         if realm_data is None:
             return None
         name_index = realm_data.name_indexes.get(name.casefold())
@@ -568,15 +556,6 @@ class _RegionDB:
         if len(record) != meta.record_size:
             return None
         return record
-
-    def _realm_data(
-        self,
-        characters_path: Path,
-        realm_cache: dict[str, _RealmData],
-        realm: str,
-    ) -> _RealmData | None:
-        cache_key = _realm_lookup_key(realm)
-        return realm_cache.get(cache_key)
 
 
 def _cache_entry_is_stale(
@@ -719,8 +698,7 @@ def _parse_provider_raids(text: str, key: str) -> list[_RaidInfo]:
         if boss_count is None:
             continue
         name = _lua_string_field(body, "name") or "Raid"
-        short_name = _lua_string_field(body, "shortName") or name
-        raids.append(_RaidInfo(name=name, short_name=short_name, boss_count=boss_count))
+        raids.append(_RaidInfo(name=name, boss_count=boss_count))
     return raids
 
 

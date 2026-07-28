@@ -56,6 +56,7 @@ from PyQt6.QtWidgets import (
 
 from . import __version__
 from .config import (
+    COMMON_WOW_RETAIL_ROOTS,
     Config,
     ConfigError,
     screenshots_path_candidate,
@@ -67,11 +68,6 @@ from .window_geometry import clamp_geometry_to_screens
 
 CredentialTester = Callable[[str, str, str], str]
 SimpleAction = Callable[[], str]
-COMMON_WOW_RETAIL_ROOTS = (
-    Path(r"C:\Games\World of Warcraft\_retail_"),
-    Path(r"C:\Program Files (x86)\World of Warcraft\_retail_"),
-    Path.home() / "World of Warcraft" / "_retail_",
-)
 WCL_CREATE_CLIENT_EXAMPLE_PATH = (
     Path(__file__).with_name("assets") / "wcl_create_client_example.jpg"
 )
@@ -491,7 +487,7 @@ class SettingsDialog(QDialog):
         root.addWidget(wcl_link_row)
         credentials_help = QLabel(
             "Create a Warcraft Logs API client with Redirect URL "
-            "http://localhost and leave Public Client unchecked. Copy the "
+            f"{WCL_CREATE_CLIENT_REDIRECT_URL} and leave Public Client unchecked. Copy the "
             "generated Client ID and Client Secret into the fields below."
         )
         credentials_help.setWordWrap(True)
@@ -1560,7 +1556,7 @@ class SettingsDialog(QDialog):
 
         text = QLabel(
             "On the Warcraft Logs Create Client page, use Redirect URL "
-            "http://localhost and leave Public Client unchecked. Then click "
+            f"{WCL_CREATE_CLIENT_REDIRECT_URL} and leave Public Client unchecked. Then click "
             "Create and copy the generated Client ID and Client Secret back here."
         )
         text.setWordWrap(True)
@@ -1631,7 +1627,7 @@ class SettingsDialog(QDialog):
         if pixmap.isNull():
             image.setText(
                 "Example screenshot is unavailable. Use Redirect URL "
-                "http://localhost and leave Public Client unchecked."
+                f"{WCL_CREATE_CLIENT_REDIRECT_URL} and leave Public Client unchecked."
             )
             image.setWordWrap(True)
         else:

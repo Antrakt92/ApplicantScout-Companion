@@ -80,9 +80,9 @@ class Applicant:
     raid_normal_median: Optional[float] = None
     raid_heroic_median: Optional[float] = None
     raid_mythic_median: Optional[float] = None
-    # M+ headline best/median avg across the 8 dungeons. Only the role-relevant
-    # metric is populated — DPS for tank+damager, HPS for healer (the OTHER
-    # metric stays None to save WCL quota: 8 unneeded encounter queries).
+    # M+ headline best/median avg across the 8 dungeons. DPS is populated for
+    # every role; legacy HPS slots remain empty to keep state/cache shape stable.
+    # Querying one metric saves 8 unneeded WCL encounter queries per applicant.
     # Overlay displays best/median when median evidence exists; all-N=1 data is
     # marked as low-evidence from the populated metric.
     mplus_dps: Optional[float] = None
@@ -262,26 +262,29 @@ def _coerce_geometry_int(
     default: int,
     min_value: int | None = None,
 ) -> int:
-    if isinstance(value, bool):
+    parsed = _parse_strict_int(value)
+    if parsed is None or (min_value is not None and parsed < min_value):
         return default
+    return parsed
+
+
+def _parse_strict_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
     if isinstance(value, int):
-        parsed = value
+        return value
     elif isinstance(value, str):
         text = value.strip()
         if not text:
-            return default
+            return None
         signless = text[1:] if text[0] in ("+", "-") else text
         if not signless.isdecimal():
-            return default
+            return None
         try:
-            parsed = int(text, 10)
+            return int(text, 10)
         except ValueError:
-            return default
-    else:
-        return default
-    if min_value is not None and parsed < min_value:
-        return default
-    return parsed
+            return None
+    return None
 
 
 def _geometry_from_dict(data: dict) -> WindowGeometry:
@@ -326,22 +329,7 @@ def _launcher_position_from_dict(data: dict) -> LauncherPosition | None:
 
 
 def _coerce_launcher_position_int(value) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        signless = text[1:] if text[0] in ("+", "-") else text
-        if not signless.isdecimal():
-            return None
-        try:
-            return int(text, 10)
-        except ValueError:
-            return None
-    return None
+    return _parse_strict_int(value)
 
 
 def load_launcher_position(config_dir: Path) -> LauncherPosition | None:

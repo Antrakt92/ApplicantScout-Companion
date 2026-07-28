@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Improved
+
+- Mythic+ Warcraft Logs evidence now uses damage percentiles for every role,
+  including healers; raid healer rankings continue to use healing percentiles.
+
 ## 0.13.0 - 25-Jul-2026
 
 Paired release with ApplicantScout addon `0.9.0`. This release prevents stale

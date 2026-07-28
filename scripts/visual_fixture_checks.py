@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import sys
 import tempfile
 from typing import Any
 
@@ -18,6 +21,118 @@ class VisualFixtureDiff:
     changed_pixels: int
     total_pixels: int
     max_channel_delta: int
+
+
+def add_visual_fixture_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    scenario_names: list[str],
+    default_scenario: str,
+    scenario_help: str,
+    all_help: str,
+) -> None:
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Write the rendered fixture to this path instead of the committed baseline.",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Compare a fresh render to the committed baseline without writing files.",
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=scenario_names,
+        default=default_scenario,
+        help=scenario_help,
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help=all_help,
+    )
+    parser.add_argument(
+        "--visual-mode",
+        choices=("strict", "smoke"),
+        default="strict",
+        help=(
+            "Check mode: strict compares committed baselines; smoke validates "
+            "that each scenario renders nonblank output without pixel comparison."
+        ),
+    )
+
+
+def parse_visual_fixture_args(
+    parser: argparse.ArgumentParser,
+    argv: list[str] | None,
+) -> argparse.Namespace:
+    args = parser.parse_args(argv)
+    if args.check and args.output is not None:
+        parser.error("--check cannot be combined with --output")
+    if args.all and args.output is not None:
+        parser.error("--all cannot be combined with --output")
+    if args.visual_mode == "smoke" and not args.check:
+        parser.error("--visual-mode smoke requires --check")
+    return args
+
+
+def check_rendered_pixmap(
+    scenario: Any,
+    pixmap: Any,
+    visual_mode: str,
+    *,
+    label: str,
+    image_factory: Callable[[str], Any],
+    compare_images: Callable[[Any, Any], Any],
+) -> tuple[bool, str]:
+    image = pixmap.toImage()
+    if visual_mode == "smoke":
+        error = validate_smoke_image(image, label=label)
+        if error is not None:
+            return False, error
+        return (
+            True,
+            f"{label} smoke check passed "
+            f"({image.width()}x{image.height()} nonblank render)",
+        )
+
+    baseline = image_factory(str(scenario.baseline_path))
+    diff = compare_images(baseline, image)
+    return diff.passed, diff.message
+
+
+def run_visual_fixture_scenarios(
+    args: argparse.Namespace,
+    *,
+    scenarios: Mapping[str, Any],
+    render_fixture: Callable[[str], Any],
+    check_fixture: Callable[[str, Any, Any, str], tuple[bool, str]],
+    label: str,
+) -> int:
+    scenario_names = sorted(scenarios) if args.all else [args.scenario]
+    failed = False
+    for scenario_name in scenario_names:
+        scenario = scenarios[scenario_name]
+        pixmap = render_fixture(scenario_name)
+        if args.check:
+            passed, message = check_fixture(
+                scenario_name,
+                scenario,
+                pixmap,
+                args.visual_mode,
+            )
+            print(
+                f"{scenario_name}: {message}",
+                file=sys.stderr if not passed else sys.stdout,
+            )
+            failed = failed or not passed
+            continue
+
+        output = args.output or scenario.baseline_path
+        save_pixmap_atomic(pixmap, output, label=label)
+        print(output)
+    return 1 if failed else 0
 
 
 def save_pixmap_atomic(pixmap: Any, output: Path, *, label: str) -> None:

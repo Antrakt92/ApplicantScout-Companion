@@ -173,7 +173,7 @@ def test_manual_wcl_fetch_rejects_unknown_region():
         raise AssertionError("manual WCL fetch must reject unknown regions")
 
 
-def test_manual_wcl_fetch_healer_role_controls_empty_mplus_output(
+def test_manual_wcl_fetch_healer_role_keeps_mplus_dps_output(
     monkeypatch,
     capsys,
     tmp_path: Path,
@@ -200,4 +200,4 @@ def test_manual_wcl_fetch_healer_role_controls_empty_mplus_output(
 
     assert manual_wcl_fetch.main(["Healz", "Ravencrest", "--role", "HEALER"]) == 0
 
-    assert "M+ HPS Headline" in capsys.readouterr().out
+    assert "M+ DPS Headline" in capsys.readouterr().out

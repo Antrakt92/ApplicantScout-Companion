@@ -20,10 +20,7 @@ import httpx
 from applicant_scout.config import load_config
 from applicant_scout.constants import CURRENT_MPLUS_ZONE_ID
 from applicant_scout.wcl import WCL_API_URL, WCLAuth
-
-
-class SeasonalScriptError(RuntimeError):
-    """Actionable manual-script error."""
+from scripts.seasonal._shared import SeasonalScriptError, quote_display_string
 
 
 def build_query(zone_id: int) -> str:
@@ -128,16 +125,12 @@ def _alias_for_name(name: str, used: set[str]) -> str:
     return alias
 
 
-def _quote_display_string(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def format_mplus_tuples(zone: dict[str, Any]) -> str:
     used_aliases: set[str] = set()
     lines = [f"# WCL zone {zone['id']}: {zone['name']}"]
     for encounter in zone["encounters"]:
         alias = _alias_for_name(str(encounter["name"]), used_aliases)
-        name = _quote_display_string(str(encounter["name"]))
+        name = quote_display_string(str(encounter["name"]))
         lines.append(f'("{alias}", {encounter["id"]}, {name}),')
     return "\n".join(lines)
 

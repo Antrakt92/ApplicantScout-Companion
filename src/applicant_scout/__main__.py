@@ -34,6 +34,7 @@ from .atomic_io import (
 from .config import (
     Config,
     ConfigError,
+    _parse_bool_setting,
     _parse_cache_ttl_seconds,
     is_config_ready,
     load_config,
@@ -57,6 +58,7 @@ from .live_snapshot_cache import (
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .overlay import OverlayWindow
 from .raiderio_local import (
+    LOOKUP_PAYLOAD_CACHE_DIR_NAME,
     RaiderIOLocalReader,
     clear_lookup_payload_cache,
     retail_root_from_screenshots_path,
@@ -69,7 +71,9 @@ from .screenshot import (
     cleanup_appscout_screenshots,
     format_screenshot_cleanup_summary,
     is_placeholder_transport_identity,
+    positive_int_arg,
     screenshot_cleanup_exit_code,
+    system_exit_code,
 )
 from .settings_dialog import (
     ReleaseNotesDialog,
@@ -83,10 +87,12 @@ from .settings_dialog import (
 )
 from .state import Applicant, AppState, LeaderKey, Listing, RosterMember, WoWPlayer
 from .updater import (
+    UPDATE_DOWNLOADS_DIR_NAME,
     check_for_update,
     download_update_installer,
     launch_update_installer,
     UpdateResult,
+    update_result_has_installable_asset,
 )
 from .wcl import (
     CharacterCache,
@@ -113,17 +119,6 @@ _RIO_LOOKUP_FAILED = object()
 RIO_PRELOAD_REFRESH_INTERVAL_SECONDS = 30.0
 APP_ICON_PATH = Path(__file__).with_name("assets") / "app_icon.ico"
 APP_USER_MODEL_ID = "Antrakt.ApplicantScout.Companion"
-CONTROL_SERVER_BASENAME = _runtime_control.CONTROL_SERVER_BASENAME
-
-
-def _scoped_control_server_name(user_identity: str) -> str:
-    return _runtime_control.scoped_control_server_name(user_identity)
-
-
-def _runtime_user_identity() -> str:
-    return _runtime_control.runtime_user_identity()
-
-
 CONTROL_SERVER_NAME = _runtime_control.CONTROL_SERVER_NAME
 LEGACY_CONTROL_SERVER_NAME = _runtime_control.LEGACY_CONTROL_SERVER_NAME
 CONTROL_OWNER_NAME = _runtime_control.CONTROL_OWNER_NAME
@@ -149,8 +144,6 @@ UPDATE_HANDOFF_TIMEOUT_MESSAGE = (
 _RETIRED_WATCHER_TRACKER_ATTR = "_applicant_scout_retired_watcher_tracker"
 _UPDATE_INSTALL_LOCK = threading.Lock()
 _QT_APPLICATION_CLASS = QApplication
-# SYNC: updater._default_update_download_dir stores installers under this cache child.
-UPDATE_DOWNLOADS_DIR_NAME = "updates"
 
 
 _ControlCommandResult = _runtime_control.ControlCommandResult
@@ -1663,7 +1656,6 @@ class _UpdateCheckCoordinator:
 @dataclass(frozen=True)
 class _UpdateCheckDecision:
     is_current: bool
-    action: Literal["ignore", "set", "clear", "preserve"]
     pending_update_version: str | None
 
 
@@ -1715,17 +1707,15 @@ def _resolve_update_check_result(
     if not coordinator.is_current(generation):
         return _UpdateCheckDecision(
             is_current=False,
-            action="ignore",
             pending_update_version=previous_pending_update_version,
         )
 
     latest_version = getattr(result, "latest_version", None)
-    if getattr(result, "status", None) == "available" and _update_result_has_installable_asset(
+    if getattr(result, "status", None) == "available" and update_result_has_installable_asset(
         result
     ):
         return _UpdateCheckDecision(
             is_current=True,
-            action="set",
             pending_update_version=str(latest_version or "available"),
         )
     if (
@@ -1735,12 +1725,10 @@ def _resolve_update_check_result(
     ):
         return _UpdateCheckDecision(
             is_current=True,
-            action="preserve",
             pending_update_version=previous_pending_update_version,
         )
     return _UpdateCheckDecision(
         is_current=True,
-        action="clear",
         pending_update_version=None,
     )
 
@@ -1792,7 +1780,10 @@ def _clear_cache_dir(
             character_cache.clear()
         cache_dir.mkdir(parents=True, exist_ok=True)
         for child in cache_dir.iterdir():
-            if child.name in {UPDATE_DOWNLOADS_DIR_NAME, "raiderio-local"}:
+            if child.name in {
+                UPDATE_DOWNLOADS_DIR_NAME,
+                LOOKUP_PAYLOAD_CACHE_DIR_NAME,
+            }:
                 continue
             if child.is_dir():
                 shutil.rmtree(child)
@@ -1887,7 +1878,6 @@ def _safe_check_for_update(current_version: str) -> UpdateResult:
         return UpdateResult(
             status="unavailable",
             message=f"GitHub update check failed: {exc}",
-            current_version=current_version,
             reason="unexpected_exception",
         )
 
@@ -1905,7 +1895,7 @@ def _check_updates(
             raise RuntimeError(str(message))
         if status != "available":
             return str(message), None
-        if not _update_result_has_installable_asset(result):
+        if not update_result_has_installable_asset(result):
             raise RuntimeError(str(message))
         installer = download_update_installer(result)
         if not update_quit_gate.mark_installer_handoff_started():
@@ -2634,20 +2624,6 @@ def _run_application_event_loop(
             runtime_owner.close()
 
 
-_snapshot_carries_leader_update = _snapshot_pipeline.snapshot_carries_leader_update
-_snapshot_authority_mask = _snapshot_pipeline.snapshot_authority_mask
-_compact_snapshot_segment = _snapshot_pipeline.compact_snapshot_segment
-_append_pending_snapshot = _snapshot_pipeline.append_pending_snapshot
-_version_producer_identity = _snapshot_pipeline.version_producer_identity
-_producer_identities_conflict = _snapshot_pipeline.producer_identities_conflict
-_producer_identity_matches = _snapshot_pipeline.producer_identity_matches
-
-
-_latest_producer_segment = _snapshot_pipeline.latest_producer_segment
-_merge_snapshot_segment = _snapshot_pipeline.merge_snapshot_segment
-_snapshot_application_plan = _snapshot_pipeline.snapshot_application_plan
-
-
 _SnapshotApplyQueue = _snapshot_pipeline.SnapshotApplyQueue
 
 
@@ -2952,24 +2928,6 @@ def _restore_live_snapshot_cache(
     return True
 
 
-def _update_result_has_installable_asset(result: object) -> bool:
-    asset_name = getattr(result, "asset_name", None)
-    if not isinstance(asset_name, str):
-        return False
-    asset_url = getattr(result, "asset_url", None)
-    checksum_name = getattr(result, "checksum_name", None)
-    checksum_url = getattr(result, "checksum_url", None)
-    metadata = (asset_name, asset_url, checksum_name, checksum_url)
-    if not all(isinstance(value, str) and value.strip() for value in metadata):
-        return False
-    if "/" in asset_name or "\\" in asset_name:
-        return False
-    normalized = asset_name.lower()
-    return normalized.startswith("applicantscoutcompanionsetup-") and normalized.endswith(
-        ".exe"
-    )
-
-
 def _settings_env_override_keys() -> list[str]:
     keys = (
         "WCL_CLIENT_ID",
@@ -2989,30 +2947,7 @@ def _settings_env_override_keys() -> list[str]:
 
 
 def _process_env_bool_override(key: str, current: bool) -> bool:
-    raw = os.environ.get(key)
-    if raw is None:
-        return current
-    value = raw.strip().lower()
-    if not value:
-        return current
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    raise ConfigError(f"{key} must be one of: 1, 0, true, false, yes, no, on, off")
-
-
-def _parse_saved_bool(key: str, raw: str | None, *, default: bool) -> bool:
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if not value:
-        return default
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    raise ConfigError(f"{key} must be one of: 1, 0, true, false, yes, no, on, off")
+    return _parse_bool_setting(key, os.environ.get(key), default=current)
 
 
 def _saved_config_value_for_process_override(
@@ -3035,7 +2970,7 @@ def _saved_config_bool_for_process_override(
     if os.environ.get(key) is None:
         return current
     try:
-        return _parse_saved_bool(key, saved_values.get(key), default=default)
+        return _parse_bool_setting(key, saved_values.get(key), default=default)
     except ConfigError:
         return current
 
@@ -3099,7 +3034,6 @@ def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
 
 
 def _settings_saved_status(
-    values,
     override_keys: list[str],
     *,
     path_warning: str | None = None,
@@ -3122,14 +3056,12 @@ def _has_pending_wcl_credentials(cfg: Config) -> bool:
 
 
 def _settings_autosave_status(
-    values,
     override_keys: list[str],
     cfg: Config,
     *,
     path_warning: str | None = None,
 ) -> tuple[str, bool, bool]:
     saved_text, saved_error = _settings_saved_status(
-        values,
         override_keys,
         path_warning=path_warning,
     )
@@ -3143,13 +3075,11 @@ def _settings_autosave_status(
 
 
 def _settings_wcl_test_success_status(
-    values,
     override_keys: list[str],
     *,
     path_warning: str | None = None,
 ) -> tuple[str, bool]:
     saved_text, saved_error = _settings_saved_status(
-        values,
         override_keys,
         path_warning=path_warning,
     )
@@ -3642,29 +3572,15 @@ def _load_startup_config(
                 return None
 
 
-def _positive_cleanup_limit(raw: str) -> int:
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("must be a positive integer") from exc
-    if value <= 0:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return value
-
-
-def _system_exit_code(code: object) -> int:
-    return code if isinstance(code, int) else 1
-
-
 def _run_cleanup_screenshots_command(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="applicant-scout cleanup-screenshots")
     parser.add_argument("screenshots_dir", nargs="?")
     parser.add_argument("--delete", action="store_true")
-    parser.add_argument("--limit", type=_positive_cleanup_limit)
+    parser.add_argument("--limit", type=positive_int_arg)
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
-        return _system_exit_code(exc.code)
+        return system_exit_code(exc.code)
 
     if args.screenshots_dir:
         screenshots_dir = Path(args.screenshots_dir)
@@ -4036,13 +3952,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if apply_credentials:
                 status_text, status_error = _settings_wcl_test_success_status(
-                    values,
                     overrides,
                     path_warning=path_warning,
                 )
             else:
                 status_text, status_error, status_warning = _settings_autosave_status(
-                    values,
                     overrides,
                     cfg,
                     path_warning=path_warning,

@@ -6,7 +6,11 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, Protocol
 
-from .constants import REGION_ID_TO_WCL
+from .producer_identity import (
+    normalize_producer_identity,
+    producer_identities_conflict as normalized_producer_identities_conflict,
+    producer_identity_matches as normalized_producer_identity_matches,
+)
 from .screenshot import Snapshot
 
 
@@ -88,39 +92,23 @@ def append_pending_snapshot(
 
 
 def version_producer_identity(version: object) -> tuple[str, str, str | None]:
-    player_identity = str(getattr(version, "player_name", "")).strip().casefold()
-    player_name, separator, player_realm = player_identity.partition("-")
-    region_id = getattr(version, "region_id", None)
-    region = REGION_ID_TO_WCL.get(region_id) if isinstance(region_id, int) else None
-    return player_name, player_realm if separator else "", region
+    return normalize_producer_identity(
+        getattr(version, "player_name", ""),
+        getattr(version, "region_id", None),
+    )
 
 
 def producer_identities_conflict(left: object, right: object) -> bool:
-    left_name, left_realm, left_region = version_producer_identity(left)
-    right_name, right_realm, right_region = version_producer_identity(right)
-    return bool(
-        left_name
-        and right_name
-        and (
-            left_name != right_name
-            or (left_realm and right_realm and left_realm != right_realm)
-            or (left_region and right_region and left_region != right_region)
-        )
+    return normalized_producer_identities_conflict(
+        version_producer_identity(left),
+        version_producer_identity(right),
     )
 
 
 def producer_identity_matches(candidate: object, reference: object) -> bool:
-    candidate_name, candidate_realm, candidate_region = version_producer_identity(
-        candidate
-    )
-    reference_name, reference_realm, reference_region = version_producer_identity(
-        reference
-    )
-    return bool(
-        candidate_name
-        and candidate_name == reference_name
-        and (not reference_realm or candidate_realm == reference_realm)
-        and (not reference_region or candidate_region == reference_region)
+    return normalized_producer_identity_matches(
+        version_producer_identity(candidate),
+        version_producer_identity(reference),
     )
 
 

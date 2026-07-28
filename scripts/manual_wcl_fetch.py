@@ -43,7 +43,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--role",
         choices=("DAMAGER", "DPS", "TANK", "HEALER"),
         default="DAMAGER",
-        help="Applicant role; controls M+ metric selection",
+        help="Applicant role; controls raid metric selection",
     )
     return parser.parse_args(argv)
 
@@ -74,18 +74,11 @@ def _print_result(client: WCLClient, ranks: CharacterRanks, role: str) -> None:
         "  Raid Mythic:  "
         f"best={_fmt(ranks.raid_mythic)}  median={_fmt(ranks.raid_mythic_median)}"
     )
-    if role == "HEALER":
-        print(
-            "  M+ HPS Headline:   "
-            f"best={_fmt(ranks.mplus_hps)}  median={_fmt(ranks.mplus_hps_median)}"
-        )
-        _print_breakdown("HPS", ranks.mplus_hps_breakdown)
-    else:
-        print(
-            "  M+ DPS Headline:   "
-            f"best={_fmt(ranks.mplus_dps)}  median={_fmt(ranks.mplus_dps_median)}"
-        )
-        _print_breakdown("DPS", ranks.mplus_dps_breakdown)
+    print(
+        "  M+ DPS Headline:   "
+        f"best={_fmt(ranks.mplus_dps)}  median={_fmt(ranks.mplus_dps_median)}"
+    )
+    _print_breakdown("DPS", ranks.mplus_dps_breakdown)
     print(f"  Quota: {client.last_quota}")
 
 

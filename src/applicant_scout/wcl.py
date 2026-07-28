@@ -55,10 +55,10 @@ WCL_NETWORK_RETRY_SECONDS = 30.0
 
 # Query builder — encounterRankings encounterID args MUST be literal ints
 # (GraphQL variable substitution works but produces 8x repetitive var declarations
-# for no benefit — IDs are stable per season). Metric depends on role: damage/tank
-# applicants get only DPS data (8 encounter queries), healers get only HPS (8
-# queries) — saves quota by not fetching irrelevant data. Cache result per role
-# so build cost is paid once.
+# for no benefit — IDs are stable per season). M+ uses DPS for every role because
+# healer damage is the more useful scouting signal; raid metrics remain role-aware
+# (HPS for healers, DPS otherwise). Only one M+ metric is queried, saving 8
+# encounter queries per applicant. Cache query text per raid metric role.
 #
 # Why per-encounter (encounterRankings) not zone-level (zoneRankings):
 # zoneRankings aggregates across ALL bracket levels — a +20-pusher gets 99%
@@ -78,7 +78,7 @@ _RAID_DETAIL_DIFFICULTIES: dict[str, tuple[str, int, str]] = {
 
 
 def wcl_metric_role(role: str) -> str:
-    """Return the WCL/cache metric shape for an ApplicantScout role."""
+    """Return the raid-metric/cache shape for an ApplicantScout role."""
     return "HEALER" if role == "HEALER" else "DPS"
 
 
@@ -89,9 +89,8 @@ def _build_character_ranks_query(
     """Returns GraphQL query string with M+ encounter aliases inlined.
 
     role: TANK/DAMAGER/HEALER, or normalized DPS from wcl_metric_role().
-    DAMAGER+TANK+DPS get only DPS encounter queries, HEALER gets only HPS —
-    irrelevant metric is skipped to save WCL quota (each encounterRankings call
-    costs ~1 point; 8 saved per applicant).
+    Every role gets only DPS encounter queries for M+; raid zone rankings use
+    the role-specific metric supplied separately in GraphQL variables.
     """
     metric_role = wcl_metric_role(role)
     cache_key = (metric_role, metric_preferences.cache_key())
@@ -99,13 +98,12 @@ def _build_character_ranks_query(
     if cached is not None:
         return cached
 
-    metric = "hps" if metric_role == "HEALER" else "dps"
     encounter_lines = []
     if metric_preferences.mplus:
         for alias, eid, _name in MPLUS_ENCOUNTERS:
             encounter_lines.append(
                 f"      {alias}: encounterRankings(encounterID: {eid}, "
-                f"metric: {metric}, byBracket: true)"
+                "metric: dps, byBracket: true)"
             )
     encounters_block = "\n".join(encounter_lines)
     raid_lines = []
@@ -244,7 +242,7 @@ class DungeonPerf:
     aggregated across ONLY runs at that top key level (lower-key runs excluded
     from this dungeon's stats — see _process_encounter_ranks).
 
-    parse_percent: best DPS/HPS percentile across the top-key runs (max).
+    parse_percent: best DPS percentile across the top-key runs (max).
     median_percent: median percentile across the same run set.
     key_level: the bracket level these stats are computed at (player's highest
     timed key in this dungeon, for their current spec).
@@ -273,17 +271,16 @@ class CharacterRanks:
     "best/median" pair. WCL UI calls these "Best Perf. Avg." and "Median Perf.
     Avg." in the character profile.
 
-    M+: only the role-relevant metric is populated — DPS for damage/tank
-    applicants (mplus_dps fields filled), HPS for healers (mplus_hps fields
-    filled). The OTHER metric stays None — saves quota by skipping 8 unneeded
-    encounter queries per applicant.
+    M+: DPS is populated for every role. The legacy mplus_hps fields remain
+    empty so persisted/state shapes stay stable while healer scouting uses the
+    same damage evidence as tanks and damage dealers.
 
-    mplus_*_breakdown: per-dungeon detail (DungeonPerf list, top-key only).
-    mplus_dps / mplus_hps: avg of per-dungeon best % across all dungeons
-        (with data). Always computed if any data — represents ceiling.
-    mplus_dps_median / mplus_hps_median: avg of per-dungeon median % across
-        only dungeons with run_count >= 2 (single-run medians = same as best,
-        not informative). None if all dungeons have run_count == 1."""
+    mplus_dps_breakdown: per-dungeon detail (DungeonPerf list, top-key only).
+    mplus_dps: avg of per-dungeon best % across all dungeons with data.
+    mplus_dps_median: avg of per-dungeon median % across only dungeons with
+        run_count >= 2 (single-run medians = same as best, not informative).
+        None if all dungeons have run_count == 1.
+    mplus_hps fields: legacy empty slots retained for stable serialization."""
 
     raid_normal: Optional[float]
     raid_heroic: Optional[float]
@@ -561,16 +558,18 @@ class WCLAuth:
                     pass
 
 
-class WCLAuthError(Exception):
+class _WCLError(Exception):
     def __init__(self, message: str, *, error_kind: str = ""):
         super().__init__(message)
         self.error_kind = error_kind
 
 
-class WCLApiError(Exception):
-    def __init__(self, message: str, *, error_kind: str = ""):
-        super().__init__(message)
-        self.error_kind = error_kind
+class WCLAuthError(_WCLError):
+    pass
+
+
+class WCLApiError(_WCLError):
+    pass
 
 
 def _json_object_response(resp, error_cls: type[Exception], context: str) -> dict:
@@ -709,10 +708,6 @@ def _ranking_alias_payload(char: dict, alias: str) -> dict:
             error_kind=WCL_ERROR_MALFORMED,
         )
     return enc_data
-
-
-def _mplus_alias_payload(char: dict, alias: str) -> dict:
-    return _ranking_alias_payload(char, alias)
 
 
 def _raid_zone_alias_payload(char: dict, alias: str) -> dict:
@@ -1113,9 +1108,8 @@ class WCLClient:
             as Unholy at +15 = 7. spec_id=0 → no filter (rare; mostly debug).
         role: TANK/DAMAGER/HEALER. Determines:
             - Raid metric (dps for tank+damager, hps for healer).
-            - M+ encounter metric — only ONE of dps/hps queried per applicant
-              to save quota (8 encounter calls instead of 16). DPS-side stays
-              None for healers and vice versa.
+            - M+ encounter metric is DPS for every role; only one metric is
+              queried to save quota (8 encounter calls instead of 16).
         region: explicit WCL region ("EU"/"US"/etc). Caller (overlay
             _FetchTask) snapshots self.region once and passes it both here and
             to CharacterCache.get/put — without this parameter the fetch read
@@ -1188,8 +1182,6 @@ class WCLClient:
                     spec_id,
                     name,
                 )
-            is_healer = role == "HEALER"
-
             query = _build_character_ranks_query(role, metric_preferences)
             variables: dict[str, object] = {
                 "name": name,
@@ -1254,22 +1246,13 @@ class WCLClient:
             if metric_preferences.mplus:
                 for alias, _eid, dungeon_name in MPLUS_ENCOUNTERS:
                     perf = _process_encounter_ranks(
-                        _mplus_alias_payload(char, alias), spec_name, dungeon_name
+                        _ranking_alias_payload(char, alias), spec_name, dungeon_name
                     )
                     if perf is not None:
                         breakdown.append(perf)
             breakdown.sort(key=lambda d: d.name)
 
             best_avg, median_avg = _compute_mplus_headline(breakdown)
-
-            # Route the breakdown into the role-relevant slot. The other slot
-            # stays None / empty — overlay reads whichever is non-None.
-            mplus_dps = None if is_healer else best_avg
-            mplus_dps_med = None if is_healer else median_avg
-            mplus_hps = best_avg if is_healer else None
-            mplus_hps_med = median_avg if is_healer else None
-            dps_breakdown = [] if is_healer else breakdown
-            hps_breakdown = breakdown if is_healer else []
 
             raid_normal_data = (
                 _raid_zone_alias_payload(char, "raidNormal")
@@ -1300,12 +1283,12 @@ class WCLClient:
                 raid_mythic_median=_zone_avg(
                     raid_mythic_data, "medianPerformanceAverage"
                 ),
-                mplus_dps=mplus_dps,
-                mplus_hps=mplus_hps,
-                mplus_dps_median=mplus_dps_med,
-                mplus_hps_median=mplus_hps_med,
-                mplus_dps_breakdown=dps_breakdown,
-                mplus_hps_breakdown=hps_breakdown,
+                mplus_dps=best_avg,
+                mplus_hps=None,
+                mplus_dps_median=median_avg,
+                mplus_hps_median=None,
+                mplus_dps_breakdown=breakdown,
+                mplus_hps_breakdown=[],
                 )
             # Unreachable in practice (401 then non-401)
             return CharacterRanks.empty(error="auth retry exhausted")
@@ -1984,7 +1967,9 @@ class _CacheSaveSnapshot:
 # for that spec could contain intentionally blank M+ data.
 # v6 = enabled raid aliases are strict; pre-v6 entries may contain cached empty
 # raid evidence from partial WCL responses.
-_CACHE_VERSION = 6
+# v7 = healer M+ evidence uses DPS; pre-v7 healer entries contain HPS-shaped
+# data and must not survive the metric change.
+_CACHE_VERSION = 7
 
 
 class CharacterCache:
@@ -2044,13 +2029,10 @@ class CharacterCache:
         # spec_id in key: M+ percentiles are per-spec (encounterRankings filters
         # by spec field); cache ignoring spec would serve stale data when
         # applicant re-applies under a different spec.
-        # role in key: M+ query is role-aware (DPS for tank+damager, HPS for
-        # healer; only ONE metric block in the response). A Mistweaver who
-        # arrives as DAMAGER then re-applies as HEALER on the same listing
-        # would otherwise serve stale DPS-shaped data on the second fetch
-        # (mplus_hps fields stay None — UI shows "—" though the player
-        # has HPS data). Tank and damager share the dps metric so they
-        # cache-collide intentionally (single stored value reused across both).
+        # role in key: raid metrics are role-aware (DPS for tank+damager, HPS
+        # for healer) even though M+ now uses DPS for every role. A role change
+        # must not reuse raid percentiles with the wrong metric. Tank and
+        # damager share the same raid/M+ shape and cache-collide intentionally.
         return f"{region}:{server_slug}:{name.lower()}:{spec_id}:{wcl_metric_role(role)}"
 
     @staticmethod

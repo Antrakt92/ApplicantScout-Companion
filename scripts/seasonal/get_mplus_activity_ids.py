@@ -25,7 +25,11 @@ import httpx
 
 from applicant_scout.constants import (
     MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME,
-    MPLUS_ENCOUNTERS,
+)
+from scripts.seasonal._shared import (
+    SeasonalScriptError,
+    current_mplus_dungeon_names,
+    quote_display_string,
 )
 
 
@@ -42,10 +46,6 @@ REQUIRED_COLUMNS = frozenset(
         "DifficultyID",
     }
 )
-
-
-class SeasonalScriptError(RuntimeError):
-    """Actionable manual-script error."""
 
 
 @dataclass(frozen=True)
@@ -174,20 +174,12 @@ def extract_mplus_activity_mapping(
     return dict(sorted(mapping.items()))
 
 
-def _quote_display_string(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def format_activity_mapping(mapping: dict[int, str]) -> str:
     lines = ["MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME: dict[int, str] = {"]
     for activity_id, dungeon_name in sorted(mapping.items()):
-        lines.append(f"    {activity_id}: {_quote_display_string(dungeon_name)},")
+        lines.append(f"    {activity_id}: {quote_display_string(dungeon_name)},")
     lines.append("}")
     return "\n".join(lines)
-
-
-def current_mplus_dungeon_names() -> list[str]:
-    return [name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS]
 
 
 def fetch_wago_activity_csv(url: str = DEFAULT_WAGO_ACTIVITY_CSV_URL) -> str:

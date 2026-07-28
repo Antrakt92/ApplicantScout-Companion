@@ -94,7 +94,6 @@ WIRE_VERSIONS_SUPPORTED = {
     0x0A,
     0x0B,
 }
-LOGICAL_WIRE_VERSIONS_SUPPORTED = frozenset((*range(0x01, 0x0A), 0x0B))
 APS1_FLAG_TERMINAL_CLEAR = 0x01
 APS1_FLAG_LFG_UNAVAILABLE = 0x02
 APS1_FLAG_ROSTER_UNAVAILABLE = 0x04
@@ -107,7 +106,6 @@ APS1_FRAGMENT_CHUNK_BYTES = 640
 APS1_FRAGMENT_MIN_CHUNKS = 2
 APS1_FRAGMENT_MAX_CHUNKS = 128
 APS1_FRAGMENT_METADATA_BYTES = 18
-APS1_FRAGMENT_FRAME_OVERHEAD = 9 + APS1_FRAGMENT_METADATA_BYTES + 4
 APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS = 300.0
 
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
@@ -235,6 +233,25 @@ class SnapshotSource:
     mtime_ns: int
     file_id: str
     size: int
+
+
+def _unlink_if_source_matches(
+    path: Path,
+    expected: SnapshotSource | None,
+) -> bool:
+    """Delete only the file generation that was inspected by the caller."""
+    try:
+        if expected is not None:
+            current = path.stat()
+            if (
+                current.st_mtime_ns != expected.mtime_ns
+                or current.st_size != expected.size
+            ):
+                return False
+        path.unlink()
+    except FileNotFoundError:
+        return True
+    return True
 
 
 @dataclass
@@ -1427,6 +1444,7 @@ def cleanup_appscout_screenshots(
             preserved += 1
             continue
         try:
+            decoded_stat = path.stat()
             result = _decode_screenshot_result(path)
         except Exception as exc:  # noqa: BLE001
             decode_errors += 1
@@ -1458,11 +1476,20 @@ def cleanup_appscout_screenshots(
             preserved += 1
             continue
 
+        decoded_source = SnapshotSource(
+            mtime_ns=decoded_stat.st_mtime_ns,
+            file_id=str(path),
+            size=decoded_stat.st_size,
+        )
         try:
-            path.unlink()
-            deleted += 1
-        except FileNotFoundError:
-            deleted += 1
+            if _unlink_if_source_matches(path, decoded_source):
+                deleted += 1
+            else:
+                preserved += 1
+                _log.info(
+                    "cleanup preserved replacement screenshot: %s",
+                    path.name,
+                )
         except OSError as exc:
             delete_failed += 1
             preserved += 1
@@ -1579,11 +1606,20 @@ class _ScreenshotWorkClaim:
         # needed to replace the stale decode result.
         self._release_keys_override = {decoded_key}
 
+    def mark_processed_generation(self, decoded_key: _ScreenshotWorkKey) -> None:
+        # Only the generation actually decoded may enter the recent-work cache.
+        # A same-path replacement arriving during signal dispatch remains new work.
+        self._release_keys_override = {decoded_key}
+
     def release(self) -> None:
         if self._released:
             return
         if self._release_keys_override is None:
             self.refresh()
+        elif not self.retry_requested:
+            current_stat = self.refresh()
+            if current_stat is not None and self.key not in self._release_keys_override:
+                self.retry_requested = True
         self._released = True
         self._owner._release(
             self.path_key,
@@ -2141,6 +2177,10 @@ class ScreenshotWatcher(QObject):
         self._dir = screenshots_dir
         self._observer: Optional[Any] = None
         self._backlog_thread: Optional[threading.Thread] = None
+        self._backlog_rescan_requested = False
+        self._observer_lock = threading.RLock()
+        self._supervisor_thread: Optional[threading.Thread] = None
+        self._observer_restart_count = 0
         self._stopped = threading.Event()
         self._work_claims = _ScreenshotWorkClaims()
         self._manual_index = _manual_index_for(screenshots_dir, cache_dir)
@@ -2153,8 +2193,47 @@ class ScreenshotWatcher(QObject):
         self._fragment_expiry_identity: tuple[int, int] | None = None
         self._fragment_degraded_reported = False
 
-    def start(self) -> None:
-        self._stopped.clear()
+    @staticmethod
+    def _observer_is_healthy(observer: Any | None) -> bool:
+        if observer is None:
+            return False
+        try:
+            is_alive = getattr(observer, "is_alive", None)
+            if callable(is_alive) and not is_alive():
+                return False
+            emitters = getattr(observer, "emitters", None)
+            if emitters is not None:
+                emitters = tuple(emitters)
+                if not emitters:
+                    return False
+                for emitter in emitters:
+                    emitter_is_alive = getattr(emitter, "is_alive", None)
+                    if callable(emitter_is_alive) and not emitter_is_alive():
+                        return False
+        except Exception:  # noqa: BLE001 - broken watchdog state is unhealthy
+            return False
+        return True
+
+    @staticmethod
+    def _stop_observer(observer: Any | None) -> None:
+        if observer is None:
+            return
+        try:
+            is_alive = getattr(observer, "is_alive", None)
+            was_alive = not callable(is_alive) or is_alive()
+        except Exception:  # noqa: BLE001 - attempt a bounded join when uncertain
+            was_alive = True
+        try:
+            observer.stop()
+        except Exception as exc:  # noqa: BLE001 - cleanup is best effort
+            _log.debug("observer cleanup stop failed: %s", exc)
+        try:
+            if was_alive:
+                observer.join(timeout=2)
+        except Exception as exc:  # noqa: BLE001 - cleanup is best effort
+            _log.debug("observer cleanup join failed: %s", exc)
+
+    def _start_observer_locked(self) -> None:
         # Ensure folder exists (WoW creates it on first screenshot, but companion
         # may start before WoW ever takes one)
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -2177,32 +2256,94 @@ class ScreenshotWatcher(QObject):
             # cap = up to ~30s). Overlay now appears immediately. snapshotReceived
             # is a Qt pyqtSignal — emits cross thread are queued safely to the GUI
             # thread by Qt's signal/slot machinery.
-            t = threading.Thread(
-                target=self._scan_recent_backlog,
-                name="ApplicantScoutBacklogScan",
-                daemon=True,
-            )
-            t.start()
-            self._backlog_thread = t
+            self._request_backlog_scan_locked()
         except Exception:
-            self._stopped.set()
             self._observer = None
             self._backlog_thread = None
-            try:
-                is_alive = getattr(observer, "is_alive", None)
-                was_alive = not callable(is_alive) or is_alive()
-            except Exception:  # noqa: BLE001
-                was_alive = True
-            try:
-                observer.stop()
-            except Exception as cleanup_exc:  # noqa: BLE001
-                _log.debug("observer cleanup stop failed: %s", cleanup_exc)
-            try:
-                if was_alive:
-                    observer.join(timeout=2)
-            except Exception as cleanup_exc:  # noqa: BLE001
-                _log.debug("observer cleanup join failed: %s", cleanup_exc)
+            self._backlog_rescan_requested = False
+            self._stop_observer(observer)
             raise
+
+    def _request_backlog_scan_locked(self) -> None:
+        self._backlog_rescan_requested = True
+        current = self._backlog_thread
+        if current is not None and current.is_alive():
+            return
+        worker = threading.Thread(
+            target=self._run_backlog_scans,
+            name="ApplicantScoutBacklogScan",
+            daemon=True,
+        )
+        self._backlog_thread = worker
+        try:
+            worker.start()
+        except Exception:
+            self._backlog_thread = None
+            self._backlog_rescan_requested = False
+            raise
+
+    def _run_backlog_scans(self) -> None:
+        while True:
+            with self._observer_lock:
+                if self._stopped.is_set():
+                    self._backlog_rescan_requested = False
+                    self._backlog_thread = None
+                    return
+                self._backlog_rescan_requested = False
+            try:
+                self._scan_recent_backlog()
+            except Exception:  # noqa: BLE001 - a later restart may request a retry
+                _log.exception("screenshot backlog scan failed")
+            with self._observer_lock:
+                if self._stopped.is_set() or not self._backlog_rescan_requested:
+                    self._backlog_rescan_requested = False
+                    self._backlog_thread = None
+                    return
+
+    def _supervise_observer(self) -> None:
+        while not self._stopped.wait(5.0):
+            try:
+                self.ensure_running()
+            except Exception:  # noqa: BLE001 - retry on the next supervisor tick
+                _log.exception("could not restart failed screenshot observer")
+
+    def start(self) -> None:
+        with self._observer_lock:
+            self._stopped.clear()
+            try:
+                self._start_observer_locked()
+                supervisor = threading.Thread(
+                    target=self._supervise_observer,
+                    name="ApplicantScoutScreenshotSupervisor",
+                    daemon=True,
+                )
+                supervisor.start()
+                self._supervisor_thread = supervisor
+            except Exception:
+                self._stopped.set()
+                observer = self._observer
+                self._observer = None
+                self._supervisor_thread = None
+                self._stop_observer(observer)
+                raise
+
+    def ensure_running(self) -> bool:
+        """Restart a dead watchdog dispatcher/emitter and rescan recent files."""
+        with self._observer_lock:
+            if self._stopped.is_set():
+                return False
+            if self._observer_is_healthy(self._observer):
+                return True
+            failed_observer = self._observer
+            self._observer = None
+            self._stop_observer(failed_observer)
+            self._start_observer_locked()
+            self._observer_restart_count += 1
+            _log.warning(
+                "restarted failed screenshot observer (restart %d)",
+                self._observer_restart_count,
+            )
+            return True
 
     def request_stop(self) -> None:
         with self._fragment_expiry_lock:
@@ -2215,10 +2356,15 @@ class ScreenshotWatcher(QObject):
 
     def stop(self) -> None:
         self.request_stop()
-        if self._observer:
-            self._observer.stop()
-            self._observer.join(timeout=2)
+        with self._observer_lock:
+            observer = self._observer
             self._observer = None
+            supervisor = self._supervisor_thread
+            self._supervisor_thread = None
+            self._backlog_rescan_requested = False
+        self._stop_observer(observer)
+        if supervisor is not None and supervisor is not threading.current_thread():
+            supervisor.join(timeout=2)
         self._manual_index.flush()
         # Backlog thread is daemon=True so process exit doesn't wait for it.
         # We don't .join here: it may be in the middle of a 30-80 ms pyzbar
@@ -2331,7 +2477,7 @@ class ScreenshotWatcher(QObject):
         if self._stopped.is_set():
             return False
         self.snapshotReceived.emit(snap)
-        return True
+        return not self._stopped.is_set()
 
     def _emit_decode_failed(
         self,
@@ -2342,7 +2488,7 @@ class ScreenshotWatcher(QObject):
         if self._stopped.is_set():
             return False
         self.decodeFailed.emit(str(path), reason, source)
-        return True
+        return not self._stopped.is_set()
 
     @staticmethod
     def _source_from_stat(path: Path, stat_result: os.stat_result) -> SnapshotSource:
@@ -2378,17 +2524,8 @@ class ScreenshotWatcher(QObject):
         for retained in files:
             path = retained.path
             try:
-                if retained.source is not None:
-                    current = path.stat()
-                    if (
-                        current.st_mtime_ns != retained.source.mtime_ns
-                        or current.st_size != retained.source.size
-                    ):
-                        continue
-                path.unlink()
-                deleted += 1
-            except FileNotFoundError:
-                pass
+                if _unlink_if_source_matches(path, retained.source):
+                    deleted += 1
             except OSError as exc:
                 _log.warning("could not delete retired fragment %s: %s", path.name, exc)
         return deleted
@@ -2621,10 +2758,13 @@ class ScreenshotWatcher(QObject):
                     if self._stopped.is_set():
                         return remaining, apply_closed, deleted, True
                     try:
-                        path.unlink()
-                        deleted += 1
-                    except FileNotFoundError:
-                        pass
+                        if _unlink_if_source_matches(path, source):
+                            deleted += 1
+                        else:
+                            _log.info(
+                                "backlog preserved replacement screenshot: %s",
+                                path.name,
+                            )
                     except OSError as exc:
                         _log.warning(
                             "backlog could not delete %s: %s",
@@ -2676,9 +2816,19 @@ class ScreenshotWatcher(QObject):
             and not result.transport_suspected
         ):
             self._manual_index.note_manual(decoded_key, flush=flush)
+        claim.mark_processed_generation(decoded_key)
         return True
 
     def _on_new_file(self, path: Path) -> None:
+        try:
+            self._on_new_file_guarded(path)
+        except Exception:  # noqa: BLE001 - never kill watchdog's dispatcher thread
+            _log.exception(
+                "screenshot observer callback failed for %s; watcher remains active",
+                path.name,
+            )
+
+    def _on_new_file_guarded(self, path: Path) -> None:
         for _attempt in range(2):
             claim = self._work_claims.try_claim(path)
             if claim is None:
@@ -2770,9 +2920,47 @@ class ScreenshotWatcher(QObject):
         if self._stopped.is_set():
             return
         try:
-            path.unlink()
+            if not _unlink_if_source_matches(path, source):
+                _log.info(
+                    "preserved replacement screenshot after decode: %s",
+                    path.name,
+                )
         except OSError as exc:
             _log.warning("could not delete %s: %s", path.name, exc)
+
+    def _decode_current_claim(
+        self,
+        path: Path,
+        claim: _ScreenshotWorkClaim,
+    ) -> tuple[DecodeResult, SnapshotSource, float] | None:
+        decode_started = time.perf_counter()
+        if claim.refresh() is None or self._manual_index.contains(claim.key):
+            return None
+        decoded_key = claim.key
+        source = self._source_from_stat(path, claim.stat_result)
+        decode_succeeded = False
+        try:
+            result = _decode_screenshot_result(path)
+            decode_succeeded = True
+        except Exception as exc:  # noqa: BLE001
+            _log.debug(
+                "decode error before APS1 ownership for %s: %r",
+                path.name,
+                exc,
+                exc_info=True,
+            )
+            result = DecodeResult(None, False)
+        if self._stopped.is_set():
+            return None
+        if not self._finalize_decode_result(
+            claim,
+            decoded_key,
+            result,
+            decode_succeeded=decode_succeeded,
+            flush=True,
+        ):
+            return None
+        return result, source, time.perf_counter() - decode_started
 
     def _process_new_file(
         self,
@@ -2808,32 +2996,10 @@ class ScreenshotWatcher(QObject):
             # Manual screenshots can be large/slow too. Only surface a health
             # failure when the timed-out file is actually an ApScout transport
             # image; unrelated screenshots must stay silent and preserved.
-            if claim.refresh() is None or self._manual_index.contains(claim.key):
+            decoded = self._decode_current_claim(path, claim)
+            if decoded is None:
                 return
-            decoded_key = claim.key
-            source = self._source_from_stat(path, claim.stat_result)
-            decode_succeeded = False
-            try:
-                result = _decode_screenshot_result(path)
-                decode_succeeded = True
-            except Exception as e:
-                _log.debug(
-                    "decode error before APS1 ownership for %s: %r",
-                    path.name,
-                    e,
-                    exc_info=True,
-                )
-                result = DecodeResult(None, False)
-            if self._stopped.is_set():
-                return
-            if not self._finalize_decode_result(
-                claim,
-                decoded_key,
-                result,
-                decode_succeeded=decode_succeeded,
-                flush=True,
-            ):
-                return
+            result, source, _decode_elapsed = decoded
             self._dispatch_live_decode_result(
                 path,
                 result,
@@ -2842,34 +3008,10 @@ class ScreenshotWatcher(QObject):
             )
             return
         wait_elapsed = time.perf_counter() - wait_started
-        decode_started = time.perf_counter()
-        if claim.refresh() is None or self._manual_index.contains(claim.key):
+        decoded = self._decode_current_claim(path, claim)
+        if decoded is None:
             return
-        decoded_key = claim.key
-        source = self._source_from_stat(path, claim.stat_result)
-        decode_succeeded = False
-        try:
-            result = _decode_screenshot_result(path)
-            decode_succeeded = True
-        except Exception as e:
-            _log.debug(
-                "decode error before APS1 ownership for %s: %r",
-                path.name,
-                e,
-                exc_info=True,
-            )
-            result = DecodeResult(None, False)
-        if self._stopped.is_set():
-            return
-        if not self._finalize_decode_result(
-            claim,
-            decoded_key,
-            result,
-            decode_succeeded=decode_succeeded,
-            flush=True,
-        ):
-            return
-        decode_elapsed = time.perf_counter() - decode_started
+        result, source, decode_elapsed = decoded
         if (
             wait_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S
             or decode_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S
@@ -2889,7 +3031,7 @@ class ScreenshotWatcher(QObject):
         )
 
 
-def _positive_int_arg(raw: str) -> int:
+def positive_int_arg(raw: str) -> int:
     try:
         value = int(raw)
     except ValueError as exc:
@@ -2899,7 +3041,7 @@ def _positive_int_arg(raw: str) -> int:
     return value
 
 
-def _system_exit_code(code: object) -> int:
+def system_exit_code(code: object) -> int:
     return code if isinstance(code, int) else 1
 
 
@@ -2938,11 +3080,11 @@ def _cleanup_cli(argv: list[str]) -> int:
     )
     parser.add_argument("screenshots_dir")
     parser.add_argument("--delete", action="store_true")
-    parser.add_argument("--limit", type=_positive_int_arg)
+    parser.add_argument("--limit", type=positive_int_arg)
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
-        return _system_exit_code(exc.code)
+        return system_exit_code(exc.code)
     try:
         summary = cleanup_appscout_screenshots(
             Path(args.screenshots_dir),

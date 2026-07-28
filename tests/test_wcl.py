@@ -538,12 +538,12 @@ def _encounter_query_lines(role: str) -> list[str]:
     ]
 
 
-def test_character_ranks_query_healer_uses_hps_for_mplus_encounters():
+def test_character_ranks_query_healer_uses_dps_for_mplus_encounters():
     lines = _encounter_query_lines("HEALER")
 
     assert len(lines) == len(MPLUS_ENCOUNTERS)
-    assert all("metric: hps" in line for line in lines)
-    assert not any("metric: dps" in line for line in lines)
+    assert all("metric: dps" in line for line in lines)
+    assert not any("metric: hps" in line for line in lines)
 
 
 @pytest.mark.parametrize("role", ["DAMAGER", "TANK", "DPS"])
@@ -587,7 +587,7 @@ def test_character_ranks_query_omits_disabled_raid_variables():
     assert "$raidMetric" not in query
     assert "zoneRankings" not in query
     assert "encounterRankings" in query
-    assert "metric: hps" in query
+    assert "metric: dps" in query
 
 
 def test_raid_boss_detail_query_uses_two_aliases_per_enabled_boss():
@@ -609,6 +609,23 @@ def test_raid_boss_detail_query_uses_two_aliases_per_enabled_boss():
     assert any("byBracket: true" in line for line in lines)
     assert "difficulty: 3" not in query
     assert "difficulty: 4" not in query
+
+
+def test_raid_boss_detail_query_healer_keeps_hps_metric():
+    query = _build_raid_boss_detail_query(
+        "HEALER",
+        MetricPreferences(
+            mplus=False,
+            raid_normal=False,
+            raid_heroic=True,
+            raid_mythic=False,
+        ),
+    )
+
+    lines = [line for line in query.splitlines() if "encounterRankings" in line]
+    assert len(lines) == len(CURRENT_RAID_ENCOUNTERS) * 2
+    assert all("metric: hps" in line for line in lines)
+    assert not any("metric: dps" in line for line in lines)
 
 
 def test_raid_boss_detail_query_includes_sporefall_rotmire():
@@ -939,7 +956,7 @@ def test_fetch_character_raid_boss_details_stale_401_does_not_invalidate_old_aut
     assert auth.invalidations == 0
 
 
-def test_fetch_character_ranks_healer_routes_mplus_to_hps_breakdown():
+def test_fetch_character_ranks_healer_routes_mplus_to_dps_breakdown():
     client, http = _client_for_payload(
         _wcl_payload(
             _character_with_empty_mplus(
@@ -972,13 +989,13 @@ def test_fetch_character_ranks_healer_routes_mplus_to_hps_breakdown():
     assert call["json"]["variables"]["serverSlug"] == "ravencrest"
     assert call["json"]["variables"]["raidMetric"] == "hps"
 
-    assert result.mplus_dps is None
-    assert result.mplus_dps_median is None
-    assert result.mplus_dps_breakdown == []
-    assert result.mplus_hps == pytest.approx(82.0)
-    assert result.mplus_hps_median == pytest.approx(72.0)
-    assert len(result.mplus_hps_breakdown) == 1
-    perf = result.mplus_hps_breakdown[0]
+    assert result.mplus_hps is None
+    assert result.mplus_hps_median is None
+    assert result.mplus_hps_breakdown == []
+    assert result.mplus_dps == pytest.approx(82.0)
+    assert result.mplus_dps_median == pytest.approx(72.0)
+    assert len(result.mplus_dps_breakdown) == 1
+    perf = result.mplus_dps_breakdown[0]
     assert perf.name == "Algeth'ar Academy"
     assert perf.parse_percent == pytest.approx(82.0)
     assert perf.median_percent == pytest.approx(72.0)
@@ -4163,20 +4180,8 @@ def test_fetch_character_ranks_character_not_found_precedes_malformed_mplus_alia
 
 
 def test_oauth_refresh_malformed_json_raises_wcl_auth_error(monkeypatch, tmp_path):
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse({}, json_error=ValueError("bad json"))
-
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    oauth_http = _OAuthHTTP(_FakeResponse({}, json_error=ValueError("bad json")))
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     auth = WCLAuth("client", "secret", tmp_path)
 
     with pytest.raises(WCLAuthError, match="Malformed OAuth response"):
@@ -4305,24 +4310,14 @@ def test_oauth_token_save_failure_preserves_previous_token_file(
 ):
     token_path = tmp_path / "token.json"
     token_path.write_text("old-token", encoding="utf-8")
-
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
+    )
 
     def fail_replace(_src: object, _dst: object) -> None:
         raise PermissionError("locked")
 
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     monkeypatch.setattr(atomic_io.os, "replace", fail_replace)
     auth = WCLAuth("client", "secret", tmp_path)
 
@@ -4562,20 +4557,10 @@ def test_oauth_cached_token_ignored_for_different_client_fingerprint(
         encoding="utf-8",
     )
 
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
-
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
+    )
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     auth = WCLAuth("new-client", "secret", tmp_path)
 
     assert auth.get_token() == "fresh-token"
@@ -4619,20 +4604,10 @@ def test_oauth_cached_token_ignored_for_same_client_different_secret(
         encoding="utf-8",
     )
 
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
-
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
+    )
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     auth = WCLAuth("client", "new-secret", tmp_path)
 
     assert auth.get_token() == "fresh-token"
@@ -4647,20 +4622,10 @@ def test_oauth_cached_token_without_fingerprint_is_ignored(
         encoding="utf-8",
     )
 
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
-
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
+    )
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     auth = WCLAuth("client", "secret", tmp_path)
 
     assert auth.get_token() == "fresh-token"
@@ -4687,20 +4652,10 @@ def test_oauth_cached_token_invalid_access_token_is_ignored_and_refreshed(
         encoding="utf-8",
     )
 
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
-
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
+    )
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     auth = WCLAuth("client", "secret", tmp_path)
 
     assert auth.get_token() == "fresh-token"
@@ -4727,20 +4682,10 @@ def test_oauth_cached_token_invalid_expires_at_is_ignored_and_refreshed(
         encoding="utf-8",
     )
 
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
-
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({"access_token": "fresh-token", "expires_in": 3600})
+    )
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     auth = WCLAuth("client", "secret", tmp_path)
 
     assert auth.get_token() == "fresh-token"
@@ -4749,22 +4694,10 @@ def test_oauth_cached_token_invalid_expires_at_is_ignored_and_refreshed(
 def test_oauth_refresh_invalid_expires_in_raises_wcl_auth_error(
     monkeypatch, tmp_path
 ):
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse(
-                {"access_token": "token", "expires_in": float("inf")}
-            )
-
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({"access_token": "token", "expires_in": float("inf")})
+    )
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     auth = WCLAuth("client", "secret", tmp_path)
 
     with pytest.raises(WCLAuthError, match="invalid expires_in"):
@@ -4774,20 +4707,10 @@ def test_oauth_refresh_invalid_expires_in_raises_wcl_auth_error(
 def test_oauth_refresh_huge_decimal_expires_in_raises_wcl_auth_error(
     monkeypatch, tmp_path
 ):
-    class _OAuthClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse({"access_token": "token", "expires_in": "9" * 500})
-
-    monkeypatch.setattr(wcl_mod.httpx, "Client", _OAuthClient)
+    oauth_http = _OAuthHTTP(
+        _FakeResponse({"access_token": "token", "expires_in": "9" * 500})
+    )
+    monkeypatch.setattr(wcl_mod.httpx, "Client", lambda *args, **kwargs: oauth_http)
     auth = WCLAuth("client", "secret", tmp_path)
 
     with pytest.raises(WCLAuthError, match="invalid expires_in"):

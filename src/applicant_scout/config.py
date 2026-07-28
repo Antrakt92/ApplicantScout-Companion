@@ -53,6 +53,13 @@ class ConfigError(RuntimeError):
     """Actionable configuration/setup error shown before app startup."""
 
 
+COMMON_WOW_RETAIL_ROOTS = (
+    Path(r"C:\Games\World of Warcraft\_retail_"),
+    Path(r"C:\Program Files (x86)\World of Warcraft\_retail_"),
+    Path.home() / "World of Warcraft" / "_retail_",
+)
+
+
 def _screenshots_setup_message(details: str) -> str:
     return (
         f"{details}. Set APSCOUT_SCREENSHOTS_PATH to your active "
@@ -62,11 +69,7 @@ def _screenshots_setup_message(details: str) -> str:
 
 def _default_chatlog_path() -> Path:
     """Default WoW retail chatlog path."""
-    candidates = [
-        Path(r"C:\Games\World of Warcraft\_retail_\Logs\WoWChatLog.txt"),
-        Path(r"C:\Program Files (x86)\World of Warcraft\_retail_\Logs\WoWChatLog.txt"),
-        Path.home() / "World of Warcraft" / "_retail_" / "Logs" / "WoWChatLog.txt",
-    ]
+    candidates = [root / "Logs" / "WoWChatLog.txt" for root in COMMON_WOW_RETAIL_ROOTS]
     for p in candidates:
         if p.parent.exists():
             return p
@@ -240,26 +243,6 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _config_values() -> dict[str, str]:
-    config_path = user_config_path()
-    if config_path.exists():
-        try:
-            return _read_env_file(config_path)
-        except (OSError, UnicodeError) as exc:
-            raise ConfigError(
-                f"Could not read ApplicantScout config at {config_path}: {exc}"
-            ) from exc
-    legacy_path = _legacy_env_path()
-    if legacy_path is not None:
-        try:
-            return _read_env_file(legacy_path)
-        except (OSError, UnicodeError) as exc:
-            raise ConfigError(
-                f"Could not read ApplicantScout config at {legacy_path}: {exc}"
-            ) from exc
-    return {}
-
-
 def read_user_config_values(config_path: Path | None = None) -> dict[str, str]:
     """Read persisted values without process environment overrides."""
     target = config_path or user_config_path()
@@ -303,10 +286,6 @@ def _bool_env_line(key: str, value: bool) -> str:
     return _env_line(key, "1" if value else "0")
 
 
-def _write_private_text(path: Path, text: str) -> None:
-    atomic_write_text(path, text, private=True)
-
-
 def save_config_values(
     *,
     wcl_client_id: str,
@@ -341,7 +320,7 @@ def save_config_values(
         lines.append(_env_line("APSCOUT_CACHE_TTL_SECONDS", str(cache_ttl_seconds)))
     if chatlog_path.strip():
         lines.append(_env_line("APSCOUT_CHATLOG_PATH", chatlog_path))
-    _write_private_text(target, "".join(lines))
+    atomic_write_text(target, "".join(lines), private=True)
     return target
 
 
@@ -385,10 +364,6 @@ def _parse_bool_setting(key: str, raw: str | None, *, default: bool) -> bool:
     raise ConfigError(f"{key} must be one of: {_BOOL_TOKEN_HELP}")
 
 
-def _parse_metric_bool_setting(key: str, raw: str | None, *, default: bool) -> bool:
-    return _parse_bool_setting(key, raw, default=default)
-
-
 def validate_metric_preferences(metric_preferences: MetricPreferences) -> MetricPreferences:
     if not metric_preferences.any_enabled:
         raise ConfigError("Select at least one WCL data type.")
@@ -397,7 +372,7 @@ def validate_metric_preferences(metric_preferences: MetricPreferences) -> Metric
 
 def load_config() -> Config:
     """Load config values without prompting or depending on process CWD."""
-    values = _config_values()
+    values = read_user_config_values()
     client_id = _value(values, "WCL_CLIENT_ID")
     client_secret = _value(values, "WCL_CLIENT_SECRET")
     draft_client_id = _value(values, "APSCOUT_DRAFT_WCL_CLIENT_ID")
@@ -415,22 +390,22 @@ def load_config() -> Config:
     cache_ttl_seconds = _parse_cache_ttl_seconds(_value(values, "APSCOUT_CACHE_TTL_SECONDS", ""))
     metric_preferences = validate_metric_preferences(
         MetricPreferences(
-            mplus=_parse_metric_bool_setting(
+            mplus=_parse_bool_setting(
                 "APSCOUT_FETCH_MPLUS",
                 _value(values, "APSCOUT_FETCH_MPLUS", ""),
                 default=DEFAULT_METRIC_PREFERENCES.mplus,
             ),
-            raid_normal=_parse_metric_bool_setting(
+            raid_normal=_parse_bool_setting(
                 "APSCOUT_FETCH_RAID_NORMAL",
                 _value(values, "APSCOUT_FETCH_RAID_NORMAL", ""),
                 default=DEFAULT_METRIC_PREFERENCES.raid_normal,
             ),
-            raid_heroic=_parse_metric_bool_setting(
+            raid_heroic=_parse_bool_setting(
                 "APSCOUT_FETCH_RAID_HEROIC",
                 _value(values, "APSCOUT_FETCH_RAID_HEROIC", ""),
                 default=DEFAULT_METRIC_PREFERENCES.raid_heroic,
             ),
-            raid_mythic=_parse_metric_bool_setting(
+            raid_mythic=_parse_bool_setting(
                 "APSCOUT_FETCH_RAID_MYTHIC",
                 _value(values, "APSCOUT_FETCH_RAID_MYTHIC", ""),
                 default=DEFAULT_METRIC_PREFERENCES.raid_mythic,

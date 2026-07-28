@@ -22,7 +22,11 @@ import httpx
 
 from applicant_scout.constants import (
     MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME,
-    MPLUS_ENCOUNTERS,
+)
+from scripts.seasonal._shared import (
+    SeasonalScriptError,
+    current_mplus_dungeon_names,
+    quote_display_string,
 )
 
 
@@ -36,10 +40,6 @@ REQUIRED_CHALLENGE_COLUMNS = frozenset({"Name_lang", "ID", "MapID"})
 REQUIRED_TRACKED_COLUMNS = frozenset(
     {"ID", "MapChallengeModeID", "DisplaySeasonID"}
 )
-
-
-class SeasonalScriptError(RuntimeError):
-    """Actionable manual-script error."""
 
 
 @dataclass(frozen=True)
@@ -177,20 +177,12 @@ def extract_mplus_challenge_map_mapping(
     return mapping
 
 
-def _quote_display_string(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def format_challenge_map_mapping(mapping: dict[int, str]) -> str:
     lines = ["MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME: dict[int, str] = {"]
     for challenge_map_id, dungeon_name in sorted(mapping.items()):
-        lines.append(f"    {challenge_map_id}: {_quote_display_string(dungeon_name)},")
+        lines.append(f"    {challenge_map_id}: {quote_display_string(dungeon_name)},")
     lines.append("}")
     return "\n".join(lines)
-
-
-def current_mplus_dungeon_names() -> list[str]:
-    return [name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS]
 
 
 def fetch_wago_csv(url: str, table_name: str, marker: str) -> str:

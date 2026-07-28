@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from .atomic_io import atomic_write_text
-from .constants import REGION_ID_TO_WCL
+from .producer_identity import (
+    normalize_producer_identity,
+    producer_identities_conflict,
+)
 from .screenshot import (
     DecodedApplicant,
     DecodedLeaderKey,
@@ -125,30 +128,15 @@ def _producer_contexts_conflict(
 ) -> bool:
     if left is None or right is None:
         return False
-    left_identity = str(left.get("player_name") or "").strip().casefold()
-    right_identity = str(right.get("player_name") or "").strip().casefold()
-    left_name, _, left_realm = left_identity.partition("-")
-    right_name, _, right_realm = right_identity.partition("-")
-    left_region_id = left.get("region_id")
-    right_region_id = right.get("region_id")
-    left_region = (
-        REGION_ID_TO_WCL.get(left_region_id)
-        if isinstance(left_region_id, int)
-        else None
-    )
-    right_region = (
-        REGION_ID_TO_WCL.get(right_region_id)
-        if isinstance(right_region_id, int)
-        else None
-    )
-    return bool(
-        left_name
-        and right_name
-        and (
-            left_name != right_name
-            or (left_realm and right_realm and left_realm != right_realm)
-            or (left_region and right_region and left_region != right_region)
-        )
+    return producer_identities_conflict(
+        normalize_producer_identity(
+            left.get("player_name"),
+            left.get("region_id"),
+        ),
+        normalize_producer_identity(
+            right.get("player_name"),
+            right.get("region_id"),
+        ),
     )
 
 

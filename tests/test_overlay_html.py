@@ -21,14 +21,14 @@ from applicant_scout.overlay import (
     COLUMN_WIDTHS,
     HEADER_TOOLTIPS,
     NAME_COLUMN_MAX_WIDTH,
-    _clamp_rect_to_bounds,
-    _metric_text,
     _mplus_cell_visuals,
-    _mplus_dungeon_metric_text,
-    _mplus_sort_key,
     _normalize_loaded_geometry,
     _raid_cell_visuals,
     _text_colour_for_bg,
+)
+from applicant_scout.overlay_presenters import (
+    mplus_dungeon_metric_text,
+    mplus_sort_key,
 )
 from applicant_scout.state import (
     DEFAULT_WINDOW_HEIGHT,
@@ -38,6 +38,7 @@ from applicant_scout.state import (
     Listing,
     WindowGeometry,
 )
+from applicant_scout.window_geometry import clamp_rect_to_bounds
 
 
 @pytest.mark.parametrize(
@@ -211,12 +212,6 @@ def test_raid_cell_visuals_treats_malformed_median_as_missing(median):
     )
 
 
-def test_metric_text_handles_best_median_and_missing_values():
-    assert _metric_text(80.0, 62.0) == "80/62"
-    assert _metric_text(80.0, None) == "80"
-    assert _metric_text(None, None) == "—"
-
-
 def test_mplus_cell_visuals_dps_appends_highest_key():
     text, fg, bg = _mplus_cell_visuals(_app(role="DAMAGER"))
 
@@ -236,7 +231,7 @@ def test_mplus_cell_visuals_listing_colours_fit_score_with_wcl_palette():
     assert fg == _text_colour_for_bg(bg)
 
 
-def test_mplus_cell_visuals_healer_uses_hps_key_only():
+def test_mplus_cell_visuals_healer_uses_dps_key_only():
     healer = _app(
         role="HEALER",
         mplus_dps=99.0,
@@ -264,7 +259,7 @@ def test_mplus_cell_visuals_healer_uses_hps_key_only():
     )
 
     text, _fg, _bg = _mplus_cell_visuals(healer)
-    assert text == "85/70 +12"
+    assert text == "99/88 +20"
 
 
 def test_mplus_cell_visuals_median_missing_keeps_key_suffix():
@@ -319,7 +314,7 @@ def test_mplus_cell_visuals_run_count_zero_cache_does_not_mark_n1():
     assert text == "80 +14"
 
 
-def test_mplus_cell_visuals_single_run_healer_uses_hps_breakdown():
+def test_mplus_cell_visuals_single_run_healer_uses_dps_breakdown():
     text, _fg, _bg = _mplus_cell_visuals(
         _app(
             role="HEALER",
@@ -348,7 +343,7 @@ def test_mplus_cell_visuals_single_run_healer_uses_hps_breakdown():
         )
     )
 
-    assert text == "70 N=1 +10"
+    assert text == "99 N=1 +20"
 
 
 @pytest.mark.parametrize(
@@ -405,31 +400,31 @@ def test_mplus_cell_visuals_all_missing_omits_key_suffix():
 
 def test_mplus_dungeon_metric_text_respects_run_count():
     assert (
-        _mplus_dungeon_metric_text(
+        mplus_dungeon_metric_text(
             {"parse_percent": 100.0, "median_percent": 80.0, "run_count": 3}
         )
         == "100/80"
     )
     assert (
-        _mplus_dungeon_metric_text(
+        mplus_dungeon_metric_text(
             {"parse_percent": 70.0, "median_percent": 50.0, "run_count": 1}
         )
         == "70 N=1"
     )
     assert (
-        _mplus_dungeon_metric_text(
+        mplus_dungeon_metric_text(
             {"parse_percent": 70.0, "median_percent": None, "run_count": 0}
         )
         == "70"
     )
     assert (
-        _mplus_dungeon_metric_text(
+        mplus_dungeon_metric_text(
             {"parse_percent": "nope", "median_percent": "101", "run_count": "x"}
         )
         == "—"
     )
     assert (
-        _mplus_dungeon_metric_text(
+        mplus_dungeon_metric_text(
             {"parse_percent": None, "median_percent": 60.0, "run_count": 2}
         )
         == "—"
@@ -443,7 +438,7 @@ def test_mplus_sort_key_puts_malformed_keys_after_valid_keys():
         {"name": "String Safe", "key_level": "12"},
     ]
 
-    assert [row["name"] for row in sorted(rows, key=_mplus_sort_key)] == [
+    assert [row["name"] for row in sorted(rows, key=mplus_sort_key)] == [
         "Valid High",
         "String Safe",
         "Bad Cache",
@@ -505,7 +500,7 @@ def test_current_geometry_version_is_left_unchanged():
 
 
 def test_clamp_rect_shrinks_oversized_visible_geometry_to_available_bounds():
-    assert _clamp_rect_to_bounds(40, 50, 5000, 3000, QRect(0, 0, 1920, 1080)) == (
+    assert clamp_rect_to_bounds(40, 50, 5000, 3000, QRect(0, 0, 1920, 1080)) == (
         0,
         0,
         1920,
@@ -514,7 +509,7 @@ def test_clamp_rect_shrinks_oversized_visible_geometry_to_available_bounds():
 
 
 def test_clamp_rect_clamps_position_after_width_shrink_at_right_edge():
-    assert _clamp_rect_to_bounds(1800, 20, 400, 300, QRect(0, 0, 1920, 1080)) == (
+    assert clamp_rect_to_bounds(1800, 20, 400, 300, QRect(0, 0, 1920, 1080)) == (
         1520,
         20,
         400,
@@ -523,7 +518,7 @@ def test_clamp_rect_clamps_position_after_width_shrink_at_right_edge():
 
 
 def test_clamp_rect_clamps_position_after_height_shrink_at_bottom_edge():
-    assert _clamp_rect_to_bounds(20, 980, 400, 300, QRect(0, 0, 1920, 1080)) == (
+    assert clamp_rect_to_bounds(20, 980, 400, 300, QRect(0, 0, 1920, 1080)) == (
         20,
         780,
         400,
@@ -532,7 +527,7 @@ def test_clamp_rect_clamps_position_after_height_shrink_at_bottom_edge():
 
 
 def test_clamp_rect_handles_negative_monitor_coordinates():
-    assert _clamp_rect_to_bounds(-2500, 900, 900, 400, QRect(-1920, 0, 1920, 1080)) == (
+    assert clamp_rect_to_bounds(-2500, 900, 900, 400, QRect(-1920, 0, 1920, 1080)) == (
         -1920,
         680,
         900,
@@ -541,7 +536,7 @@ def test_clamp_rect_handles_negative_monitor_coordinates():
 
 
 def test_clamp_rect_leaves_small_launcher_rect_inside_bounds_unchanged():
-    assert _clamp_rect_to_bounds(100, 120, 42, 42, QRect(0, 0, 1920, 1080)) == (
+    assert clamp_rect_to_bounds(100, 120, 42, 42, QRect(0, 0, 1920, 1080)) == (
         100,
         120,
         42,

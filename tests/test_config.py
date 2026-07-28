@@ -16,6 +16,7 @@ import applicant_scout.__main__ as main_mod
 from applicant_scout import atomic_io
 import applicant_scout.config as config_mod
 import applicant_scout.live_snapshot_cache as live_snapshot_cache_mod
+import applicant_scout.runtime_control as runtime_control_mod
 import applicant_scout.screenshot as screenshot_mod
 from applicant_scout.live_snapshot_cache import (
     LIVE_SNAPSHOT_CACHE_FILENAME,
@@ -45,6 +46,47 @@ from applicant_scout.config import (
     user_config_path,
 )
 from applicant_scout.metric_preferences import MetricPreferences
+
+
+class FakeSignal:
+    def __init__(self) -> None:
+        self._callbacks: list[Callable[..., object]] = []
+
+    def connect(self, callback: Callable[..., object]) -> None:
+        self._callbacks.append(callback)
+
+    def emit(self, *args: object) -> None:
+        for callback in list(self._callbacks):
+            callback(*args)
+
+
+class FakeMachine:
+    def __init__(self) -> None:
+        self.snapshots: list[object] = []
+
+    def apply_snapshot(self, snap: object) -> None:
+        self.snapshots.append(snap)
+
+
+class _LifecycleTimer:
+    def __init__(
+        self,
+        _parent: object,
+        callbacks: list[Callable[[], None]],
+    ) -> None:
+        self.timeout = SimpleNamespace(connect=callbacks.append)
+
+    def setInterval(self, _interval: int) -> None:
+        pass
+
+    def start(self) -> None:
+        pass
+
+
+def _lifecycle_timer_factory(
+    callbacks: list[Callable[[], None]],
+) -> Callable[[object], _LifecycleTimer]:
+    return lambda parent: _LifecycleTimer(parent, callbacks)
 
 
 def _cfg(
@@ -3019,11 +3061,11 @@ def test_send_control_command_reports_ok_response(monkeypatch: pytest.MonkeyPatc
 
 
 def test_control_server_name_is_user_scoped_without_exposing_identity():
-    alice = main_mod._scoped_control_server_name("DOMAIN\\Alice")
-    bob = main_mod._scoped_control_server_name("DOMAIN\\Bob")
+    alice = runtime_control_mod.scoped_control_server_name("DOMAIN\\Alice")
+    bob = runtime_control_mod.scoped_control_server_name("DOMAIN\\Bob")
 
-    assert alice.startswith(f"{main_mod.CONTROL_SERVER_BASENAME}.")
-    assert bob.startswith(f"{main_mod.CONTROL_SERVER_BASENAME}.")
+    assert alice.startswith(f"{runtime_control_mod.CONTROL_SERVER_BASENAME}.")
+    assert bob.startswith(f"{runtime_control_mod.CONTROL_SERVER_BASENAME}.")
     assert alice != bob
     assert "alice" not in alice.casefold()
     assert "bob" not in bob.casefold()
@@ -3079,7 +3121,9 @@ def test_send_control_command_falls_back_to_legacy_endpoint(
 
 @pytest.mark.skipif(main_mod.sys.platform != "win32", reason="Windows mutex contract")
 def test_windows_runtime_owner_allows_exactly_one_concurrent_contender():
-    owner_name = f"Global\\{main_mod.CONTROL_SERVER_BASENAME}.Test.{time.time_ns()}"
+    owner_name = (
+        f"Global\\{runtime_control_mod.CONTROL_SERVER_BASENAME}.Test.{time.time_ns()}"
+    )
     start = threading.Barrier(3)
     release = threading.Barrier(3)
 
@@ -5067,21 +5111,11 @@ def test_wow_lifecycle_timer_waits_until_wow_seen_before_quitting(
     states = iter([False, True, False, False, False])
     lifecycle_calls: list[str] = []
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     class FakeApp:
         def quit(self) -> None:
             lifecycle_calls.append("quit")
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: next(states))
     _install_fake_wow_watcher(lifecycle_calls)
 
@@ -5110,16 +5144,6 @@ def test_wow_lifecycle_timer_does_not_run_process_scan_on_gui_tick(
     workers = []
     calls: list[str] = []
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     class FakeApp:
         def quit(self) -> None:
             calls.append("quit")
@@ -5128,7 +5152,7 @@ def test_wow_lifecycle_timer_does_not_run_process_scan_on_gui_tick(
         calls.append("scan")
         return False
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
 
     main_mod._start_wow_lifecycle_timer(
         FakeApp(),
@@ -5155,21 +5179,11 @@ def test_wow_lifecycle_timer_waits_for_consecutive_missing_wow_scans(
     calls: list[str] = []
     states = iter([False, False, False])
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     class FakeApp:
         def quit(self) -> None:
             calls.append("quit")
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     monkeypatch.setattr(main_mod, "start_wow_sync_watcher", lambda **_kwargs: None)
 
     main_mod._start_wow_lifecycle_timer(
@@ -5201,21 +5215,11 @@ def test_wow_lifecycle_timer_resets_missing_streak_after_unknown_scan(
     calls: list[str] = []
     states = iter([False, None, False, False, False])
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     class FakeApp:
         def quit(self) -> None:
             calls.append("quit")
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     _install_fake_wow_watcher(calls)
 
     main_mod._start_wow_lifecycle_timer(
@@ -5244,16 +5248,6 @@ def test_wow_lifecycle_timer_retries_after_process_scan_failure(
     calls: list[str] = []
     states = iter([False, RuntimeError("tasklist failed"), False, False, False])
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     class FakeApp:
         def quit(self) -> None:
             calls.append("quit")
@@ -5264,7 +5258,7 @@ def test_wow_lifecycle_timer_retries_after_process_scan_failure(
             raise state
         return state
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     _install_fake_wow_watcher(calls)
 
     main_mod._start_wow_lifecycle_timer(
@@ -5298,21 +5292,11 @@ def test_wow_lifecycle_timer_rearms_watcher_before_quitting(
     callbacks = []
     calls: list[str] = []
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     class FakeApp:
         def quit(self) -> None:
             calls.append("quit")
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
@@ -5339,16 +5323,6 @@ def test_wow_lifecycle_timer_retries_rearm_failure_before_quitting(
     calls: list[str] = []
     watcher_results = iter([RuntimeError("watcher failed"), None])
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     class FakeApp:
         def quit(self) -> None:
             calls.append("quit")
@@ -5359,7 +5333,7 @@ def test_wow_lifecycle_timer_retries_rearm_failure_before_quitting(
         if isinstance(result, Exception):
             raise result
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(main_mod, "start_wow_sync_watcher", start_watcher)
 
@@ -5384,21 +5358,11 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_quit_is_blocked(
     calls: list[str] = []
     can_quit_values = iter([False, True])
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     class FakeApp:
         def quit(self) -> None:
             calls.append("app-quit")
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
@@ -5429,17 +5393,7 @@ def test_wow_lifecycle_timer_defers_rearm_and_quit_when_prepare_quit_is_blocked(
     calls: list[str] = []
     prepare_values = iter([False, True])
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
@@ -5474,23 +5428,13 @@ def test_wow_lifecycle_timer_skips_rearm_when_prepare_quit_deactivates_timer(
     calls: list[str] = []
     timer_box: dict[str, object] = {}
 
-    class FakeTimer:
-        def __init__(self, _parent) -> None:
-            self.timeout = SimpleNamespace(connect=lambda callback: callbacks.append(callback))
-
-        def setInterval(self, _interval: int) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
     def prepare_quit() -> bool:
         calls.append("prepare")
         state = getattr(timer_box["timer"], "_applicant_scout_wow_lifecycle_state")
         state["active"] = False
         return True
 
-    monkeypatch.setattr(main_mod, "QTimer", FakeTimer)
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
     monkeypatch.setattr(main_mod, "is_wow_running", lambda **_kwargs: False)
     monkeypatch.setattr(
         main_mod,
@@ -5849,17 +5793,6 @@ def test_replace_screenshot_watcher_ignores_old_queued_signals_after_replacement
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -5871,13 +5804,6 @@ def test_replace_screenshot_watcher_ignores_old_queued_signals_after_replacement
 
         def stop(self) -> None:
             pass
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -5962,17 +5888,6 @@ def test_connect_screenshot_watcher_ignores_stale_snapshot_after_newer_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, _path: Path) -> None:
             self.snapshotReceived = FakeSignal()
@@ -5983,13 +5898,6 @@ def test_connect_screenshot_watcher_ignores_stale_snapshot_after_newer_snapshot(
 
         def stop(self) -> None:
             pass
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -6030,17 +5938,6 @@ def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_sna
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, _path: Path) -> None:
             self.snapshotReceived = FakeSignal()
@@ -6051,13 +5948,6 @@ def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_sna
 
         def stop(self) -> None:
             pass
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -6097,28 +5987,10 @@ def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_sna
 
 
 def test_connect_screenshot_watcher_applies_older_snapshot_before_newer_decode_failure():
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self) -> None:
             self.snapshotReceived = FakeSignal()
             self.decodeFailed = FakeSignal()
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -6164,28 +6036,10 @@ def test_connect_screenshot_watcher_applies_older_snapshot_before_newer_decode_f
 
 
 def test_connect_screenshot_watcher_coalesces_snapshot_burst_to_latest():
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self) -> None:
             self.snapshotReceived = FakeSignal()
             self.decodeFailed = FakeSignal()
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -6231,28 +6085,10 @@ def test_connect_screenshot_watcher_coalesces_snapshot_burst_to_latest():
 
 
 def test_connect_screenshot_watcher_retains_newer_decode_failure_after_pending_snapshot():
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self) -> None:
             self.snapshotReceived = FakeSignal()
             self.decodeFailed = FakeSignal()
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -6299,28 +6135,10 @@ def test_connect_screenshot_watcher_retains_newer_decode_failure_after_pending_s
 
 
 def test_connect_screenshot_watcher_drops_older_failure_before_newer_snapshot():
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self) -> None:
             self.snapshotReceived = FakeSignal()
             self.decodeFailed = FakeSignal()
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -6499,17 +6317,6 @@ def test_snapshot_apply_queue_does_not_reemit_failure_after_generation_invalidat
 
 
 def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self) -> None:
             self.snapshotReceived = FakeSignal()
@@ -6552,17 +6359,6 @@ def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():
 
 
 def test_connect_screenshot_watcher_submits_cache_after_applying_snapshot():
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self) -> None:
             self.snapshotReceived = FakeSignal()
@@ -6607,28 +6403,10 @@ def test_connect_screenshot_watcher_submits_cache_after_applying_snapshot():
 
 
 def test_connect_screenshot_watcher_invalidate_drops_queued_flush():
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self) -> None:
             self.snapshotReceived = FakeSignal()
             self.decodeFailed = FakeSignal()
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def __init__(self) -> None:
@@ -6672,28 +6450,10 @@ def test_connect_screenshot_watcher_invalidate_drops_queued_flush():
 
 
 def test_connect_screenshot_watcher_preserves_terminal_clear_by_source_order():
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self) -> None:
             self.snapshotReceived = FakeSignal()
             self.decodeFailed = FakeSignal()
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     class FakeWindow:
         def note_decode(self, _snap: object) -> None:
@@ -7134,17 +6894,6 @@ def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -7157,13 +6906,6 @@ def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails
 
         def stop(self) -> None:
             pass
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     created: list[FakeWatcher] = []
 
@@ -7203,17 +6945,6 @@ def test_replace_screenshot_watcher_keeps_new_generation_when_old_stop_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -7227,13 +6958,6 @@ def test_replace_screenshot_watcher_keeps_new_generation_when_old_stop_fails(
             calls.append(f"stop:{self.path.name}")
             if self.path.name == "old":
                 raise RuntimeError("old stop failed")
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     calls: list[str] = []
     created: list[FakeWatcher] = []
@@ -7347,7 +7071,7 @@ def test_application_event_loop_holds_runtime_owner_through_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ):
     owner_name = (
-        f"Global\\{main_mod.CONTROL_SERVER_BASENAME}.Shutdown.{time.time_ns()}"
+        f"Global\\{runtime_control_mod.CONTROL_SERVER_BASENAME}.Shutdown.{time.time_ns()}"
     )
     owner = main_mod._acquire_runtime_owner(owner_name)
     assert owner is not None
@@ -7585,17 +7309,6 @@ def test_replace_screenshot_watcher_ignores_old_signal_emitted_during_old_stop_a
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -7608,13 +7321,6 @@ def test_replace_screenshot_watcher_ignores_old_signal_emitted_during_old_stop_a
         def stop(self) -> None:
             if self.path.name == "old":
                 self.snapshotReceived.emit("old-during-stop")
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     created: list[FakeWatcher] = []
 
@@ -7653,17 +7359,6 @@ def test_replace_screenshot_watcher_keeps_old_signals_current_until_new_start_su
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -7677,13 +7372,6 @@ def test_replace_screenshot_watcher_keeps_old_signals_current_until_new_start_su
 
         def stop(self) -> None:
             pass
-
-    class FakeMachine:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def apply_snapshot(self, snap: object) -> None:
-            self.snapshots.append(snap)
 
     created: list[FakeWatcher] = []
 
@@ -8093,17 +7781,6 @@ def test_screenshot_runtime_sets_rio_reader_before_watcher_backlog(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, _path: Path) -> None:
             self.snapshotReceived = FakeSignal()
@@ -8157,17 +7834,6 @@ def test_screenshot_runtime_keeps_old_reader_for_old_pending_signals(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -8289,17 +7955,6 @@ def test_screenshot_runtime_start_failure_preserves_old_reader_preload_ownership
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -8408,17 +8063,6 @@ def test_screenshot_runtime_committed_failures_keep_new_watcher_owned_until_shut
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ):
-    class FakeSignal:
-        def __init__(self) -> None:
-            self._callbacks = []
-
-        def connect(self, callback) -> None:
-            self._callbacks.append(callback)
-
-        def emit(self, *args) -> None:
-            for callback in list(self._callbacks):
-                callback(*args)
-
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -8692,11 +8336,8 @@ def test_raiderio_reader_for_screenshots_path_passes_cache_dir(
     assert seen == [(_retail_root(tmp_path), cache_dir)]
 
 
-def test_settings_saved_status_preserves_screenshots_path_warning(tmp_path: Path):
-    values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
-
+def test_settings_saved_status_preserves_screenshots_path_warning():
     text, is_error = main_mod._settings_saved_status(
-        values,
         [],
         path_warning="Screenshots folder warning: cached invalid path.",
     )
@@ -8706,15 +8347,11 @@ def test_settings_saved_status_preserves_screenshots_path_warning(tmp_path: Path
 
 
 def test_settings_autosave_status_reports_pending_wcl_validation(tmp_path: Path):
-    root = _retail_root(tmp_path)
-    (root / "Interface" / "AddOns").mkdir(parents=True)
-    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
     cfg = _cfg(tmp_path)
     cfg.draft_wcl_client_id = "draft-client"
     cfg.draft_wcl_client_secret = "draft-secret"
 
     text, is_error, is_warning = main_mod._settings_autosave_status(
-        values,
         [],
         cfg,
     )
@@ -8729,12 +8366,9 @@ def test_settings_autosave_status_reports_pending_wcl_validation(tmp_path: Path)
 def test_settings_autosave_status_keeps_plain_saved_without_pending_draft(
     tmp_path: Path,
 ):
-    root = _retail_root(tmp_path)
-    (root / "Interface" / "AddOns").mkdir(parents=True)
-    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
     cfg = _cfg(tmp_path)
 
-    text, is_error, is_warning = main_mod._settings_autosave_status(values, [], cfg)
+    text, is_error, is_warning = main_mod._settings_autosave_status([], cfg)
 
     assert (text, is_error, is_warning) == ("Saved.", False, False)
 
@@ -8742,14 +8376,10 @@ def test_settings_autosave_status_keeps_plain_saved_without_pending_draft(
 def test_settings_autosave_status_combines_pending_validation_with_env_override(
     tmp_path: Path,
 ):
-    root = _retail_root(tmp_path)
-    (root / "Interface" / "AddOns").mkdir(parents=True)
-    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
     cfg = _cfg(tmp_path)
     cfg.draft_wcl_client_id = "draft-client"
 
     text, is_error, is_warning = main_mod._settings_autosave_status(
-        values,
         ["APSCOUT_DRAFT_WCL_CLIENT_ID"],
         cfg,
     )
@@ -8764,12 +8394,10 @@ def test_settings_autosave_status_combines_pending_validation_with_env_override(
 def test_settings_autosave_status_combines_pending_validation_with_screenshots_warning(
     tmp_path: Path,
 ):
-    values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
     cfg = _cfg(tmp_path)
     cfg.draft_wcl_client_secret = "draft-secret"
 
     text, is_error, is_warning = main_mod._settings_autosave_status(
-        values,
         [],
         cfg,
         path_warning="Screenshots folder warning: cached invalid path.",
@@ -8784,11 +8412,9 @@ def test_settings_autosave_status_combines_pending_validation_with_screenshots_w
 def test_settings_autosave_status_accepts_cached_screenshots_warning_without_recheck(
     tmp_path: Path,
 ):
-    values = SimpleNamespace(screenshots_path=str(tmp_path / "sleeping-drive"))
     cfg = _cfg(tmp_path)
 
     text, is_error, is_warning = main_mod._settings_autosave_status(
-        values,
         [],
         cfg,
         path_warning="Screenshots folder warning: cached slow path.",
@@ -8799,26 +8425,15 @@ def test_settings_autosave_status_accepts_cached_screenshots_warning_without_rec
     assert text == "Screenshots folder warning: cached slow path."
 
 
-def test_settings_wcl_test_success_status_does_not_look_like_plain_autosave(
-    tmp_path: Path,
-):
-    root = _retail_root(tmp_path)
-    (root / "Interface" / "AddOns").mkdir(parents=True)
-    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
-
-    text, is_error = main_mod._settings_wcl_test_success_status(values, [])
+def test_settings_wcl_test_success_status_does_not_look_like_plain_autosave():
+    text, is_error = main_mod._settings_wcl_test_success_status([])
 
     assert not is_error
     assert text == "WCL credentials are valid."
 
 
-def test_settings_wcl_test_success_status_keeps_override_warning(tmp_path: Path):
-    root = _retail_root(tmp_path)
-    (root / "Interface" / "AddOns").mkdir(parents=True)
-    values = SimpleNamespace(screenshots_path=str(root / "Screenshots"))
-
+def test_settings_wcl_test_success_status_keeps_override_warning():
     text, is_error = main_mod._settings_wcl_test_success_status(
-        values,
         ["APSCOUT_WCL_CLIENT_ID"],
     )
 
@@ -8828,11 +8443,8 @@ def test_settings_wcl_test_success_status_keeps_override_warning(tmp_path: Path)
     assert "APSCOUT_WCL_CLIENT_ID" in text
 
 
-def test_settings_wcl_test_success_status_keeps_screenshots_warning(tmp_path: Path):
-    values = SimpleNamespace(screenshots_path=str(tmp_path / "not-wow"))
-
+def test_settings_wcl_test_success_status_keeps_screenshots_warning():
     text, is_error = main_mod._settings_wcl_test_success_status(
-        values,
         [],
         path_warning="Screenshots folder warning: cached invalid path.",
     )
@@ -8849,7 +8461,7 @@ def test_update_result_has_installable_asset_accepts_case_insensitive_setup_name
         checksum_name = "applicantscoutcompanionsetup-0.2.0.EXE.sha256"
         checksum_url = "https://example.test/setup.exe.sha256"
 
-    assert main_mod._update_result_has_installable_asset(Result())
+    assert main_mod.update_result_has_installable_asset(Result())
 
 
 def test_update_result_has_installable_asset_rejects_missing_checksum():
@@ -8859,7 +8471,7 @@ def test_update_result_has_installable_asset_rejects_missing_checksum():
         checksum_name = None
         checksum_url = None
 
-    assert not main_mod._update_result_has_installable_asset(Result())
+    assert not main_mod.update_result_has_installable_asset(Result())
 
 
 def test_update_result_has_installable_asset_rejects_blank_metadata():
@@ -8869,7 +8481,7 @@ def test_update_result_has_installable_asset_rejects_blank_metadata():
         checksum_name = "ApplicantScoutCompanionSetup-0.2.0.exe.sha256"
         checksum_url = "   "
 
-    assert not main_mod._update_result_has_installable_asset(Result())
+    assert not main_mod.update_result_has_installable_asset(Result())
 
 
 def test_update_result_has_installable_asset_rejects_portable_zip():
@@ -8879,7 +8491,7 @@ def test_update_result_has_installable_asset_rejects_portable_zip():
         checksum_name = "ApplicantScoutCompanion-0.2.0-portable.zip.sha256"
         checksum_url = "https://example.test/portable.zip.sha256"
 
-    assert not main_mod._update_result_has_installable_asset(Result())
+    assert not main_mod.update_result_has_installable_asset(Result())
 
 
 def test_update_result_has_installable_asset_rejects_path_separator():
@@ -8889,7 +8501,7 @@ def test_update_result_has_installable_asset_rejects_path_separator():
         checksum_name = "ApplicantScoutCompanionSetup-0.2.0.exe.sha256"
         checksum_url = "https://example.test/setup.exe.sha256"
 
-    assert not main_mod._update_result_has_installable_asset(Result())
+    assert not main_mod.update_result_has_installable_asset(Result())
 
 
 def test_update_checks_run_hourly_after_initial_startup():
@@ -9094,10 +8706,8 @@ def test_update_check_result_resolver_ignores_stale_available_result():
     )
 
     assert not stale_decision.is_current
-    assert stale_decision.action == "ignore"
     assert stale_decision.pending_update_version == "0.1.0"
     assert current_decision.is_current
-    assert current_decision.action == "set"
     assert current_decision.pending_update_version == "0.2.0"
 
 
@@ -9118,7 +8728,6 @@ def test_update_check_result_resolver_preserves_pending_on_current_transient_una
     )
 
     assert decision.is_current
-    assert decision.action == "preserve"
     assert decision.pending_update_version == "0.2.0"
 
 
@@ -9139,7 +8748,6 @@ def test_update_check_result_resolver_clears_empty_pending_on_transient_unavaila
     )
 
     assert decision.is_current
-    assert decision.action == "clear"
     assert decision.pending_update_version is None
 
 
@@ -9159,7 +8767,6 @@ def test_update_check_result_resolver_clears_pending_on_current_up_to_date():
     )
 
     assert decision.is_current
-    assert decision.action == "clear"
     assert decision.pending_update_version is None
 
 
@@ -9183,7 +8790,6 @@ def test_update_check_result_resolver_clears_pending_on_available_without_instal
     )
 
     assert decision.is_current
-    assert decision.action == "clear"
     assert decision.pending_update_version is None
 
 
@@ -9204,7 +8810,6 @@ def test_update_check_result_resolver_does_not_preserve_pending_on_confirmed_no_
     )
 
     assert decision.is_current
-    assert decision.action == "clear"
     assert decision.pending_update_version is None
 
 
@@ -9226,7 +8831,6 @@ def test_update_check_result_resolver_ignores_stale_unavailable_without_clearing
     )
 
     assert not decision.is_current
-    assert decision.action == "ignore"
     assert decision.pending_update_version == "0.2.0"
 
 
@@ -9250,7 +8854,6 @@ def test_update_check_result_resolver_sets_new_installable_update_over_previous_
     )
 
     assert decision.is_current
-    assert decision.action == "set"
     assert decision.pending_update_version == "0.3.0"
 
 
@@ -9320,7 +8923,6 @@ def test_safe_update_check_reports_unavailable_on_unexpected_exception(
     result = main_mod._safe_check_for_update("0.1.0")
 
     assert result.status == "unavailable"
-    assert result.current_version == "0.1.0"
     assert "boom" in result.message
 
 

@@ -125,7 +125,6 @@ def _installer_result(
     return UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="0.2.0",
         asset_url=asset_url,
         asset_name=asset_name,
@@ -770,7 +769,6 @@ def test_download_update_installer_accepts_case_insensitive_setup_asset(tmp_path
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="0.2.0",
         asset_url="https://example.test/setup.exe",
         asset_name="applicantscoutcompanionsetup-0.2.0.EXE",
@@ -791,7 +789,6 @@ def test_download_update_installer_requires_setup_asset(tmp_path):
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="0.2.0",
         asset_url="https://example.test/portable.zip",
         asset_name="ApplicantScoutCompanion-0.2.0-portable.zip",
@@ -809,7 +806,6 @@ def test_download_update_installer_rejects_setup_asset_with_path_separator(tmp_p
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="v0.2.0",
         asset_url="https://example.test/setup.exe",
         asset_name=r"ApplicantScoutCompanionSetup-0.2.0.exe\evil.exe",
@@ -829,7 +825,6 @@ def test_download_update_installer_requires_checksum_asset(tmp_path):
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="0.2.0",
         asset_url="https://example.test/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
@@ -847,7 +842,6 @@ def test_download_update_installer_rejects_blank_download_urls(tmp_path):
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="v0.2.0",
         asset_url="   ",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
@@ -865,7 +859,6 @@ def test_download_update_installer_rejects_blank_download_urls(tmp_path):
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="v0.2.0",
         asset_url="https://example.test/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
@@ -885,7 +878,6 @@ def test_download_update_installer_rejects_malformed_checksum(tmp_path):
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="0.2.0",
         asset_url="https://example.test/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
@@ -909,7 +901,6 @@ def test_download_update_installer_rejects_non_utf8_checksum_as_malformed(tmp_pa
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="0.2.0",
         asset_url="https://example.test/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
@@ -936,7 +927,6 @@ def test_download_update_installer_rejects_checksum_for_wrong_filename(tmp_path)
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="0.2.0",
         asset_url="https://example.test/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
@@ -963,7 +953,6 @@ def test_download_update_installer_rejects_hash_mismatch(tmp_path):
     result = UpdateResult(
         status="available",
         message="available",
-        current_version="0.1.0",
         latest_version="0.2.0",
         asset_url="https://example.test/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
@@ -1123,8 +1112,6 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
     calls: list[list[str]] = []
 
     class FakePopen:
-        pid = 4242
-
         def __init__(self, args, **_kwargs) -> None:
             calls.append(args)
 
@@ -1135,7 +1122,7 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
 
-    launch = launch_update_installer(installer)
+    launch_update_installer(installer)
 
     assert calls == [
         [
@@ -1148,8 +1135,6 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
             f"/APSCOUT_SOURCE_PATH={sys.executable}",
         ]
     ]
-    assert launch.installer_path == installer
-    assert launch.pid == 4242
 
 
 def test_launch_update_installer_returns_pollable_launch(monkeypatch, tmp_path):
@@ -1268,8 +1253,6 @@ def test_launch_update_installer_can_skip_signature_gate_for_checksum_verified_r
     calls: list[list[str]] = []
 
     class FakePopen:
-        pid = 4343
-
         def __init__(self, args, **_kwargs) -> None:
             calls.append(args)
 
@@ -1280,12 +1263,10 @@ def test_launch_update_installer_can_skip_signature_gate_for_checksum_verified_r
     )
     monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
 
-    launch = launch_update_installer(installer, require_trusted_signature=False)
+    launch_update_installer(installer, require_trusted_signature=False)
 
     assert verified_paths == []
     assert calls and calls[0][0] == str(installer)
-    assert launch.installer_path == installer
-    assert launch.pid == 4343
 
 
 def test_verify_update_installer_authenticity_accepts_trusted_signed_installer(

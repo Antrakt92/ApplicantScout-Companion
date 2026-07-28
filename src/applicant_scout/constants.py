@@ -251,9 +251,9 @@ ROLE_LABELS: dict[str, str] = {
 ALL_ROLES: frozenset[str] = frozenset(ROLE_LABELS.keys())
 
 
-# Raid metric per role — single value per cell (no DPS/HPS pair like M+).
-# Tanks ranked by their damage in WCL (no separate tank metric); healers by
-# healing; everyone else by damage. Explicit to avoid any reliance on WCL's
+# Raid metric per role. Tanks are ranked by their damage in WCL (no separate
+# tank metric), healers by healing, and everyone else by damage. M+ separately
+# uses DPS for every role. Keep this explicit rather than relying on WCL's
 # undocumented default-metric behavior.
 ROLE_TO_RAID_METRIC: dict[str, str] = {
     "TANK": "dps",

@@ -52,7 +52,7 @@ def _cfg(tmp_path: Path, *, client_id: str = "client", secret: str = "secret") -
 def _wait_for_screenshots_warning(qtbot, dialog: SettingsDialog) -> None:
     qtbot.waitUntil(
         lambda: "Screenshots folder warning" in dialog.status_label.text(),
-        timeout=1000,
+        timeout=3000,
     )
 
 

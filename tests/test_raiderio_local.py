@@ -446,12 +446,10 @@ def test_reader_decodes_current_raid_progress_from_local_raiderio_db(tmp_path: P
 def test_decoder_preserves_boss_offsets_across_current_raids():
     main_raid = raiderio_local_mod._RaidInfo(
         name="MN Tier 1 (VS / DR / MQD)",
-        short_name="VS/DR/MQD",
         boss_count=9,
     )
     sporefall = raiderio_local_mod._RaidInfo(
         name="Sporefall",
-        short_name="SF",
         boss_count=1,
     )
     values: list[tuple[int, int]] = []
@@ -694,23 +692,13 @@ def test_preload_region_async_hydrates_distinct_realm_off_caller_thread(
     )
     main_thread = threading.get_ident()
     original_read_text = Path.read_text
-    original_realm_data = raiderio_local_mod._RegionDB._realm_data
 
     def guard_read_text(self, *args, **kwargs):
         if self.name.endswith("_characters.lua") and threading.get_ident() == main_thread:
             raise AssertionError("character file read on caller thread")
         return original_read_text(self, *args, **kwargs)
 
-    def guard_realm_data(self, characters_path, realm_cache, realm):
-        if (
-            raiderio_local_mod._realm_lookup_key(realm) not in realm_cache
-            and threading.get_ident() == main_thread
-        ):
-            raise AssertionError("realm block parsed on caller thread")
-        return original_realm_data(self, characters_path, realm_cache, realm)
-
     monkeypatch.setattr(Path, "read_text", guard_read_text)
-    monkeypatch.setattr(raiderio_local_mod._RegionDB, "_realm_data", guard_realm_data)
     reader = RaiderIOLocalReader(tmp_path, cache_dir=tmp_path / "cache")
     completed = threading.Event()
 

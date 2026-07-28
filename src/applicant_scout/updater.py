@@ -22,6 +22,7 @@ from .config import user_cache_dir
 
 DEFAULT_RELEASE_REPO = "Antrakt92/ApplicantScout-Companion"
 GITHUB_API_BASE = "https://api.github.com"
+UPDATE_DOWNLOADS_DIR_NAME = "updates"
 _GITHUB_API_VERSION = "2026-03-10"
 _SEMVER_RE = re.compile(r"^\s*[vV]?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?\s*$")
 
@@ -47,7 +48,6 @@ _log = logging.getLogger("applicant_scout.updater")
 class UpdateResult:
     status: UpdateStatus
     message: str
-    current_version: str
     reason: str | None = None
     latest_version: str | None = None
     release_url: str | None = None
@@ -63,12 +63,7 @@ class UpdateResult:
 
 @dataclass(frozen=True)
 class InstallerLaunch:
-    installer_path: Path
     _process: subprocess.Popen[Any] = field(repr=False, compare=False)
-
-    @property
-    def pid(self) -> int | None:
-        return getattr(self._process, "pid", None)
 
     def poll(self) -> int | None:
         return self._process.poll()
@@ -186,7 +181,6 @@ def check_for_update(
         return UpdateResult(
             status="unavailable",
             message=f"GitHub update check failed: {exc}",
-            current_version=current_version,
             reason="client_error",
         )
     try:
@@ -203,14 +197,12 @@ def check_for_update(
             return UpdateResult(
                 status="unavailable",
                 message=f"No GitHub Releases found for {repo}.",
-                current_version=current_version,
                 reason="not_found",
             )
         if resp.status_code >= 400:
             return UpdateResult(
                 status="unavailable",
                 message=f"GitHub update check failed (HTTP {resp.status_code}).",
-                current_version=current_version,
                 reason="http_error",
             )
         try:
@@ -219,14 +211,12 @@ def check_for_update(
             return UpdateResult(
                 status="unavailable",
                 message="GitHub update check returned malformed JSON.",
-                current_version=current_version,
                 reason="malformed_json",
             )
         if not isinstance(releases, list):
             return UpdateResult(
                 status="unavailable",
                 message="GitHub update check returned an unexpected response.",
-                current_version=current_version,
                 reason="unexpected_response",
             )
         latest = _select_latest_stable_release(releases)
@@ -234,7 +224,6 @@ def check_for_update(
             return UpdateResult(
                 status="unavailable",
                 message="No stable semantic GitHub Releases are published yet.",
-                current_version=current_version,
                 reason="no_stable_releases",
             )
         tag_name = latest.get("tag_name")
@@ -250,7 +239,6 @@ def check_for_update(
                     "Latest stable GitHub Release is not immutable; "
                     "automatic update is disabled."
                 ),
-                current_version=current_version,
                 reason="release_not_immutable",
                 latest_version=latest_version or None,
             )
@@ -260,7 +248,6 @@ def check_for_update(
             return UpdateResult(
                 status="unavailable",
                 message="Latest GitHub Release has no version tag.",
-                current_version=current_version,
                 reason="missing_version_tag",
                 release_url=release_url,
             )
@@ -268,7 +255,6 @@ def check_for_update(
             return UpdateResult(
                 status="up_to_date",
                 message=f"ApplicantScout Companion is up to date ({current_version}).",
-                current_version=current_version,
                 latest_version=latest_version,
                 release_url=release_url,
             )
@@ -289,7 +275,6 @@ def check_for_update(
                     f"Version {latest_version} is available, but the installer "
                     "checksum asset was not published."
                 ),
-                current_version=current_version,
                 latest_version=latest_version,
                 release_url=release_url,
             )
@@ -298,7 +283,6 @@ def check_for_update(
                 return UpdateResult(
                     status="unavailable",
                     message="Latest GitHub Release has no release URL.",
-                    current_version=current_version,
                     reason="missing_release_url",
                     latest_version=latest_version,
                 )
@@ -308,14 +292,12 @@ def check_for_update(
                     f"Version {latest_version} is available, but no installer "
                     "asset was published."
                 ),
-                current_version=current_version,
                 latest_version=latest_version,
                 release_url=release_url,
             )
         return UpdateResult(
             status="available",
             message=f"Version {latest_version} is available.",
-            current_version=current_version,
             latest_version=latest_version,
             release_url=release_url,
             asset_url=asset_url,
@@ -327,7 +309,6 @@ def check_for_update(
         return UpdateResult(
             status="unavailable",
             message=f"GitHub update check failed: {exc}",
-            current_version=current_version,
             reason="network_error",
         )
     finally:
@@ -342,8 +323,21 @@ def _is_setup_asset_name(name: str) -> bool:
     return normalized.startswith(_INSTALLER_PREFIX.lower()) and normalized.endswith(".exe")
 
 
+def update_result_has_installable_asset(result: object) -> bool:
+    asset_name = getattr(result, "asset_name", None)
+    asset_url = getattr(result, "asset_url", None)
+    checksum_name = getattr(result, "checksum_name", None)
+    checksum_url = getattr(result, "checksum_url", None)
+    metadata = (asset_name, asset_url, checksum_name, checksum_url)
+    return bool(
+        all(isinstance(value, str) and value.strip() for value in metadata)
+        and isinstance(asset_name, str)
+        and _is_setup_asset_name(asset_name)
+    )
+
+
 def _default_update_download_dir() -> Path:
-    return user_cache_dir() / "updates"
+    return user_cache_dir() / UPDATE_DOWNLOADS_DIR_NAME
 
 
 def _strict_update_installer_version(name: str) -> tuple[int, int, int] | None:
@@ -594,7 +588,7 @@ def launch_update_installer(
         close_fds=True,
         cwd=str(installer_path.parent),
     )
-    return InstallerLaunch(installer_path=installer_path, _process=process)
+    return InstallerLaunch(_process=process)
 
 
 def verify_update_installer_authenticity(installer_path: Path) -> None:

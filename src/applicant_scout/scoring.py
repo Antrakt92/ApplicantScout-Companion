@@ -1304,13 +1304,6 @@ def _raid_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
 def role_mplus_view(
     applicant: Applicant,
 ) -> tuple[str, list[dict], float | None, float | None]:
-    if applicant.role == "HEALER":
-        return (
-            "HPS",
-            applicant.mplus_hps_breakdown,
-            safe_percent(applicant.mplus_hps),
-            safe_percent(applicant.mplus_hps_median),
-        )
     return (
         "DPS",
         applicant.mplus_dps_breakdown,
