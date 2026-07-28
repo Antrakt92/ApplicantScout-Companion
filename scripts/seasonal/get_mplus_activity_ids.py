@@ -7,6 +7,8 @@ names so historical duplicate dungeon rows do not silently leak into the
 current-season mapping.
 """
 
+# ruff: noqa: E402 - executable scripts bootstrap the repository import roots
+
 from __future__ import annotations
 
 import argparse
@@ -18,8 +20,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-# Three .parent hops: seasonal/ -> scripts/ -> repo-root -> src/
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+# Direct script execution starts with only scripts/seasonal on sys.path.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import httpx
 

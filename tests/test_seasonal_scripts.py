@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +21,36 @@ from scripts.seasonal import (
     get_mplus_encounter_ids,
     verify_wcl_season,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    (
+        "get_mplus_activity_ids.py",
+        "get_mplus_challenge_map_ids.py",
+        "verify_wcl_season.py",
+    ),
+)
+def test_seasonal_cli_direct_execution_bootstraps_repo_imports(
+    script_name: str,
+    tmp_path: Path,
+):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "seasonal" / script_name),
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_format_mplus_tuples_outputs_copyable_constants():

@@ -5,6 +5,8 @@ CURRENT_MPLUS_ZONE_ID in constants.py, then copy the emitted tuples into
 MPLUS_ENCOUNTERS.
 """
 
+# ruff: noqa: E402 - executable scripts bootstrap the repository import roots
+
 from __future__ import annotations
 
 import re
@@ -12,8 +14,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Three .parent hops: seasonal/ -> scripts/ -> repo-root -> src/
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+# Direct script execution starts with only scripts/seasonal on sys.path.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import httpx
 

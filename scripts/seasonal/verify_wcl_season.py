@@ -6,6 +6,8 @@ confirmation flag, reports the post-query quota snapshot, and fails closed when
 the remaining quota is below the requested floor.
 """
 
+# ruff: noqa: E402 - executable scripts bootstrap the repository import roots
+
 from __future__ import annotations
 
 import argparse
@@ -15,8 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-# Three .parent hops: seasonal/ -> scripts/ -> repo-root -> src/
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+# Direct script execution starts with only scripts/seasonal on sys.path.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import httpx
 
