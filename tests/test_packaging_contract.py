@@ -618,6 +618,17 @@ def test_windows_taskbar_identity_uses_app_icon_and_app_user_model_id():
     assert "AppUserModelID: {#MyAppUserModelID}" in inno_script
 
 
+def test_pyinstaller_path_probe_dispatch_precedes_gui_runtime_import():
+    entrypoint = _read_repo_text("packaging/pyinstaller/run_applicant_scout.py")
+    dispatch = entrypoint.index("dispatch_screenshots_path_probe(args)")
+    runtime_import = entrypoint.index("from applicant_scout.__main__ import main")
+
+    assert dispatch < runtime_import
+    assert "if probe_exit_code is not None:\n        return probe_exit_code" in (
+        entrypoint[dispatch:runtime_import]
+    )
+
+
 def test_installer_selects_desktop_shortcut_by_default():
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
     desktop_task = re.search(r'Name:\s*"desktopicon";[^\n]+', inno_script)

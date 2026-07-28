@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 from applicant_scout import __version__
 from applicant_scout.config import Config
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+import applicant_scout.screenshots_path_probe as path_probe_mod
 import applicant_scout.settings_dialog as settings_mod
 from applicant_scout.settings_dialog import (
     ReleaseNotesDialog,
@@ -827,7 +828,7 @@ def test_bounded_screenshots_path_probe_times_out_and_removes_result(
 
     warning = settings_mod.run_bounded_screenshots_path_probe(
         tmp_path / "offline" / "_retail_" / "Screenshots",
-        timeout_ms=200,
+        timeout_ms=1000,
     )
 
     assert warning == settings_mod.SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING
@@ -842,8 +843,8 @@ def test_screenshots_path_probe_command_emits_strict_json(
 ):
     warning = "Screenshots folder warning: test."
     monkeypatch.setattr(
-        settings_mod,
-        "_screenshots_path_warning",
+        path_probe_mod,
+        "screenshots_path_health_warning",
         lambda _path: warning,
     )
     token = "a" * 32
@@ -867,8 +868,8 @@ def test_screenshots_path_probe_command_rejects_invalid_token(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        settings_mod,
-        "_screenshots_path_warning",
+        path_probe_mod,
+        "screenshots_path_health_warning",
         lambda _path: (_ for _ in ()).throw(
             AssertionError("invalid token must fail before filesystem access")
         ),
@@ -888,7 +889,7 @@ def test_screenshots_path_probe_program_args_cover_source_and_frozen(
         executable,
         [
             "-m",
-            "applicant_scout",
+            "applicant_scout.screenshots_path_probe",
             settings_mod.SCREENSHOTS_PATH_PROBE_ARG,
             "D:\\Shots",
             "a" * 32,

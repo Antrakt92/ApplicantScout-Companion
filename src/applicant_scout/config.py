@@ -17,6 +17,10 @@ from .atomic_io import (
 )
 from .constants import REGION_ID_TO_WCL
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from .screenshots_path_probe import (
+    _looks_like_wow_retail_root,
+    screenshots_path_health_warning,
+)
 
 
 MAX_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -95,38 +99,6 @@ def _retail_root_from_legacy_path(path: Path) -> Path:
             )
         )
     return retail_root
-
-
-def _looks_like_wow_retail_root(retail_root: Path) -> bool:
-    file_markers = (retail_root / "Wow.exe",)
-    dir_markers = (
-        retail_root / "Interface",
-        retail_root / "Interface" / "AddOns",
-        retail_root / "WTF",
-    )
-    return any(marker.is_file() for marker in file_markers) or any(
-        marker.is_dir() for marker in dir_markers
-    )
-
-
-def screenshots_path_health_warning(path: Path) -> str | None:
-    """Return a non-fatal warning for paths that look unlike WoW screenshots."""
-    path = Path(path)
-    problems: list[str] = []
-    if path.name.lower() != "screenshots":
-        problems.append("folder is not named Screenshots")
-
-    retail_root = path.parent if path.parent.name.lower() == "_retail_" else None
-    if retail_root is None:
-        problems.append(r"path is not directly under a _retail_ folder")
-    elif not retail_root.exists():
-        problems.append(r"_retail_ folder does not exist")
-    elif not _looks_like_wow_retail_root(retail_root):
-        problems.append(r"_retail_ folder has no WoW install markers")
-
-    if not problems:
-        return None
-    return "Screenshots folder warning: " + "; ".join(problems) + "."
 
 
 def screenshots_path_validation_error(path: Path) -> str | None:

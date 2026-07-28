@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import threading
 import uuid
 
@@ -60,9 +59,13 @@ from .config import (
     Config,
     ConfigError,
     screenshots_path_candidate,
-    screenshots_path_health_warning,
 )
 from .metric_preferences import MetricPreferences
+from .screenshots_path_probe import (
+    SCREENSHOTS_PATH_PROBE_ARG,
+    run_screenshots_path_probe_command as run_screenshots_path_probe_command,
+    screenshots_path_probe_result_path as _screenshots_path_probe_result_path,
+)
 from .window_geometry import clamp_geometry_to_screens
 
 
@@ -98,7 +101,6 @@ WCL_CREDENTIAL_TEST_BUSY_MESSAGE = (
 )
 SCREENSHOTS_WARNING_DEBOUNCE_MS = 250
 SCREENSHOTS_VALIDATION_PENDING_MESSAGE = "Checking Screenshots folder..."
-SCREENSHOTS_PATH_PROBE_ARG = "--internal-screenshots-path-probe"
 SCREENSHOTS_PATH_PROBE_TIMEOUT_MS = 5000
 SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING = (
     "Screenshots folder warning: path check timed out."
@@ -106,41 +108,6 @@ SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING = (
 SCREENSHOTS_PATH_PROBE_FAILURE_WARNING = (
     "Screenshots folder warning: could not run the isolated path check."
 )
-
-
-def _screenshots_path_warning(path: Path) -> str | None:
-    candidate = Path(path)
-    if candidate.is_file():
-        return "Screenshots path points to a file, not a folder."
-    return screenshots_path_health_warning(candidate)
-
-
-def _screenshots_path_probe_result_path(token: str) -> Path:
-    if len(token) != 32 or any(char not in "0123456789abcdef" for char in token):
-        raise ValueError("invalid path probe token")
-    return (
-        Path(tempfile.gettempdir())
-        / f"applicant-scout-path-probe-{token}.json"
-    )
-
-
-def run_screenshots_path_probe_command(raw_path: str, token: str) -> int:
-    try:
-        result_path = _screenshots_path_probe_result_path(token)
-    except ValueError:
-        return 2
-    try:
-        warning = _screenshots_path_warning(Path(raw_path))
-    except Exception as exc:  # noqa: BLE001 - isolated filesystem boundary
-        warning = f"Screenshots folder warning: could not check path: {exc}"
-    try:
-        result_path.write_text(
-            json.dumps({"warning": warning}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except OSError:
-        return 3
-    return 0
 
 
 def _screenshots_path_probe_program_args(
@@ -151,7 +118,7 @@ def _screenshots_path_probe_program_args(
         return sys.executable, [SCREENSHOTS_PATH_PROBE_ARG, path, token]
     return sys.executable, [
         "-m",
-        "applicant_scout",
+        "applicant_scout.screenshots_path_probe",
         SCREENSHOTS_PATH_PROBE_ARG,
         path,
         token,
