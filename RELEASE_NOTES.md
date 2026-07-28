@@ -2,10 +2,41 @@
 
 ## Unreleased
 
+## 0.13.1 - 28-Jul-2026
+
+Paired release with ApplicantScout addon `0.9.1`. This patch keeps screenshot
+ingestion and QR transport responsive across long-running sessions, while
+showing the intended Mythic+ damage evidence for every role.
+
+### Fixed
+
+- Screenshot watcher replacement, retirement, and queued callback ownership are
+  generation-safe, so a stale worker cannot silence the active watcher or leave
+  ingestion stopped until the Companion is restarted.
+- Valid screenshots already waiting for the GUI are preserved across later
+  decode failures, watcher shutdown, and burst backlogs instead of being lost
+  behind a failed or retired generation.
+- Screenshot backlog recovery is supervised independently from the visible
+  overlay lifecycle, allowing ingestion to resume after transient watcher and
+  filesystem failures.
+- Screenshots-folder checks use a lightweight isolated launcher, avoiding cold
+  GUI imports that could incorrectly time out during startup or Settings edits.
+
 ### Improved
 
 - Mythic+ Warcraft Logs evidence now uses damage percentiles for every role,
   including healers; raid healer rankings continue to use healing percentiles.
+- Snapshot ownership, updater validation, seasonal checks, and visual fixture
+  rendering now share their canonical helpers, reducing divergent behavior
+  between runtime, tools, and tests.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.13.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.13.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.13.1-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.13.1-release-manifest.json`
 
 ## 0.13.0 - 25-Jul-2026
 
