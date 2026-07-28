@@ -326,8 +326,8 @@ def test_configure_wow_sync_startup_creates_watch_shortcut(
 
     monkeypatch.setattr(wow_lifecycle.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        wow_lifecycle.os,
-        "replace",
+        wow_lifecycle,
+        "_replace_file",
         lambda source, destination: replacements.append((source, destination)),
     )
 
@@ -365,8 +365,8 @@ def test_configure_wow_sync_startup_writes_dev_module_arguments(
 
     monkeypatch.setattr(wow_lifecycle.subprocess, "run", lambda args, **_kwargs: commands.append(args) or _Completed())
     monkeypatch.setattr(
-        wow_lifecycle.os,
-        "replace",
+        wow_lifecycle,
+        "_replace_file",
         lambda source, destination: replacements.append((source, destination)),
     )
 
@@ -412,8 +412,8 @@ def test_configure_wow_sync_startup_timeout_preserves_existing_shortcut(
 
     monkeypatch.setattr(wow_lifecycle.subprocess, "run", timeout)
     monkeypatch.setattr(
-        wow_lifecycle.os,
-        "replace",
+        wow_lifecycle,
+        "_replace_file",
         lambda source, destination: replacements.append((source, destination)),
     )
 

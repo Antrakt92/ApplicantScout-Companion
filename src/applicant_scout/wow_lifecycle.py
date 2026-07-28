@@ -8,6 +8,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 import io
 import os
+from os import replace as _replace_file
 from pathlib import Path
 import subprocess
 import sys
@@ -347,7 +348,7 @@ def _create_shortcut(
             creationflags=_CREATE_NO_WINDOW,
             timeout=STARTUP_SHORTCUT_CONFIG_TIMEOUT_SECONDS,
         )
-        os.replace(temporary_shortcut_path, shortcut_path)
+        _replace_file(temporary_shortcut_path, shortcut_path)
     finally:
         try:
             temporary_shortcut_path.unlink()
