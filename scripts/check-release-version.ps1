@@ -2,14 +2,11 @@ param(
     [string]$Tag = $env:GITHUB_REF_NAME,
     [switch]$RequireAssets,
     [switch]$RequireDraftReleaseAssets,
-    [switch]$RequirePublishedReleaseAssets,
     [switch]$RefuseExistingRelease,
     [string]$PairedAddonRefOutputPath,
     [string]$PairedAddonRoot,
     [string]$GitHubCliPath = "gh",
-    [string]$GitHubRepository = $env:GITHUB_REPOSITORY,
-    [int]$PublishedReleaseWaitSeconds = 120,
-    [int]$PublishedReleasePollSeconds = 10
+    [string]$GitHubRepository = $env:GITHUB_REPOSITORY
 )
 
 $ErrorActionPreference = "Stop"
@@ -421,27 +418,20 @@ function Assert-GitHubReleaseLookupParameters {
     }
 }
 
-function Test-GitHubReleaseAssets {
+function Test-GitHubDraftReleaseAssets {
     param(
         [object]$Release,
         [string]$Repo,
         [string]$ReleaseTag,
         [string[]]$ExpectedAssets,
-        [string[]]$ProtectedAssetPatterns = @(),
-        [ValidateSet("Draft", "Published")]
-        [string]$ExpectedState = "Published"
+        [string[]]$ProtectedAssetPatterns = @()
     )
 
     if ($null -eq $Release) {
         throw "GitHub Release $ReleaseTag in $Repo was not returned by gh."
     }
-    if ($ExpectedState -eq "Draft") {
-        if (-not $Release.isDraft) {
-            throw "GitHub Release $ReleaseTag in $Repo was expected draft but is already public."
-        }
-    }
-    elseif ($Release.isDraft) {
-        throw "GitHub Release $ReleaseTag in $Repo is still draft; publish the release before continuing."
+    if (-not $Release.isDraft) {
+        throw "GitHub Release $ReleaseTag in $Repo was expected draft but is already public."
     }
     if ($Release.isPrerelease) {
         throw "GitHub Release $ReleaseTag in $Repo is marked prerelease; publish a stable release before continuing."
@@ -464,52 +454,6 @@ function Test-GitHubReleaseAssets {
             }
         }
     }
-}
-
-function Wait-GitHubReleaseAssets {
-    param(
-        [string]$CliPath,
-        [string]$Repo,
-        [string]$ReleaseTag,
-        [string[]]$ExpectedAssets,
-        [string[]]$ProtectedAssetPatterns = @(),
-        [ValidateSet("Draft", "Published")]
-        [string]$ExpectedState = "Published",
-        [int]$WaitSeconds,
-        [int]$PollSeconds
-    )
-
-    if ($WaitSeconds -lt 0) {
-        throw "PublishedReleaseWaitSeconds must be zero or greater."
-    }
-    if ($PollSeconds -lt 1) {
-        throw "PublishedReleasePollSeconds must be at least 1."
-    }
-
-    $Deadline = (Get-Date).AddSeconds($WaitSeconds)
-    $LastError = $null
-    do {
-        try {
-            $Release = Invoke-GitHubReleaseView -CliPath $CliPath -Repo $Repo -ReleaseTag $ReleaseTag
-            Test-GitHubReleaseAssets `
-                -Release $Release `
-                -Repo $Repo `
-                -ReleaseTag $ReleaseTag `
-                -ExpectedAssets $ExpectedAssets `
-                -ProtectedAssetPatterns $ProtectedAssetPatterns `
-                -ExpectedState $ExpectedState
-            return
-        }
-        catch {
-            $LastError = $_.Exception.Message
-            if ((Get-Date) -ge $Deadline) {
-                break
-            }
-            Start-Sleep -Seconds $PollSeconds
-        }
-    } while ($true)
-
-    throw $LastError
 }
 
 if (-not $Tag) {
@@ -672,29 +616,12 @@ if ($RequireDraftReleaseAssets) {
         -CliPath $GitHubCliPath `
         -Repo $GitHubRepository `
         -ReleaseTag $TagName
-    Test-GitHubReleaseAssets `
+    Test-GitHubDraftReleaseAssets `
         -Release $Release `
         -Repo $GitHubRepository `
         -ReleaseTag $TagName `
         -ExpectedAssets $ExpectedCompanionAssets `
-        -ProtectedAssetPatterns $ProtectedCompanionAssetPatterns `
-        -ExpectedState "Draft"
-}
-
-if ($RequirePublishedReleaseAssets) {
-    Assert-GitHubReleaseLookupParameters `
-        -Repo $GitHubRepository `
-        -ReleaseTag $TagName `
-        -Description "release asset check"
-    Wait-GitHubReleaseAssets `
-        -CliPath $GitHubCliPath `
-        -Repo $GitHubRepository `
-        -ReleaseTag $TagName `
-        -ExpectedAssets $ExpectedCompanionAssets `
-        -ProtectedAssetPatterns $ProtectedCompanionAssetPatterns `
-        -ExpectedState "Published" `
-        -WaitSeconds $PublishedReleaseWaitSeconds `
-        -PollSeconds $PublishedReleasePollSeconds
+        -ProtectedAssetPatterns $ProtectedCompanionAssetPatterns
 }
 
 if ($PairedAddonRoot) {
