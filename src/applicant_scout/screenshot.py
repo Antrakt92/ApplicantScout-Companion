@@ -1346,17 +1346,6 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
     )
 
 
-def decode_screenshot(image_path: Path) -> tuple[Optional[Snapshot], bool]:
-    """Decode and parse a screenshot image. Returns (snapshot, has_marker).
-
-    Compatibility wrapper for callers/tests that only need the historical
-    cleanup discriminator. Use _decode_screenshot_result when the caller needs
-    a user-visible failure reason.
-    """
-    result = _decode_screenshot_result(image_path)
-    return result.snapshot, result.has_marker
-
-
 # ─── File watcher ────────────────────────────────────────────────────────────
 def _wait_for_stable_size(path: Path, timeout: float = STABLE_SIZE_TIMEOUT) -> bool:
     """Watchdog on_created fires BEFORE write completes. Poll size until

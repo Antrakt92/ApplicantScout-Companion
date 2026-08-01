@@ -31,17 +31,22 @@ from applicant_scout.screenshot import (
     SnapshotSource,
     WIRE_VERSIONS_SUPPORTED,
     _Handler,
+    _decode_screenshot_result,
     _is_supported_screenshot_path,
     _iter_screenshot_candidates,
     _parse_payload,
     _try_parse_appscout_payload,
-    decode_screenshot,
 )
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
 LUA_GOLDEN_STEM = "aps1_v9_lua_golden"
 LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v9_lua_leader_key_golden"
+
+
+def decode_screenshot(image_path: Path) -> tuple[Snapshot | None, bool]:
+    result = _decode_screenshot_result(image_path)
+    return result.snapshot, result.has_marker
 
 
 class _FakeClock:

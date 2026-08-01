@@ -4694,7 +4694,7 @@ def test_launcher_drag_ungrab_waits_for_stable_button_up_before_finishing(
             overlay_mod, "_native_left_mouse_button_down", lambda: False
         )
         released_pos = window._launcher.pos()
-        last_cursor_pos = window._launcher._last_drag_cursor_pos
+        last_cursor_pos = window._launcher._press_global_pos
         assert last_cursor_pos is not None
         monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: last_cursor_pos)
         now = {"value": 10.0}
@@ -4877,7 +4877,7 @@ def test_launcher_drag_uses_native_left_button_when_qt_reports_no_button(
     try:
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
         qtbot.mousePress(window._launcher, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
-        last_cursor_pos = window._launcher._last_drag_cursor_pos
+        last_cursor_pos = window._launcher._press_global_pos
         assert last_cursor_pos is not None
         monkeypatch.setattr(
             overlay_mod.QApplication,
@@ -5028,7 +5028,7 @@ def test_launcher_drag_poll_finishes_lost_release_and_persists_position(
         monkeypatch.setattr(
             overlay_mod, "_native_left_mouse_button_down", lambda: False
         )
-        last_cursor_pos = window._launcher._last_drag_cursor_pos
+        last_cursor_pos = window._launcher._press_global_pos
         assert last_cursor_pos is not None
         monkeypatch.setattr(overlay_mod.QCursor, "pos", lambda: last_cursor_pos)
         now = {"value": 30.0}

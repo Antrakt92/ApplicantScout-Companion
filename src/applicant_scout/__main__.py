@@ -4053,7 +4053,6 @@ def main(argv: list[str] | None = None) -> int:
         dialog.updateFinished.connect(lambda _error: _set_update_in_progress(False))
         dialog.updateCompleted.connect(_handle_dialog_update_completed)
         dialog.updateHandoffStarted.connect(_handle_update_handoff_started)
-        dialog.hideRequested.connect(lambda: None)
         dialog.quitRequested.connect(_request_quit_application)
         dialog.destroyed.connect(lambda *_args: _forget_dialog())
         dialog.set_update_in_progress(update_quit_gate.update_in_progress)

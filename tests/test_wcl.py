@@ -1463,7 +1463,7 @@ def test_reconfigure_auth_ignores_stale_429_from_in_flight_fetch(
         client.fetch_character_ranks("First", "ravencrest", spec_id=71)
 
     assert excinfo.value.error_kind == WCL_ERROR_RATE_LIMITED
-    assert client.rate_limit_retry_remaining_seconds(now=now) == 0.0
+    assert client.retry_block_remaining_seconds(now=now) == 0.0
 
 
 def test_reconfigure_auth_ignores_stale_401_invalidation():
@@ -1678,9 +1678,7 @@ def test_fetch_character_ranks_oauth_429_sets_rate_limit_block_and_short_circuit
 
     assert auth.calls == 1
     assert len(http.calls) == 0
-    assert client.rate_limit_retry_remaining_seconds(now=current[0]) == pytest.approx(
-        300.0
-    )
+    assert client.retry_block_remaining_seconds(now=current[0]) == pytest.approx(300.0)
     current[0] += 1.0
 
     result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
@@ -1852,8 +1850,6 @@ def test_retry_block_remaining_seconds_uses_max_remaining_block(
     client._rate_limited_until = current[0] + 120.0
     client._network_retry_until = current[0] + 90.0
 
-    assert client.rate_limit_retry_remaining_seconds() == pytest.approx(120.0)
-    assert client.network_retry_remaining_seconds() == pytest.approx(90.0)
     assert client.retry_block_remaining_seconds() == pytest.approx(120.0)
 
 

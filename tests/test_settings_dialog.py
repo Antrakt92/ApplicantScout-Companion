@@ -1852,9 +1852,7 @@ def test_settings_dialog_finishes_update_when_no_installer_handoff(
 def test_normal_settings_close_button_hides_to_tray(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
-    hidden: list[bool] = []
     quit_requested: list[bool] = []
-    dialog.hideRequested.connect(lambda: hidden.append(True))
     dialog.quitRequested.connect(lambda: quit_requested.append(True))
     dialog.show()
 
@@ -1862,29 +1860,23 @@ def test_normal_settings_close_button_hides_to_tray(qtbot, tmp_path: Path):
 
     assert not closed
     assert not dialog.isVisible()
-    assert hidden == [True]
     assert quit_requested == []
 
 
 def test_custom_titlebar_close_button_matches_dialog_close_behavior(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
-    hidden: list[bool] = []
-    dialog.hideRequested.connect(lambda: hidden.append(True))
     dialog.show()
 
     dialog.close_button.click()
 
     assert not dialog.isVisible()
-    assert hidden == [True]
 
 
 def test_normal_settings_close_requests_quit_when_tray_hide_disabled(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
     qtbot.addWidget(dialog)
-    hidden: list[bool] = []
     quit_requested: list[bool] = []
-    dialog.hideRequested.connect(lambda: hidden.append(True))
     dialog.quitRequested.connect(lambda: quit_requested.append(True))
     dialog.show()
 
@@ -1892,7 +1884,6 @@ def test_normal_settings_close_requests_quit_when_tray_hide_disabled(qtbot, tmp_
 
     assert closed
     assert not dialog.isVisible()
-    assert hidden == []
     assert quit_requested == [True]
 
 
@@ -1938,16 +1929,13 @@ def test_no_tray_close_blocks_quit_during_wcl_test(qtbot, tmp_path: Path):
 def test_custom_titlebar_close_respects_no_tray_quit_policy(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
     qtbot.addWidget(dialog)
-    hidden: list[bool] = []
     quit_requested: list[bool] = []
-    dialog.hideRequested.connect(lambda: hidden.append(True))
     dialog.quitRequested.connect(lambda: quit_requested.append(True))
     dialog.show()
 
     dialog.close_button.click()
 
     assert not dialog.isVisible()
-    assert hidden == []
     assert quit_requested == [True]
     assert dialog.close_button.accessibleName() == "Quit ApplicantScout"
     assert dialog.close_button.accessibleDescription() == "Quit ApplicantScout."
@@ -2018,9 +2006,7 @@ def test_no_tray_close_blocks_quit_when_pending_apply_fails(qtbot, tmp_path: Pat
 def test_settings_close_ignored_while_update_in_progress(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
     qtbot.addWidget(dialog)
-    hidden: list[bool] = []
     quit_requested: list[bool] = []
-    dialog.hideRequested.connect(lambda: hidden.append(True))
     dialog.quitRequested.connect(lambda: quit_requested.append(True))
     dialog.show()
     dialog.set_update_in_progress(True)
@@ -2029,7 +2015,6 @@ def test_settings_close_ignored_while_update_in_progress(qtbot, tmp_path: Path):
 
     assert not closed
     assert dialog.isVisible()
-    assert hidden == []
     assert quit_requested == []
     assert "update" in dialog.status_label.text().lower()
 
@@ -2050,9 +2035,7 @@ def test_settings_close_ignored_while_cache_reset_in_progress(qtbot, tmp_path: P
         hide_to_tray_on_close=False,
     )
     qtbot.addWidget(dialog)
-    hidden: list[bool] = []
     quit_requested: list[bool] = []
-    dialog.hideRequested.connect(lambda: hidden.append(True))
     dialog.quitRequested.connect(lambda: quit_requested.append(True))
     dialog.show()
     fallback = _fallback_release(release)
@@ -2065,7 +2048,6 @@ def test_settings_close_ignored_while_cache_reset_in_progress(qtbot, tmp_path: P
 
         assert not closed
         assert dialog.isVisible()
-        assert hidden == []
         assert quit_requested == []
         assert "cache reset" in dialog.status_label.text().lower()
 

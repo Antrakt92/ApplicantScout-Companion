@@ -714,18 +714,6 @@ def _sort_applicants_grouped_with_package_fits(
     )
 
 
-def sort_applicants_grouped(
-    applicants: Iterable[Applicant], listing: Listing | None = None
-) -> list[Applicant]:
-    sorted_apps, _package_fits, _candidate_fits = (
-        _sort_applicants_grouped_with_package_fits(
-            applicants,
-            listing,
-        )
-    )
-    return sorted_apps
-
-
 def sort_roster_members(members: Iterable[Applicant]) -> list[Applicant]:
     return _overlay_rows.sort_roster_members(members)
 
@@ -1267,7 +1255,6 @@ class OverlayLauncher(_KeyboardButton):
         self._drag_active = False
         self._dragged = False
         self._drag_button_up_since: float | None = None
-        self._last_drag_cursor_pos: QPoint | None = None
         self._click_emit_active = False
         self._drag_timer = QTimer(self)
         self._drag_timer.setInterval(LAUNCHER_DRAG_POLL_MS)
@@ -1304,7 +1291,6 @@ class OverlayLauncher(_KeyboardButton):
     def _move_drag_to_global_pos(self, global_pos: QPoint) -> None:
         if self._press_global_pos is None or self._press_window_pos is None:
             return
-        self._last_drag_cursor_pos = global_pos
         delta = global_pos - self._press_global_pos
         if delta.manhattanLength() > 3:
             self._dragged = True
@@ -1353,7 +1339,6 @@ class OverlayLauncher(_KeyboardButton):
             self._drag_active = True
             self._dragged = False
             self._drag_button_up_since = None
-            self._last_drag_cursor_pos = self._press_global_pos
             self.grabMouse()
             self._drag_timer.start()
             self.dragStarted.emit()
@@ -1387,7 +1372,6 @@ class OverlayLauncher(_KeyboardButton):
         self._drag_active = False
         self._dragged = False
         self._drag_button_up_since = None
-        self._last_drag_cursor_pos = None
         if QWidget.mouseGrabber() is self:
             self.releaseMouse()
         if should_click:

@@ -904,30 +904,15 @@ class WCLClient:
         elapsed = max(0.0, current_time - snapshot.observed_at)
         return max(0.0, snapshot.info.reset_in_seconds - elapsed)
 
-    def rate_limit_retry_remaining_seconds(self, now: float | None = None) -> float:
-        current_time = time.time() if now is None else now
-        with self._quota_lock:
-            rate_limited_until = self._rate_limited_until
-        return max(0.0, rate_limited_until - current_time)
-
-    def server_retry_remaining_seconds(self, now: float | None = None) -> float:
-        current_time = time.time() if now is None else now
-        with self._quota_lock:
-            server_retry_until = self._server_retry_until
-        return max(0.0, server_retry_until - current_time)
-
-    def network_retry_remaining_seconds(self, now: float | None = None) -> float:
-        current_time = time.time() if now is None else now
-        with self._quota_lock:
-            network_retry_until = self._network_retry_until
-        return max(0.0, network_retry_until - current_time)
-
     def retry_block_remaining_seconds(self, now: float | None = None) -> float:
-        return max(
-            self.rate_limit_retry_remaining_seconds(now=now),
-            self.server_retry_remaining_seconds(now=now),
-            self.network_retry_remaining_seconds(now=now),
-        )
+        with self._quota_lock:
+            retry_until = max(
+                self._rate_limited_until,
+                self._server_retry_until,
+                self._network_retry_until,
+            )
+        current_time = time.time() if now is None else now
+        return max(0.0, retry_until - current_time)
 
     def _active_wcl_retry_block(self, now: float) -> tuple[str, str, float] | None:
         with self._quota_lock:

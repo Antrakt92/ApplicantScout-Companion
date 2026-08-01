@@ -5,14 +5,25 @@ Pure data tests; no QApplication required (sort fn touches no Qt symbols)."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from applicant_scout.constants import group_id_colour
 from applicant_scout.overlay import (
     _SUNK_STATES,
     _build_group_markers,
+    _sort_applicants_grouped_with_package_fits,
     _split_composite,
-    sort_applicants_grouped,
 )
 from applicant_scout.state import Applicant, Listing
+
+
+def sort_applicants_grouped(
+    applicants: Iterable[Applicant], listing: Listing | None = None
+) -> list[Applicant]:
+    sorted_apps, _package_fits, _candidate_fits = (
+        _sort_applicants_grouped_with_package_fits(applicants, listing)
+    )
+    return sorted_apps
 
 
 def _app(

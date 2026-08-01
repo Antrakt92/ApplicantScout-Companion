@@ -311,7 +311,6 @@ def _initial_screenshots_path(cfg: Config) -> str:
 class SettingsDialog(QDialog):
     valuesChanged = pyqtSignal(object)
     credentialsValidated = pyqtSignal(object)
-    hideRequested = pyqtSignal()
     quitRequested = pyqtSignal()
     updateStarted = pyqtSignal()
     updateFinished = pyqtSignal(bool)
@@ -1189,7 +1188,6 @@ class SettingsDialog(QDialog):
 
     def _hide_to_tray(self) -> None:
         self.hide()
-        self.hideRequested.emit()
 
     def _start_screenshots_validation(self, path: str) -> None:
         generation = self._screenshots_validation_generation
