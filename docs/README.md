@@ -27,8 +27,10 @@ fixtures.
   refresh them with the same command without `--check` after intentional
   baseline changes and visual inspection.
 - Manual WCL fetch helper: `../scripts/manual_wcl_fetch.py`.
-- Seasonal WCL encounter helper:
-  `../scripts/seasonal/get_mplus_encounter_ids.py`.
+- Seasonal WCL verification and encounter tuple helper:
+  `../scripts/seasonal/verify_wcl_season.py`. Live calls require
+  `--confirm-spend-wcl-quota`; add `--print-mplus-tuples` when refreshing
+  `MPLUS_ENCOUNTERS`.
 - Seasonal LFG activity ID helper:
   `../scripts/seasonal/get_mplus_activity_ids.py`.
 - Seasonal M+ challenge-map helper:

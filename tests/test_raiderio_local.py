@@ -21,6 +21,16 @@ def _use_compact_test_dungeon_contract(
     )
 
 
+def _read_cached_payload(cache_file: Path) -> bytes:
+    source_digest = cache_file.name.split(".")[-3]
+    payload = raiderio_local_mod._decode_lookup_payload_cache(
+        cache_file.read_bytes(),
+        source_digest,
+    )
+    assert payload is not None
+    return payload
+
+
 def _write_test_db(
     root: Path,
     lookup_payload: bytes,
@@ -310,7 +320,7 @@ def test_reader_name_index_preserves_first_casefold_match(tmp_path: Path):
 
     assert repaired is not None
     assert repaired.current_score == 3200
-    assert cache_file.read_bytes() == first_record + second_record
+    assert _read_cached_payload(cache_file) == first_record + second_record
 
 
 def test_region_load_parses_each_character_layout_once(
@@ -981,7 +991,7 @@ def test_reader_invalidates_mplus_caches_when_content_changes_with_same_stat(
     assert first.current_score == 3074
     old_cache_files = list(cache_dir.rglob("*.payload.bin"))
     assert len(old_cache_files) == 1
-    assert ".v2." in old_cache_files[0].name
+    assert ".v3." in old_cache_files[0].name
 
     lookup_path = (
         tmp_path
@@ -1327,9 +1337,37 @@ def test_reader_redecodes_lookup_payload_when_decoded_cache_is_too_short_for_cha
     assert repaired is not None
     assert repaired.current_score == 3074
     assert repaired.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
-    assert cache_files[0].read_bytes() == (
-        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2)
+    assert _read_cached_payload(cache_files[0]) == (
+        _record(3200, 15, 14, 1, 0)
+        + _record(3074, 0, 12, 0, 2)
     )
+
+
+def test_reader_redecodes_same_length_corrupt_lookup_payload_cache(
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    expected_payload = _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2)
+    _write_test_db(tmp_path, expected_payload)
+    first_reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
+    first = first_reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    assert first.current_score == 3074
+
+    cache_file = next(cache_dir.rglob("*.payload.bin"))
+    corrupt_cache = bytearray(cache_file.read_bytes())
+    corrupt_cache[-1] ^= 0xFF
+    cache_file.write_bytes(corrupt_cache)
+
+    repaired = RaiderIOLocalReader(
+        tmp_path,
+        cache_dir=cache_dir,
+    ).lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert repaired is not None
+    assert repaired.current_score == 3074
+    assert repaired.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
+    assert _read_cached_payload(cache_file) == expected_payload
 
 
 def test_reader_does_not_recreate_decoded_lookup_payload_cache_after_clear_during_decode(

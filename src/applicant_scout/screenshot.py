@@ -138,6 +138,7 @@ _QR_RECOVERY_MAX_MODULE_PX = 10.0
 # work, daemonised so it doesn't delay shutdown).
 _BACKLOG_CLEANUP_LIMIT = 5000
 _RECENT_WORK_KEY_TTL_SECONDS = 3.0
+_GENERATION_RETRY_DELAY_SECONDS = 0.05
 # Bump when no-marker classification changes so older fingerprints are
 # reconsidered exactly once by the new decoder rather than hidden forever.
 _MANUAL_INDEX_VERSION = 2
@@ -2172,6 +2173,10 @@ class ScreenshotWatcher(QObject):
         fragment_clock: Callable[[], float] | None = None,
         fragment_timer_factory: Callable[[float, Callable[[], None]], Any]
         | None = None,
+        generation_retry_timer_factory: Callable[
+            [float, Callable[[], None]], Any
+        ]
+        | None = None,
     ):
         super().__init__(parent)
         self._dir = screenshots_dir
@@ -2192,6 +2197,11 @@ class ScreenshotWatcher(QObject):
         self._fragment_expiry_token = 0
         self._fragment_expiry_identity: tuple[int, int] | None = None
         self._fragment_degraded_reported = False
+        self._generation_retry_timer_factory = (
+            generation_retry_timer_factory or threading.Timer
+        )
+        self._generation_retry_lock = threading.Lock()
+        self._generation_retry_timers: dict[str, Any] = {}
 
     @staticmethod
     def _observer_is_healthy(observer: Any | None) -> bool:
@@ -2351,8 +2361,13 @@ class ScreenshotWatcher(QObject):
             self._fragment_expiry_token += 1
             timer = self._fragment_expiry_timer
             self._fragment_expiry_timer = None
+        with self._generation_retry_lock:
+            generation_retry_timers = tuple(self._generation_retry_timers.values())
+            self._generation_retry_timers.clear()
         if timer is not None:
             timer.cancel()
+        for generation_retry_timer in generation_retry_timers:
+            generation_retry_timer.cancel()
 
     def stop(self) -> None:
         self.request_stop()
@@ -2839,6 +2854,41 @@ class ScreenshotWatcher(QObject):
                 claim.release()
             if not claim.retry_requested:
                 return
+        self._schedule_generation_retry(path)
+
+    def _schedule_generation_retry(self, path: Path) -> None:
+        path_key = _normalized_work_path(path)
+        with self._generation_retry_lock:
+            if self._stopped.is_set() or path_key in self._generation_retry_timers:
+                return
+            timer_ref: list[Any] = []
+
+            def retry() -> None:
+                if timer_ref:
+                    self._run_generation_retry(path, path_key, timer_ref[0])
+
+            timer = self._generation_retry_timer_factory(
+                _GENERATION_RETRY_DELAY_SECONDS,
+                retry,
+            )
+            timer_ref.append(timer)
+            self._generation_retry_timers[path_key] = timer
+        self._set_timer_daemon(timer)
+        try:
+            timer.start()
+        except Exception as exc:  # noqa: BLE001 - observer remains usable
+            with self._generation_retry_lock:
+                if self._generation_retry_timers.get(path_key) is timer:
+                    self._generation_retry_timers.pop(path_key, None)
+            _log.warning("could not start screenshot generation retry timer: %s", exc)
+
+    def _run_generation_retry(self, path: Path, path_key: str, timer: Any) -> None:
+        with self._generation_retry_lock:
+            if self._generation_retry_timers.get(path_key) is not timer:
+                return
+            self._generation_retry_timers.pop(path_key, None)
+        if not self._stopped.is_set():
+            self._on_new_file(path)
 
     def _dispatch_live_decode_result(
         self,

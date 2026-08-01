@@ -166,7 +166,6 @@ def test_update_check_prefers_installer_asset():
     assert result.asset_name == "ApplicantScoutCompanionSetup-0.2.0.exe"
     assert result.checksum_name == "ApplicantScoutCompanionSetup-0.2.0.exe.sha256"
     assert result.checksum_url == "https://example.test/setup.exe.sha256"
-    assert result.open_url == "https://example.test/setup.exe"
 
 
 def test_update_check_requests_release_immutability_api_contract():
@@ -238,7 +237,6 @@ def test_update_check_does_not_fall_back_from_newer_mutable_release():
     assert result.reason == "release_not_immutable"
     assert result.latest_version == "v0.3.0"
     assert result.asset_url is None
-    assert result.open_url is None
 
 
 def test_update_check_does_not_select_portable_asset_for_in_app_update():
@@ -264,7 +262,6 @@ def test_update_check_does_not_select_portable_asset_for_in_app_update():
     assert result.status == "available"
     assert result.asset_name is None
     assert result.asset_url is None
-    assert result.open_url == "https://github.test/releases/tag/0.2.0"
     assert "no installer asset" in result.message
 
 
@@ -295,7 +292,6 @@ def test_update_check_rejects_blank_asset_download_url():
     assert result.status == "available"
     assert result.asset_name is None
     assert result.asset_url is None
-    assert result.open_url == "https://github.test/releases/tag/v0.2.0"
     assert "no installer asset" in result.message
 
 
@@ -327,7 +323,6 @@ def test_update_check_ignores_assets_for_other_versions():
     assert result.latest_version == "v0.2.0"
     assert result.asset_name is None
     assert result.asset_url is None
-    assert result.open_url == "https://github.test/releases/tag/v0.2.0"
 
 
 def test_update_check_accepts_v_tag_with_unprefixed_asset_version():
@@ -357,7 +352,6 @@ def test_update_check_accepts_v_tag_with_unprefixed_asset_version():
     assert result.status == "available"
     assert result.asset_name == "ApplicantScoutCompanionSetup-0.2.0.exe"
     assert result.checksum_name == "ApplicantScoutCompanionSetup-0.2.0.exe.sha256"
-    assert result.open_url == "https://example.test/setup.exe"
 
 
 def test_update_check_reports_available_but_uninstallable_without_checksum_asset():
@@ -385,7 +379,6 @@ def test_update_check_reports_available_but_uninstallable_without_checksum_asset
     assert result.asset_url is None
     assert result.checksum_name is None
     assert "checksum" in result.message.lower()
-    assert result.open_url == "https://github.test/releases/tag/v0.2.0"
 
 
 def test_update_check_selects_highest_stable_semver_when_releases_are_out_of_order():
@@ -430,7 +423,6 @@ def test_update_check_selects_highest_stable_semver_when_releases_are_out_of_ord
     assert result.latest_version == "v0.3.0"
     assert result.asset_name == "ApplicantScoutCompanionSetup-0.3.0.exe"
     assert result.checksum_name == "ApplicantScoutCompanionSetup-0.3.0.exe.sha256"
-    assert result.open_url == "https://example.test/setup-030.exe"
 
 
 def test_update_check_selects_asset_from_highest_release_not_first_release():
@@ -461,20 +453,18 @@ def test_update_check_selects_asset_from_highest_release_not_first_release():
     assert result.status == "available"
     assert result.latest_version == "v0.3.0"
     assert result.asset_name is None
-    assert result.open_url == "https://github.test/releases/tag/v0.3.0"
 
 
-def test_update_check_reports_unavailable_when_newer_release_has_no_open_url():
+def test_update_check_reports_missing_installer_without_release_url():
     client = _Client(
         _Response(200, [{"tag_name": "v0.2.0", "immutable": True, "assets": []}])
     )
 
     result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
 
-    assert result.status == "unavailable"
-    assert result.reason == "missing_release_url"
-    assert "no release URL" in result.message
-    assert result.open_url is None
+    assert result.status == "available"
+    assert result.reason is None
+    assert "no installer asset" in result.message
 
 
 def test_update_check_reports_up_to_date_for_same_version():
@@ -483,7 +473,6 @@ def test_update_check_reports_up_to_date_for_same_version():
     result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
 
     assert result.status == "up_to_date"
-    assert result.open_url == "https://github.test/releases/tag/v0.1.0"
 
 
 def test_update_check_ignores_prereleases_and_drafts():

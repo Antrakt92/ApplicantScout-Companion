@@ -28,7 +28,6 @@ from applicant_scout.wcl import (
     _RU_REALM_MAP_LOWER,
     WCL_ERROR_AUTH,
     WCL_ERROR_GRAPHQL,
-    WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_RATE_LIMITED,
@@ -1256,47 +1255,12 @@ def test_fetch_character_ranks_403_is_auth_error_kind():
     assert len(http.calls) == 1
 
 
-def test_quota_reservation_tracks_reentrant_cache_miss_without_soft_block(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    now = 1_000.0
-    second_result: list[CharacterRanks] = []
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
-    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
-    client._record_quota_snapshot(
-        RateLimitInfo(limit_per_hour=100.0, points_spent=84.0, reset_in_seconds=60.0),
-        now=now,
-    )
-
-    def fetch_second() -> None:
-        second_result.append(
-            client.fetch_character_ranks("Second", "ravencrest", spec_id=71)
-        )
-
-    client._http.close()
-    http = _ReentrantHTTP(_wcl_payload(_character_with_empty_mplus()), fetch_second)
-    client._http = http  # type: ignore[assignment]
-
-    first = client.fetch_character_ranks("First", "ravencrest", spec_id=71)
-
-    assert first.error == ""
-    assert len(second_result) == 1
-    assert second_result[0].error == ""
-    assert second_result[0].error_kind == ""
-    assert len(http.calls) == 2
-    assert client._reserved_quota_points == pytest.approx(0.0)
-
-
-def test_quota_reservation_releases_after_network_exception(
+def test_network_exception_sets_cooldown_until_retry_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ):
     now = 1_000.0
     monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
-    client._record_quota_snapshot(
-        RateLimitInfo(limit_per_hour=100.0, points_spent=84.0, reset_in_seconds=60.0),
-        now=now,
-    )
 
     class RaisingHTTP:
         calls = 0
@@ -1329,24 +1293,18 @@ def test_quota_reservation_releases_after_network_exception(
     assert len(http.calls) == 1
 
 
-def test_reconfigure_auth_clears_quota_reservation_state(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_reconfigure_auth_clears_quota_snapshot():
     now = 1_000.0
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._record_quota_snapshot(
         RateLimitInfo(limit_per_hour=100.0, points_spent=84.0, reset_in_seconds=60.0),
         now=now,
     )
-    reservation = client._reserve_quota_for_fetch(12.0, now=now)
-    assert not isinstance(reservation, CharacterRanks)
-    assert client.quota_guard_retry_remaining_seconds(now=now) == 0.0
+    assert client.last_quota is not None
 
     client.reconfigure_auth(_FakeAuth())  # type: ignore[arg-type]
 
     assert client.last_quota is None
-    assert client.quota_guard_retry_remaining_seconds(now=now) == 0.0
 
 
 def test_auth_validation_status_is_generation_safe_and_secret_free():
@@ -1462,25 +1420,6 @@ def test_late_auth_validation_completion_after_close_is_ignored():
     assert client.connection_status.state == "unknown"
 
 
-def test_stale_quota_reservation_release_after_reconfigure_does_not_clear_new_reservation():
-    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
-
-    old_reservation = client._reserve_quota_for_fetch(12.0)
-    assert not isinstance(old_reservation, CharacterRanks)
-    assert client._reserved_quota_points == pytest.approx(12.0)
-
-    client.reconfigure_auth(_FakeAuth())  # type: ignore[arg-type]
-    new_reservation = client._reserve_quota_for_fetch(12.0)
-    assert not isinstance(new_reservation, CharacterRanks)
-    assert client._reserved_quota_points == pytest.approx(12.0)
-
-    client._release_quota_reservation(old_reservation)
-    assert client._reserved_quota_points == pytest.approx(12.0)
-
-    client._release_quota_reservation(new_reservation)
-    assert client._reserved_quota_points == pytest.approx(0.0)
-
-
 def test_reconfigure_auth_ignores_stale_quota_snapshot_from_in_flight_fetch():
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
 
@@ -1497,7 +1436,6 @@ def test_reconfigure_auth_ignores_stale_quota_snapshot_from_in_flight_fetch():
 
     assert result.error == ""
     assert client.last_quota is None
-    assert client.quota_guard_retry_remaining_seconds() == 0.0
 
 
 def test_reconfigure_auth_ignores_stale_429_from_in_flight_fetch(
@@ -1570,26 +1508,6 @@ def test_quota_snapshot_near_limit_does_not_soft_block_fetch(
     assert len(http.calls) == 1
 
 
-def test_quota_guard_lifts_after_recorded_reset_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
-    client, http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
-    client._record_quota_snapshot(
-        RateLimitInfo(limit_per_hour=100.0, points_spent=90.0, reset_in_seconds=60.0),
-        now=current[0],
-    )
-    current[0] += 61.0
-
-    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
-
-    assert result.error == ""
-    assert len(http.calls) == 1
-    assert client.last_quota is not None
-    assert client.last_quota.points_spent == pytest.approx(10.0)
-
-
 def test_429_sets_cooldown_and_short_circuits_until_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1607,7 +1525,7 @@ def test_429_sets_cooldown_and_short_circuits_until_deadline(
     current[0] += 1.0
     result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
 
-    assert "rate-limited" in result.error
+    assert result.error == "WCL rate-limited; retrying in 299s"
     assert result.error_kind == WCL_ERROR_RATE_LIMITED
     assert len(http.calls) == 1
 
@@ -1908,10 +1826,10 @@ def test_fetch_character_ranks_unexpected_400_is_non_retryable_http_error():
 
 
 def test_character_ranks_empty_preserves_error_kind():
-    result = CharacterRanks.empty(error="paused", error_kind=WCL_ERROR_QUOTA_GUARD)
+    result = CharacterRanks.empty(error="paused", error_kind=WCL_ERROR_NETWORK)
 
     assert result.error == "paused"
-    assert result.error_kind == WCL_ERROR_QUOTA_GUARD
+    assert result.error_kind == WCL_ERROR_NETWORK
 
 
 def test_wcl_api_error_preserves_message_and_kind():
@@ -1919,23 +1837,6 @@ def test_wcl_api_error_preserves_message_and_kind():
 
     assert str(err) == "boom"
     assert err.error_kind == WCL_ERROR_RATE_LIMITED
-
-
-def test_near_limit_quota_snapshot_still_allows_character_fetch(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    now = 1_000.0
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
-    client, _http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
-    client._record_quota_snapshot(
-        RateLimitInfo(limit_per_hour=100.0, points_spent=90.0, reset_in_seconds=60.0),
-        now=now,
-    )
-
-    result = client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
-
-    assert result.error == ""
-    assert result.error_kind == ""
 
 
 def test_retry_block_remaining_seconds_uses_max_remaining_block(
@@ -1953,7 +1854,6 @@ def test_retry_block_remaining_seconds_uses_max_remaining_block(
 
     assert client.rate_limit_retry_remaining_seconds() == pytest.approx(120.0)
     assert client.network_retry_remaining_seconds() == pytest.approx(90.0)
-    assert client.quota_guard_retry_remaining_seconds() == 0.0
     assert client.retry_block_remaining_seconds() == pytest.approx(120.0)
 
 
@@ -2714,6 +2614,121 @@ def test_character_cache_prefers_newest_covering_scope_when_exact_missing(tmp_pa
 
     assert result is not None
     assert result.raid_heroic == pytest.approx(64.0)
+
+
+@pytest.mark.parametrize("cache_kind", ["ranks", "raid_boss_details"])
+@pytest.mark.parametrize(
+    ("exact_age", "broader_age", "expected_value"),
+    [
+        (60 * 60, 0, 64.0),
+        (0, 60 * 60, 31.0),
+        (0, 0, 31.0),
+    ],
+)
+def test_character_cache_orders_exact_and_covering_scopes_by_freshness(
+    tmp_path: Path,
+    cache_kind: str,
+    exact_age: int,
+    broader_age: int,
+    expected_value: float,
+):
+    cache = CharacterCache(tmp_path)
+    exact = MetricPreferences(
+        mplus=False,
+        raid_normal=False,
+        raid_heroic=True,
+        raid_mythic=False,
+    )
+    broader = MetricPreferences()
+
+    if cache_kind == "ranks":
+        exact_ranks = _ranks()
+        exact_ranks.raid_heroic = 31.0
+        broader_ranks = _ranks()
+        broader_ranks.raid_heroic = 64.0
+        cache.put(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            exact_ranks,
+            role="DAMAGER",
+            metric_preferences=exact,
+        )
+        cache.put(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            broader_ranks,
+            role="DAMAGER",
+            metric_preferences=broader,
+        )
+    else:
+
+        def rows(overall: float) -> dict[str, list[dict[str, object]]]:
+            return {
+                "H": [
+                    {
+                        "encounter_id": 3176,
+                        "name": "Imperator Averzian",
+                        "overall": overall,
+                        "ilvl": overall,
+                    }
+                ]
+            }
+
+        cache.put_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            rows(31.0),
+            role="DAMAGER",
+            metric_preferences=exact,
+        )
+        cache.put_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            rows(64.0),
+            role="DAMAGER",
+            metric_preferences=broader,
+        )
+
+    now = time.time()
+    for key, entry in cache._data.items():
+        scope_key = key.rsplit(":", 1)[-1]
+        if scope_key == exact.cache_key():
+            entry.fetched_at = now - exact_age
+        elif scope_key == broader.cache_key():
+            entry.fetched_at = now - broader_age
+
+    if cache_kind == "ranks":
+        result = cache.get(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            "DAMAGER",
+            metric_preferences=exact,
+        )
+        assert result is not None
+        actual_value = result.raid_heroic
+    else:
+        result = cache.get_raid_boss_details(
+            "Scout",
+            "ravencrest",
+            "EU",
+            71,
+            "DAMAGER",
+            metric_preferences=exact,
+        )
+        assert result is not None
+        actual_value = result["H"][0]["overall"]
+
+    assert actual_value == pytest.approx(expected_value)
 
 
 def test_character_cache_ignores_malformed_scope_key_entries(tmp_path):

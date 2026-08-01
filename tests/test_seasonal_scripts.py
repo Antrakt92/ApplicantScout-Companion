@@ -18,7 +18,6 @@ from applicant_scout.constants import (
 from scripts.seasonal import (
     get_mplus_activity_ids,
     get_mplus_challenge_map_ids,
-    get_mplus_encounter_ids,
     verify_wcl_season,
 )
 
@@ -54,24 +53,13 @@ def test_seasonal_cli_direct_execution_bootstraps_repo_imports(
 
 
 def test_format_mplus_tuples_outputs_copyable_constants():
-    zone = get_mplus_encounter_ids.extract_zone_payload(
-        {
-            "data": {
-                "worldData": {
-                    "zone": {
-                        "id": 47,
-                        "name": "Midnight Season 1",
-                        "encounters": [
-                            {"id": 112526, "name": "Algeth'ar Academy"},
-                            {"id": 10658, "name": "Pit of Saron"},
-                        ],
-                    }
-                }
-            }
-        }
+    zone = verify_wcl_season.ZoneSnapshot(
+        47,
+        "Midnight Season 1",
+        ((112526, "Algeth'ar Academy"), (10658, "Pit of Saron")),
     )
 
-    text = get_mplus_encounter_ids.format_mplus_tuples(zone)
+    text = verify_wcl_season.format_mplus_tuples(zone)
 
     assert "# WCL zone 47: Midnight Season 1" in text
     assert '("aa", 112526, "Algeth\'ar Academy"),' in text
@@ -79,53 +67,11 @@ def test_format_mplus_tuples_outputs_copyable_constants():
 
 
 def test_format_mplus_tuples_escapes_double_quotes():
-    zone = get_mplus_encounter_ids.extract_zone_payload(
-        {
-            "data": {
-                "worldData": {
-                    "zone": {
-                        "id": 47,
-                        "name": "Test",
-                        "encounters": [{"id": 1, "name": 'Vault "Prime"'}],
-                    }
-                }
-            }
-        }
-    )
+    zone = verify_wcl_season.ZoneSnapshot(47, "Test", ((1, 'Vault "Prime"'),))
 
-    text = get_mplus_encounter_ids.format_mplus_tuples(zone)
+    text = verify_wcl_season.format_mplus_tuples(zone)
 
     assert '("vp", 1, "Vault \\"Prime\\""),' in text
-
-
-def test_extract_zone_payload_rejects_graphql_errors():
-    with pytest.raises(get_mplus_encounter_ids.SeasonalScriptError, match="boom"):
-        get_mplus_encounter_ids.extract_zone_payload({"errors": [{"message": "boom"}]})
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"data": {"worldData": {"zone": None}}},
-        {"data": {"worldData": {"zone": {"encounters": []}}}},
-        {"data": {"worldData": {"zone": {"encounters": [{"id": True, "name": "X"}]}}}},
-        {"data": {"worldData": {"zone": {"encounters": [{"id": 1, "name": ""}]}}}},
-    ],
-)
-def test_extract_zone_payload_rejects_malformed_zone_data(payload):
-    with pytest.raises(get_mplus_encounter_ids.SeasonalScriptError):
-        get_mplus_encounter_ids.extract_zone_payload(payload)
-
-
-def test_json_object_response_rejects_non_object_json():
-    class Response:
-        text = "[]"
-
-        def json(self) -> object:
-            return []
-
-    with pytest.raises(get_mplus_encounter_ids.SeasonalScriptError, match="object"):
-        get_mplus_encounter_ids.json_object_response(Response())
 
 
 def _activity_csv(*rows: str) -> str:
@@ -497,3 +443,54 @@ def test_wcl_season_main_executes_one_confirmed_query(monkeypatch, capsys, tmp_p
     assert len(calls) == 1
     assert calls[0][0] == "token"
     assert "WCL quota after check" in capsys.readouterr().out
+
+
+def test_wcl_season_main_prints_mplus_tuples_with_one_zone_query(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setattr(
+        verify_wcl_season,
+        "load_config",
+        lambda: SimpleNamespace(
+            wcl_client_id="client",
+            wcl_client_secret="secret",
+            cache_dir=tmp_path,
+        ),
+    )
+
+    class FakeAuth:
+        def __init__(self, client_id, client_secret, cache_dir):
+            assert (client_id, client_secret, cache_dir) == (
+                "client",
+                "secret",
+                tmp_path,
+            )
+
+        def get_token(self):
+            return "token"
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_fetch(token, query):
+        calls.append((token, query))
+        return _valid_wcl_season_payload()
+
+    monkeypatch.setattr(verify_wcl_season, "WCLAuth", FakeAuth)
+    monkeypatch.setattr(verify_wcl_season, "fetch_live_payload", fake_fetch)
+
+    assert (
+        verify_wcl_season.main(
+            ["--confirm-spend-wcl-quota", "--print-mplus-tuples"]
+        )
+        == 0
+    )
+    assert len(calls) == 1
+    token, query = calls[0]
+    assert token == "token"
+    assert f"zone(id: {CURRENT_MPLUS_ZONE_ID})" in query
+    assert f"zone(id: {CURRENT_RAID_ZONE_ID})" not in query
+    output = capsys.readouterr().out
+    assert f"# WCL zone {CURRENT_MPLUS_ZONE_ID}:" in output
+    assert '("aa", 112526, "Algeth\'ar Academy"),' in output
+    assert "WCL seasonal constants match zones" not in output
+    assert "WCL quota after check" in output

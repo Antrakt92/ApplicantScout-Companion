@@ -40,8 +40,8 @@ from applicant_scout.screenshot import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-LUA_GOLDEN_STEM = "aps1_v8_lua_golden"
-LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v8_lua_leader_key_golden"
+LUA_GOLDEN_STEM = "aps1_v9_lua_golden"
+LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v9_lua_leader_key_golden"
 
 
 class _FakeClock:
@@ -4629,6 +4629,92 @@ def test_watcher_retries_changed_generation_without_deleting_replacement(
     ]
     assert failures == []
     assert image_path.read_bytes() == b"replacement-manual-screenshot"
+
+
+def test_watcher_defers_third_changed_generation_without_another_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"generation-a")
+    os.utime(image_path, ns=(1_000_000_000, 1_000_000_000))
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        generation_retry_timer_factory=timers,
+    )
+    decoded_contents: list[bytes] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        contents = path.read_bytes()
+        decoded_contents.append(contents)
+        if contents == b"generation-a":
+            path.write_bytes(b"generation-b")
+            os.utime(path, ns=(2_000_000_000, 2_000_000_000))
+        elif contents == b"generation-b":
+            path.write_bytes(b"generation-c")
+            os.utime(path, ns=(3_000_000_000, 3_000_000_000))
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._on_new_file(image_path)
+
+    assert decoded_contents == [b"generation-a", b"generation-b"]
+    assert len(timers.timers) == 1
+    assert timers.timers[0].started is True
+    assert timers.timers[0].daemon is True
+    assert timers.timers[0].delay == pytest.approx(
+        screenshot_mod._GENERATION_RETRY_DELAY_SECONDS
+    )
+
+    timers.timers[0].fire()
+
+    assert decoded_contents == [
+        b"generation-a",
+        b"generation-b",
+        b"generation-c",
+    ]
+    assert len(timers.timers) == 1
+    assert image_path.read_bytes() == b"generation-c"
+
+
+def test_watcher_stop_cancels_deferred_generation_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"generation-a")
+    os.utime(image_path, ns=(1_000_000_000, 1_000_000_000))
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        generation_retry_timer_factory=timers,
+    )
+    decoded_contents: list[bytes] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        contents = path.read_bytes()
+        decoded_contents.append(contents)
+        if contents == b"generation-a":
+            path.write_bytes(b"generation-b")
+            os.utime(path, ns=(2_000_000_000, 2_000_000_000))
+        elif contents == b"generation-b":
+            path.write_bytes(b"generation-c")
+            os.utime(path, ns=(3_000_000_000, 3_000_000_000))
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._on_new_file(image_path)
+    watcher.request_stop()
+    timers.timers[0].fire()
+
+    assert decoded_contents == [b"generation-a", b"generation-b"]
+    assert timers.timers[0].cancelled is True
+    assert image_path.read_bytes() == b"generation-c"
 
 
 def test_watcher_retries_replacement_created_during_snapshot_callback(

@@ -925,6 +925,10 @@ def test_runtime_addon_warning_matches_paired_release_version():
 def test_release_build_refuses_dirty_release_inputs_by_default():
     build_script = _read_repo_text("scripts/build-windows.ps1")
     release_inputs = _release_input_paths(build_script)
+    git_status_command = (
+        "& $Git.Source -C $RepoRoot status --porcelain "
+        "--untracked-files=all -- $ReleaseInputPaths"
+    )
 
     assert "Assert-CleanReleaseInputs" in build_script
     assert "AllowDirtyReleaseInputs" in build_script
@@ -951,6 +955,33 @@ def test_release_build_refuses_dirty_release_inputs_by_default():
         "docs\\visual",
     }.issubset(release_inputs)
     assert "--untracked-files=all" in build_script
+    assert build_script.count(git_status_command) == 1
+    assert re.search(
+        r'\$Dirty\s*=\s*Invoke-NativeChecked\s+-Label\s+'
+        r'"Inspect release input cleanliness"\s+-Command\s*\{\s*'
+        + re.escape(git_status_command),
+        build_script,
+    )
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "1.2.3",
+        "v01.2.3",
+        "v1.02.3",
+        "v1.2.03",
+    ],
+)
+def test_release_version_check_rejects_noncanonical_tag(tmp_path, tag):
+    repo = _copy_release_check_fixture(tmp_path)
+
+    result = _run_release_check(repo, "-Tag", tag)
+
+    assert result.returncode != 0
+    assert "expected strict vx.y.z with no leading zeros" in (
+        result.stdout + result.stderr
+    ).lower()
 
 
 def test_release_version_metadata_is_ready_for_current_version():

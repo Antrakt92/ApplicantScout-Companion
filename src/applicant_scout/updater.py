@@ -50,15 +50,10 @@ class UpdateResult:
     message: str
     reason: str | None = None
     latest_version: str | None = None
-    release_url: str | None = None
     asset_url: str | None = None
     asset_name: str | None = None
     checksum_url: str | None = None
     checksum_name: str | None = None
-
-    @property
-    def open_url(self) -> str | None:
-        return self.asset_url or self.release_url
 
 
 @dataclass(frozen=True)
@@ -242,21 +237,17 @@ def check_for_update(
                 reason="release_not_immutable",
                 latest_version=latest_version or None,
             )
-        release_url = latest.get("html_url")
-        release_url = release_url if isinstance(release_url, str) else None
         if not latest_version:
             return UpdateResult(
                 status="unavailable",
                 message="Latest GitHub Release has no version tag.",
                 reason="missing_version_tag",
-                release_url=release_url,
             )
         if not _is_newer(latest_version, current_version):
             return UpdateResult(
                 status="up_to_date",
                 message=f"ApplicantScout Companion is up to date ({current_version}).",
                 latest_version=latest_version,
-                release_url=release_url,
             )
         raw_assets = latest.get("assets", [])
         assets = raw_assets if isinstance(raw_assets, list) else []
@@ -276,16 +267,8 @@ def check_for_update(
                     "checksum asset was not published."
                 ),
                 latest_version=latest_version,
-                release_url=release_url,
             )
         if asset_url is None:
-            if release_url is None:
-                return UpdateResult(
-                    status="unavailable",
-                    message="Latest GitHub Release has no release URL.",
-                    reason="missing_release_url",
-                    latest_version=latest_version,
-                )
             return UpdateResult(
                 status="available",
                 message=(
@@ -293,13 +276,11 @@ def check_for_update(
                     "asset was published."
                 ),
                 latest_version=latest_version,
-                release_url=release_url,
             )
         return UpdateResult(
             status="available",
             message=f"Version {latest_version} is available.",
             latest_version=latest_version,
-            release_url=release_url,
             asset_url=asset_url,
             asset_name=asset_name,
             checksum_url=checksum_url,

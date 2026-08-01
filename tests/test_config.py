@@ -2524,7 +2524,11 @@ def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
         ),
     )
     monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(main_mod, "_run_settings_dialog", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        main_mod,
+        "_run_first_run_settings",
+        lambda *_args, **_kwargs: False,
+    )
     monkeypatch.setattr(main_mod.QMessageBox, "warning", lambda *_args, **_kwargs: None)
 
     class FakeApp:
@@ -3729,7 +3733,7 @@ def test_load_startup_config_marks_whether_first_run_setup_was_shown(
     monkeypatch.setattr(main_mod, "load_config", lambda: next(configs))
     monkeypatch.setattr(
         main_mod,
-        "_run_settings_dialog",
+        "_run_first_run_settings",
         lambda *_args, **_kwargs: calls.append("settings") or True,
     )
     monkeypatch.setattr(
@@ -3738,9 +3742,7 @@ def test_load_startup_config_marks_whether_first_run_setup_was_shown(
         lambda path: calls.append(f"probe:{path}") or None,
     )
 
-    loaded = main_mod._load_startup_config(
-        update_quit_gate=_active_update_quit_gate()
-    )
+    loaded = main_mod._load_startup_config()
 
     assert loaded == (ready_cfg, tmp_path / "Screenshots", True)
     assert calls == ["settings", f"probe:{tmp_path / 'Screenshots'}"]
@@ -3775,13 +3777,11 @@ def test_load_startup_config_routes_disconnected_storage_through_bounded_probe(
     )
     monkeypatch.setattr(
         main_mod,
-        "_run_settings_dialog",
+        "_run_first_run_settings",
         lambda *_args, **_kwargs: calls.append("settings") or False,
     )
 
-    loaded = main_mod._load_startup_config(
-        update_quit_gate=_active_update_quit_gate()
-    )
+    loaded = main_mod._load_startup_config()
 
     assert loaded is None
     assert calls == [f"probe:{screenshots}", "warning", "settings"]
@@ -3800,7 +3800,7 @@ def test_load_startup_config_prompts_for_saved_suspicious_screenshots_override(
     monkeypatch.setattr(main_mod, "load_config", lambda: next(configs))
     monkeypatch.setattr(
         main_mod,
-        "_run_settings_dialog",
+        "_run_first_run_settings",
         lambda *_args, **_kwargs: calls.append("settings") or True,
     )
     monkeypatch.setattr(
@@ -3819,9 +3819,7 @@ def test_load_startup_config_prompts_for_saved_suspicious_screenshots_override(
         ),
     )
 
-    loaded = main_mod._load_startup_config(
-        update_quit_gate=_active_update_quit_gate()
-    )
+    loaded = main_mod._load_startup_config()
 
     assert loaded == (ready_cfg, root / "Screenshots", True)
     assert calls == [
@@ -3843,7 +3841,7 @@ def test_load_startup_config_rejects_suspicious_process_env_override_without_pro
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
     monkeypatch.setattr(
         main_mod,
-        "_run_settings_dialog",
+        "_run_first_run_settings",
         lambda *_args, **_kwargs: calls.append("settings") or True,
     )
     monkeypatch.setattr(
@@ -3857,9 +3855,7 @@ def test_load_startup_config_rejects_suspicious_process_env_override_without_pro
         lambda _path: "Screenshots folder warning: invalid environment path.",
     )
 
-    loaded = main_mod._load_startup_config(
-        update_quit_gate=_active_update_quit_gate()
-    )
+    loaded = main_mod._load_startup_config()
 
     assert loaded is None
     assert calls
@@ -3880,7 +3876,7 @@ def test_load_startup_config_rejects_nested_process_env_override_without_prompt(
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
     monkeypatch.setattr(
         main_mod,
-        "_run_settings_dialog",
+        "_run_first_run_settings",
         lambda *_args, **_kwargs: calls.append("settings") or True,
     )
     monkeypatch.setattr(
@@ -3894,9 +3890,7 @@ def test_load_startup_config_rejects_nested_process_env_override_without_prompt(
         lambda _path: "Screenshots folder warning: invalid environment path.",
     )
 
-    loaded = main_mod._load_startup_config(
-        update_quit_gate=_active_update_quit_gate()
-    )
+    loaded = main_mod._load_startup_config()
 
     assert loaded is None
     assert calls
@@ -4071,7 +4065,6 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
 
     assert main_mod._run_first_run_settings(
         cfg,
-        update_quit_gate=_active_update_quit_gate(),
     )
     assert calls == ["shortcut", "save", "watcher:False"]
 
@@ -4121,7 +4114,6 @@ def test_first_run_wow_sync_disable_stops_current_session_watcher_after_save(
 
     assert main_mod._run_first_run_settings(
         cfg,
-        update_quit_gate=_active_update_quit_gate(),
     )
     assert calls == ["shortcut:False", "save", "watcher-stop"]
 
@@ -4379,7 +4371,6 @@ def test_first_run_wow_sync_enable_save_failure_rolls_back_shortcut(
 
     assert not main_mod._run_first_run_settings(
         cfg,
-        update_quit_gate=_active_update_quit_gate(),
     )
     assert calls == ["shortcut:True", "save", "shortcut:False"]
     assert len(warnings) == 1
@@ -4442,7 +4433,6 @@ def test_first_run_wow_sync_disable_save_failure_restores_previous_enabled_short
 
     assert not main_mod._run_first_run_settings(
         cfg,
-        update_quit_gate=_active_update_quit_gate(),
     )
     assert calls == ["shortcut:False", "save", "shortcut:True"]
     assert len(warnings) == 1
@@ -4500,7 +4490,6 @@ def test_first_run_wow_sync_save_failure_warns_when_rollback_fails(
 
     assert not main_mod._run_first_run_settings(
         cfg,
-        update_quit_gate=_active_update_quit_gate(),
     )
     assert calls == ["shortcut:True", "save", "shortcut:False"]
     assert len(warnings) == 1
@@ -4552,7 +4541,6 @@ def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
 
     assert not main_mod._run_first_run_settings(
         cfg,
-        update_quit_gate=_active_update_quit_gate(),
     )
     assert calls == []
     assert len(warnings) == 1
@@ -4603,7 +4591,6 @@ def test_first_run_wow_sync_disable_cleanup_failure_still_saves_settings(
 
     assert main_mod._run_first_run_settings(
         cfg,
-        update_quit_gate=_active_update_quit_gate(),
     )
     assert calls == ["save"]
     assert len(warnings) == 1
@@ -6998,7 +6985,7 @@ def test_replace_screenshot_watcher_keeps_new_generation_when_old_stop_fails(
     assert machine.snapshots == ["new-after-replace"]
 
 
-def test_quiesce_screenshot_ingestion_flushes_before_invalidate_then_closes_writer():
+def test_quiesce_screenshot_ingestion_flushes_before_invalidate():
     gate = main_mod._WatcherSignalGate()
     events: list[str] = []
 
@@ -7013,14 +7000,19 @@ def test_quiesce_screenshot_ingestion_flushes_before_invalidate_then_closes_writ
         def request_stop(self) -> None:
             events.append("request_stop")
 
-    class FakeWriter:
-        def close(self) -> None:
-            assert not gate.is_current(0)
-            events.append("writer_close")
+    main_mod._quiesce_screenshot_ingestion(FakeWatcher(), gate)
 
-    main_mod._quiesce_screenshot_ingestion(FakeWatcher(), gate, FakeWriter())
+    assert events == ["request_stop", "queue_flush"]
 
-    assert events == ["request_stop", "queue_flush", "writer_close"]
+
+def test_one_shot_callback_runs_terminal_cleanup_once():
+    calls: list[str] = []
+    callback = main_mod._make_one_shot_callback(lambda: calls.append("cleanup"))
+
+    callback()
+    callback()
+
+    assert calls == ["cleanup"]
 
 
 def test_application_event_loop_reconciles_wow_startup_before_runtime_shutdown(
@@ -7064,6 +7056,62 @@ def test_application_event_loop_reconciles_wow_startup_before_runtime_shutdown(
 
     assert result == 17
     assert events == ["request:True", "exec", "close", "shutdown", "owner-close"]
+
+
+def test_application_event_loop_attempts_full_cleanup_without_masking_exec_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    events: list[str] = []
+
+    class FakeApp:
+        def exec(self) -> int:
+            events.append("exec")
+            raise RuntimeError("event loop failed")
+
+    class FakeConfigurator:
+        def request(self, enabled: bool) -> None:
+            events.append(f"request:{enabled}")
+
+        def close(self) -> None:
+            events.append("close")
+            raise RuntimeError("configurator close failed")
+
+    class FakeOwner:
+        def close(self) -> None:
+            events.append("owner-close")
+            raise RuntimeError("owner close failed")
+
+    def watcher_getter():
+        events.append("watcher-getter")
+        raise RuntimeError("watcher getter failed")
+
+    def fail_shutdown(watcher, *_args) -> None:
+        events.append(f"shutdown:{watcher}")
+        raise RuntimeError("shutdown failed")
+
+    monkeypatch.setattr(main_mod, "_shutdown_runtime", fail_shutdown)
+
+    with pytest.raises(RuntimeError, match="event loop failed"):
+        main_mod._run_application_event_loop(
+            FakeApp(),  # type: ignore[arg-type]
+            wow_sync_startup_configurator=FakeConfigurator(),  # type: ignore[arg-type]
+            sync_with_wow=False,
+            watcher_getter=watcher_getter,
+            window=object(),  # type: ignore[arg-type]
+            cache=object(),  # type: ignore[arg-type]
+            live_snapshot_writer=object(),  # type: ignore[arg-type]
+            wcl_client=object(),  # type: ignore[arg-type]
+            runtime_owner=FakeOwner(),  # type: ignore[arg-type]
+        )
+
+    assert events == [
+        "request:False",
+        "exec",
+        "close",
+        "watcher-getter",
+        "shutdown:None",
+        "owner-close",
+    ]
 
 
 @pytest.mark.skipif(main_mod.sys.platform != "win32", reason="Windows mutex contract")
@@ -8504,6 +8552,16 @@ def test_update_result_has_installable_asset_rejects_path_separator():
     assert not main_mod.update_result_has_installable_asset(Result())
 
 
+def test_update_completion_accepts_plain_up_to_date_message():
+    completion = main_mod._update_completion_from_result(
+        "ApplicantScout Companion is up to date."
+    )
+
+    assert completion == main_mod._UpdateCompletion(
+        "ApplicantScout Companion is up to date."
+    )
+
+
 def test_update_checks_run_hourly_after_initial_startup():
     assert main_mod.UPDATE_CHECK_INITIAL_MS == 1_000
     assert main_mod.UPDATE_CHECK_INTERVAL_MS == 60 * 60 * 1000
@@ -8991,7 +9049,6 @@ def test_check_updates_downloads_and_launches_installable_release(
 
     assert calls == [result, (installer, False)]
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
-    assert update_result.open_url is None
     assert update_result.installer_handoff is True
     assert update_result.installer_launch is launch
     assert "Installing ApplicantScout Companion v0.2.0" in update_result.message
@@ -9096,7 +9153,6 @@ def test_check_updates_launches_checksum_verified_installer_without_pinned_signe
         status="available",
         message="Version v0.2.0 is available.",
         latest_version="v0.2.0",
-        release_url="https://github.com/example/release",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
         asset_url="https://example.test/setup.exe",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
@@ -9126,7 +9182,6 @@ def test_check_updates_launches_checksum_verified_installer_without_pinned_signe
 
     assert calls == [result, (installer, False)]
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
-    assert update_result.open_url is None
     assert update_result.installer_handoff is True
     assert update_result.installer_launch is launch
     assert "Installing ApplicantScout Companion v0.2.0" in update_result.message
@@ -9503,9 +9558,12 @@ def test_settings_dialog_gets_explicit_app_icon_before_exec(
     icon = object()
     seen_dialogs: list[FakeDialog] = []
 
+    captured_kwargs: dict[str, object] = {}
+
     class FakeDialog:
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args, **kwargs):
             self.icon = None
+            captured_kwargs.update(kwargs)
             seen_dialogs.append(self)
 
         def setWindowIcon(self, value) -> None:
@@ -9517,13 +9575,10 @@ def test_settings_dialog_gets_explicit_app_icon_before_exec(
     monkeypatch.setattr(main_mod, "_app_icon", lambda: icon)
     monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
 
-    assert not main_mod._run_settings_dialog(
-        cfg,
-        first_run=True,
-        update_quit_gate=_active_update_quit_gate(),
-    )
+    assert not main_mod._run_first_run_settings(cfg)
     assert seen_dialogs
     assert seen_dialogs[0].icon is icon
+    assert "check_updates" not in captured_kwargs
 
 
 def test_tray_controller_exposes_running_status_and_controls(

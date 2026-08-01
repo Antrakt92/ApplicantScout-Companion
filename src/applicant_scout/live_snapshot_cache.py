@@ -83,6 +83,7 @@ def _snapshot_context(snap: Snapshot) -> dict[str, Any]:
         "player_name": (
             snap.version.player_name if snap.version is not None else None
         ),
+        "region_id": snap.version.region_id if snap.version is not None else None,
     }
 
 
@@ -92,9 +93,11 @@ def _saved_content_context(content: dict[str, Any]) -> dict[str, Any] | None:
         return None
     version = snapshot.get("version")
     player_name = version.get("player_name") if isinstance(version, dict) else None
+    region_id = version.get("region_id") if isinstance(version, dict) else None
     return {
         "listing": snapshot.get("listing"),
         "player_name": player_name,
+        "region_id": region_id,
     }
 
 
@@ -180,38 +183,19 @@ def save_live_snapshot(
     except ValueError as exc:
         _log.warning("Failed to save live snapshot cache: %s", exc)
         return False
-    if _should_clear_cache_for_snapshot(snap):
-        return clear_live_snapshot(cache_dir)
-    if (
-        (snap.applicants_unavailable or snap.roster_unavailable)
-        and not snap.lfg_unavailable
-        and snap.listing is not None
-    ):
-        return _clear_live_snapshot_if_context_differs(
-            cache_dir,
-            _snapshot_context(snap),
-            source_id=source_id,
-            now=now,
-        )
-    if snap.lfg_unavailable and snap.version is not None:
-        return _clear_live_snapshot_if_producer_differs(
-            cache_dir,
-            _snapshot_producer_context(snap),
-            source_id=source_id,
-            now=now,
-        )
-    if not is_persistable_live_snapshot(snap):
-        return True
     try:
-        saved_at = _coerce_timestamp(time.time() if now is None else now)
+        observed_at = _coerce_timestamp(time.time() if now is None else now)
     except ValueError as exc:
         _log.warning("Failed to save live snapshot cache: %s", exc)
         return False
-    return _save_live_snapshot_content(
-        cache_dir,
-        _cache_content(snap, source_id),
-        saved_at=saved_at,
+    operation = _operation_for_snapshot(
+        snap,
+        source_id=source_id,
+        now=observed_at,
     )
+    if operation is None:
+        return True
+    return _perform_live_snapshot_cache_operation(cache_dir, operation)
 
 
 def _clear_live_snapshot_if_context_differs(
@@ -281,6 +265,42 @@ def _save_live_snapshot_content(
     except (OSError, TypeError, ValueError) as exc:
         _log.warning("Failed to save live snapshot cache %s: %s", path, exc)
         return False
+    return True
+
+
+def _perform_live_snapshot_cache_operation(
+    cache_dir: Path,
+    operation: _PendingLiveSnapshotCacheOperation,
+) -> bool:
+    if operation.kind == "clear":
+        return clear_live_snapshot(cache_dir)
+    if (
+        operation.kind == "clear_if_context_differs"
+        and operation.content is not None
+    ):
+        return _clear_live_snapshot_if_context_differs(
+            cache_dir,
+            operation.content,
+            source_id=operation.source_id,
+            now=operation.saved_at,
+        )
+    if operation.kind == "clear_if_producer_differs":
+        return _clear_live_snapshot_if_producer_differs(
+            cache_dir,
+            operation.content,
+            source_id=operation.source_id,
+            now=operation.saved_at,
+        )
+    if (
+        operation.kind == "save"
+        and operation.content is not None
+        and operation.saved_at is not None
+    ):
+        return _save_live_snapshot_content(
+            cache_dir,
+            operation.content,
+            saved_at=operation.saved_at,
+        )
     return True
 
 
@@ -451,33 +471,7 @@ class LiveSnapshotCacheWriter:
             timer.cancel()
 
     def _perform_operation(self, operation: _PendingLiveSnapshotCacheOperation) -> bool:
-        if operation.kind == "clear":
-            return clear_live_snapshot(self._cache_dir)
-        if operation.kind == "clear_if_context_differs" and operation.content is not None:
-            return _clear_live_snapshot_if_context_differs(
-                self._cache_dir,
-                operation.content,
-                source_id=operation.source_id,
-                now=operation.saved_at,
-            )
-        if operation.kind == "clear_if_producer_differs":
-            return _clear_live_snapshot_if_producer_differs(
-                self._cache_dir,
-                operation.content,
-                source_id=operation.source_id,
-                now=operation.saved_at,
-            )
-        if (
-            operation.kind == "save"
-            and operation.content is not None
-            and operation.saved_at is not None
-        ):
-            return _save_live_snapshot_content(
-                self._cache_dir,
-                operation.content,
-                saved_at=operation.saved_at,
-            )
-        return True
+        return _perform_live_snapshot_cache_operation(self._cache_dir, operation)
 
     def _coalesce_operation_locked(
         self,
@@ -582,6 +576,14 @@ def _operation_for_snapshot(
     source_id: str,
     now: float | None,
 ) -> _PendingLiveSnapshotCacheOperation | None:
+    try:
+        observed_at = _coerce_timestamp(time.time() if now is None else now)
+    except ValueError as exc:
+        _log.warning(
+            "Ignoring live snapshot cache operation with invalid timestamp: %s",
+            exc,
+        )
+        return None
     if _should_clear_cache_for_snapshot(snap):
         return _PendingLiveSnapshotCacheOperation("clear", source_id)
     if (
@@ -589,14 +591,6 @@ def _operation_for_snapshot(
         and not snap.lfg_unavailable
         and snap.listing is not None
     ):
-        try:
-            observed_at = _coerce_timestamp(time.time() if now is None else now)
-        except ValueError as exc:
-            _log.warning(
-                "Ignoring live snapshot cache context check with invalid timestamp: %s",
-                exc,
-            )
-            return None
         return _PendingLiveSnapshotCacheOperation(
             "clear_if_context_differs",
             source_id,
@@ -604,14 +598,6 @@ def _operation_for_snapshot(
             content=_snapshot_context(snap),
         )
     if snap.lfg_unavailable and snap.version is not None:
-        try:
-            observed_at = _coerce_timestamp(time.time() if now is None else now)
-        except ValueError as exc:
-            _log.warning(
-                "Ignoring live snapshot cache producer check with invalid timestamp: %s",
-                exc,
-            )
-            return None
         return _PendingLiveSnapshotCacheOperation(
             "clear_if_producer_differs",
             source_id,
@@ -620,15 +606,10 @@ def _operation_for_snapshot(
         )
     if not is_persistable_live_snapshot(snap):
         return None
-    try:
-        saved_at = _coerce_timestamp(time.time() if now is None else now)
-    except ValueError as exc:
-        _log.warning("Ignoring live snapshot cache save with invalid timestamp: %s", exc)
-        return None
     return _PendingLiveSnapshotCacheOperation(
         "save",
         source_id,
-        saved_at=saved_at,
+        saved_at=observed_at,
         content=_cache_content(snap, source_id),
     )
 

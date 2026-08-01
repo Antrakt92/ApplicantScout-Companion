@@ -237,12 +237,11 @@ class SettingsValues:
 @dataclass(frozen=True)
 class SettingsUpdateResult:
     message: str
-    open_url: str | None = None
     installer_handoff: bool = False
     installer_launch: object | None = None
 
 
-ActionReturn = str | tuple[str, str | None] | SettingsUpdateResult
+ActionReturn = str | SettingsUpdateResult
 UpdateAction = Callable[[], ActionReturn]
 
 
@@ -251,7 +250,6 @@ class _AsyncActionResult:
     button: QAbstractButton | QAction
     message: str
     error: bool = False
-    open_url: str | None = None
     success_payload: object | None = None
     keep_disabled: bool = False
     installer_launch: object | None = None
@@ -1424,19 +1422,14 @@ class SettingsDialog(QDialog):
                 keep_disabled = False
                 if isinstance(result, SettingsUpdateResult):
                     message = result.message
-                    open_url = result.open_url
                     keep_disabled = result.installer_handoff
                     installer_launch = result.installer_launch
-                elif isinstance(result, tuple):
-                    message, open_url = result
-                    installer_launch = None
                 else:
-                    message, open_url = result, None
+                    message = result
                     installer_launch = None
                 outcome = _AsyncActionResult(
                     button,
                     message,
-                    open_url=open_url,
                     success_payload=success_payload,
                     keep_disabled=keep_disabled,
                     installer_launch=installer_launch,
@@ -1462,8 +1455,6 @@ class SettingsDialog(QDialog):
             if self._update_in_progress:
                 return
             self._set_status(raw.message, error=raw.error)
-            if not raw.error and raw.open_url:
-                QDesktopServices.openUrl(QUrl(raw.open_url))
             return
         if self._update_in_progress and raw.button is not self.update_button:
             return
@@ -1486,12 +1477,8 @@ class SettingsDialog(QDialog):
                 self.updateFinished.emit(False)
                 self.set_update_available(None)
                 self.updateCompleted.emit()
-                if raw.open_url:
-                    QDesktopServices.openUrl(QUrl(raw.open_url))
             return
         raw.button.setEnabled(True)
-        if not raw.error and raw.open_url:
-            QDesktopServices.openUrl(QUrl(raw.open_url))
         if not raw.error and isinstance(raw.success_payload, SettingsValues):
             current = self.values()
             if (

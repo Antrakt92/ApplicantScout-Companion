@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
+import hmac
 import logging
 import os
 import re
 import shutil
+import struct
 import tempfile
 import threading
 import time
@@ -33,8 +35,10 @@ _NEGATIVE_CACHE_TTL_SECONDS = 30.0
 _POSITIVE_CACHE_FAILURE_GRACE_SECONDS = 30.0
 _REGION_LOAD_ATTEMPTS = 2
 LOOKUP_PAYLOAD_CACHE_DIR_NAME = "raiderio-local"
-_LOOKUP_PAYLOAD_CACHE_VERSION = 2
+_LOOKUP_PAYLOAD_CACHE_VERSION = 3
 _LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
+_LOOKUP_PAYLOAD_CACHE_MAGIC = b"ASRIOv3\0"
+_LOOKUP_PAYLOAD_CACHE_HEADER = struct.Struct(">8s32sQ32s")
 _LOOKUP_PAYLOAD_CACHE_LOCK = threading.Lock()
 _LOOKUP_PAYLOAD_CACHE_GENERATIONS: dict[Path, int] = {}
 _EXPECTED_RAIDERIO_DUNGEON_ORDER = MPLUS_RAIDERIO_DUNGEON_ORDER
@@ -851,6 +855,9 @@ def _parse_lookup_payload(
         )
         else None
     )
+    cache_source_digest = source_digest if source_digest is not None else ""
+    if cache_path is not None:
+        assert cache_source_digest
     if cache_path is not None and use_cache:
         cached_payload: bytes | None = None
         with _LOOKUP_PAYLOAD_CACHE_LOCK:
@@ -859,7 +866,10 @@ def _parse_lookup_payload(
                 payload_cache_generation,
             ):
                 try:
-                    cached_payload = cache_path.read_bytes()
+                    cached_payload = _decode_lookup_payload_cache(
+                        cache_path.read_bytes(),
+                        cache_source_digest,
+                    )
                 except OSError:
                     pass
         if cached_payload is not None:
@@ -873,6 +883,7 @@ def _parse_lookup_payload(
             _write_lookup_payload_cache(
                 cache_path,
                 payload,
+                source_digest=cache_source_digest,
                 payload_cache_dir=payload_cache_dir,
                 payload_cache_generation=payload_cache_generation,
             )
@@ -989,9 +1000,11 @@ def _write_lookup_payload_cache(
     path: Path,
     payload: bytes,
     *,
+    source_digest: str,
     payload_cache_dir: Path | None = None,
     payload_cache_generation: int | None = None,
 ) -> None:
+    cache_bytes = _encode_lookup_payload_cache(payload, source_digest)
     if payload_cache_dir is not None and payload_cache_generation is not None:
         with _LOOKUP_PAYLOAD_CACHE_LOCK:
             if not _lookup_payload_cache_generation_matches_locked(
@@ -999,9 +1012,63 @@ def _write_lookup_payload_cache(
                 payload_cache_generation,
             ):
                 return
-            _write_lookup_payload_cache_unlocked(path, payload)
+            _write_lookup_payload_cache_unlocked(path, cache_bytes)
         return
-    _write_lookup_payload_cache_unlocked(path, payload)
+    _write_lookup_payload_cache_unlocked(path, cache_bytes)
+
+
+def _source_digest_bytes(source_digest: str) -> bytes | None:
+    try:
+        digest = bytes.fromhex(source_digest)
+    except (TypeError, ValueError):
+        return None
+    if len(digest) != hashlib.sha256().digest_size:
+        return None
+    return digest
+
+
+def _encode_lookup_payload_cache(payload: bytes, source_digest: str) -> bytes:
+    digest = _source_digest_bytes(source_digest)
+    if digest is None:
+        raise ValueError("invalid RaiderIO lookup source digest")
+    return b"".join(
+        (
+            _LOOKUP_PAYLOAD_CACHE_HEADER.pack(
+                _LOOKUP_PAYLOAD_CACHE_MAGIC,
+                digest,
+                len(payload),
+                hashlib.sha256(payload).digest(),
+            ),
+            payload,
+        )
+    )
+
+
+def _decode_lookup_payload_cache(
+    cache_bytes: bytes,
+    source_digest: str,
+) -> bytes | None:
+    expected_source_digest = _source_digest_bytes(source_digest)
+    if (
+        expected_source_digest is None
+        or len(cache_bytes) < _LOOKUP_PAYLOAD_CACHE_HEADER.size
+    ):
+        return None
+    magic, cached_source_digest, payload_size, cached_payload_digest = (
+        _LOOKUP_PAYLOAD_CACHE_HEADER.unpack_from(cache_bytes)
+    )
+    if magic != _LOOKUP_PAYLOAD_CACHE_MAGIC or not hmac.compare_digest(
+        cached_source_digest,
+        expected_source_digest,
+    ):
+        return None
+    payload = cache_bytes[_LOOKUP_PAYLOAD_CACHE_HEADER.size :]
+    if payload_size != len(payload) or not hmac.compare_digest(
+        cached_payload_digest,
+        hashlib.sha256(payload).digest(),
+    ):
+        return None
+    return payload
 
 
 def _write_lookup_payload_cache_unlocked(path: Path, payload: bytes) -> None:

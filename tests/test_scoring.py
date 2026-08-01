@@ -345,7 +345,6 @@ def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localize
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.same_dungeon_score > 0.0
     assert fit.has_same_dungeon_context
     assert fit.same_dungeon_rio_key == 0
     assert fit.same_dungeon_wcl_key == 16
@@ -796,7 +795,6 @@ def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
     assert fit.source == "mplus_scorecard"
     assert fit.primary_key == 17
     assert fit.best_nearby_key == 17
-    assert fit.same_dungeon_score == 0.0
     assert fit.same_dungeon_rio_key == 15
     assert fit.same_dungeon_wcl_key == 0
     assert "+17" in fit.display
@@ -1765,8 +1763,6 @@ def test_package_fit_penalizes_weak_member_in_multi_member_group():
 
     assert group.score < solo.score
     assert group.low_score < group.high_score
-    assert group.worst_score == group.low_score
-    assert group.best_score == group.high_score
     assert group.display.startswith("G2 ")
 
 

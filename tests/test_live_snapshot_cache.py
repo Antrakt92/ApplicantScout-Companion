@@ -120,6 +120,66 @@ def test_save_and_load_live_snapshot_round_trips_without_source(tmp_path):
     assert not restored.snapshot.applicants_unavailable
 
 
+@pytest.mark.parametrize("write_mode", ["sync", "writer"])
+@pytest.mark.parametrize("operation_kind", ["partial", "clear"])
+def test_invalid_timestamp_preserves_existing_live_snapshot_cache(
+    tmp_path,
+    write_mode: str,
+    operation_kind: str,
+):
+    original = _live_snapshot()
+    assert save_live_snapshot(tmp_path, original, now=100.0)
+    incoming = (
+        replace(
+            original,
+            applicants=[],
+            applicants_unavailable=True,
+        )
+        if operation_kind == "partial"
+        else Snapshot(listing=None, version=None, terminal_clear=True)
+    )
+
+    if write_mode == "sync":
+        assert not save_live_snapshot(tmp_path, incoming, now=float("nan"))
+    else:
+        writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+        writer.submit(incoming, now=float("nan"))
+
+    restored = load_live_snapshot(tmp_path, now=101.0)
+    assert restored is not None
+    assert restored.saved_at == 100.0
+    assert restored.snapshot.applicants == original.applicants
+
+
+def test_sync_and_writer_use_shared_live_snapshot_operation_executor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    calls: list[tuple[object, str]] = []
+    perform = cache_mod._perform_live_snapshot_cache_operation
+
+    def track(cache_dir, operation):
+        calls.append((cache_dir, operation.kind))
+        return perform(cache_dir, operation)
+
+    monkeypatch.setattr(
+        cache_mod,
+        "_perform_live_snapshot_cache_operation",
+        track,
+    )
+    sync_cache_dir = tmp_path / "sync"
+    writer_cache_dir = tmp_path / "writer"
+
+    assert save_live_snapshot(sync_cache_dir, _live_snapshot(), now=100.0)
+    writer = LiveSnapshotCacheWriter(writer_cache_dir, defer_saves=False)
+    writer.submit(_live_snapshot(), now=100.0)
+
+    assert calls == [
+        (sync_cache_dir, "save"),
+        (writer_cache_dir, "save"),
+    ]
+
+
 def test_live_snapshot_source_identity_is_lexical_and_canonical(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -193,6 +253,39 @@ def test_partial_snapshot_from_new_player_cannot_preserve_old_player_cache(tmp_p
     partial = replace(
         original,
         version=replace(original.version, player_name="Alt-Realm"),
+        applicants=[],
+        applicants_unavailable=True,
+    )
+
+    assert save_live_snapshot(
+        tmp_path,
+        partial,
+        source_id=source_id,
+        now=101.0,
+    )
+    assert (
+        load_live_snapshot(
+            tmp_path,
+            expected_source_id=source_id,
+            now=102.0,
+        )
+        is None
+    )
+
+
+def test_partial_snapshot_from_new_region_cannot_preserve_old_region_cache(tmp_path):
+    source_id = live_snapshot_source_identity(tmp_path / "Screenshots")
+    original = _live_snapshot()
+    assert original.version is not None
+    assert save_live_snapshot(
+        tmp_path,
+        original,
+        source_id=source_id,
+        now=100.0,
+    )
+    partial = replace(
+        original,
+        version=replace(original.version, region_id=1),
         applicants=[],
         applicants_unavailable=True,
     )
@@ -768,6 +861,30 @@ def test_live_snapshot_writer_same_context_partial_preserves_pending_full_save(
     assert restored is not None
     assert restored.saved_at == 100.0
     assert restored.snapshot.applicants == pending_snapshot.applicants
+
+
+def test_live_snapshot_writer_new_region_partial_clears_pending_full_save(
+    tmp_path,
+):
+    pending_snapshot = _live_snapshot()
+    assert pending_snapshot.version is not None
+    partial_new_region = replace(
+        pending_snapshot,
+        version=replace(pending_snapshot.version, region_id=1),
+        applicants=[],
+        applicants_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(pending_snapshot, now=100.0)
+    writer.submit(partial_new_region, now=110.0)
+
+    assert writer.flush()
+    assert load_live_snapshot(tmp_path, now=111.0) is None
 
 
 def test_live_snapshot_writer_context_checks_cannot_restore_older_context(

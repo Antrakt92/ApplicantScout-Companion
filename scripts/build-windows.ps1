@@ -173,10 +173,9 @@ function Assert-CleanReleaseInputs {
         throw "Cannot verify release input cleanliness because git is not available."
     }
 
-    Invoke-NativeChecked -Label "Inspect release input cleanliness" -Command {
+    $Dirty = Invoke-NativeChecked -Label "Inspect release input cleanliness" -Command {
         & $Git.Source -C $RepoRoot status --porcelain --untracked-files=all -- $ReleaseInputPaths
     }
-    $Dirty = & $Git.Source -C $RepoRoot status --porcelain --untracked-files=all -- $ReleaseInputPaths
     if ($Dirty) {
         $Joined = ($Dirty -join [Environment]::NewLine)
         throw (

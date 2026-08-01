@@ -38,8 +38,8 @@ from applicant_scout.state import AppState, WoWPlayer
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-LUA_GOLDEN_STEM = "aps1_v8_lua_golden"
-LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v8_lua_leader_key_golden"
+LUA_GOLDEN_STEM = "aps1_v9_lua_golden"
+LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v9_lua_leader_key_golden"
 
 
 def _load_lua_golden_snapshot(stem: str = LUA_GOLDEN_STEM) -> tuple[Snapshot, dict]:

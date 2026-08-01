@@ -1538,6 +1538,18 @@ class _UpdateCompletion:
     installer_launch: object | None = None
 
 
+def _update_completion_from_result(
+    result: SettingsUpdateResult | str,
+) -> _UpdateCompletion:
+    if isinstance(result, SettingsUpdateResult):
+        return _UpdateCompletion(
+            message=result.message,
+            installer_handoff=result.installer_handoff,
+            installer_launch=result.installer_launch,
+        )
+    return _UpdateCompletion(message=result)
+
+
 class _UpdateQuitGate:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -1884,7 +1896,7 @@ def _safe_check_for_update(current_version: str) -> UpdateResult:
 
 def _check_updates(
     *, update_quit_gate: _UpdateQuitGate
-) -> SettingsUpdateResult | tuple[str, str | None]:
+) -> SettingsUpdateResult | str:
     if not _UPDATE_INSTALL_LOCK.acquire(blocking=False):
         raise RuntimeError("Update is already in progress.")
     try:
@@ -1894,7 +1906,7 @@ def _check_updates(
         if status == "unavailable":
             raise RuntimeError(str(message))
         if status != "available":
-            return str(message), None
+            return str(message)
         if not update_result_has_installable_asset(result):
             raise RuntimeError(str(message))
         installer = download_update_installer(result)
@@ -2527,7 +2539,6 @@ class _RetiredScreenshotWatchers:
 def _quiesce_screenshot_ingestion(
     watcher: ScreenshotWatcher | None,
     signal_gate: _WatcherSignalGate,
-    live_snapshot_writer: LiveSnapshotCacheWriter | None,
 ) -> None:
     if watcher is not None:
         request_stop = getattr(watcher, "request_stop", None)
@@ -2544,11 +2555,21 @@ def _quiesce_screenshot_ingestion(
             except Exception as exc:  # noqa: BLE001
                 log.warning("Could not flush pending screenshot snapshot: %s", exc)
     signal_gate.invalidate()
-    if live_snapshot_writer is not None:
-        try:
-            live_snapshot_writer.close()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Could not close live snapshot cache writer: %s", exc)
+
+
+def _make_one_shot_callback(action: Callable[[], None]) -> Callable[[], None]:
+    lock = threading.Lock()
+    started = False
+
+    def run_once() -> None:
+        nonlocal started
+        with lock:
+            if started:
+                return
+            started = True
+        action()
+
+    return run_once
 
 
 def _shutdown_runtime(
@@ -2609,19 +2630,32 @@ def _run_application_event_loop(
     except RuntimeError as exc:
         log.warning("Could not schedule WoW lifecycle startup reconciliation: %s", exc)
     try:
-        rc = app.exec()
-        wow_sync_startup_configurator.close()
-        _shutdown_runtime(
-            watcher_getter(),
-            window,
-            cache,
-            live_snapshot_writer,
-            wcl_client,
-        )
-        return rc
+        return app.exec()
     finally:
+        try:
+            wow_sync_startup_configurator.close()
+        except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+            log.warning("Could not close WoW startup configurator: %s", exc)
+        try:
+            watcher = watcher_getter()
+        except Exception as exc:  # noqa: BLE001 - clean other shared resources
+            watcher = None
+            log.warning("Could not resolve screenshot watcher during shutdown: %s", exc)
+        try:
+            _shutdown_runtime(
+                watcher,
+                window,
+                cache,
+                live_snapshot_writer,
+                wcl_client,
+            )
+        except Exception as exc:  # noqa: BLE001 - retain the primary failure
+            log.warning("Could not complete runtime shutdown: %s", exc)
         if runtime_owner is not None:
-            runtime_owner.close()
+            try:
+                runtime_owner.close()
+            except Exception as exc:  # noqa: BLE001 - retain the primary failure
+                log.warning("Could not release runtime ownership: %s", exc)
 
 
 _SnapshotApplyQueue = _snapshot_pipeline.SnapshotApplyQueue
@@ -3408,22 +3442,8 @@ def _apply_settings_change(
 def _run_first_run_settings(
     cfg: Config,
     *,
-    update_quit_gate: _UpdateQuitGate,
     character_cache: CharacterCache | None = None,
 ) -> bool:
-    def _check_updates_with_handoff() -> SettingsUpdateResult | tuple[str, str | None]:
-        update_quit_gate.set_update_in_progress(True)
-        keep_handoff = False
-        try:
-            result = _check_updates(update_quit_gate=update_quit_gate)
-            keep_handoff = (
-                isinstance(result, SettingsUpdateResult) and result.installer_handoff
-            )
-            return result
-        finally:
-            if not keep_handoff:
-                update_quit_gate.set_update_in_progress(False)
-
     dialog = SettingsDialog(
         cfg,
         first_run=True,
@@ -3435,7 +3455,6 @@ def _run_first_run_settings(
         ),
         open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
         clear_cache=lambda: _clear_cache_dir(cfg.cache_dir, character_cache),
-        check_updates=_check_updates_with_handoff,
     )
     dialog.setWindowIcon(_app_icon())
     _connect_release_notes_dialog_action(dialog)
@@ -3502,25 +3521,7 @@ def _run_first_run_settings(
     return True
 
 
-def _run_settings_dialog(
-    cfg: Config,
-    *,
-    first_run: bool,
-    update_quit_gate: _UpdateQuitGate,
-    character_cache: CharacterCache | None = None,
-) -> bool:
-    if not first_run:
-        raise RuntimeError("Normal settings are modeless; use _show_settings.")
-    return _run_first_run_settings(
-        cfg,
-        update_quit_gate=update_quit_gate,
-        character_cache=character_cache,
-    )
-
-
-def _load_startup_config(
-    *, update_quit_gate: _UpdateQuitGate
-) -> tuple[Config, Path, bool] | None:
+def _load_startup_config() -> tuple[Config, Path, bool] | None:
     startup_settings_shown = False
     try:
         cfg = load_config()
@@ -3529,11 +3530,7 @@ def _load_startup_config(
         return None
     while True:
         if not is_config_ready(cfg):
-            if not _run_settings_dialog(
-                cfg,
-                first_run=True,
-                update_quit_gate=update_quit_gate,
-            ):
+            if not _run_first_run_settings(cfg):
                 return None
             startup_settings_shown = True
             try:
@@ -3558,11 +3555,7 @@ def _load_startup_config(
                 )
                 return None
             QMessageBox.warning(None, "ApplicantScout setup", str(exc))
-            if not _run_settings_dialog(
-                cfg,
-                first_run=True,
-                update_quit_gate=update_quit_gate,
-            ):
+            if not _run_first_run_settings(cfg):
                 return None
             startup_settings_shown = True
             try:
@@ -3665,19 +3658,20 @@ def main(argv: list[str] | None = None) -> int:
     watcher_signal_gate = _WatcherSignalGate()
     live_snapshot_writer: LiveSnapshotCacheWriter | None = None
 
-    def _check_updates_with_handoff() -> SettingsUpdateResult | tuple[str, str | None]:
+    def _check_updates_with_handoff() -> SettingsUpdateResult | str:
         return _check_updates(update_quit_gate=update_quit_gate)
 
-    def _flush_before_quit() -> None:
+    def _flush_before_quit_impl() -> None:
         _quiesce_screenshot_ingestion(
             watcher,
             watcher_signal_gate,
-            live_snapshot_writer,
         )
         if settings_dialog is not None:
             settings_dialog.flush_pending_values()
         if active_window := window_ref.get("window"):
             active_window.flush_geometry()
+
+    _flush_before_quit = _make_one_shot_callback(_flush_before_quit_impl)
 
     def _quit_application() -> None:
         if update_handoff_recovery is not None:
@@ -3757,7 +3751,7 @@ def main(argv: list[str] | None = None) -> int:
         None,
     )
 
-    loaded = _load_startup_config(update_quit_gate=update_quit_gate)
+    loaded = _load_startup_config()
     if loaded is None:
         if isinstance(runtime_owner, _RuntimeOwner):
             runtime_owner.close()
@@ -4027,15 +4021,7 @@ def main(argv: list[str] | None = None) -> int:
         def _worker() -> None:
             try:
                 result = _check_updates_with_handoff()
-                if isinstance(result, SettingsUpdateResult):
-                    completion = _UpdateCompletion(
-                        message=result.message,
-                        installer_handoff=result.installer_handoff,
-                        installer_launch=result.installer_launch,
-                    )
-                else:
-                    message, _url = result
-                    completion = _UpdateCompletion(message=message)
+                completion = _update_completion_from_result(result)
                 update_signals.completed.emit(completion)
             except Exception as exc:  # noqa: BLE001
                 update_signals.completed.emit(

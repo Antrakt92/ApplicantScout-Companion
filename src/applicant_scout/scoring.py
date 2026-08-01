@@ -66,7 +66,6 @@ class CandidateFit:
     target_raid: str = ""
     confidence: float = 0.0
     coverage: float = 0.0
-    same_dungeon_score: float = 0.0
     has_same_dungeon_context: bool = False
     same_dungeon_rio_key: int = 0
     same_dungeon_wcl_key: int = 0
@@ -86,10 +85,8 @@ class PackageFit:
     size: int = 0
     confidence: float = 0.0
     high_score: float = 0.0
-    best_score: float = 0.0
     average_score: float = 0.0
     low_score: float = 0.0
-    worst_score: float = 0.0
     spread: float = 0.0
     member_scores: tuple[float, ...] = ()
     member_fits: tuple[CandidateFit, ...] = ()
@@ -210,10 +207,8 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
             size=size,
             confidence=0.0,
             high_score=score,
-            best_score=score,
             average_score=average,
             low_score=low,
-            worst_score=low,
             spread=score - low,
             member_scores=member_scores,
             status_penalty=0.0,
@@ -256,10 +251,8 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
         size=size,
         confidence=confidence,
         high_score=high,
-        best_score=high,
         average_score=average,
         low_score=low,
-        worst_score=low,
         spread=spread,
         member_scores=scores,
         member_fits=fits,
@@ -533,14 +526,6 @@ def _mplus_scorecard_candidate_fit(
         has_same_dungeon_context=has_same_dungeon_context,
         has_same_dungeon_evidence=has_same_dungeon_evidence,
     )
-    same_dungeon_score = max(
-        (
-            _mplus_wcl_single_positive_score(signal, target_key)
-            for signal in wcl_signals
-            if signal.same_dungeon
-        ),
-        default=0.0,
-    )
     display = str(int(round(score)))
     if primary_key > 0:
         display = f"{display} +{primary_key}"
@@ -556,7 +541,6 @@ def _mplus_scorecard_candidate_fit(
         best_nearby_key=best_nearby_key,
         confidence=confidence,
         coverage=coverage,
-        same_dungeon_score=same_dungeon_score,
         has_same_dungeon_context=has_same_dungeon_context,
         same_dungeon_rio_key=same_dungeon_key if has_same_dungeon_context else 0,
         same_dungeon_wcl_key=(

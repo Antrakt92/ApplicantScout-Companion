@@ -423,6 +423,49 @@ def _same_fetch_target_except_preferences(
     )
 
 
+def _discard_tracked_fetch(
+    storage_key: str,
+    in_flight: dict[str, _FetchIdentity],
+    waiters_by_target: dict[str, dict[str, _FetchIdentity]],
+) -> None:
+    identity = in_flight.pop(storage_key, None)
+    if identity is None:
+        return
+    waiters = waiters_by_target.get(identity.network_key)
+    if waiters is None:
+        return
+    waiters.pop(storage_key, None)
+    if not waiters:
+        waiters_by_target.pop(identity.network_key, None)
+
+
+def _coalesce_tracked_fetch(
+    identity: _FetchIdentity,
+    in_flight: dict[str, _FetchIdentity],
+    waiters_by_target: dict[str, dict[str, _FetchIdentity]],
+) -> bool:
+    if not waiters_by_target.get(identity.network_key):
+        return False
+    _discard_tracked_fetch(identity.storage_key, in_flight, waiters_by_target)
+    in_flight[identity.storage_key] = identity
+    waiters_by_target.setdefault(identity.network_key, {})[identity.storage_key] = (
+        identity
+    )
+    return True
+
+
+def _tracked_fetch_covers(
+    identity: _FetchIdentity,
+    in_flight: Mapping[str, _FetchIdentity],
+) -> bool:
+    current = in_flight.get(identity.storage_key)
+    return (
+        current is not None
+        and _same_fetch_target_except_preferences(current, identity)
+        and current.metric_preferences.covers(identity.metric_preferences)
+    )
+
+
 class _FetchTask(QRunnable):
     def __init__(
         self,
@@ -5501,15 +5544,11 @@ class OverlayWindow(QMainWindow):
         self._fetches_in_flight[identity.storage_key] = identity
 
     def _discard_fetch_by_storage_key(self, storage_key: str) -> None:
-        identity = self._fetches_in_flight.pop(storage_key, None)
-        if identity is None:
-            return
-        waiters = self._fetch_waiters_by_target.get(identity.network_key)
-        if waiters is None:
-            return
-        waiters.pop(storage_key, None)
-        if not waiters:
-            self._fetch_waiters_by_target.pop(identity.network_key, None)
+        _discard_tracked_fetch(
+            storage_key,
+            self._fetches_in_flight,
+            self._fetch_waiters_by_target,
+        )
 
     def _mark_fetch_waiting_on_target(self, identity: _FetchIdentity) -> None:
         self._fetch_waiters_by_target.setdefault(identity.network_key, {})[
@@ -5517,12 +5556,11 @@ class OverlayWindow(QMainWindow):
         ] = identity
 
     def _coalesce_fetch_if_target_in_flight(self, identity: _FetchIdentity) -> bool:
-        waiters = self._fetch_waiters_by_target.get(identity.network_key)
-        if not waiters:
-            return False
-        self._mark_fetch_in_flight(identity)
-        waiters[identity.storage_key] = identity
-        return True
+        return _coalesce_tracked_fetch(
+            identity,
+            self._fetches_in_flight,
+            self._fetch_waiters_by_target,
+        )
 
     def _mark_raid_boss_fetch_in_flight(self, identity: _FetchIdentity) -> None:
         self._discard_raid_boss_fetch_by_storage_key(identity.storage_key)
@@ -5533,15 +5571,11 @@ class OverlayWindow(QMainWindow):
             self._discard_raid_boss_fetch_by_storage_key(identity.storage_key)
 
     def _discard_raid_boss_fetch_by_storage_key(self, storage_key: str) -> None:
-        identity = self._raid_boss_fetches_in_flight.pop(storage_key, None)
-        if identity is None:
-            return
-        waiters = self._raid_boss_fetch_waiters_by_target.get(identity.network_key)
-        if waiters is None:
-            return
-        waiters.pop(storage_key, None)
-        if not waiters:
-            self._raid_boss_fetch_waiters_by_target.pop(identity.network_key, None)
+        _discard_tracked_fetch(
+            storage_key,
+            self._raid_boss_fetches_in_flight,
+            self._raid_boss_fetch_waiters_by_target,
+        )
 
     def _mark_raid_boss_fetch_waiting_on_target(self, identity: _FetchIdentity) -> None:
         self._raid_boss_fetch_waiters_by_target.setdefault(identity.network_key, {})[
@@ -5551,20 +5585,14 @@ class OverlayWindow(QMainWindow):
     def _coalesce_raid_boss_fetch_if_target_in_flight(
         self, identity: _FetchIdentity
     ) -> bool:
-        waiters = self._raid_boss_fetch_waiters_by_target.get(identity.network_key)
-        if not waiters:
-            return False
-        self._mark_raid_boss_fetch_in_flight(identity)
-        waiters[identity.storage_key] = identity
-        return True
+        return _coalesce_tracked_fetch(
+            identity,
+            self._raid_boss_fetches_in_flight,
+            self._raid_boss_fetch_waiters_by_target,
+        )
 
     def _is_fetch_in_flight_for(self, identity: _FetchIdentity) -> bool:
-        current = self._fetches_in_flight.get(identity.storage_key)
-        return (
-            current is not None
-            and _same_fetch_target_except_preferences(current, identity)
-            and current.metric_preferences.covers(identity.metric_preferences)
-        )
+        return _tracked_fetch_covers(identity, self._fetches_in_flight)
 
     def _raid_detail_preferences(self) -> MetricPreferences:
         return MetricPreferences(
@@ -6035,12 +6063,7 @@ class OverlayWindow(QMainWindow):
         self._sync_delegate_and_panel()
 
     def _is_fetch_in_flight_for_raid_details(self, identity: _FetchIdentity) -> bool:
-        current = self._raid_boss_fetches_in_flight.get(identity.storage_key)
-        return (
-            current is not None
-            and _same_fetch_target_except_preferences(current, identity)
-            and current.metric_preferences.covers(identity.metric_preferences)
-        )
+        return _tracked_fetch_covers(identity, self._raid_boss_fetches_in_flight)
 
     def _raid_boss_fetch_blocked_by_failure(self, identity: _FetchIdentity) -> bool:
         return self._raid_boss_fetch_failure_state(identity) is not None

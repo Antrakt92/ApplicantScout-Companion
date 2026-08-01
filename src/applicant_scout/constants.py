@@ -340,19 +340,22 @@ MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME: dict[int, str] = {
 }
 
 
-def mplus_dungeon_name_for_activity_id(activity_id: object) -> str:
-    if isinstance(activity_id, bool):
-        return ""
-    if isinstance(activity_id, int):
-        clean = activity_id
-    elif isinstance(activity_id, str):
+def _int_lookup_value(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
         try:
-            clean = int(activity_id)
+            return int(value)
         except ValueError:
-            return ""
-    else:
-        return ""
-    return MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME.get(clean, "")
+            return None
+    return None
+
+
+def mplus_dungeon_name_for_activity_id(activity_id: object) -> str:
+    clean = _int_lookup_value(activity_id)
+    return MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME.get(clean, "") if clean is not None else ""
 
 
 # ChallengeMapID values from Blizzard MapChallengeMode, filtered to the current
@@ -371,18 +374,12 @@ MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME: dict[int, str] = {
 
 
 def mplus_dungeon_name_for_challenge_map_id(challenge_map_id: object) -> str:
-    if isinstance(challenge_map_id, bool):
-        return ""
-    if isinstance(challenge_map_id, int):
-        clean = challenge_map_id
-    elif isinstance(challenge_map_id, str):
-        try:
-            clean = int(challenge_map_id)
-        except ValueError:
-            return ""
-    else:
-        return ""
-    return MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME.get(clean, "")
+    clean = _int_lookup_value(challenge_map_id)
+    return (
+        MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME.get(clean, "")
+        if clean is not None
+        else ""
+    )
 
 
 # Spec ID → spec NAME (no class qualifier) as returned by WCL in encounterRankings

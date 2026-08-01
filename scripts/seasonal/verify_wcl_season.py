@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,7 @@ from applicant_scout.constants import (
     MPLUS_ENCOUNTERS,
 )
 from applicant_scout.wcl import WCL_API_URL, WCLAuth, WCLAuthError
+from scripts.seasonal._shared import quote_display_string
 
 
 DEFAULT_MINIMUM_REMAINING_POINTS = 50.0
@@ -220,6 +222,39 @@ def _format_pairs(pairs: set[tuple[int, str]]) -> str:
     return ", ".join(f"{encounter_id}:{name}" for encounter_id, name in sorted(pairs))
 
 
+def _alias_for_name(name: str, used: set[str]) -> str:
+    words = [
+        word
+        for word in re.findall(r"[A-Za-z0-9]+", name)
+        if word.lower() not in {"a", "an", "of", "the"}
+    ]
+    if len(words) >= 2:
+        base = (words[0][0] + words[1][0]).lower()
+    elif words:
+        base = words[0][:2].lower()
+    else:
+        base = "d"
+    if base[0].isdigit():
+        base = "d" + base
+    alias = base
+    suffix = 2
+    while alias in used:
+        alias = f"{base}{suffix}"
+        suffix += 1
+    used.add(alias)
+    return alias
+
+
+def format_mplus_tuples(zone: ZoneSnapshot) -> str:
+    used_aliases: set[str] = set()
+    lines = [f"# WCL zone {zone.zone_id}: {zone.name}"]
+    for encounter_id, encounter_name in zone.encounters:
+        alias = _alias_for_name(encounter_name, used_aliases)
+        name = quote_display_string(encounter_name)
+        lines.append(f'("{alias}", {encounter_id}, {name}),')
+    return "\n".join(lines)
+
+
 def _assert_encounter_set(
     label: str,
     actual: set[tuple[int, str]],
@@ -320,6 +355,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_MINIMUM_REMAINING_POINTS,
         help="Fail if post-query WCL quota remaining is below this value.",
     )
+    parser.add_argument(
+        "--print-mplus-tuples",
+        action="store_true",
+        help=(
+            "Print ready-to-paste MPLUS_ENCOUNTERS tuples instead of comparing "
+            "the current M+ constants. Still requires quota confirmation."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -363,16 +406,24 @@ def main(argv: list[str] | None = None) -> int:
     except WCLAuthError as exc:
         raise SeasonalWCLVerificationError(f"WCL OAuth failed: {exc}") from exc
 
-    zone_ids = seasonal_zone_ids()
+    zone_ids = (
+        (CURRENT_MPLUS_ZONE_ID,)
+        if args.print_mplus_tuples
+        else seasonal_zone_ids()
+    )
     zones, quota = extract_payload(
         fetch_live_payload(token, build_query(zone_ids)), zone_ids
     )
-    validate_current_constants(zones)
     require_quota_floor(quota, args.minimum_remaining_points)
+    if args.print_mplus_tuples:
+        print(format_mplus_tuples(zones[CURRENT_MPLUS_ZONE_ID]))
+    else:
+        validate_current_constants(zones)
     zone_summary = ", ".join(
         f"{zone_id} ({zones[zone_id].name})" for zone_id in zone_ids
     )
-    print(f"WCL seasonal constants match zones: {zone_summary}")
+    if not args.print_mplus_tuples:
+        print(f"WCL seasonal constants match zones: {zone_summary}")
     print(
         "WCL quota after check: "
         f"spent={quota.points_spent:.1f}/{quota.limit_per_hour:.1f}, "

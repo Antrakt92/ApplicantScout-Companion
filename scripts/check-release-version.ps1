@@ -521,15 +521,10 @@ $TagName = $Tag
 if ($TagName -match "^refs/tags/(.+)$") {
     $TagName = $Matches[1]
 }
-$TagVersion = if ($TagName.StartsWith("v")) {
-    $TagName.Substring(1)
+if ($TagName -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+    throw "Malformed release tag '$Tag'. Expected strict vX.Y.Z with no leading zeros."
 }
-else {
-    $TagName
-}
-if ($TagVersion -notmatch "^\d+\.\d+\.\d+$") {
-    throw "Malformed release tag '$Tag'. Expected vX.Y.Z or X.Y.Z."
-}
+$TagVersion = $TagName.Substring(1)
 
 $PyprojectVersion = Get-SingleRegexMatch `
     -Path "pyproject.toml" `
