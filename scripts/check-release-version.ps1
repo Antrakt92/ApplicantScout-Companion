@@ -4,7 +4,6 @@ param(
     [switch]$RequireDraftReleaseAssets,
     [switch]$RequirePublishedReleaseAssets,
     [switch]$RefuseExistingRelease,
-    [switch]$RequirePublishedPairedAddonAssets,
     [string]$PairedAddonRefOutputPath,
     [string]$PairedAddonRoot,
     [string]$GitHubCliPath = "gh",
@@ -577,9 +576,6 @@ $ProtectedCompanionAssetPatterns = @(
     '^ApplicantScoutCompanion-\d+\.\d+\.\d+-portable\.zip$',
     '^ApplicantScoutCompanion-\d+\.\d+\.\d+-release-manifest\.json$'
 )
-$ProtectedAddonAssetPatterns = @(
-    '^ApplicantScout-v?\d+\.\d+\.\d+(?:-[A-Za-z0-9._-]+)?\.zip$'
-)
 if ($PyprojectVersion -ne $TagVersion) {
     $Errors += "pyproject.toml version is $PyprojectVersion, expected $TagVersion from tag $TagName."
 }
@@ -733,22 +729,6 @@ if ($Errors.Count -gt 0) {
         Write-Host "ERROR: $ErrorMessage" -ForegroundColor Red
     }
     throw "Release version check failed."
-}
-
-if ($RequirePublishedPairedAddonAssets) {
-    $PairedAddonTag = "v$PairedAddonVersion"
-    $ExpectedAddonAssets = @(
-        "ApplicantScout-$PairedAddonTag.zip",
-        "release.json"
-    )
-    Wait-GitHubReleaseAssets `
-        -CliPath $GitHubCliPath `
-        -Repo "Antrakt92/ApplicantScout-Addon" `
-        -ReleaseTag $PairedAddonTag `
-        -ExpectedAssets $ExpectedAddonAssets `
-        -ProtectedAssetPatterns $ProtectedAddonAssetPatterns `
-        -WaitSeconds $PublishedReleaseWaitSeconds `
-        -PollSeconds $PublishedReleasePollSeconds
 }
 
 if ($PairedAddonRefOutputPath) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -179,26 +180,8 @@ def test_apply_private_file_mode_uses_windows_acl_sequence(
 
     assert chmod_modes == [stat.S_IRUSR | stat.S_IWUSR]
     assert commands == [
+        ["icacls", os.fspath(target), "/reset", "/Q"],
         ["icacls", os.fspath(target), "/inheritance:r", "/Q"],
-        [
-            "icacls",
-            os.fspath(target),
-            "/remove:g",
-            "*S-1-1-0",
-            "*S-1-5-11",
-            "*S-1-5-32-545",
-            "/Q",
-        ],
-        [
-            "icacls",
-            os.fspath(target),
-            "/remove:d",
-            "*S-1-1-0",
-            "*S-1-5-11",
-            "*S-1-5-32-545",
-            "*S-1-5-21-1-2-3-1007",
-            "/Q",
-        ],
         [
             "icacls",
             os.fspath(target),
@@ -265,6 +248,31 @@ def test_apply_private_file_mode_ignores_windows_acl_failures(
     assert target.read_text(encoding="utf-8") == "secret"
 
 
+def test_apply_private_file_mode_stops_after_failed_acl_prerequisite(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(type(target), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(
+        atomic_io,
+        "_run_icacls",
+        lambda args: commands.append(args) or False,
+    )
+
+    assert not apply_private_file_mode(target)
+    assert commands == [["icacls", os.fspath(target), "/reset", "/Q"]]
+    assert not atomic_io._PRIVATE_ACL_CACHE
+
+
 def test_atomic_write_text_private_mode_hardens_parent_before_temp_and_target(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -316,26 +324,8 @@ def test_atomic_write_text_private_windows_reuses_parent_acl_for_children(
 
     assert target.read_text(encoding="utf-8") == "secret"
     assert commands == [
+        ["icacls", os.fspath(target.parent), "/reset", "/Q"],
         ["icacls", os.fspath(target.parent), "/inheritance:r", "/Q"],
-        [
-            "icacls",
-            os.fspath(target.parent),
-            "/remove:g",
-            "*S-1-1-0",
-            "*S-1-5-11",
-            "*S-1-5-32-545",
-            "/Q",
-        ],
-        [
-            "icacls",
-            os.fspath(target.parent),
-            "/remove:d",
-            "*S-1-1-0",
-            "*S-1-5-11",
-            "*S-1-5-32-545",
-            "*S-1-5-21-1-2-3-1007",
-            "/Q",
-        ],
         [
             "icacls",
             os.fspath(target.parent),
@@ -375,7 +365,7 @@ def test_atomic_write_text_private_windows_reuses_hardened_parent_between_writes
     atomic_write_text(target, "two", private=True)
 
     assert target.read_text(encoding="utf-8") == "two"
-    assert [command[1] for command in commands] == [os.fspath(target.parent)] * 4
+    assert [command[1] for command in commands] == [os.fspath(target.parent)] * 3
 
 
 def test_apply_private_directory_mode_rechecks_recreated_windows_directory(
@@ -403,7 +393,7 @@ def test_apply_private_directory_mode_rechecks_recreated_windows_directory(
     target.mkdir()
     assert atomic_io.apply_private_directory_mode(target)
 
-    assert [command[1] for command in commands] == [os.fspath(target)] * 8
+    assert [command[1] for command in commands] == [os.fspath(target)] * 6
 
 
 def test_private_acl_cache_key_prefers_inode_over_changing_ctime():
@@ -429,7 +419,10 @@ def test_private_acl_cache_key_prefers_inode_over_changing_ctime():
     assert first == second
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows ACL integration test")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("icacls") is None,
+    reason="Windows icacls integration test",
+)
 def test_apply_private_file_mode_removes_inherited_everyone_acl(tmp_path: Path):
     parent = tmp_path / "public-parent"
     parent.mkdir()
@@ -454,6 +447,39 @@ def test_apply_private_file_mode_removes_inherited_everyone_acl(tmp_path: Path):
 
     after = subprocess.run(
         ["icacls", os.fspath(target), "/findsid", everyone_sid],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert "No files with a matching SID was found" in after.stdout
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("icacls") is None,
+    reason="Windows icacls integration test",
+)
+def test_apply_private_file_mode_removes_arbitrary_explicit_allow_acl(tmp_path: Path):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    guests_sid = "*S-1-5-32-546"
+    subprocess.run(
+        ["icacls", os.fspath(target), "/grant", f"{guests_sid}:(R)", "/Q"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    before = subprocess.run(
+        ["icacls", os.fspath(target), "/findsid", guests_sid],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert "No files with a matching SID was found" not in before.stdout
+
+    assert apply_private_file_mode(target)
+
+    after = subprocess.run(
+        ["icacls", os.fspath(target), "/findsid", guests_sid],
         check=False,
         capture_output=True,
         text=True,

@@ -126,7 +126,9 @@ CONTROL_SHUTDOWN_ARG = "--shutdown-running-instance"
 SHOW_SETTINGS_ARG = "--show-settings"
 CONTROL_QUIT_COMMAND = _runtime_control.CONTROL_QUIT_COMMAND
 CONTROL_SHOW_SETTINGS_COMMAND = _runtime_control.CONTROL_SHOW_SETTINGS_COMMAND
-UPDATE_QUIT_BLOCKED_MESSAGE = "Update is installing. Wait for it to finish before quitting."
+UPDATE_QUIT_BLOCKED_MESSAGE = (
+    "Update is installing. Wait for it to finish before quitting."
+)
 WOW_EXIT_POLL_MS = 5000
 WOW_EXIT_MISSES_BEFORE_QUIT = 3
 UPDATE_CHECK_INITIAL_MS = 1_000
@@ -152,7 +154,9 @@ _ControlServerUnavailable = _runtime_control.ControlServerUnavailable
 _RuntimeOwner = _runtime_control.RuntimeOwner
 
 
-def _acquire_runtime_owner(owner_name: str = CONTROL_OWNER_NAME) -> _RuntimeOwner | None:
+def _acquire_runtime_owner(
+    owner_name: str = CONTROL_OWNER_NAME,
+) -> _RuntimeOwner | None:
     return _runtime_control.acquire_runtime_owner(owner_name)
 
 
@@ -359,9 +363,7 @@ def _set_windows_app_user_model_id() -> None:
     if sys.platform != "win32":
         return
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            APP_USER_MODEL_ID
-        )
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
     except (AttributeError, OSError, ValueError):
         log.debug("Could not set Windows AppUserModelID", exc_info=True)
 
@@ -474,7 +476,9 @@ def _create_tray_controller(
     quit_app: Callable[[], None],
 ) -> TrayController | None:
     if not QSystemTrayIcon.isSystemTrayAvailable():
-        log.warning("System tray is unavailable; settings are only available in overlay.")
+        log.warning(
+            "System tray is unavailable; settings are only available in overlay."
+        )
         return None
     app.setQuitOnLastWindowClosed(False)
     controller = TrayController(
@@ -613,8 +617,7 @@ class StateMachine(QObject):
                 self._rio_preload_active = None
                 self._rio_preload_completed_key = request_key
                 self._rio_preload_refresh_after = (
-                    self._rio_preload_monotonic()
-                    + RIO_PRELOAD_REFRESH_INTERVAL_SECONDS
+                    self._rio_preload_monotonic() + RIO_PRELOAD_REFRESH_INTERVAL_SECONDS
                 )
         except Exception:
             if self._rio_preload_active == request:
@@ -650,9 +653,7 @@ class StateMachine(QObject):
         roster_changed = False
         for member in list(self._state.party_members.values()):
             roster_changed = (
-                self._apply_current_local_rio_context(
-                    member, preserve_on_failure=True
-                )
+                self._apply_current_local_rio_context(member, preserve_on_failure=True)
                 or roster_changed
             )
         if roster_changed:
@@ -760,15 +761,13 @@ class StateMachine(QObject):
             # context. Fall back to transport evidence even when the replacement
             # database lookup fails; stale region/realm evidence is not valid.
             profile = None
-        transport_score, transport_profile, transport_rows = (
-            self._rio_transport_fields(target)
+        transport_score, transport_profile, transport_rows = self._rio_transport_fields(
+            target
         )
         rows = self._rio_dungeon_rows_from_profile(profile, transport_rows)
         raid_progress = self._rio_raid_progress_from_profile(profile)
         score = self._rio_score_from_profile(profile, transport_score)
-        rio_profile = self._rio_profile_flag_from_profile(
-            profile, transport_profile
-        )
+        rio_profile = self._rio_profile_flag_from_profile(profile, transport_profile)
         if (
             rows == target.rio_dungeons
             and raid_progress == target.rio_raid_progress
@@ -923,9 +922,7 @@ class StateMachine(QObject):
                 ):
                     continue
                 member.clear_wcl_data()
-                self._apply_current_local_rio_context(
-                    member, preserve_on_failure=False
-                )
+                self._apply_current_local_rio_context(member, preserve_on_failure=False)
                 roster_changed = True
             if roster_changed:
                 self.rosterChanged.emit()
@@ -1085,10 +1082,57 @@ class StateMachine(QObject):
         if roster_changed:
             self.rosterChanged.emit()
 
+    def _resolve_snapshot_player(self, snap: Snapshot) -> WoWPlayer | None:
+        version = snap.version
+        if version is None:
+            return None
+
+        old_player = self._state.player
+        old_full_name = old_player.full_name.strip()
+        incoming_full_name = version.player_name.strip()
+        old_identity_is_valid = bool(old_full_name) and not (
+            is_placeholder_transport_identity(old_full_name)
+        )
+        incoming_identity_is_valid = bool(incoming_full_name) and not (
+            is_placeholder_transport_identity(incoming_full_name)
+        )
+
+        resolved_full_name = incoming_full_name
+        resolved_region_id = version.region_id
+        old_region_is_valid = REGION_ID_TO_WCL.get(old_player.region_id) is not None
+        incoming_region_is_valid = REGION_ID_TO_WCL.get(version.region_id) is not None
+
+        if not incoming_identity_is_valid:
+            resolved_full_name = old_full_name if old_identity_is_valid else ""
+            if old_identity_is_valid and old_region_is_valid:
+                resolved_region_id = old_player.region_id
+        elif old_identity_is_valid:
+            incoming_name, separator, _incoming_realm = incoming_full_name.partition(
+                "-"
+            )
+            old_name, old_separator, _old_realm = old_full_name.partition("-")
+            if (
+                not separator
+                and old_separator
+                and incoming_name.casefold() == old_name.casefold()
+            ):
+                resolved_full_name = old_full_name
+
+        if not incoming_region_is_valid and old_region_is_valid:
+            resolved_region_id = old_player.region_id
+
+        return WoWPlayer(
+            addon_version=version.addon_version,
+            game_version=version.game_version,
+            region_id=resolved_region_id,
+            full_name=resolved_full_name,
+        )
+
     def apply_snapshot(self, snap: Snapshot) -> None:
+        resolved_player = self._resolve_snapshot_player(snap)
         incoming_player_identity = (
-            snap.version.player_name.strip().casefold()
-            if snap.version is not None
+            resolved_player.full_name.strip().casefold()
+            if resolved_player is not None
             else ""
         )
         incoming_player_name, _, incoming_player_realm = (
@@ -1097,8 +1141,8 @@ class StateMachine(QObject):
         current_player_name = self._producer_player_name
         current_player_realm = self._producer_player_realm
         incoming_region = (
-            REGION_ID_TO_WCL.get(snap.version.region_id)
-            if snap.version is not None
+            REGION_ID_TO_WCL.get(resolved_player.region_id)
+            if resolved_player is not None
             else None
         )
         current_region = self._producer_region
@@ -1118,14 +1162,9 @@ class StateMachine(QObject):
         region_identity_changed = False
         default_realm_changed = False
         # ─── Version ───
-        if snap.version is not None:
+        if snap.version is not None and resolved_player is not None:
             old_player = self._state.player
-            new_player = WoWPlayer(
-                addon_version=snap.version.addon_version,
-                game_version=snap.version.game_version,
-                region_id=snap.version.region_id,
-                full_name=snap.version.player_name,
-            )
+            new_player = resolved_player
             old_region_token = REGION_ID_TO_WCL.get(old_player.region_id)
             new_region_token = REGION_ID_TO_WCL.get(new_player.region_id)
             region_identity_changed = (
@@ -1141,11 +1180,11 @@ class StateMachine(QObject):
                 new_realm_slug != old_realm_slug
             )
             self._state.player = new_player
-            if snap.version.region_id != old_player.region_id:
+            if new_player.region_id != old_player.region_id:
                 # Direct Qt slots update the WCL client synchronously. Do this
                 # before local-RIO preload because supported readers may invoke
                 # their completion callback before preload_region_async returns.
-                self.versionUpdated.emit(snap.version.region_id)
+                self.versionUpdated.emit(new_player.region_id)
             if player_identity_changed:
                 # A shared WoW Screenshots folder can outlive an account or
                 # character switch. Retire stale transport domains after the
@@ -1153,7 +1192,10 @@ class StateMachine(QObject):
                 self.retire_screenshot_source()
                 self._state.player = new_player
             if incoming_player_name:
-                if player_identity_changed or incoming_player_name != current_player_name:
+                if (
+                    player_identity_changed
+                    or incoming_player_name != current_player_name
+                ):
                     self._producer_player_name = incoming_player_name
                     self._producer_player_realm = incoming_player_realm
                     self._producer_region = incoming_region
@@ -1173,8 +1215,8 @@ class StateMachine(QObject):
                 )
             log.info(
                 "Player: %s (region=%d)",
-                snap.version.player_name,
-                snap.version.region_id,
+                new_player.full_name,
+                new_player.region_id,
             )
 
         if not snap.terminal_clear and not snap.lfg_unavailable:
@@ -1358,7 +1400,8 @@ class StateMachine(QObject):
         # keys like "42:1" — same shape, no special-casing needed.
         applicant_rows = [] if snap.applicants_unavailable else snap.applicants
         valid_applicants = [
-            a for a in applicant_rows
+            a
+            for a in applicant_rows
             if (name := a.name.strip()) and not is_placeholder_transport_identity(name)
         ]
         new_by_id = {f"{a.applicant_id}:{a.member_idx}": a for a in valid_applicants}
@@ -1426,9 +1469,7 @@ class StateMachine(QObject):
                     rio_dungeons=self._rio_dungeon_rows_from_profile(
                         rio_profile, da.rio_dungeons
                     ),
-                    rio_raid_progress=self._rio_raid_progress_from_profile(
-                        rio_profile
-                    ),
+                    rio_raid_progress=self._rio_raid_progress_from_profile(rio_profile),
                 )
                 self._record_rio_transport_fields(
                     applicant,
@@ -1462,9 +1503,7 @@ class StateMachine(QObject):
                 # Preserve WCL percentiles only while the WCL result shape stays
                 # valid for this row. Gear/score changes are safe; character,
                 # spec, and DPS-vs-HEALER metric-role changes are not.
-                incoming_spec_id = (
-                    da.spec_id if da.spec_id > 0 else existing.spec_id
-                )
+                incoming_spec_id = da.spec_id if da.spec_id > 0 else existing.spec_id
                 incoming_ilvl = da.ilvl if da.ilvl > 0 else existing.ilvl
                 needs_refetch = (
                     existing.spec_id != incoming_spec_id
@@ -1615,7 +1654,7 @@ class _UpdateHandoffRecoveryController:
         self._installer_launch: object | None = None
         self._started_at: float | None = None
 
-    def arm(self, installer_launch: object | None, _message: str) -> None:
+    def arm(self, installer_launch: object | None) -> None:
         self.disarm()
         self._installer_launch = installer_launch
         self._started_at = self._monotonic()
@@ -1723,9 +1762,9 @@ def _resolve_update_check_result(
         )
 
     latest_version = getattr(result, "latest_version", None)
-    if getattr(result, "status", None) == "available" and update_result_has_installable_asset(
-        result
-    ):
+    if getattr(
+        result, "status", None
+    ) == "available" and update_result_has_installable_asset(result):
         return _UpdateCheckDecision(
             is_current=True,
             pending_update_version=str(latest_version or "available"),
@@ -1849,7 +1888,9 @@ def _load_release_notes_text() -> str:
             last_error = exc
     searched = ", ".join(str(path) for path in candidates)
     if last_error is not None:
-        raise RuntimeError(f"Could not read RELEASE_NOTES.md from {searched}: {last_error}") from last_error
+        raise RuntimeError(
+            f"Could not read RELEASE_NOTES.md from {searched}: {last_error}"
+        ) from last_error
     raise FileNotFoundError(f"Could not find RELEASE_NOTES.md in {searched}")
 
 
@@ -1875,7 +1916,9 @@ def _connect_release_notes_dialog_action(dialog: Any) -> None:
     changelog_requested.connect(lambda: _show_release_notes_dialog(dialog))
 
 
-def _test_wcl_credentials(cache_dir: Path, client_id: str, client_secret: str, _region: str) -> str:
+def _test_wcl_credentials(
+    cache_dir: Path, client_id: str, client_secret: str, _region: str
+) -> str:
     with tempfile.TemporaryDirectory(dir=cache_dir.parent) as temp_dir:
         auth = WCLAuth(client_id, client_secret, Path(temp_dir))
         auth.get_token()
@@ -1894,9 +1937,7 @@ def _safe_check_for_update(current_version: str) -> UpdateResult:
         )
 
 
-def _check_updates(
-    *, update_quit_gate: _UpdateQuitGate
-) -> SettingsUpdateResult | str:
+def _check_updates(*, update_quit_gate: _UpdateQuitGate) -> SettingsUpdateResult | str:
     if not _UPDATE_INSTALL_LOCK.acquire(blocking=False):
         raise RuntimeError("Update is already in progress.")
     try:
@@ -1942,7 +1983,9 @@ def _should_show_settings_on_start(
     return SHOW_SETTINGS_ARG in args or not wow_watch_mode
 
 
-def _duplicate_launch_command(_args: list[str], *, wow_watch_mode: bool) -> bytes | None:
+def _duplicate_launch_command(
+    _args: list[str], *, wow_watch_mode: bool
+) -> bytes | None:
     if wow_watch_mode:
         return None
     return CONTROL_SHOW_SETTINGS_COMMAND
@@ -2151,7 +2194,7 @@ def _apply_wow_sync_runtime(
                     quit_app=quit_app,
                     can_quit=can_quit,
                     prepare_quit=prepare_quit,
-            )
+                )
             return current_timer
         except Exception:
             if configure_startup:
@@ -2190,23 +2233,28 @@ class _WatcherSignalGate:
         self._pending_generation = self._generation + 1
         return self._pending_generation
 
-    def commit(self, generation: int) -> None:
+    def _replace_generation(self, generation: int) -> None:
         self._generation = generation
         self._pending_generation = None
+
+    def commit(self, generation: int) -> None:
+        self._replace_generation(generation)
 
     def cancel(self, generation: int) -> None:
         if self._pending_generation == generation:
             self._pending_generation = None
 
     def restore(self, generation: int) -> None:
-        self._generation = generation
-        self._pending_generation = None
+        self._replace_generation(generation)
 
     def invalidate(self) -> None:
-        self._generation = max(
-            self._generation,
-            self._pending_generation or self._generation,
-        ) + 1
+        self._generation = (
+            max(
+                self._generation,
+                self._pending_generation or self._generation,
+            )
+            + 1
+        )
         self._pending_generation = None
 
     def is_current(self, generation: int) -> bool:
@@ -2271,7 +2319,10 @@ class _SnapshotSourceGate:
                 return True
             if mtime_ns < self._latest_mtime_ns:
                 return False
-            if mtime_ns == self._latest_mtime_ns and identity in self._accepted_latest_ids:
+            if (
+                mtime_ns == self._latest_mtime_ns
+                and identity in self._accepted_latest_ids
+            ):
                 return False
             return True
         if self._latest_mtime_ns is None or mtime_ns > self._latest_mtime_ns:
@@ -2399,7 +2450,9 @@ class _WowSyncStartupConfigurator(QObject):
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 if not self._is_current(generation):
                     return
-                log.warning("Could not configure WoW lifecycle startup shortcut: %s", exc)
+                log.warning(
+                    "Could not configure WoW lifecycle startup shortcut: %s", exc
+                )
                 if on_error is not None:
                     callback = on_error
                     error = exc
@@ -2425,10 +2478,7 @@ class _WowSyncStartupConfigurator(QObject):
             with self._work_lock:
                 with self._state_lock:
                     applied_enabled = self._applied_enabled
-                if (
-                    desired_enabled is not None
-                    and applied_enabled != desired_enabled
-                ):
+                if desired_enabled is not None and applied_enabled != desired_enabled:
                     try:
                         self._configure(desired_enabled)
                     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -2493,7 +2543,9 @@ class _RetiredScreenshotWatchers:
             try:
                 request_stop()
             except Exception as exc:  # noqa: BLE001 - committed replacement is final
-                log.warning("Could not request previous screenshot watcher stop: %s", exc)
+                log.warning(
+                    "Could not request previous screenshot watcher stop: %s", exc
+                )
 
         def _worker() -> None:
             self._stop_one(
@@ -2832,6 +2884,7 @@ def _replace_screenshots_runtime(
             screenshots_dir,
             cache_dir=cache_dir,
         )
+
     def _commit_runtime_source(_new_watcher: ScreenshotWatcher) -> None:
         nonlocal source_changed
         if live_snapshot_cache_writer is not None:
@@ -2865,7 +2918,9 @@ def _replace_screenshots_runtime(
     try:
         _preload_machine_rio_region(machine)
     except Exception as exc:  # noqa: BLE001 - committed watcher keeps lazy retry path
-        log.warning("Could not preload local RaiderIO data after watcher replacement: %s", exc)
+        log.warning(
+            "Could not preload local RaiderIO data after watcher replacement: %s", exc
+        )
     return watcher
 
 
@@ -2937,9 +2992,7 @@ def _restore_live_snapshot_cache(
     def _expire_restored_snapshot() -> None:
         if not window.restored_snapshot_pending():
             return
-        applicants_pending, roster_pending = (
-            window.restored_snapshot_pending_surfaces()
-        )
+        applicants_pending, roster_pending = window.restored_snapshot_pending_surfaces()
         machine.expire_restored_snapshot_surfaces(
             applicants=bool(applicants_pending),
             roster=bool(roster_pending),
@@ -3027,7 +3080,9 @@ def _apply_process_env_overrides_to_config(cfg: Config) -> Config:
     screenshots_path = cfg.screenshots_path
     if screenshots_override is not None:
         clean_screenshots_path = screenshots_override.strip()
-        screenshots_path = Path(clean_screenshots_path) if clean_screenshots_path else None
+        screenshots_path = (
+            Path(clean_screenshots_path) if clean_screenshots_path else None
+        )
     metric_preferences = validate_metric_preferences(
         MetricPreferences(
             mplus=_process_env_bool_override(
@@ -3447,11 +3502,13 @@ def _run_first_run_settings(
     dialog = SettingsDialog(
         cfg,
         first_run=True,
-        credential_tester=lambda client_id, client_secret, region: _test_wcl_credentials(
-            cfg.cache_dir,
-            client_id,
-            client_secret,
-            region,
+        credential_tester=lambda client_id, client_secret, region: (
+            _test_wcl_credentials(
+                cfg.cache_dir,
+                client_id,
+                client_secret,
+                region,
+            )
         ),
         open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
         clear_cache=lambda: _clear_cache_dir(cfg.cache_dir, character_cache),
@@ -3490,8 +3547,7 @@ def _run_first_run_settings(
             configure_wow_sync_startup(cfg.sync_with_wow)
         except Exception as rollback_exc:  # noqa: BLE001
             rollback_error = (
-                " The WoW startup shortcut rollback also failed: "
-                f"{rollback_exc}"
+                f" The WoW startup shortcut rollback also failed: {rollback_exc}"
             )
             log.warning(
                 "Could not roll back WoW lifecycle startup shortcut after "
@@ -3736,7 +3792,9 @@ def main(argv: list[str] | None = None) -> int:
             quit_blocked=_show_update_quit_blocked,
         )
     except _DuplicateInstanceFound:
-        log.info("ApplicantScout Companion is already running; exiting duplicate launch.")
+        log.info(
+            "ApplicantScout Companion is already running; exiting duplicate launch."
+        )
         return 0
     except _ControlServerUnavailable as exc:
         log.error(
@@ -3835,7 +3893,7 @@ def main(argv: list[str] | None = None) -> int:
     ) -> None:
         update_quit_gate.mark_installer_handoff_started()
         if update_handoff_recovery is not None:
-            update_handoff_recovery.arm(installer_launch, message)
+            update_handoff_recovery.arm(installer_launch)
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",
@@ -3860,11 +3918,13 @@ def main(argv: list[str] | None = None) -> int:
         dialog = SettingsDialog(
             cfg,
             first_run=False,
-            credential_tester=lambda client_id, client_secret, region: _test_wcl_credentials(
-                cfg.cache_dir,
-                client_id,
-                client_secret,
-                region,
+            credential_tester=lambda client_id, client_secret, region: (
+                _test_wcl_credentials(
+                    cfg.cache_dir,
+                    client_id,
+                    client_secret,
+                    region,
+                )
             ),
             open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
             clear_cache=lambda: _clear_cache_dir(
@@ -3914,7 +3974,12 @@ def main(argv: list[str] | None = None) -> int:
                     prepare_quit=_prepare_quit_application,
                     live_snapshot_cache_writer=live_snapshot_writer,
                 )
-            except (ConfigError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            except (
+                ConfigError,
+                OSError,
+                RuntimeError,
+                subprocess.SubprocessError,
+            ) as exc:
                 log.warning("Could not apply settings change: %s", exc)
                 dialog.report_values_apply_result(False)
                 dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
@@ -4028,7 +4093,9 @@ def main(argv: list[str] | None = None) -> int:
                     _UpdateCompletion(f"Update failed: {exc}", error=True)
                 )
 
-        threading.Thread(target=_worker, name="ApplicantScoutUpdater", daemon=True).start()
+        threading.Thread(
+            target=_worker, name="ApplicantScoutUpdater", daemon=True
+        ).start()
 
     def _handle_update_completed(completion: object) -> None:
         nonlocal pending_update_version
@@ -4048,12 +4115,11 @@ def main(argv: list[str] | None = None) -> int:
             return
         update_handoff_recovery.disarm()
         pending_update_version = None
-        if not completion.installer_handoff:
-            _set_update_in_progress(False)
-            if settings_dialog is not None:
-                settings_dialog.set_update_available(None)
-            if tray_controller is not None:
-                tray_controller.set_update_available(None)
+        _set_update_in_progress(False)
+        if settings_dialog is not None:
+            settings_dialog.set_update_available(None)
+        if tray_controller is not None:
+            tray_controller.set_update_available(None)
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",

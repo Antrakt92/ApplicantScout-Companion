@@ -67,11 +67,7 @@ class InstallerLaunch:
 @dataclass(frozen=True)
 class InstallerAuthenticity:
     status: str
-    status_message: str
-    subject: str | None
-    issuer: str | None
     cert_sha256: str | None
-    thumbprint: str | None
 
 
 def _semver_key(version: str) -> tuple[int, int, int] | None:
@@ -301,7 +297,9 @@ def _is_setup_asset_name(name: str) -> bool:
     if "/" in name or "\\" in name:
         return False
     normalized = name.lower()
-    return normalized.startswith(_INSTALLER_PREFIX.lower()) and normalized.endswith(".exe")
+    return normalized.startswith(_INSTALLER_PREFIX.lower()) and normalized.endswith(
+        ".exe"
+    )
 
 
 def update_result_has_installable_asset(result: object) -> bool:
@@ -500,7 +498,9 @@ def download_update_installer(
     fd = -1
     tmp_path: Path | None = None
     try:
-        with http.stream("GET", checksum_url, follow_redirects=True) as checksum_response:
+        with http.stream(
+            "GET", checksum_url, follow_redirects=True
+        ) as checksum_response:
             checksum_bytes = _read_capped_response_bytes(
                 checksum_response,
                 limit=_MAX_CHECKSUM_DOWNLOAD_BYTES,
@@ -605,11 +605,7 @@ if ($null -ne $cert) {
 }
 [pscustomobject]@{
     Status = [string]$sig.Status
-    StatusMessage = [string]$sig.StatusMessage
-    Subject = if ($null -ne $cert) { [string]$cert.Subject } else { $null }
-    Issuer = if ($null -ne $cert) { [string]$cert.Issuer } else { $null }
     CertSha256 = $certSha256
-    Thumbprint = if ($null -ne $cert) { [string]$cert.Thumbprint } else { $null }
 } | ConvertTo-Json -Compress
 """
     env = os.environ.copy()
@@ -657,11 +653,7 @@ if ($null -ne $cert) {
         )
     return InstallerAuthenticity(
         status=str(payload.get("Status") or ""),
-        status_message=str(payload.get("StatusMessage") or ""),
-        subject=_optional_json_text(payload.get("Subject")),
-        issuer=_optional_json_text(payload.get("Issuer")),
         cert_sha256=_optional_json_text(payload.get("CertSha256")),
-        thumbprint=_optional_json_text(payload.get("Thumbprint")),
     )
 
 

@@ -18,11 +18,6 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _ICACLS_TIMEOUT_SECONDS = 5
 _WINDOWS_SYSTEM_SID = "*S-1-5-18"
 _WINDOWS_ADMINISTRATORS_SID = "*S-1-5-32-544"
-_WINDOWS_BROAD_ACCESS_SIDS = (
-    "*S-1-1-0",  # Everyone
-    "*S-1-5-11",  # Authenticated Users
-    "*S-1-5-32-545",  # Users
-)
 _CURRENT_USER_SID_CACHE: str | None = None
 _PRIVATE_ACL_CACHE: set[
     tuple[str, bool, tuple[int | None, int | None, int | None] | None]
@@ -95,28 +90,24 @@ def _apply_windows_private_acl(path: Path, *, directory: bool) -> bool:
     if user_sid is None:
         return False
     path_text = os.fspath(path)
-    ok = True
-    for args in (
-        ["icacls", path_text, "/inheritance:r", "/Q"],
-        ["icacls", path_text, "/remove:g", *_WINDOWS_BROAD_ACCESS_SIDS, "/Q"],
-        [
-            "icacls",
-            path_text,
-            "/remove:d",
-            *_WINDOWS_BROAD_ACCESS_SIDS,
-            user_sid,
-            "/Q",
-        ],
+    # WHY: removing only broad well-known groups leaves arbitrary explicit
+    # allow ACEs (for example Guests or an old local account) untouched. Reset
+    # the DACL first, remove the inherited defaults, then install the complete
+    # private allow-list. Stop at the first failure so a partial prerequisite
+    # is never mistaken for a hardened path or cached as one.
+    if not _run_icacls(["icacls", path_text, "/reset", "/Q"]):
+        return False
+    if not _run_icacls(["icacls", path_text, "/inheritance:r", "/Q"]):
+        return False
+    return _run_icacls(
         [
             "icacls",
             path_text,
             "/grant:r",
             *_windows_private_grants(user_sid, directory=directory),
             "/Q",
-        ],
-    ):
-        ok = _run_icacls(args) and ok
-    return ok
+        ]
+    )
 
 
 def _private_acl_cache_key(

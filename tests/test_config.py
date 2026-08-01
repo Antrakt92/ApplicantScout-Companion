@@ -278,6 +278,14 @@ def _stub_setup_logging(
     monkeypatch.setattr(main_mod, "_setup_logging", fake_setup_logging)
 
 
+def _stub_runtime_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main_mod,
+        "_acquire_runtime_owner",
+        lambda: SimpleNamespace(close=lambda: None),
+    )
+
+
 def _log_record(message: str) -> logging.LogRecord:
     return logging.LogRecord("test", logging.INFO, __file__, 1, message, (), None)
 
@@ -774,7 +782,9 @@ def test_screenshots_path_warning_accepts_valid_retail_screenshots(tmp_path: Pat
 
 
 def test_screenshots_path_warning_flags_non_screenshots_folder(tmp_path: Path):
-    warning = screenshots_path_health_warning(tmp_path / "World of Warcraft" / "_retail_" / "Shots")
+    warning = screenshots_path_health_warning(
+        tmp_path / "World of Warcraft" / "_retail_" / "Shots"
+    )
 
     assert warning is not None
     assert "Screenshots" in warning
@@ -915,7 +925,10 @@ def test_load_config_parses_cache_ttl_seconds_env(
 
     assert cfg.cache_ttl_seconds == 60
     assert cfg.cache_dir == tmp_path / "localappdata" / "applicant-scout" / "cache"
-    assert cfg.config_path == tmp_path / "localappdata" / "applicant-scout" / "config" / "config.env"
+    assert (
+        cfg.config_path
+        == tmp_path / "localappdata" / "applicant-scout" / "config" / "config.env"
+    )
 
 
 def test_load_config_uses_default_for_blank_cache_ttl_seconds(
@@ -1043,7 +1056,7 @@ def test_save_config_values_failed_replace_preserves_existing_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     target = tmp_path / "config.env"
-    target.write_text("WCL_CLIENT_ID=\"old\"\n", encoding="utf-8")
+    target.write_text('WCL_CLIENT_ID="old"\n', encoding="utf-8")
 
     def fail_replace(_src: object, _dst: object) -> None:
         raise PermissionError("locked")
@@ -1058,7 +1071,7 @@ def test_save_config_values_failed_replace_preserves_existing_config(
             config_path=target,
         )
 
-    assert target.read_text(encoding="utf-8") == "WCL_CLIENT_ID=\"old\"\n"
+    assert target.read_text(encoding="utf-8") == 'WCL_CLIENT_ID="old"\n'
     assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
 
 
@@ -1369,7 +1382,9 @@ def test_persist_settings_values_stages_changed_wcl_credentials_as_draft(
     )
     saved: dict[str, object] = {}
 
-    monkeypatch.setattr(main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs))
+    monkeypatch.setattr(
+        main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs)
+    )
 
     main_mod._persist_settings_values(cfg, values, apply_credentials=False)
 
@@ -1395,7 +1410,9 @@ def test_persist_settings_values_promotes_validated_wcl_credentials(
     )
     saved: dict[str, object] = {}
 
-    monkeypatch.setattr(main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs))
+    monkeypatch.setattr(
+        main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs)
+    )
 
     main_mod._persist_settings_values(cfg, values, apply_credentials=True)
 
@@ -1510,7 +1527,9 @@ def test_persist_settings_values_clearing_screenshots_override_preserves_fallbac
     )
     saved: dict[str, object] = {}
 
-    monkeypatch.setattr(main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs))
+    monkeypatch.setattr(
+        main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs)
+    )
 
     main_mod._persist_settings_values(cfg, values, apply_credentials=False)
 
@@ -1559,7 +1578,9 @@ def test_settings_change_rolls_back_config_when_screenshot_runtime_fails(
             values=values,
             apply_credentials=False,
             auth=object(),
-            wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+            wcl_client=SimpleNamespace(
+                region=cfg.region, reconfigure_auth=lambda _auth: None
+            ),
             region_runtime=main_mod._WCLRegionRuntime(cfg.region),
             window=SimpleNamespace(
                 apply_metric_preferences=lambda *_args, **_kwargs: None,
@@ -1716,7 +1737,9 @@ def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
     monkeypatch.setattr(
         main_mod,
         "_apply_wow_sync_runtime",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("shortcut failed")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("shortcut failed")
+        ),
     )
     monkeypatch.setattr(
         main_mod,
@@ -1736,7 +1759,9 @@ def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
             values=values,
             apply_credentials=False,
             auth=object(),
-            wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+            wcl_client=SimpleNamespace(
+                region=cfg.region, reconfigure_auth=lambda _auth: None
+            ),
             region_runtime=main_mod._WCLRegionRuntime(cfg.region),
             window=SimpleNamespace(
                 apply_metric_preferences=lambda *_args, **_kwargs: None,
@@ -1927,7 +1952,9 @@ def test_settings_change_derives_screenshots_before_wow_sync_runtime(
             values=values,
             apply_credentials=False,
             auth=object(),
-            wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+            wcl_client=SimpleNamespace(
+                region=cfg.region, reconfigure_auth=lambda _auth: None
+            ),
             region_runtime=main_mod._WCLRegionRuntime(cfg.region),
             window=SimpleNamespace(
                 apply_metric_preferences=lambda *_args, **_kwargs: None,
@@ -1962,7 +1989,6 @@ def test_validated_settings_promotion_marks_new_active_auth_ready(
         metric_preferences=cfg.metric_preferences,
         sync_with_wow=cfg.sync_with_wow,
     )
-
 
     new_auth = object()
     reconfigured: list[tuple[object, bool]] = []
@@ -2148,7 +2174,9 @@ def test_settings_apply_respects_process_env_overrides_for_runtime(
     monkeypatch.setenv("APSCOUT_FETCH_RAID_HEROIC", "1")
     monkeypatch.setenv("APSCOUT_FETCH_RAID_MYTHIC", "0")
     monkeypatch.setenv("APSCOUT_SYNC_WITH_WOW", "1")
-    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         main_mod,
         "_replace_screenshots_runtime",
@@ -2166,11 +2194,13 @@ def test_settings_apply_respects_process_env_overrides_for_runtime(
         values=values,
         apply_credentials=False,
         auth=object(),
-        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        wcl_client=SimpleNamespace(
+            region=cfg.region, reconfigure_auth=lambda _auth: None
+        ),
         region_runtime=main_mod._WCLRegionRuntime(cfg.region),
         window=SimpleNamespace(
-            apply_metric_preferences=lambda prefs, **_kwargs: applied_preferences.append(
-                prefs
+            apply_metric_preferences=lambda prefs, **_kwargs: (
+                applied_preferences.append(prefs)
             ),
             bump_wcl_runtime_generation=lambda: None,
         ),
@@ -2244,7 +2274,9 @@ def test_settings_change_reuses_prevalidated_path_without_sync_probe(
         values=values,
         apply_credentials=False,
         auth=object(),
-        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        wcl_client=SimpleNamespace(
+            region=cfg.region, reconfigure_auth=lambda _auth: None
+        ),
         region_runtime=main_mod._WCLRegionRuntime(cfg.region),
         window=SimpleNamespace(
             apply_metric_preferences=lambda *_args, **_kwargs: None,
@@ -2281,7 +2313,9 @@ def test_settings_change_retries_same_path_when_watcher_is_missing(
     replacement = object()
     calls: list[Path] = []
 
-    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         main_mod,
         "_replace_screenshots_runtime",
@@ -2294,7 +2328,9 @@ def test_settings_change_retries_same_path_when_watcher_is_missing(
         values=values,
         apply_credentials=False,
         auth=object(),
-        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        wcl_client=SimpleNamespace(
+            region=cfg.region, reconfigure_auth=lambda _auth: None
+        ),
         region_runtime=main_mod._WCLRegionRuntime(cfg.region),
         window=SimpleNamespace(
             apply_metric_preferences=lambda *_args, **_kwargs: None,
@@ -2455,7 +2491,9 @@ def test_load_config_wraps_unwritable_user_data_dir_as_config_error(
     cache_path.parent.mkdir(parents=True)
     cache_path.write_text("not a directory", encoding="utf-8")
 
-    with pytest.raises(ConfigError, match="Could not create ApplicantScout data directories"):
+    with pytest.raises(
+        ConfigError, match="Could not create ApplicantScout data directories"
+    ):
         load_config()
 
 
@@ -2523,7 +2561,9 @@ def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
             response=None,
         ),
     )
-    monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        main_mod, "_create_control_server", lambda *_args, **_kwargs: object()
+    )
     monkeypatch.setattr(
         main_mod,
         "_run_first_run_settings",
@@ -2572,7 +2612,9 @@ def test_main_returns_before_startup_when_cache_ttl_is_invalid(
             response=None,
         ),
     )
-    monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        main_mod, "_create_control_server", lambda *_args, **_kwargs: object()
+    )
 
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("startup continued after ConfigError")
@@ -2588,7 +2630,9 @@ def test_main_returns_before_startup_when_cache_ttl_is_invalid(
             pass
 
     monkeypatch.setattr(main_mod, "QApplication", FakeApp)
-    monkeypatch.setattr(main_mod.QMessageBox, "critical", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod.QMessageBox, "critical", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(main_mod, "WCLAuth", fail_if_called)
     monkeypatch.setattr(main_mod, "WCLClient", fail_if_called)
     monkeypatch.setattr(main_mod, "ScreenshotWatcher", fail_if_called)
@@ -2632,10 +2676,7 @@ def test_main_internal_screenshots_probe_exits_before_qapplication(
     monkeypatch.setattr(main_mod, "QApplication", fail_qapplication)
 
     token = "a" * 32
-    assert (
-        main_mod.main([main_mod.SCREENSHOTS_PATH_PROBE_ARG, r"D:\Shots", token])
-        == 0
-    )
+    assert main_mod.main([main_mod.SCREENSHOTS_PATH_PROBE_ARG, r"D:\Shots", token]) == 0
     assert calls == [rf"probe:D:\Shots:{token}"]
 
 
@@ -2650,17 +2691,19 @@ def test_main_cleanup_screenshots_uses_configured_path_before_qapplication(
     monkeypatch.setattr(
         main_mod,
         "cleanup_appscout_screenshots",
-        lambda path, *, delete=False, limit=None: calls.append((path, delete, limit))
-        or SimpleNamespace(
-            scanned=3,
-            markers_found=2,
-            deleted=2,
-            preserved=1,
-            unstable=0,
-            scan_errors=0,
-            decode_errors=0,
-            delete_failed=0,
-            limited=False,
+        lambda path, *, delete=False, limit=None: (
+            calls.append((path, delete, limit))
+            or SimpleNamespace(
+                scanned=3,
+                markers_found=2,
+                deleted=2,
+                preserved=1,
+                unstable=0,
+                scan_errors=0,
+                decode_errors=0,
+                delete_failed=0,
+                limited=False,
+            )
         ),
     )
 
@@ -2688,17 +2731,19 @@ def test_main_cleanup_screenshots_accepts_explicit_path(
     monkeypatch.setattr(
         main_mod,
         "cleanup_appscout_screenshots",
-        lambda path, *, delete=False, limit=None: calls.append((path, delete, limit))
-        or SimpleNamespace(
-            scanned=1,
-            markers_found=1,
-            deleted=0,
-            preserved=1,
-            unstable=0,
-            scan_errors=0,
-            decode_errors=0,
-            delete_failed=0,
-            limited=False,
+        lambda path, *, delete=False, limit=None: (
+            calls.append((path, delete, limit))
+            or SimpleNamespace(
+                scanned=1,
+                markers_found=1,
+                deleted=0,
+                preserved=1,
+                unstable=0,
+                scan_errors=0,
+                decode_errors=0,
+                delete_failed=0,
+                limited=False,
+            )
         ),
     )
 
@@ -3142,8 +3187,7 @@ def test_windows_runtime_owner_allows_exactly_one_concurrent_contender():
 
     results: list[bool] = []
     threads = [
-        threading.Thread(target=lambda: results.append(contend()))
-        for _ in range(2)
+        threading.Thread(target=lambda: results.append(contend())) for _ in range(2)
     ]
     for thread in threads:
         thread.start()
@@ -3273,6 +3317,7 @@ def test_create_control_server_detects_active_owner_before_stale_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[str] = []
+    _stub_runtime_owner(monkeypatch)
 
     class FakeServer:
         def __init__(self, _app) -> None:
@@ -3297,8 +3342,10 @@ def test_create_control_server_detects_active_owner_before_stale_cleanup(
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
-        lambda command, **_kwargs: calls.append(command.decode())
-        or SimpleNamespace(connected=True, written=True, response=b"ok"),
+        lambda command, **_kwargs: (
+            calls.append(command.decode())
+            or SimpleNamespace(connected=True, written=True, response=b"ok")
+        ),
     )
 
     with pytest.raises(main_mod._DuplicateInstanceFound):
@@ -3428,8 +3475,10 @@ def test_main_duplicate_manual_launch_requests_settings_before_qapplication(
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
-        lambda command, **_kwargs: calls.append(command.decode())
-        or SimpleNamespace(connected=True, written=True, response=b"ok"),
+        lambda command, **_kwargs: (
+            calls.append(command.decode())
+            or SimpleNamespace(connected=True, written=True, response=b"ok")
+        ),
     )
 
     def fail_qapplication(*_args, **_kwargs):
@@ -3450,8 +3499,10 @@ def test_main_duplicate_show_settings_arg_requests_settings_before_qapplication(
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
-        lambda command, **_kwargs: calls.append(command.decode())
-        or SimpleNamespace(connected=True, written=True, response=b"ok"),
+        lambda command, **_kwargs: (
+            calls.append(command.decode())
+            or SimpleNamespace(connected=True, written=True, response=b"ok")
+        ),
     )
 
     def fail_qapplication(*_args, **_kwargs):
@@ -3485,11 +3536,17 @@ def test_main_manual_launch_continues_when_no_control_server_exists(
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
-        lambda *_args, **_kwargs: calls.append("control")
-        or SimpleNamespace(connected=False, written=False, response=None),
+        lambda *_args, **_kwargs: (
+            calls.append("control")
+            or SimpleNamespace(connected=False, written=False, response=None)
+        ),
     )
     monkeypatch.setattr(main_mod, "QApplication", FakeApp)
-    monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: calls.append("server") or object())
+    monkeypatch.setattr(
+        main_mod,
+        "_create_control_server",
+        lambda *_args, **_kwargs: calls.append("server") or object(),
+    )
     monkeypatch.setattr(
         main_mod,
         "_load_startup_config",
@@ -3504,6 +3561,7 @@ def test_create_control_server_does_not_remove_server_after_no_response_probe(
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[str] = []
+    _stub_runtime_owner(monkeypatch)
 
     class FakeServer:
         def __init__(self, _app) -> None:
@@ -3528,8 +3586,10 @@ def test_create_control_server_does_not_remove_server_after_no_response_probe(
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
-        lambda command, **_kwargs: calls.append(command.decode())
-        or SimpleNamespace(connected=True, written=True, response=None),
+        lambda command, **_kwargs: (
+            calls.append(command.decode())
+            or SimpleNamespace(connected=True, written=True, response=None)
+        ),
     )
 
     with pytest.raises(main_mod._DuplicateInstanceFound):
@@ -3549,6 +3609,7 @@ def test_create_control_server_fails_closed_when_endpoint_cannot_be_reclaimed(
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[str] = []
+    _stub_runtime_owner(monkeypatch)
 
     class FakeServer:
         newConnection = SimpleNamespace(connect=lambda *_args: None)
@@ -3575,11 +3636,15 @@ def test_create_control_server_fails_closed_when_endpoint_cannot_be_reclaimed(
     monkeypatch.setattr(
         main_mod,
         "_send_control_command",
-        lambda command, **_kwargs: calls.append(command.decode())
-        or SimpleNamespace(connected=False, written=False, response=None),
+        lambda command, **_kwargs: (
+            calls.append(command.decode())
+            or SimpleNamespace(connected=False, written=False, response=None)
+        ),
     )
 
-    with pytest.raises(main_mod._ControlServerUnavailable, match="endpoint unavailable"):
+    with pytest.raises(
+        main_mod._ControlServerUnavailable, match="endpoint unavailable"
+    ):
         main_mod._create_control_server(
             object(),
             quit_app=lambda: None,
@@ -3760,8 +3825,10 @@ def test_load_startup_config_routes_disconnected_storage_through_bounded_probe(
     monkeypatch.setattr(
         main_mod,
         "run_bounded_screenshots_path_probe",
-        lambda path: calls.append(f"probe:{path}")
-        or "Screenshots folder warning: path check timed out.",
+        lambda path: (
+            calls.append(f"probe:{path}")
+            or "Screenshots folder warning: path check timed out."
+        ),
     )
     monkeypatch.setattr(
         main_mod,
@@ -3811,11 +3878,13 @@ def test_load_startup_config_prompts_for_saved_suspicious_screenshots_override(
     monkeypatch.setattr(
         main_mod,
         "run_bounded_screenshots_path_probe",
-        lambda path: calls.append(f"probe:{path}")
-        or (
-            "Screenshots folder warning: invalid saved path."
-            if path == bad_cfg.screenshots_path
-            else None
+        lambda path: (
+            calls.append(f"probe:{path}")
+            or (
+                "Screenshots folder warning: invalid saved path."
+                if path == bad_cfg.screenshots_path
+                else None
+            )
         ),
     )
 
@@ -3944,7 +4013,9 @@ def test_wow_watch_mode_exits_if_sync_is_disabled_while_waiting(
     shortcut_calls: list[bool] = []
 
     monkeypatch.setattr(main_mod, "load_config", lambda: next(configs))
-    monkeypatch.setattr(main_mod, "is_wow_running", lambda: checks.append("wow") or False)
+    monkeypatch.setattr(
+        main_mod, "is_wow_running", lambda: checks.append("wow") or False
+    )
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
@@ -4050,7 +4121,9 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
 
     monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
     monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
-    monkeypatch.setattr(main_mod, "save_config_values", lambda **_kwargs: calls.append("save"))
+    monkeypatch.setattr(
+        main_mod, "save_config_values", lambda **_kwargs: calls.append("save")
+    )
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
@@ -4099,7 +4172,9 @@ def test_first_run_wow_sync_disable_stops_current_session_watcher_after_save(
 
     monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
     monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
-    monkeypatch.setattr(main_mod, "save_config_values", lambda **_kwargs: calls.append("save"))
+    monkeypatch.setattr(
+        main_mod, "save_config_values", lambda **_kwargs: calls.append("save")
+    )
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
@@ -4308,7 +4383,9 @@ def test_persist_settings_values_writes_to_cfg_config_path(
     )
 
     monkeypatch.setattr(main_mod, "read_user_config_values", lambda _path: {})
-    monkeypatch.setattr(main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs))
+    monkeypatch.setattr(
+        main_mod, "save_config_values", lambda **kwargs: saved.update(kwargs)
+    )
 
     main_mod._persist_settings_values(cfg, values, apply_credentials=False)
 
@@ -4354,8 +4431,9 @@ def test_first_run_wow_sync_enable_save_failure_rolls_back_shortcut(
     monkeypatch.setattr(
         main_mod,
         "_persist_settings_values",
-        lambda *_args, **_kwargs: calls.append("save")
-        or (_ for _ in ()).throw(RuntimeError("save failed")),
+        lambda *_args, **_kwargs: (
+            calls.append("save") or (_ for _ in ()).throw(RuntimeError("save failed"))
+        ),
     )
     monkeypatch.setattr(
         main_mod,
@@ -4416,8 +4494,9 @@ def test_first_run_wow_sync_disable_save_failure_restores_previous_enabled_short
     monkeypatch.setattr(
         main_mod,
         "_persist_settings_values",
-        lambda *_args, **_kwargs: calls.append("save")
-        or (_ for _ in ()).throw(RuntimeError("save failed")),
+        lambda *_args, **_kwargs: (
+            calls.append("save") or (_ for _ in ()).throw(RuntimeError("save failed"))
+        ),
     )
     monkeypatch.setattr(
         main_mod,
@@ -4479,8 +4558,9 @@ def test_first_run_wow_sync_save_failure_warns_when_rollback_fails(
     monkeypatch.setattr(
         main_mod,
         "_persist_settings_values",
-        lambda *_args, **_kwargs: calls.append("save")
-        or (_ for _ in ()).throw(RuntimeError("save failed")),
+        lambda *_args, **_kwargs: (
+            calls.append("save") or (_ for _ in ()).throw(RuntimeError("save failed"))
+        ),
     )
     monkeypatch.setattr(
         main_mod.QMessageBox,
@@ -4527,7 +4607,9 @@ def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
 
     monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
     monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
-    monkeypatch.setattr(main_mod, "save_config_values", lambda **_kwargs: calls.append("save"))
+    monkeypatch.setattr(
+        main_mod, "save_config_values", lambda **_kwargs: calls.append("save")
+    )
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
@@ -4577,7 +4659,9 @@ def test_first_run_wow_sync_disable_cleanup_failure_still_saves_settings(
 
     monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
     monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
-    monkeypatch.setattr(main_mod, "save_config_values", lambda **_kwargs: calls.append("save"))
+    monkeypatch.setattr(
+        main_mod, "save_config_values", lambda **_kwargs: calls.append("save")
+    )
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
@@ -4717,7 +4801,9 @@ def test_wow_sync_startup_config_starts_tracked_thread_under_close_lock(
             self._target()
 
         def join(self) -> None:
-            raise AssertionError("completed tracked thread must be removed before close")
+            raise AssertionError(
+                "completed tracked thread must be removed before close"
+            )
 
     monkeypatch.setattr(main_mod.threading, "Thread", InspectingThread)
     configurator = main_mod._WowSyncStartupConfigurator(
@@ -4802,7 +4888,7 @@ def test_wow_sync_startup_config_close_corrects_inflight_stale_mutation():
 
 
 def test_wow_sync_startup_config_delivers_real_worker_error_on_gui_thread():
-    script = r'''
+    script = r"""
 import os
 import threading
 
@@ -4829,7 +4915,7 @@ app.exec()
 print(f"deliveries={deliveries!r}")
 configurator.close()
 raise SystemExit(0 if deliveries == [("shortcut failed", True)] else 2)
-'''
+"""
     env = dict(main_mod.os.environ)
     env["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -4864,7 +4950,9 @@ def test_settings_change_applies_wow_sync_runtime_without_startup_shortcut_on_ca
     calls: list[str] = []
     timer = object()
 
-    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
@@ -4889,7 +4977,9 @@ def test_settings_change_applies_wow_sync_runtime_without_startup_shortcut_on_ca
         values=values,
         apply_credentials=False,
         auth=object(),
-        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        wcl_client=SimpleNamespace(
+            region=cfg.region, reconfigure_auth=lambda _auth: None
+        ),
         region_runtime=main_mod._WCLRegionRuntime(cfg.region),
         window=SimpleNamespace(
             apply_metric_preferences=lambda *_args, **_kwargs: None,
@@ -4937,7 +5027,11 @@ def test_settings_change_disable_wow_sync_keeps_saved_config_when_helper_stop_fa
         calls.append("watcher-stop")
         raise RuntimeError("stop failed")
 
-    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: calls.append("persist-new"))
+    monkeypatch.setattr(
+        main_mod,
+        "_persist_settings_values",
+        lambda *_args, **_kwargs: calls.append("persist-new"),
+    )
     monkeypatch.setattr(
         main_mod,
         "_restore_persisted_config_snapshot",
@@ -4957,7 +5051,9 @@ def test_settings_change_disable_wow_sync_keeps_saved_config_when_helper_stop_fa
         values=values,
         apply_credentials=False,
         auth=object(),
-        wcl_client=SimpleNamespace(region=cfg.region, reconfigure_auth=lambda _auth: None),
+        wcl_client=SimpleNamespace(
+            region=cfg.region, reconfigure_auth=lambda _auth: None
+        ),
         region_runtime=main_mod._WCLRegionRuntime(cfg.region),
         window=SimpleNamespace(
             apply_metric_preferences=lambda *_args, **_kwargs: None,
@@ -5016,6 +5112,7 @@ def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
         lambda: calls.append("watcher-stop") or True,
         raising=False,
     )
+
     def fail_wow_scan() -> bool:
         raise AssertionError("WoW process scan must not block settings apply")
 
@@ -5023,10 +5120,9 @@ def test_wow_sync_runtime_apply_starts_and_stops_lifecycle_timer(
     monkeypatch.setattr(
         main_mod,
         "_start_wow_lifecycle_timer",
-        lambda _app, *, has_seen_wow, quit_app=None, **_kwargs: calls.append(
-            f"timer-start:{has_seen_wow}:{quit_app is None}"
-        )
-        or timer,
+        lambda _app, *, has_seen_wow, quit_app=None, **_kwargs: (
+            calls.append(f"timer-start:{has_seen_wow}:{quit_app is None}") or timer
+        ),
     )
 
     started = main_mod._apply_wow_sync_runtime(app, True, None)
@@ -5058,8 +5154,10 @@ def test_wow_sync_runtime_apply_rolls_back_startup_when_watcher_start_fails(
     monkeypatch.setattr(
         main_mod,
         "start_wow_sync_watcher",
-        lambda **kwargs: calls.append(f"watcher:{kwargs.get('check_existing')}")
-        or (_ for _ in ()).throw(RuntimeError("watcher failed")),
+        lambda **kwargs: (
+            calls.append(f"watcher:{kwargs.get('check_existing')}")
+            or (_ for _ in ()).throw(RuntimeError("watcher failed"))
+        ),
     )
 
     with pytest.raises(RuntimeError, match="watcher failed"):
@@ -5463,10 +5561,9 @@ def test_wow_sync_runtime_apply_starts_lifecycle_timer_even_when_wow_is_closed(
     monkeypatch.setattr(
         main_mod,
         "_start_wow_lifecycle_timer",
-        lambda _app, *, has_seen_wow, quit_app=None, **_kwargs: calls.append(
-            f"timer-start:{has_seen_wow}:{quit_app is None}"
-        )
-        or timer,
+        lambda _app, *, has_seen_wow, quit_app=None, **_kwargs: (
+            calls.append(f"timer-start:{has_seen_wow}:{quit_app is None}") or timer
+        ),
     )
 
     started = main_mod._apply_wow_sync_runtime(object(), True, None)
@@ -5528,7 +5625,9 @@ def test_replace_screenshot_watcher_keeps_old_watcher_when_new_start_fails(
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
-            self.snapshotReceived = type("Signal", (), {"connect": lambda *_args: None})()
+            self.snapshotReceived = type(
+                "Signal", (), {"connect": lambda *_args: None}
+            )()
             self.decodeFailed = type("Signal", (), {"connect": lambda *_args: None})()
 
         def start(self) -> None:
@@ -7118,9 +7217,7 @@ def test_application_event_loop_attempts_full_cleanup_without_masking_exec_failu
 def test_application_event_loop_holds_runtime_owner_through_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    owner_name = (
-        f"Global\\{runtime_control_mod.CONTROL_SERVER_BASENAME}.Shutdown.{time.time_ns()}"
-    )
+    owner_name = f"Global\\{runtime_control_mod.CONTROL_SERVER_BASENAME}.Shutdown.{time.time_ns()}"
     owner = main_mod._acquire_runtime_owner(owner_name)
     assert owner is not None
 
@@ -7157,8 +7254,7 @@ def test_application_event_loop_holds_runtime_owner_through_shutdown(
     replacement.close()
 
 
-def test_run_application_event_loop_resolves_current_watcher_at_shutdown(
-):
+def test_run_application_event_loop_resolves_current_watcher_at_shutdown():
     pending_retirement: list[Callable[[], None]] = []
 
     class RetiredWatcher:
@@ -7582,11 +7678,14 @@ def test_screenshot_runtime_source_switch_without_frame_retires_old_authority(
     assert state.applicants == {}
     assert state.party_members == {}
     assert window.restore_expired_calls == 1
-    assert load_live_snapshot(
-        tmp_path / "cache",
-        expected_source_id=source_b,
-        now=101.0,
-    ) is None
+    assert (
+        load_live_snapshot(
+            tmp_path / "cache",
+            expected_source_id=source_b,
+            now=101.0,
+        )
+        is None
+    )
 
 
 def test_screenshot_runtime_failed_source_start_discards_precommit_frame(
@@ -7604,9 +7703,7 @@ def test_screenshot_runtime_failed_source_start_discards_precommit_frame(
         snapshot_a,
         listing=replace(snapshot_a.listing, key_level=20),
         version=replace(snapshot_a.version, player_name="Alt-Realm"),
-        applicants=[
-            replace(snapshot_a.applicants[0], name="AltApplicant-Realm")
-        ],
+        applicants=[replace(snapshot_a.applicants[0], name="AltApplicant-Realm")],
     )
     state = AppState()
     old_reader = _SourceTransitionReader()
@@ -7763,9 +7860,7 @@ def test_screenshot_runtime_commits_source_before_draining_fresh_backlog(
     assert machine._rio_reader is next_reader
     assert state.player.full_name == "Alt-Realm"
     assert state.listing is not None and state.listing.key_level == 20
-    assert {row.name for row in state.applicants.values()} == {
-        "AltApplicant-Realm"
-    }
+    assert {row.name for row in state.applicants.values()} == {"AltApplicant-Realm"}
     assert set(state.party_members) == {"alt-realm"}
     assert window.decoded == [snapshot_b]
     assert window.applied == [snapshot_b]
@@ -7779,10 +7874,13 @@ def test_screenshot_runtime_commits_source_before_draining_fresh_backlog(
     restore_callbacks[0]()
     assert state.player.full_name == "Alt-Realm"
     assert state.listing is not None and state.listing.key_level == 20
-    assert load_live_snapshot(
-        cache_dir,
-        expected_source_id=source_b,
-    ) is not None
+    assert (
+        load_live_snapshot(
+            cache_dir,
+            expected_source_id=source_b,
+        )
+        is not None
+    )
 
 
 def test_restore_rejects_config_cache_when_process_env_selects_another_source(
@@ -7925,7 +8023,9 @@ def test_screenshot_runtime_keeps_old_reader_for_old_pending_signals(
         return f"{path.parent.name}-reader"
 
     monkeypatch.setattr(main_mod, "ScreenshotWatcher", create_watcher)
-    monkeypatch.setattr(main_mod, "_raiderio_reader_for_screenshots_path", reader_for_path)
+    monkeypatch.setattr(
+        main_mod, "_raiderio_reader_for_screenshots_path", reader_for_path
+    )
     machine = FakeMachine()
     gate = main_mod._WatcherSignalGate()
     old_watcher = main_mod._replace_screenshots_runtime(
@@ -8332,7 +8432,9 @@ def test_screenshot_runtime_keeps_new_reader_when_old_watcher_stop_fails(
 
     stops: list[str] = []
     monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
-    monkeypatch.setattr(main_mod, "_raiderio_reader_for_screenshots_path", reader_for_path)
+    monkeypatch.setattr(
+        main_mod, "_raiderio_reader_for_screenshots_path", reader_for_path
+    )
     machine = FakeMachine()
     gate = main_mod._WatcherSignalGate()
 
@@ -8599,7 +8701,9 @@ class _FakeTimer:
         self.stopped = True
 
 
-def _handoff_controller(monotonic_values: list[float], callbacks: list[tuple[str, bool]]):
+def _handoff_controller(
+    monotonic_values: list[float], callbacks: list[tuple[str, bool]]
+):
     values = iter(monotonic_values)
     return main_mod._UpdateHandoffRecoveryController(
         None,
@@ -8660,7 +8764,7 @@ def test_update_handoff_recovery_waits_while_installer_is_running():
     controller = _handoff_controller([0.0, 0.5], callbacks)
     launch = SimpleNamespace(poll=lambda: None)
 
-    controller.arm(launch, "Installing update.")
+    controller.arm(launch)
     _FakeTimer.instances[-1].timeout.emit()
 
     assert callbacks == []
@@ -8674,7 +8778,7 @@ def test_update_handoff_recovery_recovers_when_installer_exits():
     controller = _handoff_controller([0.0, 0.2], callbacks)
     launch = SimpleNamespace(poll=lambda: 7)
 
-    controller.arm(launch, "Installing update.")
+    controller.arm(launch)
     _FakeTimer.instances[-1].timeout.emit()
 
     assert callbacks == [
@@ -8692,7 +8796,7 @@ def test_update_handoff_recovery_times_out_running_installer_without_retry():
     controller = _handoff_controller([0.0, 1.1], callbacks)
     launch = SimpleNamespace(poll=lambda: None)
 
-    controller.arm(launch, "Installing update.")
+    controller.arm(launch)
     _FakeTimer.instances[-1].timeout.emit()
 
     assert callbacks == [
@@ -8711,9 +8815,9 @@ def test_update_handoff_recovery_rearms_single_timer():
     first_launch = SimpleNamespace(poll=lambda: None)
     second_launch = SimpleNamespace(poll=lambda: 0)
 
-    controller.arm(first_launch, "First")
+    controller.arm(first_launch)
     first_timer = _FakeTimer.instances[-1]
-    controller.arm(second_launch, "Second")
+    controller.arm(second_launch)
     second_timer = _FakeTimer.instances[-1]
     second_timer.timeout.emit()
 
@@ -9037,15 +9141,12 @@ def test_check_updates_downloads_and_launches_installable_release(
     monkeypatch.setattr(
         main_mod,
         "launch_update_installer",
-        lambda path, *, require_trusted_signature=True: calls.append(
-            (path, require_trusted_signature)
-        )
-        or launch,
+        lambda path, *, require_trusted_signature=True: (
+            calls.append((path, require_trusted_signature)) or launch
+        ),
     )
 
-    update_result = main_mod._check_updates(
-        update_quit_gate=_active_update_quit_gate()
-    )
+    update_result = main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
 
     assert calls == [result, (installer, False)]
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
@@ -9129,9 +9230,7 @@ def test_check_updates_rolls_back_handoff_when_installer_launch_fails(
         lambda _result: installer,
     )
 
-    def reject_launch(
-        _path: Path, *, require_trusted_signature: bool = True
-    ) -> object:
+    def reject_launch(_path: Path, *, require_trusted_signature: bool = True) -> object:
         launch_gate_states.append(gate.can_control_quit())
         raise RuntimeError("Popen failed")
 
@@ -9170,15 +9269,12 @@ def test_check_updates_launches_checksum_verified_installer_without_pinned_signe
     monkeypatch.setattr(
         main_mod,
         "launch_update_installer",
-        lambda path, *, require_trusted_signature=True: calls.append(
-            (path, require_trusted_signature)
-        )
-        or launch,
+        lambda path, *, require_trusted_signature=True: (
+            calls.append((path, require_trusted_signature)) or launch
+        ),
     )
 
-    update_result = main_mod._check_updates(
-        update_quit_gate=_active_update_quit_gate()
-    )
+    update_result = main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
 
     assert calls == [result, (installer, False)]
     assert isinstance(update_result, main_mod.SettingsUpdateResult)
@@ -9209,9 +9305,7 @@ def test_check_updates_reports_untrusted_installer_without_handoff(
         lambda update_result: calls.append(update_result) or installer,
     )
 
-    def reject_launch(
-        path: Path, *, require_trusted_signature: bool = True
-    ) -> object:
+    def reject_launch(path: Path, *, require_trusted_signature: bool = True) -> object:
         calls.append((path, require_trusted_signature))
         raise RuntimeError("Update installer is not trusted")
 

@@ -44,7 +44,9 @@ LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v9_lua_leader_key_golden"
 
 def _load_lua_golden_snapshot(stem: str = LUA_GOLDEN_STEM) -> tuple[Snapshot, dict]:
     payload = bytes.fromhex((FIXTURES / f"{stem}.hex").read_text(encoding="ascii"))
-    expected = json.loads((FIXTURES / f"{stem}.expected.json").read_text(encoding="utf-8"))
+    expected = json.loads(
+        (FIXTURES / f"{stem}.expected.json").read_text(encoding="utf-8")
+    )
     snap, error = _try_parse_appscout_payload(payload)
     assert error is None
     assert snap is not None
@@ -582,11 +584,11 @@ def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot(fixture_ste
         assert state.leader_key.player_name == expected["leader_key"]["player_name"]
 
     assert set(state.applicants) == {
-        f'{a["applicant_id"]}:{a["member_idx"]}' for a in expected["applicants"]
+        f"{a['applicant_id']}:{a['member_idx']}" for a in expected["applicants"]
     }
     applicant_expected = expected["applicants"][0]
     applicant = state.applicants[
-        f'{applicant_expected["applicant_id"]}:{applicant_expected["member_idx"]}'
+        f"{applicant_expected['applicant_id']}:{applicant_expected['member_idx']}"
     ]
     assert applicant.name == applicant_expected["name"]
     assert applicant.cls == "WARRIOR"
@@ -598,12 +600,13 @@ def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot(fixture_ste
     assert applicant.rio_profile == applicant_expected["rio_profile"]
     assert applicant.rio_best_key == applicant_expected["rio_best_key"]
     assert applicant.rio_best_dungeon_key == applicant_expected["rio_best_dungeon_key"]
-    assert applicant.rio_timed_at_or_above == applicant_expected[
-        "rio_timed_at_or_above"
-    ]
-    assert applicant.rio_completed_at_or_above_minus1 == applicant_expected[
-        "rio_completed_at_or_above_minus1"
-    ]
+    assert (
+        applicant.rio_timed_at_or_above == applicant_expected["rio_timed_at_or_above"]
+    )
+    assert (
+        applicant.rio_completed_at_or_above_minus1
+        == applicant_expected["rio_completed_at_or_above_minus1"]
+    )
     assert applicant.rio_dungeon_count == applicant_expected["rio_dungeon_count"]
     expected_target_key = (
         expected["leader_key"]["key_level"]
@@ -1065,7 +1068,9 @@ def test_local_rio_reenrich_error_preserves_existing_raid_progress():
     state = AppState()
     sm = StateMachine(state, rio_reader=_FakeRioReader())
     updated: list[str] = []
-    sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
+    sm.applicantUpdated.connect(
+        lambda applicant: updated.append(applicant.applicant_id)
+    )
     sm.apply_snapshot(
         Snapshot(
             listing=_listing(),
@@ -1268,7 +1273,9 @@ def test_first_snapshot_reenriches_applicant_after_async_rio_preload_completes()
     reader = _ColdRioReader(current_score=2861)
     sm = StateMachine(state, rio_reader=reader)
     updated: list[str] = []
-    sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
+    sm.applicantUpdated.connect(
+        lambda applicant: updated.append(applicant.applicant_id)
+    )
 
     sm.apply_snapshot(
         Snapshot(
@@ -1522,7 +1529,9 @@ def test_stale_rio_preload_completion_is_ignored_after_reader_swap():
     new_reader = _ColdRioReader([{"name": "New", "key_level": 21}])
     sm = StateMachine(state, rio_reader=old_reader)
     updated: list[str] = []
-    sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
+    sm.applicantUpdated.connect(
+        lambda applicant: updated.append(applicant.applicant_id)
+    )
 
     sm.apply_snapshot(
         Snapshot(
@@ -1543,7 +1552,9 @@ def test_rio_preload_completion_after_clear_does_not_resurrect_removed_rows():
     reader = _ColdRioReader()
     sm = StateMachine(state, rio_reader=reader)
     updated: list[str] = []
-    sm.applicantUpdated.connect(lambda applicant: updated.append(applicant.applicant_id))
+    sm.applicantUpdated.connect(
+        lambda applicant: updated.append(applicant.applicant_id)
+    )
 
     sm.apply_snapshot(
         Snapshot(
@@ -1667,7 +1678,9 @@ def test_name_change_at_same_composite_key_wipes_wcl_data():
         }
     ]
     events: list[tuple[str, str]] = []
-    sm.applicantRemoved.connect(lambda applicant_id: events.append(("removed", applicant_id)))
+    sm.applicantRemoved.connect(
+        lambda applicant_id: events.append(("removed", applicant_id))
+    )
     sm.applicantAdded.connect(
         lambda applicant: events.append(("added", applicant.applicant_id))
     )
@@ -2479,17 +2492,13 @@ def test_roster_unavailable_identity_change_revalidates_preserved_enrichment(
         assert applicant.raid_heroic == 92.0
         assert applicant.score == 2861
         assert applicant.rio_profile is True
-        assert applicant.rio_dungeons == [
-            {"name": "Pit of Saron", "key_level": 12}
-        ]
+        assert applicant.rio_dungeons == [{"name": "Pit of Saron", "key_level": 12}]
         assert applicant.rio_raid_progress
         assert member.fetch_status == "ready"
         assert member.raid_heroic == 92.0
         assert member.score == 2861
         assert member.rio_profile is True
-        assert member.rio_dungeons == [
-            {"name": "Pit of Saron", "key_level": 12}
-        ]
+        assert member.rio_dungeons == [{"name": "Pit of Saron", "key_level": 12}]
         assert member.rio_raid_progress
         assert applicant_updates == []
         assert roster_updates == []
@@ -2642,6 +2651,8 @@ def test_realm_less_version_does_not_erase_producer_identity_boundary():
             roster_unavailable=True,
         )
     )
+    assert state.player.full_name == "Host-RealmA"
+    assert state.player.region_id == 3
     assert state.listing is not None
     assert set(state.applicants) == {"42:1"}
     assert set(state.party_members) == {"host-realma"}
@@ -2661,6 +2672,44 @@ def test_realm_less_version_does_not_erase_producer_identity_boundary():
     assert state.listing is None
     assert state.applicants == {}
     assert state.party_members == {}
+
+
+def test_placeholder_version_preserves_producer_identity_and_applies_snapshot():
+    state = AppState()
+    state.player = WoWPlayer(
+        addon_version="old-addon",
+        game_version="old-game",
+        region_id=3,
+        full_name="Host-RealmA",
+    )
+    sm = StateMachine(state)
+    retired: list[bool] = []
+    sm.retire_screenshot_source = lambda: retired.append(True)  # type: ignore[method-assign]
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=15),
+            version=DecodedVersion(
+                addon_version="new-addon",
+                game_version="new-game",
+                region_id=0,
+                player_name="?",
+            ),
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout", spec_id=71)],
+            roster=[_roster_decoded("Host-RealmA", flags=1)],
+        )
+    )
+
+    assert retired == []
+    assert state.player == WoWPlayer(
+        addon_version="new-addon",
+        game_version="new-game",
+        region_id=3,
+        full_name="Host-RealmA",
+    )
+    assert state.listing is not None
+    assert state.listing.key_level == 15
+    assert state.applicants["42:1"].name == "Scout"
 
 
 def test_explicit_terminal_clear_snapshot_clears_listing_applicants_and_roster():
@@ -3262,7 +3311,7 @@ def test_same_character_missing_realm_partial_snapshot_keeps_transport_domains()
         )
     )
 
-    assert state.player.full_name == "Host"
+    assert state.player.full_name == "Host-Realm"
     assert state.listing is not None
     assert set(state.applicants) == {"7:1"}
     assert set(state.party_members) == {"host-realm"}

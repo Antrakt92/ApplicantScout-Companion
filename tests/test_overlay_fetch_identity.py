@@ -31,12 +31,17 @@ from applicant_scout.wcl import (
     WCL_ERROR_AUTH,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
-    WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_RATE_LIMITED,
     WCL_ERROR_SERVER,
 )
 
 ALL_METRIC_PREFERENCES = MetricPreferences()
+
+
+def _in_flight_identity(
+    window: OverlayWindow, storage_key: str
+) -> _FetchIdentity | None:
+    return window._fetches_in_flight.get(storage_key)
 
 
 class _SyncPool:
@@ -364,8 +369,7 @@ def test_auth_chip_maps_secret_free_status_copy_and_accessibility(qtbot, tmp_pat
         assert window._auth_label.property("statusState") == state
         assert detail in window._auth_label.toolTip()
         assert (
-            window._auth_label.accessibleDescription()
-            == window._auth_label.toolTip()
+            window._auth_label.accessibleDescription() == window._auth_label.toolTip()
         )
         assert "client" not in window._auth_label.toolTip().lower()
         assert "secret" not in window._auth_label.toolTip().lower()
@@ -911,14 +915,14 @@ def test_fetch_error_stores_error_kind(qtbot, tmp_path):
         window._on_fetch_done(
             identity,
             CharacterRanks.empty(
-                error="WCL quota guard 90% used",
-                error_kind=WCL_ERROR_QUOTA_GUARD,
+                error="WCL server error",
+                error_kind=WCL_ERROR_SERVER,
             ),
         )
 
         assert app.fetch_status == "error"
-        assert app.error_message == "WCL quota guard 90% used"
-        assert app.wcl_error_kind == WCL_ERROR_QUOTA_GUARD
+        assert app.error_message == "WCL server error"
+        assert app.wcl_error_kind == WCL_ERROR_SERVER
         assert app.raid_heroic is None
         assert app.mplus_dps is None
         assert app.mplus_dps_breakdown == []
@@ -1289,7 +1293,7 @@ def test_retry_failed_wcl_fetches_relaunches_party_member_error(qtbot, tmp_path)
         client.close()
 
 
-def test_retry_failed_wcl_fetches_relaunches_quota_error_after_deadline(
+def test_retry_failed_wcl_fetches_relaunches_rate_limit_error_after_deadline(
     qtbot,
     tmp_path,
 ):
@@ -1297,8 +1301,8 @@ def test_retry_failed_wcl_fetches_relaunches_quota_error_after_deadline(
     window, client = _window(qtbot, tmp_path, state)
     app = _app(
         fetch_status="error",
-        error_message="WCL quota guard 90% used",
-        wcl_error_kind=WCL_ERROR_QUOTA_GUARD,
+        error_message="WCL rate-limited",
+        wcl_error_kind=WCL_ERROR_RATE_LIMITED,
     )
     state.add_or_update(app)
 
@@ -1373,8 +1377,8 @@ def test_retry_failed_wcl_fetches_caps_batch_size(qtbot, tmp_path):
             applicant_id=f"{idx}:1",
             name=f"Scout{idx}-RealmA",
             fetch_status="error",
-            error_message="WCL quota guard 90% used",
-            wcl_error_kind=WCL_ERROR_QUOTA_GUARD,
+            error_message="WCL server error",
+            wcl_error_kind=WCL_ERROR_SERVER,
         )
         for idx in range(4)
     ]
@@ -1396,8 +1400,8 @@ def test_retry_path_with_fake_pool_completes_and_clears_in_flight(qtbot, tmp_pat
     window._pool = _SyncPool()
     app = _app(
         fetch_status="error",
-        error_message="WCL quota guard 90% used",
-        wcl_error_kind=WCL_ERROR_QUOTA_GUARD,
+        error_message="WCL network error",
+        wcl_error_kind=WCL_ERROR_NETWORK,
     )
     state.add_or_update(app)
 
@@ -1804,7 +1808,7 @@ def test_launch_fetch_unknown_spec_mplus_only_marks_ready_without_queue(
         window._launch_fetch(app)
 
         assert queued_pool.tasks == []
-        assert window._in_flight_identity(app.applicant_id) is None
+        assert _in_flight_identity(window, app.applicant_id) is None
         assert app.fetch_status == "ready"
         assert app.wcl_metric_preferences is None
         assert app.mplus_dps is None
@@ -1833,7 +1837,7 @@ def test_launch_fetch_unmapped_positive_spec_mplus_only_marks_ready_without_queu
         window._launch_fetch(app)
 
         assert queued_pool.tasks == []
-        assert window._in_flight_identity(app.applicant_id) is None
+        assert _in_flight_identity(window, app.applicant_id) is None
         assert app.fetch_status == "ready"
         assert app.wcl_metric_preferences is None
         assert app.mplus_dps is None
@@ -1866,7 +1870,7 @@ def test_unknown_spec_raid_fetch_uses_effective_preferences_without_loop(
 
     try:
         window._launch_fetch(app)
-        identity = window._in_flight_identity(app.applicant_id)
+        identity = _in_flight_identity(window, app.applicant_id)
 
         assert identity is not None
         assert identity.metric_preferences == effective
@@ -1878,7 +1882,7 @@ def test_unknown_spec_raid_fetch_uses_effective_preferences_without_loop(
         assert app.raid_heroic == 44.0
         assert app.mplus_dps is None
         assert app.wcl_metric_preferences == effective
-        assert window._in_flight_identity(app.applicant_id) is None
+        assert _in_flight_identity(window, app.applicant_id) is None
 
         window.apply_metric_preferences(prefs)
 
@@ -1919,7 +1923,7 @@ def test_window_init_projects_unknown_spec_to_effective_preferences(qtbot, tmp_p
         assert app.raid_heroic == 44.0
         assert app.mplus_dps is None
         assert app.wcl_metric_preferences == effective
-        assert window._in_flight_identity(app.applicant_id) is None
+        assert _in_flight_identity(window, app.applicant_id) is None
     finally:
         client.close()
 
@@ -1977,7 +1981,7 @@ def test_relist_same_applicant_id_launches_new_fetch_despite_old_in_flight(
 
     try:
         window._launch_fetch(old_app)
-        old_identity = window._in_flight_identity(old_app.applicant_id)
+        old_identity = _in_flight_identity(window, old_app.applicant_id)
         assert old_identity is not None
 
         window.on_cleared()
@@ -1986,7 +1990,7 @@ def test_relist_same_applicant_id_launches_new_fetch_despite_old_in_flight(
         state.add_or_update(new_app)
 
         window._launch_fetch(new_app)
-        new_identity = window._in_flight_identity(new_app.applicant_id)
+        new_identity = _in_flight_identity(window, new_app.applicant_id)
 
         assert new_app.fetch_status == "loading"
         assert new_identity is not None
@@ -2011,7 +2015,7 @@ def test_stale_completion_after_relist_does_not_clear_new_in_flight(
 
     try:
         window._launch_fetch(old_app)
-        old_identity = window._in_flight_identity(old_app.applicant_id)
+        old_identity = _in_flight_identity(window, old_app.applicant_id)
         assert old_identity is not None
 
         window.on_cleared()
@@ -2019,7 +2023,7 @@ def test_stale_completion_after_relist_does_not_clear_new_in_flight(
         new_app = _app(fetch_status="pending")
         state.add_or_update(new_app)
         window._launch_fetch(new_app)
-        new_identity = window._in_flight_identity(new_app.applicant_id)
+        new_identity = _in_flight_identity(window, new_app.applicant_id)
         assert new_identity is not None
 
         window._on_fetch_done(
@@ -2029,7 +2033,7 @@ def test_stale_completion_after_relist_does_not_clear_new_in_flight(
         assert new_app.fetch_status == "loading"
         assert new_app.raid_heroic is None
         assert new_app.mplus_dps is None
-        assert window._in_flight_identity(new_app.applicant_id) == new_identity
+        assert _in_flight_identity(window, new_app.applicant_id) == new_identity
     finally:
         client.close()
 
@@ -2046,7 +2050,7 @@ def test_stale_completion_after_relist_does_not_overwrite_ready_new_results(
 
     try:
         window._launch_fetch(old_app)
-        old_identity = window._in_flight_identity(old_app.applicant_id)
+        old_identity = _in_flight_identity(window, old_app.applicant_id)
         assert old_identity is not None
 
         window.on_cleared()
@@ -2054,7 +2058,7 @@ def test_stale_completion_after_relist_does_not_overwrite_ready_new_results(
         new_app = _app(fetch_status="pending")
         state.add_or_update(new_app)
         window._launch_fetch(new_app)
-        new_identity = window._in_flight_identity(new_app.applicant_id)
+        new_identity = _in_flight_identity(window, new_app.applicant_id)
         assert new_identity is not None
 
         window._on_fetch_done(
@@ -2063,7 +2067,7 @@ def test_stale_completion_after_relist_does_not_overwrite_ready_new_results(
         assert new_app.fetch_status == "ready"
         assert new_app.raid_heroic == 55.0
         assert new_app.mplus_dps == 66.0
-        assert window._in_flight_identity(new_app.applicant_id) is None
+        assert _in_flight_identity(window, new_app.applicant_id) is None
 
         window._on_fetch_done(
             old_identity, _ranks_with(raid_heroic=11.0, mplus_dps=22.0)
@@ -2072,7 +2076,7 @@ def test_stale_completion_after_relist_does_not_overwrite_ready_new_results(
         assert new_app.fetch_status == "ready"
         assert new_app.raid_heroic == 55.0
         assert new_app.mplus_dps == 66.0
-        assert window._in_flight_identity(new_app.applicant_id) is None
+        assert _in_flight_identity(window, new_app.applicant_id) is None
     finally:
         client.close()
 
@@ -2095,12 +2099,12 @@ def test_metric_broadening_allows_broader_fetch_when_narrow_fetch_in_flight(
 
     try:
         window._launch_fetch(app)
-        narrow_identity = window._in_flight_identity(app.applicant_id)
+        narrow_identity = _in_flight_identity(window, app.applicant_id)
         assert narrow_identity is not None
         assert narrow_identity.metric_preferences == narrow
 
         window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
-        broad_identity = window._in_flight_identity(app.applicant_id)
+        broad_identity = _in_flight_identity(window, app.applicant_id)
 
         assert broad_identity is not None
         assert broad_identity != narrow_identity
@@ -2160,11 +2164,11 @@ def test_old_narrow_completion_does_not_clear_ready_broad_data(qtbot, tmp_path):
 
     try:
         window._launch_fetch(app)
-        narrow_identity = window._in_flight_identity(app.applicant_id)
+        narrow_identity = _in_flight_identity(window, app.applicant_id)
         assert narrow_identity is not None
 
         window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
-        broad_identity = window._in_flight_identity(app.applicant_id)
+        broad_identity = _in_flight_identity(window, app.applicant_id)
         assert broad_identity is not None
 
         window._on_fetch_done(
@@ -2181,14 +2185,12 @@ def test_old_narrow_completion_does_not_clear_ready_broad_data(qtbot, tmp_path):
         assert app.fetch_status == "ready"
         assert app.raid_heroic == 55.0
         assert app.mplus_dps == 66.0
-        assert window._in_flight_identity(app.applicant_id) is None
+        assert _in_flight_identity(window, app.applicant_id) is None
     finally:
         client.close()
 
 
-def test_old_narrow_completion_does_not_refetch_after_broad_not_found(
-    qtbot, tmp_path
-):
+def test_old_narrow_completion_does_not_refetch_after_broad_not_found(qtbot, tmp_path):
     narrow = MetricPreferences(
         mplus=False,
         raid_normal=True,
@@ -2203,11 +2205,11 @@ def test_old_narrow_completion_does_not_refetch_after_broad_not_found(
 
     try:
         window._launch_fetch(app)
-        narrow_identity = window._in_flight_identity(app.applicant_id)
+        narrow_identity = _in_flight_identity(window, app.applicant_id)
         assert narrow_identity is not None
 
         window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
-        broad_identity = window._in_flight_identity(app.applicant_id)
+        broad_identity = _in_flight_identity(window, app.applicant_id)
         assert broad_identity is not None
 
         window._on_fetch_done(broad_identity, CharacterRanks.empty(not_found=True))
@@ -2218,7 +2220,7 @@ def test_old_narrow_completion_does_not_refetch_after_broad_not_found(
         )
 
         assert app.fetch_status == "not_found"
-        assert window._in_flight_identity(app.applicant_id) is None
+        assert _in_flight_identity(window, app.applicant_id) is None
     finally:
         client.close()
 
@@ -2238,11 +2240,11 @@ def test_old_narrow_completion_does_not_refetch_after_broad_error(qtbot, tmp_pat
 
     try:
         window._launch_fetch(app)
-        narrow_identity = window._in_flight_identity(app.applicant_id)
+        narrow_identity = _in_flight_identity(window, app.applicant_id)
         assert narrow_identity is not None
 
         window.apply_metric_preferences(ALL_METRIC_PREFERENCES)
-        broad_identity = window._in_flight_identity(app.applicant_id)
+        broad_identity = _in_flight_identity(window, app.applicant_id)
         assert broad_identity is not None
 
         window._on_fetch_done(
@@ -2258,7 +2260,7 @@ def test_old_narrow_completion_does_not_refetch_after_broad_error(qtbot, tmp_pat
 
         assert app.fetch_status == "error"
         assert app.error_message == "WCL server error"
-        assert window._in_flight_identity(app.applicant_id) is None
+        assert _in_flight_identity(window, app.applicant_id) is None
     finally:
         client.close()
 
@@ -2278,7 +2280,7 @@ def test_completion_after_disabling_all_metrics_is_ignored(qtbot, tmp_path):
 
     try:
         window._launch_fetch(app)
-        identity = window._in_flight_identity(app.applicant_id)
+        identity = _in_flight_identity(window, app.applicant_id)
         assert identity is not None
 
         window.apply_metric_preferences(disabled)
@@ -2324,7 +2326,7 @@ def test_completion_after_unknown_spec_effective_metrics_empty_is_ignored(
 
     try:
         window._launch_fetch(app)
-        identity = window._in_flight_identity(app.applicant_id)
+        identity = _in_flight_identity(window, app.applicant_id)
         assert identity is not None
 
         window.apply_metric_preferences(mplus_only)
@@ -2410,9 +2412,7 @@ def test_wcl_runtime_generation_bump_refetches_party_members(qtbot, tmp_path):
         client.close()
 
 
-def test_stale_network_completion_cannot_overwrite_current_auth_status(
-    qtbot, tmp_path
-):
+def test_stale_network_completion_cannot_overwrite_current_auth_status(qtbot, tmp_path):
     window, client = _window(qtbot, tmp_path, AppState())
     stale_identity = _FetchIdentity(
         applicant_id="42:1",
@@ -2936,8 +2936,7 @@ def test_listing_clear_preserves_shared_party_waiters_on_one_worker(qtbot, tmp_p
         rebound_waiters = window._fetch_waiters_by_target[worker_identity.network_key]
         assert len(rebound_waiters) == 2
         assert {
-            identity.listing_session_generation
-            for identity in rebound_waiters.values()
+            identity.listing_session_generation for identity in rebound_waiters.values()
         } == {1}
 
         window._on_fetch_done(worker_identity, _ranks())

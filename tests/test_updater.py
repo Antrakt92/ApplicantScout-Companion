@@ -78,7 +78,9 @@ class _DownloadResponse:
 
 
 class _DownloadClient:
-    def __init__(self, responses: dict[str, bytes | _DownloadResponse] | None = None) -> None:
+    def __init__(
+        self, responses: dict[str, bytes | _DownloadResponse] | None = None
+    ) -> None:
         self.urls: list[str] = []
         self.responses = responses or {}
 
@@ -340,7 +342,7 @@ def test_update_check_accepts_v_tag_with_unprefixed_asset_version():
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
                             "browser_download_url": "https://example.test/setup.exe.sha256",
-                        }
+                        },
                     ],
                 )
             ],
@@ -397,7 +399,7 @@ def test_update_check_selects_highest_stable_semver_when_releases_are_out_of_ord
                         {
                             "name": "ApplicantScoutCompanionSetup-0.3.0.exe.sha256",
                             "browser_download_url": "https://example.test/setup-030.exe.sha256",
-                        }
+                        },
                     ],
                 ),
                 _release(
@@ -410,7 +412,7 @@ def test_update_check_selects_highest_stable_semver_when_releases_are_out_of_ord
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
                             "browser_download_url": "https://example.test/setup-020.exe.sha256",
-                        }
+                        },
                     ],
                 ),
             ],
@@ -440,7 +442,7 @@ def test_update_check_selects_asset_from_highest_release_not_first_release():
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
                             "browser_download_url": "https://example.test/setup-020.exe.sha256",
-                        }
+                        },
                     ],
                 ),
                 _release("v0.3.0"),
@@ -588,7 +590,9 @@ def test_update_check_handles_non_http_owned_client_construction_error(monkeypat
 def test_update_check_closes_owned_client_on_json_error(monkeypatch):
     client = _Client(_Response(200, ValueError("not json")))
 
-    monkeypatch.setattr("applicant_scout.updater.httpx.Client", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        "applicant_scout.updater.httpx.Client", lambda **_kwargs: client
+    )
 
     result = check_for_update("0.1.0")
 
@@ -611,7 +615,9 @@ def test_update_check_reports_reason_for_unexpected_response_shape():
 def test_download_update_installer_saves_setup_asset_atomically(tmp_path):
     digest = hashlib.sha256(b"setup-bytes").hexdigest()
     client = _DownloadClient(
-        {"https://example.test/setup.exe.sha256": f"{digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()}
+        {
+            "https://example.test/setup.exe.sha256": f"{digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()
+        }
     )
     result = _installer_result()
 
@@ -768,7 +774,9 @@ def test_download_update_installer_accepts_case_insensitive_setup_asset(tmp_path
     path = download_update_installer(
         result,
         download_dir=tmp_path,
-        client=_DownloadClient({"https://example.test/setup.exe.sha256": digest.encode()}),
+        client=_DownloadClient(
+            {"https://example.test/setup.exe.sha256": digest.encode()}
+        ),
     )  # type: ignore[arg-type]
 
     assert path == tmp_path / "applicantscoutcompanionsetup-0.2.0.EXE"
@@ -784,7 +792,9 @@ def test_download_update_installer_requires_setup_asset(tmp_path):
     )
 
     try:
-        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+        download_update_installer(
+            result, download_dir=tmp_path, client=_DownloadClient()
+        )  # type: ignore[arg-type]
     except RuntimeError as exc:
         assert "installer asset" in str(exc)
     else:
@@ -803,7 +813,9 @@ def test_download_update_installer_rejects_setup_asset_with_path_separator(tmp_p
     )
 
     try:
-        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+        download_update_installer(
+            result, download_dir=tmp_path, client=_DownloadClient()
+        )  # type: ignore[arg-type]
     except RuntimeError as exc:
         assert "installer asset" in str(exc)
     else:
@@ -820,7 +832,9 @@ def test_download_update_installer_requires_checksum_asset(tmp_path):
     )
 
     try:
-        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+        download_update_installer(
+            result, download_dir=tmp_path, client=_DownloadClient()
+        )  # type: ignore[arg-type]
     except RuntimeError as exc:
         assert "checksum" in str(exc).lower()
     else:
@@ -839,7 +853,9 @@ def test_download_update_installer_rejects_blank_download_urls(tmp_path):
     )
 
     try:
-        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+        download_update_installer(
+            result, download_dir=tmp_path, client=_DownloadClient()
+        )  # type: ignore[arg-type]
     except RuntimeError as exc:
         assert "installer asset" in str(exc)
     else:
@@ -856,7 +872,9 @@ def test_download_update_installer_rejects_blank_download_urls(tmp_path):
     )
 
     try:
-        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+        download_update_installer(
+            result, download_dir=tmp_path, client=_DownloadClient()
+        )  # type: ignore[arg-type]
     except RuntimeError as exc:
         assert "checksum" in str(exc).lower()
     else:
@@ -878,7 +896,9 @@ def test_download_update_installer_rejects_malformed_checksum(tmp_path):
         download_update_installer(
             result,
             download_dir=tmp_path,
-            client=_DownloadClient({"https://example.test/setup.exe.sha256": b"not-a-sha"}),
+            client=_DownloadClient(
+                {"https://example.test/setup.exe.sha256": b"not-a-sha"}
+            ),
         )  # type: ignore[arg-type]
     except RuntimeError as exc:
         assert "malformed" in str(exc).lower()
@@ -928,7 +948,9 @@ def test_download_update_installer_rejects_checksum_for_wrong_filename(tmp_path)
             result,
             download_dir=tmp_path,
             client=_DownloadClient(
-                {"https://example.test/setup.exe.sha256": f"{digest}  Other.exe\n".encode()}
+                {
+                    "https://example.test/setup.exe.sha256": f"{digest}  Other.exe\n".encode()
+                }
             ),
         )  # type: ignore[arg-type]
     except RuntimeError as exc:
@@ -954,7 +976,9 @@ def test_download_update_installer_rejects_hash_mismatch(tmp_path):
             result,
             download_dir=tmp_path,
             client=_DownloadClient(
-                {"https://example.test/setup.exe.sha256": f"{wrong_digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()}
+                {
+                    "https://example.test/setup.exe.sha256": f"{wrong_digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()
+                }
             ),
         )  # type: ignore[arg-type]
     except RuntimeError as exc:
@@ -971,7 +995,9 @@ def test_download_update_installer_streams_installer_without_response_content(tm
     client = _DownloadClient(
         {
             "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
-            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(chunks),
+            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
+                chunks
+            ),
         }
     )
 
@@ -1273,10 +1299,7 @@ def test_verify_update_installer_authenticity_accepts_trusted_signed_installer(
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=(
-                '{"Status":"Valid","StatusMessage":"","Subject":"CN=Antrakt",'
-                '"Issuer":"CN=Test CA","CertSha256":"ABC123","Thumbprint":"00"}'
-            ),
+            stdout='{"Status":"Valid","CertSha256":"ABC123"}',
             stderr="",
         ),
     )
@@ -1299,10 +1322,7 @@ def test_verify_update_installer_authenticity_rejects_unpinned_valid_signature(
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=(
-                '{"Status":"Valid","StatusMessage":"","Subject":"CN=Antrakt",'
-                '"Issuer":"CN=Test CA","CertSha256":"ABC123","Thumbprint":"00"}'
-            ),
+            stdout='{"Status":"Valid","CertSha256":"ABC123"}',
             stderr="",
         ),
     )

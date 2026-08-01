@@ -40,7 +40,6 @@ WCL_OAUTH_URL = "https://www.warcraftlogs.com/oauth/token"
 WCL_API_URL = "https://www.warcraftlogs.com/api/v2/client"
 
 
-WCL_ERROR_QUOTA_GUARD = "quota_guard"
 WCL_ERROR_RATE_LIMITED = "rate_limited"
 WCL_ERROR_AUTH = "auth"
 WCL_ERROR_SERVER = "server"
@@ -158,9 +157,7 @@ def _build_raid_boss_detail_query(
         return cached
     metric = "hps" if metric_role == "HEALER" else "dps"
     lines: list[str] = []
-    for difficulty_key, (alias_prefix, wcl_difficulty, pref_name) in (
-        _RAID_DETAIL_DIFFICULTIES.items()
-    ):
+    for alias_prefix, wcl_difficulty, pref_name in _RAID_DETAIL_DIFFICULTIES.values():
         if not getattr(metric_preferences, pref_name):
             continue
         for encounter_alias, encounter_id, _name in CURRENT_RAID_ENCOUNTERS:
@@ -357,8 +354,7 @@ class WCLAuth:
         )
         with self._cache_ownership_lock:
             self._cache_owner_generation = (
-                self._cache_owner_generation_by_path.get(self._token_cache_key, 0)
-                + 1
+                self._cache_owner_generation_by_path.get(self._token_cache_key, 0) + 1
             )
             self._cache_owner_generation_by_path[self._token_cache_key] = (
                 self._cache_owner_generation
@@ -604,11 +600,7 @@ def _rate_limit_info_from_dict(d) -> Optional[RateLimitInfo]:
     limit_per_hour = _safe_nonnegative_finite_float(d.get("limitPerHour"))
     points_spent = _safe_nonnegative_finite_float(d.get("pointsSpentThisHour"))
     reset_in_seconds = _safe_nonnegative_finite_float(d.get("pointsResetIn"))
-    if (
-        limit_per_hour is None
-        or points_spent is None
-        or reset_in_seconds is None
-    ):
+    if limit_per_hour is None or points_spent is None or reset_in_seconds is None:
         return None
     return RateLimitInfo(
         limit_per_hour=limit_per_hour,
@@ -898,10 +890,7 @@ class WCLClient:
     ) -> None:
         observed_at = time.time() if now is None else now
         with self._quota_lock:
-            if (
-                auth_generation is not None
-                and auth_generation != self._auth_generation
-            ):
+            if auth_generation is not None and auth_generation != self._auth_generation:
                 return
             self.last_quota = quota
             self._quota_snapshot = _QuotaSnapshot(info=quota, observed_at=observed_at)
@@ -940,9 +929,7 @@ class WCLClient:
             self.network_retry_remaining_seconds(now=now),
         )
 
-    def _active_wcl_retry_block(
-        self, now: float
-    ) -> tuple[str, str, float] | None:
+    def _active_wcl_retry_block(self, now: float) -> tuple[str, str, float] | None:
         with self._quota_lock:
             rate_limited_until = self._rate_limited_until
             server_retry_until = self._server_retry_until
@@ -1082,9 +1069,7 @@ class WCLClient:
         region_used = region if region is not None else self.region
         raid_metric = ROLE_TO_RAID_METRIC.get(role, "dps")
         spec_name = (
-            SPEC_ID_TO_WCL_NAME.get(spec_id, "")
-            if metric_preferences.mplus
-            else ""
+            SPEC_ID_TO_WCL_NAME.get(spec_id, "") if metric_preferences.mplus else ""
         )
         # Unknown / unmapped spec_id: SPEC_ID_TO_WCL_NAME returns "" so the
         # downstream spec filter would silently let all of the applicant's
@@ -1191,15 +1176,9 @@ class WCLClient:
             raid_normal=_zone_avg(raid_normal_data),
             raid_heroic=_zone_avg(raid_heroic_data),
             raid_mythic=_zone_avg(raid_mythic_data),
-            raid_normal_median=_zone_avg(
-                raid_normal_data, "medianPerformanceAverage"
-            ),
-            raid_heroic_median=_zone_avg(
-                raid_heroic_data, "medianPerformanceAverage"
-            ),
-            raid_mythic_median=_zone_avg(
-                raid_mythic_data, "medianPerformanceAverage"
-            ),
+            raid_normal_median=_zone_avg(raid_normal_data, "medianPerformanceAverage"),
+            raid_heroic_median=_zone_avg(raid_heroic_data, "medianPerformanceAverage"),
+            raid_mythic_median=_zone_avg(raid_mythic_data, "medianPerformanceAverage"),
             mplus_dps=best_avg,
             mplus_hps=None,
             mplus_dps_median=median_avg,
@@ -1293,9 +1272,11 @@ class WCLClient:
                 error_kind=WCL_ERROR_MALFORMED,
             )
         rows: dict[str, list[dict[str, object]]] = {}
-        for difficulty, (_prefix, _wcl_difficulty, pref_name) in (
-            _RAID_DETAIL_DIFFICULTIES.items()
-        ):
+        for difficulty, (
+            _prefix,
+            _wcl_difficulty,
+            pref_name,
+        ) in _RAID_DETAIL_DIFFICULTIES.items():
             if not getattr(metric_preferences, pref_name):
                 continue
             _validate_raid_boss_detail_aliases(
@@ -1939,7 +1920,9 @@ class CharacterCache:
         # for healer) even though M+ now uses DPS for every role. A role change
         # must not reuse raid percentiles with the wrong metric. Tank and
         # damager share the same raid/M+ shape and cache-collide intentionally.
-        return f"{region}:{server_slug}:{name.lower()}:{spec_id}:{wcl_metric_role(role)}"
+        return (
+            f"{region}:{server_slug}:{name.lower()}:{spec_id}:{wcl_metric_role(role)}"
+        )
 
     @staticmethod
     def _not_found_key(name: str, server_slug: str, region: str) -> str:
@@ -1968,8 +1951,7 @@ class CharacterCache:
         role: str = "DAMAGER",
     ) -> str:
         return (
-            "rb:"
-            f"{CharacterCache._key_prefix(name, server_slug, region, spec_id, role)}"
+            f"rb:{CharacterCache._key_prefix(name, server_slug, region, spec_id, role)}"
         )
 
     @staticmethod
@@ -2137,19 +2119,13 @@ class CharacterCache:
                 timer.cancel()
             write_succeeded = self._write_snapshot_with_write_lock(snapshot)
             with self._lock:
-                if (
-                    not write_succeeded
-                    and self._snapshot_is_current_locked(snapshot)
-                ):
+                if not write_succeeded and self._snapshot_is_current_locked(snapshot):
                     self._dirty = True
                 if (
                     self._dirty
                     and self._defer_saves
                     and not self._closing
-                    and (
-                        self._save_timer is None
-                        or not self._save_timer.is_alive()
-                    )
+                    and (self._save_timer is None or not self._save_timer.is_alive())
                 ):
                     self._start_save_timer_locked()
             return write_succeeded
@@ -2225,8 +2201,7 @@ class CharacterCache:
                         and self._defer_saves
                         and not self._closing
                         and (
-                            self._save_timer is None
-                            or not self._save_timer.is_alive()
+                            self._save_timer is None or not self._save_timer.is_alive()
                         )
                     ):
                         self._start_save_timer_locked()
@@ -2263,12 +2238,15 @@ class CharacterCache:
                 now=now,
             ):
                 candidates.append(
-                    (-exact_candidate.fetched_at, 0, requested_scope_key, exact_candidate)
+                    (
+                        -exact_candidate.fetched_at,
+                        0,
+                        requested_scope_key,
+                        exact_candidate,
+                    )
                 )
 
-            for scope_key, breadth in _COVERING_METRIC_SCOPE_KEYS[
-                requested_scope_key
-            ]:
+            for scope_key, breadth in _COVERING_METRIC_SCOPE_KEYS[requested_scope_key]:
                 stored_key = f"{prefix}:{scope_key}"
                 entry = self._data.get(stored_key)
                 if entry is None or not self._entry_is_fresh(
@@ -2277,9 +2255,7 @@ class CharacterCache:
                     now=now,
                 ):
                     continue
-                candidates.append(
-                    (-entry.fetched_at, breadth, scope_key, entry)
-                )
+                candidates.append((-entry.fetched_at, breadth, scope_key, entry))
 
         candidates.sort()
         return _CacheLookupSnapshot(
@@ -2447,9 +2423,9 @@ class CharacterCache:
                 identity_prefix = f"{region}:{server_slug}:{name.lower()}:"
                 raid_boss_identity_prefix = f"rb:{identity_prefix}"
                 for stored_key in list(self._data):
-                    if stored_key.startswith(
-                        identity_prefix
-                    ) or stored_key.startswith(raid_boss_identity_prefix):
+                    if stored_key.startswith(identity_prefix) or stored_key.startswith(
+                        raid_boss_identity_prefix
+                    ):
                         self._data.pop(stored_key, None)
                 self._data[not_found_key] = _CacheEntry(
                     fetched_at=time.time(), ranks=asdict(ranks)

@@ -126,7 +126,6 @@ from .wcl import (
     WCL_ERROR_HTTP,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
-    WCL_ERROR_QUOTA_GUARD,
     WCL_ERROR_RATE_LIMITED,
     WCL_ERROR_SERVER,
     CharacterCache,
@@ -201,7 +200,7 @@ WCL_RETRY_CUSHION_MS = 250
 WCL_RETRY_BATCH_DELAY_MS = 1500
 LEGACY_COMPACT_WINDOW_WIDTH = 526
 _RETRYABLE_WCL_ERROR_KINDS = frozenset(
-    {WCL_ERROR_QUOTA_GUARD, WCL_ERROR_RATE_LIMITED, WCL_ERROR_SERVER, WCL_ERROR_NETWORK}
+    {WCL_ERROR_RATE_LIMITED, WCL_ERROR_SERVER, WCL_ERROR_NETWORK}
 )
 _MANUAL_WCL_RETRY_ERROR_KINDS = frozenset({WCL_ERROR_GRAPHQL, WCL_ERROR_MALFORMED})
 ROLE_ICON_SIZE = QSize(16, 16)
@@ -2563,7 +2562,7 @@ class ApplicantInfoPanel(QFrame):
         raid: bool,
         raid_difficulty_count: int = 0,
     ) -> None:
-        name_label, rio_label, wcl_key_label, value_label = labels
+        _name_label, rio_label, wcl_key_label, value_label = labels
         raid_single = raid and raid_difficulty_count <= 1
         preferred = (
             RAID_NAME_WIDTH if raid else DUNGEON_NAME_WIDTH,
@@ -2602,7 +2601,7 @@ class ApplicantInfoPanel(QFrame):
             )
         )
         widths = self._fit_detail_row_widths(preferred, minimum)
-        for label, width in zip(labels, widths):
+        for label, width in zip(labels, widths, strict=True):
             label.setFixedWidth(width)
         if raid:
             rio_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3178,9 +3177,7 @@ class OverlayWindow(QMainWindow):
         self._group_size_by_raw: dict[str, int] = {}
         self._group_position_by_id: dict[str, int] = {}
         self._package_fit_by_raw: dict[str, PackageFit] = {}
-        self._package_fit_cache_by_raw: dict[
-            str, tuple[object, PackageFit]
-        ] = {}
+        self._package_fit_cache_by_raw: dict[str, tuple[object, PackageFit]] = {}
         # Hover & pin tracking. Display priority: hover > pin > hidden.
         # Pin survives applicant churn (preserved by id across re-sort);
         # hover is preserved by id when prev row's id still exists, falls
@@ -4265,10 +4262,7 @@ class OverlayWindow(QMainWindow):
                 "Warcraft Logs is temporarily unavailable. Applicant requests "
                 "will retry automatically."
             )
-        elif state == "error" and error_kind in {
-            WCL_ERROR_RATE_LIMITED,
-            WCL_ERROR_QUOTA_GUARD,
-        }:
+        elif state == "error" and error_kind == WCL_ERROR_RATE_LIMITED:
             text = "Auth issue"
             chip_state = "warning"
             detail = (
@@ -5535,9 +5529,6 @@ class OverlayWindow(QMainWindow):
     def _fetch_rows(self) -> Iterable[Applicant]:
         yield from self._state.applicants.values()
         yield from self._state.party_members.values()
-
-    def _in_flight_identity(self, applicant_id: str) -> _FetchIdentity | None:
-        return self._fetches_in_flight.get(applicant_id)
 
     def _mark_fetch_in_flight(self, identity: _FetchIdentity) -> None:
         self._discard_fetch_by_storage_key(identity.storage_key)
