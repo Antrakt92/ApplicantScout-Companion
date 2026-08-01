@@ -8,6 +8,15 @@ from .constants import REGION_ID_TO_WCL
 
 
 ProducerIdentity: TypeAlias = tuple[str, str, str | None]
+_PLACEHOLDER_TRANSPORT_NAMES = frozenset({"?", "unknown", "unknownobject"})
+
+
+def is_placeholder_transport_identity(player_name: object) -> bool:
+    identity = str(player_name or "").strip()
+    if not identity:
+        return False
+    base = identity.split("-", 1)[0].strip().casefold()
+    return base in _PLACEHOLDER_TRANSPORT_NAMES
 
 
 def normalize_producer_identity(
@@ -17,6 +26,8 @@ def normalize_producer_identity(
     player_identity = str(player_name or "").strip().casefold()
     name, separator, realm = player_identity.partition("-")
     region = REGION_ID_TO_WCL.get(region_id) if isinstance(region_id, int) else None
+    if is_placeholder_transport_identity(player_identity):
+        return "", "", region
     return name, realm if separator else "", region
 
 

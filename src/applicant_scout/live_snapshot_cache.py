@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from functools import wraps
 import json
 import logging
 import math
@@ -10,7 +12,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 from .atomic_io import atomic_write_text
 from .producer_identity import (
@@ -38,6 +40,20 @@ LIVE_SNAPSHOT_CLOSE_TIMEOUT_SECONDS = 2.0
 LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS = 2
 LIVE_SNAPSHOT_DUPLICATE_SUPPRESSION_SECONDS = 2.0
 _UNSCOPED_SOURCE_ID = "unscoped"
+_LIVE_SNAPSHOT_FILE_LOCK = threading.RLock()
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _serialized_live_snapshot_io(
+    function: Callable[_P, _R],
+) -> Callable[_P, _R]:
+    @wraps(function)
+    def locked(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with _LIVE_SNAPSHOT_FILE_LOCK:
+            return function(*args, **kwargs)
+
+    return locked
 
 
 @dataclass(frozen=True)
@@ -159,6 +175,7 @@ def _should_clear_cache_for_snapshot(snap: Snapshot) -> bool:
     return snap.listing is None and not snap.lfg_unavailable
 
 
+@_serialized_live_snapshot_io
 def clear_live_snapshot(cache_dir: Path) -> bool:
     path = live_snapshot_cache_path(cache_dir)
     try:
@@ -268,6 +285,7 @@ def _save_live_snapshot_content(
     return True
 
 
+@_serialized_live_snapshot_io
 def _perform_live_snapshot_cache_operation(
     cache_dir: Path,
     operation: _PendingLiveSnapshotCacheOperation,
@@ -614,6 +632,7 @@ def _operation_for_snapshot(
     )
 
 
+@_serialized_live_snapshot_io
 def load_live_snapshot(
     cache_dir: Path,
     *,
@@ -669,6 +688,7 @@ def load_live_snapshot(
         return None
 
 
+@_serialized_live_snapshot_io
 def clear_live_snapshot_if_saved_at(
     cache_dir: Path,
     expected_saved_at: float,

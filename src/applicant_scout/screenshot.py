@@ -47,6 +47,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from .atomic_io import atomic_write_text
+from .producer_identity import is_placeholder_transport_identity
 
 
 _log = logging.getLogger("applicant_scout.screenshot")
@@ -826,14 +827,6 @@ def validate_snapshot_for_application(snap: Snapshot) -> Snapshot:
     snap = _without_placeholder_transport_identities(snap)
     _validate_snapshot_unique_identities(snap)
     return snap
-
-
-def is_placeholder_transport_identity(name: str) -> bool:
-    identity = name.strip()
-    if not identity:
-        return False
-    base = identity.split("-", 1)[0].strip().lower()
-    return base in {"?", "unknown", "unknownobject"}
 
 
 def _without_placeholder_transport_identities(snap: Snapshot) -> Snapshot:

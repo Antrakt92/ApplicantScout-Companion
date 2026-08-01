@@ -608,6 +608,49 @@ def test_clear_live_snapshot_if_saved_at_preserves_newer_snapshot(tmp_path):
     assert restored.saved_at == 120.0
 
 
+def test_clear_live_snapshot_if_saved_at_serializes_newer_writer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    original_clear = cache_mod.clear_live_snapshot
+    clear_entered = threading.Event()
+    release_clear = threading.Event()
+    writer_started = threading.Event()
+    clear_result: list[bool] = []
+
+    def paused_clear(cache_dir) -> bool:
+        clear_entered.set()
+        assert release_clear.wait(timeout=2.0)
+        return original_clear(cache_dir)
+
+    def clear_old_snapshot() -> None:
+        clear_result.append(clear_live_snapshot_if_saved_at(tmp_path, 100.0))
+
+    def save_new_snapshot() -> None:
+        writer_started.set()
+        assert save_live_snapshot(tmp_path, _live_snapshot(), now=101.0)
+
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", paused_clear)
+    clear_thread = threading.Thread(target=clear_old_snapshot)
+    clear_thread.start()
+    assert clear_entered.wait(timeout=2.0)
+
+    writer_thread = threading.Thread(target=save_new_snapshot)
+    writer_thread.start()
+    assert writer_started.wait(timeout=2.0)
+    release_clear.set()
+    clear_thread.join(timeout=2.0)
+    writer_thread.join(timeout=2.0)
+
+    assert not clear_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert clear_result == [True]
+    restored = load_live_snapshot(tmp_path, now=102.0)
+    assert restored is not None
+    assert restored.saved_at == 101.0
+
+
 def test_clear_live_snapshot_if_saved_at_removes_matching_snapshot(tmp_path):
     save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
 
@@ -836,6 +879,39 @@ def test_live_snapshot_writer_producer_conflict_clears_older_disk_cache(
 
     assert writer.flush()
     assert load_live_snapshot(tmp_path, now=121.0) is None
+
+
+@pytest.mark.parametrize("placeholder_name", ["?", "unknown", "UnknownObject-Realm"])
+def test_live_snapshot_writer_placeholder_producer_preserves_pending_full_save(
+    tmp_path,
+    placeholder_name: str,
+):
+    full = _live_snapshot()
+    assert full.version is not None
+    restricted = replace(
+        full,
+        listing=None,
+        version=replace(full.version, player_name=placeholder_name),
+        applicants=[],
+        roster=[],
+        lfg_unavailable=True,
+        applicants_unavailable=True,
+        roster_unavailable=True,
+    )
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    writer.submit(full, now=100.0)
+    writer.submit(restricted, now=101.0)
+
+    assert writer.flush()
+    restored = load_live_snapshot(tmp_path, now=102.0)
+    assert restored is not None
+    assert restored.saved_at == 100.0
+    assert restored.snapshot == replace(full, source=None)
 
 
 def test_live_snapshot_writer_same_context_partial_preserves_pending_full_save(

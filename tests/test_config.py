@@ -6841,6 +6841,45 @@ def test_snapshot_apply_queue_does_not_merge_authority_across_producers(tmp_path
     assert load_live_snapshot(tmp_path) is None
 
 
+@pytest.mark.parametrize("placeholder_name", ["?", "unknown", "UnknownObject-Realm"])
+def test_snapshot_apply_queue_preserves_authority_before_placeholder_version(
+    placeholder_name: str,
+):
+    callbacks: list[object] = []
+    applied: list[Snapshot] = []
+    full = _live_snapshot()
+    assert full.version is not None
+    restricted = Snapshot(
+        listing=None,
+        version=replace(
+            full.version,
+            addon_version="0.4.4",
+            player_name=placeholder_name,
+        ),
+        lfg_unavailable=True,
+        roster_unavailable=True,
+        applicants_unavailable=True,
+    )
+    queue = main_mod._SnapshotApplyQueue(
+        SimpleNamespace(apply_snapshot=applied.append),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+
+    queue.enqueue_snapshot(full)
+    queue.enqueue_snapshot(restricted)
+    callbacks.pop(0)()
+
+    assert len(applied) == 1
+    merged = applied[0]
+    assert merged.listing == full.listing
+    assert merged.applicants == full.applicants
+    assert merged.version == restricted.version
+
+
 def test_snapshot_apply_queue_preserves_positive_leader_before_zero_partial():
     state = AppState()
     machine = main_mod.StateMachine(state)

@@ -2674,6 +2674,40 @@ def test_realm_less_version_does_not_erase_producer_identity_boundary():
     assert state.party_members == {}
 
 
+def test_realm_less_version_does_not_carry_realm_across_region_change():
+    class RecordingRioReader:
+        def __init__(self) -> None:
+            self.lookups: list[tuple[str, str, str | None, bool]] = []
+
+        def lookup_profile(
+            self,
+            name: str,
+            realm: str,
+            region: str | None,
+            *,
+            allow_load: bool = True,
+        ) -> None:
+            self.lookups.append((name, realm, region, allow_load))
+
+    reader = RecordingRioReader()
+    state = AppState()
+    state.player = WoWPlayer(region_id=3, full_name="Host-RealmA")
+    sm = StateMachine(state, rio_reader=reader)
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(key_level=15),
+            version=_version("Host", region_id=1),
+            applicants=[_decoded(aid=42, member_idx=1, name="Scout", spec_id=71)],
+        )
+    )
+
+    assert state.player.full_name == "Host"
+    assert state.player.region_id == 1
+    assert set(state.applicants) == {"42:1"}
+    assert reader.lookups == [("Scout", "", "US", False)]
+
+
 def test_placeholder_version_preserves_producer_identity_and_applies_snapshot():
     state = AppState()
     state.player = WoWPlayer(

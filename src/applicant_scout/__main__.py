@@ -57,6 +57,7 @@ from .live_snapshot_cache import (
 )
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .overlay import OverlayWindow
+from .producer_identity import is_placeholder_transport_identity
 from .raiderio_local import (
     LOOKUP_PAYLOAD_CACHE_DIR_NAME,
     RaiderIOLocalReader,
@@ -70,7 +71,6 @@ from .screenshot import (
     clear_screenshot_manual_indexes,
     cleanup_appscout_screenshots,
     format_screenshot_cleanup_summary,
-    is_placeholder_transport_identity,
     positive_int_arg,
     screenshot_cleanup_exit_code,
     system_exit_code,
@@ -1111,10 +1111,16 @@ class StateMachine(QObject):
                 "-"
             )
             old_name, old_separator, _old_realm = old_full_name.partition("-")
+            region_changed = (
+                old_region_is_valid
+                and incoming_region_is_valid
+                and old_player.region_id != version.region_id
+            )
             if (
                 not separator
                 and old_separator
                 and incoming_name.casefold() == old_name.casefold()
+                and not region_changed
             ):
                 resolved_full_name = old_full_name
 
