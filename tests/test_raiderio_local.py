@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import applicant_scout.atomic_io as atomic_io_mod
 import applicant_scout.raiderio_local as raiderio_local_mod
 from applicant_scout.raiderio_local import RaiderIOLocalProfile, RaiderIOLocalReader
 
@@ -844,16 +845,14 @@ def test_reader_hardens_decoded_lookup_payload_cache_parent_temp_and_target(
     cache_dir = tmp_path / "cache"
     calls: list[tuple[str, Path]] = []
     monkeypatch.setattr(
-        raiderio_local_mod,
+        atomic_io_mod,
         "apply_private_directory_mode",
         lambda path: calls.append(("dir", Path(path))),
-        raising=False,
     )
     monkeypatch.setattr(
-        raiderio_local_mod,
+        atomic_io_mod,
         "apply_private_file_mode",
         lambda path: calls.append(("file", Path(path))),
-        raising=False,
     )
     reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
 
@@ -922,10 +921,9 @@ def test_lookup_payload_cache_private_mode_failure_does_not_block_profile_load_a
     cache_dir = tmp_path / "cache"
     file_calls: list[Path] = []
     monkeypatch.setattr(
-        raiderio_local_mod,
+        atomic_io_mod,
         "apply_private_directory_mode",
         lambda _path: None,
-        raising=False,
     )
 
     def fail_temp_mode(path: Path) -> None:
@@ -935,10 +933,9 @@ def test_lookup_payload_cache_private_mode_failure_does_not_block_profile_load_a
             raise PermissionError("private mode rejected")
 
     monkeypatch.setattr(
-        raiderio_local_mod,
+        atomic_io_mod,
         "apply_private_file_mode",
         fail_temp_mode,
-        raising=False,
     )
     reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
 

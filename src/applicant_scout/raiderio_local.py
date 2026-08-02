@@ -11,12 +11,15 @@ import os
 import re
 import shutil
 import struct
-import tempfile
 import threading
 import time
 from pathlib import Path
 
-from .atomic_io import apply_private_directory_mode, apply_private_file_mode
+from .atomic_io import (
+    apply_private_directory_mode,
+    apply_private_file_mode,
+    atomic_write_bytes,
+)
 from .constants import MPLUS_RAIDERIO_DUNGEON_ORDER
 
 
@@ -1072,39 +1075,8 @@ def _decode_lookup_payload_cache(
 
 
 def _write_lookup_payload_cache_unlocked(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    apply_private_directory_mode(path.parent)
-    fd = -1
-    temp_path: Path | None = None
-    try:
-        fd, temp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=path.parent,
-        )
-        temp_path = Path(temp_name)
-        apply_private_file_mode(temp_path)
-        with os.fdopen(fd, "wb") as handle:
-            fd = -1
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-        temp_path = None
-        apply_private_file_mode(path)
-        _prune_old_lookup_payload_caches(path)
-    except BaseException:
-        if fd != -1:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
-        raise
+    atomic_write_bytes(path, payload, private=True)
+    _prune_old_lookup_payload_caches(path)
 
 
 def _prune_old_lookup_payload_caches(current_path: Path) -> None:
