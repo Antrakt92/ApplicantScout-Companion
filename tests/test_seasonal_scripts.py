@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from applicant_scout.constants import (
@@ -16,6 +17,7 @@ from applicant_scout.constants import (
     MPLUS_ENCOUNTERS,
 )
 from scripts.seasonal import (
+    _shared as seasonal_shared,
     get_mplus_activity_ids,
     get_mplus_challenge_map_ids,
     verify_wcl_season,
@@ -91,6 +93,55 @@ def _challenge_map_csv(*rows: str) -> str:
 def _season_tracked_map_csv(*rows: str) -> str:
     header = "ID,MapChallengeModeID,DisplaySeasonID"
     return "\n".join((header, *rows))
+
+
+@pytest.mark.parametrize("fetcher", ("activity", "challenge-map"))
+@pytest.mark.parametrize(
+    ("outcome", "error_match"),
+    (
+        ("connection", "request failed"),
+        ("status", "HTTP 503"),
+        ("marker", "does not look like"),
+    ),
+)
+def test_wago_csv_fetchers_translate_transport_and_validation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    fetcher: str,
+    outcome: str,
+    error_match: str,
+):
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, url: str):
+            if outcome == "connection":
+                raise httpx.ConnectError(
+                    "network unavailable",
+                    request=httpx.Request("GET", url),
+                )
+            if outcome == "status":
+                return SimpleNamespace(status_code=503, text="temporarily unavailable")
+            return SimpleNamespace(status_code=200, text="not csv data")
+
+    def fake_client(*, timeout: float):
+        assert timeout == 15.0
+        return FakeClient()
+
+    monkeypatch.setattr(seasonal_shared.httpx, "Client", fake_client)
+
+    with pytest.raises(seasonal_shared.SeasonalScriptError, match=error_match):
+        if fetcher == "activity":
+            get_mplus_activity_ids.fetch_wago_activity_csv("https://wago.invalid/a")
+        else:
+            get_mplus_challenge_map_ids.fetch_wago_csv(
+                "https://wago.invalid/c",
+                "MapChallengeMode",
+                "Name_lang,ID,MapID",
+            )
 
 
 def test_extract_mplus_activity_mapping_selects_current_group_with_keystone_row():

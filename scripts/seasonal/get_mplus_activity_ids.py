@@ -25,14 +25,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-import httpx
-
 from applicant_scout.constants import (
     MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME,
 )
 from scripts.seasonal._shared import (
     SeasonalScriptError,
     current_mplus_dungeon_names,
+    fetch_wago_csv,
     quote_display_string,
 )
 
@@ -187,14 +186,11 @@ def format_activity_mapping(mapping: dict[int, str]) -> str:
 
 
 def fetch_wago_activity_csv(url: str = DEFAULT_WAGO_ACTIVITY_CSV_URL) -> str:
-    with httpx.Client(timeout=15.0) as client:
-        resp = client.get(url)
-    if resp.status_code != 200:
-        raise SeasonalScriptError(f"Wago HTTP {resp.status_code}: {resp.text[:200]}")
-    text = resp.text
-    if "ID,FullName_lang" not in text[:200]:
-        raise SeasonalScriptError("Wago response does not look like GroupFinderActivity CSV")
-    return text
+    return fetch_wago_csv(
+        url,
+        "GroupFinderActivity",
+        "ID,FullName_lang",
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
