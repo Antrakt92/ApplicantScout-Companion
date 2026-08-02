@@ -66,6 +66,9 @@ def test_mplus_dual_cell_uses_visual_boundary():
 
 
 def test_bold_cell_font_uses_resolved_application_size(qtbot):
+    # WHY: the application font resolution below requires pytest-qt's
+    # QApplication even though the test does not need a widget interaction.
+    assert qtbot is not None
     font = QFont()
 
     result = _bold_cell_font(font)

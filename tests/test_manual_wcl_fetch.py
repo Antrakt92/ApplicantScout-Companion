@@ -45,6 +45,7 @@ def test_manual_wcl_fetch_cli_passes_character_realm_region_spec_and_role(
             region: str,
             metric_preferences: MetricPreferences,
         ) -> None:
+            seen["client_auth"] = auth
             seen["region"] = region
             seen["metric_preferences"] = metric_preferences
 
@@ -79,6 +80,7 @@ def test_manual_wcl_fetch_cli_passes_character_realm_region_spec_and_role(
     )
 
     assert rc == 0
+    assert isinstance(seen["client_auth"], FakeAuth)
     assert seen["region"] == "EU"
     assert seen["metric_preferences"] == DEFAULT_METRIC_PREFERENCES
     assert seen["fetch"] == ("Bites", "twisting-nether", 1480, "DAMAGER")

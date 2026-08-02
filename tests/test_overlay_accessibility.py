@@ -70,8 +70,10 @@ def _build_window(tmp_path, qtbot) -> tuple[OverlayWindow, WCLClient]:
         show_settings=lambda: None,
         game_foreground_probe=lambda: True,
     )
-    window._launch_fetch = lambda applicant: None
-    window._launch_raid_boss_fetch_if_needed = lambda applicant: False
+    window._launch_fetch = lambda applicant: None  # noqa: ARG005
+    window._launch_raid_boss_fetch_if_needed = (
+        lambda applicant: False  # noqa: ARG005
+    )
     qtbot.addWidget(window)
     qtbot.addWidget(window._launcher)
     window._refresh_table()

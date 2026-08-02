@@ -142,7 +142,7 @@ def test_dependency_license_collection_fails_closed_when_no_license_file(
         metadata = {"Name": "No-License-Wheel"}
         version = "1.2.3"
 
-        def locate_file(self, file: object) -> Path:
+        def locate_file(self, _file: object) -> Path:
             raise AssertionError("no files should be located")
 
     monkeypatch.setattr(
@@ -166,7 +166,7 @@ def test_dependency_license_collection_uses_exact_reviewed_override(
         metadata = {"Name": "No-License-Wheel"}
         version = "1.2.3"
 
-        def locate_file(self, file: object) -> Path:
+        def locate_file(self, _file: object) -> Path:
             raise AssertionError("no files should be located")
 
     monkeypatch.setattr(

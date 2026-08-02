@@ -38,3 +38,10 @@ applicant_scout = ["assets/*", "assets/role_icons/*.png"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+extend-select = ["ARG"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_screenshot.py" = ["ARG"]
+"tests/test_wcl.py" = ["ARG"]

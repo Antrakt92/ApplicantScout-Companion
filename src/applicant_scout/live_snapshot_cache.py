@@ -367,10 +367,17 @@ class LiveSnapshotCacheWriter:
                 self._pending = None
                 self._last_saved_content = None
                 self._last_saved_at = None
-                self._latest_logical_operation = (
-                    _PendingLiveSnapshotCacheOperation("clear", next_source_id)
+                clear_operation = _PendingLiveSnapshotCacheOperation(
+                    "clear",
+                    next_source_id,
                 )
-            if not clear_live_snapshot(self._cache_dir):
+                self._latest_logical_operation = clear_operation
+                generation = self._generation
+            if not self._perform_operation(clear_operation):
+                # WHY: a transient filesystem failure must not let a later
+                # A -> B -> A rebind restore A's stale on-disk snapshot. A
+                # concurrently submitted save is newer and therefore wins.
+                self._requeue_failed_operation(clear_operation, generation)
                 _log.warning(
                     "Could not remove the previous source's live snapshot cache."
                 )
@@ -419,11 +426,7 @@ class LiveSnapshotCacheWriter:
             if succeeded:
                 self._record_successful_operation(operation, generation)
             if not succeeded:
-                with self._lock:
-                    if self._pending is None and generation == self._generation:
-                        self._pending = operation
-                        if not self._closed and self._defer_saves:
-                            self._schedule_locked()
+                self._requeue_failed_operation(operation, generation)
             return succeeded
 
     def invalidate(self) -> None:
@@ -463,9 +466,7 @@ class LiveSnapshotCacheWriter:
                     self._record_successful_operation(operation, generation)
                     return True
 
-            with self._lock:
-                if self._pending is None and generation == self._generation:
-                    self._pending = operation
+            self._requeue_failed_operation(operation, generation)
             _log.warning(
                 "Failed to drain the live snapshot cache writer after %d attempts.",
                 LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS,
@@ -487,6 +488,18 @@ class LiveSnapshotCacheWriter:
         self._timer = None
         if timer is not None:
             timer.cancel()
+
+    def _requeue_failed_operation(
+        self,
+        operation: _PendingLiveSnapshotCacheOperation,
+        generation: int,
+    ) -> None:
+        with self._lock:
+            if self._pending is not None or generation != self._generation:
+                return
+            self._pending = operation
+            if not self._closed and self._defer_saves:
+                self._schedule_locked()
 
     def _perform_operation(self, operation: _PendingLiveSnapshotCacheOperation) -> bool:
         return _perform_live_snapshot_cache_operation(self._cache_dir, operation)

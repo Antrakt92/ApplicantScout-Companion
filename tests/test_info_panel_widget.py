@@ -671,7 +671,7 @@ def test_raid_boss_cache_hit_applies_without_queueing_worker(qtbot, tmp_path):
 
 
 def test_raid_boss_fetch_task_started_before_clear_does_not_repopulate_cache(
-    qtbot, tmp_path
+    tmp_path,
 ):
     prefs = MetricPreferences(
         mplus=False,
@@ -726,7 +726,7 @@ def test_raid_boss_fetch_task_started_before_clear_does_not_repopulate_cache(
 
 
 def test_raid_boss_fetch_task_does_not_cache_malformed_character_response(
-    qtbot, tmp_path
+    tmp_path,
 ):
     prefs = MetricPreferences(
         mplus=False,

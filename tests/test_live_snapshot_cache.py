@@ -795,6 +795,100 @@ def test_live_snapshot_writer_rebind_waits_for_in_flight_old_source_then_clears(
     assert not _cache_path(tmp_path).exists()
 
 
+def test_live_snapshot_writer_retries_failed_rebind_clear_after_source_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    source_a = live_snapshot_source_identity(tmp_path / "A" / "Screenshots")
+    source_b = live_snapshot_source_identity(tmp_path / "B" / "Screenshots")
+    assert save_live_snapshot(
+        tmp_path,
+        _live_snapshot(),
+        source_id=source_a,
+        now=100.0,
+    )
+    original_clear = cache_mod.clear_live_snapshot
+    calls = 0
+
+    def flaky_clear(cache_dir):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            return False
+        return original_clear(cache_dir)
+
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", flaky_clear)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        source_id=source_a,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+
+    assert writer.rebind_source(source_b)
+    assert writer.rebind_source(source_a)
+    assert writer.flush()
+
+    assert calls == 3
+    assert not _cache_path(tmp_path).exists()
+    assert (
+        load_live_snapshot(tmp_path, expected_source_id=source_a, now=101.0)
+        is None
+    )
+
+
+def test_live_snapshot_writer_new_source_save_wins_over_failed_rebind_clear(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    source_a = live_snapshot_source_identity(tmp_path / "A" / "Screenshots")
+    source_b = live_snapshot_source_identity(tmp_path / "B" / "Screenshots")
+    assert save_live_snapshot(
+        tmp_path,
+        _live_snapshot(),
+        source_id=source_a,
+        now=100.0,
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_failed_clear(_cache_dir):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return False
+
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", blocked_failed_clear)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        source_id=source_a,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    rebind_thread = threading.Thread(target=lambda: writer.rebind_source(source_b))
+    rebind_thread.start()
+    assert started.wait(timeout=2.0)
+
+    snapshot_b = _live_snapshot()
+    snapshot_b = replace(
+        snapshot_b,
+        applicants=[replace(snapshot_b.applicants[0], name="Fresh-Realm")],
+    )
+    writer.submit(snapshot_b, now=120.0)
+    release.set()
+    rebind_thread.join(timeout=2.0)
+
+    assert not rebind_thread.is_alive()
+    assert writer.flush()
+    restored = load_live_snapshot(
+        tmp_path,
+        expected_source_id=source_b,
+        now=121.0,
+    )
+    assert restored is not None
+    assert restored.saved_at == 120.0
+    assert restored.snapshot.applicants[0].name == "Fresh-Realm"
+
+
 def test_live_snapshot_writer_partial_snapshot_does_not_cancel_pending_full_save(tmp_path):
     writer = LiveSnapshotCacheWriter(
         tmp_path,
@@ -1405,6 +1499,7 @@ def test_live_snapshot_writer_invalidate_drops_failed_in_flight_retry(
 
     def failing_save(_cache_dir, _content, *, saved_at):
         nonlocal calls
+        assert saved_at == 100.0
         calls += 1
         started.set()
         assert release.wait(timeout=2.0)

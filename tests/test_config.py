@@ -613,7 +613,7 @@ def test_private_rotating_file_handler_delay_mode_survives_locked_rollover(
         delay=True,
     )
 
-    def locked_rename(source: str, dest: str) -> None:
+    def locked_rename(_source: str, _dest: str) -> None:
         raise PermissionError("locked base log")
 
     monkeypatch.setattr(main_mod.os, "rename", locked_rename)
@@ -644,7 +644,7 @@ def test_private_rotating_file_handler_reports_non_permission_rollover_errors(
     )
     handle_errors: list[logging.LogRecord] = []
 
-    def broken_rename(source: str, dest: str) -> None:
+    def broken_rename(_source: str, _dest: str) -> None:
         raise OSError("disk full")
 
     def record_handle_error(record: logging.LogRecord) -> None:
@@ -1648,7 +1648,11 @@ def test_settings_change_keeps_committed_watcher_when_rio_preload_fails(
         def lookup_profile(self, *_args, **_kwargs):
             return None
 
-        def preload_region_async(self, _region: str | None, on_loaded=None) -> None:
+        def preload_region_async(
+            self,
+            _region: str | None,
+            _on_loaded=None,
+        ) -> None:
             self.calls += 1
             raise RuntimeError("preload failed")
 
@@ -3445,7 +3449,7 @@ def test_main_wow_watcher_duplicate_defers_to_atomic_control_server(
     monkeypatch.setattr(
         main_mod,
         "_prepare_wow_watch_mode",
-        lambda args: ([], True, None),
+        lambda _args: ([], True, None),
     )
     monkeypatch.setattr(
         main_mod,
@@ -9224,6 +9228,7 @@ def test_check_updates_arms_control_quit_before_launching_installer(
     def launch_installer(
         _path: Path, *, require_trusted_signature: bool = True
     ) -> object:
+        assert require_trusted_signature is False
         launch_gate_states.append(gate.can_control_quit())
         control_quit_results.append(
             gate.prepare_control_quit(
@@ -9270,6 +9275,7 @@ def test_check_updates_rolls_back_handoff_when_installer_launch_fails(
     )
 
     def reject_launch(_path: Path, *, require_trusted_signature: bool = True) -> object:
+        assert require_trusted_signature is False
         launch_gate_states.append(gate.can_control_quit())
         raise RuntimeError("Popen failed")
 
