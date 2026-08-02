@@ -690,14 +690,6 @@ def _rio_display_text(applicant: Applicant) -> str:
     return _presenters.rio_display_text(applicant)
 
 
-def _rio_panel_text(applicant: Applicant) -> str:
-    return _presenters.rio_panel_text(applicant)
-
-
-def _mplus_fit_source_text(applicant: Applicant) -> str:
-    return _presenters.mplus_fit_source_text(applicant)
-
-
 def _sort_applicants_grouped_with_package_fits(
     applicants: Iterable[Applicant],
     listing: Listing | None = None,
@@ -1005,19 +997,8 @@ class _KeyboardButton(QPushButton):
         super().keyPressEvent(event)
 
 
-class _TooltipTableWidget(QTableWidget):
-    """QTableWidget with a viewportEvent override kept as the documented
-    tooltip-bypass anchor.
-
-    Post-refactor (custom row-hover panel replaced per-cell tooltips on
-    applicant rows), the viewportEvent body is INERT for cell tooltips —
-    `item.toolTip()` returns "" for every applicant cell, so _render_tooltip
-    just calls QToolTip.hideText() (no-op). The subclass and override stay
-    as a stable type and the documented anchor; if cell tooltips ever come
-    back here, the bypass machinery is already wired.
-
-    Header tooltips (column legends) and title-label tooltip route through
-    OverlayWindow.eventFilter, NOT through this override."""
+class _ApplicantTableWidget(QTableWidget):
+    """Applicant table with explicit keyboard and focus traversal behavior."""
 
     keyboardNavigated = pyqtSignal(int)
     rowActivated = pyqtSignal(int)
@@ -1112,25 +1093,6 @@ class _TooltipTableWidget(QTableWidget):
             event.accept()
             return
         super().keyPressEvent(event)
-
-    def viewportEvent(self, e):  # type: ignore[override]
-        from PyQt6.QtCore import QEvent
-        from PyQt6.QtGui import QHelpEvent
-
-        if (
-            e is not None
-            and e.type() == QEvent.Type.ToolTip
-            and isinstance(e, QHelpEvent)
-        ):
-            tip = ""
-            idx = self.indexAt(e.pos())
-            if idx.isValid():
-                item = self.item(idx.row(), idx.column())
-                if item is not None:
-                    tip = item.toolTip()
-            return _render_tooltip(self, tip, e.globalPos())
-        return super().viewportEvent(e)
-
 
 def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
     return _presenters.count_phrase(count, singular, plural)
@@ -2061,7 +2023,7 @@ class ApplicantInfoPanel(QFrame):
         self._ilvl_label.setVisible(bool(applicant.ilvl))
         rio_score = effective_rio_score(applicant)
         if rio_score:
-            self._rio_label.setText(_rio_panel_text(applicant))
+            self._rio_label.setText(_presenters.rio_panel_text(applicant))
             self._rio_label.setStyleSheet(
                 f"color: {rio_score_colour(rio_score)}; font-weight: bold;"
             )
@@ -2493,7 +2455,7 @@ class ApplicantInfoPanel(QFrame):
             or current_fit.score <= 0.0
         ):
             return ""
-        source = _mplus_fit_source_text(applicant)
+        source = _presenters.mplus_fit_source_text(applicant)
         coverage = int(round(current_fit.coverage * max(len(MPLUS_ENCOUNTERS), 1)))
         parts = [f"Target +{current_fit.target_key}"]
         if current_fit.best_nearby_key > 0:
@@ -2679,8 +2641,8 @@ class ApplicantInfoPanel(QFrame):
             self._dungeon_widget.setVisible(False)
             self._visible_detail_rows = 0
             return 0
-        rio_rows = _rio_dungeon_rows_by_name(applicant, listing)
-        wcl_rows = _wcl_dungeon_rows_by_name(applicant, listing)
+        rio_rows = _presenters.rio_dungeon_rows_by_name(applicant, listing)
+        wcl_rows = _presenters.wcl_dungeon_rows_by_name(applicant, listing)
         listing_keys = listing_dungeon_keys(listing)
         row_keys = sorted(
             set(rio_rows) | set(wcl_rows),
@@ -2767,7 +2729,7 @@ class ApplicantInfoPanel(QFrame):
             self._visible_detail_rows = 0
             return 0
         difficulties = _enabled_raid_difficulty_keys(self._metric_preferences)
-        rows = _raid_boss_rows_for_display(applicant, difficulties)
+        rows = _presenters.raid_boss_rows_for_display(applicant, difficulties)
         for row_idx, labels in enumerate(self._dungeon_rows):
             self._set_detail_row_widths(
                 labels, raid=True, raid_difficulty_count=len(difficulties)
@@ -2808,7 +2770,7 @@ class ApplicantInfoPanel(QFrame):
                 segments = row.get("segments")
                 if isinstance(segments, list) and len(segments) > 1:
                     value_label.setTextFormat(Qt.TextFormat.RichText)
-                    value_label.setText(_raid_parse_segments_html(segments))
+                    value_label.setText(_presenters.raid_parse_segments_html(segments))
                     value_label.setStyleSheet("")
                 else:
                     value_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -2983,11 +2945,9 @@ class OverlayWindow(QMainWindow):
             action_widget.installEventFilter(self)
         layout.addWidget(self._panel)
 
-        # Table — _TooltipTableWidget overrides viewportEvent to render tooltips
-        # via QToolTip.showText(). Required because Qt's default tooltip path
-        # silently fails on this overlay's flag combo (Tool + WA_Translucent
-        # Background + WindowStaysOnTopHint) — see _TooltipTableWidget docstring.
-        self._table = _TooltipTableWidget(0, len(COLUMN_HEADERS), container)
+        # Applicant rows use the side panel rather than per-cell tooltips. The
+        # specialized table owns keyboard activation and focus traversal.
+        self._table = _ApplicantTableWidget(0, len(COLUMN_HEADERS), container)
         self._table.setHorizontalHeaderLabels(COLUMN_HEADERS)
         # Per-column legend tooltips. setHorizontalHeaderLabels creates default
         # QTableWidgetItem objects we can fetch + decorate; the actual tooltip
@@ -2997,12 +2957,9 @@ class OverlayWindow(QMainWindow):
             header_item = self._table.horizontalHeaderItem(col)
             if header_item is not None:
                 header_item.setToolTip(tip_text)
-        # Header viewport doesn't go through _TooltipTableWidget.viewportEvent
-        # (it's a separate child QHeaderView with its own viewport). Install an
-        # event filter on the header viewport so QHelpEvents there route to
-        # OverlayWindow.eventFilter, which renders the same QToolTip.showText
-        # path. Without this, header tooltips silently fail on the translucent
-        # overlay just like cell tooltips did before _TooltipTableWidget.
+        # The header is a separate QHeaderView child. Install an event filter on
+        # its viewport so QHelpEvents route to OverlayWindow.eventFilter and its
+        # reliable screen-parented QToolTip.showText path.
         header_widget = self._table.horizontalHeader()
         if header_widget is not None:
             header_vp = header_widget.viewport()
@@ -6461,10 +6418,6 @@ def _raid_values_for_key(
     return _presenters.raid_values_for_key(applicant, key)
 
 
-def _raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> str:
-    return _presenters.raid_fit_evidence_text(applicant, target, source)
-
-
 def _raid_fit_cell(
     applicant: Applicant,
     listing: Listing | None,
@@ -6510,7 +6463,7 @@ def _raid_fit_visuals(
         prefix = "SUP"
 
     text = f"{prefix} {int(round(current_fit.score))}"
-    evidence = _raid_fit_evidence_text(applicant, target, current_fit.source)
+    evidence = _presenters.raid_fit_evidence_text(applicant, target, current_fit.source)
     if evidence:
         text = f"{text} · {evidence}"
 
@@ -6538,18 +6491,6 @@ def _raid_target_col_for_listing(listing: Listing | None) -> int | None:
     return RAID_COL_BY_TARGET.get(target)
 
 
-def _rio_dungeon_rows_by_name(
-    applicant: Applicant, listing: Listing | None
-) -> dict[str, dict[str, object]]:
-    return _presenters.rio_dungeon_rows_by_name(applicant, listing)
-
-
-def _wcl_dungeon_rows_by_name(
-    applicant: Applicant, listing: Listing | None
-) -> dict[str, dict[str, object]]:
-    return _presenters.wcl_dungeon_rows_by_name(applicant, listing)
-
-
 def _enabled_raid_difficulty_keys(metric_preferences: MetricPreferences) -> list[str]:
     return _presenters.enabled_raid_difficulty_keys(metric_preferences)
 
@@ -6568,24 +6509,6 @@ def _raid_boss_fetch_failure_key(
         identity.runtime_generation,
         identity.listing_session_generation,
     )
-
-
-def _raid_boss_rows_for_display(
-    applicant: Applicant, difficulties: Iterable[str]
-) -> list[dict[str, object]]:
-    return _presenters.raid_boss_rows_for_display(applicant, difficulties)
-
-
-def _raid_parse_segments_html(segments: list[object]) -> str:
-    return _presenters.raid_parse_segments_html(segments)
-
-
-def _highest_mplus_key_level(breakdown: Iterable[object]) -> int:
-    return _overlay_rows.highest_mplus_key_level(breakdown)
-
-
-def _mplus_breakdown_all_single_run(breakdown: Iterable[object]) -> bool:
-    return _presenters.mplus_breakdown_all_single_run(breakdown)
 
 
 def _mplus_cell_visuals(
@@ -6616,13 +6539,13 @@ def _mplus_cell_visuals(
 
     if median is not None:
         headline_run_count = 2
-    elif _mplus_breakdown_all_single_run(breakdown):
+    elif _presenters.mplus_breakdown_all_single_run(breakdown):
         headline_run_count = 1
     else:
         headline_run_count = 0
     text = mplus_metric_text(best, median, headline_run_count)
 
-    highest_key = _highest_mplus_key_level(breakdown)
+    highest_key = _overlay_rows.highest_mplus_key_level(breakdown)
     if highest_key > 0:
         text = f"{text} +{highest_key}"
 
