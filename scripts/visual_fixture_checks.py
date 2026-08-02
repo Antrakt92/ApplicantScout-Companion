@@ -19,8 +19,6 @@ class VisualFixtureDiff:
     passed: bool
     message: str
     changed_pixels: int
-    total_pixels: int
-    max_channel_delta: int
 
 
 def add_visual_fixture_arguments(
@@ -216,8 +214,6 @@ def compare_visual_images(
                 f"regenerate with {regen_command}"
             ),
             changed_pixels=0,
-            total_pixels=0,
-            max_channel_delta=0,
         )
     if expected.size() != actual.size():
         expected_width = expected.width()
@@ -248,8 +244,6 @@ def compare_visual_images(
                     f"{regen_command} after intentional UI changes"
                 ),
                 changed_pixels=0,
-                total_pixels=max(actual_width * actual_height, 0),
-                max_channel_delta=0,
             )
 
     changed_pixels = 0
@@ -272,8 +266,6 @@ def compare_visual_images(
                 f"({changed_pixels}/{total_pixels} changed pixels over tolerance)"
             ),
             changed_pixels=changed_pixels,
-            total_pixels=total_pixels,
-            max_channel_delta=max_channel_delta,
         )
     return VisualFixtureDiff(
         passed=False,
@@ -286,6 +278,4 @@ def compare_visual_images(
             f"{regen_command} after intentional UI changes"
         ),
         changed_pixels=changed_pixels,
-        total_pixels=total_pixels,
-        max_channel_delta=max_channel_delta,
     )

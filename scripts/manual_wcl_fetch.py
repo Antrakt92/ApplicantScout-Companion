@@ -52,10 +52,10 @@ def _print_ranks(client: WCLClient, name: str, realm: str, spec_id: int, role: s
     slug = derive_server_slug(realm)
     print(f"\n=== {name} ({realm} -> {slug}) spec={spec_id} role={role} ===")
     ranks = client.fetch_character_ranks(name, slug, spec_id, role)
-    _print_result(client, ranks, role)
+    _print_result(client, ranks)
 
 
-def _print_result(client: WCLClient, ranks: CharacterRanks, role: str) -> None:
+def _print_result(client: WCLClient, ranks: CharacterRanks) -> None:
     if ranks.error:
         print(f"  ERROR: {ranks.error}")
         return
