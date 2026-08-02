@@ -3897,7 +3897,6 @@ def main(argv: list[str] | None = None) -> int:
     def _handle_update_handoff_started(
         message: str, installer_launch: object | None
     ) -> None:
-        update_quit_gate.mark_installer_handoff_started()
         if update_handoff_recovery is not None:
             update_handoff_recovery.arm(installer_launch)
         if tray_controller is not None:
