@@ -5,13 +5,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from io import BytesIO
-import os
 from pathlib import Path
 import sys
-import tempfile
 from typing import Literal
 
 from PIL import Image
+
+from applicant_scout.atomic_io import atomic_write_bytes
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -98,32 +98,6 @@ def _encode_public_visual(source: Path, export: PublicVisualExport) -> bytes:
         return buffer.getvalue()
 
 
-def _write_bytes_atomic(target: Path, payload: bytes) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd = -1
-    temp_path: Path | None = None
-    try:
-        fd, temp_name = tempfile.mkstemp(
-            prefix=f".{target.name}.",
-            suffix=".tmp",
-            dir=target.parent,
-        )
-        os.close(fd)
-        fd = -1
-        temp_path = Path(temp_name)
-        temp_path.write_bytes(payload)
-        os.replace(temp_path, target)
-        temp_path = None
-    finally:
-        if fd != -1:
-            os.close(fd)
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
-
-
 def export_public_visual_assets(
     addon_root: Path,
     *,
@@ -141,7 +115,7 @@ def export_public_visual_assets(
             if not target.is_file() or target.read_bytes() != expected:
                 mismatches.append(target)
             continue
-        _write_bytes_atomic(target, expected)
+        atomic_write_bytes(target, expected)
         exported.append(target)
 
     if mismatches:
