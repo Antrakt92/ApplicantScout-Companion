@@ -239,14 +239,6 @@ class RaiderIOLocalReader:
         now = time.monotonic()
         with self._lock:
             if loaded is None and previous_entry is not None and previous_entry.db is not None:
-                current_entry = self._cache.get(token)
-                if (
-                    current_entry is not None
-                    and current_entry is not previous_entry
-                    and current_entry.db is not None
-                    and current_entry.fallback_since is None
-                ):
-                    return current_entry.db
                 fallback_since = previous_entry.fallback_since
                 if fallback_since is None:
                     fallback_since = now
