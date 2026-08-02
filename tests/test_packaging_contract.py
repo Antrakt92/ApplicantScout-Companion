@@ -437,12 +437,13 @@ def test_inno_script_requires_build_env_version_and_source_dir():
 
 def test_build_script_checks_native_command_exit_codes_and_restores_inno_env():
     script = _read_repo_text("scripts/build-windows.ps1")
+    native_helper = _read_repo_text("scripts/native-command.ps1")
 
     assert "Invoke-NativeChecked" in script
     assert script.count("Invoke-NativeChecked") >= 3
     assert "New-VersionInfoFile" in script
     assert "--version-file" in script
-    assert "$LASTEXITCODE" in script
+    assert "$LASTEXITCODE" in native_helper
     assert "try {" in script
     assert "finally {" in script
     assert "Find-InnoSetupCompiler" in script
@@ -490,6 +491,64 @@ def test_check_script_checks_native_command_exit_codes():
     assert script.index(
         'Write-Host "== Seasonal WCL check (spends one authenticated query) =="'
     ) < script.index('Write-Host "== Overlay visual baselines =="')
+
+
+def test_native_command_helper_is_shared_and_preserves_output_and_failures():
+    helper = REPO_ROOT / "scripts" / "native-command.ps1"
+    for script_path in (
+        "scripts/check.ps1",
+        "scripts/build-windows.ps1",
+        "scripts/sign-windows-installer.ps1",
+    ):
+        script = _read_repo_text(script_path)
+        assert '. (Join-Path $PSScriptRoot "native-command.ps1")' in script
+        assert "function Invoke-NativeChecked" not in script
+
+    success = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            (
+                f". '{helper}'; "
+                "Invoke-NativeChecked -Label 'native probe' -Command { "
+                "& $env:ComSpec /d /c 'echo passthrough' }"
+            ),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert success.returncode == 0, success.stdout + success.stderr
+    assert "passthrough" in success.stdout
+
+    failure = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            (
+                f". '{helper}'; "
+                "Invoke-NativeChecked -Label 'native probe' -Command { "
+                "& $env:ComSpec /d /c 'exit 7' }"
+            ),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert failure.returncode != 0
+    assert "native probe failed with exit code 7" in (
+        failure.stdout + failure.stderr
+    )
+
+
+def test_release_powershell_does_not_assign_to_automatic_matches_variable():
+    for path in (
+        "scripts/release-artifact-manifest.ps1",
+        ".github/workflows/publish-release.yml",
+    ):
+        assert re.search(r"\$Matches\s*=", _read_repo_text(path), re.I) is None
 
 
 def test_check_script_does_not_accept_generic_luac_for_wow_syntax():
@@ -959,6 +1018,7 @@ def test_release_build_refuses_dirty_release_inputs_by_default():
         "scripts\\build-windows.ps1",
         "scripts\\check.ps1",
         "scripts\\check-release-version.ps1",
+        "scripts\\native-command.ps1",
         "scripts\\sign-windows-installer.ps1",
         "scripts\\collect_dependency_licenses.py",
         "scripts\\export_public_visual_assets.py",
@@ -2042,6 +2102,21 @@ def test_publish_release_workflow_requires_smoke_attestation_and_verified_assets
     )
 
 
+def test_publish_release_verify_job_exports_only_consumed_outputs():
+    workflow = _read_repo_text(".github/workflows/publish-release.yml")
+    verify = _job_block(workflow, "verify")
+
+    declared = set(
+        re.findall(
+            r"(?m)^      ([a-z0-9_]+): \$\{\{ steps\.[^\n]+\.outputs\.[^\n]+ \}\}$",
+            verify,
+        )
+    )
+    consumed = set(re.findall(r"needs\.verify\.outputs\.([a-z0-9_]+)", workflow))
+
+    assert declared == consumed
+
+
 def test_publish_release_workflow_serializes_dispatches_and_rechecks_latest():
     workflow = _read_repo_text(".github/workflows/publish-release.yml")
     publish = _job_block(workflow, "publish")
@@ -2173,8 +2248,8 @@ def test_publish_release_verifier_is_read_only_and_rerunnable_after_writer():
     assert "$Release.name -ceq $ExpectedReleaseTitle" in published_check
     assert "$Release.body -ceq $ExpectedReleaseBody" in published_check
     assert "$Assets.Count -eq $Expected.Count" in published_check
-    assert "[long]$Matches[0].size" in published_check
-    assert "[string]$Matches[0].digest" in published_check
+    assert "[long]$AssetMatches[0].size" in published_check
+    assert "[string]$AssetMatches[0].digest" in published_check
 
 
 def test_publish_release_workflow_pins_external_actions_to_commit_shas():

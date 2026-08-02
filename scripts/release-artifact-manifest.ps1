@@ -237,11 +237,11 @@ function Get-PortableEntryRecords {
     try {
         $Records = @()
         foreach ($EntryName in $RequiredPortableEntries) {
-            $Matches = @($Archive.Entries | Where-Object { $_.FullName -ceq $EntryName })
-            if ($Matches.Count -ne 1) {
+            $EntryMatches = @($Archive.Entries | Where-Object { $_.FullName -ceq $EntryName })
+            if ($EntryMatches.Count -ne 1) {
                 throw "Portable archive must contain exactly one entry named $EntryName."
             }
-            $Entry = $Matches[0]
+            $Entry = $EntryMatches[0]
             $Stream = $Entry.Open()
             try {
                 $Records += [ordered]@{

@@ -39,10 +39,8 @@ jobs:
     outputs:
       release_commit: ${{ steps.release-identity.outputs.commit }}
       tag_version: ${{ steps.release-identity.outputs.version }}
-      release_run_attempt: ${{ steps.release-run.outputs.attempt }}
       paired_addon_tag: ${{ steps.release-manifest.outputs.paired_addon_tag }}
       paired_addon_commit: ${{ steps.release-manifest.outputs.paired_addon_commit }}
-      installer_sha256: ${{ steps.release-manifest.outputs.installer_sha256 }}
       manifest_b64: ${{ steps.release-manifest.outputs.manifest_b64 }}
       manifest_sha256: ${{ steps.release-manifest.outputs.manifest_sha256 }}
       manifest_size: ${{ steps.release-manifest.outputs.manifest_size }}
@@ -414,11 +412,11 @@ jobs:
             throw "Draft release asset count changed before publication."
           }
           foreach ($Name in $Expected.Keys) {
-            $Matches = @($Assets | Where-Object { [string]$_.name -ceq $Name })
+            $AssetMatches = @($Assets | Where-Object { [string]$_.name -ceq $Name })
             if (
-              $Matches.Count -ne 1 -or
-              [long]$Matches[0].size -ne [long]$Expected[$Name].size -or
-              [string]$Matches[0].digest -cne [string]$Expected[$Name].digest
+              $AssetMatches.Count -ne 1 -or
+              [long]$AssetMatches[0].size -ne [long]$Expected[$Name].size -or
+              [string]$AssetMatches[0].digest -cne [string]$Expected[$Name].digest
             ) {
               throw "Draft release asset changed before publication: $Name"
             }
@@ -549,11 +547,11 @@ jobs:
               $Assets = @($Release.assets)
               $Valid = $Assets.Count -eq $Expected.Count
               foreach ($Name in $Expected.Keys) {
-                $Matches = @($Assets | Where-Object { [string]$_.name -ceq $Name })
+                $AssetMatches = @($Assets | Where-Object { [string]$_.name -ceq $Name })
                 if (
-                  $Matches.Count -ne 1 -or
-                  [long]$Matches[0].size -ne [long]$Expected[$Name].size -or
-                  [string]$Matches[0].digest -cne [string]$Expected[$Name].digest
+                  $AssetMatches.Count -ne 1 -or
+                  [long]$AssetMatches[0].size -ne [long]$Expected[$Name].size -or
+                  [string]$AssetMatches[0].digest -cne [string]$Expected[$Name].digest
                 ) {
                   $Valid = $false
                 }

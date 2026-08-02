@@ -14,21 +14,7 @@ $EntryPoint = Join-Path $RepoRoot "packaging\pyinstaller\run_applicant_scout.py"
 $InnoScript = Join-Path $RepoRoot "packaging\inno\ApplicantScoutCompanion.iss"
 $AppIcon = Join-Path $RepoRoot "src\applicant_scout\assets\app_icon.ico"
 $InstallerSigner = Join-Path $RepoRoot "scripts\sign-windows-installer.ps1"
-
-function Invoke-NativeChecked {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Label,
-        [Parameter(Mandatory = $true)]
-        [scriptblock]$Command
-    )
-
-    & $Command
-    $ExitCode = $LASTEXITCODE
-    if ($null -ne $ExitCode -and $ExitCode -ne 0) {
-        throw "$Label failed with exit code $ExitCode."
-    }
-}
+. (Join-Path $PSScriptRoot "native-command.ps1")
 
 function Copy-ReleaseTextArtifacts {
     param(
@@ -157,6 +143,7 @@ function Assert-CleanReleaseInputs {
         "scripts\build-windows.ps1",
         "scripts\check.ps1",
         "scripts\check-release-version.ps1",
+        "scripts\native-command.ps1",
         "scripts\sign-windows-installer.ps1",
         "scripts\collect_dependency_licenses.py",
         "scripts\export_public_visual_assets.py",
