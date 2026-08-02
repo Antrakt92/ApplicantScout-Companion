@@ -44,17 +44,17 @@ REQUIRED_TRACKED_COLUMNS = frozenset(
     {"ID", "MapChallengeModeID", "DisplaySeasonID"}
 )
 
+# Source-only MapID and tracked-row ID columns are validated during parsing but
+# are not retained in the mapping rows.
 
 @dataclass(frozen=True)
 class ChallengeMapRow:
     challenge_map_id: int
     name: str
-    map_id: int
 
 
 @dataclass(frozen=True)
 class TrackedMapRow:
-    row_id: int
     challenge_map_id: int
     display_season_id: int
 
@@ -87,11 +87,11 @@ def parse_challenge_map_rows(csv_text: str) -> list[ChallengeMapRow]:
             raise SeasonalScriptError(
                 f"Wago MapChallengeMode line {line_number} has empty Name_lang"
             )
+        _int_field(row, "MapID", "MapChallengeMode")
         rows.append(
             ChallengeMapRow(
                 challenge_map_id=_int_field(row, "ID", "MapChallengeMode"),
                 name=name,
-                map_id=_int_field(row, "MapID", "MapChallengeMode"),
             )
         )
     if not rows:
@@ -111,9 +111,9 @@ def parse_tracked_map_rows(csv_text: str) -> list[TrackedMapRow]:
 
     rows: list[TrackedMapRow] = []
     for row in reader:
+        _int_field(row, "ID", "MythicPlusSeasonTrackedMap")
         rows.append(
             TrackedMapRow(
-                row_id=_int_field(row, "ID", "MythicPlusSeasonTrackedMap"),
                 challenge_map_id=_int_field(
                     row, "MapChallengeModeID", "MythicPlusSeasonTrackedMap"
                 ),
