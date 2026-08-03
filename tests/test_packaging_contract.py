@@ -2752,6 +2752,10 @@ def test_release_workflow_uploads_exact_updater_assets_as_draft_first():
     assert "gh release view $env:RELEASE_TAG" in remote_check
     assert "--json name,body,isDraft,isPrerelease" in remote_check
     assert "releases/tags/$env:RELEASE_TAG" not in remote_check
+    assert "$MaxDownloadAttempts = 3" in remote_check
+    assert '"remote-draft-assets-$Attempt"' in remote_check
+    assert "Start-Sleep -Seconds 5" in remote_check
+    assert "$RemoteAssets = $AttemptAssets" in remote_check
 
 
 def test_release_workflow_extracts_top_release_notes_entry_only():

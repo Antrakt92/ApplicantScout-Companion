@@ -423,10 +423,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $RemoteAssets = Join-Path $env:RUNNER_TEMP "remote-draft-assets"
-          New-Item -ItemType Directory -Path $RemoteAssets | Out-Null
-          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $RemoteAssets
-          if ($LASTEXITCODE -ne 0) {
+          $RemoteAssets = $null
+          $MaxDownloadAttempts = 3
+          for ($Attempt = 1; $Attempt -le $MaxDownloadAttempts; $Attempt++) {
+            $AttemptAssets = Join-Path $env:RUNNER_TEMP "remote-draft-assets-$Attempt"
+            New-Item -ItemType Directory -Path $AttemptAssets | Out-Null
+            gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $AttemptAssets
+            if ($LASTEXITCODE -eq 0) {
+              $RemoteAssets = $AttemptAssets
+              break
+            }
+            Write-Warning "Draft asset download attempt $Attempt of $MaxDownloadAttempts failed."
+            if ($Attempt -lt $MaxDownloadAttempts) {
+              Start-Sleep -Seconds 5
+            }
+          }
+          if ($null -eq $RemoteAssets) {
             throw "Could not download the draft release assets for verification."
           }
           .\scripts\release-artifact-manifest.ps1 `

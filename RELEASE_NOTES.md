@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.13.2 - 03-Aug-2026
+## 0.13.3 - 03-Aug-2026
 
-Paired release with ApplicantScout addon `0.9.2`. This patch preserves the
+Paired release with ApplicantScout addon `0.9.3`. This patch preserves the
 newest authoritative applicant and Party state through transient identity,
 cache, watcher, and shutdown failures.
 
@@ -28,14 +28,16 @@ cache, watcher, and shutdown failures.
   freshness, atomic-write, and retry rules.
 - Duplicate and unreachable runtime, updater, seasonal, overlay, and release
   paths were removed while keeping the published artifact contract unchanged.
+- Draft verification now retries bounded transient GitHub read failures without
+  repeating asset creation or publication.
 
 ### Release Assets
 
-- Requires the ApplicantScout WoW addon `0.9.2`.
-- Installer: `ApplicantScoutCompanionSetup-0.13.2.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.13.2.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.13.2-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.13.2-release-manifest.json`
+- Requires the ApplicantScout WoW addon `0.9.3`.
+- Installer: `ApplicantScoutCompanionSetup-0.13.3.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.13.3.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.13.3-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.13.3-release-manifest.json`
 
 ## 0.13.1 - 28-Jul-2026
 
