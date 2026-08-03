@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## 0.13.2 - 03-Aug-2026
+
+Paired release with ApplicantScout addon `0.9.2`. This patch preserves the
+newest authoritative applicant and Party state through transient identity,
+cache, watcher, and shutdown failures.
+
+### Fixed
+
+- Placeholder or realm-less version frames no longer replace a confirmed
+  producer identity or discard queued and cached full snapshots, while region
+  changes no longer carry a realm from the previous region.
+- Live snapshot cache reads, writes, expiry deletes, and source rebinds are
+  serialized so stale cleanup cannot remove a newer save. Failed source clears
+  are retried unless newer authoritative state has already won.
+- Runtime owner, screenshot watcher, updater handoff, and shutdown transitions
+  are one-shot and failure-safe, preventing retired work from reviving or
+  replacing the active session.
+- Private Windows file permissions are rebuilt from an explicit allow-list, so
+  stale access entries are removed instead of surviving later repairs.
+
+### Improved
+
+- Live snapshot, RaiderIO, and Warcraft Logs caches now share stricter identity,
+  freshness, atomic-write, and retry rules.
+- Duplicate and unreachable runtime, updater, seasonal, overlay, and release
+  paths were removed while keeping the published artifact contract unchanged.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.2`.
+- Installer: `ApplicantScoutCompanionSetup-0.13.2.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.13.2.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.13.2-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.13.2-release-manifest.json`
+
 ## 0.13.1 - 28-Jul-2026
 
 Paired release with ApplicantScout addon `0.9.1`. This patch keeps screenshot
