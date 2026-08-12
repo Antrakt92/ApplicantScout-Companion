@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.13.4 - 12-Aug-2026
+
+Paired release with ApplicantScout addon `0.9.4`. This release accompanies the
+addon's Retail Midnight 12.1.0-only compatibility metadata.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.4`.
+- Installer: `ApplicantScoutCompanionSetup-0.13.4.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.13.4.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.13.4-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.13.4-release-manifest.json`
+
 ## 0.13.3 - 03-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.3`. This patch preserves the

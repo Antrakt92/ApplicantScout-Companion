@@ -3,7 +3,9 @@
 Wago DB2 exposes MapChallengeMode names and MythicPlusSeasonTrackedMap rows.
 The addon emits MapChallengeModeID for party leader keystones, so this helper
 keeps that challenge-map namespace separate from GroupFinderActivity IDs used
-for active LFG listings.
+for active LFG listings. DB2 can include a scheduled future season before it is
+live, so resolve the row set that exactly matches the shipped M+ dungeon pool
+instead of assuming the largest DisplaySeasonID is active.
 """
 
 # ruff: noqa: E402 - executable scripts bootstrap the repository import roots
@@ -142,42 +144,45 @@ def extract_mplus_challenge_map_mapping(
             )
         challenge_rows_by_id[row.challenge_map_id] = row
 
-    tracked_rows = parse_tracked_map_rows(season_tracked_map_csv)
-    current_display_season_id = max(row.display_season_id for row in tracked_rows)
-    current_challenge_ids = {
-        row.challenge_map_id
-        for row in tracked_rows
-        if row.display_season_id == current_display_season_id
-    }
-    if not current_challenge_ids:
-        raise SeasonalScriptError(
-            "Wago MythicPlusSeasonTrackedMap has no rows for latest DisplaySeasonID "
-            f"{current_display_season_id}"
-        )
-
     expected_names = set(expected_dungeon_names)
-    mapping: dict[int, str] = {}
-    for challenge_map_id in sorted(current_challenge_ids):
-        challenge = challenge_rows_by_id.get(challenge_map_id)
+    mappings_by_season: dict[int, dict[int, str]] = {}
+    for row in parse_tracked_map_rows(season_tracked_map_csv):
+        challenge = challenge_rows_by_id.get(row.challenge_map_id)
         if challenge is None:
             raise SeasonalScriptError(
                 "Wago MythicPlusSeasonTrackedMap references missing "
-                f"MapChallengeMode ID {challenge_map_id}"
+                f"MapChallengeMode ID {row.challenge_map_id}"
             )
-        if challenge.name not in expected_names:
-            raise SeasonalScriptError(
-                "Latest Wago MythicPlusSeasonTrackedMap includes unknown dungeon "
-                f"{challenge.name}"
-            )
-        mapping[challenge_map_id] = challenge.name
+        mappings_by_season.setdefault(row.display_season_id, {})[
+            row.challenge_map_id
+        ] = challenge.name
 
-    missing_names = sorted(expected_names - set(mapping.values()))
-    if missing_names:
+    matching_mappings = [
+        (display_season_id, mapping)
+        for display_season_id, mapping in mappings_by_season.items()
+        if set(mapping.values()) == expected_names
+    ]
+    if len(matching_mappings) == 1:
+        return matching_mappings[0][1]
+
+    observed = "; ".join(
+        f"{display_season_id}: {', '.join(sorted(set(mapping.values())))}"
+        for display_season_id, mapping in sorted(mappings_by_season.items())
+    )
+    if not matching_mappings:
         raise SeasonalScriptError(
-            "Latest Wago MythicPlusSeasonTrackedMap is missing current dungeon names: "
-            + ", ".join(missing_names)
+            "No Wago MythicPlusSeasonTrackedMap season matches the current dungeon "
+            "names. Expected: "
+            f"{', '.join(sorted(expected_names))}. "
+            f"Observed DisplaySeasonID mappings: {observed}"
         )
-    return mapping
+    matching_ids = ", ".join(
+        str(display_season_id) for display_season_id, _mapping in matching_mappings
+    )
+    raise SeasonalScriptError(
+        "Multiple Wago MythicPlusSeasonTrackedMap seasons match the current dungeon "
+        f"names: {matching_ids}. Observed DisplaySeasonID mappings: {observed}"
+    )
 
 
 def format_challenge_map_mapping(mapping: dict[int, str]) -> str:
@@ -190,7 +195,7 @@ def format_challenge_map_mapping(mapping: dict[int, str]) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Print or check current-season Mythic+ challenge-map ID mapping."
+        description="Print or check the shipped Mythic+ challenge-map ID mapping."
     )
     parser.add_argument(
         "--check",

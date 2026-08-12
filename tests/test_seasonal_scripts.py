@@ -237,7 +237,7 @@ def test_format_activity_mapping_outputs_copyable_constants():
     assert '1770: "Pit of Saron",' in text
 
 
-def test_extract_mplus_challenge_map_mapping_selects_latest_tracked_season():
+def test_extract_mplus_challenge_map_mapping_ignores_scheduled_future_season():
     challenge_csv = _challenge_map_csv(
         "Skyreach,161,1209",
         "Pit of Saron,556,658",
@@ -247,6 +247,7 @@ def test_extract_mplus_challenge_map_mapping_selects_latest_tracked_season():
         "1,999,33",
         "2,161,34",
         "3,556,34",
+        "4,999,35",
     )
 
     mapping = get_mplus_challenge_map_ids.extract_mplus_challenge_map_mapping(
