@@ -56,16 +56,16 @@ def test_seasonal_cli_direct_execution_bootstraps_repo_imports(
 
 def test_format_mplus_tuples_outputs_copyable_constants():
     zone = verify_wcl_season.ZoneSnapshot(
-        47,
-        "Midnight Season 1",
-        ((112526, "Algeth'ar Academy"), (10658, "Pit of Saron")),
+        55,
+        "Midnight Season 2",
+        ((12993, "Altar of Fangs"), (61762, "Kings' Rest")),
     )
 
     text = verify_wcl_season.format_mplus_tuples(zone)
 
-    assert "# WCL zone 47: Midnight Season 1" in text
-    assert '("aa", 112526, "Algeth\'ar Academy"),' in text
-    assert '("ps", 10658, "Pit of Saron"),' in text
+    assert "# WCL zone 55: Midnight Season 2" in text
+    assert '("af", 12993, "Altar of Fangs"),' in text
+    assert '("kr", 61762, "Kings\' Rest"),' in text
 
 
 def test_format_mplus_tuples_escapes_double_quotes():
@@ -329,12 +329,12 @@ def _wcl_zone(
 def _valid_wcl_season_payload() -> dict[str, Any]:
     # This deliberate season-shaped fixture must be updated when WCL moves the
     # shipped boss-detail encounters to different zones.
-    assert CURRENT_RAID_ENCOUNTER_ZONE_IDS == (CURRENT_RAID_ZONE_ID, 50)
+    assert CURRENT_RAID_ENCOUNTER_ZONE_IDS == (CURRENT_RAID_ZONE_ID,)
     raid_rows = [
         (encounter_id, name)
         for _alias, encounter_id, name in CURRENT_RAID_ENCOUNTERS
     ]
-    assert raid_rows[-1][0] == 3159
+    assert raid_rows[-1][0] == 3379
     return {
         "data": {
             "rateLimitData": {
@@ -352,9 +352,8 @@ def _valid_wcl_season_payload() -> dict[str, Any]:
                 ),
                 f"zone_{CURRENT_RAID_ZONE_ID}": _wcl_zone(
                     CURRENT_RAID_ZONE_ID,
-                    raid_rows[:-1],
+                    raid_rows,
                 ),
-                "zone_50": _wcl_zone(50, raid_rows[-1:]),
             },
         }
     }
@@ -543,6 +542,6 @@ def test_wcl_season_main_prints_mplus_tuples_with_one_zone_query(
     assert f"zone(id: {CURRENT_RAID_ZONE_ID})" not in query
     output = capsys.readouterr().out
     assert f"# WCL zone {CURRENT_MPLUS_ZONE_ID}:" in output
-    assert '("aa", 112526, "Algeth\'ar Academy"),' in output
+    assert '("af", 12993, "Altar of Fangs"),' in output
     assert "WCL seasonal constants match zones" not in output
     assert "WCL quota after check" in output

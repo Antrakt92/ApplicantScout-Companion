@@ -1502,7 +1502,7 @@ def _process_encounter_ranks(
     spec_name: applicant's current spec display name (e.g. "Brewmaster") —
         runs in OTHER specs are filtered out so a Blood DK applicant doesn't
         pick up their Unholy main's parses.
-    display_name: human-friendly dungeon name for tooltip ("Magisters' Terrace").
+    display_name: human-friendly dungeon name for tooltip ("Temple of Sethraliss").
 
     Algorithm:
     1. Filter ranks[] to entries matching applicant's spec (norm comparison).

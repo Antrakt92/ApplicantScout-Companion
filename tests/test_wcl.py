@@ -342,8 +342,8 @@ def _raid_boss_rows() -> dict[str, list[dict[str, object]]]:
     return {
         "M": [
             {
-                "encounter_id": 3176,
-                "name": "Imperator Averzian",
+                "encounter_id": 3470,
+                "name": "Nek'zali the Soulcoiler",
                 "overall": 46.2,
                 "ilvl": 68.4,
             }
@@ -627,7 +627,7 @@ def test_raid_boss_detail_query_healer_keeps_hps_metric():
     assert not any("metric: dps" in line for line in lines)
 
 
-def test_raid_boss_detail_query_includes_sporefall_rotmire():
+def test_raid_boss_detail_query_includes_tidebound_grotto_nymrissa():
     query = _build_raid_boss_detail_query(
         "DAMAGER",
         MetricPreferences(
@@ -639,38 +639,38 @@ def test_raid_boss_detail_query_includes_sporefall_rotmire():
     )
 
     assert (
-        "raid_m_ro_overall: encounterRankings(encounterID: 3159, "
+        "raid_m_nw_overall: encounterRankings(encounterID: 3379, "
         "difficulty: 5, metric: dps"
     ) in query
     assert (
-        "raid_m_ro_ilvl: encounterRankings(encounterID: 3159, "
+        "raid_m_nw_ilvl: encounterRankings(encounterID: 3379, "
         "difficulty: 5, metric: dps"
     ) in query
 
 
 def test_raid_boss_rows_parse_overall_and_ilvl_percentiles_by_spec():
     char = {
-        "raid_m_ia_overall": {
+        "raid_m_nz_overall": {
             "ranks": [
                 {"spec": "Fury", "rankPercent": 99.0},
                 {"spec": "Arms", "rankPercent": 46.2},
             ]
         },
-        "raid_m_ia_ilvl": {
+        "raid_m_nz_ilvl": {
             "ranks": [
                 {"spec": "Arms", "rankPercent": 68.4},
                 {"spec": "Arms", "rankPercent": 66.0},
             ]
         },
-        "raid_m_vo_overall": {"ranks": []},
+        "raid_m_es_overall": {"ranks": []},
     }
 
     rows = _raid_boss_rows_from_character(char, "M", spec_name="Arms")
 
     assert rows == [
         {
-            "encounter_id": 3176,
-            "name": "Imperator Averzian",
+            "encounter_id": 3470,
+            "name": "Nek'zali the Soulcoiler",
             "overall": 46.2,
             "ilvl": 68.4,
         }
@@ -682,8 +682,8 @@ def test_fetch_character_raid_boss_details_returns_enabled_difficulty_rows():
         _wcl_payload(
             _character_with_empty_raid_boss_details(
                 "M",
-                raid_m_ia_overall={"ranks": [{"spec": "Arms", "rankPercent": 46.2}]},
-                raid_m_ia_ilvl={"ranks": [{"spec": "Arms", "rankPercent": 68.4}]},
+                raid_m_nz_overall={"ranks": [{"spec": "Arms", "rankPercent": 46.2}]},
+                raid_m_nz_ilvl={"ranks": [{"spec": "Arms", "rankPercent": 68.4}]},
             )
         )
     )
@@ -705,8 +705,8 @@ def test_fetch_character_raid_boss_details_returns_enabled_difficulty_rows():
     assert rows == {
         "M": [
             {
-                "encounter_id": 3176,
-                "name": "Imperator Averzian",
+                "encounter_id": 3470,
+                "name": "Nek'zali the Soulcoiler",
                 "overall": 46.2,
                 "ilvl": 68.4,
             }
@@ -959,7 +959,7 @@ def test_fetch_character_ranks_healer_routes_mplus_to_dps_breakdown():
     client, http = _client_for_payload(
         _wcl_payload(
             _character_with_empty_mplus(
-                aa={
+                af={
                     "ranks": [
                         _rank(spec="Windwalker", bracket=14, percent=99.0),
                         _rank(spec="Mistweaver", bracket=14, percent=82.0),
@@ -995,7 +995,7 @@ def test_fetch_character_ranks_healer_routes_mplus_to_dps_breakdown():
     assert result.mplus_dps_median == pytest.approx(72.0)
     assert len(result.mplus_dps_breakdown) == 1
     perf = result.mplus_dps_breakdown[0]
-    assert perf.name == "Algeth'ar Academy"
+    assert perf.name == "Altar of Fangs"
     assert perf.parse_percent == pytest.approx(82.0)
     assert perf.median_percent == pytest.approx(72.0)
     assert perf.key_level == 14
@@ -1011,7 +1011,7 @@ def test_fetch_character_ranks_dps_roles_route_mplus_to_dps_breakdown(role):
     client, http = _client_for_payload(
         _wcl_payload(
             _character_with_empty_mplus(
-                mt={
+                ts={
                     "ranks": [
                         _rank(spec="Marksmanship", bracket=13, percent=97.0),
                         _rank(spec="BeastMastery", bracket=13, percent=80.0),
@@ -1044,7 +1044,7 @@ def test_fetch_character_ranks_dps_roles_route_mplus_to_dps_breakdown(role):
     assert result.mplus_dps_median == pytest.approx(70.0)
     assert len(result.mplus_dps_breakdown) == 1
     perf = result.mplus_dps_breakdown[0]
-    assert perf.name == "Magisters' Terrace"
+    assert perf.name == "Temple of Sethraliss"
     assert perf.parse_percent == pytest.approx(80.0)
     assert perf.median_percent == pytest.approx(70.0)
     assert perf.key_level == 13
@@ -1055,7 +1055,7 @@ def test_fetch_character_ranks_devourer_filters_other_dh_specs():
     client, http = _client_for_payload(
         _wcl_payload(
             _character_with_empty_mplus(
-                mt={
+                ts={
                     "ranks": [
                         _rank(spec="Havoc", bracket=13, percent=97.0),
                         _rank(spec="Vengeance", bracket=13, percent=88.0),
@@ -1084,7 +1084,7 @@ def test_fetch_character_ranks_devourer_filters_other_dh_specs():
     assert result.mplus_dps_median == pytest.approx(70.0)
     assert len(result.mplus_dps_breakdown) == 1
     perf = result.mplus_dps_breakdown[0]
-    assert perf.name == "Magisters' Terrace"
+    assert perf.name == "Temple of Sethraliss"
     assert perf.parse_percent == pytest.approx(80.0)
     assert perf.median_percent == pytest.approx(70.0)
     assert perf.key_level == 13
@@ -2101,8 +2101,8 @@ def test_character_cache_raid_boss_details_round_trips_enabled_empty_difficulty(
         "H": [],
         "M": [
             {
-                "encounter_id": 3176,
-                "name": "Imperator Averzian",
+                "encounter_id": 3470,
+                "name": "Nek'zali the Soulcoiler",
                 "overall": pytest.approx(46.2),
                 "ilvl": pytest.approx(68.4),
             }
@@ -2317,13 +2317,13 @@ def test_character_cache_raid_boss_details_sanitizes_malformed_disk_rows(tmp_pat
             "not-a-row",
             {"encounter_id": 0, "name": "Skipped", "overall": 90, "ilvl": 90},
             {
-                "encounter_id": 3177,
-                "name": " Vorasius ",
+                "encounter_id": 3445,
+                "name": " Entombed Sentinels ",
                 "overall": "93.5",
                 "ilvl": True,
             },
             {
-                "encounter_id": 3178,
+                "encounter_id": 3455,
                 "name": "No Percentile",
                 "overall": None,
                 "ilvl": None,
@@ -2331,8 +2331,8 @@ def test_character_cache_raid_boss_details_sanitizes_malformed_disk_rows(tmp_pat
         ],
         "M": [
             {
-                "encounter_id": 3176,
-                "name": "Imperator Averzian",
+                "encounter_id": 3470,
+                "name": "Nek'zali the Soulcoiler",
                 "overall": float("inf"),
                 "ilvl": "68.4",
             }
@@ -2362,16 +2362,16 @@ def test_character_cache_raid_boss_details_sanitizes_malformed_disk_rows(tmp_pat
         "N": [],
         "H": [
             {
-                "encounter_id": 3177,
-                "name": "Vorasius",
+                "encounter_id": 3445,
+                "name": "Entombed Sentinels",
                 "overall": pytest.approx(93.5),
                 "ilvl": None,
             }
         ],
         "M": [
             {
-                "encounter_id": 3176,
-                "name": "Imperator Averzian",
+                "encounter_id": 3470,
+                "name": "Nek'zali the Soulcoiler",
                 "overall": None,
                 "ilvl": pytest.approx(68.4),
             }
@@ -2666,8 +2666,8 @@ def test_character_cache_orders_exact_and_covering_scopes_by_freshness(
             return {
                 "H": [
                     {
-                        "encounter_id": 3176,
-                        "name": "Imperator Averzian",
+                        "encounter_id": 3470,
+                        "name": "Nek'zali the Soulcoiler",
                         "overall": overall,
                         "ilvl": overall,
                     }
@@ -4025,10 +4025,10 @@ def test_fetch_character_raid_boss_details_allows_explicit_character_null():
 
 def test_fetch_character_raid_boss_details_rejects_missing_enabled_alias():
     character = _character_with_empty_raid_boss_details("M")
-    del character["raid_m_ia_overall"]
+    del character["raid_m_nz_overall"]
     client, _http = _client_for_payload(_wcl_payload(character))
 
-    with pytest.raises(WCLApiError, match="raid_m_ia_overall is missing") as exc:
+    with pytest.raises(WCLApiError, match="raid_m_nz_overall is missing") as exc:
         client.fetch_character_raid_boss_details(
             "Scout",
             "ravencrest",
@@ -4047,10 +4047,10 @@ def test_fetch_character_raid_boss_details_rejects_missing_enabled_alias():
 @pytest.mark.parametrize(
     ("alias_value", "expected_message"),
     [
-        (None, "raid_m_ia_ilvl is null"),
-        ("bad", "raid_m_ia_ilvl is not an object"),
-        ({"ranks": None}, "raid_m_ia_ilvl.ranks is not a list"),
-        ({"ranks": "bad"}, "raid_m_ia_ilvl.ranks is not a list"),
+        (None, "raid_m_nz_ilvl is null"),
+        ("bad", "raid_m_nz_ilvl is not an object"),
+        ({"ranks": None}, "raid_m_nz_ilvl.ranks is not a list"),
+        ({"ranks": "bad"}, "raid_m_nz_ilvl.ranks is not a list"),
     ],
 )
 def test_fetch_character_raid_boss_details_rejects_malformed_enabled_alias(
@@ -4058,7 +4058,7 @@ def test_fetch_character_raid_boss_details_rejects_malformed_enabled_alias(
     expected_message,
 ):
     character = _character_with_empty_raid_boss_details(
-        "M", raid_m_ia_ilvl=alias_value
+        "M", raid_m_nz_ilvl=alias_value
     )
     client, _http = _client_for_payload(_wcl_payload(character))
 
@@ -4100,7 +4100,7 @@ def test_fetch_character_raid_boss_details_allows_empty_enabled_boss_detail_rank
 
 def test_fetch_character_raid_boss_details_graphql_error_precedes_missing_detail_alias():
     character = _character_with_empty_raid_boss_details("M")
-    del character["raid_m_ia_overall"]
+    del character["raid_m_nz_overall"]
     payload = _wcl_payload(character, errors=[{"message": "Encounter not found"}])
     client, _http = _client_for_payload(payload)
 
@@ -4123,10 +4123,10 @@ def test_fetch_character_raid_boss_details_graphql_error_precedes_missing_detail
 @pytest.mark.parametrize(
     ("alias_value", "expected_message"),
     [
-        (None, "aa is null"),
-        ({}, "aa.ranks is missing"),
-        ({"ranks": None}, "aa.ranks is not a list"),
-        ({"ranks": "bad"}, "aa.ranks is not a list"),
+        (None, "af is null"),
+        ({}, "af.ranks is missing"),
+        ({"ranks": None}, "af.ranks is not a list"),
+        ({"ranks": "bad"}, "af.ranks is not a list"),
     ],
 )
 def test_fetch_character_ranks_rejects_malformed_mplus_alias_payload(
@@ -4134,7 +4134,7 @@ def test_fetch_character_ranks_rejects_malformed_mplus_alias_payload(
     expected_message,
 ):
     character = _character_with_empty_mplus()
-    character["aa"] = alias_value
+    character["af"] = alias_value
     client, _http = _client_for_payload(_wcl_payload(character))
 
     with pytest.raises(WCLApiError, match=expected_message) as exc:
@@ -4145,10 +4145,10 @@ def test_fetch_character_ranks_rejects_malformed_mplus_alias_payload(
 
 def test_fetch_character_ranks_rejects_missing_mplus_alias():
     character = _character_with_empty_mplus()
-    del character["aa"]
+    del character["af"]
     client, _http = _client_for_payload(_wcl_payload(character))
 
-    with pytest.raises(WCLApiError, match="aa is missing") as exc:
+    with pytest.raises(WCLApiError, match="af is missing") as exc:
         client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
 
     assert exc.value.error_kind == WCL_ERROR_MALFORMED

@@ -5,25 +5,24 @@ from __future__ import annotations
 
 # Verified by scripts/seasonal/verify_wcl_season.py against the WCL GraphQL API.
 # Re-run the quota-aware release gate whenever the active season changes.
-CURRENT_MPLUS_ZONE_ID = 47  # Midnight Season 1
-CURRENT_RAID_ZONE_ID = 46  # VS / DR / MQD zoneRankings summary
-# Boss-detail encounter IDs span the main Midnight zone and Sporefall.
-CURRENT_RAID_ENCOUNTER_ZONE_IDS: tuple[int, ...] = (CURRENT_RAID_ZONE_ID, 50)
-SEASON_NAME = "Midnight Season 1"
+CURRENT_MPLUS_ZONE_ID = 55  # Midnight Season 2
+CURRENT_RAID_ZONE_ID = 53  # The Venomous Abyss + Tidebound Grotto
+CURRENT_RAID_ENCOUNTER_ZONE_IDS: tuple[int, ...] = (CURRENT_RAID_ZONE_ID,)
+SEASON_NAME = "Midnight Season 2"
 
-# Boss-detail rows are per encounterID, so they can include the 12.0.7 Sporefall
-# mini-raid even though its aggregate zoneRankings live under WCL zone 50.
+# WCL exposes the eight-boss Venomous Abyss raid and Nymrissa Wavecaller from
+# the Tidebound Grotto under one seasonal raid zone. Keep the main raid first
+# and the separate lair encounter last in the detail panel.
 CURRENT_RAID_ENCOUNTERS: list[tuple[str, int, str]] = [
-    ("ia", 3176, "Imperator Averzian"),
-    ("vo", 3177, "Vorasius"),
-    ("fk", 3179, "Fallen-King Salhadaar"),
-    ("ve", 3178, "Vaelgor & Ezzorak"),
-    ("lv", 3180, "Lightblinded Vanguard"),
-    ("cc", 3181, "Crown of the Cosmos"),
-    ("cu", 3306, "Chimaerus, the Undreamt God"),
-    ("ba", 3182, "Belo'ren, Child of Al'ar"),
-    ("mf", 3183, "Midnight Falls"),
-    ("ro", 3159, "Rotmire"),
+    ("nz", 3470, "Nek'zali the Soulcoiler"),
+    ("es", 3445, "Entombed Sentinels"),
+    ("vm", 3455, "Vashnik the Malignant"),
+    ("le", 3497, "The Lost Explorers"),
+    ("ss", 3420, "Sszorak"),
+    ("tf", 3421, "The Twin Fangs"),
+    ("ca", 3429, "The Coiled Altar"),
+    ("ut", 3492, "Ula'tek"),
+    ("nw", 3379, "Nymrissa Wavecaller"),
 ]
 
 
@@ -262,7 +261,7 @@ ROLE_TO_RAID_METRIC: dict[str, str] = {
 }
 
 
-# WCL encounter IDs for current Midnight S1 M+ dungeons. Used to build
+# WCL encounter IDs for current Midnight S2 M+ dungeons. Used to build
 # 8 aliased `encounterRankings(encounterID: ...)` calls in one query — needed
 # because zoneRankings only gives aggregate best/median across ALL bracket
 # levels (so a player who pushes +20 gets 99% inflated by +5 farm runs).
@@ -273,14 +272,14 @@ ROLE_TO_RAID_METRIC: dict[str, str] = {
 # Tuple order = stable display order in tooltip.
 MPLUS_ENCOUNTERS: list[tuple[str, int, str]] = [
     # (alias, encounter_id, display_name)
-    ("aa", 112526, "Algeth'ar Academy"),
-    ("mt", 12811, "Magisters' Terrace"),
-    ("mc", 12874, "Maisara Caverns"),
-    ("np", 12915, "Nexus-Point Xenas"),
-    ("ps", 10658, "Pit of Saron"),
-    ("st", 361753, "Seat of the Triumvirate"),
-    ("sr", 61209, "Skyreach"),
-    ("ws", 12805, "Windrunner Spire"),
+    ("af", 12993, "Altar of Fangs"),
+    ("dn", 12825, "Den of Nalorakk"),
+    ("kr", 61762, "Kings' Rest"),
+    ("mr", 12813, "Murder Row"),
+    ("rl", 112521, "Ruby Life Pools"),
+    ("ts", 61877, "Temple of Sethraliss"),
+    ("bv", 12859, "The Blinding Vale"),
+    ("va", 12923, "Voidscar Arena"),
 ]
 
 # RaiderIO packs dungeon levels in the exact order of ns.dungeons from its
@@ -289,14 +288,14 @@ MPLUS_ENCOUNTERS: list[tuple[str, int, str]] = [
 # but would relabel every packed level, so keep this contract explicit.
 # SYNC: refresh alongside MPLUS_ENCOUNTERS during the seasonal data update.
 MPLUS_RAIDERIO_DUNGEON_ORDER: tuple[str, ...] = (
-    "Pit of Saron",
-    "Skyreach",
-    "Seat of the Triumvirate",
-    "Algeth'ar Academy",
-    "Windrunner Spire",
-    "Magisters' Terrace",
-    "Maisara Caverns",
-    "Nexus-Point Xenas",
+    "Kings' Rest",
+    "Temple of Sethraliss",
+    "Ruby Life Pools",
+    "Murder Row",
+    "The Blinding Vale",
+    "Den of Nalorakk",
+    "Voidscar Arena",
+    "Altar of Fangs",
 )
 
 # WoW LFG activity IDs for the current season's Mythic+ listings. The addon
@@ -304,39 +303,41 @@ MPLUS_RAIDERIO_DUNGEON_ORDER: tuple[str, ...] = (
 # keeps same-dungeon scoring and target-row ordering stable on localized clients
 # where listing.dungeon_name is not the English WCL display name.
 MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME: dict[int, str] = {
-    115: "Pit of Saron",
-    131: "Pit of Saron",
-    1769: "Pit of Saron",
-    1770: "Pit of Saron",
-    24: "Skyreach",
-    32: "Skyreach",
-    182: "Skyreach",
-    404: "Skyreach",
-    484: "Seat of the Triumvirate",
-    485: "Seat of the Triumvirate",
-    486: "Seat of the Triumvirate",
-    1622: "Seat of the Triumvirate",
-    1644: "Seat of the Triumvirate",
-    1157: "Algeth'ar Academy",
-    1158: "Algeth'ar Academy",
-    1159: "Algeth'ar Academy",
-    1160: "Algeth'ar Academy",
-    1539: "Windrunner Spire",
-    1540: "Windrunner Spire",
-    1541: "Windrunner Spire",
-    1542: "Windrunner Spire",
-    1757: "Magisters' Terrace",
-    1758: "Magisters' Terrace",
-    1759: "Magisters' Terrace",
-    1760: "Magisters' Terrace",
-    1761: "Maisara Caverns",
-    1762: "Maisara Caverns",
-    1763: "Maisara Caverns",
-    1764: "Maisara Caverns",
-    1765: "Nexus-Point Xenas",
-    1766: "Nexus-Point Xenas",
-    1767: "Nexus-Point Xenas",
-    1768: "Nexus-Point Xenas",
+    503: "Temple of Sethraliss",
+    504: "Temple of Sethraliss",
+    505: "Temple of Sethraliss",
+    512: "Kings' Rest",
+    513: "Kings' Rest",
+    514: "Kings' Rest",
+    515: "Kings' Rest",
+    542: "Temple of Sethraliss",
+    645: "Temple of Sethraliss",
+    660: "Kings' Rest",
+    661: "Kings' Rest",
+    1173: "Ruby Life Pools",
+    1174: "Ruby Life Pools",
+    1175: "Ruby Life Pools",
+    1176: "Ruby Life Pools",
+    1699: "The Blinding Vale",
+    1700: "The Blinding Vale",
+    1701: "The Blinding Vale",
+    1721: "Den of Nalorakk",
+    1722: "Den of Nalorakk",
+    1723: "Den of Nalorakk",
+    1749: "Murder Row",
+    1750: "Murder Row",
+    1751: "Murder Row",
+    1754: "Voidscar Arena",
+    1755: "Voidscar Arena",
+    1756: "Voidscar Arena",
+    1930: "Altar of Fangs",
+    1931: "Altar of Fangs",
+    1932: "Altar of Fangs",
+    1933: "Altar of Fangs",
+    1949: "The Blinding Vale",
+    1950: "Murder Row",
+    1951: "Voidscar Arena",
+    1952: "Den of Nalorakk",
 }
 
 
@@ -362,14 +363,14 @@ def mplus_dungeon_name_for_activity_id(activity_id: object) -> str:
 # MythicPlusSeasonTrackedMap season. The addon emits this ID for party leader
 # keystones; it is a separate namespace from GroupFinderActivity activity IDs.
 MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME: dict[int, str] = {
-    161: "Skyreach",
-    239: "Seat of the Triumvirate",
-    402: "Algeth'ar Academy",
-    556: "Pit of Saron",
-    557: "Windrunner Spire",
-    558: "Magisters' Terrace",
-    559: "Nexus-Point Xenas",
-    560: "Maisara Caverns",
+    249: "Kings' Rest",
+    250: "Temple of Sethraliss",
+    399: "Ruby Life Pools",
+    584: "The Blinding Vale",
+    585: "Voidscar Arena",
+    586: "Den of Nalorakk",
+    587: "Murder Row",
+    588: "Altar of Fangs",
 }
 
 

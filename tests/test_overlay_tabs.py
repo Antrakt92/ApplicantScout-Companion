@@ -1177,7 +1177,7 @@ def test_leader_key_creates_effective_party_listing(qtbot, tmp_path):
     state = AppState()
     state.leader_key = LeaderKey(
         key_level=17,
-        challenge_map_id=556,
+        challenge_map_id=249,
         player_name="Leader-Realm",
     )
     state.party_members["dps-realm"] = _ready_mplus_member()
@@ -1187,10 +1187,10 @@ def test_leader_key_creates_effective_party_listing(qtbot, tmp_path):
 
     assert listing is not None
     assert listing.key_level == 17
-    assert listing.dungeon_name == "Pit of Saron"
+    assert listing.dungeon_name == "Kings' Rest"
     win._active_tab = "party"
     win._update_title()
-    assert win._title_bar.title_label.text() == "Party — Pit of Saron +17 (1)"
+    assert win._title_bar.title_label.text() == "Party — Kings' Rest +17 (1)"
     assert win._tab_bar._key_spin.value() == 17
 
 
@@ -1198,7 +1198,7 @@ def test_leader_key_above_30_remains_effective_and_visible(qtbot, tmp_path):
     state = AppState()
     state.leader_key = LeaderKey(
         key_level=31,
-        challenge_map_id=556,
+        challenge_map_id=249,
         player_name="Leader-Realm",
     )
     state.party_members["dps-realm"] = _ready_mplus_member()
@@ -1210,7 +1210,7 @@ def test_leader_key_above_30_remains_effective_and_visible(qtbot, tmp_path):
     assert listing.key_level == 31
     win._active_tab = "party"
     win._update_title()
-    assert win._title_bar.title_label.text() == "Party — Pit of Saron +31 (1)"
+    assert win._title_bar.title_label.text() == "Party — Kings' Rest +31 (1)"
     assert win._tab_bar._key_spin.value() == 31
 
 
@@ -1237,7 +1237,7 @@ def test_manual_target_key_overrides_leader_key(qtbot, tmp_path):
     state = AppState()
     state.leader_key = LeaderKey(
         key_level=17,
-        challenge_map_id=556,
+        challenge_map_id=249,
         player_name="Leader-Realm",
     )
     state.party_members["dps-realm"] = _ready_mplus_member()
@@ -1249,7 +1249,7 @@ def test_manual_target_key_overrides_leader_key(qtbot, tmp_path):
     assert listing is not None
     assert win._manual_target_key == 16
     assert listing.key_level == 16
-    assert listing.dungeon_name == "Pit of Saron"
+    assert listing.dungeon_name == "Kings' Rest"
     assert win._tab_bar._key_spin.value() == 16
 
 

@@ -20,6 +20,7 @@ from .scoring import (
     mplus_dungeon_fit_rows,
     mplus_metric_text,
     nonnegative_int,
+    normalise_dungeon_name,
     positive_int,
     role_mplus_view,
     safe_percent,
@@ -163,10 +164,6 @@ def mplus_run_count(entry: object) -> int:
 def mplus_sort_key(entry: dict) -> tuple[int, str]:
     name = entry.get("name")
     return (-mplus_key_level(entry), str(name or ""))
-
-
-def normalise_dungeon_name(value: object) -> str:
-    return " ".join(str(value or "").strip().casefold().split())
 
 
 def rio_dungeon_row_key(name: str, listing: Listing | None) -> str:

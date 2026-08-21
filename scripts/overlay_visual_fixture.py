@@ -69,14 +69,14 @@ def _app(**overrides) -> Applicant:
         mplus_hps_median=None,
         mplus_dps_breakdown=[
             {
-                "name": "Pit of Saron",
+                "name": "Ruby Life Pools",
                 "parse_percent": 100.0,
                 "median_percent": 80.0,
                 "key_level": 14,
                 "run_count": 3,
             },
             {
-                "name": "Skyreach",
+                "name": "Kings' Rest",
                 "parse_percent": 70.0,
                 "median_percent": None,
                 "key_level": 16,
@@ -92,14 +92,14 @@ def _app(**overrides) -> Applicant:
 def _healer_breakdown() -> list[dict]:
     return [
         {
-            "name": "Skyreach",
+            "name": "Kings' Rest",
             "parse_percent": 92.0,
             "median_percent": 84.0,
             "key_level": 16,
             "run_count": 5,
         },
         {
-            "name": "Pit of Saron",
+            "name": "Ruby Life Pools",
             "parse_percent": 63.0,
             "median_percent": 58.0,
             "key_level": 13,
@@ -111,9 +111,9 @@ def _healer_breakdown() -> list[dict]:
 def build_overlay_visual_state() -> AppState:
     state = AppState()
     state.listing = Listing(
-        activity_id=182,
-        dungeon_name="Skyreach",
-        listing_name="+16 Skyreach - visual QA",
+        activity_id=512,
+        dungeon_name="Kings' Rest",
+        listing_name="+16 Kings' Rest - visual QA",
         comment="Representative overlay fixture for UI polish review.",
         key_level=16,
         category_id=2,
@@ -232,28 +232,28 @@ def _raid_boss_parses() -> dict[str, list[dict]]:
     return {
         "H": [
             {
-                "encounter_id": 3176,
-                "name": "Imperator Averzian",
+                "encounter_id": 3470,
+                "name": "Nek'zali the Soulcoiler",
                 "overall": 83.0,
                 "ilvl": 63.0,
             },
             {
-                "encounter_id": 3177,
-                "name": "Vorasius",
+                "encounter_id": 3445,
+                "name": "Entombed Sentinels",
                 "overall": 72.0,
                 "ilvl": 58.0,
             },
         ],
         "M": [
             {
-                "encounter_id": 3176,
-                "name": "Imperator Averzian",
+                "encounter_id": 3470,
+                "name": "Nek'zali the Soulcoiler",
                 "overall": 46.0,
                 "ilvl": 68.0,
             },
             {
-                "encounter_id": 3177,
-                "name": "Vorasius",
+                "encounter_id": 3445,
+                "name": "Entombed Sentinels",
                 "overall": 39.0,
                 "ilvl": 52.0,
             },
@@ -280,8 +280,8 @@ def build_raid_listing_visual_state() -> AppState:
     state = AppState()
     state.listing = Listing(
         activity_id=0,
-        dungeon_name="Manaforge Omega",
-        listing_name="Heroic Manaforge Omega - visual QA",
+        dungeon_name="The Venomous Abyss",
+        listing_name="Heroic The Venomous Abyss - visual QA",
         comment="Raid-context overlay fixture for table and detail panel review.",
         key_level=0,
         category_id=3,
@@ -372,9 +372,9 @@ def build_party_visual_state(*, include_listing: bool) -> AppState:
     state = AppState()
     if include_listing:
         state.listing = Listing(
-            activity_id=182,
-            dungeon_name="Skyreach",
-            listing_name="+15 Skyreach - party visual QA",
+            activity_id=512,
+            dungeon_name="Kings' Rest",
+            listing_name="+15 Kings' Rest - party visual QA",
             comment="",
             key_level=15,
             category_id=2,

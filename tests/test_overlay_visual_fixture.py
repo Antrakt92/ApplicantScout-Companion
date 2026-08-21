@@ -350,7 +350,7 @@ def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
         assert listing.difficulty_id == 15
         assert listing.key_level == 0
         assert window._title_bar.title_label.text() == (
-            "Raid Applicants — Manaforge Omega (1)"
+                "Raid Applicants — The Venomous Abyss (1)"
         )
         assert len(state.applicants) == window._table.rowCount()
         assert not window._table.isColumnHidden(COL_H)
@@ -361,7 +361,7 @@ def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
         assert window._panel._dungeon_rows[0][0].text()
         assert window._panel._dungeon_rows[0][1].text()
         assert window._panel._dungeon_rows[0][3].text()
-        assert window._panel._dungeon_rows[1][0].text() == "Vorasius"
+        assert window._panel._dungeon_rows[1][0].text() == "Entombed Sentinels"
         assert window._panel._dungeon_rows[1][3].textFormat() == Qt.TextFormat.RichText
         assert "H 72-58" in window._panel._dungeon_rows[1][3].text()
         assert "M 39-52" in window._panel._dungeon_rows[1][3].text()

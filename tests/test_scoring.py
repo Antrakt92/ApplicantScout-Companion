@@ -334,12 +334,12 @@ def test_mplus_low_key_orange_does_not_beat_relevant_high_key_evidence():
 
 def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localized():
     target = _listing(
-        activity_id=404,
+        activity_id=512,
         key_level=16,
-        dungeon_name="Небесный Путь",
+        dungeon_name="Королевский Покой",
     )
     applicant = _app(
-        dps_breakdown=[_dungeon("Skyreach", [(16, 88.0, 78.0, 2)])],
+        dps_breakdown=[_dungeon("Kings' Rest", [(16, 88.0, 78.0, 2)])],
         score=3300,
     )
 
@@ -355,20 +355,20 @@ def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localize
 
 def test_mplus_fit_exposes_best_nearby_and_same_dungeon_key_evidence():
     target = _listing(
-        activity_id=404,
+        activity_id=512,
         key_level=16,
-        dungeon_name="Небесный Путь",
+        dungeon_name="Королевский Покой",
     )
     applicant = _app(
         rio_profile=True,
         rio_summary_target_key=target.key_level,
         rio_dungeons=[
-            {"name": "Skyreach", "key_level": 15},
-            {"name": "Pit of Saron", "key_level": 20},
+            {"name": "Kings' Rest", "key_level": 15},
+            {"name": "Ruby Life Pools", "key_level": 20},
         ],
         dps_breakdown=[
-            _dungeon("Skyreach", [(14, 82.0, 74.0, 2)]),
-            _dungeon("Nexus-Point Xenas", [(18, 78.0, 70.0, 2)]),
+            _dungeon("Kings' Rest", [(14, 82.0, 74.0, 2)]),
+            _dungeon("Voidscar Arena", [(18, 78.0, 70.0, 2)]),
         ],
     )
 
@@ -775,7 +775,7 @@ def test_mplus_scorecard_ignores_compact_rio_summary_for_different_target_key():
 
 
 def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
-    target = _listing(activity_id=404, key_level=16, dungeon_name="Небесный Путь")
+    target = _listing(activity_id=512, key_level=16, dungeon_name="Королевский Покой")
     applicant = _app(
         score=3200,
         rio_profile=True,
@@ -787,7 +787,7 @@ def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
         rio_summary_target_key=target.key_level,
-        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+        rio_dungeons=[{"name": "Kings' Rest", "key_level": 15}],
     )
 
     fit = candidate_fit(applicant, target)
@@ -802,7 +802,7 @@ def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
 
 
 def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
-    target = _listing(activity_id=404, key_level=16, dungeon_name="Небесный Путь")
+    target = _listing(activity_id=512, key_level=16, dungeon_name="Королевский Покой")
     applicant = _app(
         score=3200,
         rio_profile=True,
@@ -814,7 +814,7 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
         rio_summary_target_key=target.key_level,
-        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+        rio_dungeons=[{"name": "Kings' Rest", "key_level": 15}],
     )
 
     fit = candidate_fit(applicant, target)
@@ -831,7 +831,7 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
         rio_summary_target_key=target.key_level,
-        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
+        rio_dungeons=[{"name": "Kings' Rest", "key_level": 15}],
     )
     assert fit.primary_key == 17
     assert "+17" in fit.display

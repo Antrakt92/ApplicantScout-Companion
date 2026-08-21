@@ -35,7 +35,6 @@ from applicant_scout.overlay import (
     DUNGEON_NAME_WIDTH,
     DUNGEON_WCL_KEY_WIDTH,
     GAME_FOREGROUND_POLL_MS,
-    INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT,
     INFO_PANEL_PREFERRED_HEIGHT,
     LAUNCHER_SIZE,
     MPLUS_INDIVIDUAL_BG_ROLE,
@@ -267,8 +266,8 @@ def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
             raid_boss_parses={
                 "M": [
                     {
-                        "encounter_id": 3176,
-                        "name": "Imperator Averzian",
+                        "encounter_id": 3470,
+                        "name": "Nek'zali the Soulcoiler",
                         "overall": 46.0,
                         "ilvl": 68.0,
                     }
@@ -280,7 +279,7 @@ def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
 
     assert panel._detail_mode == "raid"
     name_label, rio_label, wcl_key_label, value_label = panel._dungeon_rows[0]
-    assert name_label.text() == "Imperator Averzian"
+    assert name_label.text() == "Nek'zali the Soulcoiler"
     assert rio_label.text() == "M2"
     assert "#ffe36a" in rio_label.styleSheet()
     assert wcl_key_label.text() == ""
@@ -322,22 +321,22 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
             raid_boss_parses={
                 "M": [
                     {
-                        "encounter_id": 3176,
-                        "name": "Imperator Averzian",
+                        "encounter_id": 3470,
+                        "name": "Nek'zali the Soulcoiler",
                         "overall": 46.0,
                         "ilvl": 68.0,
                     },
                     {
-                        "encounter_id": 3159,
-                        "name": "Rotmire",
+                        "encounter_id": 3379,
+                        "name": "Nymrissa Wavecaller",
                         "overall": 55.0,
                         "ilvl": 66.0,
                     },
                 ],
                 "H": [
                     {
-                        "encounter_id": 3176,
-                        "name": "Imperator Averzian",
+                        "encounter_id": 3470,
+                        "name": "Nek'zali the Soulcoiler",
                         "overall": 83.0,
                         "ilvl": 63.0,
                     }
@@ -348,7 +347,7 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     )
 
     assert panel._detail_mode == "raid"
-    assert panel._dungeon_rows[0][0].text() == "Imperator Averzian"
+    assert panel._dungeon_rows[0][0].text() == "Nek'zali the Soulcoiler"
     assert panel._dungeon_rows[0][1].text() == "H1 · M2"
     assert panel._dungeon_rows[0][2].text() == ""
     assert panel._dungeon_rows[0][3].textFormat() == Qt.TextFormat.RichText
@@ -356,17 +355,15 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     assert "M 46-68" in panel._dungeon_rows[0][3].text()
     assert panel._dungeon_rows[0][1].width() == RAID_KILL_WIDTH
     assert panel._dungeon_rows[0][3].width() == RAID_METRIC_WIDTH
-    assert panel._dungeon_rows[1][0].text() == "Vorasius"
+    assert panel._dungeon_rows[1][0].text() == "Entombed Sentinels"
     assert panel._dungeon_rows[1][1].text() == ""
-    assert panel._dungeon_rows[9][0].text() == "Rotmire"
-    assert panel._dungeon_rows[9][3].text() == "M 55-66"
-    assert panel._visible_detail_rows == 10
-    assert panel.target_height() == (
-        INFO_PANEL_PREFERRED_HEIGHT + INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT
-    )
+    assert panel._dungeon_rows[8][0].text() == "Nymrissa Wavecaller"
+    assert panel._dungeon_rows[8][3].text() == "M 55-66"
+    assert panel._visible_detail_rows == 9
+    assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
 
 
-def test_raid_panel_places_sporefall_progress_on_rotmire(qtbot):
+def test_raid_panel_places_tidebound_progress_on_nymrissa(qtbot):
     panel = ApplicantInfoPanel(
         None,
         MetricPreferences(
@@ -380,12 +377,12 @@ def test_raid_panel_places_sporefall_progress_on_rotmire(qtbot):
     app = _app(
         rio_raid_progress={
             "H": {
-                "boss_kills": [0] * 9 + [3],
-                "raid_name": "Sporefall",
+                "boss_kills": [0] * 8 + [3],
+                "raid_name": "The Tidebound Grotto",
             },
             "M": {
-                "boss_kills": [0] * 9 + [4],
-                "raid_name": "Sporefall",
+                "boss_kills": [0] * 8 + [4],
+                "raid_name": "The Tidebound Grotto",
             },
         },
         raid_boss_parses={},
@@ -393,10 +390,10 @@ def test_raid_panel_places_sporefall_progress_on_rotmire(qtbot):
 
     panel.setApplicantData(app, _raid_listing())
 
-    assert panel._dungeon_rows[0][0].text() == "Imperator Averzian"
+    assert panel._dungeon_rows[0][0].text() == "Nek'zali the Soulcoiler"
     assert panel._dungeon_rows[0][1].text() == ""
-    assert panel._dungeon_rows[9][0].text() == "Rotmire"
-    assert panel._dungeon_rows[9][1].text() == "H3 · M4"
+    assert panel._dungeon_rows[8][0].text() == "Nymrissa Wavecaller"
+    assert panel._dungeon_rows[8][1].text() == "H3 · M4"
 
 
 def test_raid_panel_colours_each_difficulty_parse_segment(qtbot):
@@ -418,14 +415,14 @@ def test_raid_panel_colours_each_difficulty_parse_segment(qtbot):
         raid_boss_parses={
             "H": [
                 {
-                    "encounter_id": 3176,
+                    "encounter_id": 3470,
                     "overall": 83.0,
                     "ilvl": 63.0,
                 }
             ],
             "M": [
                 {
-                    "encounter_id": 3176,
+                    "encounter_id": 3470,
                     "overall": 46.0,
                     "ilvl": 68.0,
                 }
@@ -468,9 +465,9 @@ def test_mplus_detail_widths_restore_after_raid_detail(qtbot):
             "M": {"boss_kills": [1, 0, 0, 0, 0, 0, 2, 0, 0]},
         },
         raid_boss_parses={
-            "N": [{"encounter_id": 3176, "overall": 91.0, "ilvl": 78.0}],
-            "H": [{"encounter_id": 3176, "overall": 83.0, "ilvl": 63.0}],
-            "M": [{"encounter_id": 3176, "overall": 46.0, "ilvl": 68.0}],
+            "N": [{"encounter_id": 3470, "overall": 91.0, "ilvl": 78.0}],
+            "H": [{"encounter_id": 3470, "overall": 83.0, "ilvl": 63.0}],
+            "M": [{"encounter_id": 3470, "overall": 46.0, "ilvl": 68.0}],
         },
     )
 
@@ -1691,25 +1688,25 @@ def test_panel_prioritises_target_dungeon_by_activity_id_when_listing_name_is_lo
     qtbot.addWidget(panel)
     listing = replace(
         _listing(),
-        activity_id=404,
-        dungeon_name="Небесный Путь",
+        activity_id=512,
+        dungeon_name="Королевский Покой",
     )
     app = _app(
         rio_profile=True,
         rio_dungeons=[
-            {"name": "Skyreach", "key_level": 15},
-            {"name": "Pit of Saron", "key_level": 16},
+            {"name": "Kings' Rest", "key_level": 15},
+            {"name": "Ruby Life Pools", "key_level": 16},
         ],
         mplus_dps_breakdown=[
             {
-                "name": "Skyreach",
+                "name": "Kings' Rest",
                 "parse_percent": 42.0,
                 "median_percent": 38.0,
                 "key_level": 12,
                 "run_count": 2,
             },
             {
-                "name": "Pit of Saron",
+                "name": "Ruby Life Pools",
                 "parse_percent": 71.0,
                 "median_percent": 62.0,
                 "key_level": 14,
@@ -1721,7 +1718,7 @@ def test_panel_prioritises_target_dungeon_by_activity_id_when_listing_name_is_lo
     panel.setApplicantData(app, listing)
 
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
-    assert name_label.text() == "Skyreach"
+    assert name_label.text() == "Kings' Rest"
     assert rio_label.text() == "RIO +15"
     assert wcl_key_label.text() == "WCL +12"
     assert wcl_label.text() == "42/38"
@@ -1732,15 +1729,15 @@ def test_panel_merges_localized_rio_row_with_wcl_activity_id_mapping(qtbot):
     qtbot.addWidget(panel)
     listing = replace(
         _listing(),
-        activity_id=404,
-        dungeon_name="Небесный Путь",
+        activity_id=512,
+        dungeon_name="Королевский Покой",
     )
     app = _app(
         rio_profile=True,
-        rio_dungeons=[{"name": "Небесный Путь", "key_level": 15}],
+        rio_dungeons=[{"name": "Королевский Покой", "key_level": 15}],
         mplus_dps_breakdown=[
             {
-                "name": "Skyreach",
+                "name": "Kings' Rest",
                 "parse_percent": 42.0,
                 "median_percent": 38.0,
                 "key_level": 12,
@@ -1752,7 +1749,7 @@ def test_panel_merges_localized_rio_row_with_wcl_activity_id_mapping(qtbot):
     panel.setApplicantData(app, listing)
 
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
-    assert name_label.text() == "Skyreach"
+    assert name_label.text() == "Kings' Rest"
     assert rio_label.text() == "RIO +15"
     assert wcl_key_label.text() == "WCL +12"
     assert wcl_label.text() == "42/38"

@@ -75,22 +75,22 @@ def test_devourer_spec_mapping_is_known():
     assert SPEC_ID_TO_WCL_NAME[1480] == "Devourer"
 
 
-def test_current_raid_encounters_include_sporefall_rotmire():
-    assert CURRENT_RAID_ENCOUNTERS[-1] == ("ro", 3159, "Rotmire")
+def test_current_raid_encounters_include_tidebound_grotto_nymrissa():
+    assert CURRENT_RAID_ENCOUNTERS[-1] == ("nw", 3379, "Nymrissa Wavecaller")
 
 
 def test_mplus_activity_id_mapping_covers_current_season_dungeons():
     mapped_names = {
         mplus_dungeon_name_for_activity_id(activity_id)
         for activity_id in (
-            24,
-            115,
-            484,
-            1157,
-            1539,
-            1757,
-            1761,
-            1765,
+            503,
+            512,
+            1173,
+            1699,
+            1721,
+            1749,
+            1754,
+            1930,
         )
     }
     encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}
@@ -127,14 +127,14 @@ def test_mplus_challenge_map_mapping_covers_current_season_dungeons():
     mapped_names = {
         mplus_dungeon_name_for_challenge_map_id(challenge_map_id)
         for challenge_map_id in (
-            161,
-            239,
-            402,
-            556,
-            557,
-            558,
-            559,
-            560,
+            249,
+            250,
+            399,
+            584,
+            585,
+            586,
+            587,
+            588,
         )
     }
     encounter_names = {name for _alias, _encounter_id, name in MPLUS_ENCOUNTERS}

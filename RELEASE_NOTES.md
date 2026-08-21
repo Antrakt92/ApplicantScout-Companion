@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 0.13.5 - 21-Aug-2026
+
+Paired release with ApplicantScout addon `0.9.5`. This patch updates all
+seasonal evidence and listing fallbacks for Midnight Season 2.
+
+### Updated
+
+- Seasonal Warcraft Logs, RaiderIO, localized listing, and party-keystone
+  mappings now target Midnight Season 2, including its eight-dungeon Mythic+
+  pool, The Venomous Abyss, and Nymrissa Wavecaller in the Tidebound Grotto.
+
+### Fixed
+
+- Dungeon-name matching now handles punctuation consistently, so Kings' Rest
+  evidence merges and sorts correctly for localized and activity-ID listings.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.5`.
+- Installer: `ApplicantScoutCompanionSetup-0.13.5.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.13.5.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.13.5-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.13.5-release-manifest.json`
+
 ## 0.13.4 - 12-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.4`. This release accompanies the

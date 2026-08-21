@@ -328,10 +328,10 @@ def _is_terminal_fetch_status(status: str) -> bool:
 def listing_dungeon_keys(listing: Listing | None) -> set[str]:
     if listing is None:
         return set()
-    keys = {_normalise_name(listing.dungeon_name)}
+    keys = {normalise_dungeon_name(listing.dungeon_name)}
     mapped_name = mplus_dungeon_name_for_activity_id(listing.activity_id)
     if mapped_name:
-        keys.add(_normalise_name(mapped_name))
+        keys.add(normalise_dungeon_name(mapped_name))
     return {key for key in keys if key}
 
 
@@ -352,7 +352,7 @@ def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
     for entry in applicant.rio_dungeons:
         if not isinstance(entry, dict):
             continue
-        row_key = _normalise_name(entry.get("name"))
+        row_key = normalise_dungeon_name(entry.get("name"))
         if row_key not in listing_keys:
             continue
         best_key = max(best_key, positive_int(entry.get("key_level")))
@@ -569,7 +569,7 @@ def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCL
         if not isinstance(entry, dict):
             continue
         dungeon_name = str(entry.get("name") or "?")
-        normalised_name = _normalise_name(dungeon_name)
+        normalised_name = normalise_dungeon_name(dungeon_name)
         for bracket in _iter_mplus_brackets(entry):
             key_level = positive_int(bracket.get("key_level"))
             percentile = safe_percent(bracket.get("parse_percent"))
@@ -785,7 +785,7 @@ def _mplus_rio_row_key_levels(applicant: Applicant) -> list[int]:
     for entry in applicant.rio_dungeons:
         if not isinstance(entry, dict):
             continue
-        dungeon_key = _normalise_name(str(entry.get("name") or ""))
+        dungeon_key = normalise_dungeon_name(str(entry.get("name") or ""))
         if not dungeon_key:
             continue
         level = positive_int(entry.get("key_level"))
@@ -1181,7 +1181,7 @@ def _mplus_wcl_total_runs(signals: list[_MPlusWCLSignal]) -> int:
 
 
 def _mplus_wcl_dungeon_key(signal: _MPlusWCLSignal) -> str | None:
-    dungeon_key = _normalise_name(signal.dungeon_name)
+    dungeon_key = normalise_dungeon_name(signal.dungeon_name)
     if not dungeon_key or signal.key_level <= 0:
         return None
     return dungeon_key
@@ -1545,7 +1545,7 @@ def positive_int(value: object) -> int:
     return parsed if parsed > 0 else 0
 
 
-def _normalise_name(value: object) -> str:
+def normalise_dungeon_name(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return "".join(ch.lower() for ch in value if ch.isalnum())
