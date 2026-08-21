@@ -36,6 +36,8 @@ from PyQt6.QtGui import (
     QKeyEvent,
     QMouseEvent,
     QPalette,
+    QPainter,
+    QPixmap,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -165,10 +167,16 @@ RAID_CONTEXT_EVIDENCE_FG = "#b8b8c8"
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
 RAID_COL_BY_TARGET = {"N": COL_N, "H": COL_H, "M": COL_M}
 WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
+# Name and raid metric columns grow from rendered content after construction;
+# a populated table can also need the native vertical scrollbar. Reserve both
+# at the initial content-safe width so a fresh raid view does not immediately
+# gain a horizontal scrollbar. Explicit user-resized geometries stay honored.
+CONTENT_SAFE_WINDOW_BUFFER = 40
 MIN_VISIBLE_WINDOW_WIDTH = 420
 USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
 STATUS_ROW_SINGLE_LINE_MIN_WIDTH = 460
+APPLICANT_ROW_HEIGHT = 27
 INFO_PANEL_MIN_HEIGHT = 80
 INFO_PANEL_PREFERRED_HEIGHT = 238
 # Preferred height is tuned for the original 9-row raid detail view; extra
@@ -744,6 +752,7 @@ def _minimum_window_width_for_metrics(
         + (COLUMN_WIDTHS[COL_M] if metric_preferences.raid_mythic else 0)
         + (mplus_width if metric_preferences.mplus else 0)
         + WINDOW_CHROME_WIDTH
+        + CONTENT_SAFE_WINDOW_BUFFER
     )
     return max(MIN_VISIBLE_WINDOW_WIDTH, width)
 
@@ -881,10 +890,13 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         # deliberately: interaction state needs constant visual reinforcement
         # (cursor moves, eye scans columns). Pinned wins on same row.
         if index.row() == self._pinned_row:
+            painter.fillRect(r, QColor(229, 204, 128, 18))
             painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#e5cc80"))
         elif index.row() == self._hover_row:
+            painter.fillRect(r, QColor(255, 255, 255, 10))
             painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#ffffff"))
         elif index.row() == self._keyboard_row:
+            painter.fillRect(r, QColor(102, 217, 239, 13))
             painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#66d9ef"))
         # Group bracket at x=3..9, COLUMN 0 ONLY. The wider rail + caps answer
         # "these adjacent rows are one application" without adding table text.
@@ -1107,6 +1119,24 @@ def _widget_has_focus(widget: QWidget) -> bool:
 # Custom title bar (frameless windows must implement their own drag)
 
 
+def _settings_sliders_icon() -> QIcon:
+    """Small single-colour settings glyph that stays crisp in the overlay chrome."""
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        colour = QColor("#d9c8a7")
+        painter.setPen(colour)
+        painter.setBrush(colour)
+        for y, knob_x in ((4, 6), (8, 11), (12, 4)):
+            painter.drawLine(2, y, 14, y)
+            painter.drawEllipse(QRect(knob_x - 1, y - 1, 3, 3))
+    finally:
+        painter.end()
+    return QIcon(pixmap)
+
+
 class TitleBar(QWidget):
     hideClicked = pyqtSignal()
     settingsClicked = pyqtSignal()
@@ -1114,8 +1144,11 @@ class TitleBar(QWidget):
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
-        self.setFixedHeight(28)
+        self.setFixedHeight(30)
         self.setObjectName("titleBar")
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setAccessibleName("ApplicantScout window title bar")
+        self.setAccessibleDescription("Drag to move the overlay window.")
         self._drag_offset = None  # type: ignore[assignment]
 
         layout = QHBoxLayout(self)
@@ -1129,24 +1162,21 @@ class TitleBar(QWidget):
 
         self.settings_button = _KeyboardButton()
         self.settings_button.setObjectName("settingsButton")
-        self.settings_button.setFixedSize(20, 20)
+        self.settings_button.setFixedSize(22, 22)
         self.settings_button.setToolTip("Settings")
         self.settings_button.setAccessibleName("Open ApplicantScout settings")
         self.settings_button.setAccessibleDescription(
             "Open the ApplicantScout companion settings window."
         )
         self.settings_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        style = self.style()
-        if style is not None:
-            self.settings_button.setIcon(
-                style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
-            )
+        self.settings_button.setIcon(_settings_sliders_icon())
+        self.settings_button.setIconSize(QSize(16, 16))
         self.settings_button.clicked.connect(self.settingsClicked.emit)
         layout.addWidget(self.settings_button)
 
-        self.hide_button = _KeyboardButton("-")
+        self.hide_button = _KeyboardButton("—")
         self.hide_button.setObjectName("hideButton")
-        self.hide_button.setFixedSize(20, 20)
+        self.hide_button.setFixedSize(22, 22)
         self.hide_button.setToolTip("Hide overlay")
         self.hide_button.setAccessibleName("Hide ApplicantScout overlay to launcher")
         self.hide_button.setAccessibleDescription(
@@ -1169,6 +1199,7 @@ class TitleBar(QWidget):
             self._drag_offset = (
                 event.globalPosition().toPoint() - window.frameGeometry().topLeft()
             )
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -1182,11 +1213,13 @@ class TitleBar(QWidget):
             window.move(event.globalPosition().toPoint() - self._drag_offset)
             event.accept()
 
-    def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         was_dragging = self._drag_offset is not None
         self._drag_offset = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         if was_dragging:
             self.dragFinished.emit()
+            event.accept()
 
 
 class OverlayLauncher(_KeyboardButton):
@@ -1205,6 +1238,7 @@ class OverlayLauncher(_KeyboardButton):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setObjectName("overlayLauncher")
         self.setFixedSize(LAUNCHER_SIZE, LAUNCHER_SIZE)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setToolTip("Show ApplicantScout overlay")
         self.setAccessibleName("Show ApplicantScout overlay")
         self.setAccessibleDescription(
@@ -1301,6 +1335,7 @@ class OverlayLauncher(_KeyboardButton):
             self._drag_active = True
             self._dragged = False
             self._drag_button_up_since = None
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self.grabMouse()
             self._drag_timer.start()
             self.dragStarted.emit()
@@ -1334,6 +1369,7 @@ class OverlayLauncher(_KeyboardButton):
         self._drag_active = False
         self._dragged = False
         self._drag_button_up_since = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         if QWidget.mouseGrabber() is self:
             self.releaseMouse()
         if should_click:
@@ -1423,7 +1459,7 @@ class SourceTabBar(QWidget):
         self._key_spin.valueChanged.connect(self.keyChanged.emit)
         self._key_label.setBuddy(self._key_spin)
         key_layout.addWidget(self._key_spin)
-        self._key_up_button = _KeyboardButton("▲")
+        self._key_up_button = _KeyboardButton("+")
         self._key_up_button.setObjectName("targetKeyStepUp")
         self._key_up_button.setFixedSize(24, 22)
         self._key_up_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -1431,7 +1467,7 @@ class SourceTabBar(QWidget):
         self._key_up_button.setAccessibleName("Increase manual Mythic Plus target key")
         self._key_up_button.clicked.connect(self._key_spin.stepUp)
         key_layout.addWidget(self._key_up_button)
-        self._key_down_button = _KeyboardButton("▼")
+        self._key_down_button = _KeyboardButton("−")
         self._key_down_button.setObjectName("targetKeyStepDown")
         self._key_down_button.setFixedSize(24, 22)
         self._key_down_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -3002,9 +3038,13 @@ class OverlayWindow(QMainWindow):
         vertical_header = self._table.verticalHeader()
         if vertical_header is not None:
             vertical_header.setVisible(False)
+            vertical_header.setMinimumSectionSize(APPLICANT_ROW_HEIGHT)
+            vertical_header.setDefaultSectionSize(APPLICANT_ROW_HEIGHT)
+            vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setAlternatingRowColors(True)
         self._table.setTabKeyNavigation(False)
         self._table.setShowGrid(False)
         self._table.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -3072,7 +3112,12 @@ class OverlayWindow(QMainWindow):
         self._health_label.setMinimumWidth(0)
         self._size_grip = QSizeGrip(bottom)
         self._size_grip.setObjectName("overlaySizeGrip")
+        self._size_grip.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        self._size_grip.setToolTip("Drag to resize overlay")
         self._size_grip.setAccessibleName("Resize ApplicantScout overlay")
+        self._size_grip.setAccessibleDescription(
+            "Drag the lower-right corner to resize the applicant table."
+        )
         self._reflow_status_row(self.width())
         layout.addWidget(bottom)
 
@@ -3106,6 +3151,7 @@ class OverlayWindow(QMainWindow):
             gui_app.primaryScreenChanged.connect(self._on_screen_topology_changed)
         self._panel_anchor_extra_height = 0
         self._panel_anchor_y_offset = 0
+        self._panel_reserved_height = INFO_PANEL_PREFERRED_HEIGHT
         self._panel_render_key: tuple | None = None
         self._candidate_fits_for_sync: Mapping[str, CandidateFit] | None = None
 
@@ -3491,6 +3537,7 @@ class OverlayWindow(QMainWindow):
         if key not in self._hover_by_tab:
             return
         if key != self._active_tab:
+            self._reset_panel_height_reservation()
             self._hover_by_tab[self._active_tab] = self._hover_id
             self._pinned_by_tab[self._active_tab] = self._pinned_id
             self._keyboard_by_tab[self._active_tab] = self._keyboard_id
@@ -4552,7 +4599,13 @@ class OverlayWindow(QMainWindow):
         if not self.isVisible():
             return
 
-        target_height = self._panel.target_height()
+        requested_height = self._panel.target_height()
+        # WHY: shrinking the window while the pointer crosses applicants moves
+        # the table underneath that pointer. Keep an interaction high-water mark
+        # so a shorter card cannot trigger a Leave/re-enter resize loop. Safe
+        # context boundaries reset it, avoiding permanent blank panel space.
+        target_height = max(requested_height, self._panel_reserved_height)
+        self._panel_reserved_height = target_height
         current_height = self._panel.height() or INFO_PANEL_MIN_HEIGHT
         if (
             current_height == target_height
@@ -4671,6 +4724,9 @@ class OverlayWindow(QMainWindow):
             if batch_updates:
                 self.update()
 
+    def _reset_panel_height_reservation(self) -> None:
+        self._panel_reserved_height = INFO_PANEL_PREFERRED_HEIGHT
+
     def _on_cell_entered(self, row: int, _col: int) -> None:
         # Bounds check guards against (a) ever-zero state during init,
         # (b) any conceivable race between setRowCount and _id_by_row rebuild.
@@ -4727,7 +4783,11 @@ class OverlayWindow(QMainWindow):
         self._hover_id = None
         self._hover_by_tab[self._active_tab] = None
         self._keyboard_preview_active = False
-        if changed:
+        had_extra_reservation = (
+            self._panel_reserved_height > INFO_PANEL_PREFERRED_HEIGHT
+        )
+        self._reset_panel_height_reservation()
+        if changed or had_extra_reservation:
             self._sync_delegate_and_panel()
 
     def _clear_pin(self) -> None:
@@ -4738,6 +4798,7 @@ class OverlayWindow(QMainWindow):
             return
         self._pinned_id = None
         self._pinned_by_tab[self._active_tab] = None
+        self._reset_panel_height_reservation()
         self._sync_delegate_and_panel()
 
     def _update_table_accessibility_context(self) -> None:
@@ -4777,6 +4838,7 @@ class OverlayWindow(QMainWindow):
         self._sync_table_current_id()
 
     def _on_panel_detail_changed(self) -> None:
+        self._reset_panel_height_reservation()
         self._sync_delegate_and_panel()
 
     def _resolve_hover_from_cursor(self) -> str | None:
@@ -4803,7 +4865,10 @@ class OverlayWindow(QMainWindow):
             return
         new_id = self._resolve_hover_from_cursor()
         if new_id != self._hover_id:
+            if new_id is None:
+                self._reset_panel_height_reservation()
             self._hover_id = new_id
+            self._hover_by_tab[self._active_tab] = new_id
             self._sync_delegate_and_panel()
 
     # ─── internals ─────
@@ -4906,15 +4971,12 @@ class OverlayWindow(QMainWindow):
             spec_item.setIcon(icon)
         # Class-coloured cell background mirrors the panel's `_class_pill` so
         # the table and info-panel use the same visual language for class
-        # identity. Black foreground + bold reads cleanly across all 13
-        # saturated class colours (PRIEST #FFFFFF is high-contrast WCAG AAA;
-        # darker classes like DK red still pass at this weight). Hover/pin
-        # stripe is painted by `_HoverHighlightDelegate` ON TOP of this cell
-        # background (delegate paints last in cell-rect render order), so the
-        # 3 px left-edge stripe still wins where they overlap.
+        # identity. Foreground follows the same contrast helper as the panel so
+        # dark DK/DH colours remain readable while pale class colours stay dark.
+        # Hover/pin stripes are painted by `_HoverHighlightDelegate` on top.
         cls_hex = CLASS_COLOURS.get(applicant.cls, "#888888")
         spec_item.setBackground(QColor(cls_hex))
-        spec_item.setForeground(QColor("#000000"))
+        spec_item.setForeground(QColor(_text_colour_for_bg(cls_hex)))
         spec_item.setFont(_bold_cell_font(spec_item.font()))
         self._table.setItem(row, COL_SPEC, spec_item)
 
@@ -6181,7 +6243,10 @@ class OverlayWindow(QMainWindow):
                     return False
                 new_id = self._resolve_hover_from_cursor()
                 if new_id != self._hover_id:
+                    if new_id is None:
+                        self._reset_panel_height_reservation()
                     self._hover_id = new_id
+                    self._hover_by_tab[self._active_tab] = new_id
                     self._sync_delegate_and_panel()
             elif event.type() == QEvent.Type.MouseMove:
                 # event has position() in Qt6 (returns QPointF).
@@ -6196,6 +6261,8 @@ class OverlayWindow(QMainWindow):
                     ):
                         new_id = self._id_by_row[row]
                     self._keyboard_preview_active = False
+                    if new_id is None:
+                        self._reset_panel_height_reservation()
                     self._hover_id = new_id
                     self._hover_by_tab[self._active_tab] = new_id
                     self._sync_delegate_and_panel()
@@ -6207,7 +6274,10 @@ class OverlayWindow(QMainWindow):
                 if self._table.rowAt(pos.y()) < 0 and self._hover_id is not None:
                     new_id = self._resolve_hover_from_cursor()
                     if new_id != self._hover_id:
+                        if new_id is None:
+                            self._reset_panel_height_reservation()
                         self._hover_id = new_id
+                        self._hover_by_tab[self._active_tab] = new_id
                         self._sync_delegate_and_panel()
             return False  # never consume — let Qt continue normal processing
         # Branch D — Alt-Tab away from window.
@@ -6237,6 +6307,7 @@ class OverlayWindow(QMainWindow):
         self._keyboard_preview_active = False
         for tab_key in self._hover_by_tab:
             self._hover_by_tab[tab_key] = None
+        self._reset_panel_height_reservation()
         if had_transient_preview:
             self._sync_delegate_and_panel()
         QTimer.singleShot(0, self._apply_panel_height_above_table)
@@ -6616,33 +6687,51 @@ def _format_listing_tooltip(listing: Listing | None) -> str:
 
 _STYLESHEET = """
 #rootContainer {
-    background-color: rgba(10, 10, 14, 220);
-    border: 1px solid rgba(80, 80, 100, 200);
-    border-radius: 4px;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 rgba(16, 18, 25, 246),
+        stop: 0.58 rgba(10, 12, 17, 246),
+        stop: 1 rgba(6, 7, 11, 246)
+    );
+    border: 1px solid rgba(127, 99, 58, 230);
+    border-radius: 7px;
 }
 #titleBar {
-    background-color: rgba(20, 20, 28, 240);
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 rgba(40, 38, 36, 248),
+        stop: 0.45 rgba(27, 27, 31, 248),
+        stop: 1 rgba(16, 18, 24, 248)
+    );
+    border-bottom: 1px solid rgba(120, 91, 52, 205);
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
 }
 #titleLabel {
-    color: #d8d8e0;
+    color: #f0e8d7;
     font-size: 12px;
-    font-weight: bold;
-    padding: 4px;
+    font-weight: 600;
+    padding: 3px 4px;
 }
 #settingsButton,
 #hideButton {
-    background-color: transparent;
-    color: #d8d8e0;
-    border: none;
-    font-size: 16px;
+    background-color: rgba(20, 22, 29, 130);
+    color: #d9c8a7;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    font-size: 15px;
     font-weight: bold;
 }
 #settingsButton:hover,
 #hideButton:hover {
-    background-color: rgba(52, 52, 66, 205);
-    border-radius: 2px;
+    background-color: rgba(73, 62, 48, 215);
+    color: #fff3d5;
+    border-color: rgba(185, 145, 83, 190);
+}
+#settingsButton:pressed,
+#hideButton:pressed {
+    background-color: rgba(105, 72, 45, 235);
+    border-color: #d7ad68;
 }
 #settingsButton:focus,
 #hideButton:focus,
@@ -6652,80 +6741,124 @@ _STYLESHEET = """
 #infoUnpinButton:focus,
 #infoWclRetryButton:focus,
 #targetKeySpin:focus {
-    border: 2px solid #66d9ef;
-    border-radius: 3px;
+    border: 2px solid #e5cc80;
+    border-radius: 4px;
+}
+#sourceTabBar {
+    background-color: rgba(13, 15, 21, 218);
+    border-bottom: 1px solid rgba(67, 56, 43, 185);
+}
+#sourceTabBar QPushButton {
+    color: #bdb9b2;
+    background-color: rgba(31, 34, 43, 205);
+    border: 1px solid rgba(82, 80, 78, 175);
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+#sourceTabBar QPushButton:hover {
+    color: #f2eadc;
+    background-color: rgba(55, 55, 61, 225);
+    border-color: rgba(145, 122, 85, 195);
+}
+#sourceTabBar QPushButton:checked {
+    color: #fff5e8;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 rgba(139, 79, 55, 245),
+        stop: 1 rgba(83, 46, 36, 245)
+    );
+    border-color: rgba(218, 137, 95, 235);
+}
+#sourceTabBar QPushButton:pressed {
+    background-color: rgba(111, 61, 43, 245);
+    border-color: #edb47d;
 }
 #statusRow {
-    background-color: rgba(14, 14, 20, 225);
-    border-top: 1px solid rgba(66, 66, 86, 120);
+    background-color: rgba(11, 13, 18, 235);
+    border-top: 1px solid rgba(75, 62, 46, 150);
 }
 #quotaChip,
 #authChip,
 #freshnessChip {
-    color: #aaaab7;
-    background-color: rgba(38, 38, 50, 205);
-    border: 1px solid rgba(82, 82, 104, 160);
-    border-radius: 5px;
+    color: #aaa9aa;
+    background-color: rgba(32, 35, 44, 218);
+    border: 1px solid rgba(78, 76, 73, 175);
+    border-radius: 6px;
     font-size: 10px;
-    padding: 1px 6px;
+    padding: 1px 7px;
 }
 #quotaChip[statusState="active"],
 #authChip[statusState="active"],
 #freshnessChip[statusState="active"] {
-    color: #b9d8f4;
-    background-color: rgba(36, 59, 82, 205);
-    border-color: rgba(82, 128, 170, 175);
+    color: #c4ddf1;
+    background-color: rgba(31, 57, 77, 220);
+    border-color: rgba(76, 124, 157, 195);
 }
 #quotaChip[statusState="warning"],
 #authChip[statusState="warning"],
 #freshnessChip[statusState="warning"] {
-    color: #f1d69a;
-    background-color: rgba(79, 63, 31, 205);
-    border-color: rgba(154, 123, 56, 180);
+    color: #f2daa5;
+    background-color: rgba(78, 60, 29, 220);
+    border-color: rgba(170, 132, 61, 205);
 }
 #quotaChip[statusState="critical"],
 #authChip[statusState="critical"],
 #freshnessChip[statusState="critical"] {
-    color: #f1b0b0;
-    background-color: rgba(82, 37, 42, 210);
-    border-color: rgba(157, 70, 78, 185);
+    color: #f3b6b0;
+    background-color: rgba(82, 35, 39, 225);
+    border-color: rgba(171, 72, 79, 205);
 }
 #overlayLauncher {
-    background-color: rgba(12, 12, 18, 235);
-    border: 1px solid rgba(240, 120, 90, 210);
-    border-radius: 6px;
-    color: #ff8a65;
+    background: qradialgradient(
+        cx: 0.45, cy: 0.35, radius: 0.9,
+        fx: 0.45, fy: 0.35,
+        stop: 0 rgba(55, 48, 42, 248),
+        stop: 0.55 rgba(25, 26, 32, 248),
+        stop: 1 rgba(10, 11, 16, 248)
+    );
+    border: 2px solid rgba(199, 151, 83, 235);
+    border-radius: 11px;
+    color: #f0c77c;
     font-size: 14px;
     font-weight: bold;
 }
 #overlayLauncher:hover {
-    background-color: rgba(34, 34, 44, 240);
+    color: #fff2c8;
+    border-color: #e5c077;
+    background-color: rgba(62, 52, 43, 248);
+}
+#overlayLauncher:pressed {
+    color: #ffffff;
+    background-color: rgba(111, 65, 44, 250);
+    border-color: #f0bd7d;
 }
 #overlayLauncher:focus {
-    border: 2px solid #66d9ef;
+    border: 2px solid #e5cc80;
 }
 #targetKeyLabel {
-    color: #f0d27a;
+    color: #d9bb78;
     font-size: 11px;
     font-weight: bold;
 }
 #targetKeyControl {
-    background-color: rgba(42, 42, 54, 225);
-    border: 1px solid rgba(240, 120, 90, 230);
-    border-radius: 3px;
+    background-color: rgba(24, 27, 35, 235);
+    border: 1px solid rgba(188, 119, 79, 220);
+    border-radius: 4px;
 }
 #targetKeySpin {
-    color: #ffffff;
+    color: #fff7e8;
     background-color: transparent;
     border: none;
     font-weight: bold;
     padding-left: 6px;
 }
 #targetKeyStepUp, #targetKeyStepDown {
-    color: #f5f5fb;
-    background-color: rgba(62, 62, 78, 235);
+    color: #e8ded0;
+    background-color: rgba(48, 48, 56, 235);
     border: none;
-    border-left: 1px solid rgba(160, 160, 180, 125);
+    border-left: 1px solid rgba(115, 96, 73, 175);
     font-size: 12px;
     font-weight: bold;
     padding: 0;
@@ -6735,100 +6868,120 @@ _STYLESHEET = """
     border-bottom-right-radius: 0;
 }
 #targetKeyStepDown {
-    border-left-color: rgba(100, 100, 120, 170);
+    border-left-color: rgba(88, 77, 65, 190);
     border-top-right-radius: 2px;
     border-bottom-right-radius: 2px;
 }
 #targetKeyStepUp:hover, #targetKeyStepDown:hover {
-    background-color: rgba(240, 120, 90, 150);
+    color: #ffffff;
+    background-color: rgba(132, 77, 53, 225);
 }
 #targetKeyStepUp:focus, #targetKeyStepDown:focus {
-    border: 2px solid #66d9ef;
+    border: 2px solid #e5cc80;
 }
 #targetKeyStepUp:pressed, #targetKeyStepDown:pressed {
-    background-color: rgba(240, 120, 90, 210);
+    background-color: rgba(165, 91, 59, 245);
 }
 /* Hover/pin info panel — opaque QWidget scout card. */
 #infoPanel {
-    background-color: rgba(12, 12, 18, 248);
-    border: 1px solid rgba(70, 70, 92, 200);
-    border-radius: 4px;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 rgba(18, 20, 27, 252),
+        stop: 0.65 rgba(11, 13, 19, 252),
+        stop: 1 rgba(18, 16, 17, 252)
+    );
+    border: 1px solid rgba(102, 84, 61, 215);
+    border-radius: 6px;
 }
 #infoPanel QLabel {
     background-color: transparent;
     font-family: 'Segoe UI', 'Cantarell', 'Helvetica Neue', sans-serif;
 }
 #infoName {
-    color: #e8e8f0;
+    color: #f3ede1;
     font-size: 16px;
     font-weight: bold;
 }
 #infoRealm, #infoMeta, #infoDungeonKey {
-    color: #8d8d98;
+    color: #99979a;
     font-size: 11px;
 }
 #infoPanelStatus {
-    color: #8d8d98;
+    color: #9b999c;
     font-size: 12px;
     padding-top: 2px;
 }
 #infoPanelStateCard {
-    background-color: rgba(25, 25, 36, 150);
-    border: 1px solid rgba(72, 72, 96, 150);
-    border-radius: 4px;
+    background-color: rgba(27, 29, 37, 185);
+    border: 1px solid rgba(91, 80, 66, 180);
+    border-radius: 5px;
 }
 #infoPanelStateIcon {
-    color: #8d8d98;
+    color: #b9a67e;
     font-size: 18px;
     font-weight: 600;
 }
 #infoPanelStateText {
-    color: #a8a8b4;
+    color: #b8b4ad;
     font-size: 12px;
 }
 #infoUnpinButton {
-    color: #d8d8e2;
-    background-color: rgba(42, 42, 56, 210);
-    border: 1px solid rgba(90, 90, 118, 210);
-    border-radius: 3px;
+    color: #ddd3c2;
+    background-color: rgba(38, 40, 48, 225);
+    border: 1px solid rgba(103, 91, 74, 215);
+    border-radius: 4px;
     font-size: 15px;
     font-weight: bold;
     padding-bottom: 2px;
 }
 #infoUnpinButton:hover {
-    background-color: rgba(74, 74, 96, 230);
+    color: #fff6e6;
+    background-color: rgba(72, 63, 51, 235);
+    border-color: rgba(185, 145, 83, 220);
+}
+#infoUnpinButton:pressed {
+    background-color: rgba(102, 71, 48, 245);
 }
 #infoWclRetryButton {
-    color: #ffe6d6;
-    background-color: rgba(82, 45, 38, 210);
-    border: 1px solid rgba(210, 118, 88, 215);
-    border-radius: 3px;
+    color: #ffe8d8;
+    background-color: rgba(82, 44, 35, 225);
+    border: 1px solid rgba(205, 117, 80, 225);
+    border-radius: 4px;
     font-size: 11px;
     font-weight: bold;
     padding: 1px 7px;
 }
 #infoWclRetryButton:hover {
-    background-color: rgba(118, 62, 48, 230);
+    background-color: rgba(121, 62, 45, 240);
+    border-color: #e69a72;
+}
+#infoWclRetryButton:pressed {
+    background-color: rgba(151, 72, 48, 250);
 }
 #infoDetailTabs QPushButton {
-    color: #c9c9d4;
-    background-color: rgba(34, 34, 44, 165);
-    border: 1px solid rgba(78, 78, 98, 135);
-    border-radius: 3px;
-    padding: 1px 7px;
+    color: #bbb8b2;
+    background-color: rgba(31, 34, 42, 195);
+    border: 1px solid rgba(80, 77, 73, 175);
+    border-radius: 4px;
+    padding: 2px 8px;
     font-weight: bold;
     font-size: 11px;
 }
 #infoDetailTabs QPushButton:hover {
-    background-color: rgba(52, 52, 66, 205);
+    color: #f2eadc;
+    background-color: rgba(55, 54, 57, 220);
+    border-color: rgba(145, 122, 85, 190);
 }
 #infoDetailTabs QPushButton:checked {
-    background-color: rgba(240, 120, 90, 220);
-    color: #ffffff;
-    border-color: rgba(255, 160, 130, 230);
+    background-color: rgba(132, 73, 51, 240);
+    color: #fff7ed;
+    border-color: rgba(222, 139, 96, 235);
+}
+#infoDetailTabs QPushButton:pressed {
+    background-color: rgba(160, 84, 55, 245);
 }
 #infoDungeonName {
-    color: #d2d2dc;
+    color: #d8d2c8;
     font-size: 11px;
 }
 #infoDungeonMetric {
@@ -6838,70 +6991,131 @@ _STYLESHEET = """
    colour for at-a-glance "what's filtered" reading. Per-role :checked
    selectors via objectName for distinct active colours. */
 #roleFilterBar {
-    background-color: rgba(18, 18, 26, 205);
-    border-bottom: 1px solid rgba(66, 66, 86, 130);
+    background-color: rgba(14, 16, 22, 218);
+    border-bottom: 1px solid rgba(68, 58, 46, 175);
 }
 #roleFilterBar QPushButton {
-    color: #c9c9d4;
-    background-color: rgba(34, 34, 44, 165);
-    border: 1px solid rgba(78, 78, 98, 135);
-    border-radius: 3px;
+    color: #c5c2bd;
+    background-color: rgba(31, 34, 42, 205);
+    border: 1px solid rgba(80, 78, 75, 175);
+    border-radius: 4px;
     padding: 2px 8px;
     font-weight: bold;
     font-size: 12px;
 }
 #roleFilterBar QPushButton:hover {
-    background-color: rgba(52, 52, 66, 205);
+    color: #f4ede0;
+    background-color: rgba(54, 55, 62, 225);
+    border-color: rgba(139, 119, 86, 195);
+}
+#roleFilterBar QPushButton:pressed {
+    background-color: rgba(76, 65, 52, 235);
 }
 #roleFilterBar QPushButton#roleBtn_DAMAGER:checked {
-    background-color: #b04545;
+    background-color: #9f3f42;
     color: #ffffff;
-    border-color: #d06060;
+    border-color: #d76668;
 }
 #roleFilterBar QPushButton#roleBtn_HEALER:checked {
-    background-color: #2f9450;
+    background-color: #287d49;
     color: #ffffff;
-    border-color: #50b070;
+    border-color: #54b979;
 }
 #roleFilterBar QPushButton#roleBtn_TANK:checked {
-    background-color: #3a6fb0;
+    background-color: #315f99;
     color: #ffffff;
-    border-color: #5a8fd0;
+    border-color: #6497d0;
 }
 #roleFilterBar QPushButton#roleFilterReset {
     padding: 0 6px;
     font-size: 11px;
-    color: #b8b8c8;
-    background-color: rgba(48, 48, 60, 190);
-    border-color: rgba(100, 100, 120, 170);
+    color: #bbb6ad;
+    background-color: rgba(44, 45, 51, 210);
+    border-color: rgba(100, 91, 79, 190);
 }
 #roleFilterBar QPushButton#roleFilterReset:hover {
-    color: #ffffff;
-    background-color: rgba(78, 78, 96, 230);
+    color: #fff5e7;
+    background-color: rgba(80, 68, 53, 235);
 }
 #roleFilterStatus {
-    color: #888;
+    color: #8f8d8a;
     font-size: 11px;
 }
 QTableWidget {
     background-color: transparent;
-    color: #e0e0e0;
+    alternate-background-color: rgba(255, 245, 224, 7);
+    color: #dfddd9;
     gridline-color: transparent;
     selection-background-color: transparent;
+    border: none;
     font-size: 11px;
 }
 QTableWidget:focus {
-    border: 2px solid #66d9ef;
+    border: 2px solid #e5cc80;
 }
 QTableWidget::item {
     padding: 1px 3px;
 }
 QHeaderView::section {
-    background-color: rgba(28, 28, 38, 240);
-    color: #b8b8c0;
-    padding: 2px;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 rgba(39, 40, 46, 248),
+        stop: 1 rgba(23, 25, 31, 248)
+    );
+    color: #c2bdb4;
+    padding: 3px 2px;
     border: none;
+    border-right: 1px solid rgba(83, 75, 63, 120);
+    border-bottom: 1px solid rgba(103, 84, 59, 185);
     font-size: 10px;
+    font-weight: 600;
+}
+QHeaderView::section:hover {
+    color: #f2e9d8;
+    background-color: rgba(58, 56, 55, 250);
+}
+QScrollBar:vertical {
+    background-color: rgba(9, 11, 16, 240);
+    width: 10px;
+    margin: 1px 0;
+    border-left: 1px solid rgba(74, 64, 51, 125);
+}
+QScrollBar::handle:vertical {
+    background-color: rgba(105, 91, 72, 220);
+    min-height: 28px;
+    border: 1px solid rgba(153, 123, 78, 190);
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: rgba(142, 116, 79, 235);
+    border-color: rgba(202, 158, 92, 220);
+}
+QScrollBar:horizontal {
+    background-color: rgba(9, 11, 16, 240);
+    height: 10px;
+    margin: 0 1px;
+    border-top: 1px solid rgba(74, 64, 51, 125);
+}
+QScrollBar::handle:horizontal {
+    background-color: rgba(105, 91, 72, 220);
+    min-width: 28px;
+    border: 1px solid rgba(153, 123, 78, 190);
+    border-radius: 4px;
+}
+QScrollBar::handle:horizontal:hover {
+    background-color: rgba(142, 116, 79, 235);
+    border-color: rgba(202, 158, 92, 220);
+}
+QScrollBar::add-line,
+QScrollBar::sub-line {
+    width: 0;
+    height: 0;
+    background: none;
+    border: none;
+}
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background: none;
 }
 /* Explicit QToolTip styling so tooltips render reliably on this overlay. */
 /* WHY: Qt.Tool + WA_TranslucentBackground + WindowStaysOnTopHint hits a Qt-on-Windows */
@@ -6910,10 +7124,11 @@ QHeaderView::section {
 /* explicit background + opaque colours via QSS makes Qt route the tooltip through */
 /* the styled-widget path, which paints reliably. */
 QToolTip {
-    background-color: #14141a;
-    color: #e8e8f0;
-    border: 1px solid #555;
-    padding: 6px;
+    background-color: #15171d;
+    color: #eee8dd;
+    border: 1px solid #8b7049;
+    border-radius: 4px;
+    padding: 7px;
     font-size: 11px;
     /* opacity must be 255 — translucency on tooltip in this overlay setup hides it */
     opacity: 255;

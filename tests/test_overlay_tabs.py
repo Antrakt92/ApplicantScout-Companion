@@ -1090,8 +1090,8 @@ def test_target_key_control_defaults_to_listing_key(qtbot, tmp_path):
     assert win._tab_bar._key_spin.font().bold()
     assert not win._tab_bar._key_up_button.isHidden()
     assert not win._tab_bar._key_down_button.isHidden()
-    assert win._tab_bar._key_up_button.text() == "▲"
-    assert win._tab_bar._key_down_button.text() == "▼"
+    assert win._tab_bar._key_up_button.text() == "+"
+    assert win._tab_bar._key_down_button.text() == "−"
 
 
 def test_target_key_control_hides_for_raid_contexts(qtbot, tmp_path):

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.14.0 - 21-Aug-2026
+
+Paired release with ApplicantScout addon `0.9.6`. This release makes the live
+scouting window denser, steadier, and more legible during rapid applicant review.
+
+### Added
+
+- A WoW-native visual pass adds clearer active, hover, pressed, focus, drag,
+  resize, and scrollbar states while retaining the compact always-on-top layout.
+
+### Fixed
+
+- Applicant rows are contiguous and fixed-height, removing the dead pointer
+  space that could clear hover while moving between people.
+- The info panel keeps a stable height during continuous row review, then
+  releases that reservation when the pointer leaves or the user changes
+  context, preventing both menu jumps and permanent blank space.
+- Dark class colours use contrast-aware text, and populated raid views reserve
+  enough width to avoid an immediate horizontal scrollbar.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.6`.
+- Installer: `ApplicantScoutCompanionSetup-0.14.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.14.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.14.0-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.14.0-release-manifest.json`
+
 ## 0.13.5 - 21-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.5`. This patch updates all

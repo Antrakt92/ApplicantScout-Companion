@@ -91,6 +91,7 @@ def test_overlay_exposes_named_controls_without_weakening_passive_show(qtbot, tm
         assert window._launcher.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
         assert window._launcher.focusPolicy() == Qt.FocusPolicy.TabFocus
         assert "#overlayLauncher:focus" in window._launcher.styleSheet()
+        assert window._launcher.cursor().shape() == Qt.CursorShape.OpenHandCursor
         assert window.windowTitle() == "ApplicantScout overlay"
         assert window._launcher.accessibleName() == "Show ApplicantScout overlay"
         assert (
@@ -102,10 +103,22 @@ def test_overlay_exposes_named_controls_without_weakening_passive_show(qtbot, tm
             == "Hide ApplicantScout overlay to launcher"
         )
         assert window._title_bar.title_label.accessibleName() == "Current listing"
+        assert window._title_bar.cursor().shape() == Qt.CursorShape.OpenHandCursor
         assert (
             window._title_bar.title_label.accessibleDescription()
             == "+12 Skyreach\n\nBring interrupts"
         )
+        assert window._size_grip.toolTip() == "Drag to resize overlay"
+        assert (
+            window._size_grip.accessibleDescription()
+            == "Drag the lower-right corner to resize the applicant table."
+        )
+        assert window._table.alternatingRowColors()
+
+        stylesheet = window.styleSheet()
+        assert "#sourceTabBar QPushButton:checked" in stylesheet
+        assert "#sourceTabBar QPushButton:pressed" in stylesheet
+        assert "QScrollBar::handle:vertical" in stylesheet
 
         assert (
             window._tab_bar._buttons["applicants"].focusPolicy()

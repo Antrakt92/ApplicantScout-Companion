@@ -22,6 +22,7 @@ import applicant_scout.scoring as scoring_mod
 from applicant_scout.compatibility import MINIMUM_ADDON_VERSION
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
+    APPLICANT_ROW_HEIGHT,
     COL_H,
     COL_ILVL,
     COL_M,
@@ -2742,6 +2743,183 @@ def test_compact_overlay_table_screen_position_stays_fixed_when_panel_expands_up
         client.close()
 
 
+def test_applicant_rows_use_compact_gap_free_sections(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="first", name="First-Realm"))
+    state.add_or_update(_app(applicant_id="second", name="Second-Realm"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        assert window._table.rowHeight(0) == APPLICANT_ROW_HEIGHT
+        assert window._table.rowHeight(1) == APPLICANT_ROW_HEIGHT
+        assert window._table.rowViewportPosition(1) == (
+            window._table.rowViewportPosition(0) + APPLICANT_ROW_HEIGHT
+        )
+        for y in range(
+            window._table.rowViewportPosition(0),
+            window._table.rowViewportPosition(1) + APPLICANT_ROW_HEIGHT,
+        ):
+            assert window._table.rowAt(y) in (0, 1)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("class_name", ["DEATHKNIGHT", "DEMONHUNTER", "PRIEST"])
+def test_spec_cell_text_uses_contrast_for_class_background(
+    qtbot, tmp_path, class_name
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    applicant = _app(applicant_id="contrast", cls=class_name)
+    state.add_or_update(applicant)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window._refresh_table()
+        item = window._table.item(window._row_for_id[applicant.applicant_id], COL_SPEC)
+        class_colour = overlay_mod.CLASS_COLOURS[class_name]
+
+        assert item.background().color() == QColor(class_colour)
+        assert item.foreground().color() == QColor(
+            overlay_mod._text_colour_for_bg(class_colour)
+        )
+    finally:
+        client.close()
+
+
+def test_overlay_stylesheet_keeps_data_driven_cell_backgrounds_visible(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    applicant = _app(applicant_id="visible-bg", cls="PRIEST", spec_id=258)
+    state.add_or_update(applicant)
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+        item = window._table.item(window._row_for_id[applicant.applicant_id], COL_SPEC)
+        item_rect = window._table.visualItemRect(item)
+        viewport = window._table.viewport()
+        assert viewport is not None
+
+        rendered = viewport.grab().toImage()
+        sample = rendered.pixelColor(item_rect.right() - 3, item_rect.center().y())
+
+        assert sample.red() >= 245
+        assert sample.green() >= 245
+        assert sample.blue() >= 245
+    finally:
+        client.close()
+
+
+def test_panel_height_does_not_shrink_between_hovered_applicants(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="first", name="First-Realm"))
+    state.add_or_update(_app(applicant_id="second", name="Second-Realm"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.setGeometry(160, 400, 360, 240)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        def requested_height() -> int:
+            current = window._panel._current_applicant
+            if current is not None and current.applicant_id == "first":
+                return 320
+            return 238
+
+        monkeypatch.setattr(window._panel, "target_height", requested_height)
+        window._on_cell_entered(window._row_for_id["first"], COL_NAME)
+        QApplication.processEvents()
+        expanded_geometry = window.geometry()
+        expanded_table_top = window._table.mapToGlobal(QPoint(0, 0)).y()
+
+        window._on_cell_entered(window._row_for_id["second"], COL_NAME)
+        QApplication.processEvents()
+
+        assert window._hover_id == "second"
+        assert window._panel.height() == 320
+        assert window.geometry() == expanded_geometry
+        assert window._table.mapToGlobal(QPoint(0, 0)).y() == expanded_table_top
+    finally:
+        client.close()
+
+
+def test_panel_height_reservation_releases_after_pointer_leaves_table(
+    qtbot, tmp_path, monkeypatch
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    state = AppState()
+    state.listing = _listing()
+    state.add_or_update(_app(applicant_id="tall", name="Tall-Realm"))
+    window = OverlayWindow(state, client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.setGeometry(160, 400, 360, 240)
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+        QApplication.processEvents()
+
+        monkeypatch.setattr(
+            window._panel,
+            "target_height",
+            lambda: 320 if window._hover_id == "tall" else 238,
+        )
+        window._on_cell_entered(window._row_for_id["tall"], COL_NAME)
+        QApplication.processEvents()
+        table_top = window._table.mapToGlobal(QPoint(0, 0)).y()
+
+        monkeypatch.setattr(window, "_resolve_hover_from_cursor", lambda: None)
+        viewport = window._table.viewport()
+        assert viewport is not None
+        window.eventFilter(viewport, QEvent(QEvent.Type.Leave))
+        QApplication.processEvents()
+
+        assert window._hover_id is None
+        assert window._hover_by_tab[window._active_tab] is None
+        assert window._panel_reserved_height == INFO_PANEL_PREFERRED_HEIGHT
+        assert window._panel.height() == INFO_PANEL_PREFERRED_HEIGHT
+        assert window._table.mapToGlobal(QPoint(0, 0)).y() == table_top
+    finally:
+        client.close()
+
+
 def test_panel_height_change_batches_window_updates_to_avoid_hover_jitter(
     qtbot, tmp_path, monkeypatch
 ):
@@ -3025,7 +3203,7 @@ def test_geometry_leave_event_keeps_hover_when_cursor_still_over_row(
         QApplication.processEvents()
 
         assert window._hover_id == "detailed"
-        assert window._panel.height() == window._panel.target_height()
+        assert window._panel.height() >= window._panel.target_height()
     finally:
         client.close()
 
@@ -3085,7 +3263,7 @@ def test_geometry_mouse_move_empty_local_pos_keeps_hover_when_cursor_still_over_
         QApplication.processEvents()
 
         assert window._hover_id == "detailed"
-        assert window._panel.height() == window._panel.target_height()
+        assert window._panel.height() >= window._panel.target_height()
     finally:
         client.close()
 
@@ -4410,7 +4588,7 @@ def test_title_bar_hide_button_collapses_to_launcher_without_shutdown(qtbot, tmp
         qtbot.waitUntil(window.isVisible, timeout=1000)
 
         hide_button = window._title_bar.hide_button
-        assert hide_button.text() == "-"
+        assert hide_button.text() == "—"
         assert hide_button.toolTip() == "Hide overlay"
 
         qtbot.mouseClick(hide_button, Qt.MouseButton.LeftButton)
@@ -5733,7 +5911,7 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
                 + last_name.height()
             )
             assert window.width() == width
-            assert window._panel.height() == window._panel.target_height()
+            assert window._panel.height() >= window._panel.target_height()
             assert label.wordWrap()
             assert "1T/1H/0DPS" in label.text()
             assert "evidence confidence 68%" in label.text()
@@ -5980,7 +6158,7 @@ def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
             else:
                 assert abs(current_table_top - table_top) <= 4
             assert window.width() == width
-            assert panel.height() == panel.target_height()
+            assert panel.height() >= panel.target_height()
             assert "1T/1H/0DPS" in package.text()
             assert "evidence confidence" in status.text()
             assert package.heightForWidth(package.width()) <= package.height()
@@ -6359,6 +6537,63 @@ def test_group_mplus_delegate_paints_full_cell_width(qtbot):
     assert image.pixelColor(
         option.rect.width() - 1, option.rect.height() // 2
     ) != QColor("#000000")
+
+
+def test_delegate_paints_subtle_full_cell_interaction_wash(qtbot):
+    table = QTableWidget(1, 1)
+    qtbot.addWidget(table)
+    table.setItem(0, 0, overlay_mod.QTableWidgetItem(""))
+    delegate = _HoverHighlightDelegate(table)
+    index = table.model().index(0, 0)
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 100, 24)
+    option.widget = table
+
+    def render_center() -> QColor:
+        image = QImage(option.rect.size(), QImage.Format.Format_ARGB32)
+        image.fill(QColor("#101116"))
+        painter = QPainter(image)
+        try:
+            delegate.paint(painter, option, index)
+        finally:
+            painter.end()
+        return image.pixelColor(70, option.rect.height() // 2)
+
+    baseline = render_center()
+    delegate.set_rows(-1, 0)
+    pinned = render_center()
+
+    assert pinned != baseline
+    assert pinned.red() > baseline.red()
+    assert pinned.green() > baseline.green()
+
+
+def test_title_bar_drag_cursor_tracks_pointer_capture(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    window = OverlayWindow(AppState(), client, CharacterCache(tmp_path), tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert window._title_bar.cursor().shape() == Qt.CursorShape.OpenHandCursor
+
+        qtbot.mousePress(
+            window._title_bar,
+            Qt.MouseButton.LeftButton,
+            pos=QPoint(4, 4),
+        )
+        assert window._title_bar.cursor().shape() == Qt.CursorShape.ClosedHandCursor
+
+        qtbot.mouseRelease(
+            window._title_bar,
+            Qt.MouseButton.LeftButton,
+            pos=QPoint(4, 4),
+        )
+        assert window._title_bar.cursor().shape() == Qt.CursorShape.OpenHandCursor
+    finally:
+        client.close()
 
 
 def test_delegate_set_rows_reports_only_changed_interaction_rows():

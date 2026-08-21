@@ -196,8 +196,8 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
         assert window._pinned_id == VISUAL_FIXTURE_PINNED_ID
         assert window._hover_id is None
         assert window._panel._name_label.text() == "ScoutHealer"
-        assert window._panel.height() == window._panel.target_height()
-        assert window._panel.minimumHeight() == window._panel.target_height()
+        assert window._panel.height() >= window._panel.target_height()
+        assert window._panel.minimumHeight() == window._panel.height()
         screen = window.screen()
         if screen is not None:
             assert window.geometry().top() >= screen.availableGeometry().top()
@@ -215,15 +215,33 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
         client.close()
 
 
-def test_overlay_visual_fixture_uses_content_safe_width_for_enabled_metrics(
-    qtbot,
-    tmp_path,
-):
+def test_overlay_visual_fixture_settles_with_reserved_panel_height(qtbot, tmp_path):
     _state, window, client = create_overlay_visual_window(tmp_path)
     qtbot.addWidget(window)
+    window._panel_reserved_height = window._panel.target_height() + 40
 
     try:
         show_overlay_visual_window(window, process_events=QApplication.processEvents)
+
+        assert window._panel.height() == window._panel_reserved_height
+        assert window._panel.height() >= window._panel.target_height()
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("scenario_name", sorted(OVERLAY_VISUAL_SCENARIOS))
+def test_overlay_visual_fixture_uses_content_safe_width_for_enabled_metrics(
+    qtbot, tmp_path, scenario_name
+):
+    _state, window, client = create_overlay_visual_window(tmp_path, scenario_name)
+    qtbot.addWidget(window)
+
+    try:
+        show_overlay_visual_window(
+            window,
+            scenario_name,
+            process_events=QApplication.processEvents,
+        )
 
         visible_width = sum(
             window._table.columnWidth(col)
@@ -232,7 +250,12 @@ def test_overlay_visual_fixture_uses_content_safe_width_for_enabled_metrics(
         )
         viewport = window._table.viewport()
         assert viewport is not None
-        assert viewport.width() >= visible_width
+        assert viewport.width() >= visible_width, (
+            window.width(),
+            window.minimumWidth(),
+            viewport.width(),
+            visible_width,
+        )
         scroll_bar = window._table.horizontalScrollBar()
         assert scroll_bar is None or scroll_bar.maximum() == 0
     finally:
@@ -365,7 +388,7 @@ def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
         assert window._panel._dungeon_rows[1][3].textFormat() == Qt.TextFormat.RichText
         assert "H 72-58" in window._panel._dungeon_rows[1][3].text()
         assert "M 39-52" in window._panel._dungeon_rows[1][3].text()
-        assert window._panel.height() == window._panel.target_height()
+        assert window._panel.height() >= window._panel.target_height()
         assert window._raid_boss_fetches_in_flight == {}
     finally:
         client.close()

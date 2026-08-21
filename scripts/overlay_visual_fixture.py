@@ -603,7 +603,8 @@ def show_overlay_visual_window(
         if (
             viewport is not None
             and viewport.width() > 0
-            and window._panel.height() == window._panel.target_height()
+            and window._panel.height() >= window._panel.target_height()
+            and window._panel.minimumHeight() == window._panel.height()
         ):
             return
     raise RuntimeError("Overlay visual fixture did not settle before screenshot")
