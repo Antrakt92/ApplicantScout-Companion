@@ -2883,7 +2883,7 @@ def test_readme_documents_snapshot_action_requires_enabled_addon():
     readme = _read_repo_text("README.md")
 
     assert (
-        "/apscout shotnow        force snapshot now while enabled (debug / manual sync)"
+        "/apscout shotnow        request snapshot while enabled; defers in combat/M+/boss fights"
         in readme
     )
     assert re.search(

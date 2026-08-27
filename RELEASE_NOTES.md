@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.14.1 - 27-Aug-2026
+
+Paired release with ApplicantScout addon `0.9.7`. This patch keeps QR transport
+current while removing avoidable in-game work during combat and active runs.
+
+### Fixed
+
+- Recreated or relisted groups publish their new applicant state without
+  requiring a WoW `/reload`.
+- The addon pauses QR work during combat, active Mythic+ runs, and raid boss
+  encounters, while remaining available between raid pulls.
+- Missed combat, challenge, or encounter end events recover from the current
+  client state instead of leaving transport stuck.
+- Disabling the addon stops idle QR interaction and LFG polling after its final
+  clear has settled.
+
+### Improved
+
+- Identical redundant deliveries reuse the already rendered QR, avoiding a
+  second encode and texture pass while preserving two physical screenshots.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.7`.
+- Installer: `ApplicantScoutCompanionSetup-0.14.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.14.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.14.1-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.14.1-release-manifest.json`
+
 ## 0.14.0 - 21-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.6`. This release makes the live
