@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.14.2 - 27-Aug-2026
+
+Paired release with ApplicantScout addon `0.9.8`. This patch restores reliable
+QR delivery around ordinary Blizzard panels, loading transitions, and transient
+screenshot decoder failures.
+
+### Fixed
+
+- A transient PIL/zbar screenshot scan failure now receives two bounded retries
+  for the exact file generation, then surfaces a visible decode failure instead
+  of waiting silently for another filesystem event or companion restart.
+- Keeping a vendor, map, character, or other tracked interaction panel open no
+  longer blocks applicant updates indefinitely; the addon uses a short visual
+  grace and then resumes transport.
+- Loading screens invalidate in-flight QR captures, and closing a long-lived
+  interaction panel schedules one safe resend of the latest snapshot.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.8`.
+- Installer: `ApplicantScoutCompanionSetup-0.14.2.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.14.2.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.14.2-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.14.2-release-manifest.json`
+
 ## 0.14.1 - 27-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.7`. This patch keeps QR transport

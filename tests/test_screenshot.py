@@ -3389,6 +3389,144 @@ def test_watcher_emits_decode_failed_for_marker_parse_failure(
     assert not image_path.exists()
 
 
+def test_watcher_retries_transient_scan_failure_without_new_filesystem_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_transient.jpg"
+    image_path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    results = iter(
+        [
+            screenshot_mod.DecodeResult(None, False, "transient scan failure"),
+            screenshot_mod.DecodeResult(
+                Snapshot(listing=None, version=None),
+                True,
+            ),
+        ]
+    )
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_TRANSIENT_SCAN_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: next(results),
+    )
+
+    watcher._on_new_file(image_path)
+
+    assert len(snapshots) == 1
+    assert failures == []
+    assert not image_path.exists()
+
+
+def test_watcher_transient_retry_follows_same_path_replacement_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_replaced.jpg"
+    image_path.write_bytes(b"old")
+    os.utime(image_path, ns=(1_000_000_000, 1_000_000_000))
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    decode_calls = 0
+
+    def decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal decode_calls
+        decode_calls += 1
+        if decode_calls == 1:
+            return screenshot_mod.DecodeResult(None, False, "transient scan failure")
+        return screenshot_mod.DecodeResult(Snapshot(listing=None, version=None), True)
+
+    def replace_during_retry(_delay: float) -> bool:
+        image_path.write_bytes(b"replacement-generation")
+        os.utime(image_path, ns=(1_000_000_001, 1_000_000_001))
+        return False
+
+    watcher.snapshotReceived.connect(snapshots.append)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+    monkeypatch.setattr(watcher._stopped, "wait", replace_during_retry)
+
+    watcher._on_new_file(image_path)
+
+    assert decode_calls == 2
+    assert len(snapshots) == 1
+    assert snapshots[0].source is not None
+    assert snapshots[0].source.size == len(b"replacement-generation")
+    assert not image_path.exists()
+
+
+def test_watcher_reports_transient_scan_failure_after_bounded_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_failed.jpg"
+    image_path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    failures: list[tuple[str, str]] = []
+    decode_calls = 0
+
+    def fail_decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal decode_calls
+        decode_calls += 1
+        return screenshot_mod.DecodeResult(None, False, "transient scan failure")
+
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_TRANSIENT_SCAN_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", fail_decode)
+
+    watcher._on_new_file(image_path)
+
+    assert decode_calls == 3
+    assert failures == [(str(image_path), "transient scan failure")]
+    assert image_path.exists()
+
+
+def test_watcher_stop_cancels_transient_scan_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_stopped.jpg"
+    image_path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    failures: list[tuple[str, str]] = []
+    decode_calls = 0
+
+    def fail_decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal decode_calls
+        decode_calls += 1
+        return screenshot_mod.DecodeResult(None, False, "transient scan failure")
+
+    def stop_during_retry(_delay: float) -> bool:
+        watcher.request_stop()
+        return True
+
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", fail_decode)
+    monkeypatch.setattr(watcher._stopped, "wait", stop_during_retry)
+
+    watcher._on_new_file(image_path)
+
+    assert decode_calls == 1
+    assert failures == []
+    assert image_path.exists()
+
+
 def test_watcher_retains_incomplete_fragments_and_emits_one_complete_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

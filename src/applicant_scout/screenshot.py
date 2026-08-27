@@ -140,6 +140,8 @@ _QR_RECOVERY_MAX_MODULE_PX = 10.0
 _BACKLOG_CLEANUP_LIMIT = 5000
 _RECENT_WORK_KEY_TTL_SECONDS = 3.0
 _GENERATION_RETRY_DELAY_SECONDS = 0.05
+_TRANSIENT_SCAN_RETRY_DELAY_SECONDS = 0.15
+_TRANSIENT_SCAN_MAX_RETRIES = 2
 # Bump when no-marker classification changes so older fingerprints are
 # reconsidered exactly once by the new decoder rather than hidden forever.
 _MANUAL_INDEX_VERSION = 2
@@ -2621,13 +2623,12 @@ class ScreenshotWatcher(QObject):
                     continue
                 remaining -= 1
                 decoded_key = claim.key
-                decode_succeeded = False
-                try:
-                    result = _decode_screenshot_result(path)
-                    decode_succeeded = True
-                except Exception as exc:  # noqa: BLE001
-                    _log.warning("backlog decode error %s: %s", path.name, exc)
-                    result = DecodeResult(None, False)
+                decoded = self._decode_claim_generation(path, claim, decoded_key)
+                if decoded is None:
+                    if self._stopped.is_set():
+                        return remaining, apply_closed, deleted, True
+                    continue
+                result, decode_succeeded = decoded
                 if self._stopped.is_set():
                     return remaining, apply_closed, deleted, True
                 generation_current = self._finalize_decode_result(
@@ -2651,6 +2652,15 @@ class ScreenshotWatcher(QObject):
                             return remaining, apply_closed, deleted, True
                         apply_closed = True
                     stop_scan = True
+                elif result.error_reason is not None and not result.has_marker:
+                    if recent and not apply_closed and not fragment_frontier_active:
+                        if not self._emit_decode_failed(
+                            path,
+                            result.error_reason,
+                            source,
+                        ):
+                            return remaining, apply_closed, deleted, True
+                        apply_closed = True
                 elif result.fragment is not None:
                     if not recent or apply_closed:
                         delete_current_marker = True
@@ -2787,6 +2797,51 @@ class ScreenshotWatcher(QObject):
             apply_closed = True
         return remaining, apply_closed, deleted, False
 
+    def _decode_claim_generation(
+        self,
+        path: Path,
+        claim: _ScreenshotWorkClaim,
+        decoded_key: _ScreenshotWorkKey,
+    ) -> tuple[DecodeResult, bool] | None:
+        decode_succeeded = False
+        try:
+            result = _decode_screenshot_result(path)
+            decode_succeeded = True
+        except Exception as exc:  # noqa: BLE001
+            _log.debug(
+                "decode error before APS1 ownership for %s: %r",
+                path.name,
+                exc,
+                exc_info=True,
+            )
+            result = DecodeResult(None, False)
+        retries = 0
+        while (
+            result.error_reason is not None
+            and not result.has_marker
+            and not result.decoder_unavailable
+            and retries < _TRANSIENT_SCAN_MAX_RETRIES
+        ):
+            if self._stopped.wait(_TRANSIENT_SCAN_RETRY_DELAY_SECONDS):
+                return None
+            current_stat = claim.refresh()
+            if current_stat is None:
+                return None
+            if claim.key != decoded_key:
+                break
+            retries += 1
+            try:
+                result = _decode_screenshot_result(path)
+                decode_succeeded = True
+            except Exception as exc:  # noqa: BLE001
+                _log.debug(
+                    "transient screenshot retry failed for %s: %r",
+                    path.name,
+                    exc,
+                    exc_info=True,
+                )
+        return result, decode_succeeded
+
     def _finalize_decode_result(
         self,
         claim: _ScreenshotWorkClaim,
@@ -2888,6 +2943,10 @@ class ScreenshotWatcher(QObject):
             )
             return
 
+        if result.error_reason is not None and not result.has_marker:
+            self._emit_decode_failed(path, result.error_reason, source)
+            return
+
         if result.fragment is not None:
             outcome = self._fragment_assembler.accept_fragment(
                 self._fragment_with_source(result.fragment, source),
@@ -2970,18 +3029,10 @@ class ScreenshotWatcher(QObject):
             return None
         decoded_key = claim.key
         source = self._source_from_stat(path, claim.stat_result)
-        decode_succeeded = False
-        try:
-            result = _decode_screenshot_result(path)
-            decode_succeeded = True
-        except Exception as exc:  # noqa: BLE001
-            _log.debug(
-                "decode error before APS1 ownership for %s: %r",
-                path.name,
-                exc,
-                exc_info=True,
-            )
-            result = DecodeResult(None, False)
+        decoded = self._decode_claim_generation(path, claim, decoded_key)
+        if decoded is None:
+            return None
+        result, decode_succeeded = decoded
         if self._stopped.is_set():
             return None
         if not self._finalize_decode_result(
