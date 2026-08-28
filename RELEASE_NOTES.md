@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.14.3 - 28-Aug-2026
+## 0.14.4 - 28-Aug-2026
 
-Paired release with ApplicantScout addon `0.9.9`. This patch restores reliable
+Paired release with ApplicantScout addon `0.9.10`. This patch restores reliable
 QR delivery around ordinary Blizzard panels, loading transitions, and transient
 screenshot decoder failures.
 
@@ -42,17 +42,19 @@ screenshot decoder failures.
   bounded forced-stop fallback, and release CI exercises the upgrade layout.
 - Release validation now exercises the pending-reboot guard with correctly
   typed Windows registry data before any installer is published.
+- Payload directory swaps now retry bounded transient Windows directory
+  contention before rolling an otherwise valid upgrade back.
 - Frozen builds exclude unused NumPy/pytest code, reject its accidental return,
   bundle the CPython license explicitly, and ship only runtime plus incorporated
   bootloader dependency notices instead of the test/build environment.
 
 ### Release Assets
 
-- Requires the ApplicantScout WoW addon `0.9.9`.
-- Installer: `ApplicantScoutCompanionSetup-0.14.3.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.14.3.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.14.3-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.14.3-release-manifest.json`
+- Requires the ApplicantScout WoW addon `0.9.10`.
+- Installer: `ApplicantScoutCompanionSetup-0.14.4.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.14.4.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.14.4-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.14.4-release-manifest.json`
 
 ## 0.14.1 - 27-Aug-2026
 

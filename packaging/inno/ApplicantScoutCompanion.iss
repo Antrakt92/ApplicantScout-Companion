@@ -84,6 +84,8 @@ const
   ProcessRunning = 1;
   ProcessExitPollAttempts = 10;
   ProcessExitPollMilliseconds = 500;
+  PayloadRenameRetryAttempts = 20;
+  PayloadRenameRetryMilliseconds = 500;
   FileAttributeDirectory = $00000010;
   FileAttributeReparsePoint = $00000400;
   InvalidFileAttributes = $FFFFFFFF;
@@ -99,6 +101,7 @@ var
   PayloadPromoted: Boolean;
   PayloadHadPrevious: Boolean;
   PayloadSwapCommitted: Boolean;
+  PayloadRenameFailureInjected: Boolean;
 
 function GetFileAttributesW(FileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -380,6 +383,40 @@ begin
     ((not FileExists(PendingPromotionMarker())) or DeleteFile(PendingPromotionMarker()));
 end;
 
+function ShouldInjectFirstPayloadRenameFailure(): Boolean;
+begin
+  Result :=
+    (not PayloadRenameFailureInjected) and
+    (GetEnv('GITHUB_ACTIONS') = 'true') and
+    (ExpandConstant('{param:APSCOUT_TEST_FAIL_FIRST_RENAME|0}') = '1');
+end;
+
+function RenamePayloadDirWithRetry(SourcePath: String; DestPath: String): Boolean;
+var
+  Attempt: Integer;
+begin
+  Result := False;
+  for Attempt := 1 to PayloadRenameRetryAttempts do begin
+    if ShouldInjectFirstPayloadRenameFailure() then begin
+      PayloadRenameFailureInjected := True;
+      Log('Injected one transient payload directory rename failure for upgrade smoke.');
+    end else if RenameFile(SourcePath, DestPath) then begin
+      Result := True;
+      Exit;
+    end;
+    if Attempt < PayloadRenameRetryAttempts then begin
+      { Windows can briefly retain a directory handle after the staged native
+        probe exits. Keep the transaction fail-closed, but allow that bounded
+        transient contention to clear before rollback. }
+      Sleep(PayloadRenameRetryMilliseconds);
+    end;
+  end;
+  Log(Format(
+    'Payload directory rename failed after %d attempts: %s -> %s.',
+    [PayloadRenameRetryAttempts, SourcePath, DestPath]
+  ));
+end;
+
 function RecoverInterruptedPayloadSwap(): Boolean;
 var
   CurrentDir: String;
@@ -403,7 +440,7 @@ begin
       if DirExists(BackupDir) then begin
         if not IsCompletePayload(BackupDir, '') or
            not RemovePayloadDir(CurrentDir) or
-           not RenameFile(BackupDir, CurrentDir) then begin
+           not RenamePayloadDirWithRetry(BackupDir, CurrentDir) then begin
           Exit;
         end;
       end else if not IsCompletePayload(CurrentDir, '') then begin
@@ -432,7 +469,7 @@ begin
       if not RemovePayloadDir(CurrentDir) then begin
         Exit;
       end;
-      if not RenameFile(BackupDir, CurrentDir) then begin
+      if not RenamePayloadDirWithRetry(BackupDir, CurrentDir) then begin
         Exit;
       end;
     end;
@@ -457,7 +494,7 @@ begin
     Exit;
   end;
   RemovePayloadDir(CurrentDir);
-  if not RenameFile(BackupDir, CurrentDir) then begin
+  if not RenamePayloadDirWithRetry(BackupDir, CurrentDir) then begin
     Log('WARNING: could not restore the previous companion payload.');
   end;
 end;
@@ -590,7 +627,8 @@ begin
   ) then begin
     RaiseException('Could not create the pending payload promotion marker.');
   end;
-  if DirExists(CurrentDir) and not RenameFile(CurrentDir, BackupDir) then begin
+  if DirExists(CurrentDir) and
+     not RenamePayloadDirWithRetry(CurrentDir, BackupDir) then begin
     RaiseException('Could not preserve the previous companion payload.');
   end;
   if ProbeCompanionProcess() <> ProcessAbsent then begin
@@ -600,7 +638,7 @@ begin
   if DirExists(BackupDir) and ShouldInjectPayloadPromotionFailure() then begin
     RaiseException('Injected payload promotion failure for upgrade smoke.');
   end;
-  if not RenameFile(NextDir, CurrentDir) then begin
+  if not RenamePayloadDirWithRetry(NextDir, CurrentDir) then begin
     RestorePayloadBackup();
     RaiseException('Could not promote the staged companion payload.');
   end;
@@ -1020,6 +1058,7 @@ begin
   PayloadPromoted := False;
   PayloadHadPrevious := False;
   PayloadSwapCommitted := False;
+  PayloadRenameFailureInjected := False;
   SelfUpdateWasRequested := SelfUpdateRequested();
   if not PayloadMutationGuard() then begin
     Result := 'The selected directory contains an unsafe filesystem redirection.';

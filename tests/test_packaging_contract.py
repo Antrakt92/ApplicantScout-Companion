@@ -849,11 +849,18 @@ def test_installer_replaces_removed_frozen_payload_instead_of_overlaying_it():
     assert "AfterInstall: CommitPayloadSwap" not in inno_script
     assert 'DestDir: "{code:CommitPayloadSwapForInstall}"' in inno_script
     assert "if not IsCompletePayload(NextDir, '{#MyAppVersion}')" in inno_script
-    assert (
-        "if DirExists(CurrentDir) and not RenameFile(CurrentDir, BackupDir)"
-        in inno_script
-    )
-    assert "if not RenameFile(NextDir, CurrentDir)" in inno_script
+    assert "function RenamePayloadDirWithRetry(" in inno_script
+    assert "PayloadRenameRetryAttempts = 20;" in inno_script
+    assert "PayloadRenameRetryMilliseconds = 500;" in inno_script
+    assert "function ShouldInjectFirstPayloadRenameFailure(): Boolean;" in inno_script
+    assert "(GetEnv('GITHUB_ACTIONS') = 'true')" in inno_script
+    assert "{param:APSCOUT_TEST_FAIL_FIRST_RENAME|0}" in inno_script
+    assert "PayloadRenameFailureInjected := True;" in inno_script
+    assert "Injected one transient payload directory rename failure" in inno_script
+    assert "not RenamePayloadDirWithRetry(CurrentDir, BackupDir)" in inno_script
+    assert "if not RenamePayloadDirWithRetry(NextDir, CurrentDir)" in inno_script
+    assert inno_script.count("RenamePayloadDirWithRetry(BackupDir, CurrentDir)") == 3
+    assert inno_script.count("RenameFile(") == 1
     commit = re.search(
         r"(?ms)^procedure CommitPayloadSwap\(\);\n(?P<body>.*?)(?=^procedure FinalizePayloadSwap)",
         inno_script,
@@ -941,6 +948,9 @@ def test_release_runs_ephemeral_contaminated_installer_upgrade_smoke():
     assert "Invoke-InstallerSmoke -FinalizationFailure" in smoke
     assert "Invoke-PendingRenameGuardSmoke" in smoke
     assert "Invoke-InstallerSmoke -PendingRenameFailure" in smoke
+    assert "Invoke-InstallerSmoke -TransientRenameFailure" in smoke
+    assert '"ApplicantScout-transient-rename-smoke.log"' in smoke
+    assert "did not exercise the retry path" in smoke
     assert "PendingFileRenameOperations" in smoke
     assert "RegistryValueKind]::MultiString" in smoke
     assert "[string[]]$OriginalValue = @()" in smoke
@@ -954,6 +964,7 @@ def test_release_runs_ephemeral_contaminated_installer_upgrade_smoke():
     assert "/APSCOUT_TEST_FAIL_PROMOTION=1" in smoke
     assert "/APSCOUT_TEST_FAIL_POST_PROMOTION=1" in smoke
     assert "/APSCOUT_TEST_FAIL_FINALIZATION=1" in smoke
+    assert "/APSCOUT_TEST_FAIL_FIRST_RENAME=1" in smoke
     assert "Failed upgrade did not preserve the previous working payload" in smoke
     assert (
         "Post-promotion rollback did not preserve the previous working payload" in smoke

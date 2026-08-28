@@ -39,10 +39,12 @@ function Invoke-InstallerSmoke {
         [switch]$ExpectFailure,
         [switch]$PostPromotionFailure,
         [switch]$FinalizationFailure,
-        [switch]$PendingRenameFailure
+        [switch]$PendingRenameFailure,
+        [switch]$TransientRenameFailure
     )
 
     $Arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS")
+    $TransientRenameLog = $null
     if ($PostPromotionFailure) {
         $ExpectFailure = $true
         $Arguments += "/APSCOUT_TEST_FAIL_POST_PROMOTION=1"
@@ -53,6 +55,12 @@ function Invoke-InstallerSmoke {
     }
     elseif ($PendingRenameFailure) {
         $ExpectFailure = $true
+    }
+    elseif ($TransientRenameFailure) {
+        $TransientRenameLog = Join-Path $env:RUNNER_TEMP "ApplicantScout-transient-rename-smoke.log"
+        Remove-Item -LiteralPath $TransientRenameLog -Force -ErrorAction SilentlyContinue
+        $Arguments += "/APSCOUT_TEST_FAIL_FIRST_RENAME=1"
+        $Arguments += "/LOG=`"$TransientRenameLog`""
     }
     elseif ($ExpectFailure) {
         $Arguments += "/APSCOUT_TEST_FAIL_PROMOTION=1"
@@ -68,6 +76,15 @@ function Invoke-InstallerSmoke {
     }
     if (-not $ExpectFailure -and $Process.ExitCode -ne 0) {
         throw "Installer upgrade smoke failed with exit code $($Process.ExitCode)."
+    }
+    if ($TransientRenameFailure) {
+        if (-not (Test-Path -LiteralPath $TransientRenameLog)) {
+            throw "Installer transient-rename smoke did not produce its diagnostic log."
+        }
+        $TransientRenameEvidence = Get-Content -LiteralPath $TransientRenameLog -Raw
+        if ($TransientRenameEvidence -notlike "*Injected one transient payload directory rename failure for upgrade smoke.*") {
+            throw "Installer transient-rename smoke did not exercise the retry path."
+        }
     }
 }
 
@@ -203,7 +220,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $ExpectedRoot "user-marker.txt"), "preserve")
     [System.IO.File]::WriteAllText((Join-Path $ConfigRoot "config-marker.txt"), "preserve")
 
-    Invoke-InstallerSmoke
+    Invoke-InstallerSmoke -TransientRenameFailure
     Assert-InstalledStartupProbe
 
     $Current = Join-Path $ExpectedRoot "current"
