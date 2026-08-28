@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -43,6 +44,8 @@ def _write_test_db(
 ) -> None:
     db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
     db.mkdir(parents=True, exist_ok=True)
+    lookup_path = db / "db_mythicplus_eu_lookup.lua"
+    generation_comment = _next_fixture_generation_comment(lookup_path)
     (db / "db_dungeons.lua").write_text(
         (
             """
@@ -72,12 +75,13 @@ ns.dungeons = {
     )
     encoded = "".join(f"\\{byte}" for byte in lookup_payload)
     order = ",".join(str(value) for value in encoding_order)
-    (db / "db_mythicplus_eu_lookup.lua").write_text(
+    lookup_path.write_text(
         'local provider={name=...,data=1,region="eu",date="test-mplus",'
         f'numCharacters={len(lookup_payload) // record_size},{milestone_metadata}'
         'lookup={},'
         f"recordSizeInBytes={record_size},encodingOrder={{{order}}}}}\n"
-        f'provider.lookup[1] = "{encoded}"\n',
+        f'provider.lookup[1] = "{encoded}"\n'
+        f"{generation_comment}\n",
         encoding="utf-8",
     )
 
@@ -146,6 +150,8 @@ def _write_test_raid_db(
 ) -> None:
     db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
     db.mkdir(parents=True, exist_ok=True)
+    lookup_path = db / "db_raiding_eu_lookup.lua"
+    generation_comment = _next_fixture_generation_comment(lookup_path)
     (db / "db_raiding_eu_characters.lua").write_text(
         'local provider={name=...,data=2,region="eu",date="test-raid",'
         f'numCharacters={len(lookup_payload) // record_size},db={{}}}}\n'
@@ -154,13 +160,14 @@ def _write_test_raid_db(
     )
     encoded = "".join(f"\\{byte}" for byte in lookup_payload)
     order = ",".join(str(value) for value in encoding_order)
-    (db / "db_raiding_eu_lookup.lua").write_text(
+    lookup_path.write_text(
         'local provider={name=...,data=2,region="eu",date="test-raid",'
         f'numCharacters={len(lookup_payload) // record_size},lookup={{}},'
         f"recordSizeInBytes={record_size},encodingOrder={{{order}}},"
         f'currentRaids={{{{["id"]=1,["name"]="Test Raid",["shortName"]="TR",'
         f'["bossCount"]={boss_count},["ordinal"]=1}}}},previousRaids={{}}}}\n'
-        f'provider.lookup[1] = "{encoded}"\n',
+        f'provider.lookup[1] = "{encoded}"\n'
+        f"{generation_comment}\n",
         encoding="utf-8",
     )
 
@@ -195,16 +202,15 @@ def _mark_test_db_changed(root: Path) -> None:
     path.write_text(path.read_text(encoding="utf-8") + "\n-- changed\n", encoding="utf-8")
 
 
-def _mark_test_raid_db_changed(root: Path) -> None:
-    path = (
-        root
-        / "Interface"
-        / "AddOns"
-        / "RaiderIO"
-        / "db"
-        / "db_raiding_eu_lookup.lua"
-    )
-    path.write_text(path.read_text(encoding="utf-8") + "\n-- changed\n", encoding="utf-8")
+def _next_fixture_generation_comment(path: Path) -> str:
+    marker = "-- fixture generation: "
+    previous_width = 0
+    if path.is_file():
+        previous = path.read_text(encoding="utf-8")
+        match = re.search(r"(?m)^-- fixture generation: (x+)$", previous)
+        if match is not None:
+            previous_width = len(match.group(1))
+    return marker + ("x" * (previous_width + 1))
 
 
 def _set_provider_region(root: Path, family: str, region: str) -> None:
@@ -1692,11 +1698,6 @@ def test_reader_retries_when_raid_source_changes_during_load(
     assert first is not None
     assert first.raid_progress["M"]["boss_kills"] == [2, 0, 1]
     _write_raid_generation(tmp_path, (1, 1, 0))
-    # Windows runners can retain the same size and timestamp across immediate
-    # rewrites. Make the pre-load generation observably stale so this test
-    # exercises the intended mid-load replacement retry instead of filesystem
-    # timestamp granularity.
-    _mark_test_raid_db_changed(tmp_path)
 
     load_region_db = raiderio_local_mod._RegionDB.load
     calls = 0
