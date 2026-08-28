@@ -195,6 +195,18 @@ def _mark_test_db_changed(root: Path) -> None:
     path.write_text(path.read_text(encoding="utf-8") + "\n-- changed\n", encoding="utf-8")
 
 
+def _mark_test_raid_db_changed(root: Path) -> None:
+    path = (
+        root
+        / "Interface"
+        / "AddOns"
+        / "RaiderIO"
+        / "db"
+        / "db_raiding_eu_lookup.lua"
+    )
+    path.write_text(path.read_text(encoding="utf-8") + "\n-- changed\n", encoding="utf-8")
+
+
 def _set_provider_region(root: Path, family: str, region: str) -> None:
     db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
     for suffix in ("characters", "lookup"):
@@ -1680,6 +1692,11 @@ def test_reader_retries_when_raid_source_changes_during_load(
     assert first is not None
     assert first.raid_progress["M"]["boss_kills"] == [2, 0, 1]
     _write_raid_generation(tmp_path, (1, 1, 0))
+    # Windows runners can retain the same size and timestamp across immediate
+    # rewrites. Make the pre-load generation observably stale so this test
+    # exercises the intended mid-load replacement retry instead of filesystem
+    # timestamp granularity.
+    _mark_test_raid_db_changed(tmp_path)
 
     load_region_db = raiderio_local_mod._RegionDB.load
     calls = 0
