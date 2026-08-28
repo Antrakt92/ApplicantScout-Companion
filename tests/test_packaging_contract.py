@@ -943,6 +943,13 @@ def test_release_runs_ephemeral_contaminated_installer_upgrade_smoke():
     assert "Invoke-InstallerSmoke -PendingRenameFailure" in smoke
     assert "PendingFileRenameOperations" in smoke
     assert "RegistryValueKind]::MultiString" in smoke
+    assert "[string[]]$OriginalValue = @()" in smoke
+    assert '[string[]]$InjectedPair = @("\\??\\$PendingTarget", "")' in smoke
+    assert "[string[]]$InjectedValue = @($OriginalValue) + @($InjectedPair)" in smoke
+    assert "$InjectionWritten = $true" in smoke
+    assert "[string[]]$CurrentValue = $SessionManager.GetValue(" in smoke
+    assert "[string[]]$RestoredValue = @($OriginalValue) + @($ConcurrentSuffix)" in smoke
+    assert "Refusing to overwrite concurrent pending-rename changes" in smoke
     assert "DeleteValue($ValueName, $false)" in smoke
     assert "/APSCOUT_TEST_FAIL_PROMOTION=1" in smoke
     assert "/APSCOUT_TEST_FAIL_POST_PROMOTION=1" in smoke

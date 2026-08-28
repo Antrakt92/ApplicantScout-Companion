@@ -100,7 +100,8 @@ function Invoke-PendingRenameGuardSmoke {
     )
     $SessionManager = $null
     $HadValue = $false
-    $OriginalValue = $null
+    [string[]]$OriginalValue = @()
+    $InjectionWritten = $false
     try {
         $SessionManager = $BaseKey.OpenSubKey($SessionManagerPath, $true)
         if ($null -eq $SessionManager) {
@@ -117,33 +118,78 @@ function Invoke-PendingRenameGuardSmoke {
                 [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
             )
         }
-        else {
-            $OriginalValue = [string[]]@()
-        }
         $PendingTarget = Join-Path $ExpectedRoot "current\ApplicantScout.exe"
-        $InjectedValue = [string[]]@($OriginalValue) + [string[]]@("\??\$PendingTarget", "")
+        [string[]]$InjectedPair = @("\??\$PendingTarget", "")
+        [string[]]$InjectedValue = @($OriginalValue) + @($InjectedPair)
         $SessionManager.SetValue(
             $ValueName,
             $InjectedValue,
             [Microsoft.Win32.RegistryValueKind]::MultiString
         )
+        $InjectionWritten = $true
         Invoke-InstallerSmoke -PendingRenameFailure
     }
     finally {
-        if ($null -ne $SessionManager) {
-            if ($HadValue) {
-                $SessionManager.SetValue(
+        try {
+            if ($null -ne $SessionManager -and $InjectionWritten) {
+                if (-not ($SessionManager.GetValueNames() -contains $ValueName) -or
+                    $SessionManager.GetValueKind($ValueName) -ne [Microsoft.Win32.RegistryValueKind]::MultiString) {
+                    throw "PendingFileRenameOperations changed type or disappeared during smoke cleanup."
+                }
+                [string[]]$CurrentValue = $SessionManager.GetValue(
                     $ValueName,
-                    [string[]]$OriginalValue,
-                    [Microsoft.Win32.RegistryValueKind]::MultiString
+                    [string[]]@(),
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
                 )
+                $OriginalCount = $OriginalValue.Count
+                $InjectedCount = $InjectedPair.Count
+                if ($CurrentValue.Count -lt ($OriginalCount + $InjectedCount)) {
+                    throw "PendingFileRenameOperations was truncated during smoke cleanup."
+                }
+                for ($Index = 0; $Index -lt $OriginalCount; $Index++) {
+                    if (-not [string]::Equals(
+                        $CurrentValue[$Index],
+                        $OriginalValue[$Index],
+                        [System.StringComparison]::Ordinal
+                    )) {
+                        throw "Refusing to overwrite concurrent pending-rename changes."
+                    }
+                }
+                for ($Index = 0; $Index -lt $InjectedCount; $Index++) {
+                    if (-not [string]::Equals(
+                        $CurrentValue[$OriginalCount + $Index],
+                        $InjectedPair[$Index],
+                        [System.StringComparison]::Ordinal
+                    )) {
+                        throw "Injected pending-rename guard changed before smoke cleanup."
+                    }
+                }
+                [string[]]$ConcurrentSuffix = @()
+                $SuffixStart = $OriginalCount + $InjectedCount
+                if ($CurrentValue.Count -gt $SuffixStart) {
+                    $ConcurrentSuffix = [string[]]@(
+                        $CurrentValue[$SuffixStart..($CurrentValue.Count - 1)]
+                    )
+                }
+                [string[]]$RestoredValue = @($OriginalValue) + @($ConcurrentSuffix)
+                if ($HadValue -or $RestoredValue.Count -gt 0) {
+                    $SessionManager.SetValue(
+                        $ValueName,
+                        $RestoredValue,
+                        [Microsoft.Win32.RegistryValueKind]::MultiString
+                    )
+                }
+                else {
+                    $SessionManager.DeleteValue($ValueName, $false)
+                }
             }
-            else {
-                $SessionManager.DeleteValue($ValueName, $false)
-            }
-            $SessionManager.Dispose()
         }
-        $BaseKey.Dispose()
+        finally {
+            if ($null -ne $SessionManager) {
+                $SessionManager.Dispose()
+            }
+            $BaseKey.Dispose()
+        }
     }
 }
 
