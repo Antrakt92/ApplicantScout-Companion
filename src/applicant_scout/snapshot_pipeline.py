@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+import logging
+import threading
 from typing import Any, Protocol
 
 from .producer_identity import (
@@ -12,6 +14,9 @@ from .producer_identity import (
     producer_identity_matches as normalized_producer_identity_matches,
 )
 from .screenshot import Snapshot
+
+
+_log = logging.getLogger("applicant_scout.snapshot_pipeline")
 
 
 _SNAPSHOT_AUTHORITY_LISTING = 1 << 0
@@ -40,9 +45,7 @@ def snapshot_authority_mask(snap: object) -> int:
     terminal_clear = bool(getattr(snap, "terminal_clear", False))
     lfg_unavailable = bool(getattr(snap, "lfg_unavailable", False))
     roster_unavailable = bool(getattr(snap, "roster_unavailable", False))
-    applicants_unavailable = bool(
-        getattr(snap, "applicants_unavailable", False)
-    )
+    applicants_unavailable = bool(getattr(snap, "applicants_unavailable", False))
     authority = 0
     if terminal_clear or not lfg_unavailable:
         authority |= (
@@ -161,11 +164,7 @@ def merge_snapshot_segment(snapshots: tuple[Snapshot, ...]) -> Snapshot:
         None,
     )
     leader_source = next(
-        (
-            snap
-            for snap in reversed(snapshots)
-            if snapshot_carries_leader_update(snap)
-        ),
+        (snap for snap in reversed(snapshots) if snapshot_carries_leader_update(snap)),
         None,
     )
     listing_seed_source = None
@@ -180,17 +179,13 @@ def merge_snapshot_segment(snapshots: tuple[Snapshot, ...]) -> Snapshot:
             listing_source.listing
             if listing_source is not None
             else (
-                listing_seed_source.listing
-                if listing_seed_source is not None
-                else None
+                listing_seed_source.listing if listing_seed_source is not None else None
             )
         ),
         version=version,
         leader_key=(leader_source.leader_key if leader_source is not None else None),
         applicants=(
-            list(applicants_source.applicants)
-            if applicants_source is not None
-            else []
+            list(applicants_source.applicants) if applicants_source is not None else []
         ),
         roster=list(roster_source.roster) if roster_source is not None else [],
         terminal_clear=False,
@@ -205,9 +200,7 @@ def snapshot_application_plan(
     cache_snapshots: tuple[Snapshot, ...],
 ) -> tuple[tuple[object, tuple[object, ...]], ...]:
     """Build state-application steps while retaining original cache inputs."""
-    typed_snapshots = tuple(
-        snap for snap in snapshots if isinstance(snap, Snapshot)
-    )
+    typed_snapshots = tuple(snap for snap in snapshots if isinstance(snap, Snapshot))
     if len(typed_snapshots) != len(snapshots):
         return tuple((snap, (snap,)) for snap in snapshots)
 
@@ -249,14 +242,23 @@ class SnapshotApplyQueue:
         self._generation = generation
         self._live_snapshot_cache_writer = live_snapshot_cache_writer
         self._scheduler = scheduler
+        self._lock = threading.RLock()
         self._pending: tuple[str, tuple[object, ...]] | None = None
         self._pending_cache_snapshots: tuple[Snapshot, ...] = ()
         self._retained_decode_failure: tuple[str, str, object | None] | None = None
         self._last_applied_source_key: tuple[int, str, int] | None = None
         self._last_reported_failure_key: tuple[int, str, int] | None = None
         self._flush_pending = False
+        self._planning_retry_attempted = False
+        self._apply_retry_attempted = False
 
     def enqueue_snapshot(self, snap: object) -> None:
+        with self._lock:
+            self._enqueue_snapshot_locked(snap)
+
+    def _enqueue_snapshot_locked(self, snap: object) -> None:
+        if self._pending is None and not self._flush_pending:
+            self._apply_retry_attempted = False
         pending_snapshots: tuple[object, ...] = ()
         if self._pending is not None and self._pending[0] == "snapshot":
             pending_snapshots = self._pending[1]
@@ -271,6 +273,7 @@ class SnapshotApplyQueue:
             "snapshot",
             append_pending_snapshot(pending_snapshots, snap),
         )
+        self._planning_retry_attempted = False
         self._schedule_flush()
 
     @staticmethod
@@ -308,6 +311,15 @@ class SnapshotApplyQueue:
         reason: str,
         source: object | None = None,
     ) -> None:
+        with self._lock:
+            self._enqueue_decode_failed_locked(path, reason, source)
+
+    def _enqueue_decode_failed_locked(
+        self,
+        path: str,
+        reason: str,
+        source: object | None = None,
+    ) -> None:
         # WHY: a decode failure has no usable state. If a valid snapshot is
         # already waiting for the GUI flush, keep that state update and retain
         # only a source-stamped failure that may prove newer after apply.
@@ -330,9 +342,27 @@ class SnapshotApplyQueue:
         if self._flush_pending:
             return
         self._flush_pending = True
-        self._scheduler(self.flush)
+        try:
+            self._scheduler(self.flush)
+        except Exception:  # noqa: BLE001 - retain pending state for the next event
+            self._flush_pending = False
+            _log.exception("could not schedule snapshot flush; pending state retained")
+
+    def _retain_failed_snapshot_apply(
+        self,
+        snapshots: tuple[object, ...],
+        cache_snapshots: tuple[Snapshot, ...],
+    ) -> None:
+        if not self._signal_gate.is_current(self._generation):
+            return
+        self._pending = ("snapshot", snapshots)
+        self._pending_cache_snapshots = cache_snapshots
 
     def flush(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
         if self._pending is None:
             self._flush_pending = False
             return
@@ -345,27 +375,107 @@ class SnapshotApplyQueue:
             return
         if kind == "snapshot":
             latest_snap = args[-1]
-            getattr(self._window, "note_decode", lambda *_args: None)(latest_snap)
-            for snap, step_cache_snapshots in snapshot_application_plan(
-                args,
-                cache_snapshots,
-            ):
+            try:
+                getattr(self._window, "note_decode", lambda *_args: None)(latest_snap)
+            except Exception:  # noqa: BLE001 - UI health must not drop state
+                _log.exception("snapshot decode notification failed")
+            try:
+                application_plan = snapshot_application_plan(args, cache_snapshots)
+            except Exception:  # noqa: BLE001 - retain undecided authoritative state
+                _log.exception("snapshot application planning failed; retaining state")
+                self._retain_failed_snapshot_apply(
+                    args,
+                    cache_snapshots,
+                )
+                if not self._planning_retry_attempted:
+                    self._planning_retry_attempted = True
+                    self._schedule_flush()
+                return
+            self._planning_retry_attempted = False
+            for snap, step_cache_snapshots in application_plan:
                 if not self._signal_gate.is_current(self._generation):
                     return
-                getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
+                try:
+                    getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
+                except Exception:  # noqa: BLE001 - preserve state at the GUI boundary
+                    _log.exception("snapshot apply failed; resetting transport state")
+                    try:
+                        getattr(
+                            self._machine,
+                            "recover_snapshot_apply_failure",
+                            lambda: None,
+                        )()
+                    except Exception:  # noqa: BLE001 - still surface the root failure
+                        _log.exception("snapshot apply failure recovery also failed")
+                    if self._live_snapshot_cache_writer is not None:
+                        try:
+                            cleared = getattr(
+                                self._live_snapshot_cache_writer,
+                                "clear",
+                                lambda: False,
+                            )()
+                            if not cleared:
+                                _log.warning(
+                                    "live snapshot cache clear remains pending "
+                                    "after apply failure"
+                                )
+                        except Exception:  # noqa: BLE001 - keep memory fail-closed
+                            _log.exception(
+                                "live snapshot cache clear failed after apply failure"
+                            )
+                    source = getattr(snap, "source", None)
+                    path = getattr(source, "file_id", "screenshot")
+                    will_retry = (
+                        not self._apply_retry_attempted
+                        and self._signal_gate.is_current(self._generation)
+                    )
+                    self._report_decode_failure(
+                        (
+                            str(path),
+                            (
+                                "Snapshot apply failed; state was reset. "
+                                + (
+                                    "Retrying once."
+                                    if will_retry
+                                    else "Waiting for a fresh capture."
+                                )
+                            ),
+                            source,
+                        )
+                    )
+                    if will_retry:
+                        self._apply_retry_attempted = True
+                        # Recovery clears every transport surface because the
+                        # failed step may have partially mutated any of them.
+                        # Rebuild from the complete original snapshot sequence;
+                        # retrying only the unapplied tail would lose authority
+                        # established by an earlier successful step.
+                        self._retain_failed_snapshot_apply(
+                            args,
+                            cache_snapshots,
+                        )
+                        self._schedule_flush()
+                    return
                 if not self._signal_gate.is_current(self._generation):
                     return
                 if self._live_snapshot_cache_writer is not None:
                     for cache_snap in step_cache_snapshots:
                         if isinstance(cache_snap, Snapshot):
-                            self._live_snapshot_cache_writer.submit(cache_snap)
-                getattr(
-                    self._window,
-                    "note_snapshot_applied",
-                    lambda *_args: None,
-                )(snap)
+                            try:
+                                self._live_snapshot_cache_writer.submit(cache_snap)
+                            except Exception:  # noqa: BLE001 - live state is authoritative
+                                _log.exception("live snapshot cache submission failed")
+                try:
+                    getattr(
+                        self._window,
+                        "note_snapshot_applied",
+                        lambda *_args: None,
+                    )(snap)
+                except Exception:  # noqa: BLE001 - observer UI must not replay state
+                    _log.exception("snapshot applied notification failed")
             if not self._signal_gate.is_current(self._generation):
                 return
+            self._apply_retry_attempted = False
             latest_source_key = self._source_order_key(
                 getattr(latest_snap, "source", None)
             )
@@ -410,8 +520,14 @@ class SnapshotApplyQueue:
     ) -> None:
         path, reason, _source = failure
         self._last_reported_failure_key = self._source_order_key(_source)
-        self._decode_failed_callback(str(path), str(reason))
-        getattr(self._window, "note_decode_failed", lambda *_args: None)(
-            str(path),
-            str(reason),
-        )
+        try:
+            self._decode_failed_callback(str(path), str(reason))
+        except Exception:  # noqa: BLE001 - one observer must not suppress another
+            _log.exception("snapshot decode failure callback failed")
+        try:
+            getattr(self._window, "note_decode_failed", lambda *_args: None)(
+                str(path),
+                str(reason),
+            )
+        except Exception:  # noqa: BLE001 - failure reporting is an isolation boundary
+            _log.exception("snapshot decode failure notification failed")

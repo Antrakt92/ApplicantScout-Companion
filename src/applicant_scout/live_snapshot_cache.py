@@ -440,6 +440,30 @@ class LiveSnapshotCacheWriter:
         with self._write_lock:
             pass
 
+    def clear(self) -> bool:
+        """Serialize a durable clear after any in-flight save."""
+        with self._write_lock:
+            with self._lock:
+                if self._closed:
+                    return False
+                self._generation += 1
+                self._cancel_timer_locked()
+                self._pending = None
+                self._last_saved_content = None
+                self._last_saved_at = None
+                operation = _PendingLiveSnapshotCacheOperation(
+                    "clear",
+                    self._source_id,
+                )
+                self._latest_logical_operation = operation
+                generation = self._generation
+            succeeded = self._perform_operation(operation)
+            if succeeded:
+                self._record_successful_operation(operation, generation)
+            else:
+                self._requeue_failed_operation(operation, generation)
+            return succeeded
+
     def close(self) -> bool:
         # WHY: reject new submissions before boundedly joining any timer-owned
         # write; a failed in-flight operation is then available for final retry.
@@ -481,7 +505,19 @@ class LiveSnapshotCacheWriter:
         timer = threading.Timer(self._save_debounce_seconds, self.flush)
         timer.daemon = True
         self._timer = timer
-        timer.start()
+        try:
+            timer.start()
+        except Exception:
+            # A failed Thread.start leaves no worker that can clear this slot.
+            # Keep the pending operation, but release the timer sentinel so a
+            # later snapshot can schedule persistence again.
+            if self._timer is timer:
+                self._timer = None
+            try:
+                timer.cancel()
+            except Exception:  # noqa: BLE001 - retain the original start error
+                pass
+            raise
 
     def _cancel_timer_locked(self) -> None:
         timer = self._timer

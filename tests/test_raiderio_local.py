@@ -39,6 +39,7 @@ def _write_test_db(
     record_size: int = 5,
     encoding_order: tuple[int, ...] = (1, 2, 10),
     dungeons: tuple[str, ...] = ("Skyreach", "Pit of Saron"),
+    keystone_milestone_levels: tuple[int, ...] | None = None,
 ) -> None:
     db = root / "Interface" / "AddOns" / "RaiderIO" / "db"
     db.mkdir(parents=True, exist_ok=True)
@@ -58,9 +59,14 @@ ns.dungeons = {
         ),
         encoding="utf-8",
     )
+    milestone_metadata = ""
+    if keystone_milestone_levels is not None:
+        levels = ",".join(str(value) for value in keystone_milestone_levels)
+        milestone_metadata = f"keystoneMilestoneLevels={{{levels}}},"
     (db / "db_mythicplus_eu_characters.lua").write_text(
         'local provider={name=...,data=1,region="eu",date="test-mplus",'
-        f'numCharacters={len(lookup_payload) // record_size},db={{}}}}\n'
+        f'numCharacters={len(lookup_payload) // record_size},{milestone_metadata}'
+        'db={}}\n'
         'provider.db["Ragnaros"]={0,"Alphapack","Chinie"}\n',
         encoding="utf-8",
     )
@@ -68,7 +74,8 @@ ns.dungeons = {
     order = ",".join(str(value) for value in encoding_order)
     (db / "db_mythicplus_eu_lookup.lua").write_text(
         'local provider={name=...,data=1,region="eu",date="test-mplus",'
-        f'numCharacters={len(lookup_payload) // record_size},lookup={{}},'
+        f'numCharacters={len(lookup_payload) // record_size},{milestone_metadata}'
+        'lookup={},'
         f"recordSizeInBytes={record_size},encodingOrder={{{order}}}}}\n"
         f'provider.lookup[1] = "{encoded}"\n',
         encoding="utf-8",
@@ -297,6 +304,90 @@ def test_reader_decodes_timed_dungeon_rows_from_local_raiderio_db(tmp_path: Path
     assert profile.current_score == 3074
     assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
     assert profile.raid_progress == {}
+
+
+def test_reader_decodes_current_303_bit_mplus_provider_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    encoding_order = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 13, 16)
+    milestone_levels = (15, 12, 10, 7, 4, 2)
+    dungeon_names = raiderio_local_mod.MPLUS_RAIDERIO_DUNGEON_ORDER
+    record = bytes.fromhex(
+        "80adc0b35cb0be03db25040a12223e7e9e1995100e019c96a7d64136251f1815"
+        "3228376ed711"
+    )
+    assert len(record) == 38
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_EXPECTED_RAIDERIO_DUNGEON_ORDER",
+        dungeon_names,
+    )
+    _write_test_db(
+        tmp_path,
+        record + record,
+        record_size=38,
+        encoding_order=encoding_order,
+        dungeons=dungeon_names,
+        keystone_milestone_levels=milestone_levels,
+    )
+
+    reader = RaiderIOLocalReader(tmp_path)
+    profile = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3456
+    assert profile.dungeons == [
+        {"name": "Kings' Rest", "key_level": 15},
+        {"name": "Temple of Sethraliss", "key_level": 12},
+        {"name": "Ruby Life Pools", "key_level": 10},
+        {"name": "The Blinding Vale", "key_level": 7},
+        {"name": "Voidscar Arena", "key_level": 14},
+        {"name": "Altar of Fangs", "key_level": 11},
+    ]
+    db = reader._cache["eu"].db
+    assert db is not None
+    meta = db._mplus_meta
+    assert meta is not None
+    assert meta.keystone_milestone_levels == milestone_levels
+    assert sum(
+        raiderio_local_mod._encoding_field_width(
+            field,
+            len(dungeon_names),
+            len(milestone_levels),
+        )
+        for field in meta.encoding_order
+    ) == 303
+
+
+def test_reader_uses_dynamic_keystone_milestone_count(tmp_path: Path):
+    record = _pack_bits(
+        [
+            (3074, 13),
+            (6, 8),
+            (3, 8),
+            (0, 6),
+            (0, 2),
+            (12, 6),
+            (2, 2),
+        ],
+        6,
+    )
+    _write_test_db(
+        tmp_path,
+        record + record,
+        record_size=6,
+        encoding_order=(1, 9, 10),
+        keystone_milestone_levels=(15, 10),
+    )
+
+    profile = RaiderIOLocalReader(tmp_path).lookup_profile(
+        "Chinie", "Ragnaros", "EU"
+    )
+
+    assert profile is not None
+    assert profile.current_score == 3074
+    assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
 
 
 def test_reader_name_index_preserves_first_casefold_match(tmp_path: Path):
@@ -844,15 +935,16 @@ def test_reader_hardens_decoded_lookup_payload_cache_parent_temp_and_target(
     )
     cache_dir = tmp_path / "cache"
     calls: list[tuple[str, Path]] = []
+    monkeypatch.setattr(atomic_io_mod, "_is_windows", lambda: False)
     monkeypatch.setattr(
         atomic_io_mod,
         "apply_private_directory_mode",
-        lambda path: calls.append(("dir", Path(path))),
+        lambda path: calls.append(("dir", Path(path))) or True,
     )
     monkeypatch.setattr(
         atomic_io_mod,
         "apply_private_file_mode",
-        lambda path: calls.append(("file", Path(path))),
+        lambda path: calls.append(("file", Path(path))) or True,
     )
     reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
 
@@ -887,13 +979,13 @@ def test_reader_hardens_existing_decoded_lookup_payload_cache_on_read_hit(
     monkeypatch.setattr(
         raiderio_local_mod,
         "apply_private_directory_mode",
-        lambda path: calls.append(("dir", Path(path))),
+        lambda path: calls.append(("dir", Path(path))) or True,
         raising=False,
     )
     monkeypatch.setattr(
         raiderio_local_mod,
         "apply_private_file_mode",
-        lambda path: calls.append(("file", Path(path))),
+        lambda path: calls.append(("file", Path(path))) or True,
         raising=False,
     )
 
@@ -977,7 +1069,10 @@ def test_reader_invalidates_decoded_lookup_payload_cache_when_lookup_file_change
 
 def test_reader_invalidates_mplus_caches_when_content_changes_with_same_stat(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    clock = [100.0]
+    monkeypatch.setattr(raiderio_local_mod.time, "monotonic", lambda: clock[0])
     old_payload = _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2)
     new_payload = _record(3200, 15, 14, 1, 0) + _record(3000, 0, 16, 0, 2)
     _write_test_db(tmp_path, old_payload)
@@ -1009,8 +1104,11 @@ def test_reader_invalidates_mplus_caches_when_content_changes_with_same_stat(
         cache_dir=cache_dir,
     ).lookup_profile("Chinie", "Ragnaros", "EU")
     new_cache_files = list(cache_dir.rglob("*.payload.bin"))
+    unchanged_before_audit = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    clock[0] += raiderio_local_mod._CONTENT_AUDIT_INTERVAL_SECONDS
     refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
 
+    assert unchanged_before_audit == first
     assert refreshed is not None
     assert refreshed.current_score == 3000
     assert refreshed.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
@@ -1021,7 +1119,10 @@ def test_reader_invalidates_mplus_caches_when_content_changes_with_same_stat(
 
 def test_reader_invalidates_raid_caches_when_content_changes_with_same_stat(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    clock = [100.0]
+    monkeypatch.setattr(raiderio_local_mod.time, "monotonic", lambda: clock[0])
     mplus_payload = _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2)
     old_raid_payload = _raid_record(
         (1, (0, 0, 0)),
@@ -1063,11 +1164,38 @@ def test_reader_invalidates_raid_caches_when_content_changes_with_same_stat(
         tmp_path,
         cache_dir=cache_dir,
     ).lookup_profile("Chinie", "Ragnaros", "EU")
+    unchanged_before_audit = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    clock[0] += raiderio_local_mod._CONTENT_AUDIT_INTERVAL_SECONDS
     refreshed = reader.lookup_profile("Chinie", "Ragnaros", "EU")
 
+    assert unchanged_before_audit == first
     assert refreshed is not None
     assert refreshed.raid_progress["M"]["boss_kills"] == [0, 1, 0]
     assert restarted == refreshed
+
+
+def test_reader_hot_cache_uses_stat_gate_without_content_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    clock = [100.0]
+    monkeypatch.setattr(raiderio_local_mod.time, "monotonic", lambda: clock[0])
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 0) + _record(3074, 0, 12, 0, 2),
+    )
+    reader = RaiderIOLocalReader(tmp_path)
+    first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
+    assert first is not None
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_region_db_fingerprint",
+        lambda *_args: pytest.fail("unchanged hot cache must not hash provider files"),
+    )
+
+    for _ in range(5):
+        clock[0] += 1.0
+        assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == first
 
 
 def test_reader_rejects_shifted_records_from_invalid_lookup_utf8_and_keeps_fallback(
@@ -1882,6 +2010,41 @@ def test_reader_rejects_unknown_encoding_field_id(tmp_path: Path, caplog: pytest
 
     assert reader.lookup_profile("Chinie", "Ragnaros", "EU") is None
     assert "unsupported RaiderIO encoding field" in caplog.text
+
+
+def test_reader_rejects_milestone_field_without_provider_metadata(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    _write_test_db(
+        tmp_path,
+        bytes(22),
+        record_size=11,
+        encoding_order=(1, 9, 10),
+    )
+
+    assert RaiderIOLocalReader(tmp_path).lookup_profile(
+        "Chinie", "Ragnaros", "EU"
+    ) is None
+    assert "missing keystone milestone levels" in caplog.text
+
+
+def test_region_load_validates_header_before_reading_full_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _write_test_db(
+        tmp_path,
+        _record(3200, 15, 14, 1, 1),
+        encoding_order=(1, 99, 10),
+    )
+    monkeypatch.setattr(
+        raiderio_local_mod,
+        "_read_utf8_source_with_digest",
+        lambda *_args: pytest.fail("invalid header must fail before full lookup read"),
+    )
+
+    assert raiderio_local_mod._RegionDB.load(tmp_path, "eu") is None
 
 
 def test_reader_rejects_known_field_bit_budget_overrun(

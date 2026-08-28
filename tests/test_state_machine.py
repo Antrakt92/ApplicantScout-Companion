@@ -109,6 +109,11 @@ class _OSErrorRioReader:
         raise OSError("RaiderIO DB locked")
 
 
+class _UnexpectedRaisingRioReader:
+    def lookup_profile(self, *_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("unexpected native reader failure")
+
+
 class _RaidOnlyRioReader:
     def lookup_profile(self, *_args: object, **_kwargs: object) -> object:
         return type(
@@ -877,6 +882,109 @@ def test_local_rio_lookup_oserror_does_not_abort_snapshot():
     )
 
     assert state.applicants["42:1"].rio_dungeons == decoded_rows
+
+
+def test_local_rio_internal_typeerror_never_retries_with_sync_loading_enabled():
+    class InternalTypeErrorReader:
+        def __init__(self) -> None:
+            self.allow_load_calls: list[bool] = []
+
+        def lookup_profile(
+            self,
+            _name: str,
+            _realm: str,
+            _region: str | None,
+            *,
+            allow_load: bool = True,
+        ) -> object:
+            self.allow_load_calls.append(allow_load)
+            raise TypeError("decoder bug, not a legacy signature")
+
+    reader = InternalTypeErrorReader()
+    state = AppState()
+    sm = StateMachine(state, rio_reader=reader)
+    decoded_rows = [{"name": "Skyreach", "key_level": 15}]
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[
+                _decoded(
+                    aid=42,
+                    member_idx=1,
+                    name="Chinie",
+                    rio_dungeons=decoded_rows,
+                )
+            ],
+        )
+    )
+
+    assert reader.allow_load_calls == [False]
+    assert state.applicants["42:1"].rio_dungeons == decoded_rows
+
+
+def test_unexpected_local_rio_failure_cannot_interrupt_authoritative_clear():
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Chinie")],
+        )
+    )
+    sm._rio_reader = _UnexpectedRaisingRioReader()
+    events: list[str] = []
+    sm.listingChanged.connect(lambda: events.append("listing"))
+    sm.cleared.connect(lambda: events.append("cleared"))
+    sm.rosterChanged.connect(lambda: events.append("roster"))
+
+    sm.apply_snapshot(
+        Snapshot(
+            listing=None,
+            version=None,
+            applicants=[],
+            roster=[_roster_decoded("Dmss-Ragnaros", flags=0x01)],
+        )
+    )
+
+    assert state.listing is None
+    assert state.applicants == {}
+    assert set(state.party_members) == {"dmss-ragnaros"}
+    assert events == ["listing", "cleared", "roster"]
+
+
+def test_snapshot_apply_failure_recovery_unconditionally_resets_all_surfaces():
+    state = AppState()
+    state.player = WoWPlayer(region_id=3, full_name="Dmss-Ragnaros")
+    sm = StateMachine(state)
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Chinie")],
+            roster=[_roster_decoded("Dmss-Ragnaros", flags=0x01)],
+        )
+    )
+    events: list[str] = []
+    sm.listingChanged.connect(lambda: events.append("listing"))
+    sm.cleared.connect(lambda: events.append("cleared"))
+    sm.rosterChanged.connect(lambda: events.append("roster"))
+
+    # Simulate the worst point of interruption: model fields were already
+    # cleared, but their normal UI signals were never emitted.
+    state.listing = None
+    state.applicants.clear()
+    state.party_members.clear()
+    sm.recover_snapshot_apply_failure()
+
+    assert state.listing is None
+    assert state.leader_key is None
+    assert state.player == WoWPlayer()
+    assert state.applicants == {}
+    assert state.party_members == {}
+    assert events == ["listing", "cleared", "roster"]
 
 
 def test_existing_applicant_preserves_local_rio_fields_when_lookup_fails():

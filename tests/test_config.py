@@ -424,7 +424,7 @@ def test_setup_logging_applies_private_mode_to_log_file(
     monkeypatch.setattr(
         main_mod,
         "apply_private_file_mode",
-        lambda path: calls.append(Path(path)),
+        lambda path: calls.append(Path(path)) or True,
     )
     with _isolated_root_logging():
         main_mod._setup_logging(tmp_path)
@@ -439,12 +439,95 @@ def test_setup_logging_applies_private_mode_to_log_dir(
     monkeypatch.setattr(
         main_mod,
         "apply_private_directory_mode",
-        lambda path: calls.append(Path(path)),
+        lambda path: calls.append(Path(path)) or True,
     )
     with _isolated_root_logging():
         main_mod._setup_logging(tmp_path)
 
     assert tmp_path in calls
+
+
+def test_setup_logging_refuses_insecure_log_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(
+        main_mod,
+        "apply_private_directory_mode",
+        lambda _path: False,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_PrivateRotatingFileHandler",
+        lambda *_args, **_kwargs: pytest.fail(
+            "file handler must not open in an insecure directory"
+        ),
+    )
+
+    with _isolated_root_logging():
+        warning = main_mod._setup_logging(tmp_path)
+
+    assert warning is not None
+    assert "private file log" in warning
+    assert "WCL_CLIENT_SECRET" not in warning
+
+
+def test_setup_logging_uses_recovery_dir_when_default_log_acl_is_inaccessible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    primary = tmp_path / "logs"
+    recovery = tmp_path / "logs-recovered"
+    monkeypatch.setattr(
+        main_mod,
+        "user_log_dir_candidates",
+        lambda: (primary, recovery),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "apply_private_directory_mode",
+        lambda path: Path(path) == recovery,
+    )
+    monkeypatch.setattr(main_mod, "apply_private_file_mode", lambda _path: True)
+
+    with _isolated_root_logging() as root:
+        warning = main_mod._setup_logging()
+        file_handlers = [
+            handler
+            for handler in root.handlers
+            if isinstance(handler, main_mod._PrivateRotatingFileHandler)
+        ]
+
+    assert warning is None
+    assert len(file_handlers) == 1
+    assert Path(file_handlers[0].baseFilename).parent == recovery
+
+
+def test_setup_logging_closes_handler_when_log_file_acl_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(
+        main_mod,
+        "apply_private_directory_mode",
+        lambda _path: True,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "apply_private_file_mode",
+        lambda _path: False,
+    )
+    log_path = tmp_path / "applicant-scout.log"
+
+    with _isolated_root_logging() as root:
+        warning = main_mod._setup_logging(tmp_path)
+        assert not any(
+            isinstance(handler, main_mod._PrivateRotatingFileHandler)
+            for handler in root.handlers
+        )
+
+    assert warning is not None
+    log_path.unlink()
 
 
 def test_private_rotating_file_handler_applies_private_mode_to_rollover_backups(
@@ -454,7 +537,7 @@ def test_private_rotating_file_handler_applies_private_mode_to_rollover_backups(
     monkeypatch.setattr(
         main_mod,
         "apply_private_file_mode",
-        lambda path: calls.append(Path(path)),
+        lambda path: calls.append(Path(path)) or True,
     )
     log_path = tmp_path / "applicant-scout.log"
     handler = main_mod._PrivateRotatingFileHandler(
@@ -472,6 +555,38 @@ def test_private_rotating_file_handler_applies_private_mode_to_rollover_backups(
 
     assert log_path in calls
     assert tmp_path / "applicant-scout.log.1" in calls
+
+
+def test_private_rotating_file_handler_disables_writes_after_rollover_acl_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    log_path = tmp_path / "applicant-scout.log"
+    acl_results = iter((True, False, True))
+    monkeypatch.setattr(
+        main_mod,
+        "apply_private_file_mode",
+        lambda _path: next(acl_results),
+    )
+    handler = main_mod._PrivateRotatingFileHandler(
+        log_path,
+        maxBytes=1,
+        backupCount=1,
+        encoding="utf-8",
+    )
+    try:
+        handler.emit(_log_record("must-not-be-written"))
+        handler.emit(_log_record("must-not-reopen-log"))
+    finally:
+        handler.close()
+
+    captured = capsys.readouterr()
+    assert "disabled private file logging" in captured.err
+    assert "must-not-be-written" not in captured.err
+    assert "must-not-reopen-log" not in captured.err
+    assert "must-not-be-written" not in log_path.read_text(encoding="utf-8")
+    assert "must-not-reopen-log" not in log_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -994,12 +1109,12 @@ def test_load_config_applies_private_modes_to_app_data_dirs_and_existing_config(
     monkeypatch.setattr(
         config_mod,
         "apply_private_directory_mode",
-        lambda path: dir_calls.append(Path(path)),
+        lambda path: dir_calls.append(Path(path)) or True,
     )
     monkeypatch.setattr(
         config_mod,
         "apply_private_file_mode",
-        lambda path: file_calls.append(Path(path)),
+        lambda path: file_calls.append(Path(path)) or True,
     )
 
     cfg = load_config()
@@ -1013,6 +1128,80 @@ def test_load_config_applies_private_modes_to_app_data_dirs_and_existing_config(
     } <= set(dir_calls)
     assert cfg.config_path == config_path
     assert config_path in file_calls
+
+
+def test_load_config_uses_recovery_log_dir_when_primary_acl_is_inaccessible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    primary, recovery = config_mod.user_log_dir_candidates()
+    monkeypatch.setattr(
+        config_mod,
+        "apply_private_directory_mode",
+        lambda path: Path(path) != primary,
+    )
+
+    cfg = load_config()
+
+    assert cfg.log_dir == recovery
+    assert recovery.is_dir()
+
+
+def test_load_config_fails_before_reading_settings_when_config_acl_is_unsafe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    config_path = user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        'WCL_CLIENT_SECRET="must-not-appear"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        config_mod,
+        "apply_private_directory_mode",
+        lambda _path: True,
+    )
+    monkeypatch.setattr(
+        config_mod,
+        "apply_private_file_mode",
+        lambda _path: False,
+    )
+    monkeypatch.setattr(
+        config_mod,
+        "_read_env_file",
+        lambda _path: pytest.fail("unsafe settings file must not be read"),
+    )
+
+    with pytest.raises(ConfigError) as caught:
+        load_config()
+
+    assert "Could not secure the ApplicantScout settings file" in str(caught.value)
+    assert "must-not-appear" not in str(caught.value)
+
+
+def test_load_config_reports_unsafe_data_directory_without_reading_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        config_mod,
+        "apply_private_directory_mode",
+        lambda path: Path(path) != config_mod.user_config_dir(),
+    )
+    monkeypatch.setattr(
+        config_mod,
+        "read_user_config_values",
+        lambda: pytest.fail("settings must not load before directory ACL validation"),
+    )
+
+    with pytest.raises(
+        ConfigError, match="Could not secure an ApplicantScout data directory"
+    ):
+        load_config()
 
 
 def test_load_config_rejects_unknown_region_env(
@@ -3559,6 +3748,57 @@ def test_main_manual_launch_continues_when_no_control_server_exists(
 
     assert main_mod.main([]) == 1
     assert calls == ["logging", "control", "app", "server", "config"]
+
+
+def test_main_surfaces_file_logging_setup_failure_after_qapplication_exists(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    warnings: list[tuple[str, str]] = []
+
+    class FakeApp:
+        aboutToQuit = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setApplicationName(self, _name: str) -> None:
+            pass
+
+    monkeypatch.setattr(
+        main_mod,
+        "_setup_logging",
+        lambda: "ApplicantScout could not start its private file log.",
+    )
+    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=False,
+            written=False,
+            response=None,
+        ),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", FakeApp)
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_create_control_server",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(main_mod, "_load_startup_config", lambda: None)
+
+    assert main_mod.main([]) == 1
+    assert warnings == [
+        (
+            "ApplicantScout logging",
+            "ApplicantScout could not start its private file log.",
+        )
+    ]
 
 
 def test_create_control_server_does_not_remove_server_after_no_response_probe(
@@ -6406,6 +6646,327 @@ def test_snapshot_apply_queue_does_not_reemit_failure_after_generation_invalidat
     assert window_failures == [("bad.jpg", "CRC mismatch")]
 
 
+def test_snapshot_apply_queue_retries_planning_once_without_new_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks: list[Callable[[], None]] = []
+    applied: list[object] = []
+    plan_calls = 0
+    real_plan = main_mod._snapshot_pipeline.snapshot_application_plan
+
+    def flaky_plan(
+        snapshots: tuple[object, ...],
+        cache_snapshots: tuple[Snapshot, ...],
+    ) -> tuple[tuple[object, tuple[object, ...]], ...]:
+        nonlocal plan_calls
+        plan_calls += 1
+        if plan_calls == 1:
+            raise RuntimeError("temporary planning failure")
+        return real_plan(snapshots, cache_snapshots)
+
+    class Machine:
+        def apply_snapshot(self, snap: object) -> None:
+            applied.append(snap)
+
+    snap = SimpleNamespace(source=None)
+    monkeypatch.setattr(
+        main_mod._snapshot_pipeline,
+        "snapshot_application_plan",
+        flaky_plan,
+    )
+    queue = main_mod._SnapshotApplyQueue(
+        Machine(),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    queue.enqueue_snapshot(snap)
+
+    callbacks.pop(0)()
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+
+    assert plan_calls == 2
+    assert applied == [snap]
+    assert callbacks == []
+
+
+def test_snapshot_apply_queue_retries_failed_apply_once_after_reset(
+    caplog: pytest.LogCaptureFixture,
+):
+    callbacks: list[Callable[[], None]] = []
+    applied: list[object] = []
+    recoveries: list[str] = []
+    failures: list[tuple[str, str]] = []
+
+    class FlakyMachine:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def apply_snapshot(self, snap: object) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary apply failure")
+            applied.append(snap)
+
+        def recover_snapshot_apply_failure(self) -> None:
+            recoveries.append("reset")
+
+    failed_snap = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=100, file_id="failed.jpg", size=10)
+    )
+    queue = main_mod._SnapshotApplyQueue(
+        FlakyMachine(),
+        object(),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    queue.enqueue_snapshot(failed_snap)
+
+    callbacks.pop(0)()
+
+    assert len(callbacks) == 1
+    assert applied == []
+    assert recoveries == ["reset"]
+    assert failures == [
+        (
+            "failed.jpg",
+            "Snapshot apply failed; state was reset. Retrying once.",
+        )
+    ]
+    assert "snapshot apply failed" in caplog.text.lower()
+
+    callbacks.pop(0)()
+
+    assert applied == [failed_snap]
+    assert callbacks == []
+
+
+def test_snapshot_apply_failure_clears_persisted_live_cache_before_retry(
+    tmp_path: Path,
+):
+    callbacks: list[Callable[[], None]] = []
+    writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+    writer.submit(_live_snapshot(), now=100.0)
+
+    class FailingMachine:
+        def apply_snapshot(self, _snap: Snapshot) -> None:
+            raise RuntimeError("partial apply")
+
+        def recover_snapshot_apply_failure(self) -> None:
+            pass
+
+    queue = main_mod._SnapshotApplyQueue(
+        FailingMachine(),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        live_snapshot_cache_writer=writer,
+        scheduler=callbacks.append,
+    )
+    queue.enqueue_snapshot(_live_snapshot())
+
+    callbacks.pop(0)()
+
+    assert len(callbacks) == 1
+    assert load_live_snapshot(tmp_path, now=101.0) is None
+    assert writer.close()
+
+
+def test_snapshot_apply_queue_replays_full_plan_after_reset_on_later_step_failure():
+    callbacks: list[Callable[[], None]] = []
+    attempted: list[Snapshot] = []
+    logical_state: list[str] = []
+    recoveries: list[str] = []
+    terminal = Snapshot(listing=None, version=None, terminal_clear=True)
+    current = _live_snapshot()
+    failed_current_once = False
+
+    class TailFlakyMachine:
+        def apply_snapshot(self, snap: Snapshot) -> None:
+            nonlocal failed_current_once
+            attempted.append(snap)
+            if snap.terminal_clear:
+                logical_state.clear()
+                return
+            if not snap.terminal_clear and not failed_current_once:
+                failed_current_once = True
+                logical_state.append("partial-current")
+                raise RuntimeError("temporary current-state failure")
+            logical_state.append("current")
+
+        def recover_snapshot_apply_failure(self) -> None:
+            recoveries.append("reset")
+            logical_state.clear()
+
+    queue = main_mod._SnapshotApplyQueue(
+        TailFlakyMachine(),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    queue.enqueue_snapshot(terminal)
+    queue.enqueue_snapshot(current)
+
+    callbacks.pop(0)()
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+
+    assert [snap.terminal_clear for snap in attempted] == [True, False, True, False]
+    assert attempted[-1].listing == current.listing
+    assert logical_state == ["current"]
+    assert recoveries == ["reset"]
+    assert callbacks == []
+
+
+def test_snapshot_apply_queue_bounds_persistent_failure_then_accepts_fresh_snapshot():
+    callbacks: list[Callable[[], None]] = []
+    should_fail = True
+    applied: list[object] = []
+    calls = 0
+
+    class FailingMachine:
+        def apply_snapshot(self, snap: object) -> None:
+            nonlocal calls
+            calls += 1
+            if should_fail:
+                raise RuntimeError("persistent apply failure")
+            applied.append(snap)
+
+    first = SimpleNamespace(source=None)
+    second = SimpleNamespace(source=None)
+    queue = main_mod._SnapshotApplyQueue(
+        FailingMachine(),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    queue.enqueue_snapshot(first)
+
+    callbacks.pop(0)()
+
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+
+    assert calls == 2
+    assert callbacks == []
+    should_fail = False
+    queue.enqueue_snapshot(second)
+    callbacks.pop(0)()
+
+    assert applied == [second]
+    assert calls == 3
+    assert callbacks == []
+
+
+def test_snapshot_apply_queue_isolates_observer_and_cache_exceptions():
+    callbacks: list[Callable[[], None]] = []
+    applied: list[Snapshot] = []
+    snap = _live_snapshot()
+
+    class BrokenWindow:
+        def note_decode(self, _snap: object) -> None:
+            raise RuntimeError("decode observer failure")
+
+        def note_snapshot_applied(self, _snap: object) -> None:
+            raise RuntimeError("applied observer failure")
+
+    class BrokenWriter:
+        def submit(self, _snap: object) -> None:
+            raise RuntimeError("cache submission failure")
+
+    queue = main_mod._SnapshotApplyQueue(
+        SimpleNamespace(apply_snapshot=applied.append),
+        BrokenWindow(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        live_snapshot_cache_writer=BrokenWriter(),
+        scheduler=callbacks.append,
+    )
+    queue.enqueue_snapshot(snap)
+
+    callbacks.pop(0)()
+
+    assert applied == [snap]
+    assert callbacks == []
+
+
+def test_snapshot_apply_queue_retains_state_when_scheduler_temporarily_fails():
+    callbacks: list[Callable[[], None]] = []
+    schedule_calls = 0
+    applied: list[object] = []
+
+    def flaky_scheduler(callback: Callable[[], None]) -> None:
+        nonlocal schedule_calls
+        schedule_calls += 1
+        if schedule_calls == 1:
+            raise RuntimeError("temporary scheduler failure")
+        callbacks.append(callback)
+
+    first = SimpleNamespace(source=None)
+    second = SimpleNamespace(source=None)
+    queue = main_mod._SnapshotApplyQueue(
+        SimpleNamespace(apply_snapshot=applied.append),
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=flaky_scheduler,
+    )
+
+    queue.enqueue_snapshot(first)
+    assert callbacks == []
+    queue.enqueue_snapshot(second)
+    callbacks.pop(0)()
+
+    assert schedule_calls == 2
+    assert applied == [second]
+
+
+@pytest.mark.parametrize("failing_observer", ["callback", "window"])
+def test_snapshot_apply_queue_isolates_decode_failure_observers(
+    failing_observer: str,
+):
+    callbacks: list[Callable[[], None]] = []
+    observed: list[str] = []
+
+    def failure_callback(_path: str, _reason: str) -> None:
+        observed.append("callback")
+        if failing_observer == "callback":
+            raise RuntimeError("callback observer failure")
+
+    class FailureWindow:
+        def note_decode_failed(self, _path: str, _reason: str) -> None:
+            observed.append("window")
+            if failing_observer == "window":
+                raise RuntimeError("window observer failure")
+
+    queue = main_mod._SnapshotApplyQueue(
+        object(),
+        FailureWindow(),
+        failure_callback,
+        signal_gate=main_mod._WatcherSignalGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    queue.enqueue_decode_failed("bad.jpg", "CRC mismatch")
+
+    callbacks.pop(0)()
+
+    assert observed == ["callback", "window"]
+    assert callbacks == []
+
+
 def test_connect_screenshot_watcher_marks_decode_before_applying_snapshot():
     class FakeWatcher:
         def __init__(self) -> None:
@@ -7127,6 +7688,60 @@ def test_replace_screenshot_watcher_keeps_new_generation_when_old_stop_fails(
     assert machine.snapshots == ["new-after-replace"]
 
 
+def test_replace_screenshot_watcher_keeps_committed_replacement_owned_when_hook_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+            self.stop_calls = 0
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    machine = FakeMachine()
+    gate = main_mod._WatcherSignalGate()
+    old = main_mod._replace_screenshot_watcher(
+        None,
+        tmp_path / "old",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+    )
+    caplog.set_level(logging.ERROR, logger="applicant_scout")
+
+    new = main_mod._replace_screenshot_watcher(
+        old,
+        tmp_path / "new",
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+        stop_runner=lambda worker: worker(),
+        on_committed=lambda _watcher: (_ for _ in ()).throw(
+            RuntimeError("source hook failed")
+        ),
+    )
+
+    old.snapshotReceived.emit("old-after-commit")
+    new.snapshotReceived.emit("new-after-commit")
+
+    assert old.stop_calls == 1
+    assert new.stop_calls == 0
+    assert gate.generation == 2
+    assert machine.snapshots == ["new-after-commit"]
+    assert "runtime source hook failed" in caplog.text
+
+
 def test_quiesce_screenshot_ingestion_flushes_before_invalidate():
     gate = main_mod._WatcherSignalGate()
     events: list[str] = []
@@ -7145,6 +7760,64 @@ def test_quiesce_screenshot_ingestion_flushes_before_invalidate():
     main_mod._quiesce_screenshot_ingestion(FakeWatcher(), gate)
 
     assert events == ["request_stop", "queue_flush"]
+
+
+def test_worker_snapshot_is_retained_before_source_file_can_be_deleted(
+    qapp,
+    tmp_path: Path,
+):
+    del qapp
+    image_path = tmp_path / "WoWScrnShot_queued.jpg"
+    image_path.write_bytes(b"owned transport")
+    stat_result = image_path.stat()
+    source = screenshot_mod.SnapshotSource(
+        mtime_ns=stat_result.st_mtime_ns,
+        file_id=str(image_path),
+        size=stat_result.st_size,
+    )
+    snap = Snapshot(listing=None, version=None, source=source)
+    watcher = screenshot_mod.ScreenshotWatcher(tmp_path)
+    gate = main_mod._WatcherSignalGate()
+    applied: list[object] = []
+    callbacks: list[object] = []
+
+    class Machine:
+        def apply_snapshot(self, incoming: object) -> None:
+            applied.append(incoming)
+
+    queue = main_mod._connect_screenshot_watcher(
+        watcher,
+        Machine(),
+        object(),
+        lambda *_args: None,
+        signal_gate=gate,
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    setattr(watcher, "_applicant_scout_apply_queue", queue)
+    emitted: list[bool] = []
+
+    def emit_then_retire() -> None:
+        accepted = watcher._emit_snapshot(snap)
+        emitted.append(accepted)
+        if accepted:
+            screenshot_mod._unlink_if_source_matches(image_path, source)
+
+    worker = threading.Thread(target=emit_then_retire)
+    worker.start()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert emitted == [True]
+    assert not image_path.exists()
+    assert applied == []
+    assert len(callbacks) == 1
+
+    main_mod._quiesce_screenshot_ingestion(watcher, gate)
+
+    assert applied == [snap]
+    assert not gate.is_current(0)
 
 
 def test_one_shot_callback_runs_terminal_cleanup_once():
@@ -7492,10 +8165,111 @@ def test_shutdown_runtime_closes_remaining_resources_after_cache_failure(caplog)
     assert "Could not close WCL character cache" in caplog.text
 
 
+def test_replace_watcher_aborts_without_inline_gui_work_when_scheduler_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    created: list[object] = []
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+            self.stopped = False
+            created.append(self)
+
+        def start(self) -> None:
+            self.snapshotReceived.emit("precommit")
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    def fail_schedule(_callback: Callable[[], None]) -> None:
+        raise RuntimeError("GUI scheduler unavailable")
+
+    machine = FakeMachine()
+    gate = main_mod._WatcherSignalGate()
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", fail_schedule)
+
+    with pytest.raises(RuntimeError, match="GUI scheduler unavailable"):
+        main_mod._replace_screenshot_watcher(
+            None,
+            tmp_path / "new",
+            machine,
+            object(),
+            lambda *_args: None,
+            signal_gate=gate,
+        )
+
+    assert machine.snapshots == []
+    assert gate.generation == 0
+    assert len(created) == 1
+    assert created[0].stopped is True
+
+
+def test_snapshot_apply_dispatcher_runs_worker_submission_on_gui_thread():
+    script = r"""
+import os
+import threading
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication
+from applicant_scout.__main__ import (
+    _initialize_snapshot_apply_dispatcher,
+    _schedule_snapshot_apply,
+)
+
+app = QApplication([])
+_initialize_snapshot_apply_dispatcher(app)
+gui_thread_id = threading.get_ident()
+deliveries = []
+
+def deliver():
+    deliveries.append(threading.get_ident())
+    app.quit()
+
+worker = threading.Thread(target=lambda: _schedule_snapshot_apply(deliver))
+worker.start()
+worker.join(timeout=2.0)
+before_event_loop = list(deliveries)
+QTimer.singleShot(5000, app.quit)
+app.exec()
+print(f"before={before_event_loop!r} deliveries={deliveries!r}")
+raise SystemExit(
+    0
+    if not worker.is_alive()
+    and before_event_loop == []
+    and deliveries == [gui_thread_id]
+    else 2
+)
+"""
+    env = dict(main_mod.os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+
+    completed = main_mod.subprocess.run(
+        [main_mod.sys.executable, "-c", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "before=[] deliveries=[" in completed.stdout
+
+
 def test_replace_screenshot_watcher_ignores_old_signal_emitted_during_old_stop_after_commit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", lambda callback: callback())
+
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -7546,6 +8320,8 @@ def test_replace_screenshot_watcher_keeps_old_signals_current_until_new_start_su
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", lambda callback: callback())
+
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -7863,6 +8639,12 @@ def test_screenshot_runtime_commits_source_before_draining_fresh_backlog(
         defer_saves=False,
     )
     next_reader = _SourceTransitionReader()
+    apply_callbacks: list[Callable[[], None]] = []
+    monkeypatch.setattr(
+        main_mod,
+        "_schedule_snapshot_apply",
+        apply_callbacks.append,
+    )
 
     class FakeWatcher:
         def __init__(self, path: Path, **_kwargs: object) -> None:
@@ -7901,6 +8683,10 @@ def test_screenshot_runtime_commits_source_before_draining_fresh_backlog(
     )
 
     assert machine._rio_reader is next_reader
+    assert writer.source_id == source_b
+    assert state.player.full_name == ""
+    assert len(apply_callbacks) == 1
+    apply_callbacks.pop(0)()
     assert state.player.full_name == "Alt-Realm"
     assert state.listing is not None and state.listing.key_level == 20
     assert {row.name for row in state.applicants.values()} == {"AltApplicant-Realm"}
@@ -7970,6 +8756,8 @@ def test_screenshot_runtime_sets_rio_reader_before_watcher_backlog(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", lambda callback: callback())
+
     class FakeWatcher:
         def __init__(self, _path: Path) -> None:
             self.snapshotReceived = FakeSignal()
@@ -8023,6 +8811,8 @@ def test_screenshot_runtime_keeps_old_reader_for_old_pending_signals(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", lambda callback: callback())
+
     class FakeWatcher:
         def __init__(self, path: Path) -> None:
             self.path = path

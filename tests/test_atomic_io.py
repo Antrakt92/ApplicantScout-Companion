@@ -152,6 +152,28 @@ def test_current_user_sid_returns_none_for_malformed_output(
     assert atomic_io._current_user_sid() is None
 
 
+@pytest.mark.parametrize(
+    "sid",
+    (
+        "S-not-a-sid",
+        "S-1",
+        "S-1-5-extra",
+        "*S-1-5-21-1-2-3-1007",
+    ),
+)
+def test_current_user_sid_rejects_noncanonical_sid_output(
+    monkeypatch: pytest.MonkeyPatch,
+    sid: str,
+):
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Completed(stdout=f'"desktop\\dima","{sid}"\n'),
+    )
+
+    assert atomic_io._current_user_sid() is None
+
+
 def test_apply_private_file_mode_uses_windows_acl_sequence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -179,9 +201,11 @@ def test_apply_private_file_mode_uses_windows_acl_sequence(
     apply_private_file_mode(target)
 
     assert chmod_modes == [stat.S_IRUSR | stat.S_IWUSR]
-    assert commands == [
+    assert len(commands) == 4
+    assert commands[0][:3] == ["icacls", os.fspath(target), "/save"]
+    assert commands[0][-1] == "/Q"
+    assert commands[1:] == [
         ["icacls", os.fspath(target), "/reset", "/Q"],
-        ["icacls", os.fspath(target), "/inheritance:r", "/Q"],
         [
             "icacls",
             os.fspath(target),
@@ -191,6 +215,7 @@ def test_apply_private_file_mode_uses_windows_acl_sequence(
             "*S-1-5-32-544:(F)",
             "/Q",
         ],
+        ["icacls", os.fspath(target), "/inheritance:r", "/Q"],
     ]
 
 
@@ -214,7 +239,7 @@ def test_apply_private_directory_mode_uses_inheritable_acl_sequence(
 
     apply_private_directory_mode(tmp_path)
 
-    assert commands[-1] == [
+    assert commands[-2] == [
         "icacls",
         os.fspath(tmp_path),
         "/grant:r",
@@ -223,6 +248,7 @@ def test_apply_private_directory_mode_uses_inheritable_acl_sequence(
         "*S-1-5-32-544:(OI)(CI)F",
         "/Q",
     ]
+    assert commands[-1] == ["icacls", os.fspath(tmp_path), "/inheritance:r", "/Q"]
 
 
 def test_apply_private_file_mode_ignores_windows_acl_failures(
@@ -248,7 +274,7 @@ def test_apply_private_file_mode_ignores_windows_acl_failures(
     assert target.read_text(encoding="utf-8") == "secret"
 
 
-def test_apply_private_file_mode_stops_after_failed_acl_prerequisite(
+def test_apply_private_file_mode_stops_when_acl_backup_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     target = tmp_path / "token.json"
@@ -269,8 +295,102 @@ def test_apply_private_file_mode_stops_after_failed_acl_prerequisite(
     )
 
     assert not apply_private_file_mode(target)
-    assert commands == [["icacls", os.fspath(target), "/reset", "/Q"]]
+    assert len(commands) == 1
+    assert commands[0][:3] == ["icacls", os.fspath(target), "/save"]
     assert not atomic_io._PRIVATE_ACL_CACHE
+
+
+@pytest.mark.parametrize("failed_mutation_index", (1, 2, 3))
+def test_apply_private_file_mode_restores_saved_acl_after_mutation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failed_mutation_index: int,
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def run_with_failure(args: list[str]) -> bool:
+        commands.append(args)
+        command_index = len(commands) - 1
+        if command_index == failed_mutation_index:
+            return False
+        return True
+
+    monkeypatch.setattr(type(target), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(atomic_io, "_run_icacls", run_with_failure)
+
+    assert not apply_private_file_mode(target)
+
+    restore = commands[-1]
+    assert restore[:3] == ["icacls", os.fspath(target.parent), "/restore"]
+    assert restore[-1] == "/Q"
+    assert not atomic_io._PRIVATE_ACL_CACHE
+
+
+def test_apply_private_file_mode_restores_access_when_acl_rollback_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    commands: list[list[str]] = []
+    results = iter((True, True, False, False, True, True))
+
+    monkeypatch.setattr(type(target), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "_current_user_sid",
+        lambda: "*S-1-5-21-1-2-3-1007",
+    )
+    monkeypatch.setattr(
+        atomic_io,
+        "_run_icacls",
+        lambda args: commands.append(args) or next(results),
+    )
+
+    assert not apply_private_file_mode(target)
+
+    assert commands[-2][2] == "/grant:r"
+    assert commands[-1] == [
+        "icacls",
+        os.fspath(target),
+        "/inheritance:e",
+        "/Q",
+    ]
+
+
+def test_atomic_private_write_fails_before_writing_when_windows_acl_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    target = tmp_path / "config" / "config.env"
+    file_calls: list[Path] = []
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io,
+        "apply_private_directory_mode",
+        lambda _path: False,
+    )
+    monkeypatch.setattr(
+        atomic_io,
+        "apply_private_file_mode",
+        lambda path: file_calls.append(Path(path)) or False,
+    )
+
+    with pytest.raises(PermissionError, match="Could not secure temporary private file"):
+        atomic_write_text(target, "client_secret=must-not-be-written", private=True)
+
+    assert file_calls
+    assert not target.exists()
+    assert _temp_files(target) == []
 
 
 def test_atomic_write_text_private_mode_hardens_parent_before_temp_and_target(
@@ -279,15 +399,16 @@ def test_atomic_write_text_private_mode_hardens_parent_before_temp_and_target(
     target = tmp_path / "nested" / "config.env"
     calls: list[tuple[str, Path]] = []
 
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: False)
     monkeypatch.setattr(
         atomic_io,
         "apply_private_directory_mode",
-        lambda path: calls.append(("dir", Path(path))),
+        lambda path: calls.append(("dir", Path(path))) or True,
     )
     monkeypatch.setattr(
         atomic_io,
         "apply_private_file_mode",
-        lambda path: calls.append(("file", Path(path))),
+        lambda path: calls.append(("file", Path(path))) or True,
     )
 
     atomic_write_text(target, "secret", private=True)
@@ -323,9 +444,14 @@ def test_atomic_write_text_private_windows_reuses_parent_acl_for_children(
     atomic_write_text(target, "secret", private=True)
 
     assert target.read_text(encoding="utf-8") == "secret"
-    assert commands == [
+    assert len(commands) == 4
+    assert commands[0][:3] == [
+        "icacls",
+        os.fspath(target.parent),
+        "/save",
+    ]
+    assert commands[1:] == [
         ["icacls", os.fspath(target.parent), "/reset", "/Q"],
-        ["icacls", os.fspath(target.parent), "/inheritance:r", "/Q"],
         [
             "icacls",
             os.fspath(target.parent),
@@ -335,6 +461,7 @@ def test_atomic_write_text_private_windows_reuses_parent_acl_for_children(
             "*S-1-5-32-544:(OI)(CI)F",
             "/Q",
         ],
+        ["icacls", os.fspath(target.parent), "/inheritance:r", "/Q"],
     ]
 
 
@@ -365,7 +492,7 @@ def test_atomic_write_text_private_windows_reuses_hardened_parent_between_writes
     atomic_write_text(target, "two", private=True)
 
     assert target.read_text(encoding="utf-8") == "two"
-    assert [command[1] for command in commands] == [os.fspath(target.parent)] * 3
+    assert [command[1] for command in commands] == [os.fspath(target.parent)] * 4
 
 
 def test_apply_private_directory_mode_rechecks_recreated_windows_directory(
@@ -393,7 +520,7 @@ def test_apply_private_directory_mode_rechecks_recreated_windows_directory(
     target.mkdir()
     assert atomic_io.apply_private_directory_mode(target)
 
-    assert [command[1] for command in commands] == [os.fspath(target)] * 6
+    assert [command[1] for command in commands] == [os.fspath(target)] * 8
 
 
 def test_private_acl_cache_key_prefers_inode_over_changing_ctime():

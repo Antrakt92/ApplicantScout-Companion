@@ -1204,6 +1204,36 @@ def test_launch_update_installer_preserves_frozen_install_directory(
     assert f"/DIR={os.path.dirname(current_exe)}" in calls[0]
 
 
+def test_launch_update_installer_preserves_staged_frozen_install_root(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.14.2.exe"
+    installer.write_text("", encoding="utf-8")
+    installed_dir = tmp_path / "Custom Apps" / "ApplicantScout Companion"
+    current_dir = installed_dir / "current"
+    current_dir.mkdir(parents=True)
+    (installed_dir / "unins000.exe").write_text("", encoding="utf-8")
+    current_exe = str(current_dir / "ApplicantScout.exe")
+    calls: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, args, **_kwargs) -> None:
+            calls.append(args)
+
+    monkeypatch.setattr("applicant_scout.updater.sys.frozen", True, raising=False)
+    monkeypatch.setattr("applicant_scout.updater.sys.executable", current_exe)
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        lambda _path: None,
+        raising=False,
+    )
+    monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
+
+    launch_update_installer(installer)
+
+    assert f"/DIR={installed_dir}" in calls[0]
+
+
 def test_launch_update_installer_does_not_install_into_portable_directory(
     monkeypatch, tmp_path
 ):

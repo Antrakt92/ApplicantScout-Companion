@@ -163,8 +163,60 @@ def user_log_dir() -> Path:
     return _user_data_dir() / "logs"
 
 
+def user_log_dir_candidates() -> tuple[Path, Path]:
+    """Preferred and recovery paths for non-authoritative rotating logs."""
+    app_data_dir = _user_data_dir()
+    return app_data_dir / "logs", app_data_dir / "logs-recovered"
+
+
+def _prepare_private_log_dir() -> Path:
+    failures: list[Path] = []
+    for path in user_log_dir_candidates():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            failures.append(path)
+            continue
+        if apply_private_directory_mode(path):
+            return path
+        failures.append(path)
+    attempted = ", ".join(str(path) for path in failures)
+    raise ConfigError(
+        "Could not secure an ApplicantScout log directory. "
+        f"Check access permissions for {attempted} and restart the companion."
+    )
+
+
 def user_config_path() -> Path:
     return user_config_dir() / CONFIG_ENV_FILENAME
+
+
+def _prepare_user_storage() -> tuple[Path, Path, Path, Path]:
+    app_data_dir = _user_data_dir()
+    config_dir = user_config_dir()
+    cache_dir = user_cache_dir()
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConfigError(
+            f"Could not create ApplicantScout data directories under "
+            f"{app_data_dir}: {exc}"
+        ) from exc
+    for path in (app_data_dir, config_dir, cache_dir):
+        if not apply_private_directory_mode(path):
+            raise ConfigError(
+                "Could not secure an ApplicantScout data directory. "
+                f"Check access permissions for {path} and restart the companion."
+            )
+    log_dir = _prepare_private_log_dir()
+    config_path = user_config_path()
+    if config_path.exists() and not apply_private_file_mode(config_path):
+        raise ConfigError(
+            "Could not secure the ApplicantScout settings file. "
+            f"Check access permissions for {config_path} and restart the companion."
+        )
+    return config_dir, cache_dir, log_dir, config_path
 
 
 def _source_checkout_root() -> Path | None:
@@ -344,6 +396,7 @@ def validate_metric_preferences(metric_preferences: MetricPreferences) -> Metric
 
 def load_config() -> Config:
     """Load config values without prompting or depending on process CWD."""
+    config_dir, cache_dir, log_dir, config_path = _prepare_user_storage()
     values = read_user_config_values()
     client_id = _value(values, "WCL_CLIENT_ID")
     client_secret = _value(values, "WCL_CLIENT_SECRET")
@@ -389,27 +442,6 @@ def load_config() -> Config:
         _value(values, "APSCOUT_SYNC_WITH_WOW", "0"),
         default=False,
     )
-
-    cache_dir = user_cache_dir()
-    config_dir = user_config_dir()
-    log_dir = user_log_dir()
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        config_dir.mkdir(parents=True, exist_ok=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise ConfigError(
-            f"Could not create ApplicantScout data directories under "
-            f"{_user_data_dir()}: {exc}"
-        ) from exc
-    app_data_dir = _user_data_dir()
-    apply_private_directory_mode(app_data_dir)
-    apply_private_directory_mode(config_dir)
-    apply_private_directory_mode(cache_dir)
-    apply_private_directory_mode(log_dir)
-    config_path = user_config_path()
-    if config_path.exists():
-        apply_private_file_mode(config_path)
 
     return Config(
         wcl_client_id=client_id,

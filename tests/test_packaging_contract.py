@@ -8,6 +8,7 @@ import pytest
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 import zipfile
 from pathlib import Path
@@ -447,9 +448,26 @@ def test_build_script_checks_native_command_exit_codes_and_restores_inno_env():
     assert "try {" in script
     assert "finally {" in script
     assert "Find-InnoSetupCompiler" in script
-    assert "LOCALAPPDATA" in script
+    assert "$env:LOCALAPPDATA" not in script
+    assert "${env:ProgramFiles(x86)}" not in script
+    assert "$env:ProgramFiles" not in script
+    assert "GetFolderPath" in script
+    assert "Get-InnoSetupRegistrations" in script
+    assert 'DisplayVersion -eq $ExpectedVersion' in script
+    assert "Test-PathTreeHasReparsePoint" in script
+    assert "ISCmplr.dll.issig" in script
+    assert "ISPP.dll.issig" in script
+    assert "Get-NormalizedUtf8SHA256" in script
+    assert "2557F3716610DED2D5ADF61BFE6FF872992E1EEFC1AA2D130452AAD2CD31A554" in script
+    assert 'Get-Command "iscc.exe"' not in script
+    assert "Get-AuthenticodeSignature" in script
+    assert "Pyrsys B\\.V\\." in script
+    assert "[System.IO.FileAttributes]::ReparsePoint" in script
     assert "APSCOUT_INNO_VERSION" in script
     assert "APSCOUT_INNO_SOURCE_DIR" in script
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    assert "#if Ver != EncodeVer(6, 7, 1, 0)" in inno_script
+    assert "require Inno Setup 6.7.1 exactly" in inno_script
 
 
 def test_check_script_checks_native_command_exit_codes():
@@ -538,9 +556,7 @@ def test_native_command_helper_is_shared_and_preserves_output_and_failures():
         capture_output=True,
     )
     assert failure.returncode != 0
-    assert "native probe failed with exit code 7" in (
-        failure.stdout + failure.stderr
-    )
+    assert "native probe failed with exit code 7" in (failure.stdout + failure.stderr)
 
 
 def test_release_powershell_does_not_assign_to_automatic_matches_variable():
@@ -670,7 +686,7 @@ def test_windows_taskbar_identity_uses_app_icon_and_app_user_model_id():
     assert "Antrakt.ApplicantScout.Companion" in main
     assert "SetCurrentProcessExplicitAppUserModelID" in main
     assert "Antrakt.ApplicantScout.Companion" in inno_script
-    assert 'IconFilename: "{app}\\ApplicantScout.exe"' in inno_script
+    assert 'IconFilename: "{app}\\current\\ApplicantScout.exe"' in inno_script
     assert "AppUserModelID: {#MyAppUserModelID}" in inno_script
 
 
@@ -684,6 +700,304 @@ def test_pyinstaller_path_probe_dispatch_precedes_gui_runtime_import():
         "if probe_exit_code is not None:\n        return probe_exit_code"
         in (entrypoint[dispatch:runtime_import])
     )
+
+
+def test_frozen_build_isolates_dll_discovery_and_probes_real_startup_imports():
+    build_script = _read_repo_text("scripts/build-windows.ps1")
+    entrypoint = _read_repo_text("packaging/pyinstaller/run_applicant_scout.py")
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "function Get-VenvBasePrefix" in build_script
+    assert "include-system-site-packages" in build_script
+    assert "include-system-site-packages = false" in build_script
+    assert "function Get-IsolatedPyInstallerPath" in build_script
+    assert "function Invoke-WithIsolatedBuildEnvironment" in build_script
+    assert (
+        '[Environment]::SetEnvironmentVariable($Name, $null, "Process")' in build_script
+    )
+    assert (
+        "$env:PATH = Get-IsolatedPyInstallerPath -BasePrefix $BasePrefix"
+        in build_script
+    )
+    assert (
+        '$env:PYINSTALLER_CONFIG_DIR = Join-Path $BuildTemp "pyinstaller-config"'
+        in build_script
+    )
+    for name in (
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONUSERBASE",
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        "QML_IMPORT_PATH",
+        "QML2_IMPORT_PATH",
+        "UPX_DIR",
+    ):
+        assert f'"{name}"' in build_script
+    assert 'Where-Object Name -Like "_PYI_*"' in build_script
+    assert "Set-Location -LiteralPath $BuildTemp" in build_script
+    assert "Set-Location -LiteralPath $PreviousLocation" in build_script
+    assert "function Assert-FrozenRuntimeLayout" in build_script
+    assert '"scripts\\verify_frozen_runtime.py"' in build_script
+    assert '"--producer-python", $Python' in build_script
+    assert "function Assert-FrozenStartupImports" in build_script
+    assert 'ArgumentList "--startup-import-probe"' in build_script
+    assert (
+        "Assert-FrozenRuntimeLayout -AppDir $AppDir -BasePrefix $BasePythonPrefix"
+        in build_script
+    )
+    assert "Assert-FrozenStartupImports -Exe $Exe" in build_script
+    assert "--collect-all pyzbar" not in build_script
+    assert '"libiconv.dll"' in build_script
+    assert '"libzbar-64.dll"' in build_script
+    assert '--add-binary "$PyzbarIconv;pyzbar"' in build_script
+    assert '--add-binary "$PyzbarZbar;pyzbar"' in build_script
+    for module in (
+        "_pytest",
+        "altgraph",
+        "build",
+        "iniconfig",
+        "nodeenv",
+        "numpy",
+        "packaging",
+        "pluggy",
+        "pygments",
+        "PyInstaller",
+        "pyproject_hooks",
+        "pyright",
+        "pytest",
+        "pytestqt",
+        "ruff",
+        "setuptools",
+    ):
+        assert f"--exclude-module {module}" in build_script
+
+    probe_dispatch = entrypoint.index("if args == [FROZEN_STARTUP_IMPORT_PROBE_ARG]:")
+    application_dispatch = entrypoint.index(
+        "from applicant_scout.__main__ import main as run_application"
+    )
+    assert probe_dispatch < application_dispatch
+    assert "def _run_frozen_startup_probe() -> int:" in entrypoint
+    assert "from PyQt6.QtWidgets import QApplication" in entrypoint
+    assert "from applicant_scout.screenshot import _decode_qr_symbols" in entrypoint
+    assert "from applicant_scout import __main__ as runtime_main" in entrypoint
+    assert "callable(runtime_main.main)" in entrypoint
+    assert entrypoint.index(
+        "from applicant_scout import __main__ as runtime_main"
+    ) < entrypoint.index(
+        'QApplication(["ApplicantScout", FROZEN_STARTUP_IMPORT_PROBE_ARG])'
+    )
+    assert (
+        'QApplication(["ApplicantScout", FROZEN_STARTUP_IMPORT_PROBE_ARG])'
+        in entrypoint
+    )
+    assert '_decode_qr_symbols(Image.new("L", (32, 32), color=255))' in entrypoint
+    assert "application.processEvents()" in entrypoint
+    assert "application.quit()" in entrypoint
+    assert "[InstallDelete]" not in inno_script
+    assert 'DestDir: "{app}\\.apscout-next"' in inno_script
+    assert 'Filename: "{app}\\current\\ApplicantScout.exe"' in inno_script
+    assert "procedure CommitPayloadSwap();" in inno_script
+    assert "AfterInstall: CommitPayloadSwap" not in inno_script
+    assert "procedure CurStepChanged(CurStep: TSetupStep);" not in inno_script
+    assert 'DestDir: "{code:CommitPayloadSwapForInstall}"' in inno_script
+    assert "function CommitPayloadSwapForInstall(Param: String): String;" in inno_script
+    install_commit = re.search(
+        r"(?ms)^function CommitPayloadSwapForInstall\(Param: String\): String;\n"
+        r"(?P<body>.*?)(?=^function SelfUpdateRequested)",
+        inno_script,
+    )
+    assert install_commit is not None
+    install_commit_body = install_commit.group("body")
+    assert "if not PayloadPreparationStarted or not ShutdownWasConfirmed" in (
+        install_commit_body
+    )
+    assert "Result := NextPayloadDir();" in install_commit_body
+    assert "Exit;" in install_commit_body
+    assert "CommitPayloadSwap();" in install_commit_body
+    assert "FinalizePayloadSwap();" in install_commit_body
+    assert "Failure := GetExceptionMessage();" in install_commit_body
+    assert "RollbackPendingPayloadSwap();" in install_commit_body
+    assert "Abort;" in install_commit_body
+    assert "Result := CurrentPayloadDir();" in install_commit_body
+    assert install_commit_body.index("Result := NextPayloadDir();") < (
+        install_commit_body.index("CommitPayloadSwap();")
+    )
+    assert install_commit_body.index("CommitPayloadSwap();") < (
+        install_commit_body.index("RollbackPendingPayloadSwap();")
+    )
+    assert install_commit_body.index("RollbackPendingPayloadSwap();") < (
+        install_commit_body.rindex("Abort;")
+    )
+    assert "RestorePayloadBackup();" in inno_script
+    assert "procedure DeinitializeSetup();" in inno_script
+    assert "if PayloadPreparationStarted and not PayloadSwapCommitted" in inno_script
+    assert (
+        "Write-PayloadVersionMarker -TargetDir $AppDir -VersionText $Version"
+        in build_script
+    )
+
+
+def test_installer_replaces_removed_frozen_payload_instead_of_overlaying_it():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    assert (
+        'Source: "{#MyAppSourceDir}\\*"; DestDir: "{app}\\.apscout-next"' in inno_script
+    )
+    assert 'Excludes: ".apscout-payload-version"' in inno_script
+    assert 'Source: "{#MyAppSourceDir}\\.apscout-payload-version"' in inno_script
+    assert "AfterInstall: CommitPayloadSwap" not in inno_script
+    assert 'DestDir: "{code:CommitPayloadSwapForInstall}"' in inno_script
+    assert "if not IsCompletePayload(NextDir, '{#MyAppVersion}')" in inno_script
+    assert (
+        "if DirExists(CurrentDir) and not RenameFile(CurrentDir, BackupDir)"
+        in inno_script
+    )
+    assert "if not RenameFile(NextDir, CurrentDir)" in inno_script
+    commit = re.search(
+        r"(?ms)^procedure CommitPayloadSwap\(\);\n(?P<body>.*?)(?=^procedure FinalizePayloadSwap)",
+        inno_script,
+    )
+    finalize = re.search(
+        r"(?ms)^procedure FinalizePayloadSwap\(\);\n(?P<body>.*?)(?=^function SelfUpdateRequested)",
+        inno_script,
+    )
+    assert commit is not None
+    assert finalize is not None
+    assert "PayloadPromoted := True;" in commit.group("body")
+    assert "PayloadSwapCommitted := True;" not in commit.group("body")
+    assert "RemovePendingPromotionMarker()" in finalize.group("body")
+    assert "PayloadSwapCommitted := True;" in finalize.group("body")
+    assert "RemoveLegacyRootPayload();" in inno_script
+    assert "function IsOwnedAppDir(): Boolean;" in inno_script
+    assert "function IsDirectoryEmpty(Path: String): Boolean;" in inno_script
+    assert (
+        "if not DirExists(AppDir) or IsDirectoryEmpty(AppDir) then begin" in inno_script
+    )
+    assert "FileExists(AddBackslash(AppDir) + 'unins000.exe')" in inno_script
+    assert inno_script.count("if ProbeCompanionProcess() <> ProcessAbsent") == 2
+    assert "ApplicantScout Companion restarted during payload promotion." in inno_script
+
+    # This mirrors the real 0.14.2 contamination that an overlay install left
+    # behind. The uninstaller is installer-owned and must survive the payload
+    # replacement; every obsolete frozen/runtime file must not.
+    old_install = {
+        "ApplicantScout.exe",
+        "_internal/Qt6Core.dll",
+        "_internal/ucrtbase.dll",
+        "_internal/api-ms-win-core-file-l1-1-0.dll",
+        "_internal/pyzbar-0.1.9.dist-info/REQUESTED",
+        "licenses/setuptools/LICENSE",
+        "unins000.exe",
+        "unins000.dat",
+    }
+    new_payload = {
+        "ApplicantScout.exe",
+        "_internal/Qt6Core.dll",
+        "_internal/python313.dll",
+        "licenses/pyzbar/LICENSE.txt",
+    }
+
+    legacy_payload_roots = {"_internal", "licenses"}
+    legacy_payload_files = {
+        "ApplicantScout.exe",
+        "LICENSE",
+        "THIRD-PARTY-NOTICES.md",
+        "RELEASE_NOTES.md",
+    }
+
+    def is_legacy_payload(path: str) -> bool:
+        normal = path.replace("\\", "/")
+        root = normal.split("/", 1)[0]
+        return root.casefold() in legacy_payload_roots or root in legacy_payload_files
+
+    installed_current = {f"current/{path}" for path in new_payload}
+    upgraded = {
+        path for path in old_install if not is_legacy_payload(path)
+    } | installed_current
+    assert upgraded == installed_current | {"unins000.exe", "unins000.dat"}
+
+
+def test_release_runs_ephemeral_contaminated_installer_upgrade_smoke():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    smoke = _read_repo_text("scripts/smoke-installer-upgrade.ps1")
+
+    assert "Smoke-test clean and contaminated installer upgrades" in workflow
+    assert ".\\scripts\\smoke-installer-upgrade.ps1" in workflow
+    assert '$env:GITHUB_ACTIONS -ne "true"' in smoke
+    assert '"_internal\\obsolete.dll"' in smoke
+    assert '"licenses\\obsolete.txt"' in smoke
+    assert '"_internal\\obsolete-second.dll"' in smoke
+    assert '"licenses\\obsolete-second.txt"' in smoke
+    assert '".apscout-backup"' in smoke
+    assert '".apscout-next"' in smoke
+    assert "Interrupted payload swap recovery" in smoke
+    assert '"user-marker.txt"' in smoke
+    assert '"config-marker.txt"' in smoke
+    assert 'Join-Path $env:LOCALAPPDATA "applicant-scout"' in smoke
+    assert "function Assert-InstalledStartupProbe" in smoke
+    assert "Invoke-InstallerSmoke -ExpectFailure" in smoke
+    assert "Invoke-InstallerSmoke -PostPromotionFailure" in smoke
+    assert "Invoke-InstallerSmoke -FinalizationFailure" in smoke
+    assert "Invoke-PendingRenameGuardSmoke" in smoke
+    assert "Invoke-InstallerSmoke -PendingRenameFailure" in smoke
+    assert "PendingFileRenameOperations" in smoke
+    assert "RegistryValueKind]::MultiString" in smoke
+    assert "DeleteValue($ValueName, $false)" in smoke
+    assert "/APSCOUT_TEST_FAIL_PROMOTION=1" in smoke
+    assert "/APSCOUT_TEST_FAIL_POST_PROMOTION=1" in smoke
+    assert "/APSCOUT_TEST_FAIL_FINALIZATION=1" in smoke
+    assert "Failed upgrade did not preserve the previous working payload" in smoke
+    assert (
+        "Post-promotion rollback did not preserve the previous working payload" in smoke
+    )
+    assert "Finalization rollback did not preserve the previous working payload" in smoke
+    assert '".apscout-promotion-pending"' in smoke
+    assert "New-Item -ItemType Junction -Path $ReparsePath" in smoke
+    assert "Uninstall unexpectedly accepted a reparse point" in smoke
+    assert "Uninstall removed the companion user-data sentinel" in smoke
+    assert "ShouldInjectPayloadPromotionFailure" in _read_repo_text(
+        "packaging/inno/ApplicantScoutCompanion.iss"
+    )
+    assert "ShouldInjectPostPromotionFailure" in _read_repo_text(
+        "packaging/inno/ApplicantScoutCompanion.iss"
+    )
+    assert "ShouldInjectFinalizationFailure" in _read_repo_text(
+        "packaging/inno/ApplicantScoutCompanion.iss"
+    )
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    assert "function PendingRenameTouchesPayload(): Boolean;" in inno_script
+    assert "PendingFileRenameOperations2" in inno_script
+    assert "PendingPathTouchesPayloadRoot(Item, CurrentPayloadDir())" in inno_script
+    assert "PendingPathTouchesPayloadRoot(Item, NextPayloadDir())" in inno_script
+    assert "PendingPathTouchesPayloadRoot(Item, BackupPayloadDir())" in inno_script
+    assert "if PendingRenameTouchesPayload() then begin" in inno_script
+    assert "NeedsRestart := True;" in inno_script
+
+
+def test_installer_guards_recursive_payload_mutation_against_redirection():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "RedirectionGuard=yes" in inno_script
+    assert "function RedirectionGuard(Path: String): Boolean;" in inno_script
+    assert "GetFileAttributesW@kernel32.dll stdcall" in inno_script
+    assert "FileAttributeReparsePoint" in inno_script
+    assert (
+        "function DirectoryTreeIsRedirectionFree(Path: String): Boolean;" in inno_script
+    )
+    assert "FindRec.Attributes and FileAttributeReparsePoint" in inno_script
+    assert "Result := PayloadMutationGuard();" in inno_script
+    assert "function UninstallPayloadDeletionAllowed(): Boolean;" in inno_script
+    uninstall_delete = inno_script.split("[UninstallDelete]", 1)[1].split("[Icons]", 1)[
+        0
+    ]
+    assert uninstall_delete.count("Check: UninstallPayloadDeletionAllowed") == 10
+    initialize_uninstall = re.search(
+        r"(?ms)^function InitializeUninstall\(\): Boolean;\n(?P<body>.*)\Z",
+        inno_script,
+    )
+    assert initialize_uninstall is not None
+    assert "Result := PayloadMutationGuard();" in initialize_uninstall.group("body")
 
 
 def test_installer_selects_desktop_shortcut_by_default():
@@ -734,11 +1048,50 @@ def test_installer_closes_running_companion_without_restart_manager_prompt():
     assert "taskkill /IM ApplicantScout.exe" not in inno_script
     assert "Win32_Process" in inno_script
     assert "ExecutablePath" in inno_script
+    assert "{app}\\current\\ApplicantScout.exe" in inno_script
     assert "{app}\\ApplicantScout.exe" in inno_script
     assert "function ProbeCompanionProcess(): Integer;" in inno_script
     assert "ewWaitUntilTerminated" in inno_script
     assert "skipifnotsilent" in inno_script
     assert "Check: ShouldRelaunchAfterInstall" in inno_script
+
+
+def test_installer_uses_current_layout_graceful_shutdown_before_force_fallback():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    match = re.search(
+        r"(?ms)^function CloseRunningCompanion\(\): Boolean;\n"
+        r"(?P<body>.*?)(?=^procedure RemoveLegacyPerMachineShortcuts)",
+        inno_script,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    current_idx = body.index(
+        "CurrentExe := ExpandConstant('{app}\\current\\ApplicantScout.exe')"
+    )
+    graceful_idx = body.index("Exec(\n      CurrentExe", current_idx)
+    wait_idx = body.index("WaitForCompanionExit()", graceful_idx)
+    force_idx = body.index("CompanionProcessScript(True)", wait_idx)
+
+    assert current_idx < graceful_idx < wait_idx < force_idx
+
+
+def test_installer_allows_only_empty_or_owned_custom_targets():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    match = re.search(
+        r"(?ms)^function IsOwnedAppDir\(\): Boolean;\n"
+        r"(?P<body>.*?)(?=^function IsCompletePayload)",
+        inno_script,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    fresh_idx = body.index("if not DirExists(AppDir) or IsDirectoryEmpty(AppDir)")
+    proof_idx = body.index("FileExists(AddBackslash(AppDir) + 'unins000.exe')")
+
+    assert fresh_idx < proof_idx
+    assert "FindFirst(AddBackslash(Path) + '*', FindRec)" in inno_script
+    assert "(FindRec.Name <> '.') and (FindRec.Name <> '..')" in inno_script
 
 
 def test_installer_accepts_self_update_context_for_portable_or_legacy_paths():
@@ -756,10 +1109,8 @@ def test_installer_accepts_self_update_context_for_portable_or_legacy_paths():
     assert "function ProbeSelfUpdateProcess(): Integer;" in inno_script
     assert "function CloseSelfUpdateSource(): Boolean;" in inno_script
     assert "CloseSelfUpdateSource()" in inno_script
-    assert (
-        "ShutdownWasConfirmed and (CompanionWasRunning or SelfUpdateWasRequested)"
-        in inno_script
-    )
+    assert "PayloadSwapCommitted and" in inno_script
+    assert "(CompanionWasRunning or SelfUpdateWasRequested)" in inno_script
 
 
 def test_installer_self_update_uses_control_shutdown_before_cim_fallback():
@@ -802,11 +1153,22 @@ def test_installer_process_control_reports_probe_and_termination_failures():
     )
     assert inno_script.count("-MethodName Terminate -OperationTimeoutSec 5") == 2
     assert (
+        "if ($owned | Where-Object { -not $_.ExecutablePath }) { exit 2 }"
+        in inno_script
+    )
+    assert (
         inno_script.count(
             "if ($candidates | Where-Object { -not $_.ExecutablePath }) { exit 2 }"
         )
-        == 2
+        == 1
     )
+    assert "WindowsIdentity]::GetCurrent().User.Value" in inno_script
+    assert "-MethodName GetOwnerSid -OperationTimeoutSec 5" in inno_script
+    assert "$owner.ReturnValue -ne 0" in inno_script
+    assert "$candidate.SessionId -eq $currentSessionId" in inno_script
+    assert "'.apscout-backup\\ApplicantScout.exe'" not in inno_script
+    assert "{app}\\.apscout-backup\\ApplicantScout.exe" in inno_script
+    assert "{app}\\.apscout-next\\ApplicantScout.exe" in inno_script
     assert "ProcessProbeFailed = -1;" in inno_script
     assert "ProcessAbsent = 0;" in inno_script
     assert "ProcessRunning = 1;" in inno_script
@@ -861,17 +1223,17 @@ def test_installer_blocks_mutation_uninstall_and_relaunch_without_exit_proof():
     )
     assert "Result := CloseRunningCompanion();" in uninstall.group("body")
     assert "Result := True;" not in uninstall.group("body")
-    assert "ShutdownWasConfirmed and" in relaunch.group("body")
+    assert "PayloadSwapCommitted and" in relaunch.group("body")
 
 
 def test_interactive_and_silent_update_relaunch_open_settings():
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
     postinstall_launch = re.search(
-        r'Filename:\s*"\{app\}\\ApplicantScout\.exe";[^\n]+Description: "Launch ApplicantScout Companion";[^\n]+',
+        r'Filename:\s*"\{app\}\\current\\ApplicantScout\.exe";[^\n]+Description: "Launch ApplicantScout Companion";[^\n]+',
         inno_script,
     )
     silent_relaunch = re.search(
-        r'Filename:\s*"\{app\}\\ApplicantScout\.exe";[^\n]+skipifnotsilent[^\n]+',
+        r'Filename:\s*"\{app\}\\current\\ApplicantScout\.exe";[^\n]+skipifnotsilent[^\n]+',
         inno_script,
     )
 
@@ -892,7 +1254,17 @@ def test_release_license_artifacts_exist_and_are_copied_into_dist():
     assert "Copy-ReleaseTextArtifacts" in build_script
     assert "Copy-DependencyLicenseArtifacts" in build_script
     assert "collect_dependency_licenses.py" in build_script
+    assert "--runtime-license-set" in build_script
+    assert "--module-toc" in build_script
+    assert '"--packaged-layout"' in build_script
+    assert "-PackagedLayout" in build_script
     assert "--overrides $LicenseOverrides" in build_script
+    assert 'Join-Path $BasePrefix "LICENSE.txt"' in build_script
+    assert 'Join-Path $LicenseDir "CPython"' in build_script
+    assert "Missing non-empty CPython license file" in build_script
+    assert "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2" in build_script
+    notices = _read_repo_text("THIRD-PARTY-NOTICES.md")
+    assert "`licenses/CPython/LICENSE.txt`" in notices
     assert "packages = [" not in build_script
     assert "THIRD-PARTY-NOTICES.md" in build_script
     assert "RELEASE_NOTES.md" in build_script
@@ -922,6 +1294,35 @@ def test_release_build_uses_pinned_constraints():
     assert "APSCOUT_PYPROJECT_FILE" in build_script
     assert "missing release constraint for pyproject dependency" in build_script
     assert "missing_pyproject_constraints" in build_script
+
+
+def test_release_constraint_probe_runs_from_isolated_working_directory(tmp_path):
+    build_script = _read_repo_text("scripts/build-windows.ps1")
+    match = re.search(
+        r"\$PythonCode = @'\n(?P<code>.*?)\n'@",
+        build_script,
+        re.S,
+    )
+    assert match is not None
+
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["PYTHONSAFEPATH"] = "1"
+    env["APSCOUT_CONSTRAINTS_FILE"] = str(REPO_ROOT / "constraints-release.txt")
+    env["APSCOUT_PYPROJECT_FILE"] = str(REPO_ROOT / "pyproject.toml")
+    env["APSCOUT_LICENSE_COLLECTOR"] = str(
+        REPO_ROOT / "scripts/collect_dependency_licenses.py"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", match.group("code")],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_dependency_license_collection_validates_pyproject_constraint_coverage():
@@ -1168,12 +1569,17 @@ def test_release_checklist_documents_paired_tag_push_sequence():
     assert "Do not wait for the companion workflow to finish" in checklist
 
 
-def test_release_checklist_documents_asset_wait_rerun_path():
+def test_release_checklist_documents_asset_wait_recovery_path():
     checklist = _read_repo_text("RELEASE_CHECKLIST.md")
 
     assert "180-second" in checklist
-    assert "rerun the failed addon workflow" in checklist
-    assert "Do not delete/recreate or force-push release tags" in checklist
+    assert "do not rerun the tag workflow" in checklist
+    assert "recover-preupload-release.yml" in checklist
+    assert "confirm_preupload_timeout=true" in checklist
+    assert "exact failed source run ID" in checklist
+    assert "no writer job started" in checklist
+    assert "Do not delete, recreate, or" in checklist
+    assert "force-push release tags" in checklist
 
 
 def test_release_checklist_documents_optional_signing_gate():

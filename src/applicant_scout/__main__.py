@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
@@ -45,6 +45,7 @@ from .config import (
     screenshots_path_candidate,
     user_config_path,
     user_log_dir,
+    user_log_dir_candidates,
     validate_metric_preferences,
 )
 from .constants import CLASS_ID_TO_NAME, REGION_ID_TO_WCL, ROLE_BYTE_TO_NAME
@@ -666,16 +667,13 @@ class StateMachine(QObject):
         name, realm = split_name_realm(decoded_name, default_realm)
         region = REGION_ID_TO_WCL.get(self._state.player.region_id)
         try:
-            try:
-                profile = self._rio_reader.lookup_profile(
-                    name,
-                    realm,
-                    region,
-                    allow_load=False,
-                )
-            except TypeError:
-                profile = self._rio_reader.lookup_profile(name, realm, region)
-        except (OSError, ValueError) as exc:
+            profile = self._rio_reader.lookup_profile(
+                name,
+                realm,
+                region,
+                allow_load=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - local DB is an enrichment boundary
             log.warning("Local RaiderIO lookup failed for %s-%s: %s", name, realm, exc)
             return _RIO_LOOKUP_FAILED
         return profile
@@ -1081,6 +1079,22 @@ class StateMachine(QObject):
             self.cleared.emit()
         if roster_changed:
             self.rosterChanged.emit()
+
+    def recover_snapshot_apply_failure(self) -> None:
+        """Fail closed after an unknown exception may have partially mutated state."""
+        self._state.listing = None
+        self._state.leader_key = None
+        self._state.player = WoWPlayer()
+        self._producer_player_name = ""
+        self._producer_player_realm = ""
+        self._producer_region = None
+        self._state.clear_all()
+        self._state.party_members.clear()
+        # Emit all transport-domain resets unconditionally: the failed apply
+        # may already have changed the model without reaching its normal signal.
+        self.listingChanged.emit()
+        self.cleared.emit()
+        self.rosterChanged.emit()
 
     def _resolve_snapshot_player(self, snap: Snapshot) -> WoWPlayer | None:
         version = snap.version
@@ -1730,17 +1744,26 @@ _TRANSIENT_UPDATE_UNAVAILABLE_REASONS = frozenset(
 
 class _PrivateRotatingFileHandler(RotatingFileHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._private_logging_disabled = False
+        self._private_logging_failure_reported = False
         super().__init__(*args, **kwargs)
-        self._apply_private_modes()
+        if not self._apply_private_modes():
+            base_path = Path(self.baseFilename)
+            self.close()
+            raise PermissionError(
+                f"Could not secure ApplicantScout log file: {base_path}"
+            )
 
-    def _apply_private_modes(self) -> None:
+    def _apply_private_modes(self) -> bool:
+        secured = True
         base_path = Path(self.baseFilename)
         if base_path.exists():
-            apply_private_file_mode(base_path)
+            secured = bool(apply_private_file_mode(base_path)) and secured
         for index in range(1, self.backupCount + 1):
             backup_path = Path(f"{self.baseFilename}.{index}")
             if backup_path.exists():
-                apply_private_file_mode(backup_path)
+                secured = bool(apply_private_file_mode(backup_path)) and secured
+        return secured
 
     def doRollover(self) -> None:  # noqa: N802 - stdlib logging API name.
         try:
@@ -1751,7 +1774,30 @@ class _PrivateRotatingFileHandler(RotatingFileHandler):
             if self.stream is None and not self.delay:
                 self.stream = self._open()
             return
-        self._apply_private_modes()
+        if not self._apply_private_modes():
+            self._private_logging_disabled = True
+            self.close()
+            raise PermissionError("Could not secure rotated ApplicantScout log files")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self._private_logging_disabled:
+            return
+        super().emit(record)
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        if not self._private_logging_disabled:
+            super().handleError(record)
+            return
+        if self._private_logging_failure_reported:
+            return
+        self._private_logging_failure_reported = True
+        try:
+            sys.stderr.write(
+                "ApplicantScout disabled private file logging because a rotated "
+                "log file could not be secured.\n"
+            )
+        except OSError:
+            pass
 
 
 def _resolve_update_check_result(
@@ -1790,7 +1836,7 @@ def _resolve_update_check_result(
     )
 
 
-def _setup_logging(log_dir: Path | None = None) -> None:
+def _setup_logging(log_dir: Path | None = None) -> str | None:
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
@@ -1803,20 +1849,39 @@ def _setup_logging(log_dir: Path | None = None) -> None:
     stream = logging.StreamHandler()
     stream.setFormatter(formatter)
     root.addHandler(stream)
-    target_log_dir = log_dir or user_log_dir()
-    try:
-        target_log_dir.mkdir(parents=True, exist_ok=True)
-        apply_private_directory_mode(target_log_dir)
-        file_handler = _PrivateRotatingFileHandler(
-            target_log_dir / "applicant-scout.log",
-            maxBytes=1_000_000,
-            backupCount=3,
-            encoding="utf-8",
-        )
+    target_log_dirs = (log_dir,) if log_dir is not None else user_log_dir_candidates()
+    failed_log_dirs: list[Path] = []
+    for target_log_dir in target_log_dirs:
+        try:
+            target_log_dir.mkdir(parents=True, exist_ok=True)
+            if not apply_private_directory_mode(target_log_dir):
+                raise PermissionError(
+                    f"Could not secure ApplicantScout log directory: {target_log_dir}"
+                )
+            file_handler = _PrivateRotatingFileHandler(
+                target_log_dir / "applicant-scout.log",
+                maxBytes=1_000_000,
+                backupCount=3,
+                encoding="utf-8",
+            )
+        except OSError:
+            failed_log_dirs.append(target_log_dir)
+            continue
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
-    except OSError as exc:
-        root.warning("Could not initialize file logging: %s", exc)
+        return None
+    attempted = ", ".join(str(path) for path in failed_log_dirs)
+    if failed_log_dirs:
+        root.warning(
+            "Could not initialize private file logging in any candidate directory: %s",
+            attempted,
+        )
+        return (
+            "ApplicantScout could not start its private file log. "
+            f"Check access permissions for {attempted}. "
+            "Errors will only be available in the current console until this is fixed."
+        )
+    return None
 
 
 def _show_config_error(message: str) -> None:
@@ -2279,6 +2344,13 @@ class _PreparedWatcherSignalScheduler:
         self._pending: list[Callable[[], None]] = []
         self._state: Literal["prepared", "committed", "cancelled"] = "prepared"
 
+    def _dispatch(self, callback: Callable[[], None]) -> None:
+        # Never execute this callback as a fallback here. Watcher signals may
+        # arrive on watchdog's worker thread, while the callback mutates Qt and
+        # the GUI-owned state machine. A scheduling failure must abort the
+        # source transition instead of turning into a cross-thread GUI call.
+        self._scheduler(callback)
+
     def schedule(self, callback: Callable[[], None]) -> None:
         with self._lock:
             if self._state == "cancelled":
@@ -2286,7 +2358,7 @@ class _PreparedWatcherSignalScheduler:
             if self._state == "prepared":
                 self._pending.append(callback)
                 return
-        self._scheduler(callback)
+        self._dispatch(callback)
 
     def commit(self) -> None:
         with self._lock:
@@ -2295,7 +2367,7 @@ class _PreparedWatcherSignalScheduler:
             self._state = "committed"
             callbacks, self._pending = self._pending, []
         for callback in callbacks:
-            self._scheduler(callback)
+            self._dispatch(callback)
 
     def cancel(self) -> None:
         with self._lock:
@@ -2306,10 +2378,15 @@ class _PreparedWatcherSignalScheduler:
 
 class _SnapshotSourceGate:
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._latest_mtime_ns: int | None = None
         self._accepted_latest_ids: set[tuple[str, int]] = set()
 
     def accept(self, source: object | None, *, advance: bool = True) -> bool:
+        with self._lock:
+            return self._accept_locked(source, advance=advance)
+
+    def _accept_locked(self, source: object | None, *, advance: bool) -> bool:
         if source is None:
             return True
         mtime_ns = getattr(source, "mtime_ns", None)
@@ -2347,11 +2424,47 @@ class _SnapshotApplier(Protocol):
     def apply_snapshot(self, snap: Snapshot) -> None: ...
 
 
+class _SnapshotApplyDispatcher(QObject):
+    _callbackReady = pyqtSignal(object)
+
+    def __init__(self, parent: QObject) -> None:
+        super().__init__(parent)
+        # Always queue, including emissions from the GUI thread during watcher
+        # commit. This lets the source transition finish before state is applied.
+        self._callbackReady.connect(
+            self._run,
+            Qt.ConnectionType.QueuedConnection,  # pyright: ignore[reportCallIssue]
+        )
+
+    @staticmethod
+    def _run(callback: object) -> None:
+        if callable(callback):
+            callback()
+
+    def schedule(self, callback: Callable[[], None]) -> None:
+        self._callbackReady.emit(callback)
+
+
+_snapshot_apply_dispatcher: _SnapshotApplyDispatcher | None = None
+
+
+def _initialize_snapshot_apply_dispatcher(parent: QObject) -> None:
+    global _snapshot_apply_dispatcher
+    _snapshot_apply_dispatcher = _SnapshotApplyDispatcher(parent)
+
+
 def _schedule_snapshot_apply(callback: Callable[[], None]) -> None:
-    if QApplication.instance() is None:
+    app = QApplication.instance()
+    if app is None:
         callback()
         return
-    QTimer.singleShot(0, callback)
+    dispatcher = _snapshot_apply_dispatcher
+    if dispatcher is None and QThread.currentThread() is app.thread():
+        _initialize_snapshot_apply_dispatcher(app)
+        dispatcher = _snapshot_apply_dispatcher
+    if dispatcher is None:
+        raise RuntimeError("snapshot apply dispatcher is not initialized")
+    dispatcher.schedule(callback)
 
 
 class _WowSyncStartupConfigurator(QObject):
@@ -2759,8 +2872,23 @@ def _connect_screenshot_watcher(
             return
         apply_queue.enqueue_decode_failed(path, reason, source)
 
-    watcher.snapshotReceived.connect(_snapshot_if_current)
-    watcher.decodeFailed.connect(_decode_failed_if_current)
+    def _connect_direct(signal: object, callback: Callable[..., None]) -> None:
+        connect = getattr(signal, "connect")
+        try:
+            connect(
+                callback,
+                Qt.ConnectionType.DirectConnection,
+            )
+        except TypeError:
+            # Lightweight unit-test signals expose the one-argument contract.
+            connect(callback)
+
+    # The worker must synchronously hand decoded state to the thread-safe apply
+    # queue before it may delete the source screenshot. Qt's default queued
+    # cross-thread delivery left a shutdown window where neither memory nor disk
+    # retained the snapshot.
+    _connect_direct(watcher.snapshotReceived, _snapshot_if_current)
+    _connect_direct(watcher.decodeFailed, _decode_failed_if_current)
     return apply_queue
 
 
@@ -2821,9 +2949,30 @@ def _replace_screenshot_watcher(
             log.warning("Could not clean up failed screenshot watcher: %s", cleanup_exc)
         raise
     signal_gate.commit(generation)
+    try:
+        prepared_scheduler.commit()
+    except Exception:
+        signal_gate.restore(previous_generation)
+        try:
+            new_watcher.stop()
+        except Exception as cleanup_exc:  # noqa: BLE001
+            log.warning(
+                "Could not clean up screenshot watcher after GUI schedule failure: %s",
+                cleanup_exc,
+            )
+        raise
     if on_committed is not None:
-        on_committed(new_watcher)
-    prepared_scheduler.commit()
+        try:
+            on_committed(new_watcher)
+        except Exception:  # noqa: BLE001 - watcher ownership already committed
+            # The generation and prepared callbacks are already committed, so
+            # surfacing this as a pre-commit failure makes the caller keep the
+            # now-inert old watcher and leaks the live replacement. Preserve
+            # ownership of the committed watcher and retire the old source;
+            # later snapshots retain their reader-bound fallback path.
+            log.exception(
+                "Screenshot watcher committed, but its runtime source hook failed"
+            )
     if current_watcher is not None:
         # WHY: watchdog Observer.stop()+join can block for seconds on Windows
         # storage paths. The generation gate above already ignores stale signals.
@@ -3665,8 +3814,10 @@ def main(argv: list[str] | None = None) -> int:
         if len(args) != 3:
             return 2
         return run_screenshots_path_probe_command(args[1], args[2])
-    _setup_logging()
+    logging_setup_warning = _setup_logging()
     if args and args[0] == "cleanup-screenshots":
+        if logging_setup_warning is not None:
+            print(logging_setup_warning, file=sys.stderr)
         return _run_cleanup_screenshots_command(args[1:])
     if CONTROL_SHUTDOWN_ARG in args:
         return _shutdown_running_instance()
@@ -3702,8 +3853,16 @@ def main(argv: list[str] | None = None) -> int:
     _set_windows_app_user_model_id()
     app = QApplication([sys.argv[0], *args])
     app.setApplicationName("ApplicantScout")
+    if isinstance(app, QObject):
+        _initialize_snapshot_apply_dispatcher(app)
     if isinstance(app, _QT_APPLICATION_CLASS):
         app.setWindowIcon(_app_icon())
+    if logging_setup_warning is not None:
+        QMessageBox.warning(
+            None,
+            "ApplicantScout logging",
+            logging_setup_warning,
+        )
     wow_sync_startup_configurator = _WowSyncStartupConfigurator(
         app if isinstance(app, QObject) else None
     )

@@ -457,6 +457,50 @@ def test_deferred_writer_context_checks_preserve_clear_and_matching_save(tmp_pat
     assert load_live_snapshot(tmp_path, now=105.0) is None
 
 
+def test_deferred_writer_recovers_after_timer_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    timers: list[object] = []
+
+    class FakeTimer:
+        def __init__(self, _delay: float, _callback) -> None:
+            self.daemon = False
+            self.cancelled = False
+            timers.append(self)
+
+        def start(self) -> None:
+            if len(timers) == 1:
+                raise RuntimeError("timer thread unavailable")
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    monkeypatch.setattr(cache_mod.threading, "Timer", FakeTimer)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    first = _live_snapshot()
+    assert first.listing is not None
+
+    with pytest.raises(RuntimeError, match="timer thread unavailable"):
+        writer.submit(first, now=100.0)
+
+    assert writer._timer is None
+    assert writer._pending is not None
+    writer.submit(replace(first, listing=replace(first.listing, key_level=15)), now=101.0)
+
+    assert len(timers) == 2
+    assert writer._timer is timers[1]
+    assert writer.flush()
+    restored = load_live_snapshot(tmp_path, now=102.0)
+    assert restored is not None
+    assert restored.snapshot.listing is not None
+    assert restored.snapshot.listing.key_level == 15
+
+
 def test_save_live_snapshot_clears_on_terminal_clear_or_no_listing(tmp_path):
     save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
     save_live_snapshot(
@@ -1485,6 +1529,49 @@ def test_live_snapshot_writer_invalidate_waits_for_in_flight_save(
     assert not flush_thread.is_alive()
     assert not invalidate_thread.is_alive()
     assert invalidate_returned.is_set()
+
+
+def test_live_snapshot_writer_clear_waits_for_in_flight_save_then_removes_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    started = threading.Event()
+    release = threading.Event()
+    clear_returned = threading.Event()
+    clear_results: list[bool] = []
+    original_save = cache_mod._save_live_snapshot_content
+
+    def slow_save(cache_dir, content, *, saved_at):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return original_save(cache_dir, content, saved_at=saved_at)
+
+    monkeypatch.setattr(cache_mod, "_save_live_snapshot_content", slow_save)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(_live_snapshot(), now=100.0)
+
+    flush_thread = threading.Thread(target=writer.flush)
+    flush_thread.start()
+    assert started.wait(timeout=2.0)
+
+    clear_thread = threading.Thread(
+        target=lambda: (clear_results.append(writer.clear()), clear_returned.set())
+    )
+    clear_thread.start()
+    assert not clear_returned.wait(timeout=0.05)
+
+    release.set()
+    flush_thread.join(timeout=2.0)
+    clear_thread.join(timeout=2.0)
+
+    assert not flush_thread.is_alive()
+    assert not clear_thread.is_alive()
+    assert clear_results == [True]
+    assert not _cache_path(tmp_path).exists()
 
 
 def test_live_snapshot_writer_invalidate_drops_failed_in_flight_retry(

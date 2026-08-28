@@ -181,6 +181,14 @@ jobs:
         working-directory: ApplicantScout-Companion
         run: .\scripts\build-windows.ps1 -SkipChecks
 
+      - name: Smoke-test clean and contaminated installer upgrades
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $Version = "${{ steps.release-identity.outputs.version }}"
+          .\scripts\smoke-installer-upgrade.ps1 `
+            -InstallerPath "dist\ApplicantScoutCompanionSetup-$Version.exe"
+
       - name: Validate release assets
         shell: pwsh
         working-directory: ApplicantScout-Companion

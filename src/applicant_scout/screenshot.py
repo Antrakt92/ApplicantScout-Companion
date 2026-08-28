@@ -132,14 +132,14 @@ _QR_RECOVERY_BLACK_THRESHOLD = 128
 _QR_RECOVERY_MIN_MODULE_PX = 2.0
 _QR_RECOVERY_MAX_MODULE_PX = 10.0
 
-# Cap startup-cleanup scan at most-recent N WoWScrnShot image files. Backlog scan
-# runs on a daemon thread — no startup-latency impact on overlay paint —
-# so the cap is now purely a leak-vector ceiling for pathological dev folders.
-# 5000 covers years of casual use (~30-80ms per file × 5000 ≈ 4 min thread
-# work, daemonised so it doesn't delay shutdown).
-_BACKLOG_CLEANUP_LIMIT = 5000
+# Cap each startup-cleanup pass at the most-recent N unknown screenshots.
+# Manual fingerprints persist, so later starts advance through older files without
+# letting one pathological folder consume minutes of CPU beside WoW.
+_BACKLOG_CLEANUP_LIMIT = 500
+_BACKLOG_INCOMPLETE_SCAN_LIMIT = 4
 _RECENT_WORK_KEY_TTL_SECONDS = 3.0
 _GENERATION_RETRY_DELAY_SECONDS = 0.05
+_INCOMPLETE_SCAN_RETRY_DELAY_SECONDS = 0.35
 _TRANSIENT_SCAN_RETRY_DELAY_SECONDS = 0.15
 _TRANSIENT_SCAN_MAX_RETRIES = 2
 # Bump when no-marker classification changes so older fingerprints are
@@ -297,6 +297,7 @@ class DecodeResult:
     fragment: Optional[SnapshotFragment] = None
     fragment_candidate: bool = False
     transport_suspected: bool = False
+    scan_incomplete: bool = False
 
 
 @dataclass
@@ -842,12 +843,10 @@ def _without_placeholder_transport_identities(snap: Snapshot) -> Snapshot:
         for member in snap.roster
         if not is_placeholder_transport_identity(member.name)
     ]
-    applicants_unavailable = (
-        snap.applicants_unavailable or len(applicants) != len(snap.applicants)
+    applicants_unavailable = snap.applicants_unavailable or len(applicants) != len(
+        snap.applicants
     )
-    roster_unavailable = (
-        snap.roster_unavailable or len(roster) != len(snap.roster)
-    )
+    roster_unavailable = snap.roster_unavailable or len(roster) != len(snap.roster)
     normalized_applicants = [] if applicants_unavailable else applicants
     normalized_roster = [] if roster_unavailable else roster
     if (
@@ -1329,7 +1328,11 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
     except QRScanFailed as exc:
         reason = str(exc) or "QR scan failed"
         _log.warning("could not scan %s: %s", image_path.name, reason)
-        return DecodeResult(None, False, reason)
+        # QRScanFailed means zbar was present but could not finish this image.
+        # It is not evidence that the generation has no APS1 marker, so keep it
+        # eligible for the watcher's delayed retry just like an exception that
+        # escapes the image/native boundary.
+        return DecodeResult(None, False, reason, scan_incomplete=True)
 
     if not has_marker:
         return DecodeResult(
@@ -1651,6 +1654,11 @@ class _ScreenshotWorkClaims:
             for key in seen_keys:
                 self._recent_keys[key] = now
 
+    def forget_recent_generation(self, key: _ScreenshotWorkKey) -> None:
+        """Allow one explicitly scheduled retry of an unchanged generation."""
+        with self._lock:
+            self._recent_keys.pop(key, None)
+
 
 def _manual_index_path(cache_dir: Path, screenshots_dir: Path) -> Path:
     directory_key = _normalized_work_path(screenshots_dir).encode(
@@ -1669,6 +1677,8 @@ class _ManualScreenshotIndex:
         self._lock = threading.Lock()
         self._loaded = False
         self._keys: set[_ScreenshotWorkKey] = set()
+        self._deferred_keys: set[_ScreenshotWorkKey] = set()
+        self._deferred_cursor: _ScreenshotWorkKey | None = None
         self._dirty = False
 
     def _load_locked(self) -> None:
@@ -1689,34 +1699,106 @@ class _ManualScreenshotIndex:
         entries = raw.get("manual")
         if not isinstance(entries, list):
             return
-        for entry in entries:
-            if (
-                not isinstance(entry, list)
-                or len(entry) != 3
-                or not isinstance(entry[0], str)
-                or not isinstance(entry[1], int)
-                or not isinstance(entry[2], int)
-                or entry[1] < 0
-                or entry[2] < 0
-            ):
-                continue
-            self._keys.add(_ScreenshotWorkKey(entry[0], entry[1], entry[2]))
+        deferred_entries = raw.get("deferred", [])
+        if not isinstance(deferred_entries, list):
+            deferred_entries = []
+        deferred_cursor = raw.get("deferred_cursor")
+        for source_entries, target in (
+            (entries, self._keys),
+            (deferred_entries, self._deferred_keys),
+        ):
+            for entry in source_entries:
+                if (
+                    not isinstance(entry, list)
+                    or len(entry) != 3
+                    or not isinstance(entry[0], str)
+                    or not isinstance(entry[1], int)
+                    or not isinstance(entry[2], int)
+                    or entry[1] < 0
+                    or entry[2] < 0
+                ):
+                    continue
+                target.add(_ScreenshotWorkKey(entry[0], entry[1], entry[2]))
+        if (
+            isinstance(deferred_cursor, list)
+            and len(deferred_cursor) == 3
+            and isinstance(deferred_cursor[0], str)
+            and isinstance(deferred_cursor[1], int)
+            and isinstance(deferred_cursor[2], int)
+            and deferred_cursor[1] >= 0
+            and deferred_cursor[2] >= 0
+        ):
+            self._deferred_cursor = _ScreenshotWorkKey(
+                deferred_cursor[0],
+                deferred_cursor[1],
+                deferred_cursor[2],
+            )
 
     def snapshot(self) -> set[_ScreenshotWorkKey]:
         with self._lock:
             self._load_locked()
-            return set(self._keys)
+            return self._keys | self._deferred_keys
+
+    def deferred_snapshot(self) -> set[_ScreenshotWorkKey]:
+        with self._lock:
+            self._load_locked()
+            return set(self._deferred_keys)
 
     def contains(self, key: _ScreenshotWorkKey) -> bool:
         with self._lock:
             self._load_locked()
             return key in self._keys
 
+    def select_retry_window(
+        self,
+        ordered_keys: list[_ScreenshotWorkKey],
+        *,
+        limit: int,
+    ) -> set[_ScreenshotWorkKey]:
+        """Rotate bounded retries without changing newest-to-oldest authority."""
+        with self._lock:
+            self._load_locked()
+            eligible = list(ordered_keys)
+            if not eligible or limit <= 0:
+                return set()
+            start = 0
+            if self._deferred_cursor in eligible:
+                start = (eligible.index(self._deferred_cursor) + 1) % len(eligible)
+            count = min(limit, len(eligible))
+            selected = [
+                eligible[(start + offset) % len(eligible)] for offset in range(count)
+            ]
+            if self._deferred_cursor != selected[-1]:
+                self._deferred_cursor = selected[-1]
+                self._dirty = True
+            return set(selected)
+
     def note_manual(self, key: _ScreenshotWorkKey, *, flush: bool) -> None:
         with self._lock:
             self._load_locked()
             if key not in self._keys:
                 self._keys.add(key)
+                self._dirty = True
+            if key in self._deferred_keys:
+                self._deferred_keys.discard(key)
+                self._dirty = True
+            if flush:
+                self._flush_locked()
+
+    def note_deferred(self, key: _ScreenshotWorkKey, *, flush: bool) -> None:
+        with self._lock:
+            self._load_locked()
+            if key not in self._deferred_keys:
+                self._deferred_keys.add(key)
+                self._dirty = True
+            if flush:
+                self._flush_locked()
+
+    def forget_deferred(self, key: _ScreenshotWorkKey, *, flush: bool) -> None:
+        with self._lock:
+            self._load_locked()
+            if key in self._deferred_keys:
+                self._deferred_keys.discard(key)
                 self._dirty = True
             if flush:
                 self._flush_locked()
@@ -1728,9 +1810,12 @@ class _ManualScreenshotIndex:
     ) -> None:
         with self._lock:
             self._load_locked()
-            stale = (baseline - current) & self._keys
+            stale = baseline - current
             if stale:
                 self._keys.difference_update(stale)
+                self._deferred_keys.difference_update(stale)
+                if self._deferred_cursor in stale:
+                    self._deferred_cursor = None
                 self._dirty = True
 
     def flush(self) -> None:
@@ -1741,6 +1826,8 @@ class _ManualScreenshotIndex:
     def reset(self) -> None:
         with self._lock:
             self._keys.clear()
+            self._deferred_keys.clear()
+            self._deferred_cursor = None
             self._loaded = True
             self._dirty = False
             if self._state_path is None:
@@ -1762,8 +1849,28 @@ class _ManualScreenshotIndex:
                 key=lambda item: (item.path, item.mtime_ns, item.size),
             )
         ]
+        deferred_entries = [
+            [key.path, key.mtime_ns, key.size]
+            for key in sorted(
+                self._deferred_keys,
+                key=lambda item: (item.path, item.mtime_ns, item.size),
+            )
+        ]
         payload = json.dumps(
-            {"version": _MANUAL_INDEX_VERSION, "manual": entries},
+            {
+                "version": _MANUAL_INDEX_VERSION,
+                "manual": entries,
+                "deferred": deferred_entries,
+                "deferred_cursor": (
+                    [
+                        self._deferred_cursor.path,
+                        self._deferred_cursor.mtime_ns,
+                        self._deferred_cursor.size,
+                    ]
+                    if self._deferred_cursor is not None
+                    else None
+                ),
+            },
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -2157,9 +2264,7 @@ class ScreenshotWatcher(QObject):
         fragment_clock: Callable[[], float] | None = None,
         fragment_timer_factory: Callable[[float, Callable[[], None]], Any]
         | None = None,
-        generation_retry_timer_factory: Callable[
-            [float, Callable[[], None]], Any
-        ]
+        generation_retry_timer_factory: Callable[[float, Callable[[], None]], Any]
         | None = None,
     ):
         super().__init__(parent)
@@ -2186,6 +2291,11 @@ class ScreenshotWatcher(QObject):
         )
         self._generation_retry_lock = threading.Lock()
         self._generation_retry_timers: dict[str, Any] = {}
+        self._incomplete_retry_lock = threading.Lock()
+        self._incomplete_retry_timers: dict[
+            str,
+            tuple[_ScreenshotWorkKey, Any],
+        ] = {}
 
     @staticmethod
     def _observer_is_healthy(observer: Any | None) -> bool:
@@ -2276,6 +2386,18 @@ class ScreenshotWatcher(QObject):
             self._backlog_rescan_requested = False
             raise
 
+    def _request_backlog_rescan_after_deferred_resolution(self) -> None:
+        with self._observer_lock:
+            if self._stopped.is_set():
+                return
+            # Direct cleanup/tests can scan without starting the live watcher.
+            # Only a live observer or an existing backlog worker owns follow-up
+            # scans; otherwise a classified manual file would unexpectedly
+            # create a background thread from a synchronous helper call.
+            if self._observer is None and self._backlog_thread is None:
+                return
+            self._request_backlog_scan_locked()
+
     def _run_backlog_scans(self) -> None:
         while True:
             with self._observer_lock:
@@ -2348,10 +2470,17 @@ class ScreenshotWatcher(QObject):
         with self._generation_retry_lock:
             generation_retry_timers = tuple(self._generation_retry_timers.values())
             self._generation_retry_timers.clear()
+        with self._incomplete_retry_lock:
+            incomplete_retry_timers = tuple(
+                timer for _key, timer in self._incomplete_retry_timers.values()
+            )
+            self._incomplete_retry_timers.clear()
         if timer is not None:
             timer.cancel()
         for generation_retry_timer in generation_retry_timers:
             generation_retry_timer.cancel()
+        for incomplete_retry_timer in incomplete_retry_timers:
+            incomplete_retry_timer.cancel()
 
     def stop(self) -> None:
         self.request_stop()
@@ -2553,6 +2682,13 @@ class ScreenshotWatcher(QObject):
             _work_key_from_stat(path, stat_result) for path, stat_result in all_files
         }
         self._manual_index.prune_missing(baseline_manual_keys, current_keys)
+        # Pruning can remove a persisted deferred authority barrier whose file
+        # was rotated or deleted while the companion was stopped. All retry and
+        # manual decisions in this pass must use the post-prune state, or the
+        # stale key makes every remaining candidate look older than an unknown
+        # screenshot that no longer exists.
+        current_manual_keys = self._manual_index.snapshot()
+        current_deferred_keys = self._manual_index.deferred_snapshot()
         try:
             if not all_files:
                 return
@@ -2561,28 +2697,54 @@ class ScreenshotWatcher(QObject):
             historical = [
                 item for item in all_files if item[1].st_mtime < fragment_cutoff
             ]
+            manual_only_keys = current_manual_keys - current_deferred_keys
+            ordered_retry_candidates = [
+                _work_key_from_stat(path, stat_result)
+                for path, stat_result in all_files
+                if _work_key_from_stat(path, stat_result) not in manual_only_keys
+            ]
+            retry_window_active = bool(current_deferred_keys)
+            selected_deferred = (
+                self._manual_index.select_retry_window(
+                    ordered_retry_candidates,
+                    limit=_BACKLOG_INCOMPLETE_SCAN_LIMIT,
+                )
+                if retry_window_active
+                else set()
+            )
             remaining = _BACKLOG_CLEANUP_LIMIT
             apply_closed = False
+            authority_blocked = False
             deleted = 0
-            remaining, apply_closed, phase_deleted, stop_scan = (
+            remaining, apply_closed, authority_blocked, phase_deleted, stop_scan = (
                 self._scan_backlog_phase(
                     recent,
                     recent=True,
                     remaining=remaining,
                     apply_closed=apply_closed,
+                    authority_blocked=authority_blocked,
+                    retry_window_active=retry_window_active,
+                    selected_deferred_keys=selected_deferred,
                     snapshot_apply_cutoff_ns=int(apply_cutoff * 1_000_000_000),
                 )
             )
             deleted += phase_deleted
             if not stop_scan and remaining > 0 and not self._stopped.is_set():
-                remaining, apply_closed, phase_deleted, _stop_scan = (
-                    self._scan_backlog_phase(
-                        historical,
-                        recent=False,
-                        remaining=remaining,
-                        apply_closed=apply_closed,
-                        snapshot_apply_cutoff_ns=None,
-                    )
+                (
+                    remaining,
+                    apply_closed,
+                    authority_blocked,
+                    phase_deleted,
+                    _stop_scan,
+                ) = self._scan_backlog_phase(
+                    historical,
+                    recent=False,
+                    remaining=remaining,
+                    apply_closed=apply_closed,
+                    authority_blocked=authority_blocked,
+                    retry_window_active=retry_window_active,
+                    selected_deferred_keys=selected_deferred,
+                    snapshot_apply_cutoff_ns=None,
                 )
                 deleted += phase_deleted
             if deleted:
@@ -2600,10 +2762,14 @@ class ScreenshotWatcher(QObject):
         recent: bool,
         remaining: int,
         apply_closed: bool,
+        authority_blocked: bool,
+        retry_window_active: bool,
+        selected_deferred_keys: set[_ScreenshotWorkKey],
         snapshot_apply_cutoff_ns: int | None,
-    ) -> tuple[int, bool, int, bool]:
+    ) -> tuple[int, bool, bool, int, bool]:
         deleted = 0
         fragment_frontier_active = False
+        incomplete_scans = 0
         deferred_failure: tuple[Path, str, SnapshotSource] | None = None
         for path, _candidate_stat in candidates:
             if self._stopped.is_set() or remaining <= 0:
@@ -2618,19 +2784,26 @@ class ScreenshotWatcher(QObject):
             if claim is None:
                 continue
             stop_scan = False
+            retry_owned_generation: _ScreenshotWorkKey | None = None
             try:
                 if self._manual_index.contains(claim.key):
+                    continue
+                if retry_window_active and claim.key not in selected_deferred_keys:
+                    # Retry fairness must never change snapshot authority. A
+                    # skipped newer generation remains unresolved, so preserve
+                    # every older owned screenshot until a rotated pass classifies it.
+                    authority_blocked = True
                     continue
                 remaining -= 1
                 decoded_key = claim.key
                 decoded = self._decode_claim_generation(path, claim, decoded_key)
                 if decoded is None:
                     if self._stopped.is_set():
-                        return remaining, apply_closed, deleted, True
+                        return remaining, apply_closed, authority_blocked, deleted, True
                     continue
                 result, decode_succeeded = decoded
                 if self._stopped.is_set():
-                    return remaining, apply_closed, deleted, True
+                    return remaining, apply_closed, authority_blocked, deleted, True
                 generation_current = self._finalize_decode_result(
                     claim,
                     decoded_key,
@@ -2643,26 +2816,65 @@ class ScreenshotWatcher(QObject):
                 if not generation_current:
                     pass
                 elif result.decoder_unavailable:
-                    if recent and not apply_closed and not fragment_frontier_active:
+                    if (
+                        recent
+                        and not apply_closed
+                        and not authority_blocked
+                        and not fragment_frontier_active
+                    ):
                         if not self._emit_decode_failed(
                             path,
                             result.error_reason or "QR decoder unavailable",
                             source,
                         ):
-                            return remaining, apply_closed, deleted, True
+                            return (
+                                remaining,
+                                apply_closed,
+                                authority_blocked,
+                                deleted,
+                                True,
+                            )
                         apply_closed = True
                     stop_scan = True
+                elif result.scan_incomplete:
+                    # A native/image exception does not establish ownership.
+                    # Persist a separate deferred fingerprint (not a manual
+                    # classification) so later starts advance through the
+                    # backlog. Bound new failures per pass to avoid minutes of
+                    # retry waits when the decoder itself is unavailable.
+                    self._manual_index.note_deferred(decoded_key, flush=False)
+                    if recent:
+                        # A current listing discovered during startup should not
+                        # require a companion restart after a transient decoder
+                        # failure. Historical cleanup stays restart-bounded.
+                        self._schedule_incomplete_scan_retry(path, source)
+                    incomplete_scans += 1
+                    authority_blocked = True
+                    stop_scan = incomplete_scans >= _BACKLOG_INCOMPLETE_SCAN_LIMIT
                 elif result.error_reason is not None and not result.has_marker:
-                    if recent and not apply_closed and not fragment_frontier_active:
+                    if (
+                        recent
+                        and not apply_closed
+                        and not authority_blocked
+                        and not fragment_frontier_active
+                    ):
                         if not self._emit_decode_failed(
                             path,
                             result.error_reason,
                             source,
                         ):
-                            return remaining, apply_closed, deleted, True
+                            return (
+                                remaining,
+                                apply_closed,
+                                authority_blocked,
+                                deleted,
+                                True,
+                            )
                         apply_closed = True
                 elif result.fragment is not None:
-                    if not recent or apply_closed:
+                    if authority_blocked:
+                        delete_current_marker = False
+                    elif not recent or apply_closed:
                         delete_current_marker = True
                     else:
                         outcome = self._fragment_assembler.accept_fragment(
@@ -2671,18 +2883,26 @@ class ScreenshotWatcher(QObject):
                             now=self._fragment_clock(),
                         )
                         if outcome.error_reason is not None:
+                            fragment_frontier_active = False
                             self._cancel_fragment_expiry()
                             if not self._emit_decode_failed(
                                 path,
                                 outcome.error_reason,
                                 source,
                             ):
-                                return remaining, apply_closed, deleted, True
+                                return (
+                                    remaining,
+                                    apply_closed,
+                                    authority_blocked,
+                                    deleted,
+                                    True,
+                                )
                             deleted += self._delete_retired_fragment_files(
                                 outcome.retired_files
                             )
                             apply_closed = True
                         elif outcome.snapshot is not None:
+                            fragment_frontier_active = False
                             self._cancel_fragment_expiry()
                             assembled_source = outcome.snapshot.source
                             is_fresh = (
@@ -2693,7 +2913,13 @@ class ScreenshotWatcher(QObject):
                             )
                             if is_fresh:
                                 if not self._emit_snapshot(outcome.snapshot):
-                                    return remaining, apply_closed, deleted, True
+                                    return (
+                                        remaining,
+                                        apply_closed,
+                                        authority_blocked,
+                                        deleted,
+                                        True,
+                                    )
                                 deleted += self._delete_retired_fragment_files(
                                     outcome.retired_files
                                 )
@@ -2714,7 +2940,11 @@ class ScreenshotWatcher(QObject):
                                 fragment_frontier_active = True
                                 self._arm_fragment_expiry(result.fragment)
                 elif result.snapshot is not None:
-                    if deferred_failure is None and not fragment_frontier_active:
+                    if (
+                        deferred_failure is None
+                        and not fragment_frontier_active
+                        and not authority_blocked
+                    ):
                         whole = self._snapshot_with_source(result.snapshot, source)
                         outcome = self._fragment_assembler.accept_snapshot(
                             whole,
@@ -2732,13 +2962,20 @@ class ScreenshotWatcher(QObject):
                         )
                         if outcome.accepted and is_fresh and not apply_closed:
                             if not self._emit_snapshot(whole):
-                                return remaining, apply_closed, deleted, True
+                                return (
+                                    remaining,
+                                    apply_closed,
+                                    authority_blocked,
+                                    deleted,
+                                    True,
+                                )
                             _log.info("backlog: applied snapshot from %s", path.name)
                             apply_closed = True
                 elif (
                     result.has_marker
                     and recent
                     and not apply_closed
+                    and not authority_blocked
                     and not fragment_frontier_active
                 ):
                     if result.fragment_candidate:
@@ -2759,11 +2996,23 @@ class ScreenshotWatcher(QObject):
                             result.error_reason or "parse failed",
                             source,
                         ):
-                            return remaining, apply_closed, deleted, True
+                            return (
+                                remaining,
+                                apply_closed,
+                                authority_blocked,
+                                deleted,
+                                True,
+                            )
                         apply_closed = True
-                if generation_current and result.has_marker and delete_current_marker:
+                if (
+                    generation_current
+                    and result.has_marker
+                    and delete_current_marker
+                    and not authority_blocked
+                    and (apply_closed or not fragment_frontier_active)
+                ):
                     if self._stopped.is_set():
-                        return remaining, apply_closed, deleted, True
+                        return remaining, apply_closed, authority_blocked, deleted, True
                     try:
                         if _unlink_if_source_matches(path, source):
                             deleted += 1
@@ -2778,24 +3027,38 @@ class ScreenshotWatcher(QObject):
                             path.name,
                             exc,
                         )
+                if (
+                    generation_current
+                    and authority_blocked
+                    and not result.scan_incomplete
+                    and (result.has_marker or result.transport_suspected)
+                ):
+                    # This owned generation was intentionally preserved behind
+                    # a newer unresolved authority barrier. It must not enter
+                    # the recent-work dedupe cache, or the coalesced rescan that
+                    # follows barrier resolution cannot apply it in-process.
+                    retry_owned_generation = decoded_key
             finally:
                 claim.release()
+            if retry_owned_generation is not None:
+                self._work_claims.forget_recent_generation(retry_owned_generation)
             if claim.retry_requested and not self._stopped.is_set():
                 self._on_new_file(path)
             if stop_scan:
-                return remaining, apply_closed, deleted, True
+                return remaining, apply_closed, authority_blocked, deleted, True
         if (
             deferred_failure is not None
             and not apply_closed
+            and not authority_blocked
             and not self._stopped.is_set()
         ):
             failed_path, reason, source = deferred_failure
             if fragment_frontier_active:
                 self._note_fragment_degraded_failure()
             if not self._emit_decode_failed(failed_path, reason, source):
-                return remaining, apply_closed, deleted, True
+                return remaining, apply_closed, authority_blocked, deleted, True
             apply_closed = True
-        return remaining, apply_closed, deleted, False
+        return remaining, apply_closed, authority_blocked, deleted, False
 
     def _decode_claim_generation(
         self,
@@ -2814,7 +3077,15 @@ class ScreenshotWatcher(QObject):
                 exc,
                 exc_info=True,
             )
-            result = DecodeResult(None, False)
+            # Treat an unexpected native/image exception like every other
+            # transient scan failure. Returning a clean no-marker result here
+            # permanently marked this exact file generation as processed.
+            result = DecodeResult(
+                None,
+                False,
+                "temporary screenshot decode failure",
+                scan_incomplete=True,
+            )
         retries = 0
         while (
             result.error_reason is not None
@@ -2834,12 +3105,24 @@ class ScreenshotWatcher(QObject):
                 result = _decode_screenshot_result(path)
                 decode_succeeded = True
             except Exception as exc:  # noqa: BLE001
+                decode_succeeded = False
                 _log.debug(
                     "transient screenshot retry failed for %s: %r",
                     path.name,
                     exc,
                     exc_info=True,
                 )
+                result = DecodeResult(
+                    None,
+                    False,
+                    "temporary screenshot decode failure",
+                    scan_incomplete=True,
+                )
+        if not decode_succeeded:
+            # Repeated unexpected exceptions still do not prove that a manual
+            # screenshot belongs to ApplicantScout. Preserve it silently after
+            # the bounded retry, while leaving the generation unclassified.
+            result = DecodeResult(None, False, scan_incomplete=True)
         return result, decode_succeeded
 
     def _finalize_decode_result(
@@ -2859,6 +3142,7 @@ class ScreenshotWatcher(QObject):
             )
             claim.request_retry_for_changed_generation(decoded_key)
             return False
+        was_deferred = decoded_key in self._manual_index.deferred_snapshot()
         if (
             decode_succeeded
             and current_stat is not None
@@ -2868,7 +3152,18 @@ class ScreenshotWatcher(QObject):
             and not result.transport_suspected
         ):
             self._manual_index.note_manual(decoded_key, flush=flush)
+        elif not result.scan_incomplete:
+            # A later process/live event may successfully classify a generation
+            # that an earlier backlog pass deferred. Remove the cursor entry so
+            # it cannot become a permanent blacklist.
+            self._manual_index.forget_deferred(decoded_key, flush=flush)
         claim.mark_processed_generation(decoded_key)
+        if was_deferred and not result.scan_incomplete:
+            # A deferred newest screenshot is an authority barrier for every
+            # older candidate. Once a later retry classifies that generation,
+            # immediately resume the coalesced backlog so an older valid APS
+            # snapshot cannot remain stuck until another filesystem event.
+            self._request_backlog_rescan_after_deferred_resolution()
         return True
 
     def _on_new_file(self, path: Path) -> None:
@@ -2880,13 +3175,22 @@ class ScreenshotWatcher(QObject):
                 path.name,
             )
 
-    def _on_new_file_guarded(self, path: Path) -> None:
+    def _on_new_file_guarded(
+        self,
+        path: Path,
+        *,
+        allow_incomplete_retry: bool = True,
+    ) -> None:
         for _attempt in range(2):
             claim = self._work_claims.try_claim(path)
             if claim is None:
                 return
             try:
-                self._process_new_file(path, claim)
+                self._process_new_file(
+                    path,
+                    claim,
+                    allow_incomplete_retry=allow_incomplete_retry,
+                )
             finally:
                 claim.release()
             if not claim.retry_requested:
@@ -2927,6 +3231,75 @@ class ScreenshotWatcher(QObject):
         if not self._stopped.is_set():
             self._on_new_file(path)
 
+    def _schedule_incomplete_scan_retry(
+        self,
+        path: Path,
+        source: SnapshotSource,
+    ) -> None:
+        path_key = _normalized_work_path(path)
+        expected_key = _ScreenshotWorkKey(path_key, source.mtime_ns, source.size)
+        with self._incomplete_retry_lock:
+            if self._stopped.is_set():
+                return
+            previous = self._incomplete_retry_timers.get(path_key)
+            if previous is not None and previous[0] == expected_key:
+                return
+            timer_ref: list[Any] = []
+
+            def retry() -> None:
+                if timer_ref:
+                    self._run_incomplete_scan_retry(
+                        path,
+                        path_key,
+                        expected_key,
+                        timer_ref[0],
+                    )
+
+            timer = self._generation_retry_timer_factory(
+                _INCOMPLETE_SCAN_RETRY_DELAY_SECONDS,
+                retry,
+            )
+            timer_ref.append(timer)
+            self._incomplete_retry_timers[path_key] = expected_key, timer
+        if previous is not None:
+            previous[1].cancel()
+        self._set_timer_daemon(timer)
+        try:
+            timer.start()
+        except Exception as exc:  # noqa: BLE001 - observer remains usable
+            with self._incomplete_retry_lock:
+                if self._incomplete_retry_timers.get(path_key) == (
+                    expected_key,
+                    timer,
+                ):
+                    self._incomplete_retry_timers.pop(path_key, None)
+            _log.warning("could not start incomplete screenshot retry timer: %s", exc)
+
+    def _run_incomplete_scan_retry(
+        self,
+        path: Path,
+        path_key: str,
+        expected_key: _ScreenshotWorkKey,
+        timer: Any,
+    ) -> None:
+        with self._incomplete_retry_lock:
+            if self._incomplete_retry_timers.get(path_key) != (
+                expected_key,
+                timer,
+            ):
+                return
+            self._incomplete_retry_timers.pop(path_key, None)
+        if self._stopped.is_set():
+            return
+        try:
+            current_key = _work_key_from_stat(path, path.stat())
+        except OSError:
+            return
+        if current_key != expected_key:
+            return
+        self._work_claims.forget_recent_generation(expected_key)
+        self._on_new_file_guarded(path, allow_incomplete_retry=False)
+
     def _dispatch_live_decode_result(
         self,
         path: Path,
@@ -2934,7 +3307,21 @@ class ScreenshotWatcher(QObject):
         source: SnapshotSource,
         *,
         marker_failure_reason: str,
+        allow_incomplete_retry: bool,
     ) -> None:
+        if result.scan_incomplete:
+            if allow_incomplete_retry:
+                _log.info(
+                    "deferring one final incomplete screenshot scan for %s",
+                    path.name,
+                )
+                self._schedule_incomplete_scan_retry(path, source)
+            else:
+                _log.info(
+                    "preserving %s after final incomplete screenshot scan",
+                    path.name,
+                )
+            return
         if result.decoder_unavailable:
             self._emit_decode_failed(
                 path,
@@ -3049,6 +3436,8 @@ class ScreenshotWatcher(QObject):
         self,
         path: Path,
         claim: _ScreenshotWorkClaim,
+        *,
+        allow_incomplete_retry: bool = True,
     ) -> None:
         """Called from watchdog observer thread. Decode + emit + cleanup.
 
@@ -3088,6 +3477,7 @@ class ScreenshotWatcher(QObject):
                 result,
                 source,
                 marker_failure_reason="size never stabilized",
+                allow_incomplete_retry=allow_incomplete_retry,
             )
             return
         wait_elapsed = time.perf_counter() - wait_started
@@ -3111,6 +3501,7 @@ class ScreenshotWatcher(QObject):
             result,
             source,
             marker_failure_reason="parse failed",
+            allow_incomplete_retry=allow_incomplete_retry,
         )
 
 

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.14.2 - 27-Aug-2026
+## 0.14.2 - 28-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.8`. This patch restores reliable
 QR delivery around ordinary Blizzard panels, loading transitions, and transient
@@ -13,11 +13,36 @@ screenshot decoder failures.
 - A transient PIL/zbar screenshot scan failure now receives two bounded retries
   for the exact file generation, then surfaces a visible decode failure instead
   of waiting silently for another filesystem event or companion restart.
+- A screenshot that exhausts those immediate native-decoder retries receives
+  one final generation-checked retry without needing another filesystem event;
+  the same recovery also covers the newest snapshot discovered during startup.
 - Keeping a vendor, map, character, or other tracked interaction panel open no
   longer blocks applicant updates indefinitely; the addon uses a short visual
   grace and then resumes transport.
 - Loading screens invalidate in-flight QR captures, and closing a long-lived
   interaction panel schedules one safe resend of the latest snapshot.
+- Snapshot work is always queued onto Qt's GUI thread. Planning retries once
+  before mutation, and an unexpected apply failure clears memory and disk state
+  before replaying the complete original plan once from a clean baseline.
+- Local RaiderIO enrichment failures cannot interrupt authoritative listing,
+  applicant, or roster updates, and the current compact provider schema is
+  validated against real installed data.
+- Config, cache, and log writes now preserve ownership and fail closed when
+  Windows ACL hardening cannot be verified.
+- A legacy log directory with an unrecoverable Windows ACL no longer blocks
+  startup; the companion preserves it and continues in a new private recovery
+  log directory without weakening settings or cache protections.
+- Windows builds isolate native runtime discovery, reject conflicting ICU DLLs,
+  verify the frozen Qt/zbar runtime, and support staged upgrades plus clean
+  custom install directories.
+
+### Improved
+
+- Installer shutdown targets the staged `current` executable before using the
+  bounded forced-stop fallback, and release CI exercises the upgrade layout.
+- Frozen builds exclude unused NumPy/pytest code, reject its accidental return,
+  bundle the CPython license explicitly, and ship only runtime plus incorporated
+  bootloader dependency notices instead of the test/build environment.
 
 ### Release Assets
 

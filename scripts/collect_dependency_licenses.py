@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import metadata
@@ -11,12 +12,14 @@ import tomllib
 from pathlib import Path
 from urllib.parse import urlparse
 
+from packaging.markers import default_environment
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
 
 LICENSE_FILE_TOKENS = ("license", "copying", "notice")
 DEFAULT_RELEASE_EXTRAS = ("dev",)
+DEFAULT_BUILD_ARTIFACT_LICENSE_PACKAGES = ("PyInstaller",)
 
 
 @dataclass(frozen=True)
@@ -199,6 +202,122 @@ def missing_pyproject_constraints(
     return [name for name in required if name not in constrained]
 
 
+def runtime_license_package_names_from_pyproject(
+    path: Path,
+    *,
+    build_artifact_packages: Sequence[str] = DEFAULT_BUILD_ARTIFACT_LICENSE_PACKAGES,
+) -> list[str]:
+    """Resolve the installed runtime dependency closure plus embedded build artifacts.
+
+    Release constraints intentionally contain test and build tools as well as the
+    application runtime. Their code and notices do not belong in the shipped
+    payload unless the frozen artifact actually incorporates them. PyInstaller's
+    bootloader is incorporated, so its own license is included without pulling
+    its entire build-only dependency closure into the installer.
+    """
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    project = data.get("project", {})
+    if not isinstance(project, dict):
+        raise ValueError("pyproject.toml project must be a table")
+    direct_requirements = _string_list(
+        project.get("dependencies", []),
+        field="project.dependencies",
+    )
+    pending = [_requirement_name(requirement) for requirement in direct_requirements]
+    resolved: set[str] = set()
+    marker_environment: dict[str, str] = {
+        str(key): str(value) for key, value in default_environment().items()
+    }
+    marker_environment["extra"] = ""
+
+    while pending:
+        requested_name = pending.pop()
+        canonical_requested = str(canonicalize_name(requested_name))
+        if canonical_requested in resolved:
+            continue
+        try:
+            dist = metadata.distribution(requested_name)
+        except metadata.PackageNotFoundError as exc:
+            raise ValueError(
+                f"Runtime distribution is not installed: {requested_name}"
+            ) from exc
+        installed_name = dist.metadata.get("Name", requested_name)
+        canonical_installed = str(canonicalize_name(str(installed_name)))
+        if canonical_installed != canonical_requested:
+            raise ValueError(
+                "Installed runtime distribution identity mismatch: requested "
+                f"{canonical_requested}, metadata names {canonical_installed}"
+            )
+        resolved.add(canonical_installed)
+        for raw_requirement in dist.requires or ():
+            try:
+                requirement = Requirement(raw_requirement)
+            except InvalidRequirement as exc:
+                raise ValueError(
+                    f"Malformed installed requirement for {canonical_installed}: "
+                    f"{raw_requirement}"
+                ) from exc
+            if requirement.marker is not None and not requirement.marker.evaluate(
+                marker_environment
+            ):
+                continue
+            pending.append(str(canonicalize_name(requirement.name)))
+
+    resolved.update(
+        str(canonicalize_name(package)) for package in build_artifact_packages
+    )
+    return sorted(resolved)
+
+
+def frozen_distribution_names_from_toc(path: Path) -> list[str]:
+    """Map modules present in the frozen PYZ back to installed distributions."""
+    try:
+        toc = ast.literal_eval(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise ValueError(f"Could not parse frozen module provenance {path}: {exc}") from exc
+
+    module_roots: set[str] = set()
+
+    def visit(value: object) -> None:
+        if (
+            isinstance(value, tuple)
+            and len(value) == 3
+            and isinstance(value[0], str)
+            and value[2] in {"EXTENSION", "PYMODULE", "PYSOURCE"}
+        ):
+            module_roots.add(value[0].partition(".")[0].casefold())
+            return
+        if isinstance(value, dict):
+            for item in value.items():
+                visit(item)
+            return
+        if isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                visit(item)
+
+    visit(toc)
+    if not module_roots:
+        raise ValueError(f"Frozen module provenance contains no module rows: {path}")
+
+    distribution_map = {
+        module.casefold(): distributions
+        for module, distributions in metadata.packages_distributions().items()
+    }
+    distributions: set[str] = set()
+    for module_root in module_roots:
+        for distribution in distribution_map.get(module_root, ()):  # stdlib has none
+            distributions.add(str(canonicalize_name(distribution)))
+    return sorted(distributions)
+
+
+def project_distribution_name(path: Path) -> str:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    project = data.get("project", {})
+    if not isinstance(project, dict) or not isinstance(project.get("name"), str):
+        raise ValueError("pyproject.toml project.name must be a string")
+    return str(canonicalize_name(project["name"]))
+
+
 def collect_dependency_license_artifacts(
     packages: Iterable[str],
     dest: Path,
@@ -294,6 +413,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pyproject", type=Path)
     parser.add_argument("--dest", required=True, type=Path)
     parser.add_argument("--overrides", required=True, type=Path)
+    parser.add_argument("--runtime-license-set", action="store_true")
+    parser.add_argument("--module-toc", type=Path)
     args = parser.parse_args(argv)
 
     if args.pyproject is not None:
@@ -306,7 +427,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             return 1
 
-    packages = parse_exact_constraints(args.constraints)
+    if args.runtime_license_set:
+        if args.pyproject is None:
+            parser.error("--runtime-license-set requires --pyproject")
+        if args.module_toc is None:
+            parser.error("--runtime-license-set requires --module-toc")
+        packages = sorted(
+            set(runtime_license_package_names_from_pyproject(args.pyproject))
+            | set(frozen_distribution_names_from_toc(args.module_toc))
+        )
+        own_distribution = project_distribution_name(args.pyproject)
+        packages = [package for package in packages if package != own_distribution]
+        constrained = {
+            str(canonicalize_name(name))
+            for name in parse_exact_constraints(args.constraints)
+        }
+        missing_runtime = sorted(set(packages) - constrained)
+        if missing_runtime:
+            for package in missing_runtime:
+                print(
+                    f"missing release constraint for runtime license: {package}",
+                    file=sys.stderr,
+                )
+            return 1
+    else:
+        packages = parse_exact_constraints(args.constraints)
     overrides = load_license_overrides(args.overrides)
     collect_dependency_license_artifacts(packages, args.dest, overrides=overrides)
     return 0

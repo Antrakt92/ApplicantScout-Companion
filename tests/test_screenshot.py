@@ -13,7 +13,7 @@ import os
 import struct
 import threading
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -2612,6 +2612,7 @@ def test_decode_result_marks_transient_zbar_failure_as_incomplete_scan(
     assert result.snapshot is None
     assert not result.has_marker
     assert result.error_reason == "QR scan failed: temporary zbar failure"
+    assert result.scan_incomplete is True
 
 
 def test_cleanup_dry_run_reports_marker_files_without_deleting(
@@ -3428,6 +3429,180 @@ def test_watcher_retries_transient_scan_failure_without_new_filesystem_event(
     assert not image_path.exists()
 
 
+def test_watcher_retries_unexpected_initial_decode_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_decode_exception.jpg"
+    image_path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    decode_calls = 0
+
+    def decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal decode_calls
+        decode_calls += 1
+        if decode_calls == 1:
+            raise RuntimeError("temporary native decoder failure")
+        return screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None),
+            True,
+        )
+
+    watcher.snapshotReceived.connect(snapshots.append)
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_TRANSIENT_SCAN_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._on_new_file(image_path)
+
+    assert decode_calls == 2
+    assert len(snapshots) == 1
+    assert failures == []
+    assert not image_path.exists()
+
+
+def test_watcher_does_not_report_stale_transient_failure_after_retry_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_mixed_failure.jpg"
+    image_path.write_bytes(b"manual-or-transport")
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        generation_retry_timer_factory=timers,
+    )
+    failures: list[tuple[str, str]] = []
+    results: Iterator[screenshot_mod.DecodeResult | BaseException] = iter(
+        (
+            screenshot_mod.DecodeResult(None, False, "transient scan failure"),
+            RuntimeError("native retry failure"),
+            RuntimeError("native retry failure"),
+            RuntimeError("final native retry failure"),
+            RuntimeError("final native retry failure"),
+            RuntimeError("final native retry failure"),
+        )
+    )
+
+    def decode(_path: Path) -> screenshot_mod.DecodeResult:
+        result = next(results)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    watcher.decodeFailed.connect(lambda path, reason: failures.append((path, reason)))
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_TRANSIENT_SCAN_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._on_new_file(image_path)
+
+    assert failures == []
+    assert image_path.exists()
+    assert len(timers.timers) == 1
+
+    timers.timers[0].fire()
+
+    assert failures == []
+    assert image_path.exists()
+    assert len(timers.timers) == 1
+
+
+def test_watcher_recovers_from_incomplete_scan_without_new_filesystem_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_delayed_recovery.jpg"
+    _write_blank_image(image_path)
+    payload = _wrap_payload(_build_body([]))
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        generation_retry_timer_factory=timers,
+    )
+    snapshots: list[Snapshot] = []
+    decode_calls = 0
+
+    def decode(_image, *, symbols=None):
+        nonlocal decode_calls
+        decode_calls += 1
+        if decode_calls <= 3:
+            raise RuntimeError("temporary native decoder failure")
+        return [SimpleNamespace(data=payload)]
+
+    watcher.snapshotReceived.connect(snapshots.append)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_TRANSIENT_SCAN_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(screenshot_mod, "pyzbar_decode", decode)
+    monkeypatch.setattr(screenshot_mod, "ZBarSymbol", None)
+
+    watcher._on_new_file(image_path)
+
+    assert decode_calls == 3
+    assert snapshots == []
+    assert image_path.exists()
+    assert len(timers.timers) == 1
+    assert timers.timers[0].delay == pytest.approx(
+        screenshot_mod._INCOMPLETE_SCAN_RETRY_DELAY_SECONDS
+    )
+
+    timers.timers[0].fire()
+
+    assert decode_calls == 4
+    assert len(snapshots) == 1
+    assert not image_path.exists()
+
+
+def test_watcher_stop_cancels_incomplete_scan_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_cancel_delayed_scan.jpg"
+    image_path.write_bytes(b"transport")
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        generation_retry_timer_factory=timers,
+    )
+    decode_calls = 0
+
+    def decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal decode_calls
+        decode_calls += 1
+        raise RuntimeError("native decoder failure")
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_TRANSIENT_SCAN_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._on_new_file(image_path)
+    watcher.request_stop()
+    timers.timers[0].fire()
+
+    assert decode_calls == 3
+    assert timers.timers[0].cancelled is True
+    assert image_path.exists()
+
+
 def test_watcher_transient_retry_follows_same_path_replacement_generation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3752,7 +3927,11 @@ def test_watcher_preserves_manual_screenshot_when_decode_raises(
 ):
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     image_path.write_bytes(b"manual")
-    watcher = ScreenshotWatcher(tmp_path)
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        generation_retry_timer_factory=timers,
+    )
     snapshots: list[Snapshot] = []
     failures: list[tuple[str, str]] = []
     watcher.snapshotReceived.connect(snapshots.append)
@@ -3769,6 +3948,8 @@ def test_watcher_preserves_manual_screenshot_when_decode_raises(
     assert snapshots == []
     assert failures == []
     assert image_path.exists()
+    assert len(timers.timers) == 1
+    watcher.request_stop()
 
 
 def test_watcher_stable_timeout_preserves_manual_screenshot_when_decode_raises(
@@ -3777,7 +3958,11 @@ def test_watcher_stable_timeout_preserves_manual_screenshot_when_decode_raises(
 ):
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     image_path.write_bytes(b"manual")
-    watcher = ScreenshotWatcher(tmp_path)
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path,
+        generation_retry_timer_factory=timers,
+    )
     snapshots: list[Snapshot] = []
     failures: list[tuple[str, str]] = []
     watcher.snapshotReceived.connect(snapshots.append)
@@ -3794,6 +3979,8 @@ def test_watcher_stable_timeout_preserves_manual_screenshot_when_decode_raises(
     assert snapshots == []
     assert failures == []
     assert image_path.exists()
+    assert len(timers.timers) == 1
+    watcher.request_stop()
 
 
 def test_watcher_stable_timeout_emits_marker_snapshot_and_deletes_transport(
@@ -4032,9 +4219,7 @@ def test_watcher_real_failure_callback_stop_preserves_marker_file(
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     image_path.write_bytes(b"transport")
     watcher = ScreenshotWatcher(tmp_path)
-    watcher.decodeFailed.connect(
-        lambda _path, _reason, _source: watcher.request_stop()
-    )
+    watcher.decodeFailed.connect(lambda _path, _reason, _source: watcher.request_stop())
     monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
     monkeypatch.setattr(
         screenshot_mod,
@@ -4193,8 +4378,8 @@ def test_backlog_incomplete_newest_generation_suppresses_older_whole_without_fai
     assert snapshots == []
     assert failures == []
     assert newest.exists()
-    assert not older.exists()
-    assert not oldest_corrupt.exists()
+    assert older.exists()
+    assert oldest_corrupt.exists()
 
 
 def test_backlog_does_not_apply_older_snapshot_after_newest_marker_decode_failure(
@@ -4581,11 +4766,19 @@ def test_backlog_persists_manual_fingerprint_across_watcher_restart(
     monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
     monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
 
-    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    ScreenshotWatcher(
+        screenshots,
+        cache_dir=cache_dir,
+        generation_retry_timer_factory=_FakeTimerFactory(),
+    )._scan_recent_backlog()
     assert calls == [image_path]
 
     monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
-    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    ScreenshotWatcher(
+        screenshots,
+        cache_dir=cache_dir,
+        generation_retry_timer_factory=_FakeTimerFactory(),
+    )._scan_recent_backlog()
 
     assert calls == [image_path]
 
@@ -4612,7 +4805,11 @@ def test_backlog_does_not_persist_transient_scan_failure_as_manual(
     monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
     monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
 
-    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    ScreenshotWatcher(
+        screenshots,
+        cache_dir=cache_dir,
+        generation_retry_timer_factory=_FakeTimerFactory(),
+    )._scan_recent_backlog()
     monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
     ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
 
@@ -4705,6 +4902,395 @@ def test_backlog_resumes_beyond_unknown_decode_budget(
     assert not oldest_transport.exists()
     assert newer_manual.exists()
     assert older_manual.exists()
+
+
+def test_default_backlog_decode_budget_is_bounded_for_startup_work():
+    assert 0 < screenshot_mod._BACKLOG_CLEANUP_LIMIT <= 500
+
+
+def test_backlog_rotates_bounded_deferred_retries_without_reordering_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    paths = [screenshots / f"WoWScrnShot_{index:04d}.jpg" for index in range(6)]
+    for index, path in enumerate(paths):
+        path.write_bytes(b"unknown")
+        mtime = 900.0 - index
+        os.utime(path, (mtime, mtime))
+    calls: list[Path] = []
+
+    def raise_decode(path: Path) -> screenshot_mod.DecodeResult:
+        calls.append(path)
+        raise RuntimeError("native decoder failure")
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_TRANSIENT_SCAN_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", raise_decode)
+    monkeypatch.setattr(
+        ScreenshotWatcher,
+        "_schedule_incomplete_scan_retry",
+        lambda *_args, **_kwargs: None,
+    )
+
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    first_attempted = set(calls)
+    assert first_attempted == set(paths[:4])
+    assert len(calls) == 12
+
+    monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    second_attempt_order = calls[12::3]
+
+    assert second_attempt_order == paths[:4]
+    assert len(calls) == 24
+
+    monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+    third_attempt_order = calls[24::3]
+
+    assert third_attempt_order == [paths[0], paths[1], paths[4], paths[5]]
+    assert len(calls) == 36
+
+
+def test_backlog_recovered_newest_deferred_beats_older_unseen_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    newer = screenshots / "WoWScrnShot_newer.jpg"
+    older = screenshots / "WoWScrnShot_older.jpg"
+    newer.write_bytes(b"newer")
+    older.write_bytes(b"older")
+    os.utime(newer, (999.0, 999.0))
+    os.utime(older, (998.0, 998.0))
+
+    watcher = ScreenshotWatcher(screenshots, cache_dir=cache_dir)
+    newer_stat = newer.stat()
+    watcher._manual_index.note_deferred(
+        screenshot_mod._work_key_from_stat(newer, newer_stat),
+        flush=True,
+    )
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        return screenshot_mod.DecodeResult(
+            Snapshot(
+                listing=None,
+                version=screenshot_mod.DecodedVersion(
+                    addon_version=path.stem,
+                    game_version="12.0.0",
+                    region_id=3,
+                    player_name="Host-Realm",
+                ),
+            ),
+            True,
+        )
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._scan_recent_backlog()
+
+    assert len(snapshots) == 1
+    assert snapshots[0].version is not None
+    assert snapshots[0].version.addon_version == newer.stem
+    assert not newer.exists()
+    assert not older.exists()
+
+
+def test_backlog_skipped_newer_deferred_preserves_older_valid_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    paths = [screenshots / f"WoWScrnShot_{index:04d}.jpg" for index in range(6)]
+    for index, path in enumerate(paths):
+        path.write_bytes(f"generation-{index}".encode())
+        os.utime(path, (999.0 - index, 999.0 - index))
+
+    watcher = ScreenshotWatcher(screenshots, cache_dir=cache_dir)
+    ordered_keys = [
+        screenshot_mod._work_key_from_stat(path, path.stat()) for path in paths
+    ]
+    for key in ordered_keys:
+        watcher._manual_index.note_deferred(key, flush=False)
+    # Prime two bounded windows. The scan's own third selection is paths 2..5,
+    # so unresolved newer paths 0 and 1 become an authority barrier.
+    watcher._manual_index.select_retry_window(ordered_keys, limit=4)
+    watcher._manual_index.select_retry_window(ordered_keys, limit=4)
+    watcher._manual_index.flush()
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        if path == paths[4]:
+            return screenshot_mod.DecodeResult(
+                Snapshot(listing=None, version=None),
+                True,
+            )
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._scan_recent_backlog()
+
+    assert snapshots == []
+    assert paths[0].exists()
+    assert paths[1].exists()
+    assert paths[4].exists()
+
+
+def test_missing_persisted_deferred_barrier_does_not_block_valid_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    missing_newer = screenshots / "WoWScrnShot_rotated.jpg"
+    older_transport = screenshots / "WoWScrnShot_valid.jpg"
+    missing_newer.write_bytes(b"deferred")
+    older_transport.write_bytes(b"transport")
+    os.utime(missing_newer, (999.0, 999.0))
+    os.utime(older_transport, (998.0, 998.0))
+
+    watcher = ScreenshotWatcher(screenshots, cache_dir=cache_dir)
+    watcher._manual_index.note_deferred(
+        screenshot_mod._work_key_from_stat(missing_newer, missing_newer.stat()),
+        flush=True,
+    )
+    missing_newer.unlink()
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda path: screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None),
+            path == older_transport,
+        ),
+    )
+
+    watcher._scan_recent_backlog()
+
+    assert len(snapshots) == 1
+    assert not older_transport.exists()
+    assert watcher._manual_index.deferred_snapshot() == set()
+
+
+def test_recent_backlog_incomplete_scan_recovers_without_process_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    image_path = screenshots / "WoWScrnShot_current_listing.jpg"
+    image_path.write_bytes(b"valid-transport-generation")
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        screenshots,
+        cache_dir=cache_dir,
+        generation_retry_timer_factory=timers,
+    )
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    decode_calls = 0
+
+    def decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal decode_calls
+        if _path != image_path:
+            return screenshot_mod.DecodeResult(None, False)
+        decode_calls += 1
+        if decode_calls <= 3:
+            return screenshot_mod.DecodeResult(
+                None,
+                False,
+                "temporary native failure",
+                scan_incomplete=True,
+            )
+        return screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None),
+            True,
+        )
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._scan_recent_backlog()
+
+    assert decode_calls == 3
+    assert len(timers.timers) == 1
+    assert snapshots == []
+    timers.timers[0].fire()
+
+    assert decode_calls == 4
+    assert len(snapshots) == 1
+    assert not image_path.exists()
+
+
+def test_resolved_manual_authority_barrier_resumes_older_valid_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    newer_manual = screenshots / "WoWScrnShot_newer_manual.jpg"
+    older_transport = screenshots / "WoWScrnShot_older_transport.jpg"
+    newer_manual.write_bytes(b"manual")
+    older_transport.write_bytes(b"transport")
+    os.utime(newer_manual, (999.0, 999.0))
+    os.utime(older_transport, (998.0, 998.0))
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        screenshots,
+        cache_dir=cache_dir,
+        generation_retry_timer_factory=timers,
+    )
+    snapshot_applied = threading.Event()
+    snapshots: list[Snapshot] = []
+
+    def emit_snapshot(snapshot: Snapshot) -> bool:
+        snapshots.append(snapshot)
+        snapshot_applied.set()
+        return True
+
+    monkeypatch.setattr(watcher, "_emit_snapshot", emit_snapshot)
+    newer_decode_calls = 0
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal newer_decode_calls
+        if path == newer_manual:
+            newer_decode_calls += 1
+            if newer_decode_calls <= 3:
+                return screenshot_mod.DecodeResult(
+                    None,
+                    False,
+                    "temporary native failure",
+                    scan_incomplete=True,
+                )
+            return screenshot_mod.DecodeResult(None, False)
+        assert path == older_transport
+        return screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None),
+            True,
+        )
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._scan_recent_backlog()
+
+    assert newer_decode_calls == 3
+    assert len(timers.timers) == 1
+    assert snapshots == []
+    assert older_transport.exists()
+
+    # Model the already-running watchdog without starting a real filesystem
+    # observer. Resolving the deferred newest generation must request one
+    # serialized backlog rescan by itself.
+    watcher._observer = object()
+    timers.timers[0].fire()
+
+    assert snapshot_applied.wait(timeout=2)
+    worker = watcher._backlog_thread
+    if worker is not None:
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+    watcher._observer = None
+    watcher.request_stop()
+
+    assert newer_decode_calls == 4
+    assert len(snapshots) == 1
+    assert newer_manual.exists()
+    assert not older_transport.exists()
+
+
+def test_backlog_retries_persisted_incomplete_snapshot_after_process_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    image_path = screenshots / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"valid-transport-generation")
+    os.utime(image_path, (995.0, 995.0))
+    failed_calls = 0
+
+    def raise_decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal failed_calls
+        failed_calls += 1
+        raise RuntimeError("temporary native decoder failure")
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_TRANSIENT_SCAN_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", raise_decode)
+
+    first_watcher = ScreenshotWatcher(screenshots, cache_dir=cache_dir)
+    first_watcher._scan_recent_backlog()
+
+    assert failed_calls == 3
+    assert image_path.exists()
+    first_watcher.request_stop()
+
+    monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
+    snapshots: list[Snapshot] = []
+    recovered_calls = 0
+
+    def recover_decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal recovered_calls
+        recovered_calls += 1
+        return screenshot_mod.DecodeResult(
+            Snapshot(listing=None, version=None),
+            True,
+        )
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", recover_decode)
+    restarted = ScreenshotWatcher(screenshots, cache_dir=cache_dir)
+    restarted.snapshotReceived.connect(snapshots.append)
+
+    restarted._scan_recent_backlog()
+
+    assert recovered_calls == 1
+    assert len(snapshots) == 1
+    assert not image_path.exists()
+    index_path = next(cache_dir.glob("screenshot-manual-index-*.json"))
+    persisted = json.loads(index_path.read_text(encoding="utf-8"))
+    assert persisted["deferred"] == []
 
 
 def test_observer_and_backlog_share_single_in_flight_decode_claim(

@@ -177,9 +177,14 @@ the queue to publish multiple drafts.
    Approved/Released file. If marketplace propagation is delayed, rerun only
    that verification job; never retry the already completed upload.
 7. If the addon workflow fails only because companion assets were not public
-   inside the 180-second wait, rerun the failed addon workflow after the
-   companion assets exist. Do not delete/recreate or force-push release tags for
-   that timeout path.
+   inside the 180-second wait, do not rerun the tag workflow: it deliberately
+   rejects later attempts so an uncertain marketplace outcome cannot upload
+   twice. After the companion assets exist, dispatch
+   `recover-preupload-release.yml` with the exact failed source run ID, the
+   unchanged tag, and `confirm_preupload_timeout=true`. That recovery validates
+   that the paired wait was the only failure and that no writer job started
+   before it reuses the retained verified artifact. Do not delete, recreate, or
+   force-push release tags for this timeout path.
 8. Do not publish an update release without the `.exe` and `.exe.sha256` pair;
    in-app updates intentionally refuse incomplete releases.
 9. For wire-breaking changes, do not rely on companion-first ordering alone:

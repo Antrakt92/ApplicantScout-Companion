@@ -6,10 +6,12 @@ import pytest
 
 from scripts.collect_dependency_licenses import (
     collect_dependency_license_artifacts,
+    frozen_distribution_names_from_toc,
     load_license_overrides,
     missing_pyproject_constraints,
     parse_exact_constraints,
     release_dependency_names_from_pyproject,
+    runtime_license_package_names_from_pyproject,
 )
 
 
@@ -241,7 +243,37 @@ def test_repository_license_override_manifest_is_valid_and_empty():
 
 def test_repository_release_dependencies_collect_without_placeholders(tmp_path: Path):
     repo_root = Path(__file__).resolve().parents[1]
-    packages = parse_exact_constraints(repo_root / "constraints-release.txt")
+    packages = runtime_license_package_names_from_pyproject(
+        repo_root / "pyproject.toml"
+    )
+    assert {
+        "anyio",
+        "httpcore",
+        "httpx",
+        "pillow",
+        "pyinstaller",
+        "pyqt6",
+        "pyqt6-qt6",
+        "pyqt6-sip",
+        "python-dotenv",
+        "pyzbar",
+        "watchdog",
+    }.issubset(packages)
+    assert not {
+        "_pytest",
+        "build",
+        "iniconfig",
+        "nodeenv",
+        "numpy",
+        "packaging",
+        "pluggy",
+        "pygments",
+        "pyright",
+        "pytest",
+        "pytest-qt",
+        "ruff",
+        "setuptools",
+    }.intersection(packages)
     overrides = load_license_overrides(
         repo_root / "packaging" / "dependency-license-overrides.toml"
     )
@@ -253,6 +285,35 @@ def test_repository_release_dependencies_collect_without_placeholders(tmp_path: 
     assert files
     assert all(path.stat().st_size > 0 for path in files)
     assert not list(dest.rglob("NO-LICENSE-FILE-FOUND.txt"))
+
+
+def test_frozen_module_toc_maps_only_installed_distribution_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    toc = tmp_path / "PYZ-00.toc"
+    toc.write_text(
+        repr(
+            [
+                ("typing_extensions", "C:/runtime/typing_extensions.py", "PYMODULE"),
+                ("PIL.Image", "C:/runtime/PIL/Image.py", "PYMODULE"),
+                ("pathlib", "C:/Python/Lib/pathlib.py", "PYMODULE"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "scripts.collect_dependency_licenses.metadata.packages_distributions",
+        lambda: {
+            "typing_extensions": ["typing_extensions"],
+            "PIL": ["Pillow"],
+        },
+    )
+
+    assert frozen_distribution_names_from_toc(toc) == [
+        "pillow",
+        "typing-extensions",
+    ]
 
 
 def test_dependency_license_collection_copies_non_empty_native_license(

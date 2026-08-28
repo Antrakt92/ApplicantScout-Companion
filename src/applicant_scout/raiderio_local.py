@@ -36,7 +36,9 @@ _REGION_FILE_TOKENS = {
 _DUNGEON_LEVELS_FIELD = 10
 _NEGATIVE_CACHE_TTL_SECONDS = 30.0
 _POSITIVE_CACHE_FAILURE_GRACE_SECONDS = 30.0
+_CONTENT_AUDIT_INTERVAL_SECONDS = 300.0
 _REGION_LOAD_ATTEMPTS = 2
+_PROVIDER_HEADER_MAX_CHARS = 64 * 1024
 LOOKUP_PAYLOAD_CACHE_DIR_NAME = "raiderio-local"
 _LOOKUP_PAYLOAD_CACHE_VERSION = 3
 _LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
@@ -45,6 +47,8 @@ _LOOKUP_PAYLOAD_CACHE_HEADER = struct.Struct(">8s32sQ32s")
 _LOOKUP_PAYLOAD_CACHE_LOCK = threading.Lock()
 _LOOKUP_PAYLOAD_CACHE_GENERATIONS: dict[Path, int] = {}
 _EXPECTED_RAIDERIO_DUNGEON_ORDER = MPLUS_RAIDERIO_DUNGEON_ORDER
+_FileStat = tuple[str, bool, int, int]
+_RegionDBStat = tuple[_FileStat, ...]
 _FileFingerprint = tuple[str, bool, int, int, str]
 _RegionDBFingerprint = tuple[_FileFingerprint, ...]
 
@@ -100,6 +104,7 @@ class RaiderIOLocalProfile:
 class _ProviderMeta:
     record_size: int
     encoding_order: tuple[int, ...]
+    keystone_milestone_levels: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -134,7 +139,9 @@ class _RegionCacheEntry:
     db: _RegionDB | None
     db_fingerprint: _RegionDBFingerprint | None
     observed_fingerprint: _RegionDBFingerprint
+    observed_stat: _RegionDBStat
     last_attempt_at: float
+    last_content_audit_at: float
     fallback_since: float | None = None
 
 
@@ -226,17 +233,37 @@ class RaiderIOLocalReader:
             return self._region_db_serialized(token)
 
     def _region_db_serialized(self, token: str) -> _RegionDB | None:
-        fingerprint = _region_db_fingerprint(self._retail_root, token)
+        stat_fingerprint = _region_db_stat(self._retail_root, token)
         now = time.monotonic()
         with self._lock:
             entry = self._cache.get(token)
             if entry is not None and not _cache_entry_is_stale(
-                entry, fingerprint, now
+                entry, stat_fingerprint, now
             ):
                 return entry.db
             previous_entry = entry
+            retry_due = entry is not None and _cache_entry_retry_due(entry, now)
+        fingerprint = _region_db_fingerprint(self._retail_root, token)
+        now = time.monotonic()
+        if (
+            previous_entry is not None
+            and not retry_due
+            and previous_entry.observed_fingerprint == fingerprint
+        ):
+            with self._lock:
+                self._cache[token] = _RegionCacheEntry(
+                    db=previous_entry.db,
+                    db_fingerprint=previous_entry.db_fingerprint,
+                    observed_fingerprint=fingerprint,
+                    observed_stat=_stat_from_fingerprint(fingerprint),
+                    last_attempt_at=previous_entry.last_attempt_at,
+                    last_content_audit_at=now,
+                    fallback_since=previous_entry.fallback_since,
+                )
+            return previous_entry.db
         loaded, fingerprint = self._load_stable_region_db(token, fingerprint)
         now = time.monotonic()
+        observed_stat = _stat_from_fingerprint(fingerprint)
         with self._lock:
             if loaded is None and previous_entry is not None and previous_entry.db is not None:
                 fallback_since = previous_entry.fallback_since
@@ -250,7 +277,9 @@ class RaiderIOLocalReader:
                         db=None,
                         db_fingerprint=None,
                         observed_fingerprint=fingerprint,
+                        observed_stat=observed_stat,
                         last_attempt_at=now,
+                        last_content_audit_at=now,
                     )
                     return None
                 self._cache[token] = _RegionCacheEntry(
@@ -261,7 +290,9 @@ class RaiderIOLocalReader:
                         else previous_entry.observed_fingerprint
                     ),
                     observed_fingerprint=fingerprint,
+                    observed_stat=observed_stat,
                     last_attempt_at=now,
+                    last_content_audit_at=now,
                     fallback_since=fallback_since,
                 )
                 return previous_entry.db
@@ -269,7 +300,9 @@ class RaiderIOLocalReader:
                 db=loaded,
                 db_fingerprint=fingerprint if loaded is not None else None,
                 observed_fingerprint=fingerprint,
+                observed_stat=observed_stat,
                 last_attempt_at=now,
+                last_content_audit_at=now,
             )
         return loaded
 
@@ -363,8 +396,34 @@ class _RegionDB:
         mplus_realm_cache: dict[str, _RealmData] = {}
         if has_mplus:
             try:
+                mplus_lookup_header = _read_provider_header(mplus_lookup_path)
+                mplus_header_meta = _parse_provider_meta(mplus_lookup_header)
+                dungeons = _parse_dungeon_names(
+                    dungeons_path.read_text(encoding="utf-8")
+                )
+                _validate_dungeon_order(dungeons)
+                _validate_encoding_plan(mplus_header_meta, len(dungeons))
+                mplus_characters_header = _read_provider_header(
+                    mplus_characters_path
+                )
+                _validate_provider_identity_pair(
+                    mplus_characters_header,
+                    mplus_lookup_header,
+                    "M+",
+                    expected_region=token,
+                )
                 mplus_characters_text = mplus_characters_path.read_text(
                     encoding="utf-8"
+                )
+                _validate_provider_identity_pair(
+                    mplus_characters_text,
+                    mplus_lookup_header,
+                    "M+",
+                    expected_region=token,
+                )
+                mplus_layout = _parse_character_layout(
+                    mplus_characters_text,
+                    mplus_header_meta.record_size,
                 )
                 lookup_text, lookup_digest = _read_utf8_source_with_digest(
                     mplus_lookup_path
@@ -376,15 +435,9 @@ class _RegionDB:
                     expected_region=token,
                 )
                 mplus_meta = _parse_provider_meta(lookup_text)
-                dungeons = _parse_dungeon_names(
-                    dungeons_path.read_text(encoding="utf-8")
-                )
-                _validate_dungeon_order(dungeons)
+                if mplus_meta != mplus_header_meta:
+                    raise ValueError("RaiderIO M+ provider metadata changed during load")
                 _validate_encoding_plan(mplus_meta, len(dungeons))
-                mplus_layout = _parse_character_layout(
-                    mplus_characters_text,
-                    mplus_meta.record_size,
-                )
                 mplus_lookup_payload = _parse_lookup_payload_for_character_layout(
                     lookup_text,
                     source_path=mplus_lookup_path,
@@ -410,8 +463,40 @@ class _RegionDB:
         raid_realm_cache: dict[str, _RealmData] = {}
         if has_raid:
             try:
+                raid_lookup_header = _read_provider_header(raid_lookup_path)
+                raid_header_meta = _parse_provider_meta(raid_lookup_header)
+                header_current_raids = _parse_provider_raids(
+                    raid_lookup_header, "currentRaids"
+                )
+                header_previous_raids = _parse_provider_raids(
+                    raid_lookup_header, "previousRaids"
+                )
+                _validate_raid_encoding_plan(
+                    raid_header_meta,
+                    header_current_raids,
+                    header_previous_raids,
+                )
+                raid_characters_header = _read_provider_header(
+                    raid_characters_path
+                )
+                _validate_provider_identity_pair(
+                    raid_characters_header,
+                    raid_lookup_header,
+                    "raid",
+                    expected_region=token,
+                )
                 raid_characters_text = raid_characters_path.read_text(
                     encoding="utf-8"
+                )
+                _validate_provider_identity_pair(
+                    raid_characters_text,
+                    raid_lookup_header,
+                    "raid",
+                    expected_region=token,
+                )
+                raid_layout = _parse_character_layout(
+                    raid_characters_text,
+                    raid_header_meta.record_size,
                 )
                 raid_lookup_text, raid_lookup_digest = _read_utf8_source_with_digest(
                     raid_lookup_path
@@ -423,15 +508,18 @@ class _RegionDB:
                     expected_region=token,
                 )
                 raid_meta = _parse_provider_meta(raid_lookup_text)
+                if raid_meta != raid_header_meta:
+                    raise ValueError("RaiderIO raid provider metadata changed during load")
                 current_raids = _parse_provider_raids(raid_lookup_text, "currentRaids")
                 previous_raids = _parse_provider_raids(
                     raid_lookup_text, "previousRaids"
                 )
+                if (
+                    current_raids != header_current_raids
+                    or previous_raids != header_previous_raids
+                ):
+                    raise ValueError("RaiderIO raid provider schema changed during load")
                 _validate_raid_encoding_plan(raid_meta, current_raids, previous_raids)
-                raid_layout = _parse_character_layout(
-                    raid_characters_text,
-                    raid_meta.record_size,
-                )
                 raid_lookup_payload = _parse_lookup_payload_for_character_layout(
                     raid_lookup_text,
                     source_path=raid_lookup_path,
@@ -485,7 +573,9 @@ class _RegionDB:
             if record is not None:
                 try:
                     mplus_profile = _decode_profile(
-                        record, self._mplus_meta.encoding_order, self._dungeons
+                        record,
+                        self._mplus_meta,
+                        self._dungeons,
                     )
                 except ValueError as exc:
                     _log.warning(
@@ -559,21 +649,23 @@ class _RegionDB:
 
 def _cache_entry_is_stale(
     entry: _RegionCacheEntry,
-    fingerprint: _RegionDBFingerprint,
+    stat_fingerprint: _RegionDBStat,
     now: float,
 ) -> bool:
-    if entry.db is not None:
-        return entry.observed_fingerprint != fingerprint or (
-            entry.fallback_since is not None
-            and (
-                now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
-                or _positive_fallback_grace_expired(entry, now)
-            )
-        )
     return (
-        entry.observed_fingerprint != fingerprint
-        or now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
+        entry.observed_stat != stat_fingerprint
+        or _cache_entry_retry_due(entry, now)
+        or now - entry.last_content_audit_at >= _CONTENT_AUDIT_INTERVAL_SECONDS
     )
+
+
+def _cache_entry_retry_due(entry: _RegionCacheEntry, now: float) -> bool:
+    if entry.db is not None:
+        return entry.fallback_since is not None and (
+            now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
+            or _positive_fallback_grace_expired(entry, now)
+        )
+    return now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
 
 
 def _positive_fallback_grace_expired(
@@ -593,6 +685,14 @@ def _region_db_fingerprint(retail_root: Path, token: str) -> _RegionDBFingerprin
         _file_fingerprint(path)
         for path in _region_db_paths(retail_root, token)
     )
+
+
+def _region_db_stat(retail_root: Path, token: str) -> _RegionDBStat:
+    return tuple(_file_stat(path) for path in _region_db_paths(retail_root, token))
+
+
+def _stat_from_fingerprint(fingerprint: _RegionDBFingerprint) -> _RegionDBStat:
+    return tuple(file_fingerprint[:4] for file_fingerprint in fingerprint)
 
 
 def _region_db_paths(retail_root: Path, token: str) -> tuple[Path, ...]:
@@ -616,9 +716,22 @@ def _file_fingerprint(path: Path) -> _FileFingerprint:
     return (path.name, True, stat.st_mtime_ns, stat.st_size, digest)
 
 
+def _file_stat(path: Path) -> _FileStat:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (path.name, False, 0, 0)
+    return (path.name, True, stat.st_mtime_ns, stat.st_size)
+
+
 def _read_utf8_source_with_digest(path: Path) -> tuple[str, str]:
     raw = path.read_bytes()
     return raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
+
+
+def _read_provider_header(path: Path) -> str:
+    with path.open("r", encoding="utf-8") as handle:
+        return handle.read(_PROVIDER_HEADER_MAX_CHARS)
 
 
 def retail_root_from_screenshots_path(path: Path) -> Path | None:
@@ -643,7 +756,20 @@ def _parse_provider_meta(text: str) -> _ProviderMeta:
     if not record_match or not order_match:
         raise ValueError("RaiderIO lookup metadata missing record size or encoding order")
     order = tuple(int(value) for value in re.findall(r"\d+", order_match.group(1)))
-    return _ProviderMeta(record_size=int(record_match.group(1)), encoding_order=order)
+    milestone_match = re.search(
+        r'(?:\["keystoneMilestoneLevels"\]|keystoneMilestoneLevels)\s*=\s*\{([^}]*)\}',
+        text,
+    )
+    milestone_levels = (
+        tuple(int(value) for value in re.findall(r"\d+", milestone_match.group(1)))
+        if milestone_match is not None
+        else None
+    )
+    return _ProviderMeta(
+        record_size=int(record_match.group(1)),
+        encoding_order=order,
+        keystone_milestone_levels=milestone_levels,
+    )
 
 
 def _validate_provider_identity_pair(
@@ -756,19 +882,25 @@ def _lua_string_field(text: str, key: str) -> str | None:
     return _decode_lua_string_bytes(match.group(1)).decode("utf-8")
 
 
-def _encoding_field_width(field: int, dungeon_count: int) -> int:
+def _encoding_field_width(
+    field: int,
+    dungeon_count: int,
+    milestone_count: int,
+) -> int:
     if field == 1:
         return 13
-    if field in {2, 6, 15}:
+    if field in {2, 4, 6, 8, 15, 16}:
         return 7
     if field == 3:
-        return 14
+        return 15
     if field in {5, 12}:
         return 13
-    if field in {7, 13}:
+    if field == 7:
         return 12
+    if field == 13:
+        return 15
     if field == 9:
-        return 8 * 6
+        return 8 * milestone_count
     if field in {_DUNGEON_LEVELS_FIELD, 14}:
         return dungeon_count * 8
     if field == 11:
@@ -789,8 +921,12 @@ def _validate_encoding_plan(meta: _ProviderMeta, dungeon_count: int) -> None:
     if missing_fields:
         missing = ", ".join(str(field) for field in missing_fields)
         raise ValueError(f"RaiderIO M+ encoding plan missing required fields: {missing}")
+    if 9 in meta.encoding_order and meta.keystone_milestone_levels is None:
+        raise ValueError("RaiderIO M+ encoding plan missing keystone milestone levels")
+    milestone_count = len(meta.keystone_milestone_levels or ())
     bit_budget = sum(
-        _encoding_field_width(field, dungeon_count) for field in meta.encoding_order
+        _encoding_field_width(field, dungeon_count, milestone_count)
+        for field in meta.encoding_order
     )
     max_bits = meta.record_size * 8
     if bit_budget > max_bits:
@@ -1137,26 +1273,34 @@ def _validate_dungeon_order(dungeon_names: list[str]) -> None:
 
 
 def _decode_profile(
-    record: bytes, encoding_order: tuple[int, ...], dungeon_names: list[str]
+    record: bytes,
+    meta: _ProviderMeta,
+    dungeon_names: list[str],
 ) -> RaiderIOLocalProfile:
     bit_offset = 0
     current_score = 0
     dungeon_rows: list[dict] = []
-    for field in encoding_order:
+    for field in meta.encoding_order:
         if field == 1:
             current_score, bit_offset = _read_bits(record, bit_offset, 13)
-        elif field in {2, 6, 15}:
+        elif field in {2, 4, 6, 8, 15, 16}:
             _, bit_offset = _read_bits(record, bit_offset, 7)
         elif field == 3:
-            _, bit_offset = _read_bits(record, bit_offset, 12)
+            _, bit_offset = _read_bits(record, bit_offset, 13)
             _, bit_offset = _read_bits(record, bit_offset, 2)
         elif field in {5, 12}:
             _, bit_offset = _read_bits(record, bit_offset, 13)
-        elif field in {7, 13}:
+        elif field == 7:
             _, bit_offset = _read_bits(record, bit_offset, 10)
             _, bit_offset = _read_bits(record, bit_offset, 2)
+        elif field == 13:
+            _, bit_offset = _read_bits(record, bit_offset, 13)
+            _, bit_offset = _read_bits(record, bit_offset, 2)
         elif field == 9:
-            bit_offset += 8 * 6
+            if meta.keystone_milestone_levels is None:
+                raise ValueError("RaiderIO M+ milestone metadata missing")
+            for _ in meta.keystone_milestone_levels:
+                _, bit_offset = _read_bits(record, bit_offset, 8)
         elif field == _DUNGEON_LEVELS_FIELD:
             rows, bit_offset = _read_dungeon_rows(record, bit_offset, dungeon_names)
             dungeon_rows = rows

@@ -675,6 +675,9 @@ def _installer_current_dir_args() -> list[str]:
     executable = Path(sys.executable)
     if executable.name.lower() != "applicantscout.exe":
         return []
-    if not (executable.parent / "unins000.exe").is_file():
+    install_root = executable.parent
+    if executable.parent.name.casefold() == "current":
+        install_root = executable.parent.parent
+    if not (install_root / "unins000.exe").is_file():
         return []
-    return [f"/DIR={executable.parent}"]
+    return [f"/DIR={install_root}"]

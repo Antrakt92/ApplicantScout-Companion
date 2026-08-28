@@ -6,6 +6,7 @@ import csv
 from collections.abc import Callable
 import io
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _ICACLS_TIMEOUT_SECONDS = 5
 _WINDOWS_SYSTEM_SID = "*S-1-5-18"
 _WINDOWS_ADMINISTRATORS_SID = "*S-1-5-32-544"
+_WINDOWS_SID_PATTERN = re.compile(r"S-\d+(?:-\d+){2,}\Z", re.ASCII)
 _CURRENT_USER_SID_CACHE: str | None = None
 _PRIVATE_ACL_CACHE: set[
     tuple[str, bool, tuple[int | None, int | None, int | None] | None]
@@ -49,7 +51,7 @@ def _current_user_sid() -> str | None:
     if not rows or len(rows[0]) < 2:
         return None
     sid = rows[0][1].strip()
-    if not sid.startswith("S-"):
+    if _WINDOWS_SID_PATTERN.fullmatch(sid) is None:
         return None
     return f"*{sid}"
 
@@ -90,24 +92,52 @@ def _apply_windows_private_acl(path: Path, *, directory: bool) -> bool:
     if user_sid is None:
         return False
     path_text = os.fspath(path)
-    # WHY: removing only broad well-known groups leaves arbitrary explicit
-    # allow ACEs (for example Guests or an old local account) untouched. Reset
-    # the DACL first, remove the inherited defaults, then install the complete
-    # private allow-list. Stop at the first failure so a partial prerequisite
-    # is never mistaken for a hardened path or cached as one.
-    if not _run_icacls(["icacls", path_text, "/reset", "/Q"]):
+    grants = [
+        "icacls",
+        path_text,
+        "/grant:r",
+        *_windows_private_grants(user_sid, directory=directory),
+        "/Q",
+    ]
+    try:
+        with tempfile.TemporaryDirectory(prefix="applicant-scout-acl-") as backup_dir:
+            backup_path = Path(backup_dir) / "dacl.txt"
+            save = ["icacls", path_text, "/save", os.fspath(backup_path), "/Q"]
+            if not _run_icacls(save):
+                return False
+
+            # WHY: /reset removes arbitrary explicit ACEs but temporarily restores
+            # the parent's inherited ACL. Install the recovery principals before
+            # removing inheritance, so a failed final step cannot lock out the
+            # current user. The saved DACL provides best-effort rollback whenever
+            # any mutating step reports failure.
+            mutations = (
+                ["icacls", path_text, "/reset", "/Q"],
+                grants,
+                ["icacls", path_text, "/inheritance:r", "/Q"],
+            )
+            for command in mutations:
+                if _run_icacls(command):
+                    continue
+                restored = _run_icacls(
+                    [
+                        "icacls",
+                        os.fspath(path.parent),
+                        "/restore",
+                        os.fspath(backup_path),
+                        "/Q",
+                    ]
+                )
+                if not restored:
+                    # Last-resort recoverability: retain inheritance and restore
+                    # the known administrative principals instead of attempting
+                    # another destructive reset/removal sequence.
+                    _run_icacls(grants)
+                    _run_icacls(["icacls", path_text, "/inheritance:e", "/Q"])
+                return False
+    except OSError:
         return False
-    if not _run_icacls(["icacls", path_text, "/inheritance:r", "/Q"]):
-        return False
-    return _run_icacls(
-        [
-            "icacls",
-            path_text,
-            "/grant:r",
-            *_windows_private_grants(user_sid, directory=directory),
-            "/Q",
-        ]
-    )
+    return True
 
 
 def _private_acl_cache_key(
@@ -190,7 +220,11 @@ def _atomic_write(
         # Re-running icacls for the temp file and final target turns each
         # settings autosave into a subprocess storm on the GUI path.
         if private and not (_is_windows() and parent_private_ready):
-            apply_private_file_mode(temp_path)
+            temp_private_ready = bool(apply_private_file_mode(temp_path))
+            if _is_windows() and not temp_private_ready:
+                raise PermissionError(
+                    f"Could not secure temporary private file for {path.name}"
+                )
         write_contents(fd)
         fd = -1
         os.replace(temp_path, path)
