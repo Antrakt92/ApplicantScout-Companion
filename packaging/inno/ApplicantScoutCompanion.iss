@@ -411,10 +411,11 @@ begin
       Sleep(PayloadRenameRetryMilliseconds);
     end;
   end;
-  Log(Format(
-    'Payload directory rename failed after %d attempts: %s -> %s.',
-    [PayloadRenameRetryAttempts, SourcePath, DestPath]
-  ));
+  Log(
+    'Payload directory rename failed after ' +
+    IntToStr(PayloadRenameRetryAttempts) + ' attempts: ' +
+    SourcePath + ' -> ' + DestPath + '.'
+  );
 end;
 
 function RecoverInterruptedPayloadSwap(): Boolean;
