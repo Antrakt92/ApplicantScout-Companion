@@ -3420,6 +3420,13 @@ class ScreenshotWatcher(QObject):
         path: Path,
         claim: _ScreenshotWorkClaim,
     ) -> tuple[DecodeResult, SnapshotSource, float] | None:
+        # A delayed watchdog/timer callback can enter _process_new_file just
+        # before a watcher replacement requests stop, then resume after the
+        # stable-size wait. Recheck at the native-decode boundary so the retired
+        # watcher cannot spend another expensive pyzbar/JPG pass beside its
+        # replacement.
+        if self._stopped.is_set():
+            return None
         decode_started = time.perf_counter()
         if claim.refresh() is None or self._manual_index.contains(claim.key):
             return None

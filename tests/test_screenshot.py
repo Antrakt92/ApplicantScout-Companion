@@ -3603,6 +3603,33 @@ def test_watcher_stop_cancels_incomplete_scan_retry(
     assert image_path.exists()
 
 
+def test_watcher_stop_during_stable_wait_skips_native_decode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_stop_during_stable_wait.jpg"
+    image_path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    decode_calls = 0
+
+    def stop_during_wait(_path: Path) -> bool:
+        watcher.request_stop()
+        return True
+
+    def decode(_path: Path) -> screenshot_mod.DecodeResult:
+        nonlocal decode_calls
+        decode_calls += 1
+        return screenshot_mod.DecodeResult(Snapshot(listing=None, version=None), True)
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", stop_during_wait)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._on_new_file(image_path)
+
+    assert decode_calls == 0
+    assert image_path.exists()
+
+
 def test_watcher_transient_retry_follows_same_path_replacement_generation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -5296,12 +5323,19 @@ def test_backlog_retries_persisted_incomplete_snapshot_after_process_restart(
     )
     monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", raise_decode)
 
-    first_watcher = ScreenshotWatcher(screenshots, cache_dir=cache_dir)
+    first_timers = _FakeTimerFactory()
+    first_watcher = ScreenshotWatcher(
+        screenshots,
+        cache_dir=cache_dir,
+        generation_retry_timer_factory=first_timers,
+    )
     first_watcher._scan_recent_backlog()
 
     assert failed_calls == 3
     assert image_path.exists()
+    assert len(first_timers.timers) == 1
     first_watcher.request_stop()
+    assert first_timers.timers[0].cancelled is True
 
     monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_REGISTRY", {})
     snapshots: list[Snapshot] = []
