@@ -100,7 +100,22 @@ def _prepare_update_available(dialog: SettingsDialog) -> None:
 def _prepare_update_installing_disabled(dialog: SettingsDialog) -> None:
     dialog.set_update_available("v0.8.0")
     dialog.set_update_in_progress(True)
-    dialog.set_status("Installing update.")
+    dialog.set_status("Installing update.", busy=True)
+
+
+def _prepare_saved(dialog: SettingsDialog) -> None:
+    dialog.set_status("Saved.")
+
+
+def _prepare_validation_error(dialog: SettingsDialog) -> None:
+    dialog.set_status("WCL Client ID and Secret are required.", error=True)
+
+
+def _prepare_save_warning(dialog: SettingsDialog) -> None:
+    dialog.set_status(
+        "Saved for this app session, but environment overrides are active.",
+        warning=True,
+    )
 
 
 SETTINGS_DIALOG_VISUAL_SCENARIOS: dict[str, SettingsDialogVisualScenario] = {
@@ -113,6 +128,22 @@ SETTINGS_DIALOG_VISUAL_SCENARIOS: dict[str, SettingsDialogVisualScenario] = {
         baseline_path=_baseline_path("first-run"),
         first_run=True,
         blank_credentials=True,
+    ),
+    "saved": SettingsDialogVisualScenario(
+        name="saved",
+        baseline_path=_baseline_path("saved"),
+        prepare_dialog=_prepare_saved,
+    ),
+    "validation-error": SettingsDialogVisualScenario(
+        name="validation-error",
+        baseline_path=_baseline_path("validation-error"),
+        blank_credentials=True,
+        prepare_dialog=_prepare_validation_error,
+    ),
+    "save-warning": SettingsDialogVisualScenario(
+        name="save-warning",
+        baseline_path=_baseline_path("save-warning"),
+        prepare_dialog=_prepare_save_warning,
     ),
     "update-available": SettingsDialogVisualScenario(
         name="update-available",

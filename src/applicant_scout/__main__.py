@@ -4116,7 +4116,7 @@ def main(argv: list[str] | None = None) -> int:
             nonlocal current_screenshots_dir
             nonlocal watcher
             nonlocal wow_exit_timer
-            dialog.set_status("Saving...")
+            dialog.set_status("Saving...", busy=True)
             try:
                 result = _apply_settings_change(
                     app=app,

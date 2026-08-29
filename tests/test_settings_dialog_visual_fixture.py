@@ -31,6 +31,9 @@ def test_settings_visual_fixture_scenarios_are_small_and_unique():
     assert set(SETTINGS_DIALOG_VISUAL_SCENARIOS) == {
         "normal-default",
         "first-run",
+        "saved",
+        "validation-error",
+        "save-warning",
         "update-available",
         "update-installing-disabled",
     }
@@ -134,10 +137,44 @@ def test_settings_visual_fixture_installer_state_disables_controls_without_async
         "Installing ApplicantScout update..."
     )
     assert dialog.status_label.text() == "Installing update."
+    assert dialog.status_label.property("statusState") == "busy"
     assert not dialog.client_id_edit.isEnabled()
     assert not dialog.client_secret_edit.isEnabled()
     assert not dialog.region_combo.isEnabled()
     assert not dialog.screenshots_edit.isEnabled()
+    assert not dialog.wcl_clients_link.isEnabled()
+    assert not dialog.support_button.isEnabled()
+    assert not dialog.close_button.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("scenario_name", "expected_state", "expected_text"),
+    [
+        ("saved", "success", "Saved."),
+        (
+            "validation-error",
+            "error",
+            "WCL Client ID and Secret are required.",
+        ),
+        (
+            "save-warning",
+            "warning",
+            "Saved for this app session, but environment overrides are active.",
+        ),
+    ],
+)
+def test_settings_visual_fixture_status_states_are_semantic(
+    qtbot,
+    scenario_name: str,
+    expected_state: str,
+    expected_text: str,
+):
+    dialog = create_settings_visual_dialog(scenario_name)
+    qtbot.addWidget(dialog)
+
+    assert dialog.status_label.property("statusState") == expected_state
+    assert dialog.status_label.text() == expected_text
+    assert dialog.status_label.accessibleDescription() == expected_text
 
 
 def test_settings_visual_fixture_first_run_layout_has_setup_buttons(qtbot):

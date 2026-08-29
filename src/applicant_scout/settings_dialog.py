@@ -17,6 +17,7 @@ from PyQt6.QtCore import (
     QPoint,
     QProcess,
     QSignalBlocker,
+    QSize,
     Qt,
     QTimer,
     QUrl,
@@ -40,6 +41,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -66,7 +68,7 @@ from .screenshots_path_probe import (
     run_screenshots_path_probe_command as run_screenshots_path_probe_command,
     screenshots_path_probe_result_path as _screenshots_path_probe_result_path,
 )
-from .window_geometry import clamp_geometry_to_screens
+from .window_geometry import clamp_geometry_to_screens, clamp_rect_to_bounds
 
 
 CredentialTester = Callable[[str, str, str], str]
@@ -108,6 +110,318 @@ SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING = (
 SCREENSHOTS_PATH_PROBE_FAILURE_WARNING = (
     "Screenshots folder warning: could not run the isolated path check."
 )
+
+
+_SETTINGS_STYLESHEET = """
+QDialog#applicantScoutSettings,
+QDialog#releaseNotesDialog,
+QDialog#wclSetupExampleDialog {
+    background-color: #090a0f;
+    color: #eee8dd;
+    font-family: 'Segoe UI', 'Cantarell', 'Helvetica Neue', sans-serif;
+}
+#settingsTitleBar {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 rgba(40, 38, 36, 255),
+        stop: 0.48 rgba(27, 27, 31, 255),
+        stop: 1 rgba(16, 18, 24, 255)
+    );
+    border-top: 1px solid #8b7049;
+    border-left: 1px solid #6d583d;
+    border-right: 1px solid #6d583d;
+    border-bottom: 1px solid #785d3c;
+}
+#settingsTitle {
+    color: #f0e8d7;
+    font-weight: 600;
+}
+#settingsBody {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 rgba(16, 18, 25, 255),
+        stop: 0.58 rgba(10, 12, 17, 255),
+        stop: 1 rgba(6, 7, 11, 255)
+    );
+    border-left: 1px solid #6d583d;
+    border-right: 1px solid #6d583d;
+    border-bottom: 1px solid #6d583d;
+}
+#settingsScroll,
+#settingsScroll > QWidget > QWidget {
+    background: transparent;
+    border: none;
+}
+#settingsHero {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba(88, 49, 34, 238),
+        stop: 0.62 rgba(44, 32, 28, 232),
+        stop: 1 rgba(23, 25, 31, 224)
+    );
+    border: 1px solid rgba(205, 128, 82, 220);
+    border-radius: 6px;
+}
+#settingsHeroEyebrow {
+    color: #f0c77c;
+    font-size: 10px;
+    font-weight: 700;
+}
+#settingsHeroTitle {
+    color: #fff5e8;
+    font-size: 18px;
+    font-weight: 700;
+}
+#settingsHeroText {
+    color: #c8c0b5;
+}
+#warcraftLogsSection,
+#scoutingSection {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 rgba(25, 27, 35, 244),
+        stop: 1 rgba(14, 16, 22, 244)
+    );
+    border: 1px solid rgba(102, 84, 61, 215);
+    border-radius: 6px;
+}
+#settingsSectionTitle {
+    color: #f0c77c;
+    font-size: 11px;
+    font-weight: 700;
+}
+#settingsSectionHint,
+#settingsAutosaveHint,
+#releaseNotesSubtitle {
+    color: #aaa59d;
+}
+#wclClientsToExampleArrow {
+    color: #9b8765;
+}
+QLabel {
+    color: #e8e1d5;
+}
+QLineEdit,
+QComboBox,
+QTextBrowser {
+    color: #f2eadc;
+    background-color: rgba(31, 34, 42, 238);
+    border: 1px solid rgba(92, 85, 75, 220);
+    border-radius: 4px;
+    selection-background-color: #805038;
+    selection-color: #ffffff;
+    padding: 5px 7px;
+}
+QLineEdit:hover,
+QComboBox:hover,
+QTextBrowser:hover {
+    border-color: rgba(156, 126, 84, 225);
+}
+QLineEdit:focus,
+QComboBox:focus,
+QTextBrowser:focus {
+    border: 2px solid #e5cc80;
+    padding: 4px 6px;
+}
+QLineEdit:disabled,
+QComboBox:disabled,
+QTextBrowser:disabled {
+    color: #77746f;
+    background-color: rgba(28, 30, 35, 210);
+    border-color: rgba(67, 64, 59, 180);
+}
+QPushButton,
+QToolButton {
+    color: #e8ded0;
+    background-color: rgba(43, 45, 53, 238);
+    border: 1px solid rgba(103, 91, 74, 220);
+    border-radius: 4px;
+    padding: 4px 10px;
+}
+QPushButton:hover,
+QToolButton:hover {
+    color: #fff6e6;
+    background-color: rgba(72, 63, 51, 244);
+    border-color: rgba(185, 145, 83, 230);
+}
+QPushButton:pressed,
+QToolButton:pressed {
+    background-color: rgba(112, 69, 46, 250);
+    border-color: #d7ad68;
+}
+QPushButton:focus,
+QToolButton:focus,
+QCheckBox:focus {
+    border: 2px solid #e5cc80;
+}
+QPushButton:disabled,
+QToolButton:disabled {
+    color: #77746f;
+    background-color: rgba(35, 37, 42, 210);
+    border-color: rgba(68, 65, 60, 175);
+}
+#wclClientsLink {
+    color: #d9bb78;
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 1px 2px;
+    text-decoration: underline;
+}
+#wclClientsLink:hover {
+    color: #fff2c8;
+    background-color: rgba(73, 62, 48, 180);
+    border-color: rgba(145, 122, 85, 180);
+}
+#wclClientsLink:focus {
+    color: #fff2c8;
+    background-color: rgba(73, 62, 48, 210);
+    border: 2px solid #e5cc80;
+    padding: 0 1px;
+}
+#supportApplicantScout {
+    color: #ff7b88;
+    background: transparent;
+    border: 1px solid transparent;
+    font-size: 17px;
+    font-weight: 600;
+    padding: 0 0 1px 0;
+}
+#supportApplicantScout:hover {
+    color: #ff9aa4;
+    background-color: #2b171d;
+    border-color: #7a3d49;
+}
+#installUpdate {
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 3px;
+}
+#installUpdate:hover {
+    background-color: #17283c;
+    border-color: #4d7198;
+}
+#settingsClose {
+    color: #c8c1b6;
+    background: transparent;
+    border: 1px solid transparent;
+    font-size: 18px;
+    padding: 0 0 2px 0;
+}
+#settingsClose:hover {
+    color: #ffffff;
+    background-color: #46282a;
+    border-color: #8b4a4f;
+}
+#supportApplicantScout:focus,
+#installUpdate:focus,
+#settingsClose:focus {
+    border: 2px solid #e5cc80;
+}
+#wclClientsLink:disabled,
+#supportApplicantScout:disabled,
+#settingsClose:disabled {
+    color: #686661;
+    background: transparent;
+    border-color: transparent;
+}
+#startCompanion {
+    color: #fff7ed;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 rgba(151, 83, 56, 255),
+        stop: 1 rgba(91, 49, 37, 255)
+    );
+    border-color: #de8b60;
+    font-weight: 700;
+    padding: 6px 14px;
+}
+#startCompanion:hover {
+    background-color: #a85b3d;
+    border-color: #edb47d;
+}
+QCheckBox {
+    color: #dfd8cc;
+    spacing: 6px;
+    padding: 2px;
+}
+QCheckBox:disabled {
+    color: #77746f;
+}
+#settingsFooter {
+    border-top: 1px solid rgba(91, 74, 54, 175);
+}
+#settingsStatus {
+    border-radius: 4px;
+    padding: 4px 7px;
+}
+#settingsStatus[statusState="success"] {
+    background-color: rgba(39, 91, 58, 150);
+    border: 1px solid rgba(84, 185, 121, 170);
+}
+#settingsStatus[statusState="warning"] {
+    background-color: rgba(78, 60, 29, 180);
+    border: 1px solid rgba(170, 132, 61, 190);
+}
+#settingsStatus[statusState="busy"] {
+    background-color: rgba(31, 57, 77, 180);
+    border: 1px solid rgba(76, 124, 157, 195);
+}
+#settingsStatus[statusState="error"] {
+    background-color: rgba(82, 35, 39, 185);
+    border: 1px solid rgba(171, 72, 79, 195);
+}
+QMenu {
+    color: #eee8dd;
+    background-color: #15171d;
+    border: 1px solid #8b7049;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 5px 22px 5px 9px;
+    border-radius: 3px;
+}
+QMenu::item:selected {
+    color: #fff5e8;
+    background-color: #684431;
+}
+QMenu::item:disabled {
+    color: #77746f;
+}
+QScrollBar:vertical {
+    background-color: #090b10;
+    width: 10px;
+    margin: 1px 0;
+    border-left: 1px solid rgba(74, 64, 51, 150);
+}
+QScrollBar::handle:vertical {
+    background-color: rgba(105, 91, 72, 230);
+    min-height: 28px;
+    border: 1px solid rgba(153, 123, 78, 200);
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: rgba(142, 116, 79, 240);
+    border-color: rgba(202, 158, 92, 225);
+}
+QScrollBar::add-line,
+QScrollBar::sub-line {
+    width: 0;
+    height: 0;
+    background: none;
+    border: none;
+}
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background: none;
+}
+QToolTip {
+    color: #eee8dd;
+    background-color: #15171d;
+    border: 1px solid #8b7049;
+    padding: 6px;
+    opacity: 255;
+}
+"""
 
 
 def _screenshots_path_probe_program_args(
@@ -224,6 +538,30 @@ def _close_button_copy(*, first_run: bool, hide_to_tray: bool) -> tuple[str, str
     return CLOSE_QUIT_TOOLTIP, "Quit ApplicantScout"
 
 
+def _settings_section(
+    parent: QWidget,
+    *,
+    object_name: str,
+    title: str,
+    hint: str,
+) -> tuple[QWidget, QVBoxLayout]:
+    section = QWidget(parent)
+    section.setObjectName(object_name)
+    layout = QVBoxLayout(section)
+    layout.setContentsMargins(14, 11, 14, 13)
+    layout.setSpacing(8)
+
+    section_title = QLabel(title, section)
+    section_title.setObjectName("settingsSectionTitle")
+    layout.addWidget(section_title)
+
+    section_hint = QLabel(hint, section)
+    section_hint.setObjectName("settingsSectionHint")
+    section_hint.setWordWrap(True)
+    layout.addWidget(section_hint)
+    return section, layout
+
+
 @dataclass(frozen=True)
 class SettingsValues:
     wcl_client_id: str
@@ -259,6 +597,18 @@ class _AsyncSignals(QObject):
     finished = pyqtSignal(object)
 
 
+class _SettingsScrollArea(QScrollArea):
+    """Expose the full form as the preferred size while allowing runtime shrink."""
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        content = self.widget()
+        if content is None:
+            return super().sizeHint()
+        hint = content.sizeHint()
+        frame = self.frameWidth() * 2
+        return QSize(hint.width() + frame, hint.height() + frame)
+
+
 @dataclass(frozen=True)
 class _ScreenshotsValidationResult:
     generation: int
@@ -269,6 +619,8 @@ class _ScreenshotsValidationResult:
 class ReleaseNotesDialog(QDialog):
     def __init__(self, release_notes: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("releaseNotesDialog")
+        self.setStyleSheet(_SETTINGS_STYLESHEET)
         self.setWindowTitle("ApplicantScout Changelog")
         self.setModal(True)
         self.setMinimumSize(720, 560)
@@ -330,6 +682,8 @@ class SettingsDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.setObjectName("applicantScoutSettings")
+        self.setStyleSheet(_SETTINGS_STYLESHEET)
         self._first_run = first_run
         self._hide_to_tray_on_close = hide_to_tray_on_close
         self._update_in_progress = False
@@ -387,7 +741,7 @@ class SettingsDialog(QDialog):
         window_title = _settings_window_title(first_run=first_run)
         self.setWindowTitle(window_title)
         self.setModal(first_run)
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(560)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
         outer = QVBoxLayout(self)
@@ -398,29 +752,45 @@ class SettingsDialog(QDialog):
         body = QWidget(self)
         body.setObjectName("settingsBody")
         root = QVBoxLayout(body)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(14, 13, 14, 14)
+        root.setSpacing(11)
 
         if first_run:
+            hero = QWidget(body)
+            hero.setObjectName("settingsHero")
+            hero_layout = QVBoxLayout(hero)
+            hero_layout.setContentsMargins(14, 11, 14, 12)
+            hero_layout.setSpacing(3)
+            hero_eyebrow = QLabel("FIRST-RUN SETUP", hero)
+            hero_eyebrow.setObjectName("settingsHeroEyebrow")
+            hero_layout.addWidget(hero_eyebrow)
+            hero_title = QLabel("Connect ApplicantScout", hero)
+            hero_title.setObjectName("settingsHeroTitle")
+            hero_layout.addWidget(hero_title)
             intro = QLabel(
-                "Enter your Warcraft Logs API credentials and the WoW Screenshots folder."
+                "Add Warcraft Logs credentials and your WoW Screenshots folder. "
+                "Every valid change saves automatically."
             )
+            intro.setObjectName("settingsHeroText")
             intro.setWordWrap(True)
-            root.addWidget(intro)
+            hero_layout.addWidget(intro)
+            root.addWidget(hero)
 
-        wcl_link_row = QWidget(self)
+        wcl_section, wcl_root = _settings_section(
+            body,
+            object_name="warcraftLogsSection",
+            title="WARCRAFT LOGS",
+            hint="Connect the private API client used to fetch applicant performance.",
+        )
+        root.addWidget(wcl_section)
+
+        wcl_link_row = QWidget(wcl_section)
         wcl_link_layout = QHBoxLayout(wcl_link_row)
         wcl_link_layout.setContentsMargins(0, 0, 0, 0)
         wcl_link_layout.setSpacing(8)
         self.wcl_clients_link = QPushButton("Warcraft Logs API clients")
         self.wcl_clients_link.setObjectName("wclClientsLink")
         self.wcl_clients_link.setFlat(True)
-        self.wcl_clients_link.setStyleSheet(
-            "QPushButton { color: #6ea8fe; text-decoration: underline; "
-            "background: transparent; border: 0; padding: 0; }"
-            "QPushButton:focus { color: #ffffff; "
-            "background: rgba(110, 168, 254, 64); border-radius: 3px; }"
-        )
         self.wcl_clients_link.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.wcl_clients_link.setAccessibleName("Open Warcraft Logs API clients")
         self.wcl_clients_link.setAccessibleDescription(
@@ -448,19 +818,21 @@ class SettingsDialog(QDialog):
         self.wcl_example_button.clicked.connect(self._show_wcl_setup_example)
         wcl_link_layout.addWidget(self.wcl_example_button)
         wcl_link_layout.addStretch(1)
-        root.addWidget(wcl_link_row)
+        wcl_root.addWidget(wcl_link_row)
         credentials_help = QLabel(
             "Create a Warcraft Logs API client with Redirect URL "
             f"{WCL_CREATE_CLIENT_REDIRECT_URL} and leave Public Client unchecked. Copy the "
             "generated Client ID and Client Secret into the fields below."
         )
         credentials_help.setWordWrap(True)
-        root.addWidget(credentials_help)
+        wcl_root.addWidget(credentials_help)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        root.addLayout(form)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
+        wcl_root.addLayout(form)
 
         display_client_id = getattr(cfg, "draft_wcl_client_id", "") or cfg.wcl_client_id
         display_client_secret = (
@@ -469,21 +841,56 @@ class SettingsDialog(QDialog):
 
         self.client_id_edit = QLineEdit(display_client_id)
         self.client_id_edit.setObjectName("wclClientId")
+        self.client_id_edit.setToolTip("Client ID generated by your Warcraft Logs API client.")
+        self.client_id_edit.setAccessibleName("Warcraft Logs Client ID")
+        self.client_id_edit.setAccessibleDescription(
+            "Client ID generated by the private Warcraft Logs API client."
+        )
         form.addRow("WCL Client ID", self.client_id_edit)
 
         self.client_secret_edit = QLineEdit(display_client_secret)
         self.client_secret_edit.setObjectName("wclClientSecret")
         self.client_secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.client_secret_edit.setToolTip(
+            "Client Secret generated by your Warcraft Logs API client."
+        )
+        self.client_secret_edit.setAccessibleName("Warcraft Logs Client Secret")
+        self.client_secret_edit.setAccessibleDescription(
+            "Secret generated by the private Warcraft Logs API client; the value is masked."
+        )
         form.addRow("WCL Client Secret", self.client_secret_edit)
 
         self.region_combo = QComboBox()
         self.region_combo.setObjectName("region")
         self.region_combo.addItems(["EU", "US", "KR", "TW", "CN"])
+        self.region_combo.setToolTip(
+            "Fallback region used when an applicant name does not include a known realm."
+        )
+        self.region_combo.setAccessibleName("Warcraft Logs fallback region")
+        self.region_combo.setAccessibleDescription(
+            "Fallback region used when the applicant's character realm cannot determine it."
+        )
         region_idx = self.region_combo.findText((cfg.region or "EU").upper())
         self.region_combo.setCurrentIndex(max(0, region_idx))
         form.addRow("Region fallback", self.region_combo)
 
-        path_row = QWidget(self)
+        scouting_section, scouting_root = _settings_section(
+            body,
+            object_name="scoutingSection",
+            title="SCOUTING",
+            hint="Choose the local screenshot source and the data shown in applicant rows.",
+        )
+        root.addWidget(scouting_section)
+        scouting_form = QFormLayout()
+        scouting_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        scouting_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        scouting_form.setHorizontalSpacing(12)
+        scouting_form.setVerticalSpacing(8)
+        scouting_root.addLayout(scouting_form)
+
+        path_row = QWidget(scouting_section)
         path_layout = QHBoxLayout(path_row)
         path_layout.setContentsMargins(0, 0, 0, 0)
         path_layout.setSpacing(6)
@@ -510,9 +917,9 @@ class SettingsDialog(QDialog):
         )
         self.browse_button.clicked.connect(self._browse_screenshots)
         path_layout.addWidget(self.browse_button)
-        form.addRow("WoW Screenshots folder", path_row)
+        scouting_form.addRow("WoW Screenshots folder", path_row)
 
-        metrics_row = QWidget(self)
+        metrics_row = QWidget(scouting_section)
         metrics_layout = QHBoxLayout(metrics_row)
         metrics_layout.setContentsMargins(0, 0, 0, 0)
         metrics_layout.setSpacing(8)
@@ -520,18 +927,34 @@ class SettingsDialog(QDialog):
         self.mplus_check = QCheckBox("M+")
         self.mplus_check.setObjectName("fetchMplus")
         self.mplus_check.setToolTip("Fetch and show Mythic+ dungeon parses.")
+        self.mplus_check.setAccessibleName("Fetch Mythic Plus data")
+        self.mplus_check.setAccessibleDescription(
+            "Fetch and show Mythic+ dungeon parses."
+        )
         self.mplus_check.setChecked(prefs.mplus)
         self.raid_normal_check = QCheckBox("Raid N")
         self.raid_normal_check.setObjectName("fetchRaidNormal")
         self.raid_normal_check.setToolTip("Fetch and show Normal raid parses.")
+        self.raid_normal_check.setAccessibleName("Fetch Normal raid data")
+        self.raid_normal_check.setAccessibleDescription(
+            "Fetch and show Normal raid parses."
+        )
         self.raid_normal_check.setChecked(prefs.raid_normal)
         self.raid_heroic_check = QCheckBox("Raid H")
         self.raid_heroic_check.setObjectName("fetchRaidHeroic")
         self.raid_heroic_check.setToolTip("Fetch and show Heroic raid parses.")
+        self.raid_heroic_check.setAccessibleName("Fetch Heroic raid data")
+        self.raid_heroic_check.setAccessibleDescription(
+            "Fetch and show Heroic raid parses."
+        )
         self.raid_heroic_check.setChecked(prefs.raid_heroic)
         self.raid_mythic_check = QCheckBox("Raid M")
         self.raid_mythic_check.setObjectName("fetchRaidMythic")
         self.raid_mythic_check.setToolTip("Fetch and show Mythic raid parses.")
+        self.raid_mythic_check.setAccessibleName("Fetch Mythic raid data")
+        self.raid_mythic_check.setAccessibleDescription(
+            "Fetch and show Mythic raid parses."
+        )
         self.raid_mythic_check.setChecked(prefs.raid_mythic)
         for checkbox in (
             self.raid_normal_check,
@@ -541,25 +964,33 @@ class SettingsDialog(QDialog):
         ):
             metrics_layout.addWidget(checkbox)
         metrics_layout.addStretch(1)
-        form.addRow("WCL data", metrics_row)
+        scouting_form.addRow("WCL data", metrics_row)
 
         self.sync_with_wow_check = QCheckBox("Start and stop with WoW")
         self.sync_with_wow_check.setObjectName("syncWithWow")
         self.sync_with_wow_check.setToolTip(
             "Start ApplicantScout when WoW starts and quit it when WoW closes."
         )
+        self.sync_with_wow_check.setAccessibleName("Synchronize with WoW")
+        self.sync_with_wow_check.setAccessibleDescription(
+            "Start ApplicantScout when WoW starts and quit it when WoW closes."
+        )
         self.sync_with_wow_check.setChecked(cfg.sync_with_wow)
-        form.addRow("", self.sync_with_wow_check)
+        scouting_form.addRow("", self.sync_with_wow_check)
 
         root.addStretch(1)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("settingsStatus")
         self.status_label.setWordWrap(True)
+        self.status_label.setAccessibleName("Settings status")
+        self.status_label.setAccessibleDescription("")
+        self.status_label.setProperty("statusState", "idle")
+        self.status_label.hide()
         footer = QWidget(self)
         footer.setObjectName("settingsFooter")
         footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setContentsMargins(0, 9, 0, 0)
         footer_layout.setSpacing(8)
         self.support_button = QToolButton(footer)
         self.support_button.setObjectName("supportApplicantScout")
@@ -571,27 +1002,15 @@ class SettingsDialog(QDialog):
             accessible_description="Open Ko-fi support for ApplicantScout.",
         )
         self.support_button.setFixedSize(26, 24)
-        self.support_button.setStyleSheet(
-            "QToolButton {"
-            "background: transparent;"
-            "color: #ff6b7a;"
-            "border: 1px solid transparent;"
-            "border-radius: 4px;"
-            "font-size: 17px;"
-            "font-weight: 600;"
-            "padding-bottom: 1px;"
-            "}"
-            "QToolButton:hover {"
-            "background: #24131a;"
-            "color: #ff8a95;"
-            "border-color: #7a3340;"
-            "}"
-            "QToolButton:pressed {"
-            "background: #1b0f14;"
-            "}"
-        )
         self.support_button.clicked.connect(self._open_support)
         footer_layout.addWidget(self.support_button)
+        self.autosave_hint = QLabel("Valid changes save automatically", footer)
+        self.autosave_hint.setObjectName("settingsAutosaveHint")
+        self.autosave_hint.setAccessibleName("Automatic save status")
+        self.autosave_hint.setAccessibleDescription(
+            "Valid settings changes save automatically."
+        )
+        footer_layout.addWidget(self.autosave_hint, stretch=1)
         footer_layout.addWidget(self.status_label, stretch=1)
         self.test_button = QPushButton("Test WCL", footer)
         self.test_button.setObjectName("testWcl")
@@ -609,33 +1028,43 @@ class SettingsDialog(QDialog):
             buttons = QHBoxLayout()
             buttons.setSpacing(8)
             buttons.addStretch(1)
-            self.start_button = QPushButton("Start companion")
-            self.start_button.setObjectName("startCompanion")
-            self.start_button.clicked.connect(self.accept)
-            buttons.addWidget(self.start_button)
             self.setup_quit_button = QPushButton("Quit setup")
             self.setup_quit_button.setObjectName("quitApplicantScout")
+            _set_tooltip_and_accessibility(
+                self.setup_quit_button,
+                tooltip="Quit ApplicantScout without completing setup.",
+                accessible_name="Quit ApplicantScout setup",
+            )
             self.setup_quit_button.clicked.connect(self.reject)
             buttons.addWidget(self.setup_quit_button)
+            self.start_button = QPushButton("Start companion")
+            self.start_button.setObjectName("startCompanion")
+            _set_tooltip_and_accessibility(
+                self.start_button,
+                tooltip="Validate these settings and start ApplicantScout.",
+                accessible_name="Start ApplicantScout companion",
+            )
+            self.start_button.setDefault(True)
+            self.start_button.clicked.connect(self.accept)
+            buttons.addWidget(self.start_button)
             root.addLayout(buttons)
-        outer.addWidget(body)
+        self.body_scroll = _SettingsScrollArea(self)
+        self.body_scroll.setObjectName("settingsScroll")
+        self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.body_scroll.setWidget(body)
+        outer.addWidget(self.body_scroll)
         self._connect_value_change_signals()
         self._schedule_screenshots_warning(self.screenshots_edit.text())
+        self.client_id_edit.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _build_title_bar(self, title: str) -> QWidget:
         title_bar = QWidget(self)
         self.title_bar = title_bar
         title_bar.setObjectName("settingsTitleBar")
-        title_bar.setStyleSheet(
-            "#settingsTitleBar {"
-            "background: #242424;"
-            "border-bottom: 1px solid #343434;"
-            "}"
-            "#settingsTitleBar QLabel#settingsTitle {"
-            "color: #f0f0f0;"
-            "font-weight: 500;"
-            "}"
-        )
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(8, 4, 6, 4)
         title_layout.setSpacing(8)
@@ -661,28 +1090,6 @@ class SettingsDialog(QDialog):
             accessible_name=UPDATE_ACCESSIBLE_NAME,
         )
         self.update_button.setFixedSize(30, 26)
-        self.update_button.setStyleSheet(
-            "QToolButton {"
-            "background: transparent;"
-            "color: #4da3ff;"
-            "border: 1px solid transparent;"
-            "border-radius: 4px;"
-            "padding: 3px;"
-            "}"
-            "QToolButton:hover {"
-            "background: #10203a;"
-            "color: #74baff;"
-            "border-color: #2f5f9e;"
-            "}"
-            "QToolButton:pressed {"
-            "background: #0b172b;"
-            "}"
-            "QToolButton:disabled {"
-            "background: transparent;"
-            "color: #315f91;"
-            "border-color: transparent;"
-            "}"
-        )
         self.update_button.hide()
         self.update_button.clicked.connect(self._check_for_updates)
         title_layout.addWidget(self.update_button)
@@ -700,24 +1107,6 @@ class SettingsDialog(QDialog):
             accessible_name=close_accessible_name,
         )
         self.close_button.setFixedSize(30, 26)
-        self.close_button.setStyleSheet(
-            "QToolButton {"
-            "background: transparent;"
-            "color: #b8b8b8;"
-            "border: 1px solid transparent;"
-            "border-radius: 4px;"
-            "font-size: 18px;"
-            "padding-bottom: 2px;"
-            "}"
-            "QToolButton:hover {"
-            "background: #3a2424;"
-            "color: #ffffff;"
-            "border-color: #704040;"
-            "}"
-            "QToolButton:pressed {"
-            "background: #2b1717;"
-            "}"
-        )
         self.close_button.clicked.connect(self.close)
         title_layout.addWidget(self.close_button)
 
@@ -819,16 +1208,47 @@ class SettingsDialog(QDialog):
 
     def _clamp_runtime_geometry(self) -> None:
         geometry = self.geometry()
+        screens = tuple(QApplication.screens())
         clamped = clamp_geometry_to_screens(
             geometry.x(),
             geometry.y(),
             geometry.width(),
             geometry.height(),
-            screens=QApplication.screens(),
+            screens=screens,
             primary_screen=QApplication.primaryScreen(),
             preserve_grabbable_geometry=True,
             grabbable_height_px=self.title_bar.height(),
         )
+        title_height = max(1, self.title_bar.height())
+        best_title_overlap = 0
+        best_bounds = None
+        for screen in screens:
+            bounds = screen.availableGeometry()
+            overlap_x = max(
+                0,
+                min(geometry.right() + 1, bounds.right() + 1)
+                - max(geometry.x(), bounds.x()),
+            )
+            overlap_y = max(
+                0,
+                min(geometry.y() + title_height, bounds.bottom() + 1)
+                - max(geometry.y(), bounds.y()),
+            )
+            title_overlap = overlap_x * overlap_y
+            if title_overlap > best_title_overlap:
+                best_title_overlap = title_overlap
+                best_bounds = bounds
+        if best_bounds is not None and (
+            geometry.width() > best_bounds.width()
+            or geometry.height() > best_bounds.height()
+        ):
+            clamped = clamp_rect_to_bounds(
+                geometry.x(),
+                geometry.y(),
+                geometry.width(),
+                geometry.height(),
+                best_bounds,
+            )
         if clamped != (
             geometry.x(),
             geometry.y(),
@@ -909,6 +1329,7 @@ class SettingsDialog(QDialog):
 
     def _set_settings_controls_enabled(self, enabled: bool) -> None:
         for widget in (
+            self.wcl_clients_link,
             self.wcl_example_button,
             self.client_id_edit,
             self.client_secret_edit,
@@ -920,8 +1341,10 @@ class SettingsDialog(QDialog):
             self.raid_heroic_check,
             self.raid_mythic_check,
             self.sync_with_wow_check,
+            self.support_button,
             self.test_button,
             self.more_actions_button,
+            self.close_button,
         ):
             widget.setEnabled(enabled)
         for widget in (self.start_button, self.setup_quit_button):
@@ -1012,8 +1435,9 @@ class SettingsDialog(QDialog):
         *,
         error: bool = False,
         warning: bool = False,
+        busy: bool = False,
     ) -> None:
-        self._set_status(text, error=error, warning=warning)
+        self._set_status(text, error=error, warning=warning, busy=busy)
 
     def current_screenshots_warning(self) -> str | None:
         current_path = self.screenshots_edit.text().strip()
@@ -1392,15 +1816,37 @@ class SettingsDialog(QDialog):
             self._autosave_timer.stop()
             self._emit_values_changed_if_valid()
 
-    def _set_status(self, text: str, *, error: bool = False, warning: bool = False) -> None:
+    def _set_status(
+        self,
+        text: str,
+        *,
+        error: bool = False,
+        warning: bool = False,
+        busy: bool = False,
+    ) -> None:
         self.status_label.setText(text)
         if error:
             colour = "#ff6666"
+            state = "error"
         elif warning:
             colour = "#e5cc80"
+            state = "warning"
+        elif busy:
+            colour = "#c4ddf1"
+            state = "busy"
         else:
             colour = "#9edc8a"
+            state = "success" if text else "idle"
+        self.status_label.setProperty("statusState", state)
+        self.status_label.setAccessibleDescription(text)
         self.status_label.setStyleSheet(f"color: {colour};")
+        self.status_label.setVisible(bool(text))
+        self.autosave_hint.setVisible(not bool(text))
+        style = self.status_label.style()
+        if style is not None:
+            style.unpolish(self.status_label)
+            style.polish(self.status_label)
+        self.status_label.update()
 
     def _start_async_action(
         self,
@@ -1412,7 +1858,7 @@ class SettingsDialog(QDialog):
         success_payload: object | None = None,
     ) -> None:
         button.setEnabled(False)
-        self._set_status(busy_text)
+        self._set_status(busy_text, busy=True)
 
         def _worker() -> None:
             try:
@@ -1498,6 +1944,8 @@ class SettingsDialog(QDialog):
 
     def _build_wcl_setup_example_dialog(self) -> QDialog:
         popup = QDialog(self)
+        popup.setObjectName("wclSetupExampleDialog")
+        popup.setStyleSheet(_SETTINGS_STYLESHEET)
         popup.setWindowTitle("Warcraft Logs API client example")
         popup.setModal(True)
         popup.setMinimumWidth(720)

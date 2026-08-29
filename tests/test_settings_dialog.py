@@ -6,7 +6,7 @@ import sys
 import threading
 
 import pytest
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QRect, Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -1089,18 +1089,15 @@ def test_normal_settings_uses_actions_menu_and_tray_close(qtbot, tmp_path: Path)
     assert update_button.isHidden()
     assert update_button.width() == 30
     assert update_button.height() == 26
-    assert "background: transparent" in update_button.styleSheet()
-    assert "#4da3ff" in update_button.styleSheet()
-    assert "#74baff" in update_button.styleSheet()
+    assert "#installUpdate" in dialog.styleSheet()
     assert support_button.text() == "♡"
     assert support_button.accessibleName() == "Support ApplicantScout"
     assert "Ko-fi" in support_button.accessibleDescription()
     assert "ko-fi" in support_button.toolTip().lower()
     assert support_button.width() == 26
     assert support_button.height() == 24
-    assert "background: transparent" in support_button.styleSheet()
-    assert "#ff6b7a" in support_button.styleSheet()
-    assert "#ff8a95" in support_button.styleSheet()
+    assert "#supportApplicantScout" in dialog.styleSheet()
+    assert "#ff7b88" in dialog.styleSheet()
     assert more_button.text() == "More"
     assert more_button.accessibleName() == "More settings actions"
     assert "Open logs" in more_button.accessibleDescription()
@@ -1140,16 +1137,128 @@ def test_settings_dialog_form_controls_have_accessibility_metadata(qtbot, tmp_pa
     dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
     qtbot.addWidget(dialog)
 
+    assert dialog.client_id_edit.accessibleName() == "Warcraft Logs Client ID"
+    assert "API client" in dialog.client_id_edit.accessibleDescription()
+    assert dialog.client_secret_edit.accessibleName() == "Warcraft Logs Client Secret"
+    assert "secret" in dialog.client_secret_edit.accessibleDescription().lower()
+    assert dialog.region_combo.accessibleName() == "Warcraft Logs fallback region"
+    assert "character realm" in dialog.region_combo.accessibleDescription()
     assert dialog.screenshots_edit.accessibleName() == "WoW Screenshots folder"
     assert "_retail_" in dialog.screenshots_edit.accessibleDescription()
     assert dialog.browse_button.accessibleName() == "Browse WoW Screenshots folder"
     assert "Screenshots" in dialog.browse_button.accessibleDescription()
+    assert dialog.raid_normal_check.accessibleName() == "Fetch Normal raid data"
+    assert "Normal raid parses" in dialog.raid_normal_check.accessibleDescription()
+    assert dialog.raid_heroic_check.accessibleName() == "Fetch Heroic raid data"
+    assert dialog.raid_mythic_check.accessibleName() == "Fetch Mythic raid data"
+    assert dialog.mplus_check.accessibleName() == "Fetch Mythic Plus data"
+    assert "Mythic+" in dialog.mplus_check.accessibleDescription()
+    assert dialog.sync_with_wow_check.accessibleName() == "Synchronize with WoW"
+    assert "WoW starts" in dialog.sync_with_wow_check.accessibleDescription()
     assert dialog.test_button.accessibleName() == "Test Warcraft Logs credentials"
     assert "Validate" in dialog.test_button.accessibleDescription()
     assert dialog.more_actions_button.accessibleName() == "More settings actions"
     assert "reset cached data" in dialog.more_actions_button.accessibleDescription().lower()
     assert dialog.wcl_example_button.accessibleName() == "Show WCL setup example"
     assert "Create Client" in dialog.wcl_example_button.accessibleDescription()
+    assert dialog.start_button is not None
+    assert dialog.start_button.accessibleName() == "Start ApplicantScout companion"
+    assert dialog.start_button.isDefault()
+    assert dialog.setup_quit_button is not None
+    assert dialog.setup_quit_button.accessibleName() == "Quit ApplicantScout setup"
+
+
+def test_settings_dialog_uses_wow_native_sections_and_focus_treatment(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.objectName() == "applicantScoutSettings"
+    assert dialog.findChild(QWidget, "settingsHero") is not None
+    assert dialog.findChild(QWidget, "warcraftLogsSection") is not None
+    assert dialog.findChild(QWidget, "scoutingSection") is not None
+    section_titles = {
+        label.text()
+        for label in dialog.findChildren(QLabel, "settingsSectionTitle")
+    }
+    assert section_titles == {"WARCRAFT LOGS", "SCOUTING"}
+    stylesheet = dialog.styleSheet()
+    assert "#warcraftLogsSection" in stylesheet
+    assert "#scoutingSection" in stylesheet
+    assert "#startCompanion" in stylesheet
+    assert "#e5cc80" in stylesheet
+    assert ":focus" in stylesheet
+
+
+def test_first_run_settings_scroll_when_available_height_is_small(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+    dialog.resize(560, 500)
+    dialog.show()
+
+    qtbot.waitUntil(lambda: dialog.body_scroll.verticalScrollBar().maximum() > 0)
+
+    assert dialog.size().width() == 560
+    assert dialog.height() == 500
+    assert dialog.body_scroll.horizontalScrollBar().maximum() == 0
+    assert dialog.start_button is not None
+    assert dialog.start_button.parent() is not None
+
+
+def test_settings_runtime_clamp_bounds_oversized_dialog_to_available_screen(
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot,
+    tmp_path: Path,
+):
+    class _Screen:
+        @staticmethod
+        def availableGeometry() -> QRect:
+            return QRect(100, 50, 800, 600)
+
+        @staticmethod
+        def geometry() -> QRect:
+            return QRect(100, 50, 800, 600)
+
+    screen = _Screen()
+    monkeypatch.setattr(settings_mod.QApplication, "screens", lambda: [screen])
+    monkeypatch.setattr(settings_mod.QApplication, "primaryScreen", lambda: screen)
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+    dialog.setGeometry(0, 0, 700, 900)
+
+    dialog._clamp_runtime_geometry()
+
+    assert dialog.geometry() == QRect(100, 50, 700, 600)
+
+
+def test_settings_status_exposes_semantic_state_and_message(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    assert dialog.status_label.accessibleName() == "Settings status"
+    assert dialog.status_label.property("statusState") == "idle"
+    assert dialog.status_label.isHidden()
+
+    dialog.set_status("Saved.")
+
+    assert dialog.status_label.property("statusState") == "success"
+    assert dialog.status_label.accessibleDescription() == "Saved."
+    assert not dialog.status_label.isHidden()
+
+    dialog.set_status("Fix the invalid value.", error=True)
+
+    assert dialog.status_label.property("statusState") == "error"
+    assert dialog.status_label.accessibleDescription() == "Fix the invalid value."
+
+    dialog.set_status("Checking Screenshots folder...", warning=True)
+
+    assert dialog.status_label.property("statusState") == "warning"
+
+    dialog.set_status("Saving...", busy=True)
+
+    assert dialog.status_label.property("statusState") == "busy"
+    assert dialog.status_label.accessibleDescription() == "Saving..."
 
 
 def test_settings_dialog_changelog_action_emits_request(qtbot, tmp_path: Path):
@@ -1331,7 +1440,7 @@ def test_settings_dialog_shows_blue_update_icon_only_when_update_available(
     assert not update_button.isHidden()
     assert "v0.2.0" in update_button.toolTip()
     assert "v0.2.0" in update_button.accessibleDescription()
-    assert "#4da3ff" in update_button.styleSheet()
+    assert not update_button.icon().isNull()
 
     dialog.set_update_available(None)
 
@@ -1371,6 +1480,9 @@ def test_settings_dialog_disables_editable_settings_during_update(qtbot, tmp_pat
     assert not dialog.screenshots_edit.isEnabled()
     assert not dialog.test_button.isEnabled()
     assert not dialog.more_actions_button.isEnabled()
+    assert not dialog.wcl_clients_link.isEnabled()
+    assert not dialog.support_button.isEnabled()
+    assert not dialog.close_button.isEnabled()
     assert not dialog.cache_action.isEnabled()
     assert dialog.update_button.accessibleDescription() == (
         "Installing ApplicantScout update..."
