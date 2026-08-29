@@ -1955,16 +1955,18 @@ def test_package_fit_exposes_role_composition_and_incomplete_member_counts():
         _app(role="DAMAGER", fetch_status="loading"),
         _app(role="DAMAGER", fetch_status="error"),
         _app(role="UNKNOWN", fetch_status="not_found"),
+        _app(role="DAMAGER", fetch_status="restricted"),
     ]
 
     group = package_fit(members, target)
 
-    assert group.size == 5
-    assert (group.tank_count, group.healer_count, group.dps_count) == (1, 1, 2)
+    assert group.size == 6
+    assert (group.tank_count, group.healer_count, group.dps_count) == (1, 1, 3)
     assert group.unknown_role_count == 1
     assert group.loading_count == 2
     assert group.error_count == 1
     assert group.not_found_count == 1
+    assert group.restricted_count == 1
     assert (
         group.tank_count
         + group.healer_count
@@ -1972,7 +1974,7 @@ def test_package_fit_exposes_role_composition_and_incomplete_member_counts():
         + group.unknown_role_count
         == group.size
     )
-    assert group.display == "G5 3"
+    assert group.display == "G6 0"
 
 
 def test_package_fit_terminal_member_does_not_score_from_stale_wcl_metrics():

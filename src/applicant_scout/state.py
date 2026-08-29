@@ -109,7 +109,8 @@ class Applicant:
     # None means unknown/no usable WCL data, so runtime scope changes must refetch
     # before relying on enabled metrics.
     wcl_metric_preferences: Optional[MetricPreferences] = None
-    fetch_status: str = "pending"  # pending / loading / ready / error / not_found
+    # pending / loading / ready / error / not_found / restricted
+    fetch_status: str = "pending"
     error_message: str = ""
     wcl_error_kind: str = ""
 

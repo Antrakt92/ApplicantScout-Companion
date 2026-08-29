@@ -129,6 +129,7 @@ from .wcl import (
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_RATE_LIMITED,
+    WCL_ERROR_RESTRICTED,
     WCL_ERROR_SERVER,
     CharacterCache,
     CharacterRanks,
@@ -547,6 +548,13 @@ class _FetchTask(QRunnable):
                 identity.server_slug,
                 elapsed,
             )
+        elif ranks.error_kind == WCL_ERROR_RESTRICTED:
+            _log.info(
+                "WCL fetch finished with private rankings: %s-%s in %.2fs",
+                self._name,
+                identity.server_slug,
+                elapsed,
+            )
         elif ranks.error:
             _log.info(
                 "WCL fetch finished with error: %s-%s kind=%s in %.2fs",
@@ -562,7 +570,11 @@ class _FetchTask(QRunnable):
                 identity.server_slug,
                 elapsed,
             )
-        if ranks.not_found or not ranks.error:
+        if (
+            ranks.not_found
+            or not ranks.error
+            or ranks.error_kind == WCL_ERROR_RESTRICTED
+        ):
             self._cache.put(
                 self._name,
                 identity.server_slug,
@@ -2129,6 +2141,8 @@ class ApplicantInfoPanel(QFrame):
             parts.append(f"error {package.error_count}")
         if package.not_found_count > 0:
             parts.append(f"not found {package.not_found_count}")
+        if package.restricted_count > 0:
+            parts.append(f"private {package.restricted_count}")
         if package.context == CONTEXT_MPLUS:
             parts.append(
                 f"hi/avg/low {int(round(package.high_score))}/"
@@ -2177,6 +2191,14 @@ class ApplicantInfoPanel(QFrame):
                     package.not_found_count,
                     "member not found on WCL",
                     "members not found on WCL",
+                )
+            )
+        if package.restricted_count > 0:
+            data_status.append(
+                _count_phrase(
+                    package.restricted_count,
+                    "member with private WCL rankings",
+                    "members with private WCL rankings",
                 )
             )
         if data_status:
@@ -2256,6 +2278,25 @@ class ApplicantInfoPanel(QFrame):
                     and not self._package_label.text()
                 ),
                 state_kind="not_found",
+            )
+            return
+        if status == "restricted":
+            current_fit = fit or candidate_fit(applicant, listing)
+            source_note = (
+                " · RaiderIO only"
+                if current_fit.context == CONTEXT_MPLUS and current_fit.score > 0.0
+                else ""
+            )
+            visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
+            visible_rows = self._set_detail_rows(applicant, listing)
+            self._show_status(
+                f"Private Warcraft Logs rankings{source_note}",
+                centered=(
+                    visible_metrics == 0
+                    and visible_rows == 0
+                    and not self._package_label.text()
+                ),
+                state_kind="restricted",
             )
             return
         if status != "ready":
@@ -5695,7 +5736,11 @@ class OverlayWindow(QMainWindow):
         record_api_result = getattr(self._wcl_client, "record_api_result", None)
         if callable(record_api_result):
             record_api_result(
-                succeeded=ranks.not_found or not bool(ranks.error),
+                succeeded=(
+                    ranks.not_found
+                    or not bool(ranks.error)
+                    or ranks.error_kind == WCL_ERROR_RESTRICTED
+                ),
                 error_kind=ranks.error_kind,
             )
         self._refresh_auth_label()
@@ -5912,7 +5957,7 @@ class OverlayWindow(QMainWindow):
         ) or not fetched_identity.metric_preferences.covers(
             current_identity.metric_preferences
         ):
-            if applicant.fetch_status in {"error", "not_found"}:
+            if applicant.fetch_status in {"error", "not_found", "restricted"}:
                 self._sync_delegate_and_panel()
                 return
             if not self._is_fetch_in_flight_for(
@@ -5926,6 +5971,10 @@ class OverlayWindow(QMainWindow):
             applicant.clear_wcl_data(fetch_status="not_found")
             applicant.error_message = ""
             applicant.wcl_error_kind = ""
+        elif ranks.error_kind == WCL_ERROR_RESTRICTED:
+            applicant.clear_wcl_data(fetch_status="restricted")
+            applicant.error_message = ranks.error
+            applicant.wcl_error_kind = WCL_ERROR_RESTRICTED
         elif ranks.error:
             applicant.clear_wcl_data(fetch_status="error")
             applicant.error_message = ranks.error
@@ -6601,7 +6650,7 @@ def _mplus_cell_visuals(
 
     if status == "error":
         return "?", "#ff5555", None
-    if status == "not_found":
+    if status in {"not_found", "restricted"}:
         return "—", "#5d5d5d", None
 
     _metric_label, breakdown, best, median = role_mplus_view(applicant)

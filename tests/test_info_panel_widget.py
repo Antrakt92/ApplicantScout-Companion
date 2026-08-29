@@ -2387,6 +2387,23 @@ def test_wcl_retry_button_visibility_is_explicitly_gated(qtbot):
     assert panel._wcl_retry_button.isHidden()
 
 
+def test_panel_explains_private_wcl_rankings_without_retry(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+
+    panel.setApplicantData(
+        _app(
+            fetch_status="restricted",
+            error_message="Rankings are private on Warcraft Logs",
+            wcl_error_kind="restricted",
+        ),
+        wcl_retry_available=True,
+    )
+
+    assert "Private Warcraft Logs rankings" in panel._state_text_label.text()
+    assert panel._wcl_retry_button.isHidden()
+
+
 def test_panel_explains_error_mplus_fit_uses_raiderio_only(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)

@@ -98,6 +98,7 @@ class PackageFit:
     loading_count: int = 0
     error_count: int = 0
     not_found_count: int = 0
+    restricted_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,7 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
     )
     error_count = sum(member.fetch_status == "error" for member in members)
     not_found_count = sum(member.fetch_status == "not_found" for member in members)
+    restricted_count = sum(member.fetch_status == "restricted" for member in members)
     if context == CONTEXT_UNKNOWN:
         member_scores = tuple(float(effective_rio_score(a)) for a in members)
         score = float(max(member_scores, default=0.0))
@@ -219,6 +221,7 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
             loading_count=loading_count,
             error_count=error_count,
             not_found_count=not_found_count,
+            restricted_count=restricted_count,
         )
 
     fits = tuple(candidate_fit(member, listing) for member in members)
@@ -264,6 +267,7 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
         loading_count=loading_count,
         error_count=error_count,
         not_found_count=not_found_count,
+        restricted_count=restricted_count,
     )
 
 
@@ -322,7 +326,7 @@ def fit_colour(score: float) -> str:
 
 
 def _is_terminal_fetch_status(status: str) -> bool:
-    return status in {"error", "not_found"}
+    return status in {"error", "not_found", "restricted"}
 
 
 def listing_dungeon_keys(listing: Listing | None) -> set[str]:
@@ -1427,6 +1431,7 @@ def _package_status_penalty(members: Iterable[Applicant]) -> float:
     penalties = {
         "error": 4.0,
         "not_found": 6.0,
+        "restricted": 4.0,
     }
     return min(12.0, sum(penalties.get(member.fetch_status, 0.0) for member in members))
 
@@ -1440,6 +1445,7 @@ def _package_confidence(
         "pending": 0.65,
         "error": 0.45,
         "not_found": 0.35,
+        "restricted": 0.40,
     }
     values = [
         fit.confidence * factors.get(member.fetch_status, 0.5)

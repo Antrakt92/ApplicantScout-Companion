@@ -138,7 +138,7 @@ def test_sunk_states_contents():
     """Sentinel: pin the set contents. Anti-drift guard — adding a new fetch
     status to state.py without considering its sort behaviour should be a
     deliberate decision that updates this test in lockstep."""
-    assert _SUNK_STATES == frozenset({"error", "not_found"})
+    assert _SUNK_STATES == frozenset({"error", "not_found", "restricted"})
 
 
 # ─── empty input ────────────────────────────────────────────────────────────

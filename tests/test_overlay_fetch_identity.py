@@ -32,6 +32,7 @@ from applicant_scout.wcl import (
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_RATE_LIMITED,
+    WCL_ERROR_RESTRICTED,
     WCL_ERROR_SERVER,
 )
 
@@ -885,6 +886,45 @@ def test_fetch_done_prefers_not_found_over_error_text(qtbot, tmp_path):
         assert app.raid_heroic is None
         assert app.mplus_dps is None
         assert app.mplus_dps_breakdown == []
+    finally:
+        client.close()
+
+
+def test_fetch_done_preserves_private_rankings_as_terminal_restricted_state(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app()
+    app.fetch_status = "ready"
+    app.raid_heroic = 88.0
+    app.mplus_dps = 77.0
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state)
+
+    try:
+        resolved = _fetch_identity_for_applicant(
+            app,
+            state.player.full_name,
+            "EU",
+            ALL_METRIC_PREFERENCES,
+        )
+        assert resolved is not None
+        identity, _charname = resolved
+
+        window._on_fetch_done(
+            identity,
+            CharacterRanks.empty(
+                error="Rankings are private on Warcraft Logs",
+                error_kind=WCL_ERROR_RESTRICTED,
+            ),
+        )
+
+        assert app.fetch_status == "restricted"
+        assert app.error_message == "Rankings are private on Warcraft Logs"
+        assert app.wcl_error_kind == WCL_ERROR_RESTRICTED
+        assert app.raid_heroic is None
+        assert app.mplus_dps is None
     finally:
         client.close()
 
@@ -2484,6 +2524,33 @@ def test_network_character_not_found_is_successful_api_status(qtbot, tmp_path):
         client.close()
 
 
+def test_network_private_rankings_is_successful_api_status(qtbot, tmp_path):
+    window, client = _window(qtbot, tmp_path, AppState())
+    identity = _FetchIdentity(
+        applicant_id="42:1",
+        charname_key="private",
+        server_slug="realma",
+        region="EU",
+        spec_id=71,
+        metric_role="DPS",
+        metric_preferences=ALL_METRIC_PREFERENCES,
+    )
+
+    try:
+        window._record_fetch_connection_status(
+            identity,
+            CharacterRanks.empty(
+                error="Rankings are private on Warcraft Logs",
+                error_kind=WCL_ERROR_RESTRICTED,
+            ),
+        )
+
+        assert client.connection_status.state == "api_ready"
+        assert client.connection_status.error_kind == ""
+    finally:
+        client.close()
+
+
 def test_fetch_task_persists_not_found_and_reuses_across_identity_churn(
     qtbot, tmp_path
 ):
@@ -2517,6 +2584,48 @@ def test_fetch_task_persists_not_found_and_reuses_across_identity_churn(
         window._launch_fetch(app)
 
         assert app.fetch_status == "not_found"
+        assert calls == 1
+    finally:
+        client.close()
+
+
+def test_fetch_task_persists_restricted_rankings_without_repeated_network_fetch(
+    qtbot, tmp_path, caplog
+):
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    app = _app(fetch_status="pending")
+    state.add_or_update(app)
+    window, client = _window(qtbot, tmp_path, state)
+    window._pool = _SyncPool()
+    calls = 0
+
+    def fake_fetch(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return CharacterRanks.empty(
+            error="Rankings are private on Warcraft Logs",
+            error_kind=WCL_ERROR_RESTRICTED,
+        )
+
+    client.fetch_character_ranks = fake_fetch  # type: ignore[method-assign]
+    caplog.set_level("INFO", logger="applicant_scout.overlay")
+
+    try:
+        window._launch_fetch(app)
+
+        assert app.fetch_status == "restricted"
+        assert calls == 1
+        assert "WCL fetch finished with private rankings" in caplog.text
+        assert "WCL fetch finished with error" not in caplog.text
+        cached = window._cache.get("Scout", "realma", "EU", 71, "DPS")
+        assert cached is not None
+        assert cached.error_kind == WCL_ERROR_RESTRICTED
+
+        app.fetch_status = "pending"
+        window._launch_fetch(app)
+
+        assert app.fetch_status == "restricted"
         assert calls == 1
     finally:
         client.close()

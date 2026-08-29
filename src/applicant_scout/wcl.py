@@ -47,6 +47,12 @@ WCL_ERROR_MALFORMED = "malformed"
 WCL_ERROR_GRAPHQL = "graphql"
 WCL_ERROR_NETWORK = "network"
 WCL_ERROR_HTTP = "http"
+WCL_ERROR_RESTRICTED = "restricted"
+
+_PRIVATE_RANKINGS_PROVIDER_MESSAGE = (
+    "you do not have permission to see this character's rankings."
+)
+_PRIVATE_RANKINGS_USER_MESSAGE = "Rankings are private on Warcraft Logs"
 WCL_RATE_LIMIT_RETRY_SECONDS = 300.0
 WCL_SERVER_RETRY_SECONDS = 30.0
 WCL_NETWORK_RETRY_SECONDS = 30.0
@@ -666,6 +672,16 @@ def _ranks_for_graphql_errors(
     )
 
 
+def _is_private_rankings_payload(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    error = value.get("error")
+    return (
+        isinstance(error, str)
+        and error.strip().casefold() == _PRIVATE_RANKINGS_PROVIDER_MESSAGE
+    )
+
+
 def _ranking_alias_payload(char: dict, alias: str) -> dict:
     if alias not in char:
         raise WCLApiError(
@@ -683,6 +699,8 @@ def _ranking_alias_payload(char: dict, alias: str) -> dict:
             f"Malformed WCL response: {alias} is not an object",
             error_kind=WCL_ERROR_MALFORMED,
         )
+    if _is_private_rankings_payload(enc_data):
+        return {"ranks": []}
     if "ranks" not in enc_data:
         raise WCLApiError(
             f"Malformed WCL response: {alias}.ranks is missing",
@@ -711,6 +729,11 @@ def _raid_zone_alias_payload(char: dict, alias: str) -> dict:
     if not isinstance(zone_data, dict):
         raise WCLApiError(
             f"Malformed WCL response: {alias} is not an object",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    if "error" in zone_data and not _is_private_rankings_payload(zone_data):
+        raise WCLApiError(
+            f"Malformed WCL response: {alias}.error is unexpected",
             error_kind=WCL_ERROR_MALFORMED,
         )
     return zone_data
@@ -1124,6 +1147,23 @@ class WCLClient:
             raise WCLApiError(
                 "Malformed WCL response: character is not an object",
                 error_kind=WCL_ERROR_MALFORMED,
+            )
+
+        enabled_aliases: list[str] = []
+        if metric_preferences.mplus:
+            enabled_aliases.extend(alias for alias, _eid, _name in MPLUS_ENCOUNTERS)
+        if metric_preferences.raid_normal:
+            enabled_aliases.append("raidNormal")
+        if metric_preferences.raid_heroic:
+            enabled_aliases.append("raidHeroic")
+        if metric_preferences.raid_mythic:
+            enabled_aliases.append("raidMythic")
+        if enabled_aliases and all(
+            _is_private_rankings_payload(char.get(alias)) for alias in enabled_aliases
+        ):
+            return CharacterRanks.empty(
+                error=_PRIVATE_RANKINGS_USER_MESSAGE,
+                error_kind=WCL_ERROR_RESTRICTED,
             )
 
         # Build per-dungeon breakdown from the 8 aliased encounterRankings.

@@ -90,7 +90,7 @@ def raid_cell_visuals(
         return "…", "#888", None
     if fetch_status == "error":
         return "?", "#ff5555", None
-    if fetch_status == "not_found":
+    if fetch_status in {"not_found", "restricted"}:
         return "—", "#5d5d5d", None
     best_pct = safe_percent(best)
     median_pct = safe_percent(median)

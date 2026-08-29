@@ -31,6 +31,7 @@ from applicant_scout.wcl import (
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_RATE_LIMITED,
+    WCL_ERROR_RESTRICTED,
     WCL_ERROR_SERVER,
     WCLAuth,
     WCLAuthError,
@@ -4139,6 +4140,77 @@ def test_fetch_character_ranks_rejects_malformed_mplus_alias_payload(
 
     with pytest.raises(WCLApiError, match=expected_message) as exc:
         client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_fetch_character_ranks_classifies_private_rankings_as_restricted():
+    character = _character_with_empty_mplus()
+    private_payload = {
+        "error": "You do not have permission to see this character's rankings."
+    }
+    for alias, _encounter_id, _dungeon_name in MPLUS_ENCOUNTERS:
+        character[alias] = dict(private_payload)
+    for alias in ("raidNormal", "raidHeroic", "raidMythic"):
+        character[alias] = dict(private_payload)
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    result = client.fetch_character_ranks("Private", "antonidas", spec_id=62)
+
+    assert result.not_found is False
+    assert result.error == "Rankings are private on Warcraft Logs"
+    assert result.error_kind == WCL_ERROR_RESTRICTED
+    assert result.mplus_dps_breakdown == []
+
+
+def test_fetch_character_ranks_does_not_hide_unknown_embedded_alias_error():
+    character = _character_with_empty_mplus()
+    character["af"] = {"error": "Unexpected provider failure"}
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    with pytest.raises(WCLApiError, match="af.ranks is missing") as exc:
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+
+    assert exc.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_fetch_character_ranks_keeps_public_metrics_when_one_scope_is_private():
+    character = _character_with_empty_mplus()
+    character["af"] = {
+        "error": "You do not have permission to see this character's rankings."
+    }
+    character["raidHeroic"] = {
+        "bestPerformanceAverage": 81.0,
+        "medianPerformanceAverage": 72.0,
+    }
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    result = client.fetch_character_ranks(
+        "Scout",
+        "ravencrest",
+        spec_id=71,
+        metric_preferences=MetricPreferences(),
+    )
+
+    assert result.error == ""
+    assert result.error_kind == ""
+    assert result.raid_heroic == 81.0
+    assert result.raid_heroic_median == 72.0
+    assert result.mplus_dps_breakdown == []
+
+
+def test_fetch_character_ranks_rejects_unknown_embedded_raid_error():
+    character = _character_with_empty_mplus()
+    character["raidHeroic"] = {"error": "Unexpected provider failure"}
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    with pytest.raises(WCLApiError, match="raidHeroic.error is unexpected") as exc:
+        client.fetch_character_ranks(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(),
+        )
 
     assert exc.value.error_kind == WCL_ERROR_MALFORMED
 

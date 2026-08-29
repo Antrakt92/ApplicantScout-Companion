@@ -20,7 +20,7 @@ from .scoring import (
 from .state import Applicant, Listing
 
 
-_SUNK_STATES: frozenset[str] = frozenset({"error", "not_found"})
+_SUNK_STATES: frozenset[str] = frozenset({"error", "not_found", "restricted"})
 _PROVISIONAL_STATES: frozenset[str] = frozenset({"loading", "pending"})
 _MPLUS_CATEGORY_ID = 2
 

@@ -185,6 +185,14 @@ def test_raid_cell_visuals_hide_stale_values_for_provisional_status(fetch_status
     assert _raid_cell_visuals(91.0, 78.0, fetch_status) == ("…", "#888", None)
 
 
+def test_raid_cell_visuals_marks_private_rankings_as_unavailable():
+    assert _raid_cell_visuals(91.0, 78.0, "restricted") == (
+        "—",
+        "#5d5d5d",
+        None,
+    )
+
+
 @pytest.mark.parametrize(
     "best",
     [math.nan, math.inf, True, "bad", -1.0, 101.0],
@@ -352,6 +360,7 @@ def test_mplus_cell_visuals_single_run_healer_uses_dps_breakdown():
         ("loading", "…"),
         ("error", "?"),
         ("not_found", "—"),
+        ("restricted", "—"),
     ],
 )
 def test_mplus_cell_visuals_status_cells_omit_key_suffix(status, expected):
@@ -366,6 +375,7 @@ def test_mplus_cell_visuals_status_cells_omit_key_suffix(status, expected):
         ("pending", "…"),
         ("error", "?"),
         ("not_found", "—"),
+        ("restricted", "—"),
     ],
 )
 def test_mplus_cell_visuals_listing_status_precedes_stale_fit(status, expected):
