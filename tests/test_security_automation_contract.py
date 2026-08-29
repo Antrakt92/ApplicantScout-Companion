@@ -43,6 +43,9 @@ def test_dependabot_covers_python_and_github_actions_on_a_bounded_schedule():
     assert config.count('directory: "/"') == 2
     assert config.count('interval: "weekly"') == 2
     assert config.count("open-pull-requests-limit: 5") == 2
+    assert config.count("default-days: 14") == 2
+    assert "codeql-actions:" in config
+    assert '          - "github/codeql-action/*"' in config
 
 
 def test_security_policy_documents_python_and_lua_coverage_boundary():

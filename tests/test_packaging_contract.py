@@ -3004,6 +3004,8 @@ def test_check_workflow_runs_non_release_companion_and_addon_gates():
     assert "push:" in workflow
     assert "pull_request:" in workflow
     assert "workflow_dispatch:" in workflow
+    assert re.search(r"(?m)^  push:\n    branches:\n      - main\s*$", workflow)
+    assert not re.search(r"(?m)^  push:\n    branches:\n      - ['\"]?\*\*", workflow)
     assert "paired_addon_ref:" in workflow
     assert "tags:" not in workflow
     assert re.search(r"(?m)^    runs-on: windows-2022\s*$", check)
