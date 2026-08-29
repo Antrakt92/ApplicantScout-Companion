@@ -496,18 +496,41 @@ def _create_tray_controller(
     return controller
 
 
+def _start_daemon_thread(
+    target: Callable[[], None],
+    *,
+    name: str,
+    on_start_error: Callable[[Exception], None] | None = None,
+) -> threading.Thread | None:
+    """Launch optional background work without stranding caller-owned state."""
+    try:
+        worker = threading.Thread(target=target, name=name, daemon=True)
+        worker.start()
+    except Exception as exc:  # noqa: BLE001 - local worker launch boundary
+        log.warning("Could not start %s thread: %s", name, exc)
+        if on_start_error is not None:
+            try:
+                on_start_error(exc)
+            except Exception as callback_exc:  # noqa: BLE001 - preserve GUI loop
+                log.warning(
+                    "Could not recover after %s thread start failure: %s",
+                    name,
+                    callback_exc,
+                )
+        return None
+    return worker
+
+
 def _validate_oauth_async(client: WCLClient) -> threading.Thread | None:
     """Start a fresh, generation-safe OAuth probe off the GUI thread."""
     validation = client.begin_auth_validation()
     if validation is None:
         return None
-    worker = threading.Thread(
-        target=lambda: client.run_auth_validation(validation),
+    return _start_daemon_thread(
+        lambda: client.run_auth_validation(validation),
         name="WCLAuthValidator",
-        daemon=True,
+        on_start_error=lambda _exc: client.cancel_auth_validation(validation),
     )
-    worker.start()
-    return worker
 
 
 class StateMachine(QObject):
@@ -2235,7 +2258,11 @@ def _start_wow_lifecycle_timer(
                 return
             signals.checked.emit(running)
 
-        run_async(_worker)
+        try:
+            run_async(_worker)
+        except Exception as exc:  # noqa: BLE001 - retry on the next timer tick
+            state["checking"] = False
+            log.warning("Could not start WoW lifecycle check: %s", exc)
 
     setattr(timer, "_applicant_scout_wow_lifecycle_signals", signals)
     setattr(timer, "_applicant_scout_wow_lifecycle_state", state)
@@ -4244,9 +4271,13 @@ def main(argv: list[str] | None = None) -> int:
                     _UpdateCompletion(f"Update failed: {exc}", error=True)
                 )
 
-        threading.Thread(
-            target=_worker, name="ApplicantScoutUpdater", daemon=True
-        ).start()
+        _start_daemon_thread(
+            _worker,
+            name="ApplicantScoutUpdater",
+            on_start_error=lambda exc: update_signals.completed.emit(
+                _UpdateCompletion(f"Update failed: {exc}", error=True)
+            ),
+        )
 
     def _handle_update_completed(completion: object) -> None:
         nonlocal pending_update_version
@@ -4286,11 +4317,7 @@ def main(argv: list[str] | None = None) -> int:
             result = _safe_check_for_update(__version__)
             update_signals.checked.emit(generation, result)
 
-        threading.Thread(
-            target=_worker,
-            name="ApplicantScoutUpdateCheck",
-            daemon=True,
-        ).start()
+        _start_daemon_thread(_worker, name="ApplicantScoutUpdateCheck")
 
     def _handle_update_checked(generation: int, result: object) -> None:
         nonlocal pending_update_version

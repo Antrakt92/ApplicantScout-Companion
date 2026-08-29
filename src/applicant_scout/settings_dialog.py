@@ -1886,7 +1886,21 @@ class SettingsDialog(QDialog):
                 )
             self._signals.finished.emit(outcome)
 
-        threading.Thread(target=_worker, name="SettingsAction", daemon=True).start()
+        try:
+            worker = threading.Thread(
+                target=_worker,
+                name="SettingsAction",
+                daemon=True,
+            )
+            worker.start()
+        except Exception as exc:  # noqa: BLE001 - restore the GUI action inline
+            self._finish_async_action(
+                _AsyncActionResult(
+                    button,
+                    f"{error_prefix}: {exc}",
+                    error=True,
+                )
+            )
 
     def _finish_async_action(self, raw: object) -> None:
         if not isinstance(raw, _AsyncActionResult):

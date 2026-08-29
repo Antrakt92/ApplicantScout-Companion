@@ -1733,6 +1733,88 @@ def test_settings_dialog_emits_update_lifecycle_for_failure(qtbot, tmp_path: Pat
     assert seen == [("started", None), ("finished", True)]
 
 
+def test_settings_dialog_restores_wcl_action_when_worker_cannot_start(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _StartFailThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(settings_mod.threading, "Thread", _StartFailThread)
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        credential_tester=lambda *_args: "credentials ok",
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.test_button.click()
+
+    assert dialog.test_button.isEnabled()
+    assert not dialog._credential_test_in_progress
+    assert dialog.status_label.text() == "WCL test failed: thread start failed"
+
+
+def test_settings_dialog_restores_cache_action_when_worker_cannot_start(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _StartFailThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(settings_mod.threading, "Thread", _StartFailThread)
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        clear_cache=lambda: "Cache cleared.",
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.cache_action.trigger()
+
+    assert dialog.cache_action.isEnabled()
+    assert dialog.client_id_edit.isEnabled()
+    assert not dialog._cache_action_in_progress
+    assert dialog.status_label.text() == "Could not clear cache: thread start failed"
+
+
+def test_settings_dialog_finishes_update_when_worker_cannot_start(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _StartFailThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(settings_mod.threading, "Thread", _StartFailThread)
+    dialog = SettingsDialog(
+        _cfg(tmp_path),
+        check_updates=lambda: "up to date",
+    )
+    qtbot.addWidget(dialog)
+    finished: list[bool] = []
+    dialog.updateFinished.connect(finished.append)
+    dialog.set_update_available("v0.2.0")
+
+    dialog.update_button.click()
+
+    assert finished == [True]
+    assert dialog.update_button.isEnabled()
+    assert dialog.status_label.text() == "Update failed: thread start failed"
+
+
 def test_settings_update_flushes_pending_values_before_update_start(
     qtbot,
     tmp_path: Path,

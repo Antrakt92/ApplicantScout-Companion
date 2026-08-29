@@ -856,6 +856,14 @@ class WCLClient:
             status,
         )
 
+    def cancel_auth_validation(self, validation: _WCLAuthValidation) -> None:
+        """Clear a current validation whose background worker could not start."""
+        self._set_connection_status_if_current(
+            validation.auth_generation,
+            validation.status_revision,
+            WCLConnectionStatus(),
+        )
+
     def _set_connection_status_if_current(
         self,
         auth_generation: int,

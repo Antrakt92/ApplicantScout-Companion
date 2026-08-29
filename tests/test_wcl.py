@@ -1421,6 +1421,21 @@ def test_late_auth_validation_completion_after_close_is_ignored():
     assert client.connection_status.state == "unknown"
 
 
+def test_cancel_auth_validation_clears_only_current_checking_state():
+    auth = _ProbeAuth()
+    client = WCLClient(auth, region="EU")  # type: ignore[arg-type]
+    first = client.begin_auth_validation()
+    second = client.begin_auth_validation()
+
+    assert first is not None
+    assert second is not None
+    client.cancel_auth_validation(first)
+    assert client.connection_status.state == "checking"
+
+    client.cancel_auth_validation(second)
+    assert client.connection_status.state == "unknown"
+
+
 def test_reconfigure_auth_ignores_stale_quota_snapshot_from_in_flight_fetch():
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
 

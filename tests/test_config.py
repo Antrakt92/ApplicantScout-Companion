@@ -185,6 +185,30 @@ def test_validate_oauth_async_does_not_launch_after_client_close(
     )
 
 
+def test_validate_oauth_async_cancels_validation_when_worker_start_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[object] = []
+    validation = object()
+    client = SimpleNamespace(
+        begin_auth_validation=lambda: calls.append("begin") or validation,
+        run_auth_validation=lambda value: calls.append(("run", value)),
+        cancel_auth_validation=lambda value: calls.append(("cancel", value)),
+    )
+
+    class _StartFailThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(main_mod.threading, "Thread", _StartFailThread)
+
+    assert main_mod._validate_oauth_async(client) is None
+    assert calls == ["begin", ("cancel", validation)]
+
+
 def _live_snapshot() -> Snapshot:
     return Snapshot(
         listing=DecodedListing(
@@ -5528,6 +5552,39 @@ def test_wow_lifecycle_timer_does_not_run_process_scan_on_gui_tick(
     workers[0]()
 
     assert calls == ["scan"]
+
+
+def test_wow_lifecycle_timer_retries_after_async_runner_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    callbacks = []
+    calls: list[str] = []
+    launch_attempts = 0
+
+    def run_async(worker: Callable[[], None]) -> None:
+        nonlocal launch_attempts
+        launch_attempts += 1
+        if launch_attempts == 1:
+            raise RuntimeError("thread start failed")
+        worker()
+
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks))
+    caplog.set_level(logging.WARNING, logger="applicant_scout")
+
+    main_mod._start_wow_lifecycle_timer(
+        SimpleNamespace(quit=lambda: None),
+        has_seen_wow=False,
+        running_checker=lambda: calls.append("scan") or True,
+        async_runner=run_async,
+    )
+
+    callbacks[0]()
+    callbacks[0]()
+
+    assert launch_attempts == 2
+    assert calls == ["scan"]
+    assert "Could not start WoW lifecycle check" in caplog.text
 
 
 def test_wow_lifecycle_timer_waits_for_consecutive_missing_wow_scans(
