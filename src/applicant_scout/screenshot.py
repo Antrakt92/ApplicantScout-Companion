@@ -136,6 +136,11 @@ _QR_RECOVERY_MAX_MODULE_PX = 10.0
 # Manual fingerprints persist, so later starts advance through older files without
 # letting one pathological folder consume minutes of CPU beside WoW.
 _BACKLOG_CLEANUP_LIMIT = 500
+# Recent frames retain the larger envelope above because a fresh fragmented
+# snapshot may need many files to reassemble. Historical files are cleanup-only:
+# keep their native QR/JPG work to a small slice per launch so starting the
+# companion beside WoW cannot spend tens of seconds decoding stale captures.
+_BACKLOG_HISTORICAL_CLEANUP_LIMIT = 4
 _BACKLOG_INCOMPLETE_SCAN_LIMIT = 4
 _RECENT_WORK_KEY_TTL_SECONDS = 3.0
 _GENERATION_RETRY_DELAY_SECONDS = 0.05
@@ -2730,8 +2735,12 @@ class ScreenshotWatcher(QObject):
             )
             deleted += phase_deleted
             if not stop_scan and remaining > 0 and not self._stopped.is_set():
-                (
+                historical_remaining = min(
                     remaining,
+                    _BACKLOG_HISTORICAL_CLEANUP_LIMIT,
+                )
+                (
+                    _historical_remaining,
                     apply_closed,
                     authority_blocked,
                     phase_deleted,
@@ -2739,7 +2748,7 @@ class ScreenshotWatcher(QObject):
                 ) = self._scan_backlog_phase(
                     historical,
                     recent=False,
-                    remaining=remaining,
+                    remaining=historical_remaining,
                     apply_closed=apply_closed,
                     authority_blocked=authority_blocked,
                     retry_window_active=retry_window_active,

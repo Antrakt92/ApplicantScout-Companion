@@ -4906,6 +4906,42 @@ def test_backlog_resumes_beyond_unknown_decode_budget(
 
 def test_default_backlog_decode_budget_is_bounded_for_startup_work():
     assert 0 < screenshot_mod._BACKLOG_CLEANUP_LIMIT <= 500
+    assert 0 < screenshot_mod._BACKLOG_HISTORICAL_CLEANUP_LIMIT <= 4
+
+
+def test_backlog_limits_historical_cleanup_without_reducing_recent_restore_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    screenshots = tmp_path / "Screenshots"
+    cache_dir = tmp_path / "cache"
+    screenshots.mkdir()
+    cache_dir.mkdir()
+    recent = [screenshots / f"WoWScrnShot_recent_{index}.jpg" for index in range(3)]
+    historical = [
+        screenshots / f"WoWScrnShot_historical_{index}.jpg" for index in range(6)
+    ]
+    for index, path in enumerate([*recent, *historical]):
+        path.write_bytes(path.name.encode("ascii"))
+        mtime = 990.0 - index if path in recent else 600.0 - index
+        os.utime(path, (mtime, mtime))
+
+    decoded: list[Path] = []
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        decoded.append(path)
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+    monkeypatch.setattr(screenshot_mod, "_BACKLOG_CLEANUP_LIMIT", 500)
+    monkeypatch.setattr(screenshot_mod, "_BACKLOG_HISTORICAL_CLEANUP_LIMIT", 2)
+
+    ScreenshotWatcher(screenshots, cache_dir=cache_dir)._scan_recent_backlog()
+
+    assert decoded[:3] == recent
+    assert decoded[3:] == historical[:2]
 
 
 def test_backlog_rotates_bounded_deferred_retries_without_reordering_authority(

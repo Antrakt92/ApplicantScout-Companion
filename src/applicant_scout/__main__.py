@@ -1844,7 +1844,7 @@ def _setup_logging(log_dir: Path | None = None) -> str | None:
     root.setLevel(logging.INFO)
     formatter = logging.Formatter(
         "%(asctime)s %(name)s %(levelname)s: %(message)s",
-        datefmt="%H:%M:%S",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     stream = logging.StreamHandler()
     stream.setFormatter(formatter)
@@ -3968,6 +3968,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     setattr(app, "_applicant_scout_control_server", control_server)
+    log.info(
+        "ApplicantScout Companion %s starting (pid=%d, packaged=%s, watch_wow=%s)",
+        __version__,
+        os.getpid(),
+        bool(getattr(sys, "frozen", False)),
+        wow_watch_mode,
+    )
     runtime_owner = getattr(
         control_server,
         "_applicant_scout_runtime_owner",

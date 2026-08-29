@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 import logging
 from pathlib import Path
+import re
 import shutil
 import threading
 import time
@@ -430,6 +431,28 @@ def test_setup_logging_applies_private_mode_to_log_file(
         main_mod._setup_logging(tmp_path)
 
     assert tmp_path / "applicant-scout.log" in calls
+
+
+def test_setup_logging_records_full_local_date_for_cross_day_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(main_mod, "apply_private_directory_mode", lambda _path: True)
+    monkeypatch.setattr(main_mod, "apply_private_file_mode", lambda _path: True)
+
+    with _isolated_root_logging() as root:
+        main_mod._setup_logging(tmp_path)
+        handler = next(
+            item
+            for item in root.handlers
+            if isinstance(item, main_mod._PrivateRotatingFileHandler)
+        )
+        rendered = handler.format(_log_record("session marker"))
+
+    assert re.match(
+        r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} test INFO: session marker$",
+        rendered,
+    )
 
 
 def test_setup_logging_applies_private_mode_to_log_dir(
@@ -3944,6 +3967,7 @@ def test_main_fails_closed_when_control_server_cannot_be_created(
 
 def test_main_claims_control_server_before_loading_startup_config(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ):
     calls: list[str] = []
 
@@ -3981,9 +4005,15 @@ def test_main_claims_control_server_before_loading_startup_config(
         "_load_startup_config",
         lambda **_kwargs: calls.append("config") or None,
     )
+    caplog.set_level(logging.INFO, logger="applicant_scout")
 
     assert main_mod.main([]) == 1
     assert calls == ["server", "config"]
+    assert (
+        f"ApplicantScout Companion {main_mod.__version__} starting "
+        in caplog.text
+    )
+    assert "packaged=False, watch_wow=False" in caplog.text
 
 
 def test_main_control_server_uses_guarded_quit_callback(
