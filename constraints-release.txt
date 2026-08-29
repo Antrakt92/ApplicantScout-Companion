@@ -21,7 +21,7 @@ PyInstaller==6.20.0
 pyinstaller-hooks-contrib==2026.5
 pyproject_hooks==1.2.0
 PyQt6==6.11.0
-PyQt6-Qt6==6.11.0
+PyQt6-Qt6==6.11.2
 PyQt6-sip==13.11.1
 pyright==1.1.409
 pytest==9.0.3
