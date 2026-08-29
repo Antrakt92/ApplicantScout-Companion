@@ -179,11 +179,15 @@ the queue to publish multiple drafts.
 7. If the addon workflow fails only because companion assets were not public
    inside the 180-second wait, do not rerun the tag workflow: it deliberately
    rejects later attempts so an uncertain marketplace outcome cannot upload
-   twice. After the companion assets exist, dispatch
-   `recover-preupload-release.yml` with the exact failed source run ID, the
-   unchanged tag, and `confirm_preupload_timeout=true`. That recovery validates
-   that the paired wait was the only failure and that no writer job started
-   before it reuses the retained verified artifact. Do not delete, recreate, or
+   twice. The addon's scheduled `Auto-recover pre-upload paired release`
+   workflow rechecks the exact failed run every 15 minutes and dispatches the
+   guarded recovery only after the paired immutable companion assets exist. It
+   cannot publish directly. If automatic dispatch does not start after the next
+   interval, inspect that workflow's failed gate and use the manual fallback:
+   dispatch `recover-preupload-release.yml` with the exact failed source run ID,
+   the unchanged tag, and `confirm_preupload_timeout=true`. The recovery itself
+   revalidates that the paired wait was the only failure, no writer job started,
+   and the retained verified artifact is still exact. Do not delete, recreate, or
    force-push release tags for this timeout path.
 8. Do not publish an update release without the `.exe` and `.exe.sha256` pair;
    in-app updates intentionally refuse incomplete releases.
