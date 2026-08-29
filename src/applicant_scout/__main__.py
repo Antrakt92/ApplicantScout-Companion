@@ -73,6 +73,7 @@ from .screenshot import (
     cleanup_appscout_screenshots,
     format_screenshot_cleanup_summary,
     positive_int_arg,
+    snapshot_source_order_key,
     screenshot_cleanup_exit_code,
     system_exit_code,
 )
@@ -2379,45 +2380,25 @@ class _PreparedWatcherSignalScheduler:
 class _SnapshotSourceGate:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._latest_mtime_ns: int | None = None
-        self._accepted_latest_ids: set[tuple[str, int]] = set()
+        self._latest_source_key: tuple[int, str, int] | None = None
 
     def accept(self, source: object | None, *, advance: bool = True) -> bool:
         with self._lock:
             return self._accept_locked(source, advance=advance)
 
     def _accept_locked(self, source: object | None, *, advance: bool) -> bool:
-        if source is None:
+        source_key = snapshot_source_order_key(source)
+        if source_key is None:
             return True
-        mtime_ns = getattr(source, "mtime_ns", None)
-        file_id = getattr(source, "file_id", None)
-        size = getattr(source, "size", None)
-        if not isinstance(mtime_ns, int) or not isinstance(file_id, str):
-            return True
-        if not isinstance(size, int):
-            return True
-        identity = (file_id, size)
         if not advance:
-            if self._latest_mtime_ns is None:
-                return True
-            if mtime_ns < self._latest_mtime_ns:
-                return False
-            if (
-                mtime_ns == self._latest_mtime_ns
-                and identity in self._accepted_latest_ids
-            ):
-                return False
+            return (
+                self._latest_source_key is None
+                or source_key > self._latest_source_key
+            )
+        if self._latest_source_key is None or source_key > self._latest_source_key:
+            self._latest_source_key = source_key
             return True
-        if self._latest_mtime_ns is None or mtime_ns > self._latest_mtime_ns:
-            self._latest_mtime_ns = mtime_ns
-            self._accepted_latest_ids = {identity}
-            return True
-        if mtime_ns < self._latest_mtime_ns:
-            return False
-        if identity in self._accepted_latest_ids:
-            return False
-        self._accepted_latest_ids.add(identity)
-        return True
+        return False
 
 
 class _SnapshotApplier(Protocol):

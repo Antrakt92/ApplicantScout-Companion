@@ -1996,12 +1996,21 @@ class _PendingFragmentAssembly:
     last_seen: float
 
 
-def _snapshot_source_order_key(
-    source: SnapshotSource | None,
+def snapshot_source_order_key(
+    source: object | None,
 ) -> tuple[int, str, int] | None:
     if source is None:
         return None
-    return source.mtime_ns, source.file_id, source.size
+    mtime_ns = getattr(source, "mtime_ns", None)
+    file_id = getattr(source, "file_id", None)
+    size = getattr(source, "size", None)
+    if (
+        not isinstance(mtime_ns, int)
+        or not isinstance(file_id, str)
+        or not isinstance(size, int)
+    ):
+        return None
+    return mtime_ns, file_id, size
 
 
 class _SnapshotFragmentAssembler:
@@ -2084,7 +2093,7 @@ class _SnapshotFragmentAssembler:
     ) -> _FragmentAssemblyOutcome:
         """Apply a whole-frame barrier and reject snapshots behind chunk work."""
         current_time = time.monotonic() if now is None else now
-        source_key = _snapshot_source_order_key(snap.source)
+        source_key = snapshot_source_order_key(snap.source)
         with self._lock:
             retired = list(self._expire_locked(current_time))
             if not self._is_newer_source(source_key, self._frontier_source_key):
@@ -2113,7 +2122,7 @@ class _SnapshotFragmentAssembler:
         now: float | None = None,
     ) -> _FragmentAssemblyOutcome:
         current_time = time.monotonic() if now is None else now
-        source_key = _snapshot_source_order_key(fragment.source)
+        source_key = snapshot_source_order_key(fragment.source)
         signature = (
             fragment.chunk_count,
             fragment.inner_total_len,

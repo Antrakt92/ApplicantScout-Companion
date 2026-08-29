@@ -6244,6 +6244,15 @@ def test_snapshot_source_gate_accepts_equal_mtime_distinct_file():
     assert gate.accept(right)
 
 
+def test_snapshot_source_gate_rejects_late_lower_tiebreak_source():
+    gate = main_mod._SnapshotSourceGate()
+    newer = SimpleNamespace(mtime_ns=200, file_id="right.jpg", size=10)
+    older = SimpleNamespace(mtime_ns=200, file_id="left.jpg", size=10)
+
+    assert gate.accept(newer)
+    assert not gate.accept(older)
+
+
 def test_connect_screenshot_watcher_ignores_stale_snapshot_after_newer_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6292,6 +6301,44 @@ def test_connect_screenshot_watcher_ignores_stale_snapshot_after_newer_snapshot(
 
     assert machine.snapshots == [newer]
     assert window.decoded == [newer]
+
+
+def test_connect_screenshot_watcher_ignores_reverse_equal_mtime_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class FakeWatcher:
+        def __init__(self, _path: Path) -> None:
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    machine = FakeMachine()
+    watcher = main_mod._replace_screenshot_watcher(
+        None,
+        tmp_path,
+        machine,
+        object(),
+        lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+    )
+    newer = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=200, file_id="right.jpg", size=10)
+    )
+    older = SimpleNamespace(
+        source=SimpleNamespace(mtime_ns=200, file_id="left.jpg", size=10)
+    )
+
+    watcher.snapshotReceived.emit(newer)
+    watcher.snapshotReceived.emit(older)
+
+    assert machine.snapshots == [newer]
 
 
 def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_snapshot(

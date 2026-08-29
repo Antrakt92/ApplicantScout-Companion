@@ -13,7 +13,7 @@ from .producer_identity import (
     producer_identities_conflict as normalized_producer_identities_conflict,
     producer_identity_matches as normalized_producer_identity_matches,
 )
-from .screenshot import Snapshot
+from .screenshot import Snapshot, snapshot_source_order_key
 
 
 _log = logging.getLogger("applicant_scout.snapshot_pipeline")
@@ -280,16 +280,7 @@ class SnapshotApplyQueue:
     def _source_order_key(
         source: object | None,
     ) -> tuple[int, str, int] | None:
-        mtime_ns = getattr(source, "mtime_ns", None)
-        file_id = getattr(source, "file_id", None)
-        size = getattr(source, "size", None)
-        if (
-            not isinstance(mtime_ns, int)
-            or not isinstance(file_id, str)
-            or not isinstance(size, int)
-        ):
-            return None
-        return mtime_ns, file_id, size
+        return snapshot_source_order_key(source)
 
     @classmethod
     def _failure_is_newer_than_snapshot(
