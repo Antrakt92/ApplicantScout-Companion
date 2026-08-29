@@ -3339,6 +3339,71 @@ def test_watcher_coalesces_backlog_rescan_requests_into_one_worker(tmp_path: Pat
     assert watcher._backlog_thread is None
 
 
+def test_watcher_retries_backlog_scan_after_unexpected_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    watcher = ScreenshotWatcher(tmp_path)
+    calls = 0
+
+    def scan() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary backlog failure")
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_BACKLOG_SCAN_RETRY_INITIAL_SECONDS",
+        0.001,
+    )
+    watcher._scan_recent_backlog = scan  # type: ignore[method-assign]
+    with watcher._observer_lock:
+        watcher._request_backlog_scan_locked()
+        worker = watcher._backlog_thread
+
+    assert worker is not None
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert calls == 2
+    assert watcher._backlog_thread is None
+
+
+def test_watcher_stop_cancels_backlog_failure_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    watcher = ScreenshotWatcher(tmp_path)
+    first_failure = threading.Event()
+    calls = 0
+
+    def scan() -> None:
+        nonlocal calls
+        calls += 1
+        first_failure.set()
+        raise RuntimeError("persistent backlog failure")
+
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_BACKLOG_SCAN_RETRY_INITIAL_SECONDS",
+        60.0,
+    )
+    watcher._scan_recent_backlog = scan  # type: ignore[method-assign]
+    with watcher._observer_lock:
+        watcher._request_backlog_scan_locked()
+        worker = watcher._backlog_thread
+
+    assert worker is not None
+    assert first_failure.wait(timeout=2)
+    watcher.request_stop()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert calls == 1
+    assert watcher._backlog_thread is None
+
+
 def test_watcher_stop_discards_queued_backlog_rescan(tmp_path: Path):
     watcher = ScreenshotWatcher(tmp_path)
     first_scan_entered = threading.Event()

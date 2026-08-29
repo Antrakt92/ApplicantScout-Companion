@@ -142,6 +142,12 @@ _BACKLOG_CLEANUP_LIMIT = 500
 # companion beside WoW cannot spend tens of seconds decoding stale captures.
 _BACKLOG_HISTORICAL_CLEANUP_LIMIT = 4
 _BACKLOG_INCOMPLETE_SCAN_LIMIT = 4
+# The live observer can remain healthy after an unexpected startup backlog
+# failure, so it will not trigger the normal observer-restart rescan. Keep one
+# worker alive with a capped backoff until the transient filesystem/decoder
+# failure clears or shutdown cancels the wait.
+_BACKLOG_SCAN_RETRY_INITIAL_SECONDS = 0.5
+_BACKLOG_SCAN_RETRY_MAX_SECONDS = 30.0
 _RECENT_WORK_KEY_TTL_SECONDS = 3.0
 _GENERATION_RETRY_DELAY_SECONDS = 0.05
 _INCOMPLETE_SCAN_RETRY_DELAY_SECONDS = 0.35
@@ -2413,6 +2419,7 @@ class ScreenshotWatcher(QObject):
             self._request_backlog_scan_locked()
 
     def _run_backlog_scans(self) -> None:
+        retry_delay = _BACKLOG_SCAN_RETRY_INITIAL_SECONDS
         while True:
             with self._observer_lock:
                 if self._stopped.is_set():
@@ -2420,10 +2427,27 @@ class ScreenshotWatcher(QObject):
                     self._backlog_thread = None
                     return
                 self._backlog_rescan_requested = False
+            scan_failed = False
             try:
                 self._scan_recent_backlog()
-            except Exception:  # noqa: BLE001 - a later restart may request a retry
+            except Exception:  # noqa: BLE001 - retry off the GUI thread
+                scan_failed = True
                 _log.exception("screenshot backlog scan failed")
+                with self._observer_lock:
+                    if not self._stopped.is_set():
+                        self._backlog_rescan_requested = True
+            if scan_failed:
+                if self._stopped.wait(retry_delay):
+                    with self._observer_lock:
+                        self._backlog_rescan_requested = False
+                        self._backlog_thread = None
+                    return
+                retry_delay = min(
+                    retry_delay * 2,
+                    _BACKLOG_SCAN_RETRY_MAX_SECONDS,
+                )
+            else:
+                retry_delay = _BACKLOG_SCAN_RETRY_INITIAL_SECONDS
             with self._observer_lock:
                 if self._stopped.is_set() or not self._backlog_rescan_requested:
                     self._backlog_rescan_requested = False

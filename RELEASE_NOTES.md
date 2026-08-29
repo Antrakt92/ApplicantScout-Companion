@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Fixed
+
+- An unexpected startup backlog-scan failure now retries off the GUI thread
+  with a shutdown-aware capped backoff, so an already-created QR screenshot can
+  recover without restarting the companion.
+- Screenshot-folder startup work is bounded, retired watchers stop before
+  decoding, and equal-time files use a stable full source order. Together these
+  prevent old watcher work or timestamp ties from replacing newer applicant
+  state.
+- Failed background-worker launches restore their Settings actions immediately;
+  the WoW lifecycle watcher retries on its next tick instead of remaining stuck.
+- Warcraft Logs private-character responses are shown as restricted evidence
+  rather than being misreported as missing logs.
+
+### Improved
+
+- First-run setup and the regular Settings dialog now share the same compact,
+  actionable Screenshots-path guidance and recovery controls.
+
 ## 0.14.4 - 28-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.10`. This patch restores reliable
