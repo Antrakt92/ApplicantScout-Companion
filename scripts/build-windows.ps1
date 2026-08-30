@@ -722,6 +722,13 @@ if (-not $AllowDirtyReleaseInputs) {
     Assert-CleanReleaseInputs
 }
 
+if (-not $SkipChecks) {
+    # WHY: the artifact build intentionally removes the repository root from
+    # Python's implicit search path. Run the source-tree gate before entering
+    # that isolated environment; artifact probes remain isolated below.
+    & (Join-Path $RepoRoot "scripts\check.ps1")
+}
+
 $AppDir = Join-Path $RepoRoot "dist\ApplicantScout"
 $Exe = Join-Path $AppDir "ApplicantScout.exe"
 $BasePythonPrefix = Get-VenvBasePrefix
@@ -746,9 +753,6 @@ Invoke-WithIsolatedBuildEnvironment -BasePrefix $BasePythonPrefix -Action {
     $BuildState.InstallerChecksum = $InstallerChecksum
     New-VersionInfoFile -VersionText $Version -OutputPath $VersionInfoFile
 
-    if (-not $SkipChecks) {
-        & (Join-Path $RepoRoot "scripts\check.ps1")
-    }
     Invoke-PyInstaller
     if (-not (Test-Path -LiteralPath $Exe)) {
         throw "Build did not produce expected executable: $Exe"

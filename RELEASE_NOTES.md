@@ -26,6 +26,9 @@ failures without blocking the overlay.
 
 - First-run setup and the regular Settings dialog now share the same compact,
   actionable Screenshots-path guidance and recovery controls.
+- Local release builds run source checks before entering the artifact-isolated
+  Python environment, so repository test helpers remain available while frozen
+  runtime discovery stays isolated.
 
 ### Release Assets
 

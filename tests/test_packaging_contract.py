@@ -772,7 +772,6 @@ def test_frozen_build_isolates_dll_discovery_and_probes_real_startup_imports():
         "setuptools",
     ):
         assert f"--exclude-module {module}" in build_script
-
     probe_dispatch = entrypoint.index("if args == [FROZEN_STARTUP_IMPORT_PROBE_ARG]:")
     application_dispatch = entrypoint.index(
         "from applicant_scout.__main__ import main as run_application"
@@ -837,6 +836,15 @@ def test_frozen_build_isolates_dll_discovery_and_probes_real_startup_imports():
         "Write-PayloadVersionMarker -TargetDir $AppDir -VersionText $Version"
         in build_script
     )
+
+
+def test_source_checks_run_before_isolated_artifact_environment():
+    build_script = _read_repo_text("scripts/build-windows.ps1")
+
+    check_call = '& (Join-Path $RepoRoot "scripts\\check.ps1")'
+    isolated_call = "Invoke-WithIsolatedBuildEnvironment -BasePrefix"
+    assert build_script.count(check_call) == 1
+    assert build_script.index(check_call) < build_script.index(isolated_call)
 
 
 def test_installer_replaces_removed_frozen_payload_instead_of_overlaying_it():
