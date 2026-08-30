@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.14.5 - 30-Aug-2026
+
+Paired release with ApplicantScout addon `0.9.11`. This patch keeps screenshot
+discovery and background recovery reliable through transient startup and worker
+failures without blocking the overlay.
+
 ### Fixed
 
 - An unexpected startup backlog-scan failure now retries off the GUI thread
@@ -20,6 +26,14 @@
 
 - First-run setup and the regular Settings dialog now share the same compact,
   actionable Screenshots-path guidance and recovery controls.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.11`.
+- Installer: `ApplicantScoutCompanionSetup-0.14.5.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.14.5.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.14.5-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.14.5-release-manifest.json`
 
 ## 0.14.4 - 28-Aug-2026
 
