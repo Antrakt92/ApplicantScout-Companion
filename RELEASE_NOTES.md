@@ -2,8 +2,28 @@
 
 ## Unreleased
 
-- Refresh the bundled image-processing and Qt libraries, including security
-  fixes for malformed-image parsing.
+## 0.14.7 - 02-Sep-2026
+
+Paired release with ApplicantScout addon `0.9.13`. This patch refreshes bundled
+libraries without changing the overlay workflow or APS1 payload compatibility.
+
+### Security
+
+- Update Pillow to 12.3.0, including fixes for malformed-image parsing.
+
+### Improved
+
+- Refresh the bundled Qt runtime and supporting libraries.
+- The paired addon retains its existing Mythic+ background-work suppression;
+  its gameplay logic is unchanged.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.13`.
+- Installer: `ApplicantScoutCompanionSetup-0.14.7.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.14.7.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.14.7-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.14.7-release-manifest.json`
 
 ## 0.14.6 - 02-Sep-2026
 
