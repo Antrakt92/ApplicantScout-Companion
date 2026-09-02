@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.14.6 - 02-Sep-2026
+
+Paired release with ApplicantScout addon `0.9.12`, which reduces in-game
+background work during Mythic+ and spreads QR encoding across frames.
+
+### Improved
+
+- The paired addon stops optional scanning, roster, inspect, keystone, and
+  greeting work throughout an active key, then restores fresh tracking state.
+- Loading transitions and delayed challenge-completion state no longer resume
+  QR work prematurely or leave normal tracking paused indefinitely.
+- QR error correction avoids redundant calculations without changing APS1
+  compatibility. Companion runtime behavior and dependency versions are unchanged.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.12`.
+- Installer: `ApplicantScoutCompanionSetup-0.14.6.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.14.6.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.14.6-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.14.6-release-manifest.json`
+
 ## 0.14.5 - 30-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.11`. This patch keeps screenshot
