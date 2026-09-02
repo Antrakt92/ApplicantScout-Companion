@@ -53,8 +53,8 @@ jobs:
       CONFIRM_CHECKSUM_GATED_UPDATE_SMOKE: ${{ inputs.confirm_checksum_gated_update_smoke }}
     steps:
       - name: Checkout companion
-        # actions/checkout v6 pinned to the upstream tag commit.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        # actions/checkout v7.0.1 pinned to the upstream release commit.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0

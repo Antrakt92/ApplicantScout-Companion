@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
+
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +37,9 @@ def test_codeql_scans_python_with_minimum_explicit_permissions_and_pinned_action
     ]
     for action, ref in action_refs:
         assert _FULL_SHA.fullmatch(ref), f"{action} must be pinned to a full commit SHA"
+    assert action_refs[1][1] == action_refs[2][1], (
+        "CodeQL init and analyze must use the same release commit"
+    )
 
 
 def test_dependabot_covers_python_and_github_actions_on_a_bounded_schedule():
@@ -56,3 +63,26 @@ def test_security_policy_documents_python_and_lua_coverage_boundary():
     assert "Lua" in policy
     assert "does not support Lua" in policy
     assert "ApplicantScout-Addon" in policy
+
+
+def test_image_decoder_requires_security_fixed_pillow():
+    # Pillow 12.3.0 fixes malformed-image memory-safety and parser-loop issues.
+    safe_floor = Version("12.3.0")
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    requirements = [Requirement(value) for value in project["dependencies"]]
+    pillow = next(value for value in requirements if value.name.lower() == "pillow")
+    assert any(
+        item.operator == ">=" and Version(item.version) >= safe_floor
+        for item in pillow.specifier
+    ), "Source installs must require a security-fixed Pillow version"
+
+    constraints = [
+        Requirement(line)
+        for line in _read("constraints-release.txt").splitlines()
+        if line and not line.startswith("#")
+    ]
+    pinned = next(value for value in constraints if value.name.lower() == "pillow")
+    assert any(
+        item.operator == "==" and Version(item.version) >= safe_floor
+        for item in pinned.specifier
+    ), "Release builds must pin a security-fixed Pillow version"

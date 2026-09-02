@@ -21,15 +21,15 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Checkout companion
-        # actions/checkout v6 pinned to the upstream tag commit.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        # actions/checkout v7.0.1 pinned to the upstream release commit.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           path: ApplicantScout-Companion
 
       - name: Checkout addon
-        # actions/checkout v6 pinned to the upstream tag commit.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        # actions/checkout v7.0.1 pinned to the upstream release commit.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: Antrakt92/ApplicantScout-Addon
           ref: ${{ github.event.inputs.paired_addon_ref || 'main' }}
@@ -37,8 +37,8 @@ jobs:
           path: ApplicantScout-Addon
 
       - name: Set up Python
-        # actions/setup-python v6 pinned to the upstream tag commit.
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        # actions/setup-python v7.0.0 pinned to the upstream release commit.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.13'
 
@@ -64,15 +64,15 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Checkout companion
-        # actions/checkout v6 pinned to the upstream tag commit.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        # actions/checkout v7.0.1 pinned to the upstream release commit.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           path: ApplicantScout-Companion
 
       - name: Set up Python
-        # actions/setup-python v6 pinned to the upstream tag commit.
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        # actions/setup-python v7.0.0 pinned to the upstream release commit.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.13'
 

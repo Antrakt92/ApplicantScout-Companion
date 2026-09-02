@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Refresh the bundled image-processing and Qt libraries, including security
+  fixes for malformed-image parsing.
+
 ## 0.14.6 - 02-Sep-2026
 
 Paired release with ApplicantScout addon `0.9.12`, which reduces in-game
