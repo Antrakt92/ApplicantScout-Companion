@@ -264,6 +264,100 @@ class _ClientSocket:
         return "socket error"
 
 
+class _BufferedClientSocket(_ClientSocket):
+    def __init__(self, buffered: bytes, *response_chunks: bytes) -> None:
+        super().__init__(*response_chunks)
+        self._incoming = bytearray(buffered)
+
+    def bytesAvailable(self) -> int:
+        return len(self._incoming)
+
+    def waitForReadyRead(self, timeout_ms: int) -> bool:
+        self.calls.append(f"wait-ready:{timeout_ms}")
+        if not self._response_chunks:
+            return False
+        self._incoming.extend(self._response_chunks.popleft())
+        return True
+
+    def read(self, max_bytes: int) -> SimpleNamespace:
+        self.read_limits.append(max_bytes)
+        value = bytes(self._incoming[:max_bytes])
+        del self._incoming[:max_bytes]
+        return SimpleNamespace(data=lambda: value)
+
+
+@pytest.mark.parametrize("response", [b"ok", b"blocked"])
+def test_send_control_command_consumes_already_buffered_acknowledgment(response):
+    socket = _BufferedClientSocket(response + b"\n")
+
+    result = runtime_control.send_control_command(
+        runtime_control.CONTROL_QUIT_COMMAND,
+        socket_factory=lambda: socket,
+        server_names=("test",),
+    )
+
+    assert result.response == response
+    assert result.error is None
+    assert not any(call.startswith("wait-ready:") for call in socket.calls)
+    assert socket.calls.count("disconnect") == 1
+
+
+def test_send_control_command_completes_buffered_response_with_later_fragment():
+    socket = _BufferedClientSocket(b"o", b"k\n")
+
+    result = runtime_control.send_control_command(
+        runtime_control.CONTROL_SHOW_SETTINGS_COMMAND,
+        socket_factory=lambda: socket,
+        server_names=("test",),
+    )
+
+    assert result.response == b"ok"
+    assert result.error is None
+    assert len([call for call in socket.calls if call.startswith("wait-ready:")]) == 1
+
+
+@pytest.mark.parametrize(
+    "response,error",
+    [
+        (b"ok", "control response ended before a complete newline frame"),
+        (b"ok\nblocked\n", "control response frame contained trailing bytes"),
+        (b"x" * 65, "control response frame exceeded the size limit"),
+    ],
+)
+def test_send_control_command_validates_already_buffered_response(response, error):
+    socket = _BufferedClientSocket(response)
+
+    result = runtime_control.send_control_command(
+        runtime_control.CONTROL_QUIT_COMMAND,
+        socket_factory=lambda: socket,
+        server_names=("test",),
+    )
+
+    assert result.response is None
+    assert result.error == error
+    assert max(socket.read_limits) <= runtime_control.CONTROL_FRAME_MAX_BYTES + 2
+
+
+def test_send_control_command_stops_when_buffered_socket_returns_no_bytes():
+    class UnreadableSocket(_BufferedClientSocket):
+        def read(self, max_bytes: int) -> SimpleNamespace:
+            self.read_limits.append(max_bytes)
+            assert len(self.read_limits) == 1
+            return SimpleNamespace(data=lambda: b"")
+
+    socket = UnreadableSocket(b"ok\n")
+
+    result = runtime_control.send_control_command(
+        runtime_control.CONTROL_QUIT_COMMAND,
+        socket_factory=lambda: socket,
+        server_names=("test",),
+    )
+
+    assert result.response is None
+    assert result.error == "control response was not received"
+    assert socket.calls.count("disconnect") == 1
+
+
 @pytest.mark.parametrize(
     ("chunks", "expected"),
     [

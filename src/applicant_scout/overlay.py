@@ -1775,6 +1775,39 @@ class RoleFilterBar(QWidget):
 # Applicant info hover/pin panel (above the table, below the title bar)
 
 
+class _IdentityLabel(QLabel):
+    """Keep full identity metadata while yielding header space to its actions."""
+
+    def setText(self, text: str | None) -> None:  # noqa: N802
+        super().setText(text)
+        self.setToolTip(text or "")
+        self.setAccessibleName(text or "")
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, super().minimumSizeHint().height())
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        text = self.text()
+        rendered = self.fontMetrics().elidedText(
+            text, Qt.TextElideMode.ElideRight, self.contentsRect().width()
+        )
+        style = self.style()
+        if rendered == text or style is None:
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        style.drawItemText(
+            painter,
+            self.contentsRect(),
+            int(self.alignment()),
+            self.palette(),
+            self.isEnabled(),
+            rendered,
+            self.foregroundRole(),
+        )
+        painter.end()
+
+
 class ApplicantInfoPanel(QFrame):
     """Compact QWidget scout card shown above the applicant table.
 
@@ -1816,9 +1849,9 @@ class ApplicantInfoPanel(QFrame):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(5)
-        self._name_label = QLabel("")
+        self._name_label = _IdentityLabel("")
         self._name_label.setObjectName("infoName")
-        self._realm_label = QLabel("")
+        self._realm_label = _IdentityLabel("")
         self._realm_label.setObjectName("infoRealm")
         header_layout.addWidget(self._name_label)
         header_layout.addWidget(self._realm_label)
@@ -1991,6 +2024,8 @@ class ApplicantInfoPanel(QFrame):
 
     def tooltip_widgets(self) -> tuple[QWidget, ...]:
         return (
+            self._name_label,
+            self._realm_label,
             self._wcl_retry_button,
             self._unpin_button,
             self._metric_labels["M+"],

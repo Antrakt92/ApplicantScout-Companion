@@ -142,9 +142,17 @@ def send_control_command(
         response_buffer = bytearray()
         response_started = time.monotonic()
         response_wait_ms = CONTROL_RESPONSE_TIMEOUT_MS
-        while socket.waitForReadyRead(response_wait_ms):
+        while True:
+            # A fast reply can already be buffered while the write completes.
+            # Qt's waitForReadyRead waits for new data, not existing bytes.
+            available = getattr(socket, "bytesAvailable", lambda: 0)()
+            if available <= 0 and not socket.waitForReadyRead(response_wait_ms):
+                break
             remaining = CONTROL_FRAME_MAX_BYTES + 2 - len(response_buffer)
-            response_buffer.extend(_read_socket_bytes(socket, remaining))
+            chunk = _read_socket_bytes(socket, remaining)
+            if not chunk:
+                break
+            response_buffer.extend(chunk)
             newline_at = response_buffer.find(b"\n")
             if newline_at >= 0:
                 if newline_at > CONTROL_FRAME_MAX_BYTES:

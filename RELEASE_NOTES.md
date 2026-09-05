@@ -18,11 +18,17 @@ Paired release with ApplicantScout addon `0.9.14`.
   damage evidence does not measure healing, survival, or utility.
 - The key controls fit the narrowest supported window, with full key values
   and counts preserved; wider windows restore the usual labels.
+- Long names and realms shorten with an ellipsis in narrow applicant cards,
+  keeping detail actions readable; tooltips retain the full identity.
 - Settings can show a pasted Client Secret for checking, hide it again when
   leaving the window, and take you to missing fields during first-run setup.
 
 ### Fixed
 
+- Fast responses from the running app are recognized correctly when opening
+  Settings or requesting shutdown, including during update handoff.
+- The paired addon resumes scouting after leaving a key when WoW's challenge
+  status becomes readable shortly after the loading screen.
 - Corroborating RaiderIO runs no longer reduce Fit by removing support from
   weaker logs, and a weaker duplicate WCL bracket cannot inflate that support.
 - Better WCL evidence no longer lowers Fit at the 25th and 50th percentile

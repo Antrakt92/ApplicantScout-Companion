@@ -563,6 +563,103 @@ def test_manual_raid_boss_detail_button_queues_fetch(qtbot, tmp_path):
         window.close()
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_narrow_raid_header_keeps_manual_action_readable(
+    qtbot, tmp_path, pinned, monkeypatch
+):
+    prefs = MetricPreferences(
+        mplus=True, raid_normal=False, raid_heroic=False, raid_mythic=True
+    )
+    client = WCLClient(WCLAuth("client", "secret", tmp_path), metric_preferences=prefs)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    applicant = _app(name="Двенадцатьхх-СвежевательДуш", raid_boss_parses={})
+    state.add_or_update(applicant)
+    window = OverlayWindow(
+        state, client, CharacterCache(tmp_path), tmp_path, metric_preferences=prefs
+    )
+    qtbot.addWidget(window)
+    try:
+        window._pool = _QueuedPool()
+        window._resolve_hover_from_cursor = lambda: None
+        window._refresh_table()
+        window.show()
+        window._pinned_id = "42" if pinned else None
+        window._hover_id = None if pinned else "42"
+        window._sync_delegate_and_panel()
+        panel = window._panel
+        button = panel._wcl_retry_button
+        for width in (300, 388, 650, 300):
+            window.resize(width, 800)
+            qtbot.wait(1)
+            assert window.width() == width
+            assert button.text() == "Load boss details"
+            assert button.width() >= button.sizeHint().width()
+            assert button.mapTo(panel, QPoint()).x() + button.width() <= panel.width() - 10
+            assert panel._name_label.text() == "Двенадцатьхх"
+            assert panel._realm_label.text() == "СвежевательДуш"
+            assert panel._name_label.toolTip() == "Двенадцатьхх"
+            assert panel._realm_label.toolTip() == "СвежевательДуш"
+            assert panel._name_label.accessibleName() == "Двенадцатьхх"
+            assert panel._realm_label.accessibleName() == "СвежевательДуш"
+            assert panel._name_label in panel.tooltip_widgets()
+            assert panel._realm_label in panel.tooltip_widgets()
+            assert window._raid_boss_fetches_in_flight == {}
+        rendered = []
+
+        def record_tooltip(parent_widget, tip, _global_pos):
+            rendered.append((parent_widget, tip))
+            return True
+
+        monkeypatch.setattr(overlay_mod, "_render_tooltip", record_tooltip)
+        for label in (panel._name_label, panel._realm_label):
+            event = QHelpEvent(QEvent.Type.ToolTip, QPoint(2, 3), QPoint(70, 90))
+            assert window.eventFilter(label, event)
+        assert rendered == [
+            (panel._name_label, "Двенадцатьхх"),
+            (panel._realm_label, "СвежевательДуш"),
+        ]
+
+        state.party_members["friend"] = RosterMember(
+            applicant_id="friend",
+            name="Ally",
+            cls="MONK",
+            spec_id=270,
+            ilvl=700,
+            score=0,
+            role="HEALER",
+            fetch_status="error",
+            error_message="Connection failed",
+        )
+        window._on_source_tab_changed("party")
+        qtbot.wait(1)
+        assert panel._name_label.text() == panel._name_label.toolTip() == "Ally"
+        assert panel._realm_label.text() == panel._realm_label.toolTip() == ""
+        assert panel._realm_label.accessibleName() == ""
+        state.party_members["friend"].name = "Longcharname-Pozzo dell'Eternità"
+        state.party_members["friend"].wcl_error_kind = WCL_ERROR_MALFORMED
+        window._sync_delegate_and_panel()
+        qtbot.wait(1)
+        assert button.text() == "Retry WCL"
+        assert not button.isHidden()
+        assert button.width() >= button.sizeHint().width()
+        assert panel._realm_label.toolTip() == "Pozzo dell'Eternità"
+        assert window._raid_boss_fetches_in_flight == {}
+        window._on_source_tab_changed("applicants")
+        qtbot.wait(1)
+        assert panel._name_label.text() == panel._name_label.toolTip() == "Двенадцатьхх"
+        assert panel._realm_label.text() == panel._realm_label.toolTip() == "СвежевательДуш"
+        qtbot.keyClick(button, Qt.Key.Key_Return)
+        assert len(window._raid_boss_fetches_in_flight) == 1
+        panel.setPlaceholder()
+        for label in (panel._name_label, panel._realm_label):
+            assert label.text() == label.toolTip() == label.accessibleName() == ""
+    finally:
+        window.close()
+        client.close()
+
+
 def test_raid_boss_fetch_done_preserves_existing_mplus_data(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     prefs = MetricPreferences(
