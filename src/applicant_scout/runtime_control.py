@@ -132,8 +132,12 @@ def send_control_command(
             last_error = socket.errorString()
             continue
         payload = command.rstrip() + b"\n"
-        socket.write(payload)
-        if not socket.waitForBytesWritten(timeout_ms):
+        accepted = socket.write(payload)
+        write_rejected = isinstance(accepted, int) and accepted != len(payload)
+        # Qt returns false when there is no pending output left to wait for.
+        # A fully drained command still needs its normal response validation.
+        pending = getattr(socket, "bytesToWrite", lambda: 1)()
+        if write_rejected or (pending > 0 and not socket.waitForBytesWritten(timeout_ms)):
             error = socket.errorString()
             socket.disconnectFromServer()
             return ControlCommandResult(connected=True, written=False, error=error)

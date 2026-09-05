@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.15.0 - 05-Sep-2026
+## 0.15.1 - 05-Sep-2026
 
-Paired release with ApplicantScout addon `0.9.14`.
+Paired release with ApplicantScout addon `0.9.15`.
 
 ### Improved
 
@@ -49,11 +49,11 @@ Paired release with ApplicantScout addon `0.9.14`.
 
 ### Release Assets
 
-- Requires the ApplicantScout WoW addon `0.9.14`.
-- Installer: `ApplicantScoutCompanionSetup-0.15.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.15.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.15.0-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.15.0-release-manifest.json`
+- Requires the ApplicantScout WoW addon `0.9.15`.
+- Installer: `ApplicantScoutCompanionSetup-0.15.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.15.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.15.1-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.15.1-release-manifest.json`
 
 ## 0.14.7 - 02-Sep-2026
 

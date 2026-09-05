@@ -286,6 +286,47 @@ class _BufferedClientSocket(_ClientSocket):
         return SimpleNamespace(data=lambda: value)
 
 
+@pytest.mark.parametrize(
+    "accepted,pending,wait_result,expected_written",
+    [
+        (5, 0, False, True),
+        (5, 5, True, True),
+        (5, 5, False, False),
+        (-1, 0, True, False),
+        (0, 0, True, False),
+        (2, 0, True, False),
+    ],
+)
+def test_send_control_command_distinguishes_drained_and_failed_writes(
+    accepted, pending, wait_result, expected_written
+):
+    class WriteStateSocket(_BufferedClientSocket):
+        def write(self, value: bytes) -> int:
+            super().write(value)
+            return accepted
+
+        def bytesToWrite(self) -> int:
+            return pending
+
+        def waitForBytesWritten(self, timeout_ms: int) -> bool:
+            self.calls.append(f"wait-written:{timeout_ms}")
+            return wait_result
+
+    socket = WriteStateSocket(b"ok\n")
+    result = runtime_control.send_control_command(
+        runtime_control.CONTROL_QUIT_COMMAND,
+        socket_factory=lambda: socket,
+        server_names=("test",),
+    )
+
+    assert result.connected
+    assert result.written is expected_written
+    assert result.response == (b"ok" if expected_written else None)
+    assert socket.calls.count("disconnect") == 1
+    if accepted == 5 and pending == 0:
+        assert not any(call.startswith("wait-written:") for call in socket.calls)
+
+
 @pytest.mark.parametrize("response", [b"ok", b"blocked"])
 def test_send_control_command_consumes_already_buffered_acknowledgment(response):
     socket = _BufferedClientSocket(response + b"\n")
