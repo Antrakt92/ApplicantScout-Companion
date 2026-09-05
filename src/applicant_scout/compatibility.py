@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 
-MINIMUM_ADDON_VERSION = "0.9.13"
+MINIMUM_ADDON_VERSION = "0.9.14"
 _SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 

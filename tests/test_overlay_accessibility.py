@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
@@ -348,6 +350,49 @@ def test_table_keyboard_state_tracks_identity_across_sort_filter_and_tabs(
         qtbot.keyClick(window._table, Qt.Key.Key_Space)
         assert window._pinned_id == "tank"
     finally:
+        window.close()
+        client.close()
+
+
+@pytest.mark.parametrize("resume_key", [Qt.Key.Key_End, Qt.Key.Key_Return, Qt.Key.Key_Space])
+def test_background_sort_preserves_scroll_after_mouse_takes_over(
+    qtbot, tmp_path, monkeypatch, resume_key
+):
+    window, client = _build_window(tmp_path, qtbot)
+    try:
+        window._state.listing = None
+        for index in range(40):
+            window._state.add_or_update(
+                _app(
+                    f"extra{index}", f"Extra{index}-Realm",
+                    role="DAMAGER", score=1900 - index,
+                )
+            )
+        monkeypatch.setattr(window, "_resolve_hover_from_cursor", lambda: None)
+        window._refresh_table()
+        window.show()
+        window.resize(500, 600)
+        QApplication.processEvents()
+        qtbot.keyClick(window._table, Qt.Key.Key_Home)
+        assert window._keyboard_id == "tank"
+
+        window._clear_transient_interaction_preview()
+        scroll = window._table.verticalScrollBar()
+        assert scroll is not None and scroll.maximum() > 10
+        scroll.setValue(10)
+        previous_scroll = scroll.value()
+
+        window._state.applicants["tank"].score = 1
+        window._refresh_table()
+
+        assert window._keyboard_id == "tank"
+        assert window._table.currentRow() == window._row_for_id["tank"]
+        assert scroll.value() == previous_scroll
+        qtbot.keyClick(window._table, resume_key)
+        assert window._keyboard_preview_active
+        assert scroll.value() > previous_scroll
+    finally:
+        window.shutdown_fetches()
         window.close()
         client.close()
 

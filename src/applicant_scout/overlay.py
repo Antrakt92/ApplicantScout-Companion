@@ -320,6 +320,23 @@ HEADER_TOOLTIPS: list[str] = [
 ]
 
 
+MPLUS_FIT_EXPLANATION = (
+    "Fit is a 0–100 estimate for the selected key, using Warcraft Logs performance "
+    "and RaiderIO completion evidence. It is not a WCL parse percentile. "
+    "M+ WCL values measure damage for every role; they do not assess healing, "
+    "survival, or utility.\n\n"
+    "Evidence strength describes the breadth and quality of available evidence. "
+    "It is not a success probability. Strong evidence can support a low Fit "
+    "when completed keys are below the target. "
+    "Dungeon coverage counts completion or WCL evidence that meets the scoring "
+    "thresholds, not every dungeon present in the logs. "
+    "A dungeon reported by both sources counts once; summary-only RaiderIO "
+    "coverage is combined conservatively.\n\n"
+    "The limit names the main gap holding this estimate back. "
+    "WCL best/median values remain visible in the dungeon rows; N=1 means one run."
+)
+
+
 # ───────────────────────────────────────────────────────────────────
 # WCL fetch worker (off main thread)
 
@@ -1065,6 +1082,9 @@ class _ApplicantTableWidget(QTableWidget):
         if key in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Space):
             row = self.currentRow()
             if row >= 0 and not self.isRowHidden(row):
+                item = self.currentItem()
+                if item is not None:
+                    self.scrollToItem(item)
                 self.rowActivated.emit(row)
             event.accept()
             return
@@ -1496,6 +1516,8 @@ class SourceTabBar(QWidget):
         self._applicant_count_stale = False
         self._party_count_stale = False
         self._active_key = "applicants"
+        self._target_key_visible = True
+        self._layout_ready = False
         self.set_counts(applicants=0, party=0)
         self.set_active("applicants", emit=False)
 
@@ -1550,6 +1572,52 @@ class SourceTabBar(QWidget):
             party_button.setAccessibleDescription(
                 f"Show {_count_phrase(self._party_count, 'party member')} in the party table."
             )
+        self._sync_compact_layout()
+
+    def _sync_compact_layout(self) -> None:
+        applicants_button = self._buttons["applicants"]
+        marker = "?" if self._applicant_count_stale else ""
+        full_label = f"Applicants ({self._applicant_count}{marker})"
+        applicants_button.setText(full_label)
+        self._key_label.setVisible(self._target_key_visible)
+        spin_width = 64
+        if self._target_key_visible and self._layout_ready:
+            layout = self.layout()
+            if layout is None:
+                return
+            margins = layout.contentsMargins()
+            tabs_width = sum(
+                button.sizeHint().width() for button in self._buttons.values()
+            )
+            available = self.width() - margins.left() - margins.right()
+            required = (
+                tabs_width
+                + self._key_label.sizeHint().width()
+                + 112
+                + 3 * layout.spacing()
+            )
+            if required > available:
+                self._key_label.hide()
+                required = tabs_width + 112 + 2 * layout.spacing()
+            if required > available:
+                # WHY: Qt measures the full maximum key, including prefix and frame.
+                minimum_spin_width = self._key_spin.minimumSizeHint().width()
+                spin_width = max(minimum_spin_width, 64 - (required - available))
+                required -= 64 - spin_width
+            if required > available:
+                applicants_button.setText(f"Apps ({self._applicant_count}{marker})")
+        self._key_spin.setFixedWidth(spin_width)
+        self._key_control.setFixedWidth(spin_width + 48)
+        if not self._applicant_count_stale:
+            applicants_button.setToolTip(
+                full_label if applicants_button.text() != full_label else ""
+            )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # WHY: A newly constructed hidden child still has placeholder geometry.
+        self._layout_ready = True
+        self._sync_compact_layout()
 
     def set_active(self, key: str, *, emit: bool = True) -> None:
         if key not in self._buttons:
@@ -1571,8 +1639,9 @@ class SourceTabBar(QWidget):
     def set_target_key_visible(self, visible: bool) -> None:
         if not visible and _widget_has_focus(self._key_control):
             self._buttons[self._active_key].setFocus(Qt.FocusReason.OtherFocusReason)
-        self._key_label.setVisible(visible)
+        self._target_key_visible = visible
         self._key_control.setVisible(visible)
+        self._sync_compact_layout()
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -1924,6 +1993,8 @@ class ApplicantInfoPanel(QFrame):
         return (
             self._wcl_retry_button,
             self._unpin_button,
+            self._metric_labels["M+"],
+            self._package_label,
             self._status_label,
             self._state_text_label,
             *(labels[0] for labels in self._dungeon_rows),
@@ -2023,8 +2094,11 @@ class ApplicantInfoPanel(QFrame):
         self._set_action_visible(self._wcl_retry_button, False)
         for label in self._metric_labels.values():
             label.setText("")
+            label.setToolTip("")
+            label.setAccessibleDescription("")
             label.setVisible(False)
         self._package_label.setText("")
+        self._package_label.setToolTip("")
         self._package_label.setAccessibleDescription("")
         self._package_label.setVisible(False)
         self._set_action_visible(self._detail_tabs, False)
@@ -2104,6 +2178,7 @@ class ApplicantInfoPanel(QFrame):
             or metric_disabled
         ):
             self._package_label.setText("")
+            self._package_label.setToolTip("")
             self._package_label.setAccessibleDescription("")
             self._package_label.setVisible(False)
             return
@@ -2157,7 +2232,7 @@ class ApplicantInfoPanel(QFrame):
                     f"low {int(round(package.low_score))}",
                 )
             )
-        parts.append(f"evidence confidence {int(round(package.confidence * 100))}%")
+        parts.append(f"evidence strength {int(round(package.confidence * 100))}%")
         if member_note:
             parts.append(member_note)
         text = " · ".join(parts)
@@ -2204,12 +2279,14 @@ class ApplicantInfoPanel(QFrame):
         if data_status:
             description_parts.append(f"Data status: {', '.join(data_status)}.")
         description_parts.append(
-            f"Group evidence confidence is "
+            f"Group evidence strength is "
             f"{int(round(package.confidence * 100))} percent. "
             "It reflects the weakest member and fetch completeness, not a success "
             "probability."
         )
-        self._package_label.setAccessibleDescription(" ".join(description_parts))
+        description = " ".join(description_parts)
+        self._package_label.setAccessibleDescription(description)
+        self._package_label.setToolTip(description)
 
     def _set_status_or_data(
         self,
@@ -2318,11 +2395,9 @@ class ApplicantInfoPanel(QFrame):
         elif fit_status:
             self._show_status(
                 fit_status,
-                accessible_description=(
-                    "Evidence confidence reflects coverage and clean run evidence; "
-                    "it is not a success probability."
-                ),
+                accessible_description=MPLUS_FIT_EXPLANATION,
             )
+            self._status_label.setToolTip(f"{fit_status}\n\n{MPLUS_FIT_EXPLANATION}")
         elif not visible_metrics and not visible_rows:
             self._show_status(
                 "No Warcraft Logs data",
@@ -2392,6 +2467,8 @@ class ApplicantInfoPanel(QFrame):
     def _clear_metrics_and_dungeons(self) -> None:
         for label in self._metric_labels.values():
             label.setText("")
+            label.setToolTip("")
+            label.setAccessibleDescription("")
             label.setVisible(False)
         for row in self._dungeon_rows:
             for label in row:
@@ -2503,12 +2580,17 @@ class ApplicantInfoPanel(QFrame):
             text, _fg, bg = _mplus_cell_visuals(applicant, listing, fit=fit)
             if bg is not None:
                 prefix = "M+ " if text.startswith("Fit ") else f"M+ {metric_label} "
+                is_fit = text.startswith("Fit ")
+                badge_text = text.replace("Fit ", "Fit estimate ", 1) if is_fit else text
                 self._set_badge(
                     self._metric_labels["M+"],
-                    f"{prefix}{text}",
+                    f"{prefix}{badge_text}",
                     bg,
                     _text_colour_for_bg(bg),
                 )
+                if is_fit:
+                    self._metric_labels["M+"].setToolTip(MPLUS_FIT_EXPLANATION)
+                    self._metric_labels["M+"].setAccessibleDescription(MPLUS_FIT_EXPLANATION)
                 shown += 1
             else:
                 self._metric_labels["M+"].setVisible(False)
@@ -2529,7 +2611,6 @@ class ApplicantInfoPanel(QFrame):
         if (
             current_fit.context != CONTEXT_MPLUS
             or not current_fit.display
-            or current_fit.score <= 0.0
         ):
             return ""
         source = _presenters.mplus_fit_source_text(applicant)
@@ -2569,14 +2650,11 @@ class ApplicantInfoPanel(QFrame):
         }.get(current_fit.limit_reason, "")
         if limit_text:
             parts.append(f"limit: {limit_text}")
-        parts.extend(
-            (
-                f"evidence confidence {int(round(current_fit.confidence * 100))}%",
-                f"coverage {coverage}/{max(len(MPLUS_ENCOUNTERS), 1)}",
-                source,
-            )
+        evidence_line = (
+            f"Evidence strength {int(round(current_fit.confidence * 100))}% · "
+            f"{coverage}/{max(len(MPLUS_ENCOUNTERS), 1)} qualifying dungeons · {source}"
         )
-        return " · ".join(parts)
+        return f"{' · '.join(parts)}\n{evidence_line}"
 
     def _set_detail_row_widths(
         self,
@@ -4849,12 +4927,29 @@ class OverlayWindow(QMainWindow):
             self._table.setAccessibleName("Applicant applications table")
 
     def _sync_table_current_id(self) -> None:
+        # WHY: Qt scrolls to a changed current row. Once mouse interaction has
+        # replaced keyboard preview, background sorting must not pull the view
+        # back to the remembered keyboard candidate.
+        scroll_positions = (
+            [
+                (bar, bar.value())
+                for bar in (
+                    self._table.verticalScrollBar(),
+                    self._table.horizontalScrollBar(),
+                )
+                if bar is not None
+            ]
+            if not self._keyboard_preview_active
+            else []
+        )
         row = self._row_for_id.get(self._keyboard_id, -1) if self._keyboard_id else -1
         if row >= 0 and not self._table.isRowHidden(row):
             self._table.setCurrentCell(row, COL_NAME)
         else:
             self._table.clearSelection()
             self._table.setCurrentCell(-1, -1)
+        for bar, position in scroll_positions:
+            bar.setValue(position)
 
     def _reconcile_keyboard_current(
         self, previous_id: str | None, previous_row: int | None

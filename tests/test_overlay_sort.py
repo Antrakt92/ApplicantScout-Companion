@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import pytest
+
+from applicant_scout import scoring
 from applicant_scout.constants import group_id_colour
 from applicant_scout.overlay import (
     _SUNK_STATES,
@@ -495,7 +498,9 @@ def test_mplus_group_sort_uses_package_fit_not_best_member_only():
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1", "10:2"]
 
 
-def test_mplus_same_displayed_fit_sorts_by_confidence_before_hidden_decimal():
+def test_mplus_same_displayed_fit_sorts_by_confidence_before_hidden_decimal(
+    monkeypatch: pytest.MonkeyPatch,
+):
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -505,44 +510,28 @@ def test_mplus_same_displayed_fit_sorts_by_confidence_before_hidden_decimal():
         category_id=2,
         difficulty_id=8,
     )
-    broad_rio_same_display = _app(
-        aid=10,
-        score=3300,
-        rio_profile=True,
-        rio_best_key=16,
-        rio_best_dungeon_key=16,
-        rio_timed_at_or_above=4,
-        rio_timed_at_or_above_minus1=8,
-        rio_timed_at_or_above_minus2=8,
-        rio_completed_at_or_above_minus1=8,
-        rio_dungeon_count=8,
-        rio_summary_target_key=listing.key_level,
-    )
-    sparse_wcl_same_display = _app(
-        aid=20,
-        score=0,
-        dps_breakdown=[
-            {
-                "name": name,
-                "key_level": 16,
-                "parse_percent": 85,
-                "median_percent": 85,
-                "run_count": 3,
-            }
-            for name in (
-                "Skyreach",
-                "Algeth'ar Academy",
-                "Magisters' Terrace",
-                "Maisara Caverns",
-            )
-        ],
+    stronger_evidence = _app(aid=10, score=0)
+    higher_hidden_score = _app(aid=20, score=0)
+
+    # Keep the sorting contract independent of evidence calibration coefficients.
+    fits = {
+        "10:1": scoring.CandidateFit(
+            context="mplus", score=51.6, confidence=0.75, display="52 +16"
+        ),
+        "20:1": scoring.CandidateFit(
+            context="mplus", score=52.4, confidence=0.70, display="52 +16"
+        ),
+    }
+    monkeypatch.setattr(
+        scoring, "candidate_fit", lambda applicant, _listing: fits[applicant.applicant_id]
     )
 
-    sorted_apps = sort_applicants_grouped(
-        [sparse_wcl_same_display, broad_rio_same_display], listing
-    )
-
-    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
+    for applicants in (
+        [higher_hidden_score, stronger_evidence],
+        [stronger_evidence, higher_hidden_score],
+    ):
+        sorted_apps = sort_applicants_grouped(applicants, listing)
+        assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
 
 
 def test_mplus_mixed_wave_orders_by_package_fit_status_and_group_adjacency():

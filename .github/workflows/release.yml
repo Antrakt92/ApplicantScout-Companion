@@ -155,6 +155,11 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Check pinned dependency advisories before installation
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: python scripts/check_dependency_advisories.py
+
       - name: Install release dependencies
         shell: pwsh
         working-directory: ApplicantScout-Companion

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QFontMetrics
 
 from applicant_scout.__main__ import StateMachine
@@ -15,6 +15,7 @@ from applicant_scout.overlay import (
     COL_RIO,
     INFO_PANEL_PREFERRED_HEIGHT,
     METRIC_COLUMN_TEXT_PADDING,
+    MPLUS_TARGET_KEY_MAX,
     _mplus_cell_visuals,
     OverlayWindow,
 )
@@ -172,6 +173,88 @@ def _window(tmp_path, qtbot, state: AppState) -> OverlayWindow:
     qtbot.addWidget(win)
     qtbot.addWidget(win._launcher)
     return win
+
+
+@pytest.mark.parametrize(
+    "applicants,party,stale", [(0, 0, False), (99, 40, True), (200, 40, True)]
+)
+@pytest.mark.parametrize("key_level", [0, MPLUS_TARGET_KEY_MAX])
+def test_source_controls_fit_minimum_window_and_restore_on_resize(
+    qtbot, tmp_path, applicants, party, stale, key_level
+):
+    state = AppState()
+    state.listing = _listing()
+    win = _window(tmp_path, qtbot, state)
+    bar = win._tab_bar
+    win.show()
+    bar.set_counts(applicants=applicants, party=party)
+    bar.set_applicant_count_stale(stale)
+    bar.set_party_count_stale(stale)
+    bar.set_target_key(key_level)
+    win.resize(300, win.height())
+    qtbot.wait(1)
+
+    assert win.width() == win.minimumWidth() == 300
+    widgets = [*bar._buttons.values(), bar._key_control]
+    previous_right = 0
+    for widget in widgets:
+        point = widget.mapTo(bar, QPoint())
+        assert point.x() >= previous_right
+        assert point.x() + widget.width() <= bar.width() - 8
+        previous_right = point.x() + widget.width()
+    for button in bar._buttons.values():
+        assert button.width() >= button.sizeHint().width()
+    assert bar._key_spin.width() >= bar._key_spin.minimumSizeHint().width()
+    key_editor = bar._key_spin.lineEdit()
+    assert key_editor is not None
+    assert key_editor.contentsRect().width() >= key_editor.fontMetrics().horizontalAdvance(
+        bar._key_spin.text()
+    )
+    assert bar._key_spin.value() == key_level
+    assert str(applicants) in bar._buttons["applicants"].text()
+    assert str(party) in bar._buttons["party"].text()
+    assert ("?" in bar._buttons["applicants"].text()) == stale
+    assert ("?" in bar._buttons["party"].text()) == stale
+    assert bar._key_up_button.width() == bar._key_down_button.width() == 24
+    assert bar._buttons["applicants"].accessibleName() == "Applicants view"
+    if stale:
+        assert "last known count" in bar._buttons["applicants"].toolTip()
+
+    win.resize(650, win.height())
+    qtbot.wait(1)
+    marker = "?" if stale else ""
+    assert bar._buttons["applicants"].text() == f"Applicants ({applicants}{marker})"
+    assert not bar._key_label.isHidden()
+    assert bar._key_spin.width() == 64
+
+    win.resize(300, win.height())
+    qtbot.wait(1)
+    bar.set_target_key_visible(False)
+    assert bar._key_control.isHidden()
+    assert bar._key_label.isHidden()
+    assert bar._buttons["applicants"].text() == f"Applicants ({applicants}{marker})"
+    bar.set_target_key_visible(True)
+    qtbot.wait(1)
+    assert bar._key_control.mapTo(bar, QPoint()).x() + bar._key_control.width() <= 292
+
+
+def test_compact_source_key_buttons_and_keyboard_remain_usable(qtbot, tmp_path):
+    state = AppState()
+    state.listing = _listing()
+    win = _window(tmp_path, qtbot, state)
+    win.show()
+    win.resize(300, win.height())
+    bar = win._tab_bar
+    qtbot.wait(1)
+    bar.set_target_key(12)
+    qtbot.mouseClick(bar._key_up_button, Qt.MouseButton.LeftButton)
+    assert bar._key_spin.value() == 13
+    qtbot.mouseClick(bar._key_down_button, Qt.MouseButton.LeftButton)
+    assert bar._key_spin.value() == 12
+    qtbot.keyClick(bar._key_spin, Qt.Key.Key_Up)
+    assert bar._key_spin.value() == 13
+    qtbot.keyClick(bar._key_spin, Qt.Key.Key_Down)
+    assert bar._key_spin.value() == 12
 
 
 def test_window_helper_disables_background_raid_detail_fetch(qtbot, tmp_path):

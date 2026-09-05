@@ -3,7 +3,8 @@ param(
     [ValidateSet("Strict", "Smoke")]
     [string]$VisualMode = "Strict",
     [switch]$SeasonalOnlineChecks,
-    [switch]$SeasonalWCLChecks
+    [switch]$SeasonalWCLChecks,
+    [switch]$DependencyAdvisoryChecks
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,6 +57,13 @@ $Lua51Candidates = @(
 $Lua51 = $Lua51Candidates | Select-Object -First 1
 if (-not $Lua51) {
     throw "Missing lua 5.1. Install with: choco install lua51 -y"
+}
+
+if ($DependencyAdvisoryChecks) {
+    Write-Host "== Release dependency advisories =="
+    Invoke-NativeChecked -Label "Release dependency advisories" -Command {
+        & $Python scripts\check_dependency_advisories.py
+    }
 }
 
 Write-Host "== Python tests =="

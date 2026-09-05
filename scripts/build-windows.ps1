@@ -183,6 +183,7 @@ function Assert-CleanReleaseInputs {
         "packaging",
         "scripts\build-windows.ps1",
         "scripts\check.ps1",
+        "scripts\check_dependency_advisories.py",
         "scripts\check-release-version.ps1",
         "scripts\native-command.ps1",
         "scripts\sign-windows-installer.ps1",
@@ -720,6 +721,12 @@ if (-not (Test-Path -LiteralPath $InstallerSigner)) {
 
 if (-not $AllowDirtyReleaseInputs) {
     Assert-CleanReleaseInputs
+}
+
+# Advisory availability is a build gate even when previously completed tests
+# are skipped; release artifacts must not silently use an unchecked pin set.
+Invoke-NativeChecked -Label "Release dependency advisories" -Command {
+    & $Python (Join-Path $RepoRoot "scripts\check_dependency_advisories.py")
 }
 
 if (-not $SkipChecks) {

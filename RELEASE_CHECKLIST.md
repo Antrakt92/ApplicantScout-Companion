@@ -32,7 +32,7 @@ proves the immutable public copy and assets.
 
    ```powershell
     .\.venv\Scripts\python -m pytest
-    .\scripts\check.ps1 -SeasonalOnlineChecks -SeasonalWCLChecks
+    .\scripts\check.ps1 -SeasonalOnlineChecks -SeasonalWCLChecks -DependencyAdvisoryChecks
     .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
     .\scripts\check-release-version.ps1 -Tag v<companion version>
    ```
@@ -46,7 +46,10 @@ proves the immutable public copy and assets.
    and `MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME` against Wago's
    MythicPlusSeasonTrackedMap / MapChallengeMode data before seasonal release
    prep relies on the shipped localized-listing or Party leader-key fallback.
-   Also compare `MPLUS_RAIDERIO_DUNGEON_ORDER` with
+   `-DependencyAdvisoryChecks` verifies all exact release pins against official
+   PyPI advisory metadata and fails on active findings or incomplete coverage.
+   The release workflow checks before installation, and artifact builds repeat
+   the gate even when other tests are skipped. Also compare `MPLUS_RAIDERIO_DUNGEON_ORDER` with
    `RaiderIO/db/db_dungeons.lua::ns.dungeons`; packed RaiderIO key levels are
    positional, so a same-count reorder must not ship unnoticed.
    `-SeasonalWCLChecks` is an explicit quota-spend acknowledgment: it makes one

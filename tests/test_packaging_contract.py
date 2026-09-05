@@ -476,6 +476,8 @@ def test_check_script_checks_native_command_exit_codes():
     assert "Invoke-NativeChecked" in script
     assert "[switch]$SeasonalOnlineChecks" in script
     assert "[switch]$SeasonalWCLChecks" in script
+    assert "[switch]$DependencyAdvisoryChecks" in script
+    assert 'Invoke-NativeChecked -Label "Release dependency advisories"' in script
     assert '[string]$VisualMode = "Strict"' in script
     assert 'Invoke-NativeChecked -Label "Python tests"' in script
     assert 'Invoke-NativeChecked -Label "Seasonal activity IDs"' in script
@@ -509,6 +511,17 @@ def test_check_script_checks_native_command_exit_codes():
     assert script.index(
         'Write-Host "== Seasonal WCL check (spends one authenticated query) =="'
     ) < script.index('Write-Host "== Overlay visual baselines =="')
+
+
+def test_release_advisory_gate_cannot_be_skipped_with_build_tests():
+    build = _read_repo_text("scripts/build-windows.ps1")
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    advisory = 'Invoke-NativeChecked -Label "Release dependency advisories"'
+    assert build.index(advisory) < build.index("if (-not $SkipChecks)")
+    assert '"scripts\\check_dependency_advisories.py",' in build
+    assert workflow.index("run: python scripts/check_dependency_advisories.py") < (
+        workflow.index("- name: Install release dependencies")
+    )
 
 
 def test_native_command_helper_is_shared_and_preserves_output_and_failures():

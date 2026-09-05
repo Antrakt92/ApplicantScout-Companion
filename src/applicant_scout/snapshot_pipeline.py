@@ -68,17 +68,42 @@ def snapshot_authority_mask(snap: object) -> int:
     return authority
 
 
+def listing_snapshot_segments(
+    snapshots: tuple[object, ...],
+) -> tuple[tuple[object, ...], ...]:
+    segments: list[tuple[object, ...]] = []
+    current: list[object] = []
+    listing_known = False
+    listing: object = None
+    for snap in snapshots:
+        if not bool(getattr(snap, "lfg_unavailable", False)):
+            observed_listing = getattr(snap, "listing", None)
+            if listing_known and observed_listing != listing:
+                segments.append(tuple(current))
+                current = []
+            listing = observed_listing
+            listing_known = True
+        current.append(snap)
+    if current:
+        segments.append(tuple(current))
+    return tuple(segments)
+
+
 def compact_snapshot_segment(snapshots: tuple[object, ...]) -> tuple[object, ...]:
-    """Keep the newest observation plus each older snapshot with unique authority."""
-    covered = 0
-    retained_reversed: list[object] = []
-    for snap in reversed(snapshots):
-        authority = snapshot_authority_mask(snap)
-        if not retained_reversed or authority & ~covered:
-            retained_reversed.append(snap)
-            covered |= authority
-    retained_reversed.reverse()
-    return tuple(retained_reversed)
+    """Coalesce authority within each uninterrupted listing context."""
+    retained: list[object] = []
+    # A -> B -> A is still a listing transition: losing B would preserve or
+    # resurrect departed applicants when the last A has a restricted read.
+    for segment in listing_snapshot_segments(snapshots):
+        covered = 0
+        retained_reversed: list[object] = []
+        for snap in reversed(segment):
+            authority = snapshot_authority_mask(snap)
+            if not retained_reversed or authority & ~covered:
+                retained_reversed.append(snap)
+                covered |= authority
+        retained.extend(reversed(retained_reversed))
+    return tuple(retained)
 
 
 def append_pending_snapshot(
@@ -89,6 +114,14 @@ def append_pending_snapshot(
     # later partial/full frame so listing-session and waiter cleanup still runs.
     if bool(getattr(snap, "terminal_clear", False)):
         return (snap,)
+    if isinstance(snap, Snapshot) and snap.version is not None and any(
+        producer_identities_conflict(previous.version, snap.version)
+        for previous in pending
+        if isinstance(previous, Snapshot) and previous.version is not None
+    ):
+        # Keep the reset even if the producer switches back before GUI apply.
+        # This is an in-memory barrier; cache writes retain the original frames.
+        return (Snapshot(listing=None, version=None, terminal_clear=True), snap)
     if pending and bool(getattr(pending[0], "terminal_clear", False)):
         return (pending[0],) + compact_snapshot_segment(pending[1:] + (snap,))
     return compact_snapshot_segment(pending + (snap,))
@@ -219,7 +252,17 @@ def snapshot_application_plan(
             planned_terminal = replace(terminal, version=None)
         steps.append((planned_terminal, cache_terminal))
     if segment:
-        steps.append((merge_snapshot_segment(segment), tuple(cache_segment)))
+        listing_segments = listing_snapshot_segments(latest_producer_segment(segment))
+        for index, listing_segment in enumerate(listing_segments):
+            typed_segment = tuple(
+                snap for snap in listing_segment if isinstance(snap, Snapshot)
+            )
+            steps.append(
+                (
+                    merge_snapshot_segment(typed_segment),
+                    tuple(cache_segment) if index == len(listing_segments) - 1 else (),
+                )
+            )
     return tuple(steps)
 
 

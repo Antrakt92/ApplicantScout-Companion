@@ -104,6 +104,16 @@ applicants, and raw WCL raid/M+ percentiles as supporting evidence. Raid
 listings place the fit signal in the matching Normal/Heroic/Mythic column,
 while M+ listings focus on the target key and dungeon history.
 
+**M+ Fit is an estimate of how the available evidence matches the target key,
+not a success probability or a Warcraft Logs percentile.** Named dungeon
+evidence from RaiderIO and WCL is combined once per dungeon; unnamed summaries
+are treated conservatively when their overlap is unknown. The detail card
+separates key experience from evidence strength and dungeon coverage. Strong
+evidence can support a low Fit when the completed keys are below the target.
+M+ WCL values measure damage for every role, including tanks and healers; they
+do not assess healing, survival, interrupts, or other utility. A low Fit is a
+limit of the available evidence, not a verdict on the player's overall skill.
+
 The RIO column shows the applying character's current score. If the RaiderIO
 addon is installed in WoW and exposes a higher current-season main score for an
 alt, the overlay can display `current [main]` and use the stronger context for

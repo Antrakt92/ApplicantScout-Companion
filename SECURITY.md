@@ -15,6 +15,15 @@ paired `ApplicantScout-Addon` release train.
   `security-events: write` permission required to upload findings.
 - Dependabot monitors Python and pinned GitHub Actions dependencies. Repository
   dependency alerts and security updates must also remain enabled in GitHub.
+- A separate advisory check queries official PyPI release metadata for every
+  exact pin in `constraints-release.txt` on pull requests, `main`, and a daily
+  schedule. Release installation and artifact builds require this check to
+  succeed. Active advisories, invalid input, and unavailable or incomplete
+  responses fail the check. Ordinary local tests remain available offline.
+- This covers known advisories exposed by PyPI for the pinned versions; it
+  does not prove an absence of vulnerabilities or resolve GitHub's dependency
+  graph. The graph may show unversioned direct dependencies and must not be
+  treated as equivalent to the checked release constraints.
 - CodeQL does not support Lua. The paired addon's Lua boundary is covered by
   pinned LuaLS diagnostics, Lua 5.1 syntax checks, behavioral contract tests,
   and review; this is complementary static coverage, not a claim that Lua is

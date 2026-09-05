@@ -6,9 +6,10 @@ import sys
 import threading
 
 import pytest
-from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtCore import QEvent, QRect, Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialogButtonBox,
     QLabel,
@@ -136,6 +137,116 @@ def test_settings_dialog_prefers_draft_wcl_credentials(qtbot, tmp_path: Path):
 
     assert values.wcl_client_id == "draft-client"
     assert values.wcl_client_secret == "draft-secret"
+
+
+@pytest.mark.parametrize("client_id, secret, field", [
+    ("", "", "client_id_edit"),
+    ("client", "   ", "client_secret_edit"),
+])
+def test_first_run_invalid_submit_focuses_missing_credential(
+    qtbot, tmp_path: Path, client_id: str, secret: str, field: str
+):
+    dialog = SettingsDialog(_cfg(tmp_path, client_id=client_id, secret=secret), first_run=True)
+    qtbot.addWidget(dialog)
+    dialog.resize(560, 320)
+    dialog.show()
+    assert dialog.start_button is not None
+    dialog.start_button.setFocus()
+    scrollbar = dialog.body_scroll.verticalScrollBar()
+    scrollbar.setValue(scrollbar.maximum())
+
+    dialog.accept()
+
+    target = getattr(dialog, field)
+    assert dialog.focusWidget() is target
+    assert scrollbar.value() < scrollbar.maximum()
+    assert dialog.isVisible()
+
+
+def test_settings_secret_reveal_preserves_values_and_does_not_save(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+    before = dialog.values()
+    changed = []
+    dialog.valuesChanged.connect(changed.append)
+
+    dialog.reveal_secret_button.click()
+
+    assert dialog.client_secret_edit.echoMode() == QLineEdit.EchoMode.Normal
+    assert dialog.reveal_secret_button.text() == "Hide"
+    assert dialog.reveal_secret_button.accessibleName() == "Hide Warcraft Logs Client Secret"
+    assert not dialog.reveal_secret_button.autoDefault()
+    assert dialog.start_button is not None and dialog.start_button.isDefault()
+    assert dialog.values() == before
+    assert not dialog._autosave_timer.isActive()
+    assert not changed
+
+    dialog.reveal_secret_button.click()
+    assert dialog.client_secret_edit.echoMode() == QLineEdit.EchoMode.Password
+    assert dialog.reveal_secret_button.text() == "Show"
+
+
+def test_settings_secret_is_masked_after_hide_and_reopen(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.reveal_secret_button.click()
+    dialog.hide()
+    dialog.show()
+
+    assert not dialog.reveal_secret_button.isChecked()
+    assert dialog.client_secret_edit.echoMode() == QLineEdit.EchoMode.Password
+
+
+def test_settings_secret_is_masked_and_disabled_during_update(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.reveal_secret_button.click()
+    dialog.set_update_in_progress(True)
+
+    assert not dialog.reveal_secret_button.isEnabled()
+    assert dialog.client_secret_edit.echoMode() == QLineEdit.EchoMode.Password
+
+    dialog.set_update_in_progress(False)
+    assert dialog.reveal_secret_button.isEnabled()
+    assert not dialog.reveal_secret_button.isChecked()
+
+
+def test_settings_secret_is_masked_when_window_deactivates(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.reveal_secret_button.click()
+
+    QApplication.sendEvent(dialog, QEvent(QEvent.Type.WindowDeactivate))
+
+    assert not dialog.reveal_secret_button.isChecked()
+    assert dialog.client_secret_edit.echoMode() == QLineEdit.EchoMode.Password
+    assert "masked" in dialog.client_secret_edit.accessibleDescription()
+
+
+def test_settings_invalid_autosave_does_not_steal_focus(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.screenshots_edit.setFocus()
+
+    assert not dialog._emit_values_changed_if_valid()
+
+    assert dialog.focusWidget() is dialog.screenshots_edit
+
+
+def test_settings_test_wcl_focuses_missing_secret(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(
+        _cfg(tmp_path, secret=""), credential_tester=lambda *_args: "OK"
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.test_button.setFocus()
+
+    dialog.test_button.click()
+
+    assert dialog.focusWidget() is dialog.client_secret_edit
+    assert not dialog._credential_test_in_progress
 
 
 def test_settings_dialog_has_wow_lifecycle_checkbox_near_bottom(qtbot, tmp_path: Path):
@@ -2536,6 +2647,110 @@ def test_settings_dialog_ignores_stale_credentials_test_result(
         timeout=1500,
     )
     assert seen == []
+
+
+@pytest.mark.parametrize("change_credentials", [False, True])
+def test_settings_dialog_attributes_failed_wcl_test_to_tested_credentials(
+    qtbot, tmp_path: Path, change_credentials: bool
+):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def tester(*_args) -> str:
+        entered.set()
+        assert release.wait(ASYNC_TEST_BLOCK_TIMEOUT)
+        raise RuntimeError("Tested credentials were rejected")
+
+    dialog = SettingsDialog(_cfg(tmp_path), credential_tester=tester)
+    qtbot.addWidget(dialog)
+    validated = []
+    dialog.credentialsValidated.connect(validated.append)
+    fallback = _fallback_release(release)
+    try:
+        dialog.test_button.click()
+        assert entered.wait(1)
+        if change_credentials:
+            dialog.client_secret_edit.setText("replacement-secret")
+        release.set()
+        qtbot.waitUntil(lambda: not dialog._credential_test_in_progress)
+        expected = (
+            "Credentials changed during test; test WCL again."
+            if change_credentials
+            else "WCL test failed: Tested credentials were rejected"
+        )
+        assert dialog.status_label.text() == expected
+        assert dialog.test_button.isEnabled()
+        assert validated == []
+    finally:
+        release.set()
+        fallback.cancel()
+
+
+@pytest.mark.parametrize("busy_action", ["update", "cache"])
+def test_settings_late_path_result_preserves_busy_status_and_validation(
+    qtbot, tmp_path: Path, busy_action: str
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog._screenshots_warning_timer.stop()
+    if busy_action == "update":
+        dialog.set_update_in_progress(True)
+    else:
+        dialog._cache_action_in_progress = True
+        dialog._refresh_settings_interaction_state()
+    dialog.set_status("Action is running...", busy=True)
+    warning = "Screenshots folder warning: path does not exist."
+
+    dialog._finish_screenshots_validation(settings_mod._ScreenshotsValidationResult(
+        dialog._screenshots_validation_generation,
+        dialog.screenshots_edit.text().strip(),
+        warning,
+    ))
+
+    assert dialog.status_label.text() == "Action is running..."
+    assert dialog.status_label.property("statusState") == "busy"
+    assert dialog.current_screenshots_warning() == warning
+    if busy_action == "update":
+        dialog.set_update_in_progress(False)
+    else:
+        dialog._cache_action_in_progress = False
+        dialog._refresh_settings_interaction_state()
+    assert not dialog._emit_values_changed_if_valid()
+    assert dialog.status_label.text() == warning
+
+
+@pytest.mark.parametrize("busy_action", ["update", "cache"])
+def test_settings_deferred_path_autosave_resumes_after_busy_action(
+    qtbot, tmp_path: Path, busy_action: str
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog._screenshots_warning_timer.stop()
+    saved = []
+    dialog.valuesChanged.connect(saved.append)
+    dialog._screenshots_validation_waiting_autosave = True
+    if busy_action == "update":
+        dialog.set_update_in_progress(True)
+    else:
+        dialog._cache_action_in_progress = True
+        dialog._refresh_settings_interaction_state()
+    dialog._finish_screenshots_validation(settings_mod._ScreenshotsValidationResult(
+        dialog._screenshots_validation_generation,
+        dialog.screenshots_edit.text().strip(),
+        None,
+    ))
+    assert saved == []
+    assert dialog._screenshots_validation_waiting_autosave
+
+    if busy_action == "update":
+        dialog.set_update_in_progress(False)
+    else:
+        dialog._cache_action_in_progress = False
+        dialog._refresh_settings_interaction_state()
+
+    assert not dialog._screenshots_validation_waiting_autosave
+    assert dialog._autosave_timer.isActive()
+    qtbot.waitUntil(lambda: len(saved) == 1)
 
 
 def test_settings_dialog_ignores_stale_region_test_result(

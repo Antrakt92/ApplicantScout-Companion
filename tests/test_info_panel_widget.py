@@ -1838,8 +1838,8 @@ def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
 
     assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
     assert panel._status_label.text() == (
-        "Target +16 · best nearby +16 · same dungeon RIO +16 · "
-        "evidence confidence 75% · coverage 8/8 · RaiderIO only"
+        "Target +16 · best nearby +16 · same dungeon RIO +16\n"
+        "Evidence strength 75% · 8/8 qualifying dungeons · RaiderIO only"
     )
 
 
@@ -1861,7 +1861,85 @@ def test_panel_explains_missing_nearby_and_same_dungeon_evidence(qtbot):
     assert "no nearby key evidence" in panel._status_label.text()
     assert "no same-dungeon evidence" in panel._status_label.text()
     assert "limit: score-only evidence" in panel._status_label.text()
-    assert "evidence confidence 30%" in panel._status_label.text()
+    assert "Evidence strength 30%" in panel._status_label.text()
+
+
+def test_fit_explanation_is_available_to_mouse_and_clears_with_context(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setApplicantData(_app(), _listing())
+
+    badge = panel._metric_labels["M+"]
+    assert "Fit estimate" in badge.text()
+    assert badge in panel.tooltip_widgets()
+    assert "not a WCL parse percentile" in badge.toolTip()
+    assert "success probability" in badge.accessibleDescription()
+    assert "counts once" in panel._status_label.toolTip()
+    assert "\nEvidence strength" in panel._status_label.text()
+
+    panel.setApplicantData(_app(), None)
+    assert badge.toolTip() == ""
+    assert badge.accessibleDescription() == ""
+    panel.setPlaceholder()
+    assert panel._status_label.toolTip() == ""
+
+
+@pytest.mark.parametrize("role", ["DAMAGER", "TANK", "HEALER"])
+def test_zero_fit_keeps_evidence_and_damage_metric_explanation(qtbot, role):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    applicant = _app(
+        role=role,
+        score=0,
+        main_score=0,
+        rio_profile=False,
+        rio_dungeons=[],
+        rio_best_key=0,
+        rio_best_dungeon_key=0,
+        mplus_dps=20,
+        mplus_dps_median=20,
+        mplus_dps_breakdown=[{
+            "name": "Skyreach", "key_level": 16, "parse_percent": 20,
+            "median_percent": 20, "run_count": 3,
+        }],
+    )
+    listing = _listing()
+    assert scoring_mod.candidate_fit(applicant, listing).score == 0
+
+    panel.setApplicantData(applicant, listing)
+
+    assert "Fit estimate 0" in panel._metric_labels["M+"].text()
+    assert "same dungeon WCL +16" in panel._status_label.text()
+    assert "limit:" in panel._status_label.text()
+    assert "measure damage" in panel._metric_labels["M+"].toolTip()
+    assert "healing, survival, or utility" in panel._status_label.toolTip()
+
+
+def test_group_explanation_uses_overlay_tooltip_routing(qtbot, tmp_path, monkeypatch):
+    client = WCLClient(WCLAuth("client", "secret", tmp_path))
+    window = OverlayWindow(AppState(), client, CharacterCache(tmp_path), tmp_path)
+    qtbot.addWidget(window)
+    package = PackageFit(score=73.0, display="G2 FIT 73", size=2, confidence=0.68)
+    window._panel.setApplicantData(_app(), package=package)
+    label = window._panel._package_label
+    rendered = []
+    monkeypatch.setattr(
+        overlay_mod,
+        "_render_tooltip",
+        lambda parent, text, pos: rendered.append((parent, text, pos)) or True,
+    )
+    position = QPoint(70, 90)
+    event = QHelpEvent(QEvent.Type.ToolTip, QPoint(4, 5), position)
+    try:
+        assert label in window._action_tooltip_widgets
+        assert window.eventFilter(label, event)
+        assert rendered == [(label, label.accessibleDescription(), position)]
+        assert "weakest member" in label.toolTip()
+        window._panel.setApplicantData(_app(), package=None)
+        assert label.toolTip() == ""
+    finally:
+        window.close()
+        client.close()
 
 
 def test_panel_keeps_grey_same_dungeon_quality_visible(qtbot):
@@ -2038,7 +2116,7 @@ def test_panel_renders_group_package_line(qtbot):
 
     assert panel._package_label.text() == (
         "Group FIT 73 · 1T/0H/1DPS · high 91 · avg 74 · low 52 · "
-        "evidence confidence 68%"
+        "evidence strength 68%"
     )
     assert panel._package_label.accessibleName() == ""
     assert "68 percent" in panel._package_label.accessibleDescription()
@@ -2085,7 +2163,7 @@ def test_panel_renders_real_mplus_package_without_blank_label(qtbot):
     assert panel._package_label.text().startswith("Group fit ")
     assert " · hi/avg/low " in panel._package_label.text()
     assert " · 0T/0H/2DPS" in panel._package_label.text()
-    assert " · evidence confidence " in panel._package_label.text()
+    assert " · evidence strength " in panel._package_label.text()
     assert " · this low" in panel._package_label.text()
     assert "Group  " not in panel._package_label.text()
     assert not panel._package_label.isHidden()
@@ -5931,7 +6009,7 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
             assert window._panel.height() >= window._panel.target_height()
             assert label.wordWrap()
             assert "1T/1H/0DPS" in label.text()
-            assert "evidence confidence 68%" in label.text()
+            assert "evidence strength 68%" in label.text()
             assert label.heightForWidth(label.width()) <= label.height()
             assert status.heightForWidth(status.width()) <= status.height()
             if width == 300:
@@ -6177,7 +6255,7 @@ def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
             assert window.width() == width
             assert panel.height() >= panel.target_height()
             assert "1T/1H/0DPS" in package.text()
-            assert "evidence confidence" in status.text()
+            assert "Evidence strength" in status.text()
             assert package.heightForWidth(package.width()) <= package.height()
             assert status.heightForWidth(status.width()) <= status.height()
             assert package.geometry().bottom() < status.geometry().top()

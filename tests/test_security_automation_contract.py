@@ -86,3 +86,17 @@ def test_image_decoder_requires_security_fixed_pillow():
         item.operator == "==" and Version(item.version) >= safe_floor
         for item in pinned.specifier
     ), "Release builds must pin a security-fixed Pillow version"
+
+
+def test_dependency_advisories_checks_exact_pins_without_installs_or_write_permissions():
+    workflow = _read(".github/workflows/dependency-advisories.yml")
+    assert "python scripts/check_dependency_advisories.py" in workflow
+    assert "pull_request:" in workflow and "push:" in workflow
+    assert "schedule:" in workflow and "workflow_dispatch:" in workflow
+    assert "contents: read" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "timeout-minutes: 10" in workflow
+    for forbidden in (": write", "pip install", "secrets.", "continue-on-error", "pull_request_target"):
+        assert forbidden not in workflow
+    for action, ref in re.findall(r"(?m)^\s*uses:\s*([^@\s]+)@([^\s#]+)", workflow):
+        assert _FULL_SHA.fullmatch(ref), f"{action} must be pinned to a full commit SHA"

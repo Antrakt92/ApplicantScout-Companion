@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+## 0.15.0 - 05-Sep-2026
+
+Paired release with ApplicantScout addon `0.9.14`.
+
+### Improved
+
+- Mythic+ Fit combines RaiderIO and Warcraft Logs evidence by dungeon. The same
+  dungeon no longer counts twice, distinct dungeons contribute to coverage,
+  and summary-only data stays conservative.
+- Applicant details separate key experience from evidence strength, making the
+  score easier to interpret. Familiar colors, highlighting, and grouped sorting
+  remain in place.
+- Zero Fit keeps its explanation visible. Mythic+ tooltips clarify that WCL
+  damage evidence does not measure healing, survival, or utility.
+- The key controls fit the narrowest supported window, with full key values
+  and counts preserved; wider windows restore the usual labels.
+- Settings can show a pasted Client Secret for checking, hide it again when
+  leaving the window, and take you to missing fields during first-run setup.
+
+### Fixed
+
+- Corroborating RaiderIO runs no longer reduce Fit by removing support from
+  weaker logs, and a weaker duplicate WCL bracket cannot inflate that support.
+- Better WCL evidence no longer lowers Fit at the 25th and 50th percentile
+  boundaries, including low keys and mixed dungeon results.
+- WCL test results stay tied to the credentials tested. Late folder checks no
+  longer overwrite update or cache-action progress.
+- Rapid listing or character changes no longer restore applicants from an
+  earlier context when the newest screenshot has incomplete data.
+- Background sorting preserves mouse browsing position. Returning to keyboard
+  activation reveals the selected row before pinning it.
+- The paired addon fixes external keystone-provider detection, cross-realm
+  leader-name collisions, and stale cached party item levels.
+
+### Release Checks
+
+- Pinned Python dependencies are checked against known PyPI advisories before
+  release installation and artifact builds; incomplete checks block the build.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.14`.
+- Installer: `ApplicantScoutCompanionSetup-0.15.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.15.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.15.0-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.15.0-release-manifest.json`
+
 ## 0.14.7 - 02-Sep-2026
 
 Paired release with ApplicantScout addon `0.9.13`. This patch refreshes bundled
