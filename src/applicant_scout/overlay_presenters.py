@@ -208,7 +208,7 @@ def wcl_dungeon_rows_by_name(
                 rows[row_key] = {
                     "name": row.dungeon_name,
                     "key_level": row.key_level,
-                    "text": row.text,
+                    "text": row.text.replace(" N=1", " 1 run"),
                     "colour": row.colour,
                 }
         return rows
@@ -275,7 +275,7 @@ def raid_boss_rows_for_display(
             if idx < len(boss_kills):
                 kills = nonnegative_int(boss_kills[idx])
             if kills > 0:
-                kill_parts.append(f"{difficulty}{kills}")
+                kill_parts.append(f"{difficulty}×{kills}")
             if value:
                 text = f"{difficulty} {value}"
                 parse_parts.append(text)
@@ -326,7 +326,7 @@ def raid_parse_pair_text(overall: float | None, ilvl: float | None) -> str:
         return ""
     left = str(int(round(overall))) if overall is not None else "-"
     right = str(int(round(ilvl))) if ilvl is not None else "-"
-    return f"{left}-{right}"
+    return f"{left} / {right}"
 
 
 def raid_parse_segments_html(segments: list[object]) -> str:
@@ -364,11 +364,19 @@ def mplus_breakdown_all_single_run(breakdown: Iterable[object]) -> bool:
 def mplus_dungeon_metric_text(entry: object) -> str:
     if not isinstance(entry, dict):
         return "—"
-    return mplus_metric_text(
+    return mplus_metric_display_text(
         entry.get("parse_percent"),
         entry.get("median_percent"),
         entry.get("run_count"),
     )
+
+
+def mplus_metric_display_text(
+    best: object, median: object, run_count: object, *, headline: bool = False
+) -> str:
+    """Name single-run evidence without implying an aggregate has one total run."""
+    text = mplus_metric_text(best, median, run_count)
+    return text.replace(" N=1", " 1/dungeon" if headline else " 1 run")
 
 
 def format_age(delta_sec: float) -> str:

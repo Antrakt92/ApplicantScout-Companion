@@ -23,6 +23,7 @@ from applicant_scout.compatibility import MINIMUM_ADDON_VERSION
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
     APPLICANT_ROW_HEIGHT,
+    COL_FIT,
     COL_H,
     COL_ILVL,
     COL_M,
@@ -196,7 +197,7 @@ def test_ready_panel_renders_identity_metrics_and_dungeons(qtbot):
     assert "DPS" in panel._role_label.text()
     assert panel._ilvl_label.text() == "ilvl 264"
     assert panel._rio_label.text() == "RIO 2443"
-    assert panel._metric_labels["N"].text() == "N 88/72"
+    assert panel._metric_labels["N"].text() == "Normal 88/72"
     assert percentile_colour(88.0) in panel._metric_labels["N"].styleSheet()
     assert panel._metric_labels["M+"].text() == "M+ DPS 80/62 +14"
 
@@ -236,9 +237,10 @@ def test_raid_listing_panel_shows_disabled_target_badge_with_estimated_fit(qtbot
     )
 
     assert panel._metric_labels["N"].isHidden()
-    assert not panel._metric_labels["H"].isHidden()
-    assert panel._metric_labels["H"].text().startswith("H EST ")
-    assert "M 70/60" in panel._metric_labels["H"].text()
+    assert panel._metric_labels["H"].isHidden()
+    assert not panel._metric_labels["Fit"].isHidden()
+    assert panel._metric_labels["Fit"].text().startswith("Fit estimate · Heroic: Estimate ")
+    assert panel._metric_labels["M"].text() == "Mythic 70/60"
     assert not panel._metric_labels["M"].isHidden()
     assert panel._status_label.text() != "No Warcraft Logs data"
 
@@ -281,10 +283,10 @@ def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
     assert panel._detail_mode == "raid"
     name_label, rio_label, wcl_key_label, value_label = panel._dungeon_rows[0]
     assert name_label.text() == "Nek'zali the Soulcoiler"
-    assert rio_label.text() == "M2"
+    assert rio_label.text() == "M×2"
     assert "#ffe36a" in rio_label.styleSheet()
     assert wcl_key_label.text() == ""
-    assert value_label.text() == "M 46-68"
+    assert value_label.text() == "M 46 / 68"
     assert name_label.width() == RAID_NAME_WIDTH
     assert rio_label.width() == RAID_SINGLE_KILL_WIDTH
     assert wcl_key_label.width() == 0
@@ -349,19 +351,27 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
 
     assert panel._detail_mode == "raid"
     assert panel._dungeon_rows[0][0].text() == "Nek'zali the Soulcoiler"
-    assert panel._dungeon_rows[0][1].text() == "H1 · M2"
+    assert panel._dungeon_rows[0][1].text() == "H×1 · M×2"
     assert panel._dungeon_rows[0][2].text() == ""
     assert panel._dungeon_rows[0][3].textFormat() == Qt.TextFormat.RichText
-    assert "H 83-63" in panel._dungeon_rows[0][3].text()
-    assert "M 46-68" in panel._dungeon_rows[0][3].text()
+    assert "H 83 / 63" in panel._dungeon_rows[0][3].text()
+    assert "M 46 / 68" in panel._dungeon_rows[0][3].text()
     assert panel._dungeon_rows[0][1].width() == RAID_KILL_WIDTH
     assert panel._dungeon_rows[0][3].width() == RAID_METRIC_WIDTH
     assert panel._dungeon_rows[1][0].text() == "Entombed Sentinels"
     assert panel._dungeon_rows[1][1].text() == ""
     assert panel._dungeon_rows[8][0].text() == "Nymrissa Wavecaller"
-    assert panel._dungeon_rows[8][3].text() == "M 55-66"
+    assert panel._dungeon_rows[8][3].text() == "M 55 / 66"
     assert panel._visible_detail_rows == 9
-    assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
+    target_height = panel.target_height()
+    assert target_height >= INFO_PANEL_PREFERRED_HEIGHT
+    panel.resize(650, target_height)
+    panel.show()
+    QApplication.processEvents()
+    last_name = panel._dungeon_rows[8][0]
+    last_bottom = last_name.mapTo(panel, QPoint(0, 0)).y() + last_name.height()
+    assert not last_name.isHidden()
+    assert last_bottom <= panel.contentsRect().bottom()
 
 
 def test_raid_panel_places_tidebound_progress_on_nymrissa(qtbot):
@@ -394,7 +404,7 @@ def test_raid_panel_places_tidebound_progress_on_nymrissa(qtbot):
     assert panel._dungeon_rows[0][0].text() == "Nek'zali the Soulcoiler"
     assert panel._dungeon_rows[0][1].text() == ""
     assert panel._dungeon_rows[8][0].text() == "Nymrissa Wavecaller"
-    assert panel._dungeon_rows[8][1].text() == "H3 · M4"
+    assert panel._dungeon_rows[8][1].text() == "H×3 · M×4"
 
 
 def test_raid_panel_colours_each_difficulty_parse_segment(qtbot):
@@ -435,8 +445,8 @@ def test_raid_panel_colours_each_difficulty_parse_segment(qtbot):
 
     value_label = panel._dungeon_rows[0][3]
     assert value_label.textFormat() == Qt.TextFormat.RichText
-    assert "H 83-63" in value_label.text()
-    assert "M 46-68" in value_label.text()
+    assert "H 83 / 63" in value_label.text()
+    assert "M 46 / 68" in value_label.text()
     assert percentile_colour(83.0) in value_label.text()
     assert percentile_colour(46.0) in value_label.text()
     assert percentile_colour(83.0) not in value_label.styleSheet()
@@ -473,11 +483,11 @@ def test_mplus_detail_widths_restore_after_raid_detail(qtbot):
     )
 
     panel.setApplicantData(app, _raid_listing())
-    assert panel._dungeon_rows[0][1].text() == "N5 · H3 · M1"
+    assert panel._dungeon_rows[0][1].text() == "N×5 · H×3 · M×1"
     assert panel._dungeon_rows[0][3].textFormat() == Qt.TextFormat.RichText
-    assert "N 91-78" in panel._dungeon_rows[0][3].text()
-    assert "H 83-63" in panel._dungeon_rows[0][3].text()
-    assert "M 46-68" in panel._dungeon_rows[0][3].text()
+    assert "N 91 / 78" in panel._dungeon_rows[0][3].text()
+    assert "H 83 / 63" in panel._dungeon_rows[0][3].text()
+    assert "M 46 / 68" in panel._dungeon_rows[0][3].text()
     assert panel._dungeon_rows[0][3].width() > DUNGEON_METRIC_WIDTH
 
     panel._on_detail_mode_clicked("mplus")
@@ -1733,7 +1743,7 @@ def test_context_dungeon_rows_colour_the_printed_percentile(qtbot):
 
     _name_label, _rio_label, wcl_key_label, value_label = panel._dungeon_rows[0]
     assert wcl_key_label.text() == "WCL +16"
-    assert value_label.text() == "83 N=1"
+    assert value_label.text() == "83 1 run"
     assert percentile_colour(83.0) in value_label.styleSheet()
 
 
@@ -1906,10 +1916,12 @@ def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
 
     assert "Not found on Warcraft Logs" in panel._status_label.text()
     assert "RaiderIO only" in panel._status_label.text()
-    assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
-    assert panel._metric_labels["M+"].text().endswith("+17")
-    assert "DPS" not in panel._metric_labels["M+"].text()
-    assert "RIO" not in panel._metric_labels["M+"].text()
+    assert panel._metric_labels["Fit"].text().startswith("Fit estimate · +16:")
+    fit = scoring_mod.candidate_fit(app, listing)
+    assert panel._metric_labels["Fit"].text() == f"Fit estimate · +16: {round(fit.score)}"
+    assert "DPS" not in panel._metric_labels["Fit"].text()
+    assert panel._metric_labels["M+"].isHidden()
+    assert "RIO" not in panel._metric_labels["Fit"].text()
 
 
 def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
@@ -1933,7 +1945,7 @@ def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
 
     panel.setApplicantData(app, listing)
 
-    assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
+    assert panel._metric_labels["Fit"].text().startswith("Fit estimate · +16:")
     assert panel._status_label.text() == (
         "Target +16 · best nearby +16 · same dungeon RIO +16\n"
         "Evidence strength 75% · 8/8 qualifying dungeons · RaiderIO only"
@@ -1966,8 +1978,8 @@ def test_fit_explanation_is_available_to_mouse_and_clears_with_context(qtbot):
     qtbot.addWidget(panel)
     panel.setApplicantData(_app(), _listing())
 
-    badge = panel._metric_labels["M+"]
-    assert "Fit estimate" in badge.text()
+    badge = panel._metric_labels["Fit"]
+    assert badge.text().startswith("Fit estimate · +16:")
     assert badge in panel.tooltip_widgets()
     assert "not a WCL parse percentile" in badge.toolTip()
     assert "success probability" in badge.accessibleDescription()
@@ -2005,10 +2017,11 @@ def test_zero_fit_keeps_evidence_and_damage_metric_explanation(qtbot, role):
 
     panel.setApplicantData(applicant, listing)
 
-    assert "Fit estimate 0" in panel._metric_labels["M+"].text()
+    assert panel._metric_labels["Fit"].text() == "Fit estimate · +16: 0"
+    assert panel._metric_labels["M+"].text() == "M+ DPS 20/20 +16"
     assert "same dungeon WCL +16" in panel._status_label.text()
     assert "limit:" in panel._status_label.text()
-    assert "measure damage" in panel._metric_labels["M+"].toolTip()
+    assert "measure damage" in panel._metric_labels["Fit"].toolTip()
     assert "healing, survival, or utility" in panel._status_label.toolTip()
 
 
@@ -2058,7 +2071,7 @@ def test_panel_keeps_grey_same_dungeon_quality_visible(qtbot):
 
     text = panel._status_label.text()
     assert "no nearby key evidence" in text
-    assert "same dungeon WCL +20 31 N=1" in text
+    assert "same dungeon WCL +20 31 1 run" in text
     assert "limit: weak WCL evidence" in text
 
 
@@ -2602,7 +2615,7 @@ def test_panel_explains_error_mplus_fit_uses_raiderio_only(qtbot):
 
     panel.setApplicantData(app, listing)
 
-    assert panel._metric_labels["M+"].text().startswith("M+ Fit ")
+    assert panel._metric_labels["Fit"].text().startswith("Fit estimate · +16:")
     assert panel._status_label.text() == "WCL error: bad token · RaiderIO only"
     assert not panel._status_label.isHidden()
     assert panel._state_stage.isHidden()
@@ -6583,16 +6596,19 @@ def test_package_cell_keeps_package_and_individual_mplus_for_every_group_member(
         window._refresh_table()
         owner_row = window._row_for_id["10:2"]
         follower_row = window._row_for_id["10:3"]
-        owner_item = window._table.item(owner_row, COL_MPLUS)
-        follower_item = window._table.item(follower_row, COL_MPLUS)
+        owner_item = window._table.item(owner_row, COL_FIT)
+        follower_item = window._table.item(follower_row, COL_FIT)
 
         assert owner_item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
         assert follower_item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
         assert owner_item.data(MPLUS_PACKAGE_BG_ROLE) == follower_item.data(
             MPLUS_PACKAGE_BG_ROLE
         )
-        assert owner_item.data(MPLUS_INDIVIDUAL_TEXT_ROLE).endswith("+14")
-        assert follower_item.data(MPLUS_INDIVIDUAL_TEXT_ROLE).endswith("+14")
+        for row, item in ((owner_row, owner_item), (follower_row, follower_item)):
+            app = state.applicants[window._id_by_row[row]]
+            expected = overlay_mod._fit_cell_visuals(app, state.listing)[0]
+            assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == f"Player {expected}"
+            assert window._table.item(row, COL_MPLUS).text() == "80/62 +14"
         assert owner_item.data(MPLUS_INDIVIDUAL_BG_ROLE)
         assert follower_item.data(MPLUS_INDIVIDUAL_BG_ROLE)
         assert window._delegate._group_marker_by_row[owner_row].first_visible
@@ -6601,8 +6617,9 @@ def test_package_cell_keeps_package_and_individual_mplus_for_every_group_member(
         client.close()
 
 
+@pytest.mark.parametrize("status, placeholder", [("error", "?"), ("loading", "…"), ("pending", "…")])
 def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
-    qtbot, tmp_path
+    qtbot, tmp_path, status, placeholder
 ):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
@@ -6611,7 +6628,7 @@ def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
     state.listing = _listing()
     state.add_or_update(_app(applicant_id="10:1", name="Ready-Realm"))
     state.add_or_update(
-        _app(applicant_id="10:2", name="Error-Realm", fetch_status="error")
+        _app(applicant_id="10:2", name="Error-Realm", fetch_status=status)
     )
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
@@ -6619,9 +6636,10 @@ def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
     try:
         window._refresh_table()
         error_row = window._row_for_id["10:2"]
-        item = window._table.item(error_row, COL_MPLUS)
+        item = window._table.item(error_row, COL_FIT)
 
-        assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == "?"
+        assert window._table.item(error_row, COL_MPLUS).text() == placeholder
+        assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == f"Player {placeholder}"
         assert item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
     finally:
         client.close()
@@ -6656,7 +6674,7 @@ def test_overlay_table_uses_monospace_only_for_metric_columns(qtbot, tmp_path):
         client.close()
 
 
-def test_raid_listing_table_keeps_non_target_difficulty_evidence_neutral(
+def test_raid_listing_table_keeps_raw_evidence_coloured_and_fit_separate(
     qtbot, tmp_path
 ):
     auth = WCLAuth("client", "secret", tmp_path)
@@ -6691,30 +6709,32 @@ def test_raid_listing_table_keeps_non_target_difficulty_evidence_neutral(
         mythic_item = window._table.item(row, COL_M)
 
         assert heroic_item.text() == "70/64"
-        assert heroic_item.background().style() == Qt.BrushStyle.NoBrush
-        assert heroic_item.foreground().color().name() == QColor("#b8b8c8").name()
-        assert mythic_item.text().startswith("EST ")
-        assert mythic_item.background().style() != Qt.BrushStyle.NoBrush
+        assert heroic_item.background().color() == QColor(percentile_colour(70.0))
+        assert mythic_item.text() == "—"
+        assert mythic_item.background().style() == Qt.BrushStyle.NoBrush
+        fit_item = window._table.item(row, COL_FIT)
+        assert fit_item.text().startswith("Estimate ")
+        assert fit_item.background().style() != Qt.BrushStyle.NoBrush
         assert window._fetches_in_flight == {}
         assert window._raid_boss_fetches_in_flight == {}
     finally:
         client.close()
 
 
-def test_group_mplus_delegate_paints_full_cell_width(qtbot):
-    table = QTableWidget(1, COL_MPLUS + 1)
+def test_group_fit_delegate_paints_full_cell_width(qtbot):
+    table = QTableWidget(1, COL_FIT + 1)
     qtbot.addWidget(table)
     delegate = _HoverHighlightDelegate(table)
     table.setItem(
         0,
-        COL_MPLUS,
+        COL_FIT,
         _mplus_group_cell(
             PackageFit(size=2, display="G2 OK 58", colour="#0070ff"),
             _app(),
             _listing(),
         ),
     )
-    index = table.model().index(0, COL_MPLUS)
+    index = table.model().index(0, COL_FIT)
     option = QStyleOptionViewItem()
     option.rect = QRect(0, 0, 100, 24)
     option.widget = table
@@ -7023,7 +7043,7 @@ def test_refresh_table_reuses_member_fits_from_package_sort(
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
     expected_individual_text = {
-        applicant.applicant_id: overlay_mod._mplus_cell_visuals(
+        applicant.applicant_id: overlay_mod._fit_cell_visuals(
             applicant,
             state.listing,
         )[0]
@@ -7045,10 +7065,10 @@ def test_refresh_table_reuses_member_fits_from_package_sort(
         assert sorted(calls) == sorted(expected_individual_text)
         assert window._candidate_fits_for_sync is None
         for applicant_id, expected_text in expected_individual_text.items():
-            item = window._table.item(window._row_for_id[applicant_id], COL_MPLUS)
+            item = window._table.item(window._row_for_id[applicant_id], COL_FIT)
             assert item is not None
             if applicant_id.startswith("10:"):
-                assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == expected_text
+                assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == f"Player {expected_text}"
             else:
                 assert item.text() == expected_text
     finally:
@@ -7075,10 +7095,9 @@ def test_refresh_table_reuses_member_fits_for_raid_rows(
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
     expected_text = {
-        applicant.applicant_id: overlay_mod._raid_fit_visuals(
+        applicant.applicant_id: overlay_mod._fit_cell_visuals(
             applicant,
             state.listing,
-            "H",
         )[0]
         for applicant in applicants
     }
@@ -7097,7 +7116,7 @@ def test_refresh_table_reuses_member_fits_for_raid_rows(
 
         assert sorted(calls) == sorted(expected_text)
         for applicant_id, text in expected_text.items():
-            item = window._table.item(window._row_for_id[applicant_id], COL_H)
+            item = window._table.item(window._row_for_id[applicant_id], COL_FIT)
             assert item is not None
             assert item.text() == text
     finally:
@@ -7133,7 +7152,7 @@ def test_refresh_table_noop_reuses_existing_rows_when_order_stable(
         client.close()
 
 
-def test_metric_column_widths_skip_noop_and_mplus_only_refreshes(
+def test_metric_column_widths_skip_noop_but_measure_changed_parse_text(
     qtbot,
     tmp_path,
     monkeypatch,
@@ -7169,7 +7188,7 @@ def test_metric_column_widths_skip_noop_and_mplus_only_refreshes(
 
     try:
         window._refresh_table()
-        assert measured == [COL_N, COL_H, COL_M]
+        assert measured == [COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT]
 
         measured.clear()
         window._refresh_table()
@@ -7177,11 +7196,13 @@ def test_metric_column_widths_skip_noop_and_mplus_only_refreshes(
 
         state.applicants["10:1"].mplus_dps = 91.0
         window._refresh_table()
-        assert measured == []
+        assert measured == [COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT]
+
+        measured.clear()
 
         state.applicants["10:1"].raid_normal = 99.0
         window._refresh_table()
-        assert measured == [COL_N, COL_H, COL_M]
+        assert measured == [COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT]
     finally:
         client.close()
 

@@ -11,12 +11,15 @@ from applicant_scout.__main__ import StateMachine
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.overlay import (
     COL_H,
+    COL_M,
     COL_MPLUS,
+    COL_FIT,
     COL_RIO,
     INFO_PANEL_PREFERRED_HEIGHT,
     METRIC_COLUMN_TEXT_PADDING,
     MPLUS_TARGET_KEY_MAX,
     _mplus_cell_visuals,
+    _fit_cell_visuals,
     OverlayWindow,
 )
 from applicant_scout.scoring import CONTEXT_RAID, detect_listing_context
@@ -619,8 +622,8 @@ def test_cleared_raid_listing_preserves_party_raid_difficulty(qtbot, tmp_path):
     assert listing.difficulty_id == 15
     assert win._active_tab == "party"
     assert win._title_bar.title_label.text() == "Party — Manaforge Omega (1)"
-    assert win._table.item(0, COL_H).text().startswith(
-        ("FIT ", "OK ", "RISK ", "SUP ", "EST ")
+    assert win._table.item(0, COL_FIT).text().startswith(
+        ("Good ", "Fair ", "Risk ", "Support ", "Estimate ")
     )
 
 
@@ -1372,7 +1375,10 @@ def test_manual_target_key_recomputes_party_mplus_cells(qtbot, tmp_path):
 
     assert legacy_text == "90/80 +10"
     assert win._table.item(0, 7).text() == expected
-    assert win._table.item(0, 7).text() != legacy_text
+    assert win._table.item(0, 7).text() == legacy_text
+    fit_text, _fg, _bg = _fit_cell_visuals(member, win._effective_listing())
+    assert win._table.item(0, COL_FIT).text() == fit_text
+    assert "+10" in win._table.horizontalHeaderItem(COL_FIT).text()
 
 
 def test_manual_target_key_recomputes_pinned_party_evidence_text(qtbot, tmp_path):
@@ -1422,7 +1428,10 @@ def test_listing_change_recomputes_party_mplus_cells(qtbot, tmp_path):
     expected, _fg, _bg = _mplus_cell_visuals(member, win._effective_listing())
     assert legacy_text == "90/80 +10"
     assert win._table.item(0, 7).text() == expected
-    assert win._table.item(0, 7).text() != legacy_text
+    assert win._table.item(0, 7).text() == legacy_text
+    fit_text, _fg, _bg = _fit_cell_visuals(member, win._effective_listing())
+    assert win._table.item(0, COL_FIT).text() == fit_text
+    assert "+10" in win._table.horizontalHeaderItem(COL_FIT).text()
 
 
 def test_real_listing_key_clears_manual_party_target_key(qtbot, tmp_path):
@@ -1468,7 +1477,7 @@ def test_manual_target_key_does_not_override_raid_listing(qtbot, tmp_path):
     assert detect_listing_context(listing) == CONTEXT_RAID
 
 
-def test_raid_listing_renders_fit_in_target_column_and_neutral_mplus(
+def test_raid_listing_separates_fit_from_coloured_raw_parses(
     qtbot, tmp_path
 ):
     state = AppState()
@@ -1508,11 +1517,11 @@ def test_raid_listing_renders_fit_in_target_column_and_neutral_mplus(
 
     win._refresh_table()
 
-    assert win._table.item(0, COL_H).text().startswith("FIT ")
+    assert win._table.item(0, COL_FIT).text().startswith("Good ")
     assert "82/82" in win._table.item(0, COL_H).text()
-    assert win._table.item(0, COL_MPLUS).text() == "44 N=1 +18"
+    assert win._table.item(0, COL_MPLUS).text() == "44 1/dungeon +18"
     _text, _fg, mplus_bg = _mplus_cell_visuals(applicant, win._effective_listing())
-    assert mplus_bg is None
+    assert mplus_bg is not None
 
 
 def test_raid_fit_column_expands_to_fit_rendered_text(qtbot, tmp_path):
@@ -1542,14 +1551,14 @@ def test_raid_fit_column_expands_to_fit_rendered_text(qtbot, tmp_path):
 
     win._refresh_table()
 
-    item = win._table.item(0, COL_H)
+    item = win._table.item(0, COL_FIT)
     required = (
         QFontMetrics(item.font()).horizontalAdvance(item.text())
         + METRIC_COLUMN_TEXT_PADDING
     )
-    assert item.text().startswith("FIT ")
-    assert "82/82" in item.text()
-    assert win._table.columnWidth(COL_H) >= required
+    assert item.text().startswith("Good ")
+    assert "82/82" == win._table.item(0, COL_H).text()
+    assert win._table.columnWidth(COL_FIT) >= required
 
 
 def test_raid_listing_forces_disabled_target_column_with_estimated_fit(
@@ -1581,8 +1590,9 @@ def test_raid_listing_forces_disabled_target_column_with_estimated_fit(
     win._refresh_table()
 
     assert not win._table.isColumnHidden(COL_H)
-    assert win._table.item(0, COL_H).text().startswith("EST ")
-    assert "M 70/60" in win._table.item(0, COL_H).text()
+    assert win._table.item(0, COL_FIT).text().startswith("Estimate ")
+    assert win._table.item(0, COL_H).text() == "—"
+    assert win._table.item(0, COL_M).text() == "70/60"
 
 
 def test_raid_listing_target_column_keeps_loading_state(qtbot, tmp_path):

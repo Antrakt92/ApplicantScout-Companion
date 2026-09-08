@@ -100,7 +100,6 @@ from .scoring import (
     detect_listing_context,
     effective_rio_score,
     listing_dungeon_keys,
-    mplus_metric_text,
     package_fit,
     positive_int,
     role_mplus_view,
@@ -144,18 +143,18 @@ from .wcl import (
 _log = logging.getLogger("applicant_scout.overlay")
 
 
-# Compact column layout. Name can grow a little for real applicants, but is
-# capped so one long character name cannot force the whole overlay wide.
-COLUMN_HEADERS = ["Spec", "Name", "iLvl", "RIO", "N", "H", "M", "M+"]
-COLUMN_WIDTHS = [74, 112, 44, 84, 50, 50, 50, 88]
+# Keep existing evidence column indices stable; Fit is moved visually after RIO.
+# Cap Name growth so one long character name cannot force the overlay wide.
+COLUMN_HEADERS = ["Spec", "Name", "iLvl", "RIO", "Normal", "Heroic", "Mythic", "M+ DPS", "Fit"]
+COLUMN_WIDTHS = [74, 112, 44, 84, 70, 70, 70, 132, 102]
 NAME_COLUMN_MAX_WIDTH = 126
 DUNGEON_NAME_WIDTH = 148
 DUNGEON_KEY_WIDTH = 72
 DUNGEON_WCL_KEY_WIDTH = 72
 DUNGEON_METRIC_WIDTH = 58
 RAID_NAME_WIDTH = DUNGEON_NAME_WIDTH
-RAID_KILL_WIDTH = 96
-RAID_METRIC_WIDTH = 168
+RAID_KILL_WIDTH = 138
+RAID_METRIC_WIDTH = 246
 RAID_SINGLE_KILL_WIDTH = 42
 RAID_SINGLE_METRIC_WIDTH = 72
 # The 300 px window minimum leaves 260 px for four labels after frame,
@@ -165,10 +164,9 @@ DETAIL_COMPACT_NAME_WIDTH = 56
 RAID_COMPACT_KILL_WIDTH = 74
 RAID_COMPACT_METRIC_WIDTH = 130
 METRIC_COLUMN_TEXT_PADDING = 22
-RAID_CONTEXT_EVIDENCE_FG = "#b8b8c8"
-COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS = range(8)
+COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT = range(9)
 RAID_COL_BY_TARGET = {"N": COL_N, "H": COL_H, "M": COL_M}
-WINDOW_CHROME_WIDTH = DEFAULT_WINDOW_WIDTH - sum(COLUMN_WIDTHS)
+WINDOW_CHROME_WIDTH = 12
 # Name and raid metric columns grow from rendered content after construction;
 # a populated table can also need the native vertical scrollbar. Reserve both
 # at the initial content-safe width so a fresh raid view does not immediately
@@ -288,36 +286,27 @@ HEADER_TOOLTIPS: list[str] = [
     "contexts use RaiderIO as fallback ordering support.\n\n"
     "Coloured by tier band (gold ≥3200, purple ≥2700, blue ≥2200,\n"
     "green ≥1700, white below). Mid-Midnight-S1 thresholds.",
-    # N
-    "Raid Normal — best/median per-encounter parse percentile.\n\n"
-    "Format: 'best/median' (e.g. '88/72'). Best = ceiling on a single boss.\n"
-    "Median = consistency across encounters at this difficulty.\n"
-    "Single value (no slash) = only one encounter logged → no median signal.\n\n"
-    "Background colour = best percentile tier (WCL ranking palette:\n"
-    "tan 100, pink 99, orange 95-98, purple 75-94,\n"
-    "blue 50-74, green 25-49, gray 0-24).",
-    # H
-    "Raid Heroic — best/median per-encounter parse percentile.\n\n"
-    "Same format and colour scheme as the Normal column. Use Heroic as\n"
-    "the primary raid signal — most pugs that care about parses run\n"
-    "Heroic, fewer have meaningful Mythic data.",
-    # M
-    "Raid Mythic — best/median per-encounter parse percentile.\n\n"
-    "Same format as Normal/Heroic. Few pug applicants will have data\n"
-    "here; '—' means no Mythic logs in current spec.",
-    # M+
-    "Mythic+ fit for the current listing when the companion knows your\n"
-    "hosted key level or manual Party target key.\n\n"
-    "Metric: DPS for every role; raid healer rankings continue to use HPS.\n"
-    "N=1 marks a single logged run at that key, so there is no median signal.\n"
-    "Fit labels combine relevant WCL bracket performance, RaiderIO completion\n"
-    "evidence, key-level context, same-dungeon evidence, and profile\n"
-    "consistency. Score-only fallback stays capped and low-confidence. Grouped\n"
-    "applicants are accepted together, so grouped rows can show package fit\n"
-    "alongside individual context.\n\n"
-    "Background colour follows the numeric fit score with the WCL ranking\n"
-    "palette, after those context guards are applied.\n\n"
-    "Hover the row for the per-dungeon breakdown in the top panel.",
+    # WCL raid summaries are averages supplied by Warcraft Logs.
+    "Normal raid — WCL best / median performance averages for the current spec.\n\n"
+    "These summarize boss rankings; best is not the single highest boss parse. "
+    "A missing median is unavailable data, not proof of a single encounter.\n\n"
+    "Colour follows the best percentile: grey <25, green 25+, blue 50+, "
+    "purple 75+, orange 95+, pink 99, gold 100. Raid healers use HPS; others use DPS.",
+    "Heroic raid — WCL best / median performance averages for the current spec.\n\n"
+    "Same values and percentile colours as Normal. The separate Fit column "
+    "estimates suitability for the current listing.",
+    "Mythic raid — WCL best / median performance averages for the current spec.\n\n"
+    "Same values and percentile colours as Normal. A dash means unavailable data.",
+    "Mythic+ WCL best / median percentile averages, followed by highest logged key.\n\n"
+    "DPS for every role, including healers. Colour follows the best percentile. "
+    "1/dungeon means every logged dungeon has one run; there is no median signal. "
+    "The highest logged key is context, not the key of every displayed parse. "
+    "Fit for the selected target is shown separately.",
+    "Fit is a contextual score estimate for the named raid difficulty or M+ key, "
+    "not a WCL percentile or success probability. Strong / Good / Fair / Risk summarize "
+    "the recommendation. Estimate uses another raid difficulty; Support uses "
+    "secondary evidence. Group / Player shows the shared application estimate "
+    "and individual estimate. Hover a row for evidence and limitations.",
 ]
 
 
@@ -334,7 +323,7 @@ MPLUS_FIT_EXPLANATION = (
     "A dungeon reported by both sources counts once; summary-only RaiderIO "
     "coverage is combined conservatively.\n\n"
     "The limit names the main gap holding this estimate back. "
-    "WCL best/median values remain visible in the dungeon rows; N=1 means one run."
+    "WCL best/median values remain visible in the dungeon rows; 1 run means a single sample."
 )
 
 
@@ -767,11 +756,7 @@ def _minimum_window_width_for_metrics(
     *,
     name_width: int = COLUMN_WIDTHS[COL_NAME],
 ) -> int:
-    mplus_width = (
-        MPLUS_GROUP_COLUMN_WIDTH
-        if metric_preferences.mplus and not metric_preferences.raid_enabled
-        else COLUMN_WIDTHS[COL_MPLUS]
-    )
+    mplus_width = COLUMN_WIDTHS[COL_MPLUS]
     width = (
         COLUMN_WIDTHS[COL_SPEC]
         + max(COLUMN_WIDTHS[COL_NAME], name_width)
@@ -781,6 +766,7 @@ def _minimum_window_width_for_metrics(
         + (COLUMN_WIDTHS[COL_H] if metric_preferences.raid_heroic else 0)
         + (COLUMN_WIDTHS[COL_M] if metric_preferences.raid_mythic else 0)
         + (mplus_width if metric_preferences.mplus else 0)
+        + MPLUS_GROUP_COLUMN_WIDTH
         + WINDOW_CHROME_WIDTH
         + CONTENT_SAFE_WINDOW_BUFFER
     )
@@ -906,7 +892,7 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
             else:
                 super().paint(painter, option, index)
         elif (
-            index.column() == COL_MPLUS
+            index.column() == COL_FIT
             and isinstance(index.data(MPLUS_PACKAGE_TEXT_ROLE), str)
             and painter is not None
         ):
@@ -1900,14 +1886,16 @@ class ApplicantInfoPanel(QFrame):
         metrics_layout.setContentsMargins(0, 0, 0, 0)
         metrics_layout.setSpacing(4)
         self._metric_labels: dict[str, QLabel] = {
-            key: QLabel("") for key in ("N", "H", "M", "M+")
+            key: QLabel("") for key in ("N", "H", "M", "M+", "Fit")
         }
-        for key in ("N", "H", "M", "M+"):
+        for key in ("N", "H", "M", "M+", "Fit"):
             label = self._metric_labels[key]
             label.setObjectName("infoMetricBadge")
             metrics_layout.addWidget(label)
+        metrics_layout.removeWidget(self._metric_labels["Fit"])
         metrics_layout.addStretch(1)
         outer.addWidget(metrics)
+        identity_layout.insertWidget(identity_layout.count() - 1, self._metric_labels["Fit"])
 
         self._package_label = QLabel("")
         self._package_label.setObjectName("infoPackageBadge")
@@ -1949,6 +1937,10 @@ class ApplicantInfoPanel(QFrame):
             detail_layout.addWidget(button)
         detail_layout.addStretch(1)
         outer.addWidget(self._detail_tabs)
+        self._detail_legend = QLabel("")
+        self._detail_legend.setWordWrap(True)
+        self._detail_legend.setStyleSheet("color: #b8b8c8; font-size: 10px;")
+        outer.addWidget(self._detail_legend)
 
         self._status_label = QLabel("")
         self._status_label.setObjectName("infoPanelStatus")
@@ -2030,6 +2022,7 @@ class ApplicantInfoPanel(QFrame):
             self._wcl_retry_button,
             self._unpin_button,
             self._metric_labels["M+"],
+            self._metric_labels["Fit"],
             self._package_label,
             self._status_label,
             self._state_text_label,
@@ -2138,6 +2131,7 @@ class ApplicantInfoPanel(QFrame):
         self._package_label.setAccessibleDescription("")
         self._package_label.setVisible(False)
         self._set_action_visible(self._detail_tabs, False)
+        self._detail_legend.setVisible(False)
         self._status_label.setText("")
         self._status_label.setToolTip("")
         self._status_label.setAccessibleDescription("")
@@ -2531,6 +2525,7 @@ class ApplicantInfoPanel(QFrame):
             modes.append("mplus")
         if not modes:
             self._detail_rows_enabled = False
+            self._detail_legend.setVisible(False)
             self._set_action_visible(self._detail_tabs, False)
             return
         self._detail_rows_enabled = True
@@ -2551,6 +2546,12 @@ class ApplicantInfoPanel(QFrame):
 
     def _set_detail_mode(self, mode: str) -> None:
         self._detail_mode = mode
+        self._detail_legend.setText(
+            "Kills: N Normal · H Heroic · M Mythic\nBoss parses: overall / item level · × = kills"
+            if mode == "raid"
+            else "RIO = completed key · WCL = logged key\nDPS best / median · 1 run = a single sample"
+        )
+        self._detail_legend.setVisible(True)
         for key, button in self._detail_buttons.items():
             enabled = (key == "raid" and self._metric_preferences.raid_enabled) or (
                 key == "mplus" and self._metric_preferences.mplus
@@ -2599,13 +2600,14 @@ class ApplicantInfoPanel(QFrame):
             if not enabled and key != target_raid:
                 self._metric_labels[key].setVisible(False)
                 continue
-            text, fg, bg = _raid_fit_visuals(applicant, listing, key, fit=fit)
+            best, median = _raid_values_for_key(applicant, key)
+            text, fg, bg = _raid_cell_visuals(best, median, applicant.fetch_status)
             if bg is None:
                 self._metric_labels[key].setVisible(False)
                 continue
             self._set_badge(
                 self._metric_labels[key],
-                f"{key} {text}",
+                f"{dict(N='Normal', H='Heroic', M='Mythic')[key]} {text}",
                 bg,
                 fg or _text_colour_for_bg(bg),
             )
@@ -2615,23 +2617,45 @@ class ApplicantInfoPanel(QFrame):
             metric_label, _breakdown, _best, _median = role_mplus_view(applicant)
             text, _fg, bg = _mplus_cell_visuals(applicant, listing, fit=fit)
             if bg is not None:
-                prefix = "M+ " if text.startswith("Fit ") else f"M+ {metric_label} "
-                is_fit = text.startswith("Fit ")
-                badge_text = text.replace("Fit ", "Fit estimate ", 1) if is_fit else text
                 self._set_badge(
                     self._metric_labels["M+"],
-                    f"{prefix}{badge_text}",
+                    f"M+ {metric_label} {text}",
                     bg,
                     _text_colour_for_bg(bg),
                 )
-                if is_fit:
-                    self._metric_labels["M+"].setToolTip(MPLUS_FIT_EXPLANATION)
-                    self._metric_labels["M+"].setAccessibleDescription(MPLUS_FIT_EXPLANATION)
                 shown += 1
             else:
                 self._metric_labels["M+"].setVisible(False)
         else:
             self._metric_labels["M+"].setVisible(False)
+        text, fg, bg = _fit_cell_visuals(applicant, listing, fit=fit)
+        if bg is not None:
+            target_name = dict(N="Normal", H="Heroic", M="Mythic").get(target_raid, "")
+            current_fit = fit or candidate_fit(applicant, listing)
+            if current_fit.context == CONTEXT_MPLUS:
+                target_name = f"+{current_fit.target_key}" if current_fit.target_key > 0 else "M+"
+            self._set_badge(
+                self._metric_labels["Fit"], f"Fit estimate · {target_name}: {text}", bg,
+                fg or _text_colour_for_bg(bg),
+            )
+            explanation = (
+                MPLUS_FIT_EXPLANATION
+                if current_fit.context == CONTEXT_MPLUS
+                else HEADER_TOOLTIPS[COL_FIT]
+            )
+            if current_fit.context == CONTEXT_RAID:
+                evidence = _presenters.raid_fit_evidence_text(
+                    applicant, target_raid, current_fit.source
+                )
+                if evidence:
+                    explanation += f"\n\nTarget: {target_name}. Source evidence: {evidence}."
+            self._metric_labels["Fit"].setToolTip(explanation)
+            self._metric_labels["Fit"].setAccessibleDescription(explanation)
+            shown += 1
+        else:
+            self._metric_labels["Fit"].setVisible(False)
+            self._metric_labels["Fit"].setToolTip("")
+            self._metric_labels["Fit"].setAccessibleDescription("")
         return shown
 
     def _mplus_fit_status_text(
@@ -2661,7 +2685,7 @@ class ApplicantInfoPanel(QFrame):
         if current_fit.same_dungeon_rio_key > 0:
             same_dungeon.append(f"RIO +{current_fit.same_dungeon_rio_key}")
         if current_fit.same_dungeon_wcl_key > 0:
-            metric = mplus_metric_text(
+            metric = _presenters.mplus_metric_display_text(
                 current_fit.same_dungeon_wcl_best,
                 current_fit.same_dungeon_wcl_median,
                 current_fit.same_dungeon_wcl_run_count,
@@ -3139,6 +3163,15 @@ class OverlayWindow(QMainWindow):
 
         # Applicant rows use the side panel rather than per-cell tooltips. The
         # specialized table owns keyboard activation and focus traversal.
+        self._metric_legend = QLabel(
+            "WCL: best / median · colour = best percentile · M+ = DPS for all roles · 1/dungeon = one run each\n"
+            "Fit = target score estimate, not a parse · Group / Player = joint / individual · G3 = 3-player group"
+        )
+        self._metric_legend.setObjectName("metricLegend")
+        self._metric_legend.setWordWrap(True)
+        self._metric_legend.setContentsMargins(9, 4, 9, 4)
+        self._metric_legend.setStyleSheet("color: #b8b8c8; font-size: 11px;")
+        layout.addWidget(self._metric_legend)
         self._table = _ApplicantTableWidget(0, len(COLUMN_HEADERS), container)
         self._table.setHorizontalHeaderLabels(COLUMN_HEADERS)
         # Per-column legend tooltips. setHorizontalHeaderLabels creates default
@@ -3217,13 +3250,14 @@ class OverlayWindow(QMainWindow):
         h = self._table.horizontalHeader()
         if h is None:
             raise RuntimeError("QTableWidget horizontal header is unavailable")
-        # Keep non-M+ columns at their compact widths; M+ is the fill column.
+        # Keep evidence and Fit widths content-sized; M+ is the fill column.
         # Without a stretched final section, wider saved geometries leave a
         # transparent strip after M+ that looks like broken unused UI.
         for col in range(self._table.columnCount()):
             if col != COL_MPLUS:
                 h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
         h.setSectionResizeMode(COL_MPLUS, QHeaderView.ResizeMode.Stretch)
+        h.moveSection(h.visualIndex(COL_FIT), 4)
         h.setStretchLastSection(True)
         self._max_name_width_px = COLUMN_WIDTHS[COL_NAME]
         self._metric_column_widths_dirty = True
@@ -4759,6 +4793,11 @@ class OverlayWindow(QMainWindow):
         if not self.isVisible():
             return
 
+        # The wrapping legend also sits above the table; retain its tallest
+        # interaction height so widening cannot move a row under the pointer.
+        legend_height = self._metric_legend.heightForWidth(max(self._metric_legend.width(), 1))
+        if legend_height > self._metric_legend.minimumHeight():
+            self._metric_legend.setMinimumHeight(legend_height)
         requested_height = self._panel.target_height()
         # WHY: shrinking the window while the pointer crosses applicants moves
         # the table underneath that pointer. Keep an interaction high-water mark
@@ -4898,6 +4937,7 @@ class OverlayWindow(QMainWindow):
 
     def _reset_panel_height_reservation(self) -> None:
         self._panel_reserved_height = INFO_PANEL_PREFERRED_HEIGHT
+        self._metric_legend.setMinimumHeight(0)
 
     def _on_cell_entered(self, row: int, _col: int) -> None:
         # Bounds check guards against (a) ever-zero state during init,
@@ -5199,58 +5239,34 @@ class OverlayWindow(QMainWindow):
         raw_aid, _ = _split_composite(applicant.applicant_id)
         listing = self._effective_listing()
         listing_context = detect_listing_context(listing)
-        target_raid = _raid_target_key_for_listing(listing)
         package = self._package_fit_by_raw.get(raw_aid)
 
-        # Raid percentile cells: dual "best/median" display. For active raid
-        # listings, the target difficulty cell becomes the recommendation slot.
+        # Raw WCL evidence keeps the same meaning and palette in every listing.
+        # Contextual recommendations have a separate cell.
         raid_cells = [
             ("N", COL_N, applicant.raid_normal, applicant.raid_normal_median),
             ("H", COL_H, applicant.raid_heroic, applicant.raid_heroic_median),
             ("M", COL_M, applicant.raid_mythic, applicant.raid_mythic_median),
         ]
-        for raid_key, col, best, median in raid_cells:
-            if listing_context == CONTEXT_RAID and raid_key == target_raid:
-                item = (
-                    _raid_package_cell(package)
-                    if package is not None
-                    and package.display
-                    and self._group_ready_by_raw.get(raw_aid, False)
-                    and self._group_size_by_raw.get(raw_aid, 1) >= 2
-                    else _raid_fit_cell(applicant, listing, raid_key, fit=fit)
-                )
-            else:
-                item = _raid_dual_cell(
-                    best,
-                    median,
-                    applicant.fetch_status,
-                    neutral=listing_context == CONTEXT_RAID,
-                )
+        for _raid_key, col, best, median in raid_cells:
             self._table.setItem(
-                row,
-                col,
-                item,
+                row, col, _raid_dual_cell(best, median, applicant.fetch_status)
             )
+        self._table.setItem(row, COL_MPLUS, _mplus_dual_cell(applicant, listing, fit=fit))
         if (
-            listing_context == CONTEXT_MPLUS
+            listing_context in {CONTEXT_MPLUS, CONTEXT_RAID}
             and package is not None
             and package.display
             and self._group_size_by_raw.get(raw_aid, 1) >= 2
+            and (
+                listing_context == CONTEXT_MPLUS
+                or self._group_ready_by_raw.get(raw_aid, False)
+            )
         ):
-            self._table.setItem(
-                row,
-                COL_MPLUS,
-                _mplus_group_cell(package, applicant, listing, fit=fit),
-            )
+            fit_item = _mplus_group_cell(package, applicant, listing, fit=fit)
         else:
-            # M+ cell: context-fit display for M+ listings, legacy headline
-            # otherwise. Raid listings keep this neutral so the target raid
-            # column owns the visible recommendation.
-            self._table.setItem(
-                row,
-                COL_MPLUS,
-                _mplus_dual_cell(applicant, listing, fit=fit),
-            )
+            fit_item = _fit_cell(applicant, listing, fit=fit)
+        self._table.setItem(row, COL_FIT, fit_item)
 
         accessible_headers = (
             "Specialization",
@@ -5260,7 +5276,8 @@ class OverlayWindow(QMainWindow):
             "Normal raid",
             "Heroic raid",
             "Mythic raid",
-            "Mythic Plus",
+            "Mythic Plus DPS percentiles",
+            "Contextual fit estimate",
         )
         role_name = {
             "TANK": "Tank",
@@ -5284,7 +5301,7 @@ class OverlayWindow(QMainWindow):
                 continue
             if column == COL_NAME:
                 value = applicant.name
-            elif column == COL_MPLUS and isinstance(
+            elif column == COL_FIT and isinstance(
                 item.data(MPLUS_PACKAGE_TEXT_ROLE), str
             ):
                 package_text = str(item.data(MPLUS_PACKAGE_TEXT_ROLE) or "No data")
@@ -5363,6 +5380,7 @@ class OverlayWindow(QMainWindow):
         )
 
         listing = self._effective_listing()
+        self._apply_metric_column_visibility()
         sorted_package_fit_by_raw: dict[str, PackageFit] = {}
         sorted_candidate_fit_by_id: dict[str, CandidateFit] = {}
         if self._active_tab == "party":
@@ -5596,10 +5614,10 @@ class OverlayWindow(QMainWindow):
             self._apply_metric_minimum_width()
 
     def _auto_size_metric_columns(self) -> None:
-        """Size raid metric columns to their rendered text instead of eliding fit."""
+        """Size visible evidence and Fit columns only when rendered metrics change."""
         if not self._metric_column_widths_dirty:
             return
-        for col in (COL_N, COL_H, COL_M):
+        for col in (COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT):
             if self._table.isColumnHidden(col):
                 continue
             width = self._metric_column_required_width(col)
@@ -5609,7 +5627,7 @@ class OverlayWindow(QMainWindow):
 
     def _raid_metric_row_width_signature(self, row: int) -> tuple:
         signature = []
-        for col in (COL_N, COL_H, COL_M):
+        for col in (COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT):
             item = self._table.item(row, col)
             if item is None:
                 signature.append(None)
@@ -5631,6 +5649,14 @@ class OverlayWindow(QMainWindow):
             if item is None:
                 continue
             text = item.text()
+            if col == COL_FIT and isinstance(item.data(MPLUS_PACKAGE_TEXT_ROLE), str):
+                package_width = QFontMetrics(item.font()).horizontalAdvance(
+                    str(item.data(MPLUS_PACKAGE_TEXT_ROLE))
+                )
+                individual_width = QFontMetrics(item.font()).horizontalAdvance(
+                    str(item.data(MPLUS_INDIVIDUAL_TEXT_ROLE))
+                )
+                width = max(width, 2 * max(package_width, individual_width) + 24)
             if not text:
                 continue
             width = max(
@@ -5656,6 +5682,19 @@ class OverlayWindow(QMainWindow):
             COL_M, not (prefs.raid_mythic or target_raid_col == COL_M)
         )
         self._table.setColumnHidden(COL_MPLUS, not prefs.mplus)
+        listing = self._effective_listing()
+        context = detect_listing_context(listing)
+        self._table.setColumnHidden(COL_FIT, context not in {CONTEXT_RAID, CONTEXT_MPLUS})
+        target = _raid_target_key_for_listing(listing)
+        target_name = {"N": "Normal", "H": "Heroic", "M": "Mythic"}.get(target, "")
+        if context == CONTEXT_MPLUS and listing is not None:
+            target_name = f"+{listing.key_level}" if listing.key_level > 0 else "M+"
+        header = self._table.horizontalHeaderItem(COL_FIT)
+        if header is not None:
+            title = f"Fit · {target_name}" if target_name else "Fit"
+            if header.text() != title:
+                header.setText(title)
+                self._metric_column_widths_dirty = True
         current_visibility = tuple(
             self._table.isColumnHidden(col) for col in (COL_N, COL_H, COL_M)
         )
@@ -6648,20 +6687,9 @@ def _raid_dual_cell(
     best: float | None,
     median: float | None,
     fetch_status: str,
-    *,
-    neutral: bool = False,
 ) -> QTableWidgetItem:
-    """Raid difficulty cell — shows "best/median" pair (WCL UI's "Best Perf.
-    Avg." vs "Median Perf. Avg."). Best is the headline (skill ceiling);
-    median is consistency signal. Background colour from BEST since that's
-    the primary scouting signal — gold cell with low median tells "lucky
-    pulls" story; same gold with high median tells "stable pumper".
-
-    Per-cell tooltip removed: full context now lives in the row-hover panel."""
+    """Show WCL best/median performance averages and the best percentile colour."""
     text, fg, bg = _raid_cell_visuals(best, median, fetch_status)
-    if neutral and bg is not None:
-        fg = RAID_CONTEXT_EVIDENCE_FG
-        bg = None
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     if fg is not None:
@@ -6686,67 +6714,54 @@ def _raid_values_for_key(
     return _presenters.raid_values_for_key(applicant, key)
 
 
-def _raid_fit_cell(
+def _fit_label(display: str) -> str:
+    for old, new in (("TOP", "Strong"), ("FIT", "Good"), ("OK", "Fair"), ("RISK", "Risk")):
+        if display.startswith(old + " "):
+            return new + display[len(old):]
+    return display
+
+
+def _fit_cell_visuals(
     applicant: Applicant,
-    listing: Listing | None,
-    target: str,
+    listing: Listing | None = None,
+    *,
+    fit: CandidateFit | None = None,
+) -> tuple[str, str | None, str | None]:
+    if applicant.fetch_status in {"loading", "pending"}:
+        return "…", "#888", None
+    current_fit = fit or candidate_fit(applicant, listing)
+    if current_fit.context not in {CONTEXT_RAID, CONTEXT_MPLUS} or not current_fit.display:
+        if applicant.fetch_status == "error":
+            return "?", "#ff5555", None
+        return "—", "#888", None
+    if current_fit.context == CONTEXT_RAID:
+        if current_fit.source in {"raid_higher_fallback", "raid_lower_fallback"}:
+            label = "Estimate"
+        elif current_fit.source != "raid_exact":
+            label = "Support"
+        else:
+            label = _fit_label(current_fit.label + " ").strip()
+        text = f"{label} {int(round(current_fit.score))}"
+    else:
+        text = str(int(round(current_fit.score)))
+    bg = current_fit.colour
+    return text, _text_colour_for_bg(bg) if bg else None, bg
+
+
+def _fit_cell(
+    applicant: Applicant,
+    listing: Listing | None = None,
     *,
     fit: CandidateFit | None = None,
 ) -> QTableWidgetItem:
-    text, fg, bg = _raid_fit_visuals(applicant, listing, target, fit=fit)
+    text, fg, bg = _fit_cell_visuals(applicant, listing, fit=fit)
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     if bg is not None:
         item.setBackground(QColor(bg))
-        item.setForeground(QColor(fg or _text_colour_for_bg(bg)))
+    if fg is not None:
+        item.setForeground(QColor(fg))
     item.setFont(_metric_cell_font(item.font(), bold=bg is not None))
-    return item
-
-
-def _raid_fit_visuals(
-    applicant: Applicant,
-    listing: Listing | None,
-    target: str,
-    *,
-    fit: CandidateFit | None = None,
-) -> tuple[str, str | None, str | None]:
-    if applicant.fetch_status != "ready":
-        best, median = _raid_values_for_key(applicant, target)
-        return _raid_cell_visuals(best, median, applicant.fetch_status)
-
-    current_fit = fit or candidate_fit(applicant, listing)
-    if (
-        current_fit.context != CONTEXT_RAID
-        or current_fit.target_raid != target
-        or not current_fit.display
-    ):
-        best, median = _raid_values_for_key(applicant, target)
-        return _raid_cell_visuals(best, median, applicant.fetch_status)
-
-    if current_fit.source == "raid_exact":
-        prefix = current_fit.label
-    elif current_fit.source in {"raid_higher_fallback", "raid_lower_fallback"}:
-        prefix = "EST"
-    else:
-        prefix = "SUP"
-
-    text = f"{prefix} {int(round(current_fit.score))}"
-    evidence = _presenters.raid_fit_evidence_text(applicant, target, current_fit.source)
-    if evidence:
-        text = f"{text} · {evidence}"
-
-    bg = current_fit.colour
-    fg = _text_colour_for_bg(bg) if bg is not None else None
-    return text, fg, bg
-
-
-def _raid_package_cell(package: PackageFit) -> QTableWidgetItem:
-    item = QTableWidgetItem(package.display)
-    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-    bg = package.colour or "#2a2a33"
-    item.setBackground(QColor(bg))
-    item.setForeground(QColor(_text_colour_for_bg(bg)))
-    item.setFont(_metric_cell_font(item.font(), bold=True))
     return item
 
 
@@ -6785,16 +6800,11 @@ def _mplus_cell_visuals(
     *,
     fit: CandidateFit | None = None,
 ) -> tuple[str, str | None, str | None]:
-    """Returns table text/colours for the role-relevant M+ headline cell."""
+    """Return raw WCL evidence, independent of the compatible context arguments."""
+    del listing, fit
     status = applicant.fetch_status
     if status in {"loading", "pending"}:
         return "…", "#888", None
-
-    current_fit = fit or candidate_fit(applicant, listing)
-    if current_fit.context == CONTEXT_MPLUS and current_fit.display:
-        bg = current_fit.colour
-        fg = _text_colour_for_bg(bg) if bg is not None else None
-        return f"Fit {current_fit.display}", fg, bg
 
     if status == "error":
         return "?", "#ff5555", None
@@ -6811,14 +6821,11 @@ def _mplus_cell_visuals(
         headline_run_count = 1
     else:
         headline_run_count = 0
-    text = mplus_metric_text(best, median, headline_run_count)
+    text = _presenters.mplus_metric_display_text(best, median, headline_run_count, headline=True)
 
     highest_key = _overlay_rows.highest_mplus_key_level(breakdown)
     if highest_key > 0:
         text = f"{text} +{highest_key}"
-
-    if current_fit.context == CONTEXT_RAID:
-        return text, "#b8b8c8", None
 
     bg = percentile_colour(best) if best is not None else None
     fg = _text_colour_for_bg(bg) if bg is not None else None
@@ -6850,11 +6857,12 @@ def _mplus_group_cell(
     *,
     fit: CandidateFit | None = None,
 ) -> QTableWidgetItem:
-    package_text = package.display
+    package_text = f"G{package.size} {int(round(package.score))}"
     package_bg = package.colour or "#2a2a33"
-    individual_text, individual_fg, individual_bg = _mplus_cell_visuals(
+    individual_text, individual_fg, individual_bg = _fit_cell_visuals(
         applicant, listing, fit=fit
     )
+    individual_text = f"Player {individual_text}"
     item = QTableWidgetItem(f"{package_text} | {individual_text}")
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     item.setData(MPLUS_PACKAGE_TEXT_ROLE, package_text)

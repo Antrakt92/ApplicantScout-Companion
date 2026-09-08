@@ -386,8 +386,8 @@ def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
         assert window._panel._dungeon_rows[0][3].text()
         assert window._panel._dungeon_rows[1][0].text() == "Entombed Sentinels"
         assert window._panel._dungeon_rows[1][3].textFormat() == Qt.TextFormat.RichText
-        assert "H 72-58" in window._panel._dungeon_rows[1][3].text()
-        assert "M 39-52" in window._panel._dungeon_rows[1][3].text()
+        assert "H 72 / 58" in window._panel._dungeon_rows[1][3].text()
+        assert "M 39 / 52" in window._panel._dungeon_rows[1][3].text()
         assert window._panel.height() >= window._panel.target_height()
         assert window._raid_boss_fetches_in_flight == {}
     finally:

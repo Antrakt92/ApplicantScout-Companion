@@ -230,6 +230,14 @@ def build_overlay_visual_state() -> AppState:
 
 def _raid_boss_parses() -> dict[str, list[dict]]:
     return {
+        "N": [
+            {
+                "encounter_id": 3470,
+                "name": "Nek'zali the Soulcoiler",
+                "overall": 94.0,
+                "ilvl": 89.0,
+            },
+        ],
         "H": [
             {
                 "encounter_id": 3470,
@@ -263,6 +271,11 @@ def _raid_boss_parses() -> dict[str, list[dict]]:
 
 def _raid_progress() -> dict[str, dict]:
     return {
+        "N": {
+            "killed": 9,
+            "total": 9,
+            "boss_kills": [12, 3, 2, 2, 1, 1, 1, 1, 1],
+        },
         "H": {
             "killed": 4,
             "total": 9,
@@ -289,7 +302,7 @@ def build_raid_listing_visual_state() -> AppState:
     )
     prefs = MetricPreferences(
         mplus=True,
-        raid_normal=False,
+        raid_normal=True,
         raid_heroic=True,
         raid_mythic=True,
     )
@@ -321,8 +334,8 @@ def build_raid_listing_visual_state() -> AppState:
             ilvl=660,
             score=2740,
             role="HEALER",
-            raid_normal=None,
-            raid_normal_median=None,
+            raid_normal=94.0,
+            raid_normal_median=89.0,
             raid_heroic=86.0,
             raid_heroic_median=77.0,
             raid_mythic=42.0,
@@ -534,7 +547,7 @@ OVERLAY_VISUAL_SCENARIOS: dict[str, VisualFixtureScenario] = {
         build_state=build_raid_listing_visual_state,
         metric_preferences=MetricPreferences(
             mplus=True,
-            raid_normal=False,
+            raid_normal=True,
             raid_heroic=True,
             raid_mythic=True,
         ),

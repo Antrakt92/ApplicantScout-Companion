@@ -16,6 +16,7 @@ from PyQt6.QtCore import QRect
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
     COL_MPLUS,
+    COL_FIT,
     COL_RIO,
     COLUMN_HEADERS,
     COLUMN_WIDTHS,
@@ -160,8 +161,8 @@ def _mplus_listing() -> Listing:
 
 
 def test_column_width_contract_is_compact():
-    assert COLUMN_WIDTHS == [74, 112, 44, 84, 50, 50, 50, 88]
-    assert sum(COLUMN_WIDTHS) == 552
+    assert COLUMN_WIDTHS == [74, 112, 44, 84, 70, 70, 70, 132, 102]
+    assert sum(COLUMN_WIDTHS) == 758
     assert NAME_COLUMN_MAX_WIDTH == 126
     assert DEFAULT_WINDOW_WIDTH == 572
     assert WINDOW_GEOMETRY_LAYOUT_VERSION == 5
@@ -189,12 +190,14 @@ def test_rio_header_tooltip_describes_conditional_sorting_semantics():
     assert "context" in tip
 
 
-def test_mplus_header_tooltip_describes_package_and_completion_evidence():
+def test_mplus_and_fit_header_tooltips_distinguish_evidence_from_estimates():
     tip = HEADER_TOOLTIPS[COL_MPLUS].casefold()
-
-    assert "package" in tip
-    assert "raiderio completion" in tip
-    assert "score-only" in tip
+    assert "best / median" in tip
+    assert "dps for every role" in tip
+    assert "1/dungeon" in tip
+    fit_tip = HEADER_TOOLTIPS[COL_FIT].casefold()
+    assert "not a wcl percentile" in fit_tip
+    assert "group / player" in fit_tip
 
 
 @pytest.mark.parametrize(
@@ -271,14 +274,11 @@ def test_mplus_cell_visuals_dps_appends_highest_key():
     assert fg == _text_colour_for_bg(bg)
 
 
-def test_mplus_cell_visuals_listing_colours_fit_score_with_wcl_palette():
+def test_mplus_cell_visuals_listing_keeps_raw_percentile_palette():
     text, fg, bg = _mplus_cell_visuals(_app(role="DAMAGER"), _mplus_listing())
 
-    score = int(text.split()[1])
-    assert text.startswith("Fit ")
-    assert text.endswith("+14")
-    assert score < 25
-    assert bg == percentile_colour(float(score))
+    assert text == "80/62 +14"
+    assert bg == percentile_colour(80.0)
     assert fg == _text_colour_for_bg(bg)
 
 
@@ -342,7 +342,7 @@ def test_mplus_cell_visuals_all_single_run_marks_low_evidence():
         )
     )
 
-    assert text == "80 N=1 +14"
+    assert text == "80 1/dungeon +14"
 
 
 def test_mplus_cell_visuals_run_count_zero_cache_does_not_mark_n1():
@@ -394,7 +394,7 @@ def test_mplus_cell_visuals_single_run_healer_uses_dps_breakdown():
         )
     )
 
-    assert text == "99 N=1 +20"
+    assert text == "99 1/dungeon +20"
 
 
 @pytest.mark.parametrize(
@@ -462,7 +462,7 @@ def test_mplus_dungeon_metric_text_respects_run_count():
         mplus_dungeon_metric_text(
             {"parse_percent": 70.0, "median_percent": 50.0, "run_count": 1}
         )
-        == "70 N=1"
+        == "70 1 run"
     )
     assert (
         mplus_dungeon_metric_text(

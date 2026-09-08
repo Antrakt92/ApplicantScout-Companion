@@ -106,11 +106,22 @@ capture lease defensively.
 
 ## Overlay Data
 
-The overlay shows a context-aware numeric fit score for the hosted key or raid,
-coloured with the Warcraft Logs percentile palette, package ratings for grouped
-applicants, and raw WCL raid/M+ percentiles as supporting evidence. Raid
-listings place the fit signal in the matching Normal/Heroic/Mythic column,
-while M+ listings focus on the target key and dungeon history.
+The **Fit** column shows an estimate for the target key or raid difficulty,
+including a combined rating for grouped applicants. **Normal**, **Heroic**,
+**Mythic**, and **M+** show the player's WCL results in every context. Each
+available parse keeps its percentile colour, independently of Fit.
+
+The table's parse pairs read **best / median**. Raid values are WCL's performance
+averages across encounters. A missing median stays missing; it does not prove
+there was only one log. In the M+ summary, **1/dungeon** means the available
+dungeon results each contain one logged run, so there is no repeat-run median.
+The **+key** beside that summary is the highest key represented in those WCL
+results, not necessarily the run that produced the best percentile.
+
+In the boss details, **N / H / M** mean Normal / Heroic / Mythic. **H×2** means
+two Heroic kills recorded by RaiderIO. Boss parse pairs have their own label:
+**overall / item level**, comparing the result with all matching logs and with
+the matching item-level bracket. Boss details load only when requested.
 
 **M+ Fit is an estimate of how the available evidence matches the target key,
 not a success probability or a Warcraft Logs percentile.** Named dungeon

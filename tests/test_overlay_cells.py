@@ -8,6 +8,7 @@ from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
     _bold_cell_font,
     _mplus_dual_cell,
+    _fit_cell,
     _rio_display_text,
     _text_colour_for_bg,
 )
@@ -77,13 +78,12 @@ def test_bold_cell_font_uses_resolved_application_size(qtbot):
     assert result.pointSize() > 0 or result.pixelSize() > 0
 
 
-def test_mplus_dual_cell_uses_context_fit_for_mplus_listing():
+def test_mplus_dual_cell_keeps_raw_evidence_for_mplus_listing():
     item = _mplus_dual_cell(_app(), _mplus_listing())
 
-    assert item.text().startswith("Fit ")
-    assert item.text().split()[1].isdigit()
-    assert not item.text().startswith(("TOP ", "FIT ", "OK ", "RISK "))
-    assert "+14" in item.text()
+    assert item.text() == "80/62 +14"
+    assert item.background().color().name() == QColor(percentile_colour(80.0)).name()
+    assert _fit_cell(_app(), _mplus_listing()).text().isdigit()
 
 
 def test_mplus_dual_cell_listing_error_status_precedes_stale_fit():
@@ -92,9 +92,9 @@ def test_mplus_dual_cell_listing_error_status_precedes_stale_fit():
     assert item.text() == "?"
 
 
-def test_mplus_dual_cell_listing_not_found_can_show_scorecard_fit():
+def test_fit_cell_listing_not_found_can_show_scorecard_fit():
     listing = _mplus_listing()
-    item = _mplus_dual_cell(
+    item = _fit_cell(
         _app(
             score=3200,
             fetch_status="not_found",
@@ -114,9 +114,8 @@ def test_mplus_dual_cell_listing_not_found_can_show_scorecard_fit():
         listing,
     )
 
-    assert item.text().startswith("Fit ")
-    assert "RIO" not in item.text()
-    assert "+15" in item.text()
+    assert item.text().isdigit()
+    assert item.background().style() != 0
 
 
 def test_rio_display_text_shows_current_and_better_main():

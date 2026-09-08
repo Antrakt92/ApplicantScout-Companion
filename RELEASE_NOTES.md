@@ -1,16 +1,40 @@
 # ApplicantScout Companion Release Notes
 
-## Unreleased
+## 0.16.0 - 08-Sep-2026
 
-- Add optional usage statistics, off by default, with a separate consent control
-  and no character names, screenshots or credentials in reports.
+Paired release with ApplicantScout addon `0.10.0`.
+
+### Improved
+
+- Show Normal, Heroic, Mythic and Mythic+ WCL results in their percentile
+  colors in every listing and Party view.
+- Separate target Fit from raw parses, with clear raid difficulty names,
+  group and player estimates, and visible explanations of the metrics.
+- Explain boss kill counts, overall/item-level boss parses and single-run
+  dungeon evidence without confusing them with best/median summaries.
+- Keep partial-group estimates and RaiderIO-only Fit available when WCL data
+  is incomplete, while preserving cached updates and stable table positioning.
+
+- Add an optional usage-sharing consent control, off by default. Reporting
+  remains inactive in this build because no collection service is configured.
 - Keep setup actions visible while scrolling on smaller screens.
 - Add a step-by-step setup guide and clearer Windows download instructions.
+
+### Fixed
+
 - Resume screenshot-folder validation after reopening Settings, and handle
   Escape consistently with the window's save and quit behavior.
 - Stop obsolete Warcraft Logs requests after credentials change or shutdown.
 - Prevent interrupted cache writes from restoring a cleared applicant snapshot.
 - Keep optional reporting failures from interrupting startup or Settings.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.10.0`.
+- Installer: `ApplicantScoutCompanionSetup-0.16.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.16.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.16.0-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.16.0-release-manifest.json`
 
 ## 0.15.2 - 08-Sep-2026
 
