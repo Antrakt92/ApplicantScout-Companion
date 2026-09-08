@@ -1286,6 +1286,11 @@ class SettingsDialog(QDialog):
     def showEvent(self, event):  # type: ignore[override]
         self._clamp_runtime_geometry()
         super().showEvent(event)
+        if (
+            self._screenshots_validation_ready_generation
+            != self._screenshots_validation_generation
+        ):
+            self._start_screenshots_validation(self.screenshots_edit.text().strip())
 
     def values(self) -> SettingsValues:
         return SettingsValues(
@@ -1417,6 +1422,14 @@ class SettingsDialog(QDialog):
         if self._block_credential_test_in_progress():
             return
         super().reject()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if not self._first_run and event.key() == Qt.Key.Key_Escape:
+            # Match the close button's save/quit policy when no tray is available.
+            self.close()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def done(self, result: int) -> None:  # type: ignore[override]
         self._cancel_screenshots_validation_process()
@@ -1727,6 +1740,8 @@ class SettingsDialog(QDialog):
         if process is None:
             return
         self._screenshots_validation_process = None
+        # A dismissed dialog can be reopened with the same pending path.
+        self._screenshots_validation_started_generation = None
         self._screenshots_validation_process_generation = None
         self._screenshots_validation_process_path = ""
         result_path = self._screenshots_validation_process_result_path

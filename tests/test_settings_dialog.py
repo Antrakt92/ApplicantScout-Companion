@@ -870,6 +870,44 @@ def test_settings_dialog_reject_kills_path_probe_and_removes_result(
     assert not result_path.exists()
 
 
+def test_settings_dialog_reopen_resumes_cancelled_path_validation(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(
+        lambda: dialog._screenshots_validation_ready_generation
+        == dialog._screenshots_validation_generation,
+        timeout=2000,
+    )
+    helper = tmp_path / "slow_reopen_probe.py"
+    helper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    original_probe = settings_mod._screenshots_path_probe_program_args
+    monkeypatch.setattr(
+        settings_mod, "_screenshots_path_probe_program_args",
+        lambda path, token: (sys.executable, [str(helper), path, token]),
+    )
+    pending = tmp_path / "second" / "_retail_" / "Screenshots"
+    (pending.parent / "Interface" / "AddOns").mkdir(parents=True)
+    saved = []
+    dialog.valuesChanged.connect(saved.append)
+    dialog.show()
+    dialog.screenshots_edit.setText(str(pending))
+    assert not dialog.flush_pending_values()
+    assert dialog._screenshots_validation_process is not None
+
+    dialog.reject()
+    assert dialog._screenshots_validation_process is None
+    monkeypatch.setattr(
+        settings_mod, "_screenshots_path_probe_program_args", original_probe,
+    )
+    dialog.show()
+
+    qtbot.waitUntil(lambda: bool(saved), timeout=2000)
+    assert saved[-1].screenshots_path == str(pending)
+    assert dialog.prepare_quit()
+
+
 def test_settings_dialog_destroy_cancels_active_path_probe(
     qtbot,
     tmp_path: Path,
@@ -2244,6 +2282,36 @@ def test_custom_titlebar_close_respects_no_tray_quit_policy(qtbot, tmp_path: Pat
     assert quit_requested == [True]
     assert dialog.close_button.accessibleName() == "Quit ApplicantScout"
     assert dialog.close_button.accessibleDescription() == "Quit ApplicantScout."
+
+
+def test_no_tray_escape_flushes_pending_values_and_quits(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.valuesChanged.connect(lambda values: seen.append(("saved", values.wcl_client_id)))
+    dialog.quitRequested.connect(lambda: seen.append(("quit", "")))
+    dialog.show()
+    dialog.client_id_edit.setText("new-client")
+
+    qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+
+    assert seen == [("saved", "new-client"), ("quit", "")]
+    assert not dialog.isVisible()
+
+
+def test_no_tray_escape_keeps_invalid_pending_values_visible(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), hide_to_tray_on_close=False)
+    qtbot.addWidget(dialog)
+    quit_requested = []
+    dialog.quitRequested.connect(lambda: quit_requested.append(True))
+    dialog.show()
+    dialog.client_id_edit.clear()
+
+    qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+
+    assert dialog.isVisible()
+    assert quit_requested == []
+    assert "client id" in dialog.status_label.text().lower()
 
 
 def test_no_tray_close_flushes_pending_text_values_before_quit(qtbot, tmp_path: Path):
