@@ -7,40 +7,48 @@
   <img alt="Warcraft Logs plus RaiderIO" src="https://img.shields.io/badge/WCL%20%2B%20RaiderIO-context-7c5cff?style=for-the-badge">
 </p>
 
-> The Windows overlay that turns ApplicantScout QR screenshots into Warcraft
-> Logs, RaiderIO, raid-fit, Mythic+ fit, and current-roster context.
+**Warcraft Logs and RaiderIO beside your WoW Group Finder.**
 
-ApplicantScout Companion is the required second half of
-[ApplicantScout](https://github.com/Antrakt92/ApplicantScout-Addon). The WoW
-addon captures Group Finder applicants and current party/raid rosters through
-normal screenshots; the companion decodes those screenshots, fetches Warcraft
-Logs data, reads optional local RaiderIO context, and renders the overlay.
+Compare Mythic+ and raid applicants, inspect players who applied together, and
+review your current party or raid. ApplicantScout puts their logs, scores, and
+experience in one table, with missing data clearly marked.
+
+**This free Windows app works with the
+[ApplicantScout WoW addon](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest).
+You need both installed and running to receive group data.**
+
+**[Download the Windows installer](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest)**
+· **[Setup guide](docs/GETTING_STARTED.md)**
+
+Choose `ApplicantScoutCompanionSetup-*.exe` under **Assets** on the download
+page. The installer is the usual choice; use the portable ZIP if you prefer to
+unpack and run the app yourself. Current Windows builds are unsigned, so
+SmartScreen may warn. See [Trust and local data](#trust-and-local-data).
+
+Setup requires a free Warcraft Logs account and an API Client ID/Secret.
+The guide shows how to create them. ApplicantScout does not ask for your
+Blizzard password.
 
 <p align="center">
-  <img src="docs/visual/overlay-polish-fixture.png" alt="ApplicantScout Companion applicant overlay with key fit and grouped applicant context" width="45%">
-  <img src="docs/visual/overlay-polish-fixture-party-manual-key.png" alt="ApplicantScout Companion Party view with roster context and manual key calibration" width="45%">
+  <img src="docs/visual/overlay-polish-fixture.png" alt="Windows companion: Mythic+ applicants with individual results and grouped applications" width="45%">
+  <img src="docs/visual/overlay-polish-fixture-party-manual-key.png" alt="Windows companion: Party view with current group members and a chosen target key" width="45%">
 </p>
 
-> [!IMPORTANT]
-> Install both pieces:
->
-> 1. [ApplicantScout WoW addon](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest)
-> 2. [ApplicantScout Companion for Windows](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest)
+## What You Can Check
 
-## What You Get
+- **Applicants:** Warcraft Logs performance, RaiderIO score, role, and item
+  level while your listing fills.
+- **Grouped applications:** each member's results and a combined Fit estimate
+  for players applying together.
+- **Party view:** the current party or raid after invites or after joining a
+  group.
+- **Dungeon and raid experience:** target-key Fit and dungeon history for
+  Mythic+, or progress and Fit for raid listings.
 
-- **Applicant overlay:** WCL, RaiderIO, role, item level, raid/M+ context, and
-  fit cells while your listing fills.
-- **Party view:** current party/raid roster context a few moments after invites
-  or after you join someone else's group.
-- **Grouped-applicant handling:** package-level fit without hiding each
-  character's own evidence.
-- **Raid and M+ aware scoring:** raid listings keep raid evidence primary; M+
-  listings focus on target-key fit and dungeon history.
-- **Missing-evidence states:** no logs and single-run medians stay visible
-  instead of pretending to be stable signal.
-- **Local-first setup:** WCL credentials, cache, logs, and settings stay under
-  your Windows user profile.
+Missing logs and limited run history are shown explicitly. Fit helps compare
+the available results; it does not predict whether the group will finish a key.
+M+ WCL values measure damage for all roles, including healers and tanks.
+See [Overlay data](#overlay-data) for the limits of each metric.
 
 ## Quick Start
 
@@ -56,7 +64,7 @@ Logs data, reads optional local RaiderIO context, and renders the overlay.
    Use `ApplicantScoutCompanionSetup-*.exe`; the portable ZIP is mainly for
    manual/dev use.
 3. Create Warcraft Logs API credentials:
-   1. Open https://www.warcraftlogs.com/api/clients/.
+   1. Sign in to [Warcraft Logs and open API Clients](https://www.warcraftlogs.com/api/clients/).
    2. Click **Create Client**.
    3. Name: anything clear, for example `ApplicantScoutPersonal`.
    4. Redirect URL: exactly `http://localhost`.
@@ -128,6 +136,11 @@ there while you review the group.
 
 ## Trust And Local Data
 
+**Optional usage statistics are off by default.** In Settings you can choose to
+share a random installation ID, version and daily setup/use milestones. Names,
+screenshots and credentials are excluded. You can turn sharing off at any time.
+Read [what is shared and retained](docs/PRIVACY.md).
+
 ApplicantScout Companion does not ask for Blizzard credentials or account
 access. It does not read WoW memory, inject code, automate gameplay, or send
 chat messages for transport.
@@ -136,6 +149,8 @@ Local files:
 
 - Config and WCL Client ID/Secret:
   `%LOCALAPPDATA%\applicant-scout\config\config.env`
+- Optional usage preference and reporting ID:
+  `%LOCALAPPDATA%\applicant-scout\config\usage.json`
 - OAuth token cache and WCL character cache:
   `%LOCALAPPDATA%\applicant-scout\cache\`
 - Decoded local RaiderIO lookup payload cache:
@@ -161,9 +176,9 @@ paths, keystone/listing metadata, and WCL/RaiderIO evidence.
 QR screenshots may remain if the companion is absent, interrupted, pointed at
 the wrong folder, or the Screenshots folder is synced/shared before cleanup.
 
-ApplicantScout has a signing-ready release pipeline, but public Windows builds
-remain unsigned until a code-signing certificate is configured with
-`APSCOUT_SIGNING_CERT_SHA1`. SmartScreen can still warn on first install.
+Current Windows builds are unsigned. SmartScreen can warn on first install
+and may show an unknown publisher. Download from the linked GitHub release
+and proceed only if you trust the source.
 The `.sha256` sidecar verifies file integrity, not publisher identity.
 
 ## Settings
@@ -239,6 +254,7 @@ through the slash commands below.
 /apscout on | off       enable/disable capture
 /apscout toggle         flip enabled state
 /apscout config         open/close settings panel
+/apscout setup          show companion download and setup
 /apscout status         show current state + QR diagnostics
 /apscout playstyle [off|learning|relaxed|competitive|carry] set M+ default playstyle
 /apscout reset          clear transport cache, queue fresh snapshot
@@ -303,6 +319,9 @@ build emits `dist\ApplicantScoutCompanionSetup-<version>.exe`, its matching
 the portable ZIP. Use `.\scripts\build-windows.ps1 -SkipInstaller` for a
 portable ZIP-only smoke build.
 
+ApplicantScout has a signing-ready release pipeline. Public Windows builds stay
+unsigned until a code-signing certificate is configured.
+
 If a code-signing certificate is installed in the Windows certificate store,
 set `APSCOUT_SIGNING_CERT_SHA1` to its certificate thumbprint before running the
 build. The script signs the installer with `signtool` before `.sha256`
@@ -325,7 +344,7 @@ applicant-scout cleanup-screenshots --delete
 
 Use GitHub Issues in `Antrakt92/ApplicantScout-Companion` for companion setup,
 installer, WCL, or overlay issues and `Antrakt92/ApplicantScout-Addon` for
-in-game addon issues. Keep support links out of the in-game addon UI.
+in-game addon issues.
 
 ## License
 

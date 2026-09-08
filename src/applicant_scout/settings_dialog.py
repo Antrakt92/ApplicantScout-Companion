@@ -69,6 +69,7 @@ from .screenshots_path_probe import (
     screenshots_path_probe_result_path as _screenshots_path_probe_result_path,
 )
 from .window_geometry import clamp_geometry_to_screens, clamp_rect_to_bounds
+from .usage import UsageClient, UsagePersistenceError
 
 
 CredentialTester = Callable[[str, str, str], str]
@@ -176,6 +177,7 @@ QDialog#wclSetupExampleDialog {
     color: #c8c0b5;
 }
 #warcraftLogsSection,
+#usageStatisticsSection,
 #scoutingSection {
     background: qlineargradient(
         x1: 0, y1: 0, x2: 1, y2: 1,
@@ -661,6 +663,7 @@ def _initial_screenshots_path(cfg: Config) -> str:
 
 
 class SettingsDialog(QDialog):
+    usageConsentChanged = pyqtSignal(bool)
     valuesChanged = pyqtSignal(object)
     credentialsValidated = pyqtSignal(object)
     quitRequested = pyqtSignal()
@@ -679,12 +682,14 @@ class SettingsDialog(QDialog):
         clear_cache: SimpleAction | None = None,
         check_updates: UpdateAction | None = None,
         hide_to_tray_on_close: bool = True,
+        usage_client: UsageClient | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("applicantScoutSettings")
         self.setStyleSheet(_SETTINGS_STYLESHEET)
         self._first_run = first_run
+        self._usage_client = usage_client
         self._hide_to_tray_on_close = hide_to_tray_on_close
         self._update_in_progress = False
         self._cache_action_in_progress = False
@@ -775,6 +780,40 @@ class SettingsDialog(QDialog):
             intro.setWordWrap(True)
             hero_layout.addWidget(intro)
             root.addWidget(hero)
+
+        usage_section, usage_root = _settings_section(
+            body,
+            object_name="usageStatisticsSection",
+            title="OPTIONAL USAGE STATISTICS",
+            hint=(
+                "Share a random installation ID, app version and daily setup/use milestones "
+                "to help improve setup. No names, screenshots, credentials or folder paths. "
+                "Events expire after 90 days."
+            ),
+        )
+        self.usage_check = QCheckBox("Share basic usage statistics", usage_section)
+        self.usage_check.setObjectName("shareUsageStatistics")
+        self.usage_check.setChecked(bool(usage_client and usage_client.consent_enabled))
+        self.usage_check.setEnabled(usage_client is not None)
+        self.usage_check.setAccessibleDescription(
+            "Optional. Off by default. Changes save immediately, even if setup is incomplete. "
+            "Turning this off stops future reporting and clears queued events and the local ID."
+        )
+        self.usage_check.toggled.connect(self._change_usage_consent)
+        usage_root.addWidget(self.usage_check)
+        usage_privacy = QLabel(
+            '<a href="https://github.com/Antrakt92/ApplicantScout-Companion/blob/main/docs/PRIVACY.md">'
+            'What is shared and how to turn it off</a>', usage_section
+        )
+        usage_privacy.setOpenExternalLinks(True)
+        usage_privacy.setWordWrap(True)
+        usage_root.addWidget(usage_privacy)
+        if usage_client is not None and not usage_client.collection_available:
+            usage_unavailable = QLabel(
+                "Usage reporting is disabled for this build or installation.", usage_section
+            )
+            usage_unavailable.setWordWrap(True)
+            usage_root.addWidget(usage_unavailable)
 
         wcl_section, wcl_root = _settings_section(
             body,
@@ -994,6 +1033,7 @@ class SettingsDialog(QDialog):
         self.sync_with_wow_check.setChecked(cfg.sync_with_wow)
         scouting_form.addRow("", self.sync_with_wow_check)
 
+        root.addWidget(usage_section)
         root.addStretch(1)
 
         self.status_label = QLabel("")
@@ -1038,7 +1078,12 @@ class SettingsDialog(QDialog):
         self.test_button.clicked.connect(self._test_credentials)
         footer_layout.addWidget(self.test_button)
         footer_layout.addWidget(self._build_more_actions_button(footer))
-        root.addWidget(footer)
+        actions = QWidget(self)
+        actions.setObjectName("settingsActions")
+        actions_root = QVBoxLayout(actions)
+        actions_root.setContentsMargins(14, 0, 14, 14)
+        actions_root.setSpacing(8)
+        actions_root.addWidget(footer)
 
         if first_run:
             buttons = QHBoxLayout()
@@ -1063,7 +1108,7 @@ class SettingsDialog(QDialog):
             self.start_button.setDefault(True)
             self.start_button.clicked.connect(self.accept)
             buttons.addWidget(self.start_button)
-            root.addLayout(buttons)
+            actions_root.addLayout(buttons)
         self.body_scroll = _SettingsScrollArea(self)
         self.body_scroll.setObjectName("settingsScroll")
         self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1072,7 +1117,8 @@ class SettingsDialog(QDialog):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.body_scroll.setWidget(body)
-        outer.addWidget(self.body_scroll)
+        outer.addWidget(self.body_scroll, stretch=1)
+        outer.addWidget(actions)
         self._connect_value_change_signals()
         self._schedule_screenshots_warning(self.screenshots_edit.text())
         self.client_id_edit.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -1286,6 +1332,23 @@ class SettingsDialog(QDialog):
     def showEvent(self, event):  # type: ignore[override]
         self._clamp_runtime_geometry()
         super().showEvent(event)
+
+    def _change_usage_consent(self, enabled: bool) -> None:
+        if self._usage_client is None:
+            return
+        try:
+            self._usage_client.set_consent(enabled)
+        except UsagePersistenceError:
+            with QSignalBlocker(self.usage_check):
+                self.usage_check.setChecked(self._usage_client.consent_enabled)
+            self.set_status(
+                "Usage reporting is off for this session, but the preference could not be saved. "
+                "The previous choice may return after restart. "
+                "Check that your Windows settings folder is writable.", error=True
+            )
+            self.usageConsentChanged.emit(False)
+            return
+        self.usageConsentChanged.emit(enabled)
 
     def values(self) -> SettingsValues:
         return SettingsValues(

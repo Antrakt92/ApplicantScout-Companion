@@ -69,6 +69,13 @@ class FakeMachine:
         self.snapshots.append(snap)
 
 
+@pytest.fixture
+def immediate_snapshot_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These signal-gate tests use synchronous fakes; Qt's session application
+    # may already exist when another test module runs first.
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", lambda callback: callback())
+
+
 class _LifecycleTimer:
     def __init__(
         self,
@@ -4040,6 +4047,109 @@ def test_main_claims_control_server_before_loading_startup_config(
     assert "packaged=False, watch_wow=False" in caplog.text
 
 
+@pytest.fixture
+def usage_main_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from unittest.mock import MagicMock
+    import signal
+
+    timeline: list[str] = []
+    cfg = _cfg(tmp_path, screenshots_path=tmp_path / "Screenshots")
+    usage_client = SimpleNamespace(
+        record=lambda event: timeline.append(event),
+        close=lambda: timeline.append("usage-close"),
+    )
+
+    def create_usage(state_dir, version, *, test_installation):
+        assert state_dir == cfg.config_dir
+        assert version == main_mod.__version__
+        assert test_installation is False
+        timeline.append("usage-init")
+        return usage_client
+
+    def load_startup():
+        timeline.append("config-ready")
+        return cfg, cfg.screenshots_path, False
+
+    _stub_setup_logging(monkeypatch)
+    monkeypatch.delenv("APSCOUT_USAGE_TEST_INSTALLATION", raising=False)
+    monkeypatch.setattr(main_mod, "UsageClient", create_usage)
+    monkeypatch.setattr(main_mod, "user_config_path", lambda: cfg.config_dir / "config.env")
+    monkeypatch.setattr(main_mod, "_load_startup_config", load_startup)
+    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
+    monkeypatch.setattr(main_mod, "_prepare_wow_watch_mode", lambda args: (args, False, None))
+    monkeypatch.setattr(main_mod, "_send_control_command", lambda *_args, **_kwargs: SimpleNamespace(
+        connected=False, written=False, response=None,
+    ))
+    monkeypatch.setattr(main_mod, "_create_control_server", lambda *_args, **_kwargs: (
+        timeline.append("owned") or object()
+    ))
+    # Keep main's wiring and lifecycle real while replacing GUI/network/storage
+    # dependencies. Timers do not execute callbacks in this harness.
+    for name in (
+        "QApplication", "QTimer", "_WowSyncStartupConfigurator", "WCLAuth",
+        "CharacterCache", "LiveSnapshotCacheWriter", "WCLClient", "StateMachine",
+        "_raiderio_reader_for_screenshots_path", "OverlayWindow", "_validate_oauth_async",
+        "_app_icon", "UpdateSignals", "_UpdateHandoffRecoveryController",
+    ):
+        monkeypatch.setattr(main_mod, name, MagicMock())
+    monkeypatch.setattr(signal, "signal", MagicMock())
+    monkeypatch.setattr(main_mod, "_create_tray_controller", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_mod, "_restore_live_snapshot_cache", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(main_mod, "_start_initial_screenshot_watcher", lambda *_args, **_kwargs: None)
+    run_loop = MagicMock(side_effect=lambda *_args, **_kwargs: timeline.append("event-loop") or 0)
+    monkeypatch.setattr(main_mod, "_run_application_event_loop", run_loop)
+    return SimpleNamespace(timeline=timeline, client=usage_client, run_loop=run_loop)
+
+
+def test_main_usage_records_setup_only_after_config_ready_and_closes(usage_main_harness):
+    assert main_mod.main([]) == 0
+    assert usage_main_harness.timeline == [
+        "owned", "usage-init", "config-ready", "setup_completed", "event-loop", "usage-close",
+    ]
+
+
+def test_main_usage_startup_cancel_closes_without_setup(
+    usage_main_harness, monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(main_mod, "_load_startup_config", lambda: None)
+    assert main_mod.main([]) == 1
+    assert usage_main_harness.timeline == ["owned", "usage-init", "usage-close"]
+    usage_main_harness.run_loop.assert_not_called()
+
+
+def test_main_usage_event_loop_error_still_closes(usage_main_harness):
+    usage_main_harness.run_loop.side_effect = RuntimeError("event loop failed")
+    with pytest.raises(RuntimeError, match="event loop failed"):
+        main_mod.main([])
+    assert usage_main_harness.timeline == [
+        "owned", "usage-init", "config-ready", "setup_completed", "usage-close",
+    ]
+
+
+@pytest.mark.parametrize("mode", ["shutdown", "probe", "cleanup", "watch-exit", "duplicate"])
+def test_main_usage_not_initialized_for_early_exit(
+    usage_main_harness, monkeypatch: pytest.MonkeyPatch, mode: str,
+):
+    args: list[str] = []
+    if mode == "shutdown":
+        args = [main_mod.CONTROL_SHUTDOWN_ARG]
+        monkeypatch.setattr(main_mod, "_shutdown_running_instance", lambda: 0)
+    elif mode == "probe":
+        args = [main_mod.SCREENSHOTS_PATH_PROBE_ARG, "path", "token"]
+        monkeypatch.setattr(main_mod, "run_screenshots_path_probe_command", lambda *_args: 0)
+    elif mode == "cleanup":
+        args = ["cleanup-screenshots"]
+        monkeypatch.setattr(main_mod, "_run_cleanup_screenshots_command", lambda *_args: 0)
+    elif mode == "watch-exit":
+        monkeypatch.setattr(main_mod, "_prepare_wow_watch_mode", lambda args: (args, True, 0))
+    else:
+        monkeypatch.setattr(main_mod, "_send_control_command", lambda *_args, **_kwargs: SimpleNamespace(
+            connected=True, written=True, response=b"ok",
+        ))
+    assert main_mod.main(args) == 0
+    assert usage_main_harness.timeline == []
+
+
 def test_main_control_server_uses_guarded_quit_callback(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -6206,6 +6316,7 @@ def test_replace_screenshot_watcher_marks_old_stopped_before_deferred_stop(
     assert calls == ["start:new", "request-stop:old", "stop:old"]
 
 
+@pytest.mark.usefixtures("immediate_snapshot_apply")
 def test_replace_screenshot_watcher_ignores_old_queued_signals_after_replacement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6310,6 +6421,7 @@ def test_snapshot_source_gate_rejects_late_lower_tiebreak_source():
     assert not gate.accept(older)
 
 
+@pytest.mark.usefixtures("immediate_snapshot_apply")
 def test_connect_screenshot_watcher_ignores_stale_snapshot_after_newer_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6360,6 +6472,7 @@ def test_connect_screenshot_watcher_ignores_stale_snapshot_after_newer_snapshot(
     assert window.decoded == [newer]
 
 
+@pytest.mark.usefixtures("immediate_snapshot_apply")
 def test_connect_screenshot_watcher_ignores_reverse_equal_mtime_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6398,6 +6511,7 @@ def test_connect_screenshot_watcher_ignores_reverse_equal_mtime_snapshot(
     assert machine.snapshots == [newer]
 
 
+@pytest.mark.usefixtures("immediate_snapshot_apply")
 def test_connect_screenshot_watcher_ignores_stale_decode_failure_after_newer_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7714,6 +7828,7 @@ def test_snapshot_apply_queue_keeps_terminal_clear_before_new_state(
         assert restored is None
 
 
+@pytest.mark.usefixtures("immediate_snapshot_apply")
 def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7765,6 +7880,7 @@ def test_replace_screenshot_watcher_restores_old_generation_when_new_start_fails
     assert machine.snapshots == ["old-after-failed-replace"]
 
 
+@pytest.mark.usefixtures("immediate_snapshot_apply")
 def test_replace_screenshot_watcher_keeps_new_generation_when_old_stop_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7822,6 +7938,7 @@ def test_replace_screenshot_watcher_keeps_new_generation_when_old_stop_fails(
     assert machine.snapshots == ["new-after-replace"]
 
 
+@pytest.mark.usefixtures("immediate_snapshot_apply")
 def test_replace_screenshot_watcher_keeps_committed_replacement_owned_when_hook_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

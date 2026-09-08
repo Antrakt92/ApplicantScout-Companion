@@ -1,5 +1,12 @@
 # ApplicantScout Companion Release Notes
 
+## Unreleased
+
+- Add optional usage statistics, off by default, with a separate consent control
+  and no character names, screenshots or credentials in reports.
+- Keep setup actions visible while scrolling on smaller screens.
+- Add a step-by-step setup guide and clearer Windows download instructions.
+
 ## 0.15.2 - 08-Sep-2026
 
 Paired release with ApplicantScout addon `0.9.16`.
