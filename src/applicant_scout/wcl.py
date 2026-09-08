@@ -821,6 +821,13 @@ class WCLClient:
 
     def run_auth_validation(self, validation: _WCLAuthValidation) -> None:
         """Run a fresh OAuth probe and ignore stale/reconfigured completion."""
+        with self._quota_lock:
+            if (
+                self._closed
+                or validation.auth_generation != self._auth_generation
+                or validation.status_revision != self._connection_status_revision
+            ):
+                return
         try:
             validation.auth.probe_online()
         except WCLAuthError as exc:
@@ -974,6 +981,11 @@ class WCLClient:
             elif error_kind == WCL_ERROR_NETWORK:
                 self._network_retry_until = time.time() + WCL_NETWORK_RETRY_SECONDS
 
+    def _require_current_auth(self, auth_generation: int) -> None:
+        with self._quota_lock:
+            if self._closed or auth_generation != self._auth_generation:
+                raise WCLApiError("Request cancelled because the WCL connection changed.")
+
     def _post_graphql_with_auth_retry(
         self,
         auth: WCLAuth,
@@ -981,6 +993,7 @@ class WCLClient:
         body: dict[str, object],
     ) -> httpx.Response:
         for attempt in range(2):
+            self._require_current_auth(auth_generation)
             try:
                 token = auth.get_token()
             except WCLAuthError as exc:
@@ -989,6 +1002,9 @@ class WCLClient:
             except (httpx.TimeoutException, httpx.RequestError):
                 self._set_network_retry_if_current(auth_generation)
                 raise
+            # OAuth can block while Settings replaces credentials or shutdown
+            # retires the client. Do not start another request for that work.
+            self._require_current_auth(auth_generation)
             try:
                 resp = self._http.post(
                     WCL_API_URL,
@@ -1003,7 +1019,7 @@ class WCLClient:
                     is_current_auth = auth_generation == self._auth_generation
                 if is_current_auth:
                     auth.invalidate()
-                continue
+                    continue
             if resp.status_code in (401, 403):
                 raise WCLApiError(
                     f"Authentication failed (HTTP {resp.status_code})",

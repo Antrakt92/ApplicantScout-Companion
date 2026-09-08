@@ -969,6 +969,7 @@ def test_fetch_character_raid_boss_details_stale_401_does_not_invalidate_old_aut
 
     assert excinfo.value.error_kind == WCL_ERROR_AUTH
     assert auth.invalidations == 0
+    assert len(client._http.calls) == 1
 
 
 def test_fetch_character_ranks_healer_routes_mplus_to_dps_breakdown():
@@ -1337,7 +1338,7 @@ def test_auth_validation_status_is_generation_safe_and_secret_free():
     client.reconfigure_auth(new_auth, validated=True)  # type: ignore[arg-type]
     client.run_auth_validation(validation)
 
-    assert old_auth.probes == 1
+    assert old_auth.probes == 0
     assert client.connection_status.state == "oauth_ready"
     assert client.connection_status.error_kind == ""
     assert "raw provider body" not in repr(client.connection_status)
@@ -1352,7 +1353,7 @@ def test_late_auth_validation_cannot_overwrite_newer_api_result():
     client.record_api_result(succeeded=False, error_kind=WCL_ERROR_NETWORK)
     client.run_auth_validation(validation)
 
-    assert auth.probes == 1
+    assert auth.probes == 0
     assert client.connection_status.state == "error"
     assert client.connection_status.error_kind == WCL_ERROR_NETWORK
 
@@ -1368,7 +1369,7 @@ def test_settings_validation_of_same_auth_invalidates_old_startup_probe():
     client.mark_active_auth_validated()
     client.run_auth_validation(validation)
 
-    assert auth.probes == 1
+    assert auth.probes == 0
     assert client.connection_status.state == "oauth_ready"
     assert client.connection_status.error_kind == ""
 
@@ -1432,7 +1433,7 @@ def test_late_auth_validation_completion_after_close_is_ignored():
     client.close()
     client.run_auth_validation(validation)
 
-    assert auth.probes == 1
+    assert auth.probes == 0
     assert client.connection_status.state == "unknown"
 
 
@@ -1449,6 +1450,81 @@ def test_cancel_auth_validation_clears_only_current_checking_state():
 
     client.cancel_auth_validation(second)
     assert client.connection_status.state == "unknown"
+    client.run_auth_validation(first)
+    client.run_auth_validation(second)
+    assert auth.probes == 0
+
+
+@pytest.mark.parametrize("retire", ["close", "reconfigure"])
+def test_in_flight_auth_validation_completion_still_ignores_retired_connection(retire):
+    class RetiringProbeAuth(_ProbeAuth):
+        def probe_online(self):
+            super().probe_online()
+            if retire == "close":
+                client.close()
+            else:
+                client.reconfigure_auth(_FakeAuth(), validated=True)
+            raise WCLAuthError("retired response", error_kind=WCL_ERROR_AUTH)
+
+    auth = RetiringProbeAuth()
+    client = WCLClient(auth)
+    validation = client.begin_auth_validation()
+    assert validation is not None
+    client.run_auth_validation(validation)
+    assert auth.probes == 1
+    assert client.connection_status.state == (
+        "unknown" if retire == "close" else "oauth_ready"
+    )
+
+
+@pytest.mark.parametrize("retire", ["close", "reconfigure"])
+@pytest.mark.parametrize("details", [False, True])
+def test_oauth_completion_after_connection_retired_does_not_send_graphql(retire, details):
+    class RetiringAuth(_FakeAuth):
+        def get_token(self):
+            if retire == "close":
+                client.close()
+            else:
+                client.reconfigure_auth(_FakeAuth())
+            return super().get_token()
+
+    client = WCLClient(RetiringAuth())
+    client._http.close()
+    http = _FakeHTTP(_wcl_payload(None))
+    client._http = http
+    fetch = (
+        client.fetch_character_raid_boss_details
+        if details
+        else client.fetch_character_ranks
+    )
+    with pytest.raises(WCLApiError, match="cancelled"):
+        fetch(
+            "Scout",
+            "ravencrest",
+            spec_id=71,
+            metric_preferences=MetricPreferences(mplus=True, raid_mythic=True),
+        )
+    assert http.calls == []
+
+
+def test_fetch_after_close_does_not_request_oauth_token():
+    class CountingAuth(_FakeAuth):
+        calls = 0
+
+        def get_token(self):
+            self.calls += 1
+            return super().get_token()
+
+    auth = CountingAuth()
+    client = WCLClient(auth)
+    client._http.close()
+    http = _FakeHTTP(_wcl_payload(None))
+    client._http = http
+    client.close()
+    with pytest.raises(WCLApiError, match="cancelled"):
+        client.fetch_character_ranks("Scout", "ravencrest", spec_id=71)
+    assert auth.calls == 0
+    assert http.calls == []
 
 
 def test_reconfigure_auth_ignores_stale_quota_snapshot_from_in_flight_fetch():
@@ -1520,6 +1596,7 @@ def test_reconfigure_auth_ignores_stale_401_invalidation():
 
     assert excinfo.value.error_kind == WCL_ERROR_AUTH
     assert old_auth.invalidations == 0
+    assert client._http.calls == 1
 
 
 def test_quota_snapshot_near_limit_does_not_soft_block_fetch(
