@@ -1,11 +1,29 @@
 # ApplicantScout Companion Release Notes
 
-## Unreleased
+## 0.15.2 - 08-Sep-2026
+
+Paired release with ApplicantScout addon `0.9.16`.
+
+### Fixed
 
 - Ignore malformed cached timestamps without preventing startup or discarding
   other valid character data.
 - Preserve other file writes when saving settings or caches fails.
 - Show the raid difficulty evidence actually used by the Fit calculation.
+- Preserve applicant data when Group Finder temporarily withholds application
+  status, and reject invalid numeric snapshot values in the paired addon.
+
+### Maintenance
+
+- Update the packaged dependencies and build tools.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.9.16`.
+- Installer: `ApplicantScoutCompanionSetup-0.15.2.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.15.2.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.15.2-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.15.2-release-manifest.json`
 
 ## 0.15.1 - 05-Sep-2026
 
