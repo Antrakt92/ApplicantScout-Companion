@@ -49,10 +49,15 @@ def test_dependabot_covers_python_and_github_actions_on_a_bounded_schedule():
     assert config.count('package-ecosystem: "github-actions"') == 1
     assert config.count('directory: "/"') == 2
     assert config.count('interval: "weekly"') == 2
-    assert config.count("open-pull-requests-limit: 5") == 2
+    assert config.count("open-pull-requests-limit: 1") == 1
+    assert config.count("open-pull-requests-limit: 2") == 1
     assert config.count("default-days: 14") == 2
+    assert "python-dependencies:" in config
     assert "codeql-actions:" in config
     assert '          - "github/codeql-action/*"' in config
+    assert "workflow-actions:" in config
+    assert config.index("codeql-actions:") < config.index("workflow-actions:")
+    assert config.count('          - "*"') == 2
 
 
 def test_security_policy_documents_python_and_lua_coverage_boundary():
