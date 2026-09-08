@@ -6,6 +6,11 @@
   and no character names, screenshots or credentials in reports.
 - Keep setup actions visible while scrolling on smaller screens.
 - Add a step-by-step setup guide and clearer Windows download instructions.
+- Resume screenshot-folder validation after reopening Settings, and handle
+  Escape consistently with the window's save and quit behavior.
+- Stop obsolete Warcraft Logs requests after credentials change or shutdown.
+- Prevent interrupted cache writes from restoring a cleared applicant snapshot.
+- Keep optional reporting failures from interrupting startup or Settings.
 
 ## 0.15.2 - 08-Sep-2026
 
