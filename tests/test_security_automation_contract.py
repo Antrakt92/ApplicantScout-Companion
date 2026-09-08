@@ -58,6 +58,9 @@ def test_dependabot_covers_python_and_github_actions_on_a_bounded_schedule():
     assert "workflow-actions:" in config
     assert config.index("codeql-actions:") < config.index("workflow-actions:")
     assert config.count('          - "*"') == 2
+    actions_config = config.split('package-ecosystem: "github-actions"', 1)[1]
+    cooldown = actions_config.split("    cooldown:\n", 1)[1].split("    groups:", 1)[0]
+    assert '      exclude:\n        - "github/codeql-action/*"' in cooldown
 
 
 def test_security_policy_documents_python_and_lua_coverage_boundary():
@@ -95,6 +98,7 @@ def test_image_decoder_requires_security_fixed_pillow():
 
 def test_dependency_advisories_checks_exact_pins_without_installs_or_write_permissions():
     workflow = _read(".github/workflows/dependency-advisories.yml")
+    advisory_job = workflow.split("  submit-release-graph:", 1)[0]
     assert "python scripts/check_dependency_advisories.py" in workflow
     assert "pull_request:" in workflow and "push:" in workflow
     assert "schedule:" in workflow and "workflow_dispatch:" in workflow
@@ -102,6 +106,6 @@ def test_dependency_advisories_checks_exact_pins_without_installs_or_write_permi
     assert "persist-credentials: false" in workflow
     assert "timeout-minutes: 10" in workflow
     for forbidden in (": write", "pip install", "secrets.", "continue-on-error", "pull_request_target"):
-        assert forbidden not in workflow
+        assert forbidden not in advisory_job
     for action, ref in re.findall(r"(?m)^\s*uses:\s*([^@\s]+)@([^\s#]+)", workflow):
         assert _FULL_SHA.fullmatch(ref), f"{action} must be pinned to a full commit SHA"

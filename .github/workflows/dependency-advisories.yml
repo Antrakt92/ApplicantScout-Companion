@@ -29,3 +29,48 @@ jobs:
 
       - name: Check known PyPI advisories for every release pin
         run: python scripts/check_dependency_advisories.py
+
+  submit-release-graph:
+    if: >-
+      github.repository == 'Antrakt92/ApplicantScout-Companion' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: release-dependency-graph
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+
+      - name: Build exact release dependency snapshot
+        run: python scripts/build_dependency_snapshot.py --output "$RUNNER_TEMP/release-dependency-snapshot.json"
+
+      - name: Submit current default-branch snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_sha=$(gh api repos/Antrakt92/ApplicantScout-Companion/git/ref/heads/main --jq '.object.sha')
+          if [ "$current_sha" != "$GITHUB_SHA" ]; then
+            echo "Skip superseded commit; only the current default branch may update the graph."
+            exit 0
+          fi
+          result=$(gh api --method POST repos/Antrakt92/ApplicantScout-Companion/dependency-graph/snapshots \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            --input "$RUNNER_TEMP/release-dependency-snapshot.json" \
+            --jq '.result')
+          test "$result" = 'SUCCESS'

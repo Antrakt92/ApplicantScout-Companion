@@ -20,10 +20,13 @@ paired `ApplicantScout-Addon` release train.
   schedule. Release installation and artifact builds require this check to
   succeed. Active advisories, invalid input, and unavailable or incomplete
   responses fail the check. Ordinary local tests remain available offline.
-- This covers known advisories exposed by PyPI for the pinned versions; it
-  does not prove an absence of vulnerabilities or resolve GitHub's dependency
-  graph. The graph may show unversioned direct dependencies and must not be
-  treated as equivalent to the checked release constraints.
+- A separate trusted `main` job submits every exact release pin to GitHub's
+  dependency graph. Only this submission job has repository write access;
+  pull requests cannot submit snapshots. The manifest records versions without
+  inventing dependency relationships or runtime scope.
+- The advisory check covers known advisories exposed by PyPI for the pinned
+  versions. It remains independent of graph submission and does not prove an
+  absence of vulnerabilities.
 - CodeQL does not support Lua. The paired addon's Lua boundary is covered by
   pinned LuaLS diagnostics, Lua 5.1 syntax checks, behavioral contract tests,
   and review; this is complementary static coverage, not a claim that Lua is
