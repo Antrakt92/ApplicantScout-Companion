@@ -26,6 +26,8 @@ from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTr
 from . import __version__
 from . import runtime_control as _runtime_control
 from . import snapshot_pipeline as _snapshot_pipeline
+from .usage import UsageClient
+from .usage_events import UsageActivity
 from .atomic_io import (
     apply_private_directory_mode,
     apply_private_file_mode,
@@ -3665,6 +3667,7 @@ def _run_first_run_settings(
     dialog = SettingsDialog(
         cfg,
         first_run=True,
+        usage_client=getattr(QApplication.instance(), "_usage_client", None),
         credential_tester=lambda client_id, client_secret, region: (
             _test_wcl_credentials(
                 cfg.cache_dir,
@@ -3989,13 +3992,23 @@ def main(argv: list[str] | None = None) -> int:
         None,
     )
 
+    usage_client = UsageClient(
+        user_config_path().parent,
+        __version__,
+        test_installation=os.environ.get("APSCOUT_USAGE_TEST_INSTALLATION") == "1",
+    )
+    setattr(app, "_usage_client", usage_client)
+    if about_to_quit is not None:
+        about_to_quit.connect(usage_client.close)
     loaded = _load_startup_config()
     if loaded is None:
+        usage_client.close()
         if isinstance(runtime_owner, _RuntimeOwner):
             runtime_owner.close()
         return 1
 
     cfg, screenshots_dir, startup_settings_shown = loaded
+    usage_client.record("setup_completed")
     region = cfg.region or REGION_ID_TO_WCL.get(3, "EU")  # default EU
     region_runtime = _WCLRegionRuntime(region)
     log.info("Screenshots: %s", screenshots_dir)
@@ -4097,6 +4110,7 @@ def main(argv: list[str] | None = None) -> int:
         dialog = SettingsDialog(
             cfg,
             first_run=False,
+            usage_client=usage_client,
             credential_tester=lambda client_id, client_secret, region: (
                 _test_wcl_credentials(
                     cfg.cache_dir,
@@ -4220,6 +4234,14 @@ def main(argv: list[str] | None = None) -> int:
                 tray_controller.set_update_available(None)
 
         dialog.valuesChanged.connect(_handle_values_changed)
+
+        def _usage_consent_changed(enabled: bool) -> None:
+            if window.usage_activity is not None:
+                window.usage_activity.reset()
+            if enabled:
+                usage_client.record("setup_completed")
+
+        dialog.usageConsentChanged.connect(_usage_consent_changed)
         dialog.credentialsValidated.connect(_handle_credentials_validated)
         dialog.updateStarted.connect(window.flush_geometry)
         dialog.updateStarted.connect(lambda: _set_update_in_progress(True))
@@ -4243,6 +4265,7 @@ def main(argv: list[str] | None = None) -> int:
         game_foreground_probe=is_wow_foreground,
     )
     _validate_oauth_async(wcl_client)
+    window.usage_activity = UsageActivity(usage_client)
     window_ref["window"] = window
     window.setWindowIcon(_app_icon())
     show_settings_action.set_callback(_show_settings)
@@ -4446,19 +4469,22 @@ def main(argv: list[str] | None = None) -> int:
     if watcher is not None:
         log.info("Ready. Overlay will appear when applicants are present.")
 
-    return _run_application_event_loop(
-        app,
-        wow_sync_startup_configurator=wow_sync_startup_configurator,
-        sync_with_wow=cfg.sync_with_wow,
-        watcher_getter=lambda: watcher,
-        window=window,
-        cache=cache,
-        live_snapshot_writer=live_snapshot_writer,
-        wcl_client=wcl_client,
-        runtime_owner=(
-            runtime_owner if isinstance(runtime_owner, _RuntimeOwner) else None
-        ),
-    )
+    try:
+        return _run_application_event_loop(
+            app,
+            wow_sync_startup_configurator=wow_sync_startup_configurator,
+            sync_with_wow=cfg.sync_with_wow,
+            watcher_getter=lambda: watcher,
+            window=window,
+            cache=cache,
+            live_snapshot_writer=live_snapshot_writer,
+            wcl_client=wcl_client,
+            runtime_owner=(
+                runtime_owner if isinstance(runtime_owner, _RuntimeOwner) else None
+            ),
+        )
+    finally:
+        usage_client.close()
 
 
 if __name__ == "__main__":

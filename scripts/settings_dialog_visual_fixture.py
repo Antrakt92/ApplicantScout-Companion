@@ -5,14 +5,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from applicant_scout import __version__
 from applicant_scout.config import Config
 from applicant_scout.metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
 )
 from applicant_scout.settings_dialog import SettingsDialog
+from applicant_scout.usage import UsageClient
 from scripts.visual_fixture_checks import VisualFixtureDiff, compare_visual_images
 
 if TYPE_CHECKING:
@@ -179,14 +182,30 @@ def create_settings_visual_dialog(
     hide_to_tray_on_close: bool = True,
 ) -> SettingsDialog:
     resolved = resolve_settings_visual_scenario(scenario)
-    dialog = SettingsDialog(
-        _visual_config(
-            first_run=resolved.first_run,
-            blank_credentials=resolved.blank_credentials,
-        ),
-        first_run=resolved.first_run,
-        hide_to_tray_on_close=hide_to_tray_on_close,
+    # Exercise the real consent UI without a live endpoint or user settings.
+    usage_state = TemporaryDirectory(prefix="appscout-visual-usage-")
+    usage = UsageClient(
+        Path(usage_state.name),
+        __version__,
+        endpoint="https://usage.example.invalid/v1/events",
+        _sender=lambda _endpoint, _payload: 204,
     )
+    try:
+        dialog = SettingsDialog(
+            _visual_config(
+                first_run=resolved.first_run,
+                blank_credentials=resolved.blank_credentials,
+            ),
+            first_run=resolved.first_run,
+            hide_to_tray_on_close=hide_to_tray_on_close,
+            usage_client=usage,
+        )
+    except Exception:
+        usage.close()
+        usage_state.cleanup()
+        raise
+    dialog.destroyed.connect(usage.close)
+    dialog.destroyed.connect(usage_state.cleanup)
     _stabilize_dialog_inputs(dialog, first_run=resolved.first_run)
     if resolved.prepare_dialog is not None:
         resolved.prepare_dialog(dialog)

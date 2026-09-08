@@ -76,6 +76,7 @@ from .constants import (
     rio_score_colour,
 )
 from .compatibility import addon_version_warning
+from .usage_events import UsageActivity
 from . import overlay_presenters as _presenters
 from . import overlay_rows as _overlay_rows
 from .metric_preferences import (
@@ -3010,6 +3011,7 @@ class OverlayWindow(QMainWindow):
         super().__init__()
 
         self._state = state
+        self.usage_activity: UsageActivity | None = None
         self._wcl_client = wcl_client
         self._cache = cache
         self._config_dir = config_dir
@@ -4115,6 +4117,10 @@ class OverlayWindow(QMainWindow):
         Keep each restored surface guarded through apply, then release only the
         surfaces the fresh snapshot authoritatively carried.
         """
+        activity = getattr(self, "usage_activity", None)
+        if isinstance(activity, UsageActivity):
+            activity.snapshot_applied(snap)
+            self._record_usage_rows()
         if not self.restored_snapshot_pending():
             return
 
@@ -4877,6 +4883,18 @@ class OverlayWindow(QMainWindow):
             self._update_table_interaction_rows(changed_rows)
             if batch_updates:
                 self.update()
+        self._record_usage_rows()
+
+    def _record_usage_rows(self) -> None:
+        activity = getattr(self, "usage_activity", None)
+        if isinstance(activity, UsageActivity):
+            rows = self._active_row_map()
+            activity.rows_rendered(
+                (rows[key] for index, key in enumerate(self._id_by_row)
+                 if key in rows and not self._table.isRowHidden(index)),
+                visible=self.isVisible() and not self.restored_snapshot_pending(),
+                surface=self._active_tab,
+            )
 
     def _reset_panel_height_reservation(self) -> None:
         self._panel_reserved_height = INFO_PANEL_PREFERRED_HEIGHT

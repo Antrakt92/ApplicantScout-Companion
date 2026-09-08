@@ -1331,7 +1331,7 @@ def test_settings_dialog_uses_wow_native_sections_and_focus_treatment(
         label.text()
         for label in dialog.findChildren(QLabel, "settingsSectionTitle")
     }
-    assert section_titles == {"WARCRAFT LOGS", "SCOUTING"}
+    assert section_titles == {"WARCRAFT LOGS", "SCOUTING", "OPTIONAL USAGE STATISTICS"}
     stylesheet = dialog.styleSheet()
     assert "#warcraftLogsSection" in stylesheet
     assert "#scoutingSection" in stylesheet

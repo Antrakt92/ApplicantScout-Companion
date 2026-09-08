@@ -1,9 +1,11 @@
 # ApplicantScout Companion Docs
 
-This folder holds contributor-facing companion docs and generated visual
-fixtures.
+This folder holds setup instructions, privacy information, contributor docs
+and generated visual fixtures.
 
 - User setup and current support links: `../README.md`.
+- [Step-by-step setup](GETTING_STARTED.md).
+- [Optional usage statistics and privacy](PRIVACY.md).
 - Installer and portable build notes: `../RELEASE_NOTES.md`.
 - Overlay visual baselines: `visual/overlay-polish-fixture*.png`. From the
   repository root, check all scenarios with
