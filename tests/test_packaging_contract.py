@@ -1611,7 +1611,7 @@ def test_release_checklist_documents_paired_tag_push_sequence():
 def test_release_checklist_documents_asset_wait_recovery_path():
     checklist = _read_repo_text("RELEASE_CHECKLIST.md")
 
-    assert "180-second" in checklist
+    assert "900-second" in checklist
     assert "do not rerun the tag workflow" in checklist
     assert "recover-preupload-release.yml" in checklist
     assert "confirm_preupload_timeout=true" in checklist
