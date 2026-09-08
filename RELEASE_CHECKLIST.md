@@ -86,6 +86,16 @@ proves the immutable public copy and assets.
 
 ## Publish
 
+Before preparing the paired tags, compare the addon's release TOC and README
+with the installed Retail client. From the addon checkout run:
+
+```powershell
+.\scripts\check-retail-client-interface.ps1 -WowExecutablePath '<path-to-Wow.exe>'
+```
+
+The check requires one exact Interface value and a matching README compatibility
+line. Resolve any mismatch against the installed client before creating tags.
+
 Before creating or pushing release tags, enable **Release immutability** under
 the companion repository's release settings. Configure the repository secret
 `RELEASE_SETTINGS_READ_TOKEN` as a fine-grained token limited to this repository
@@ -113,8 +123,10 @@ the queue to publish multiple drafts.
 
    Do not wait for the companion workflow to finish before pushing the addon
    tag. The companion and addon workflows first wait for the opposite tag; the
-   addon workflow later has a separate 180-second wait for published companion
-   assets before BigWigs publishes marketplace files.
+   addon workflow later has a separate 900-second wait for published companion
+   assets before BigWigs publishes marketplace files. Publish the verified
+   companion draft promptly after the updater smoke so the paired addon can
+   complete without recovery.
 2. Confirm the companion `Build and release` GitHub Actions workflow completed
    with a verified draft release, then record its numeric run ID. The publish
    gate downloads the retained run-attempt-specific release Actions artifact from
@@ -180,7 +192,7 @@ the queue to publish multiple drafts.
    Approved/Released file. If marketplace propagation is delayed, rerun only
    that verification job; never retry the already completed upload.
 7. If the addon workflow fails only because companion assets were not public
-   inside the 180-second wait, do not rerun the tag workflow: it deliberately
+   inside the 900-second wait, do not rerun the tag workflow: it deliberately
    rejects later attempts so an uncertain marketplace outcome cannot upload
    twice. The addon's scheduled `Auto-recover pre-upload paired release`
    workflow rechecks the exact failed run every 15 minutes and dispatches the
