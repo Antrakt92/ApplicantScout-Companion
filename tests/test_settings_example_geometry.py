@@ -1,4 +1,7 @@
 from pathlib import Path
+import os
+import subprocess
+import sys
 
 import pytest
 from PyQt6.QtCore import QPoint, QRect, Qt
@@ -92,8 +95,9 @@ def test_wcl_example_fits_small_work_area_with_close_outside_scroll(
 
 
 @pytest.mark.parametrize("screen_size", [(640, 480), (400, 400)])
+@pytest.mark.parametrize("cursor_at_end", [False, True])
 def test_wcl_example_fields_and_copy_buttons_remain_reachable_by_scrolling(
-    qtbot, tmp_path: Path, monkeypatch, screen_size
+    qtbot, tmp_path: Path, monkeypatch, screen_size, cursor_at_end
 ):
     copied = []
 
@@ -115,10 +119,20 @@ def test_wcl_example_fields_and_copy_buttons_remain_reachable_by_scrolling(
         button = popup.findChild(QPushButton, button_name)
         assert field is not None and button is not None
         assert field.isReadOnly() and field.text() == expected
+        field.setCursorPosition(len(field.text()) if cursor_at_end else 0)
         for control in (field, button):
             assert scroll.isAncestorOf(control)
             scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
-            scroll.ensureWidgetVisible(control)
+            content = scroll.widget()
+            assert content is not None
+            rect = _rect_in(control, content)
+            # QLineEdit's ensureWidgetVisible target is its input cursor, which
+            # may already be visible while the field's border is clipped.
+            # Exercise reachability of the entire control, not that cursor.
+            scroll.ensureVisible(
+                rect.center().x(), rect.center().y(),
+                rect.width() // 2 + 1, rect.height() // 2 + 1,
+            )
             QApplication.processEvents()
             assert viewport.rect().contains(_rect_in(control, viewport))
         qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
@@ -146,3 +160,21 @@ def test_missing_example_image_keeps_instructions_and_close_reachable(
     QApplication.processEvents()
     assert scroll.viewport().rect().contains(_rect_in(image, scroll.viewport()))
     assert available.contains(popup.frameGeometry())
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows release-runner style matrix")
+def test_wcl_example_controls_with_windows_release_runner_style(qapp):
+    # CI uses Windows Server at 100% scaling; a Windows 11 developer desktop at
+    # 125% has different cursor/border rounding. Isolate the second QApplication
+    # in a child process so neither the desktop nor this suite changes style/DPI.
+    child_env = os.environ.copy()
+    current_scale = float(child_env.get("QT_SCALE_FACTOR", "1"))
+    child_env["QT_SCALE_FACTOR"] = str(current_scale / qapp.devicePixelRatio())
+    child_env["QT_STYLE_OVERRIDE"] = "windowsvista"
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(Path(__file__).resolve()),
+         "-q", "-k", "fields_and_copy_buttons", "--tb=short"],
+        cwd=Path(__file__).resolve().parents[1], env=child_env,
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

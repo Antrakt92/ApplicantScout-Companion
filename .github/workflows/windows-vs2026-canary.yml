@@ -63,7 +63,11 @@ jobs:
 
       - name: Install Lua 5.1
         shell: pwsh
-        run: choco install lua51 --version=5.1.5 -y --no-progress
+        run: |
+          if (-not [Environment]::Is64BitOperatingSystem) { throw "Pinned Lua package requires a 64-bit Windows runner" }
+          # Pin the LuaBinaries lua-5.1.5_Win64_bin.zip payload, including when the package uses HTTP.
+          choco install lua51 --version=5.1.5 -y --no-progress --checksum64=5f34cf7d40a20a587ea351482a4207d93b92ef6f1983e910a13338253819fe93 --checksumtype64=sha256
+          if ($LASTEXITCODE -ne 0) { throw "Lua 5.1 installation failed with exit code $LASTEXITCODE" }
 
       - name: Install Inno Setup
         shell: pwsh
