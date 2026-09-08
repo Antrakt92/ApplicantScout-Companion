@@ -610,16 +610,29 @@ def show_overlay_visual_window(
 ) -> None:
     prepare_overlay_visual_window(window, scenario)
     window.show()
+    previous_geometry = None
     for _ in range(8):
         process_events()
         viewport = window._table.viewport()
+        card = window._panel_scroll
+        card_viewport = card.viewport()
+        if card_viewport is None:
+            continue
+        geometry = (
+            window.geometry(), card.geometry(), card_viewport.geometry(),
+            window._panel.geometry(), window._table.geometry(),
+        )
         if (
             viewport is not None
             and viewport.width() > 0
             and window._panel.height() >= window._panel.target_height()
             and window._panel.minimumHeight() == window._panel.height()
+            and card.geometry().bottom() < window._table.geometry().top()
+            and card_viewport.height() <= card.height()
+            and geometry == previous_geometry
         ):
             return
+        previous_geometry = geometry
     raise RuntimeError("Overlay visual fixture did not settle before screenshot")
 
 

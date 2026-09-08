@@ -6,6 +6,7 @@ Pure data tests; no QApplication required (sort fn touches no Qt symbols)."""
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 
 import pytest
 
@@ -383,7 +384,7 @@ def test_all_sunk_group_keeps_members_adjacent():
     assert [a.applicant_id for a in sorted_apps] == ["10:1", "10:2"]
 
 
-def test_mplus_listing_sorts_by_context_fit_before_rio():
+def test_equal_mplus_best_parses_use_context_fit_before_rio():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -439,7 +440,7 @@ def test_mplus_listing_sorts_by_context_fit_before_rio():
     assert [a.applicant_id for a in sorted_apps] == ["1:1", "2:1"]
 
 
-def test_mplus_group_sort_uses_package_fit_not_best_member_only():
+def test_equal_mplus_best_parses_use_package_fit_not_best_member_only():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -534,7 +535,7 @@ def test_mplus_same_displayed_fit_sorts_by_confidence_before_hidden_decimal(
         assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
 
 
-def test_mplus_mixed_wave_orders_by_package_fit_status_and_group_adjacency():
+def test_mplus_mixed_wave_orders_known_parses_before_fallback_and_keeps_groups():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -682,10 +683,10 @@ def test_mplus_mixed_wave_orders_by_package_fit_status_and_group_adjacency():
     assert [a.applicant_id for a in sorted_apps] == [
         "10:1",
         "40:1",
-        "20:1",
         "30:1",
         "30:2",
         "50:1",
+        "20:1",
         "60:1",
     ]
 
@@ -734,7 +735,7 @@ def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
 
 
-def test_mplus_not_found_with_strong_scorecard_evidence_sorts_by_fit():
+def test_mplus_known_parse_precedes_stronger_rio_only_fit():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -775,7 +776,7 @@ def test_mplus_not_found_with_strong_scorecard_evidence_sorts_by_fit():
 
     sorted_apps = sort_applicants_grouped([ready_lower_fit, no_wcl_strong_rio], listing)
 
-    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
+    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
 
 
 def test_mplus_loading_scorecard_fit_stays_below_visible_ready_fit():
@@ -890,7 +891,7 @@ def test_mplus_unknown_key_sorts_by_visible_mplus_headline_before_rio():
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1", "30:1"]
 
 
-def test_mplus_unknown_key_prioritises_highest_key_before_percentile():
+def test_mplus_unknown_key_prioritises_percentile_before_highest_key():
     listing = Listing(
         activity_id=401,
         dungeon_name="Mythic+",
@@ -943,7 +944,7 @@ def test_mplus_unknown_key_prioritises_highest_key_before_percentile():
         listing,
     )
 
-    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
+    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
 
 
 def test_mplus_unknown_key_group_uses_weakest_member_headline():
@@ -998,6 +999,141 @@ def test_mplus_unknown_key_group_uses_weakest_member_headline():
         ],
     )
 
+    superstar.mplus_dps = 99.0
+    weak_friend.mplus_dps = 10.0
+    solid_solo.mplus_dps = 70.0
+
     sorted_apps = sort_applicants_grouped([weak_friend, solid_solo, superstar], listing)
 
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1", "10:2"]
+
+
+# Known content contexts rank the same best percentile the table displays.
+def _parse_listing(context):
+    raid = isinstance(context, int)
+    return Listing(
+        activity_id=0,
+        dungeon_name="Raid" if raid else "Mythic+",
+        listing_name="Raid" if raid else "Mythic+",
+        comment="",
+        key_level=0 if raid or context == "mplus_unknown" else 16,
+        category_id=3 if raid else 2,
+        difficulty_id=context if raid else 8,
+    )
+
+
+def _parse_row(aid, best, context, *, member=1, score=0, status="ready", median=50):
+    app = _app(
+        aid=aid, m=member, score=score, fetch_status=status,
+        dps_breakdown=[dict(
+            name="Skyreach", key_level=16, parse_percent=90,
+            median_percent=80, run_count=3,
+        )],
+    )
+    if isinstance(context, int):
+        field = {14: "raid_normal", 15: "raid_heroic", 16: "raid_mythic"}[context]
+        return replace(app, **{field: best, field + "_median": median})
+    return replace(app, mplus_dps=best, mplus_dps_median=median)
+
+
+@pytest.mark.parametrize("role", ["DAMAGER", "TANK", "HEALER"])
+def test_visible_mplus_best_parse_overrides_opposing_fit_and_rio(role):
+    listing = _parse_listing("mplus")
+    high_parse_low_fit = replace(
+        _parse_row(10, 95.0, "mplus", median=10), role=role, mplus_hps=1,
+        mplus_dps_breakdown=[dict(
+            name="Skyreach", key_level=6, parse_percent=95,
+            median_percent=10, run_count=2,
+        )],
+    )
+    lower_parse_high_fit = replace(
+        _parse_row(20, 45.0, "mplus", score=3500, median=45), role=role, mplus_hps=99,
+        mplus_dps_breakdown=[dict(
+            name="Skyreach", key_level=16, parse_percent=75,
+            median_percent=70, run_count=8,
+        )],
+    )
+    assert scoring.candidate_fit(high_parse_low_fit, listing).score < (
+        scoring.candidate_fit(lower_parse_high_fit, listing).score
+    )
+
+    result = sort_applicants_grouped([lower_parse_high_fit, high_parse_low_fit], listing)
+
+    assert [app.applicant_id for app in result] == ["10:1", "20:1"]
+
+
+@pytest.mark.parametrize("difficulty", [14, 15, 16])
+def test_visible_raid_best_parse_beats_median_fit_and_other_difficulties(difficulty):
+    listing = _parse_listing(difficulty)
+    high_best = replace(
+        _parse_row(10, 90.0, difficulty, median=0),
+        raid_normal=10.0, raid_normal_median=10.0,
+        raid_heroic=10.0, raid_heroic_median=10.0,
+        raid_mythic=10.0, raid_mythic_median=10.0,
+    )
+    low_best = replace(
+        _parse_row(20, 70.0, difficulty, score=3500, median=70),
+        raid_normal=100.0, raid_normal_median=100.0,
+        raid_heroic=100.0, raid_heroic_median=100.0,
+        raid_mythic=100.0, raid_mythic_median=100.0,
+    )
+    field = {14: "raid_normal", 15: "raid_heroic", 16: "raid_mythic"}[difficulty]
+    high_best = replace(high_best, **{field: 90.0, field + "_median": 0.0})
+    low_best = replace(low_best, **{field: 70.0, field + "_median": 70.0})
+    assert scoring.candidate_fit(high_best, listing).score < (
+        scoring.candidate_fit(low_best, listing).score
+    )
+
+    result = sort_applicants_grouped([low_best, high_best], listing)
+
+    assert [app.applicant_id for app in result] == ["10:1", "20:1"]
+
+
+@pytest.mark.parametrize("context", ["mplus", "mplus_unknown", 14, 15, 16])
+@pytest.mark.parametrize("invalid", [None, -1, 101, float("nan"), float("inf"), True, "bad"])
+def test_valid_zero_best_parse_precedes_missing_or_invalid_best(context, invalid):
+    zero = _parse_row(20, 0.0, context, median=0)
+    missing = _parse_row(10, invalid, context, score=4000, median=100)
+
+    result = sort_applicants_grouped([missing, zero], _parse_listing(context))
+
+    assert [app.applicant_id for app in result] == ["20:1", "10:1"]
+
+
+@pytest.mark.parametrize("context", ["mplus", "mplus_unknown", 15])
+@pytest.mark.parametrize("status", ["pending", "loading", "error", "not_found", "restricted"])
+def test_hidden_stale_parse_cannot_outrank_visible_ready_zero(context, status):
+    stale = _parse_row(10, 100.0, context, status=status, score=4000, median=100)
+    zero = _parse_row(20, 0.0, context, median=0)
+
+    result = sort_applicants_grouped([stale, zero], _parse_listing(context))
+
+    assert [app.applicant_id for app in result] == ["20:1", "10:1"]
+
+
+@pytest.mark.parametrize("context", ["mplus", "mplus_unknown", 14, 15, 16])
+def test_parse_sorted_groups_use_weakest_best_and_keep_member_order(context):
+    superstar = _parse_row(10, 99.0, context, member=1, score=3500)
+    weak_friend = _parse_row(10, 10.0, context, member=2, score=3500)
+    balanced_lead = _parse_row(20, 60.0, context, member=1)
+    balanced_friend = _parse_row(20, 50.0, context, member=2)
+    solo = _parse_row(30, 55.0, context)
+
+    result = sort_applicants_grouped(
+        [weak_friend, balanced_friend, solo, superstar, balanced_lead],
+        _parse_listing(context),
+    )
+
+    assert [app.applicant_id for app in result] == ["30:1", "20:1", "20:2", "10:1", "10:2"]
+
+
+@pytest.mark.parametrize("context", ["mplus", "mplus_unknown", 15])
+@pytest.mark.parametrize("status,best", [("ready", None), ("loading", 100), ("error", 100)])
+def test_one_unknown_member_makes_package_parse_unknown_without_splitting(context, status, best):
+    leader = _parse_row(10, 100.0, context, member=1, score=4000)
+    unknown_friend = _parse_row(10, best, context, member=2, status=status, score=4000)
+    solo_zero = _parse_row(20, 0.0, context, median=0)
+
+    result = sort_applicants_grouped([unknown_friend, leader, solo_zero], _parse_listing(context))
+
+    assert [app.applicant_id for app in result] == ["20:1", "10:1", "10:2"]

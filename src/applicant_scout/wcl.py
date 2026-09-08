@@ -115,22 +115,26 @@ def _build_character_ranks_query(
     if metric_preferences.raid_normal:
         raid_lines.append(
             "      raidNormal: zoneRankings(zoneID: $raidZoneID, "
-            "difficulty: 3, metric: $raidMetric)"
+            "difficulty: 3, metric: $raidMetric, specName: $specName)"
         )
     if metric_preferences.raid_heroic:
         raid_lines.append(
             "      raidHeroic: zoneRankings(zoneID: $raidZoneID, "
-            "difficulty: 4, metric: $raidMetric)"
+            "difficulty: 4, metric: $raidMetric, specName: $specName)"
         )
     if metric_preferences.raid_mythic:
         raid_lines.append(
             "      raidMythic: zoneRankings(zoneID: $raidZoneID, "
-            "difficulty: 5, metric: $raidMetric)"
+            "difficulty: 5, metric: $raidMetric, specName: $specName)"
         )
     metric_blocks = "\n".join([*raid_lines, encounters_block]).rstrip()
     raid_vars = ""
     if metric_preferences.raid_enabled:
-        raid_vars = ",\n                     $raidZoneID: Int!,\n                     $raidMetric: CharacterPageRankingMetricType"
+        raid_vars = (
+            ",\n                     $raidZoneID: Int!,"
+            "\n                     $raidMetric: CharacterPageRankingMetricType,"
+            "\n                     $specName: String!"
+        )
 
     q = f"""
 query CharacterRanks($name: String!, $serverSlug: String!, $serverRegion: String!{raid_vars}) {{
@@ -1058,9 +1062,8 @@ class WCLClient:
     ) -> CharacterRanks:
         """One query → raid (3 difficulties) + 8 per-encounter M+ rankings.
 
-        spec_id: WoW retail spec ID. Used to filter encounter runs to that spec
-            only — Dsk80 example proved spec critical: as Blood at +15 = 82,
-            as Unholy at +15 = 7. spec_id=0 → no filter (rare; mostly debug).
+        spec_id: WoW retail spec ID. Both raid summaries and M+ runs must belong
+            to this spec. Unknown specs return no rankings without a request.
         role: TANK/DAMAGER/HEALER. Determines:
             - Raid metric (dps for tank+damager, hps for healer).
             - M+ encounter metric is DPS for every role; only one metric is
@@ -1082,6 +1085,11 @@ class WCLClient:
         )
         if not metric_preferences.any_enabled:
             return CharacterRanks.empty()
+        spec_name = SPEC_ID_TO_WCL_NAME.get(spec_id, "")
+        # WCL zoneRankings defaults to all specs when its filter is omitted.
+        # An unknown snapshot must never borrow another spec's raid history.
+        if spec_id <= 0 or not spec_name:
+            return CharacterRanks.empty()
         now = time.time()
         with self._quota_lock:
             auth = self._auth
@@ -1100,22 +1108,6 @@ class WCLClient:
         # would query a different region than the caller passed to cache.get.
         region_used = region if region is not None else self.region
         raid_metric = ROLE_TO_RAID_METRIC.get(role, "dps")
-        spec_name = (
-            SPEC_ID_TO_WCL_NAME.get(spec_id, "") if metric_preferences.mplus else ""
-        )
-        # Unknown / unmapped spec_id: SPEC_ID_TO_WCL_NAME returns "" so the
-        # downstream spec filter would silently let all of the applicant's
-        # OTHER specs into the result. Log loud — _process_encounter_ranks
-        # short-circuits to None (M+ cell shows "—") rather than ship wrong-spec
-        # numbers. Trips for unmapped retail spec_ids (future expansions, or
-        # garbage values from a corrupted snapshot).
-        if metric_preferences.mplus and spec_id != 0 and not spec_name:
-            _log.warning(
-                "Unmapped spec_id=%d (no SPEC_ID_TO_WCL_NAME entry) — M+ "
-                "breakdown for %s will be empty to avoid mixing other specs",
-                spec_id,
-                name,
-            )
         query = _build_character_ranks_query(role, metric_preferences)
         variables: dict[str, object] = {
             "name": name,
@@ -1125,6 +1117,7 @@ class WCLClient:
         if metric_preferences.raid_enabled:
             variables["raidZoneID"] = CURRENT_RAID_ZONE_ID
             variables["raidMetric"] = raid_metric
+            variables["specName"] = spec_name
         body = {"query": query, "variables": variables}
 
         resp = self._post_graphql_with_auth_retry(auth, auth_generation, body)
@@ -1900,7 +1893,9 @@ class _CacheSaveSnapshot:
 # raid evidence from partial WCL responses.
 # v7 = healer M+ evidence uses DPS; pre-v7 healer entries contain HPS-shaped
 # data and must not survive the metric change.
-_CACHE_VERSION = 7
+# v8 = raid summaries filter to the applying spec; pre-v8 raid aggregates
+# combine specs even though their cache keys already contain a spec ID.
+_CACHE_VERSION = 8
 
 
 class CharacterCache:

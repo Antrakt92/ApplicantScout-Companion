@@ -15,7 +15,6 @@ from .scoring import (
     effective_rio_score,
     package_fit,
     positive_int,
-    role_mplus_view,
 )
 from .state import Applicant, Listing
 
@@ -99,13 +98,6 @@ def highest_mplus_key_level(breakdown: Iterable[object]) -> int:
     return highest
 
 
-def mplus_headline_sort_score(applicant: Applicant) -> tuple[int, float]:
-    if applicant.fetch_status in _SUNK_STATES:
-        return (0, 0.0)
-    _metric_label, breakdown, best, _median = role_mplus_view(applicant)
-    return (highest_mplus_key_level(breakdown), float(best or 0.0))
-
-
 def sort_applicants_grouped_with_package_fits(
     applicants: Iterable[Applicant],
     listing: Listing | None = None,
@@ -121,15 +113,11 @@ def sort_applicants_grouped_with_package_fits(
     group_max: dict[str, int] = {}
     group_fit: dict[str, float] = {}
     group_confidence: dict[str, float] = {}
-    group_mplus_headline: dict[str, tuple[int, float]] = {}
+    group_parse: dict[str, float | None] = {}
     group_has_ready: dict[str, bool] = {}
     group_has_provisional: dict[str, bool] = {}
     use_fit = detect_listing_context(listing) in (CONTEXT_MPLUS, CONTEXT_RAID)
-    use_mplus_headline = (
-        not use_fit
-        and listing is not None
-        and listing.category_id == _MPLUS_CATEGORY_ID
-    )
+    use_parse = use_fit or (listing is not None and listing.category_id == _MPLUS_CATEGORY_ID)
     group_members: dict[str, list[Applicant]] = {}
     for applicant in apps:
         raw_aid, _ = split_composite(applicant.applicant_id)
@@ -144,7 +132,7 @@ def sort_applicants_grouped_with_package_fits(
     if package_fit_cache is not None:
         for stale_raw_aid in set(package_fit_cache) - set(group_members):
             package_fit_cache.pop(stale_raw_aid, None)
-    if use_fit:
+    if use_parse:
         for raw_aid, members in group_members.items():
             fit_cache_key = (
                 fit_cache_context,
@@ -163,29 +151,27 @@ def sort_applicants_grouped_with_package_fits(
                 if package_fit_cache is not None:
                     package_fit_cache[raw_aid] = (fit_cache_key, fit)
             package_fits[raw_aid] = fit
-            for member, member_fit in zip(members, fit.member_fits, strict=True):
-                candidate_fits[member.applicant_id] = member_fit
+            if use_fit:
+                for member, member_fit in zip(members, fit.member_fits, strict=True):
+                    candidate_fits[member.applicant_id] = member_fit
             group_fit[raw_aid] = fit.score
             group_confidence[raw_aid] = fit.confidence
-    elif use_mplus_headline:
-        for raw_aid, members in group_members.items():
-            group_mplus_headline[raw_aid] = min(
-                (mplus_headline_sort_score(member) for member in members),
-                default=(0, 0.0),
-            )
+            group_parse[raw_aid] = fit.parse_percentile
 
     def _key(applicant: Applicant):
         raw_aid, member_idx = split_composite(applicant.applicant_id)
         group_rio = group_max.get(raw_aid, 0)
         group_score = group_fit.get(raw_aid, 0.0)
         group_confidence_score = group_confidence.get(raw_aid, 0.0)
-        headline_key, headline_percent = group_mplus_headline.get(raw_aid, (0, 0.0))
+        parse_percentile = group_parse.get(raw_aid)
         all_sunk = not group_has_ready.get(raw_aid, False)
         provisional = group_has_provisional.get(raw_aid, False)
         sunk = applicant.fetch_status in _SUNK_STATES
         if use_fit:
             no_fit = group_score <= 0.0
             return (
+                parse_percentile is None,
+                -parse_percentile if parse_percentile is not None else 0.0,
                 no_fit,
                 provisional if not no_fit else False,
                 all_sunk if no_fit else False,
@@ -197,12 +183,11 @@ def sort_applicants_grouped_with_package_fits(
                 member_idx,
                 sunk,
             )
-        if use_mplus_headline:
+        if use_parse:
             return (
+                parse_percentile is None,
+                -parse_percentile if parse_percentile is not None else 0.0,
                 all_sunk,
-                headline_key <= 0,
-                -headline_key,
-                -headline_percent,
                 -group_rio,
                 raw_aid,
                 member_idx,

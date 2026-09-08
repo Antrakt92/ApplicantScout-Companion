@@ -83,7 +83,8 @@ def test_mplus_dual_cell_keeps_raw_evidence_for_mplus_listing():
 
     assert item.text() == "80/62 +14"
     assert item.background().color().name() == QColor(percentile_colour(80.0)).name()
-    assert _fit_cell(_app(), _mplus_listing()).text().isdigit()
+    fit_text = _fit_cell(_app(), _mplus_listing()).text()
+    assert fit_text.startswith("~") and fit_text[1:].isdigit()
 
 
 def test_mplus_dual_cell_listing_error_status_precedes_stale_fit():
@@ -114,7 +115,7 @@ def test_fit_cell_listing_not_found_can_show_scorecard_fit():
         listing,
     )
 
-    assert item.text().isdigit()
+    assert item.text().startswith("~") and item.text()[1:].isdigit()
     assert item.background().style() != 0
 
 

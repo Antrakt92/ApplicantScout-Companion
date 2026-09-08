@@ -15,6 +15,7 @@ from applicant_scout.overlay import (
     COL_MPLUS,
     COL_FIT,
     COL_RIO,
+    FIT_BACKGROUND,
     INFO_PANEL_PREFERRED_HEIGHT,
     METRIC_COLUMN_TEXT_PADDING,
     MPLUS_TARGET_KEY_MAX,
@@ -622,9 +623,11 @@ def test_cleared_raid_listing_preserves_party_raid_difficulty(qtbot, tmp_path):
     assert listing.difficulty_id == 15
     assert win._active_tab == "party"
     assert win._title_bar.title_label.text() == "Party — Manaforge Omega (1)"
-    assert win._table.item(0, COL_FIT).text().startswith(
-        ("Good ", "Fair ", "Risk ", "Support ", "Estimate ")
-    )
+    fit_item = win._table.item(0, COL_FIT)
+    assert fit_item.text().startswith("~")
+    assert fit_item.text()[1:].isdigit()
+    assert "Heroic" in win._table.horizontalHeaderItem(COL_FIT).text()
+    assert not win._table.isColumnHidden(COL_H)
 
 
 def test_authoritative_party_replacement_clears_preserved_raid_context(
@@ -1393,7 +1396,8 @@ def test_manual_target_key_recomputes_pinned_party_evidence_text(qtbot, tmp_path
     win._tab_bar._key_spin.setValue(10)
     win._refresh_table()
     win._sync_delegate_and_panel()
-    assert "Target +10" in win._panel._status_label.text()
+    assert "Target +10" in win._panel._metric_labels["Fit"].toolTip()
+    assert win._panel._status_label.isHidden()
 
     win._tab_bar._key_spin.setValue(12)
     assert win._manual_target_key == 12
@@ -1409,8 +1413,9 @@ def test_manual_target_key_recomputes_pinned_party_evidence_text(qtbot, tmp_path
     assert "Target +12" in win._panel._mplus_fit_status_text(
         member, win._effective_listing()
     )
-    assert "Target +12" in win._panel._status_label.text()
-    assert "Target +10" not in win._panel._status_label.text()
+    assert "Target +12" in win._panel._metric_labels["Fit"].toolTip()
+    assert "Target +10" not in win._panel._metric_labels["Fit"].toolTip()
+    assert win._panel._status_label.isHidden()
 
 
 def test_listing_change_recomputes_party_mplus_cells(qtbot, tmp_path):
@@ -1517,9 +1522,12 @@ def test_raid_listing_separates_fit_from_coloured_raw_parses(
 
     win._refresh_table()
 
-    assert win._table.item(0, COL_FIT).text().startswith("Good ")
+    fit_item = win._table.item(0, COL_FIT)
+    assert fit_item.text().startswith("~")
+    assert fit_item.text()[1:].isdigit()
+    assert fit_item.background().color().name() == FIT_BACKGROUND
     assert "82/82" in win._table.item(0, COL_H).text()
-    assert win._table.item(0, COL_MPLUS).text() == "44 1/dungeon +18"
+    assert win._table.item(0, COL_MPLUS).text() == "44 +18"
     _text, _fg, mplus_bg = _mplus_cell_visuals(applicant, win._effective_listing())
     assert mplus_bg is not None
 
@@ -1556,7 +1564,8 @@ def test_raid_fit_column_expands_to_fit_rendered_text(qtbot, tmp_path):
         QFontMetrics(item.font()).horizontalAdvance(item.text())
         + METRIC_COLUMN_TEXT_PADDING
     )
-    assert item.text().startswith("Good ")
+    assert item.text().startswith("~")
+    assert item.text()[1:].isdigit()
     assert "82/82" == win._table.item(0, COL_H).text()
     assert win._table.columnWidth(COL_FIT) >= required
 
@@ -1590,9 +1599,17 @@ def test_raid_listing_forces_disabled_target_column_with_estimated_fit(
     win._refresh_table()
 
     assert not win._table.isColumnHidden(COL_H)
-    assert win._table.item(0, COL_FIT).text().startswith("Estimate ")
+    fit_item = win._table.item(0, COL_FIT)
+    assert fit_item.text().startswith("~")
+    assert fit_item.text()[1:].isdigit()
+    assert fit_item.background().color().name() == FIT_BACKGROUND
     assert win._table.item(0, COL_H).text() == "—"
     assert win._table.item(0, COL_M).text() == "70/60"
+    win._on_cell_clicked(0, COL_FIT)
+    fit_badge = win._panel._metric_labels["Fit"]
+    assert fit_badge.text().startswith("Fit · Heroic: Estimate ~")
+    assert "Target: Heroic" in fit_badge.toolTip()
+    assert "M 70/60" in fit_badge.toolTip()
 
 
 def test_raid_listing_target_column_keeps_loading_state(qtbot, tmp_path):

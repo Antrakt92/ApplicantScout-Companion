@@ -10,10 +10,11 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import httpx
 
@@ -33,6 +34,7 @@ _SELF_UPDATE_FLAG = "/APSCOUT_SELFUPDATE=1"
 _MAX_INSTALLER_DOWNLOAD_BYTES = 256 * 1024 * 1024
 _MAX_CHECKSUM_DOWNLOAD_BYTES = 8 * 1024
 _AUTHENTICODE_TIMEOUT_SECONDS = 15
+_UPDATE_NETWORK_TIMEOUT_SECONDS = 15
 _TRUSTED_SIGNER_CERT_SHA256: frozenset[str] = frozenset()
 _UPDATE_INSTALLER_STALE_AGE_SECONDS = 30 * 24 * 60 * 60
 _UPDATE_INSTALLER_MAX_FILES = 4
@@ -54,6 +56,72 @@ class UpdateResult:
     asset_name: str | None = None
     checksum_url: str | None = None
     checksum_name: str | None = None
+
+
+@dataclass(frozen=True)
+class UpdateProgress:
+    phase: Literal["checking", "downloading", "verifying", "installing"]
+    downloaded_bytes: int = 0
+    total_bytes: int | None = None
+
+    @property
+    def message(self) -> str:
+        if self.phase == "downloading":
+            if self.total_bytes:
+                percent = min(100, self.downloaded_bytes * 100 // self.total_bytes)
+                return f"Downloading update… {percent}%"
+            return f"Downloading update… {self.downloaded_bytes / (1024 * 1024):.1f} MB"
+        return {
+            "checking": "Checking update…",
+            "verifying": "Verifying update…",
+            "installing": "Installing update…",
+        }[self.phase]
+
+
+class UpdateCancelled(RuntimeError):
+    """Cancellation acknowledged before installer handoff."""
+
+
+class UpdateDownloadControl:
+    """Per-attempt cancellation and bounded progress delivery across GUI/worker threads."""
+
+    def __init__(self, on_progress: Callable[[UpdateProgress], None] | None = None) -> None:
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._installing = False
+        self._on_progress = on_progress
+        self._last_progress: UpdateProgress | None = None
+        self._last_report_at = 0.0
+
+    def cancel(self) -> bool:
+        with self._lock:
+            if self._installing:
+                return False
+            self._cancelled = True
+            return True
+
+    def checkpoint(self) -> None:
+        with self._lock:
+            if self._cancelled:
+                raise UpdateCancelled("Update cancelled.")
+
+    def begin_installation(self) -> None:
+        with self._lock:
+            if self._cancelled:
+                raise UpdateCancelled("Update cancelled.")
+            self._installing = True
+        self.report(UpdateProgress("installing"))
+
+    def report(self, progress: UpdateProgress) -> None:
+        now = time.monotonic()
+        with self._lock:
+            previous = self._last_progress
+            if previous is not None and previous.phase == progress.phase and now - self._last_report_at < 0.1:
+                return
+            self._last_progress = progress
+            self._last_report_at = now
+        if self._on_progress is not None:
+            self._on_progress(progress)
 
 
 @dataclass(frozen=True)
@@ -410,12 +478,16 @@ def _raise_if_response_too_large(response: Any, *, limit: int, label: str) -> No
         raise RuntimeError(f"Update {label} is too large.")
 
 
-def _read_capped_response_bytes(response: Any, *, limit: int, label: str) -> bytes:
+def _read_capped_response_bytes(
+    response: Any, *, limit: int, label: str, control: UpdateDownloadControl | None = None,
+) -> bytes:
     response.raise_for_status()
     _raise_if_response_too_large(response, limit=limit, label=label)
     chunks: list[bytes] = []
     total = 0
     for chunk in response.iter_bytes():
+        if control is not None:
+            control.checkpoint()
         if not chunk:
             continue
         total += len(chunk)
@@ -450,12 +522,18 @@ def _write_capped_response_to_file(
     *,
     limit: int,
     label: str,
+    control: UpdateDownloadControl | None = None,
 ) -> str:
     response.raise_for_status()
     _raise_if_response_too_large(response, limit=limit, label=label)
     digest = hashlib.sha256()
     total = 0
+    length = _content_length(response)
+    if control is not None:
+        control.report(UpdateProgress("downloading", 0, length))
     for chunk in response.iter_bytes():
+        if control is not None:
+            control.checkpoint()
         if not chunk:
             continue
         total += len(chunk)
@@ -463,6 +541,8 @@ def _write_capped_response_to_file(
             raise RuntimeError(f"Update {label} is too large.")
         digest.update(chunk)
         handle.write(chunk)
+        if control is not None:
+            control.report(UpdateProgress("downloading", total, length))
     return digest.hexdigest()
 
 
@@ -471,6 +551,7 @@ def download_update_installer(
     *,
     download_dir: Path | None = None,
     client: httpx.Client | None = None,
+    control: UpdateDownloadControl | None = None,
 ) -> Path:
     """Download the selected setup asset and return its local path.
 
@@ -489,12 +570,15 @@ def download_update_installer(
     if not checksum_url or not checksum_name:
         raise RuntimeError("Latest release does not include an installer checksum.")
 
+    if control is not None:
+        control.checkpoint()
     target_dir = download_dir or _default_update_download_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / asset_name
 
     owns_client = client is None
-    http = client or httpx.Client(timeout=120.0, follow_redirects=True)
+    # Bound cancellation latency while an HTTP operation is waiting for data.
+    http = client or httpx.Client(timeout=_UPDATE_NETWORK_TIMEOUT_SECONDS, follow_redirects=True)
     fd = -1
     tmp_path: Path | None = None
     try:
@@ -505,6 +589,7 @@ def download_update_installer(
                 checksum_response,
                 limit=_MAX_CHECKSUM_DOWNLOAD_BYTES,
                 label="checksum",
+                control=control,
             )
         try:
             checksum_text = checksum_bytes.decode("utf-8")
@@ -514,6 +599,8 @@ def download_update_installer(
             checksum_text,
             expected_name=asset_name,
         )
+        if control is not None:
+            control.checkpoint()
         fd, tmp_name = tempfile.mkstemp(
             prefix=f".{target.name}.",
             suffix=".tmp",
@@ -528,13 +615,22 @@ def download_update_installer(
                     handle,
                     limit=_MAX_INSTALLER_DOWNLOAD_BYTES,
                     label="installer",
+                    control=control,
                 )
+        if control is not None:
+            control.checkpoint()
+            control.report(UpdateProgress("verifying"))
+            control.checkpoint()
         if actual_digest.lower() != expected_digest.lower():
             raise RuntimeError("Update installer checksum mismatch.")
         tmp_path.replace(target)
         tmp_path = None
         _prune_stale_update_installers(target_dir, active_installer=target)
         return target
+    except httpx.HTTPError:
+        if control is not None:
+            control.checkpoint()
+        raise
     finally:
         if fd != -1:
             try:

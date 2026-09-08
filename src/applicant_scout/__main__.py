@@ -96,6 +96,9 @@ from .updater import (
     download_update_installer,
     launch_update_installer,
     UpdateResult,
+    UpdateDownloadControl,
+    UpdateCancelled,
+    UpdateProgress,
     update_result_has_installable_asset,
 )
 from .wcl import (
@@ -1613,6 +1616,7 @@ class StateMachine(QObject):
 class UpdateSignals(QObject):
     checked = pyqtSignal(int, object)
     completed = pyqtSignal(object)
+    progressed = pyqtSignal(object, object)
 
 
 @dataclass(frozen=True)
@@ -1621,6 +1625,7 @@ class _UpdateCompletion:
     error: bool = False
     installer_handoff: bool = False
     installer_launch: object | None = None
+    cancelled: bool = False
 
 
 def _update_completion_from_result(
@@ -1631,6 +1636,7 @@ def _update_completion_from_result(
             message=result.message,
             installer_handoff=result.installer_handoff,
             installer_launch=result.installer_launch,
+            cancelled=result.cancelled,
         )
     return _UpdateCompletion(message=result)
 
@@ -2034,11 +2040,18 @@ def _safe_check_for_update(current_version: str) -> UpdateResult:
         )
 
 
-def _check_updates(*, update_quit_gate: _UpdateQuitGate) -> SettingsUpdateResult | str:
+def _check_updates(
+    *, update_quit_gate: _UpdateQuitGate, control: UpdateDownloadControl | None = None,
+) -> SettingsUpdateResult | str:
     if not _UPDATE_INSTALL_LOCK.acquire(blocking=False):
         raise RuntimeError("Update is already in progress.")
     try:
+        if control is not None:
+            control.checkpoint()
+            control.report(UpdateProgress("checking"))
         result = _safe_check_for_update(__version__)
+        if control is not None:
+            control.checkpoint()
         status = getattr(result, "status", None)
         message = getattr(result, "message", "Update check failed.")
         if status == "unavailable":
@@ -2047,7 +2060,12 @@ def _check_updates(*, update_quit_gate: _UpdateQuitGate) -> SettingsUpdateResult
             return str(message)
         if not update_result_has_installable_asset(result):
             raise RuntimeError(str(message))
-        installer = download_update_installer(result)
+        installer = (
+            download_update_installer(result, control=control)
+            if control is not None else download_update_installer(result)
+        )
+        if control is not None:
+            control.begin_installation()
         if not update_quit_gate.mark_installer_handoff_started():
             raise RuntimeError("Update installer handoff is not active.")
         # WHY: current broad releases are unsigned by policy; the installer and
@@ -2068,6 +2086,8 @@ def _check_updates(*, update_quit_gate: _UpdateQuitGate) -> SettingsUpdateResult
             installer_handoff=True,
             installer_launch=installer_launch,
         )
+    except UpdateCancelled:
+        return SettingsUpdateResult("Update cancelled.", cancelled=True)
     finally:
         _UPDATE_INSTALL_LOCK.release()
 
@@ -2863,24 +2883,29 @@ def _connect_screenshot_watcher(
         live_snapshot_cache_writer=live_snapshot_cache_writer,
         scheduler=scheduler or _schedule_snapshot_apply,
     )
+    handoff_lock = threading.RLock()
 
     def _snapshot_if_current(snap: object) -> None:
-        if not signal_gate.is_current(generation):
-            return
-        if not source_gate.accept(getattr(snap, "source", None)):
-            return
-        apply_queue.enqueue_snapshot(snap)
+        # Direct signals can arrive from different decoder workers. Source
+        # acceptance and enqueue must stay ordered across those workers.
+        with handoff_lock:
+            if not signal_gate.is_current(generation):
+                return
+            if not source_gate.accept(getattr(snap, "source", None)):
+                return
+            apply_queue.enqueue_snapshot(snap)
 
     def _decode_failed_if_current(
         path: str,
         reason: str,
         source: object | None = None,
     ) -> None:
-        if not signal_gate.is_current(generation):
-            return
-        if not source_gate.accept(source, advance=False):
-            return
-        apply_queue.enqueue_decode_failed(path, reason, source)
+        with handoff_lock:
+            if not signal_gate.is_current(generation):
+                return
+            if not source_gate.accept(source, advance=False):
+                return
+            apply_queue.enqueue_decode_failed(path, reason, source)
 
     def _connect_direct(signal: object, callback: Callable[..., None]) -> None:
         connect = getattr(signal, "connect")
@@ -3889,9 +3914,14 @@ def main(argv: list[str] | None = None) -> int:
     watcher: ScreenshotWatcher | None = None
     watcher_signal_gate = _WatcherSignalGate()
     live_snapshot_writer: LiveSnapshotCacheWriter | None = None
+    update_signals = UpdateSignals(app if isinstance(app, QObject) else None)
+    active_update_control: UpdateDownloadControl | None = None
 
     def _check_updates_with_handoff() -> SettingsUpdateResult | str:
-        return _check_updates(update_quit_gate=update_quit_gate)
+        return _check_updates(update_quit_gate=update_quit_gate, control=active_update_control)
+
+    def _cancel_update_download() -> bool:
+        return active_update_control.cancel() if active_update_control is not None else False
 
     def _flush_before_quit_impl() -> None:
         _quiesce_screenshot_ingestion(
@@ -4055,12 +4085,28 @@ def main(argv: list[str] | None = None) -> int:
     wow_exit_timer: QTimer | None = None
 
     def _set_update_in_progress(in_progress: bool) -> None:
+        nonlocal active_update_control
+        if in_progress and not update_quit_gate.update_in_progress:
+            control = UpdateDownloadControl(
+                lambda progress: update_signals.progressed.emit(control, progress)
+            )
+            active_update_control = control
+        elif not in_progress:
+            active_update_control = None
         update_quit_gate.set_update_in_progress(in_progress)
         if tray_controller is not None:
             tray_controller.set_update_available(pending_update_version)
             tray_controller.set_update_in_progress(in_progress)
         if settings_dialog is not None:
             settings_dialog.set_update_in_progress(in_progress)
+
+    def _handle_update_progress(control: object, progress: object) -> None:
+        if control is not active_update_control or not update_quit_gate.update_in_progress:
+            return
+        if settings_dialog is not None and isinstance(progress, UpdateProgress):
+            settings_dialog.set_update_progress(progress)
+
+    update_signals.progressed.connect(_handle_update_progress)
 
     def _recover_update_handoff(message: str, retry_available: bool) -> None:
         nonlocal pending_update_version
@@ -4127,6 +4173,7 @@ def main(argv: list[str] | None = None) -> int:
                 live_snapshot_writer=live_snapshot_writer,
             ),
             check_updates=_check_updates_with_handoff,
+            cancel_update=_cancel_update_download,
             hide_to_tray_on_close=tray_controller is not None,
             parent=window,
         )
@@ -4269,7 +4316,6 @@ def main(argv: list[str] | None = None) -> int:
     window_ref["window"] = window
     window.setWindowIcon(_app_icon())
     show_settings_action.set_callback(_show_settings)
-    update_signals = UpdateSignals(app)
     update_check_coordinator = _UpdateCheckCoordinator()
     update_handoff_recovery = _UpdateHandoffRecoveryController(
         app,
@@ -4279,6 +4325,7 @@ def main(argv: list[str] | None = None) -> int:
     def _run_update() -> None:
         if update_quit_gate.update_in_progress:
             return
+        _show_settings()
         if not _flush_settings_before_update(settings_dialog):
             return
         window.flush_geometry()
@@ -4306,6 +4353,12 @@ def main(argv: list[str] | None = None) -> int:
         nonlocal pending_update_version
         if not isinstance(completion, _UpdateCompletion):
             log.warning("Ignored unexpected update completion payload: %r", completion)
+            return
+        if completion.cancelled:
+            update_handoff_recovery.disarm()
+            _set_update_in_progress(False)
+            if settings_dialog is not None:
+                settings_dialog.set_status(completion.message)
             return
         if completion.error:
             update_handoff_recovery.disarm()

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import gc
 from pathlib import Path
 import sys
 import threading
+import weakref
 
 import pytest
 from PyQt6.QtCore import QEvent, QRect, Qt
@@ -942,6 +944,39 @@ def test_settings_dialog_destroy_cancels_active_path_probe(
         lambda: dialog._screenshots_validation_process is None,
         timeout=1000,
     )
+
+
+def test_settings_active_probe_dialog_garbage_collection_has_no_callbacks(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    helper = tmp_path / "gc_path_probe.py"
+    helper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    monkeypatch.setattr(
+        settings_mod, "_screenshots_path_probe_program_args",
+        lambda _path, _token: (sys.executable, [str(helper)]),
+    )
+    dialog = SettingsDialog(_cfg(tmp_path))
+    dialog._screenshots_warning_timer.stop()
+    dialog._start_screenshots_validation_process(
+        dialog._screenshots_validation_generation, dialog.screenshots_edit.text(),
+    )
+    process = dialog._screenshots_validation_process
+    assert process is not None
+    assert process.waitForStarted(2000)
+    result_path = dialog._screenshots_validation_process_result_path
+    assert result_path is not None
+    result_path.write_text("partial result", encoding="utf-8")
+    dialog_ref = weakref.ref(dialog)
+    process_ref = weakref.ref(process)
+    del process, dialog
+    with qtbot.captureExceptions() as errors:
+        gc.collect()
+        QApplication.processEvents()
+        gc.collect()
+    assert not errors
+    assert dialog_ref() is None
+    assert process_ref() is None
+    assert not result_path.exists()
 
 
 def test_bounded_screenshots_path_probe_times_out_and_removes_result(

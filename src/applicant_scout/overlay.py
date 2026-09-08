@@ -45,6 +45,9 @@ from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
     QGridLayout,
+    QLayout,
+    QLayoutItem,
+    QScrollArea,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -146,7 +149,7 @@ _log = logging.getLogger("applicant_scout.overlay")
 # Keep existing evidence column indices stable; Fit is moved visually after RIO.
 # Cap Name growth so one long character name cannot force the overlay wide.
 COLUMN_HEADERS = ["Spec", "Name", "iLvl", "RIO", "Normal", "Heroic", "Mythic", "M+ DPS", "Fit"]
-COLUMN_WIDTHS = [74, 112, 44, 84, 70, 70, 70, 132, 102]
+COLUMN_WIDTHS = [74, 112, 44, 84, 64, 64, 64, 112, 90]
 NAME_COLUMN_MAX_WIDTH = 126
 DUNGEON_NAME_WIDTH = 148
 DUNGEON_KEY_WIDTH = 72
@@ -163,8 +166,10 @@ RAID_SINGLE_METRIC_WIDTH = 72
 DETAIL_COMPACT_NAME_WIDTH = 56
 RAID_COMPACT_KILL_WIDTH = 74
 RAID_COMPACT_METRIC_WIDTH = 130
-METRIC_COLUMN_TEXT_PADDING = 22
+METRIC_COLUMN_TEXT_PADDING = 14
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT = range(9)
+FIT_BACKGROUND = "#292c36"
+FIT_GROUP_BACKGROUND = "#343946"
 RAID_COL_BY_TARGET = {"N": COL_N, "H": COL_H, "M": COL_M}
 WINDOW_CHROME_WIDTH = 12
 # Name and raid metric columns grow from rendered content after construction;
@@ -190,7 +195,7 @@ LAUNCHER_DRAG_RELEASE_GRACE_S = 1.0
 LAUNCHER_FOREGROUND_GRACE_S = 3.0
 OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S = 1.25
 VK_LBUTTON = 0x01
-MPLUS_GROUP_COLUMN_WIDTH = 188
+MPLUS_GROUP_COLUMN_WIDTH = 112
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
 MPLUS_PACKAGE_BG_ROLE = Qt.ItemDataRole.UserRole + 21
 MPLUS_INDIVIDUAL_TEXT_ROLE = Qt.ItemDataRole.UserRole + 22
@@ -199,7 +204,7 @@ MPLUS_INDIVIDUAL_BG_ROLE = Qt.ItemDataRole.UserRole + 24
 ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE = Qt.ItemDataRole.UserRole + 30
 MPLUS_GROUP_LANE_MAX_WIDTH = 72
 MPLUS_GROUP_LANE_MIN_WIDTH = 42
-MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 56
+MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 40
 MPLUS_TARGET_KEY_MAX = 99
 _TABLE_DETAIL_ONLY_APPLICANT_FIELDS = {"raid_boss_parses"}
 
@@ -282,7 +287,7 @@ HEADER_TOOLTIPS: list[str] = [
     # RIO
     "RaiderIO M+ score for this character. If RaiderIO is installed and exposes\n"
     "a higher main score for an alt, the cell shows current [main]. Known\n"
-    "M+/raid listings sort by context/package fit; no-listing or unknown\n"
+    "M+/raid listings sort by their visible best percentile; no-listing or unknown\n"
     "contexts use RaiderIO as fallback ordering support.\n\n"
     "Coloured by tier band (gold ≥3200, purple ≥2700, blue ≥2200,\n"
     "green ≥1700, white below). Mid-Midnight-S1 thresholds.",
@@ -299,14 +304,18 @@ HEADER_TOOLTIPS: list[str] = [
     "Same values and percentile colours as Normal. A dash means unavailable data.",
     "Mythic+ WCL best / median percentile averages, followed by highest logged key.\n\n"
     "DPS for every role, including healers. Colour follows the best percentile. "
-    "1/dungeon means every logged dungeon has one run; there is no median signal. "
+    "A missing median means there is no repeat-run median signal; "
+    "single-run samples are identified in dungeon value tooltips. "
     "The highest logged key is context, not the key of every displayed parse. "
     "Fit for the selected target is shown separately.",
-    "Fit is a contextual score estimate for the named raid difficulty or M+ key, "
-    "not a WCL percentile or success probability. Strong / Good / Fair / Risk summarize "
-    "the recommendation. Estimate uses another raid difficulty; Support uses "
-    "secondary evidence. Group / Player shows the shared application estimate "
-    "and individual estimate. Hover a row for evidence and limitations.",
+    "~ marks a contextual Fit estimate for the named raid difficulty or M+ key, "
+    "not a WCL percentile or success probability. Evidence and any fallback "
+    "to another raid difficulty are explained in the detail panel. "
+    "For grouped applicants, G3 means a three-player group: "
+    "the shared estimate is on the left and each player's estimate on the right. "
+    "Applications sort by the listing's parse column; groups stay together "
+    "and use their lowest member percentile. "
+    "Hover a row for evidence and limitations.",
 ]
 
 
@@ -1795,6 +1804,67 @@ class _IdentityLabel(QLabel):
         painter.end()
 
 
+class _BadgeFlowLayout(QLayout):
+    """Wrap existing badges without allocating widgets during hover updates."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(4)
+
+    def addItem(self, item: QLayoutItem) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientation:
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._flow(QRect(0, 0, width, 0), place=False)
+
+    def minimumSize(self) -> QSize:
+        return QSize(0, 0)
+
+    def sizeHint(self) -> QSize:
+        items = [item for item in self._items if not item.isEmpty()]
+        return QSize(
+            sum(item.sizeHint().width() for item in items) + max(0, len(items) - 1) * self.spacing(),
+            max((item.sizeHint().height() for item in items), default=0),
+        )
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        self._flow(rect, place=True)
+
+    def _flow(self, rect: QRect, *, place: bool) -> int:
+        x, y, row_height = rect.x(), rect.y(), 0
+        for item in self._items:
+            if item.isEmpty():
+                continue
+            size = item.sizeHint()
+            width = min(size.width(), max(1, rect.width()))
+            if x > rect.x() and x + width > rect.x() + rect.width():
+                x, y, row_height = rect.x(), y + row_height + self.spacing(), 0
+            height = size.height()
+            if place:
+                item.setGeometry(QRect(x, y, width, height))
+            x += width + self.spacing()
+            row_height = max(row_height, height)
+        return y - rect.y() + row_height
+
+
 class ApplicantInfoPanel(QFrame):
     """Compact QWidget scout card shown above the applicant table.
 
@@ -1828,6 +1898,7 @@ class ApplicantInfoPanel(QFrame):
         self.setMaximumHeight(INFO_PANEL_MIN_HEIGHT)
 
         outer = QVBoxLayout(self)
+        outer.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self._outer_layout = outer
         outer.setContentsMargins(10, 6, 10, 6)
         outer.setSpacing(4)
@@ -1860,7 +1931,7 @@ class ApplicantInfoPanel(QFrame):
         outer.addWidget(header)
 
         identity = QWidget(self)
-        identity_layout = QHBoxLayout(identity)
+        identity_layout = _BadgeFlowLayout(identity)
         identity_layout.setContentsMargins(0, 0, 0, 0)
         identity_layout.setSpacing(4)
         self._spec_label = QLabel("")
@@ -1878,11 +1949,10 @@ class ApplicantInfoPanel(QFrame):
             self._rio_label,
         ):
             identity_layout.addWidget(label)
-        identity_layout.addStretch(1)
         outer.addWidget(identity)
 
         metrics = QWidget(self)
-        metrics_layout = QHBoxLayout(metrics)
+        metrics_layout = _BadgeFlowLayout(metrics)
         metrics_layout.setContentsMargins(0, 0, 0, 0)
         metrics_layout.setSpacing(4)
         self._metric_labels: dict[str, QLabel] = {
@@ -1893,9 +1963,8 @@ class ApplicantInfoPanel(QFrame):
             label.setObjectName("infoMetricBadge")
             metrics_layout.addWidget(label)
         metrics_layout.removeWidget(self._metric_labels["Fit"])
-        metrics_layout.addStretch(1)
         outer.addWidget(metrics)
-        identity_layout.insertWidget(identity_layout.count() - 1, self._metric_labels["Fit"])
+        identity_layout.addWidget(self._metric_labels["Fit"])
 
         self._package_label = QLabel("")
         self._package_label.setObjectName("infoPackageBadge")
@@ -1976,6 +2045,12 @@ class ApplicantInfoPanel(QFrame):
         self._dungeon_grid.setContentsMargins(0, 2, 0, 0)
         self._dungeon_grid.setHorizontalSpacing(6)
         self._dungeon_grid.setVerticalSpacing(1)
+        self._detail_headers: tuple[QLabel, QLabel, QLabel, QLabel] = (
+            QLabel(""), QLabel(""), QLabel(""), QLabel("")
+        )
+        for column, label in enumerate(self._detail_headers):
+            label.setStyleSheet("color: #b8b8c8; font-size: 10px;")
+            self._dungeon_grid.addWidget(label, 0, column)
         self._dungeon_rows: list[tuple[QLabel, QLabel, QLabel, QLabel]] = []
         max_raid_detail_rows = len(CURRENT_RAID_ENCOUNTERS) * 3
         for row in range(max(INFO_PANEL_DETAIL_BASE_ROWS, max_raid_detail_rows)):
@@ -2000,10 +2075,10 @@ class ApplicantInfoPanel(QFrame):
             value.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
-            self._dungeon_grid.addWidget(name, row, 0)
-            self._dungeon_grid.addWidget(rio_key, row, 1)
-            self._dungeon_grid.addWidget(wcl_key, row, 2)
-            self._dungeon_grid.addWidget(value, row, 3)
+            self._dungeon_grid.addWidget(name, row + 1, 0)
+            self._dungeon_grid.addWidget(rio_key, row + 1, 1)
+            self._dungeon_grid.addWidget(wcl_key, row + 1, 2)
+            self._dungeon_grid.addWidget(value, row + 1, 3)
             self._dungeon_rows.append((name, rio_key, wcl_key, value))
         self._dungeon_grid.setColumnStretch(4, 1)
         outer.addWidget(self._dungeon_widget)
@@ -2021,12 +2096,14 @@ class ApplicantInfoPanel(QFrame):
             self._realm_label,
             self._wcl_retry_button,
             self._unpin_button,
-            self._metric_labels["M+"],
-            self._metric_labels["Fit"],
+            *self._metric_labels.values(),
             self._package_label,
             self._status_label,
             self._state_text_label,
+            *self._detail_headers,
             *(labels[0] for labels in self._dungeon_rows),
+            *(labels[1] for labels in self._dungeon_rows),
+            *(labels[3] for labels in self._dungeon_rows),
         )
 
     def set_metric_preferences(self, metric_preferences: MetricPreferences) -> None:
@@ -2039,8 +2116,7 @@ class ApplicantInfoPanel(QFrame):
         return QSize(hint.width(), INFO_PANEL_PREFERRED_HEIGHT)
 
     def minimumSizeHint(self) -> QSize:  # type: ignore[override]
-        hint = super().minimumSizeHint()
-        return QSize(hint.width(), INFO_PANEL_MIN_HEIGHT)
+        return QSize(0, INFO_PANEL_MIN_HEIGHT)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -2145,6 +2221,10 @@ class ApplicantInfoPanel(QFrame):
         for row in self._dungeon_rows:
             for label in row:
                 label.setText("")
+                label.setToolTip("")
+                label.setAccessibleDescription("")
+                label.setProperty("raidFullText", None)
+                label.setProperty("raidSegments", None)
                 label.setVisible(False)
         self._dungeon_widget.setVisible(False)
 
@@ -2266,8 +2346,19 @@ class ApplicantInfoPanel(QFrame):
         if member_note:
             parts.append(member_note)
         text = " · ".join(parts)
-        bg = package.colour or "#2a2a33"
-        self._set_badge(self._package_label, text, bg, _text_colour_for_bg(bg))
+        summary = [f"Group ({package.size})", f"Fit ~{int(round(package.score))}"]
+        summary.extend(
+            f"{count} {state}"
+            for count, state in (
+                (package.loading_count, "loading"),
+                (package.error_count, "error"),
+                (package.not_found_count, "not found"),
+                (package.restricted_count, "private"),
+            )
+            if count > 0
+        )
+        bg = FIT_GROUP_BACKGROUND
+        self._set_badge(self._package_label, " · ".join(summary), bg, _text_colour_for_bg(bg))
 
         description_parts = []
         if role_total > 0:
@@ -2314,7 +2405,7 @@ class ApplicantInfoPanel(QFrame):
             "It reflects the weakest member and fetch completeness, not a success "
             "probability."
         )
-        description = " ".join(description_parts)
+        description = f"{text}\n\n{' '.join(description_parts)}"
         self._package_label.setAccessibleDescription(description)
         self._package_label.setToolTip(description)
 
@@ -2412,7 +2503,6 @@ class ApplicantInfoPanel(QFrame):
 
         visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
         visible_rows = self._set_detail_rows(applicant, listing)
-        fit_status = self._mplus_fit_status_text(applicant, listing, fit=fit)
         if self._active_detail_mode() == "raid" and raid_detail_status:
             self._show_status(
                 raid_detail_status,
@@ -2422,12 +2512,6 @@ class ApplicantInfoPanel(QFrame):
                     "Retry WCL" if raid_detail_status_error else "Load boss details"
                 ),
             )
-        elif fit_status:
-            self._show_status(
-                fit_status,
-                accessible_description=MPLUS_FIT_EXPLANATION,
-            )
-            self._status_label.setToolTip(f"{fit_status}\n\n{MPLUS_FIT_EXPLANATION}")
         elif not visible_metrics and not visible_rows:
             self._show_status(
                 "No Warcraft Logs data",
@@ -2503,6 +2587,10 @@ class ApplicantInfoPanel(QFrame):
         for row in self._dungeon_rows:
             for label in row:
                 label.setText("")
+                label.setToolTip("")
+                label.setAccessibleDescription("")
+                label.setProperty("raidFullText", None)
+                label.setProperty("raidSegments", None)
                 label.setVisible(False)
         self._dungeon_widget.setVisible(False)
         self._visible_detail_rows = 0
@@ -2551,7 +2639,7 @@ class ApplicantInfoPanel(QFrame):
             if mode == "raid"
             else "RIO = completed key · WCL = logged key\nDPS best / median · 1 run = a single sample"
         )
-        self._detail_legend.setVisible(True)
+        self._detail_legend.setVisible(False)
         for key, button in self._detail_buttons.items():
             enabled = (key == "raid" and self._metric_preferences.raid_enabled) or (
                 key == "mplus" and self._metric_preferences.mplus
@@ -2611,6 +2699,7 @@ class ApplicantInfoPanel(QFrame):
                 bg,
                 fg or _text_colour_for_bg(bg),
             )
+            self._metric_labels[key].setToolTip(self._metric_labels[key].text())
             shown += 1
 
         if self._metric_preferences.mplus:
@@ -2623,6 +2712,7 @@ class ApplicantInfoPanel(QFrame):
                     bg,
                     _text_colour_for_bg(bg),
                 )
+                self._metric_labels["M+"].setToolTip(self._metric_labels["M+"].text())
                 shown += 1
             else:
                 self._metric_labels["M+"].setVisible(False)
@@ -2634,8 +2724,12 @@ class ApplicantInfoPanel(QFrame):
             current_fit = fit or candidate_fit(applicant, listing)
             if current_fit.context == CONTEXT_MPLUS:
                 target_name = f"+{current_fit.target_key}" if current_fit.target_key > 0 else "M+"
+            elif current_fit.source in {"raid_higher_fallback", "raid_lower_fallback"}:
+                text = f"Estimate {text}"
+            elif current_fit.source != "raid_exact":
+                text = f"Support {text}"
             self._set_badge(
-                self._metric_labels["Fit"], f"Fit estimate · {target_name}: {text}", bg,
+                self._metric_labels["Fit"], f"Fit · {target_name}: {text}", bg,
                 fg or _text_colour_for_bg(bg),
             )
             explanation = (
@@ -2643,6 +2737,10 @@ class ApplicantInfoPanel(QFrame):
                 if current_fit.context == CONTEXT_MPLUS
                 else HEADER_TOOLTIPS[COL_FIT]
             )
+            if current_fit.context == CONTEXT_MPLUS:
+                evidence = self._mplus_fit_status_text(applicant, listing, fit=current_fit)
+                if evidence:
+                    explanation = f"{evidence}\n\n{explanation}"
             if current_fit.context == CONTEXT_RAID:
                 evidence = _presenters.raid_fit_evidence_text(
                     applicant, target_raid, current_fit.source
@@ -2838,12 +2936,17 @@ class ApplicantInfoPanel(QFrame):
         raid_difficulty_count = (
             len(_enabled_raid_difficulty_keys(self._metric_preferences)) if raid else 0
         )
+        self._set_detail_row_widths(
+            self._detail_headers, raid=raid, raid_difficulty_count=raid_difficulty_count
+        )
         for labels in self._dungeon_rows:
             self._set_detail_row_widths(
                 labels,
                 raid=raid,
                 raid_difficulty_count=raid_difficulty_count,
             )
+            if raid:
+                self._reflow_raid_numeric_labels(labels)
             name_label = labels[0]
             full_name = name_label.property("detailFullName")
             if isinstance(full_name, str) and full_name and not name_label.isHidden():
@@ -2856,6 +2959,7 @@ class ApplicantInfoPanel(QFrame):
             self._dungeon_widget.setVisible(False)
             self._visible_detail_rows = 0
             return 0
+        self._set_detail_headers(raid=False)
         rio_rows = _presenters.rio_dungeon_rows_by_name(applicant, listing)
         wcl_rows = _presenters.wcl_dungeon_rows_by_name(applicant, listing)
         listing_keys = listing_dungeon_keys(listing)
@@ -2891,7 +2995,7 @@ class ApplicantInfoPanel(QFrame):
             self._set_detail_name(name_label, dungeon_name)
             rio_key = positive_int(rio_row.get("key_level"))
             if rio_key > 0:
-                rio_label.setText(f"RIO +{rio_key}")
+                rio_label.setText(f"+{rio_key}")
                 rio_label.setStyleSheet(
                     "background-color: #24242d; color: #e0e0e0; "
                     "border-radius: 2px; padding: 0 4px; font-weight: bold;"
@@ -2902,13 +3006,21 @@ class ApplicantInfoPanel(QFrame):
             wcl_key = positive_int(wcl_row.get("key_level"))
             if wcl_key > 0:
                 wcl_text = str(wcl_row.get("text") or "")
-                wcl_key_label.setText(f"WCL +{wcl_key}")
+                wcl_key_label.setText(f"+{wcl_key}")
                 wcl_key_label.setStyleSheet(
                     "background-color: #202028; color: #f1f1f4; "
                     "border-radius: 2px; padding: 0 4px; font-weight: bold;"
                 )
                 value_label.setTextFormat(Qt.TextFormat.PlainText)
-                value_label.setText(wcl_text)
+                visible_text = wcl_text.removesuffix(" 1 run")
+                value_label.setText(visible_text)
+                sample_note = (
+                    f"DPS percentile {visible_text}. "
+                    "1 logged run; no repeat-run median."
+                    if wcl_text.endswith(" 1 run") else ""
+                )
+                value_label.setToolTip(sample_note)
+                value_label.setAccessibleDescription(sample_note)
                 bg = str(wcl_row.get("colour") or "#2a2a33")
                 fg = _text_colour_for_bg(bg)
                 value_label.setStyleSheet(
@@ -2944,6 +3056,7 @@ class ApplicantInfoPanel(QFrame):
             self._visible_detail_rows = 0
             return 0
         difficulties = _enabled_raid_difficulty_keys(self._metric_preferences)
+        self._set_detail_headers(raid=True, raid_difficulty_count=len(difficulties))
         rows = _presenters.raid_boss_rows_for_display(applicant, difficulties)
         for row_idx, labels in enumerate(self._dungeon_rows):
             self._set_detail_row_widths(
@@ -2968,6 +3081,9 @@ class ApplicantInfoPanel(QFrame):
                 name_label.setToolTip("")
                 name_label.setProperty("detailFullName", None)
             rio_text = str(row.get("rio_text") or "")
+            rio_label.setProperty("raidFullText", rio_text)
+            rio_label.setToolTip(rio_text)
+            rio_label.setAccessibleDescription(rio_text)
             if rio_text:
                 rio_label.setText(rio_text)
                 rio_label.setStyleSheet(
@@ -2979,6 +3095,10 @@ class ApplicantInfoPanel(QFrame):
                 rio_label.setText("")
                 rio_label.setStyleSheet("")
             value_text = str(row.get("value") or "")
+            value_label.setProperty("raidFullText", value_text)
+            value_label.setProperty("raidSegments", row.get("segments"))
+            value_label.setToolTip(value_text)
+            value_label.setAccessibleDescription(value_text)
             if value_text:
                 wcl_key_label.setText("")
                 wcl_key_label.setStyleSheet("")
@@ -3001,12 +3121,45 @@ class ApplicantInfoPanel(QFrame):
                 value_label.setTextFormat(Qt.TextFormat.PlainText)
                 value_label.setText("")
                 value_label.setStyleSheet("")
+            self._reflow_raid_numeric_labels(labels)
             for label in labels:
                 label.setVisible(True)
         visible = len(rows)
         self._dungeon_widget.setVisible(visible > 0)
         self._visible_detail_rows = visible
         return visible
+
+    @staticmethod
+    def _reflow_raid_numeric_labels(labels: tuple[QLabel, QLabel, QLabel, QLabel]) -> None:
+        kills, value = labels[1], labels[3]
+        kill_text = kills.property("raidFullText")
+        if isinstance(kill_text, str) and kill_text:
+            rendered = kill_text
+            if kills.fontMetrics().horizontalAdvance(kill_text) > max(0, kills.width() - 10):
+                rendered = "\n".join(kill_text.split(" · "))
+            if kills.text() != rendered:
+                kills.setText(rendered)
+        segments = value.property("raidSegments")
+        if not isinstance(segments, list) or not segments:
+            return
+        font = QFont(value.font())
+        font.setPixelSize(11)
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        full_text = " ".join(str(segment.get("text", "")) for segment in segments)
+        if metrics.horizontalAdvance(full_text) <= max(0, value.width() - 8):
+            rendered = _presenters.raid_parse_segments_html(segments)
+        else:
+            compact_segments = [dict(segment, text=str(segment.get("text", "")).replace(" ", "")) for segment in segments]
+            rendered = "<br>".join(_presenters.raid_parse_segments_html([segment]) for segment in compact_segments)
+        # A single normal-width pair keeps its simple label representation.
+        if len(segments) == 1 and metrics.horizontalAdvance(full_text) <= max(0, value.width() - 8):
+            value.setTextFormat(Qt.TextFormat.PlainText)
+            rendered = full_text
+        else:
+            value.setTextFormat(Qt.TextFormat.RichText)
+        if value.text() != rendered:
+            value.setText(rendered)
 
     def _set_badge(self, label: QLabel, text: str, bg: str, fg: str) -> None:
         label.setText(text)
@@ -3015,6 +3168,29 @@ class ApplicantInfoPanel(QFrame):
             "padding: 1px 5px; font-weight: bold;"
         )
         label.setVisible(True)
+
+    def _set_detail_headers(self, *, raid: bool, raid_difficulty_count: int = 0) -> None:
+        titles = (
+            ("Boss", "Kills", "", "Parse")
+            if raid else ("Dungeon", "Best key", "Logged key", "DPS parse")
+        )
+        descriptions = (
+            ("Raid boss", "Kills by difficulty: Normal, Heroic, Mythic", "",
+             "Warcraft Logs boss percentile: overall / item level")
+            if raid else (
+                "Mythic+ dungeon", "Highest completed key from RaiderIO",
+                "Highest key represented in Warcraft Logs",
+                "Warcraft Logs DPS percentile: best / median. Hover a value for single-run details.",
+            )
+        )
+        self._set_detail_row_widths(
+            self._detail_headers, raid=raid, raid_difficulty_count=raid_difficulty_count
+        )
+        for label, title, description in zip(self._detail_headers, titles, descriptions, strict=True):
+            label.setText(title)
+            label.setToolTip(description)
+            label.setAccessibleDescription(description)
+            label.setVisible(bool(title))
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -3097,6 +3273,7 @@ class OverlayWindow(QMainWindow):
         self.setCentralWidget(container)
 
         layout = QVBoxLayout(container)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -3159,19 +3336,28 @@ class OverlayWindow(QMainWindow):
         )
         for action_widget in panel_tooltip_widgets:
             action_widget.installEventFilter(self)
-        layout.addWidget(self._panel)
+        self._panel_scroll = QScrollArea(container)
+        self._panel_scroll.setObjectName("infoPanelScroll")
+        self._panel_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._panel_scroll.setWidgetResizable(True)
+        self._panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._panel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._panel_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._panel_scroll.setWidget(self._panel)
+        self._panel_scroll.setFixedHeight(INFO_PANEL_MIN_HEIGHT)
+        layout.addWidget(self._panel_scroll)
 
         # Applicant rows use the side panel rather than per-cell tooltips. The
         # specialized table owns keyboard activation and focus traversal.
         self._metric_legend = QLabel(
-            "WCL: best / median · colour = best percentile · M+ = DPS for all roles · 1/dungeon = one run each\n"
-            "Fit = target score estimate, not a parse · Group / Player = joint / individual · G3 = 3-player group"
+            "WCL: best / median · Fit: target estimate · G: group"
         )
         self._metric_legend.setObjectName("metricLegend")
         self._metric_legend.setWordWrap(True)
         self._metric_legend.setContentsMargins(9, 4, 9, 4)
         self._metric_legend.setStyleSheet("color: #b8b8c8; font-size: 11px;")
         layout.addWidget(self._metric_legend)
+        self._metric_legend.hide()
         self._table = _ApplicantTableWidget(0, len(COLUMN_HEADERS), container)
         self._table.setHorizontalHeaderLabels(COLUMN_HEADERS)
         # Per-column legend tooltips. setHorizontalHeaderLabels creates default
@@ -3260,6 +3446,10 @@ class OverlayWindow(QMainWindow):
         h.moveSection(h.visualIndex(COL_FIT), 4)
         h.setStretchLastSection(True)
         self._max_name_width_px = COLUMN_WIDTHS[COL_NAME]
+        self._content_width_limit = MIN_VISIBLE_WINDOW_WIDTH
+        self._width_layout_key: tuple | None = None
+        self._column_measurement_key: tuple | None = None
+        self._column_remeasure_pending = False
         self._metric_column_widths_dirty = True
         self._apply_metric_column_visibility()
         layout.addWidget(self._table, stretch=1)
@@ -3324,6 +3514,8 @@ class OverlayWindow(QMainWindow):
             status_widget.installEventFilter(self)
 
         self.setStyleSheet(_STYLESHEET)
+        self._table.installEventFilter(self)
+        h.installEventFilter(self)
         self._launcher.setStyleSheet(_STYLESHEET)
         self._set_accessibility_tab_order()
 
@@ -3335,12 +3527,17 @@ class OverlayWindow(QMainWindow):
         self._save_timer.setInterval(500)
         self._save_timer.timeout.connect(self._persist_geometry)
         self._suppress_geometry_persist = False
+        self._width_limit_screen = None
+        self._width_limit_handle = None
+        self._syncing_width_limit = False
+        self._geometry_clamp_pending = False
         gui_app = QGuiApplication.instance()
         if isinstance(gui_app, QGuiApplication):
             gui_app.screenRemoved.connect(self._on_screen_topology_changed)
             gui_app.primaryScreenChanged.connect(self._on_screen_topology_changed)
         self._panel_anchor_extra_height = 0
         self._panel_anchor_y_offset = 0
+        self._panel_anchor_target_height = INFO_PANEL_MIN_HEIGHT
         self._panel_reserved_height = INFO_PANEL_PREFERRED_HEIGHT
         self._panel_render_key: tuple | None = None
         self._candidate_fits_for_sync: Mapping[str, CandidateFit] | None = None
@@ -3388,8 +3585,11 @@ class OverlayWindow(QMainWindow):
         # off-screen. Picks first screen whose geometry intersects the saved
         # rect; falls back to centering on primary screen if none match.
         has_saved_geometry = (self._config_dir / "window.json").exists()
+        self._auto_size_metric_columns()
         geo = _normalize_loaded_geometry(load_geometry(self._config_dir))
-        x, y, w, h = _clamp_geometry_to_screen(geo.x, geo.y, geo.w, geo.h)
+        x, y, w, h = _clamp_geometry_to_screen(
+            geo.x, geo.y, min(geo.w, self.maximumWidth()), geo.h
+        )
         min_width = self.minimumWidth()
         if not has_saved_geometry and geo.w == DEFAULT_WINDOW_WIDTH:
             w = _minimum_window_width_for_metrics(metric_preferences)
@@ -4768,6 +4968,11 @@ class OverlayWindow(QMainWindow):
         )
         if self._panel_render_key == render_key:
             return
+        if getattr(self, "_panel_scroll_identity", None) != visible_id:
+            self._panel_scroll_identity = visible_id
+            scrollbar = self._panel_scroll.verticalScrollBar()
+            if scrollbar is not None:
+                scrollbar.setValue(0)
         self._panel.setApplicantData(
             applicant,
             listing,
@@ -4789,59 +4994,83 @@ class OverlayWindow(QMainWindow):
         )
         self._panel_render_key = render_key
 
-    def _apply_panel_height_above_table(self) -> None:
-        if not self.isVisible():
+    def _apply_panel_height_above_table(self, *, allow_window_resize: bool = True) -> None:
+        if not self.isVisible() or getattr(self, "_adjusting_panel_geometry", False):
             return
-
-        # The wrapping legend also sits above the table; retain its tallest
-        # interaction height so widening cannot move a row under the pointer.
-        legend_height = self._metric_legend.heightForWidth(max(self._metric_legend.width(), 1))
-        if legend_height > self._metric_legend.minimumHeight():
-            self._metric_legend.setMinimumHeight(legend_height)
-        requested_height = self._panel.target_height()
-        # WHY: shrinking the window while the pointer crosses applicants moves
-        # the table underneath that pointer. Keep an interaction high-water mark
-        # so a shorter card cannot trigger a Leave/re-enter resize loop. Safe
-        # context boundaries reset it, avoiding permanent blank panel space.
-        target_height = max(requested_height, self._panel_reserved_height)
-        self._panel_reserved_height = target_height
-        current_height = self._panel.height() or INFO_PANEL_MIN_HEIGHT
-        if (
-            current_height == target_height
-            and self._panel.minimumHeight() == target_height
-            and self._panel.maximumHeight() == target_height
-        ):
-            return
-
-        previous_extra = self._panel_anchor_extra_height
-        previous_y_offset = self._panel_anchor_y_offset
-        new_extra = max(0, target_height - INFO_PANEL_MIN_HEIGHT)
-        geom = self.geometry()
-        base_y = geom.y() + previous_y_offset
-        base_height = max(self.minimumHeight(), geom.height() - previous_extra)
-
+        self._adjusting_panel_geometry = True
         updates_enabled = self.updatesEnabled()
         if updates_enabled:
             self.setUpdatesEnabled(False)
         try:
-            self._panel.setMinimumHeight(target_height)
-            self._panel.setMaximumHeight(target_height)
+            requested_height = self._panel.target_height()
+            target_height = max(requested_height, self._panel_reserved_height)
+            self._panel_reserved_height = target_height
+            natural_changed = self._panel.minimumHeight() != target_height
+            if natural_changed:
+                self._panel.setFixedHeight(target_height)
+            if (
+                not allow_window_resize
+                and self._panel_anchor_target_height != INFO_PANEL_MIN_HEIGHT
+            ):
+                # After initial expansion, a manual width/height change accepts
+                # the new wrapping height without growing the user's window.
+                self._panel_anchor_target_height = target_height
 
-            new_y = base_y - new_extra
+            central = self.centralWidget()
+            root_layout = central.layout() if central is not None else None
+            if root_layout is None:
+                return
+            fixed_height = sum(
+                widget.height()
+                for index in range(root_layout.count())
+                if (item := root_layout.itemAt(index)) is not None
+                and (widget := item.widget()) is not None
+                and widget not in (self._panel_scroll, self._table)
+                and not widget.isHidden()
+            )
+            header = self._table.horizontalHeader()
+            header_height = header.height() if header is not None else 28
+            one_row = header_height + APPLICANT_ROW_HEIGHT + 2
+            self._table.setMinimumHeight(one_row)
+            table_reserve = header_height + APPLICANT_ROW_HEIGHT * 2 + 2
             screen = self.screen()
-            if screen is not None:
-                new_y = max(screen.availableGeometry().top(), new_y)
-            self._panel_anchor_extra_height = new_extra
-            self._panel_anchor_y_offset = max(0, base_y - new_y)
-            new_height = max(self.minimumHeight(), base_height + new_extra)
-            if (new_y, new_height) != (geom.y(), geom.height()):
-                self._set_geometry_without_persist(
-                    geom.x(),
-                    new_y,
-                    geom.width(),
-                    new_height,
-                )
+            available = screen.availableGeometry() if screen is not None else self.geometry()
+
+            # Preserve the table anchor when the card grows, within the screen.
+            # A manual height resize only changes the scroll viewport below.
+            if (
+                target_height != self._panel_anchor_target_height
+                and allow_window_resize
+                and not getattr(self, "_handling_resize", False)
+            ):
+                geom = self.geometry()
+                base_y = geom.y() + self._panel_anchor_y_offset
+                base_height = max(self.minimumHeight(), geom.height() - self._panel_anchor_extra_height)
+                screen_card_budget = max(0, available.height() - fixed_height - table_reserve)
+                visible_target = min(target_height, screen_card_budget)
+                new_extra = max(0, visible_target - INFO_PANEL_MIN_HEIGHT)
+                new_y = max(available.top(), base_y - new_extra)
+                new_height = min(base_height + new_extra, available.bottom() - new_y + 1)
+                new_height = max(self.minimumHeight(), new_height)
+                self._panel_anchor_extra_height = max(0, new_height - base_height)
+                self._panel_anchor_y_offset = max(0, base_y - new_y)
+                # Viewport-only resize callbacks must not consume a pending
+                # card expansion before show/content layout applies it.
+                self._panel_anchor_target_height = target_height
+                if (new_y, new_height) != (geom.y(), geom.height()):
+                    self._set_geometry_without_persist(geom.x(), new_y, geom.width(), new_height)
+
+            # At the smallest supported height keep at least one actionable row.
+            reserve = table_reserve if self.height() - fixed_height - table_reserve >= 48 else one_row
+            card_budget = max(0, self.height() - fixed_height - reserve)
+            viewport_height = min(target_height, card_budget)
+            if self._panel_scroll.height() != viewport_height:
+                self._panel_scroll.setFixedHeight(viewport_height)
+            # Finish the deferred Qt layout while painting is still suspended.
+            # Otherwise the resized card can briefly cover the old table bounds.
+            root_layout.activate()
         finally:
+            self._adjusting_panel_geometry = False
             if updates_enabled:
                 self.setUpdatesEnabled(True)
                 self.update()
@@ -4871,6 +5100,8 @@ class OverlayWindow(QMainWindow):
             self._suppress_geometry_persist = False
 
     def _clamp_runtime_geometry(self) -> None:
+        self._geometry_clamp_pending = False
+        self._sync_window_width_limit()
         geometry = self.geometry()
         clamped = _clamp_geometry_to_screen(
             geometry.x(),
@@ -4890,7 +5121,53 @@ class OverlayWindow(QMainWindow):
 
     def _on_screen_topology_changed(self, _screen: object | None = None) -> None:
         # Defer until Qt has published the replacement screens/primary screen.
+        if self._geometry_clamp_pending:
+            return
+        self._geometry_clamp_pending = True
         QTimer.singleShot(0, self._clamp_runtime_geometry)
+
+    def _sync_window_width_limit(self, *, follow_content: bool = False) -> None:
+        """Bound native resizing as well as restored geometry, in Qt logical pixels."""
+        if self._syncing_width_limit:
+            return
+        self._syncing_width_limit = True
+        try:
+            handle = self.windowHandle()
+            if handle is not None and handle is not self._width_limit_handle:
+                if self._width_limit_handle is not None:
+                    try:
+                        self._width_limit_handle.screenChanged.disconnect(self._on_screen_topology_changed)
+                    except (TypeError, RuntimeError):
+                        pass  # The previous native window may already be destroyed.
+                handle.screenChanged.connect(self._on_screen_topology_changed)
+                self._width_limit_handle = handle
+            screen = self.screen()
+            if screen is not self._width_limit_screen:
+                if self._width_limit_screen is not None:
+                    try:
+                        self._width_limit_screen.availableGeometryChanged.disconnect(self._on_screen_topology_changed)
+                    except (TypeError, RuntimeError):
+                        pass  # A removed monitor's Qt object may already be destroyed.
+                if screen is not None:
+                    screen.availableGeometryChanged.connect(self._on_screen_topology_changed)
+                self._width_limit_screen = screen
+            available_width = screen.availableGeometry().width() if screen is not None else self._content_width_limit
+            limit = min(self._content_width_limit, max(USER_MIN_WINDOW_WIDTH, available_width))
+            if self.maximumWidth() != limit:
+                was_at_limit = self.width() >= self.maximumWidth()
+                suppressed = self._suppress_geometry_persist
+                self._suppress_geometry_persist = True
+                try:
+                    # Qt can resize synchronously here, midway through a row
+                    # refresh. Preserve hover identity until that batch finishes.
+                    self.setMaximumWidth(limit)
+                    # Follow content at the ceiling, preserving manually narrowed sizes.
+                    if follow_content and was_at_limit and self.width() < limit:
+                        self.resize(limit, self.height())
+                finally:
+                    self._suppress_geometry_persist = suppressed
+        finally:
+            self._syncing_width_limit = False
 
     def _sync_delegate_and_panel(self) -> None:
         """Single bookkeeping point for (delegate hover/pin row caches →
@@ -5360,8 +5637,8 @@ class OverlayWindow(QMainWindow):
         - End with _sync_delegate_and_panel — single bookkeeping point that
           re-applies correct stripe rows + refreshes panel content.
 
-        Sort: see `sort_applicants_grouped` docstring. Known M+/raid listings
-        use context package fit; unknown listings preserve prior max-RIO order
+        Sort: M+/raid applications use the displayed context percentile, keeping
+        groups together by their weakest parse. Unknown listings preserve max-RIO order
         with higher RaiderIO main score folded into the max when available.
 
         Group markers: multi-member-group rows get a per-group hashed-hue
@@ -5614,20 +5891,47 @@ class OverlayWindow(QMainWindow):
             self._apply_metric_minimum_width()
 
     def _auto_size_metric_columns(self) -> None:
-        """Size visible evidence and Fit columns only when rendered metrics change."""
+        """Measure intrinsic columns once per data/layout change, never from stretch."""
+        self._column_remeasure_pending = False
+        header = self._table.horizontalHeader()
+        layout_key = (
+            self._active_tab,
+            tuple(self._table.isColumnHidden(col) for col in range(self._table.columnCount())),
+            tuple(item.text() if (item := self._table.horizontalHeaderItem(col)) is not None else "" for col in range(self._table.columnCount())),
+            header.sortIndicatorSection() if header is not None and header.isSortIndicatorShown() else -1,
+        )
+        measurement_key = (layout_key, self._table.font().toString(), header.font().toString() if header is not None else "")
+        if measurement_key != self._column_measurement_key:
+            self._metric_column_widths_dirty = True
         if not self._metric_column_widths_dirty:
             return
-        for col in (COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT):
+        required_width = 0
+        for col in range(self._table.columnCount()):
             if self._table.isColumnHidden(col):
                 continue
             width = self._metric_column_required_width(col)
+            required_width += width
             if self._table.columnWidth(col) != width:
                 self._table.setColumnWidth(col, width)
+        # Reserve scroll/focus chrome even without a scrollbar so row count and
+        # keyboard focus cannot oscillate the window's maximum width.
+        scrollbar = self._table.verticalScrollBar()
+        scroll_width = scrollbar.sizeHint().width() if scrollbar is not None else 0
+        natural_width = max(MIN_VISIBLE_WINDOW_WIDTH, required_width + scroll_width + WINDOW_CHROME_WIDTH)
+        # Keep a content high-water mark within a view: a disappearing group or
+        # background result must not shrink the window under the user's pointer.
+        if measurement_key == self._width_layout_key:
+            natural_width = max(natural_width, self._content_width_limit)
+        self._content_width_limit = natural_width
+        self._width_layout_key = measurement_key
+        self._column_measurement_key = measurement_key
         self._metric_column_widths_dirty = False
+        if hasattr(self, "_syncing_width_limit"):
+            self._sync_window_width_limit(follow_content=True)
 
     def _raid_metric_row_width_signature(self, row: int) -> tuple:
         signature = []
-        for col in (COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT):
+        for col in range(self._table.columnCount()):
             item = self._table.item(row, col)
             if item is None:
                 signature.append(None)
@@ -5637,12 +5941,22 @@ class OverlayWindow(QMainWindow):
 
     def _metric_column_required_width(self, col: int) -> int:
         width = COLUMN_WIDTHS[col]
+        if col == COL_NAME:
+            width = self._max_name_width_px
         header_item = self._table.horizontalHeaderItem(col)
         if header_item is not None:
+            header = self._table.horizontalHeader()
+            header_metrics = header.fontMetrics() if header is not None else self._table.fontMetrics()
+            header_style = header.style() if header is not None else None
+            arrow_width = (
+                header_style.pixelMetric(QStyle.PixelMetric.PM_HeaderMarkSize)
+                if header_style is not None and header is not None and header.isSortIndicatorShown() and header.sortIndicatorSection() == col
+                else 0
+            )
             width = max(
                 width,
-                self._table.fontMetrics().horizontalAdvance(header_item.text())
-                + METRIC_COLUMN_TEXT_PADDING,
+                header_metrics.horizontalAdvance(header_item.text())
+                + METRIC_COLUMN_TEXT_PADDING + arrow_width,
             )
         for row in range(self._table.rowCount()):
             item = self._table.item(row, col)
@@ -5656,14 +5970,24 @@ class OverlayWindow(QMainWindow):
                 individual_width = QFontMetrics(item.font()).horizontalAdvance(
                     str(item.data(MPLUS_INDIVIDUAL_TEXT_ROLE))
                 )
-                width = max(width, 2 * max(package_width, individual_width) + 24)
+                width = max(
+                    width,
+                    min(MPLUS_GROUP_LANE_MAX_WIDTH, max(MPLUS_GROUP_LANE_MIN_WIDTH, package_width + 12))
+                    + max(MPLUS_INDIVIDUAL_LANE_MIN_WIDTH, individual_width + 12) + 1,
+                )
+                # The delegate paints two lanes, not the combined item text.
+                continue
             if not text:
                 continue
-            width = max(
-                width,
-                QFontMetrics(item.font()).horizontalAdvance(text)
-                + METRIC_COLUMN_TEXT_PADDING,
-            )
+            text_width = QFontMetrics(item.font()).horizontalAdvance(text) + METRIC_COLUMN_TEXT_PADDING
+            if col == COL_NAME:
+                text_width = min(NAME_COLUMN_MAX_WIDTH, text_width)
+            elif col == COL_SPEC and not item.icon().isNull():
+                text_width += self._table.iconSize().width() + 4
+            elif col == COL_RIO:
+                # Main-character context may elide; it must not widen the whole overlay.
+                text_width = min(text_width, QFontMetrics(item.font()).horizontalAdvance("9999 [9999]") + METRIC_COLUMN_TEXT_PADDING)
+            width = max(width, text_width)
         return width
 
     def _apply_metric_column_visibility(self) -> None:
@@ -5685,6 +6009,19 @@ class OverlayWindow(QMainWindow):
         listing = self._effective_listing()
         context = detect_listing_context(listing)
         self._table.setColumnHidden(COL_FIT, context not in {CONTEXT_RAID, CONTEXT_MPLUS})
+        sort_column = (
+            COL_MPLUS
+            if context == CONTEXT_MPLUS or (
+                context != CONTEXT_RAID and listing is not None and listing.category_id == 2
+            )
+            else target_raid_col if target_raid_col is not None else COL_RIO
+        )
+        table_header = self._table.horizontalHeader()
+        if table_header is not None:
+            table_header.setSortIndicator(sort_column, Qt.SortOrder.DescendingOrder)
+            table_header.setSortIndicatorShown(
+                self._active_tab == "applicants" and not self._table.isColumnHidden(sort_column)
+            )
         target = _raid_target_key_for_listing(listing)
         target_name = {"N": "Normal", "H": "Heroic", "M": "Mythic"}.get(target, "")
         if context == CONTEXT_MPLUS and listing is not None:
@@ -6440,6 +6777,20 @@ class OverlayWindow(QMainWindow):
         from PyQt6.QtCore import QEvent
         from PyQt6.QtGui import QHelpEvent
 
+        if not hasattr(self, "_table"):
+            return super().eventFilter(obj, event)
+
+        if (
+            event is not None
+            and event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange)
+            and hasattr(self, "_column_remeasure_pending")
+            and obj in (self._table, self._table.horizontalHeader())
+        ):
+            self._metric_column_widths_dirty = True
+            if not self._column_remeasure_pending:
+                self._column_remeasure_pending = True
+                QTimer.singleShot(0, self._auto_size_metric_columns)
+
         if (
             event is not None
             and event.type() == QEvent.Type.ToolTip
@@ -6465,7 +6816,7 @@ class OverlayWindow(QMainWindow):
             # errors rely on this bypass because their visible text is bounded.
             # Identity match only: objectName/text can change without affecting
             # which child widgets need the translucent-overlay tooltip bypass.
-            if any(obj is widget for widget in self._action_tooltip_widgets):
+            if obj is not None and any(obj is widget for widget in self._action_tooltip_widgets):
                 return _render_tooltip(obj, obj.toolTip(), event.globalPos())
         # Branch C — table viewport Leave / MouseMove (hover bookkeeping).
         table_vp = self._table.viewport()
@@ -6560,17 +6911,21 @@ class OverlayWindow(QMainWindow):
             self._save_timer.start()
 
     def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, "_status_layout"):
-            self._reflow_status_row(event.size().width())
-        if hasattr(self, "_panel"):
-            QTimer.singleShot(0, self._apply_panel_height_above_table)
-        if self._suppress_geometry_persist:
-            return
-        self._save_timer.start()
-        # Geometry change can shift cells under a stationary cursor without
-        # firing cellEntered — re-resolve hover from cursor position.
-        self._reresolve_hover_from_cursor()
+        self._handling_resize = True
+        try:
+            super().resizeEvent(event)
+            if hasattr(self, "_status_layout"):
+                self._reflow_status_row(event.size().width())
+            if hasattr(self, "_panel"):
+                QTimer.singleShot(0, lambda: self._apply_panel_height_above_table(allow_window_resize=False))
+            if self._suppress_geometry_persist:
+                return
+            self._save_timer.start()
+            # Geometry change can shift cells under a stationary cursor without
+            # firing cellEntered — re-resolve hover from cursor position.
+            self._reresolve_hover_from_cursor()
+        finally:
+            self._handling_resize = False
 
     def closeEvent(self, event):
         if self._closed:
@@ -6714,13 +7069,6 @@ def _raid_values_for_key(
     return _presenters.raid_values_for_key(applicant, key)
 
 
-def _fit_label(display: str) -> str:
-    for old, new in (("TOP", "Strong"), ("FIT", "Good"), ("OK", "Fair"), ("RISK", "Risk")):
-        if display.startswith(old + " "):
-            return new + display[len(old):]
-    return display
-
-
 def _fit_cell_visuals(
     applicant: Applicant,
     listing: Listing | None = None,
@@ -6734,17 +7082,8 @@ def _fit_cell_visuals(
         if applicant.fetch_status == "error":
             return "?", "#ff5555", None
         return "—", "#888", None
-    if current_fit.context == CONTEXT_RAID:
-        if current_fit.source in {"raid_higher_fallback", "raid_lower_fallback"}:
-            label = "Estimate"
-        elif current_fit.source != "raid_exact":
-            label = "Support"
-        else:
-            label = _fit_label(current_fit.label + " ").strip()
-        text = f"{label} {int(round(current_fit.score))}"
-    else:
-        text = str(int(round(current_fit.score)))
-    bg = current_fit.colour
+    text = f"~{int(round(current_fit.score))}"
+    bg = FIT_BACKGROUND
     return text, _text_colour_for_bg(bg) if bg else None, bg
 
 
@@ -6857,12 +7196,11 @@ def _mplus_group_cell(
     *,
     fit: CandidateFit | None = None,
 ) -> QTableWidgetItem:
-    package_text = f"G{package.size} {int(round(package.score))}"
-    package_bg = package.colour or "#2a2a33"
+    package_text = f"G{package.size} ~{int(round(package.score))}"
+    package_bg = FIT_GROUP_BACKGROUND
     individual_text, individual_fg, individual_bg = _fit_cell_visuals(
         applicant, listing, fit=fit
     )
-    individual_text = f"Player {individual_text}"
     item = QTableWidgetItem(f"{package_text} | {individual_text}")
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     item.setData(MPLUS_PACKAGE_TEXT_ROLE, package_text)

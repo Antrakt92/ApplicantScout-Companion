@@ -3,15 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
+import pytest
+
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QMouseEvent
 
 import applicant_scout.overlay as overlay_mod
 import applicant_scout.settings_dialog as settings_mod
 from applicant_scout.config import Config
+from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.overlay import OverlayWindow
 from applicant_scout.settings_dialog import SettingsDialog
-from applicant_scout.state import AppState
+from applicant_scout.state import AppState, WindowGeometry, save_geometry
 from applicant_scout.wcl import CharacterCache, WCLAuth, WCLClient
 from applicant_scout.window_geometry import clamp_geometry_to_screens
 
@@ -61,6 +64,9 @@ def _overlay(tmp_path: Path, qtbot) -> tuple[OverlayWindow, WCLClient]:
         CharacterCache(tmp_path),
         tmp_path,
         game_foreground_probe=lambda: True,
+        metric_preferences=MetricPreferences(
+            mplus=True, raid_normal=True, raid_heroic=True, raid_mythic=True,
+        ),
     )
     qtbot.addWidget(window)
     qtbot.addWidget(window._launcher)
@@ -287,4 +293,114 @@ def test_screen_removal_reclamps_both_live_frameless_windows(
     finally:
         window.close()
         dialog.close()
+        client.close()
+
+
+@pytest.mark.parametrize("saved_width", [610, 1400, 5000])
+def test_overlay_restored_width_preserves_compact_size_and_caps_large_geometry(
+    qtbot, tmp_path: Path, saved_width: int,
+):
+    save_geometry(tmp_path, WindowGeometry(x=100, y=100, w=saved_width, h=520))
+    window, client = _overlay(tmp_path, qtbot)
+    try:
+        assert 610 <= window.maximumWidth() < 1400
+        assert window.width() == min(saved_width, window.maximumWidth())
+        assert window.height() == 520
+    finally:
+        window.close()
+        client.close()
+
+
+def test_overlay_resize_caps_width_without_adding_height_cap(qtbot, tmp_path: Path):
+    window, client = _overlay(tmp_path, qtbot)
+    try:
+        window.resize(5000, 1200)
+        assert window.width() == window.maximumWidth()
+        assert window.height() == 1200
+        window.resize(610, 520)
+        assert window.width() == 610
+        assert window.height() == 520
+    finally:
+        window.close()
+        client.close()
+
+
+class _ChangingScreen(QObject):
+    availableGeometryChanged = pyqtSignal(QRect)
+
+    def __init__(self, width: int):
+        super().__init__()
+        self.bounds = QRect(0, 0, width, 900)
+
+    def availableGeometry(self) -> QRect:
+        return self.bounds
+
+    def set_available_width(self, width: int) -> None:
+        self.bounds.setWidth(width)
+        self.availableGeometryChanged.emit(self.bounds)
+
+
+def test_overlay_available_screen_width_change_updates_live_resize_limit(
+    monkeypatch, qtbot, tmp_path: Path,
+):
+    window, client = _overlay(tmp_path, qtbot)
+    screen = _ChangingScreen(1600)
+    monkeypatch.setattr(window, "screen", lambda: screen)
+    try:
+        window._sync_window_width_limit()
+        natural_limit = window.maximumWidth()
+        assert natural_limit > 540
+        window.resize(natural_limit, 520)
+        screen.set_available_width(540)
+        qtbot.waitUntil(lambda: window.maximumWidth() == 540)
+        assert window.width() == 540
+        assert window.height() == 520
+        window.resize(5000, 520)
+        assert window.width() == 540
+
+        screen.set_available_width(1600)
+        qtbot.waitUntil(lambda: window.maximumWidth() == natural_limit)
+        assert window.width() == 540
+        window.resize(610, 520)
+        assert window.width() == 610
+    finally:
+        window.close()
+        client.close()
+
+
+class _ChangingWindow(QObject):
+    screenChanged = pyqtSignal(object)
+
+
+def test_overlay_window_screen_change_uses_new_monitor_width(
+    monkeypatch, qtbot, tmp_path: Path,
+):
+    window, client = _overlay(tmp_path, qtbot)
+    old_screen = _ChangingScreen(1600)
+    new_screen = _ChangingScreen(540)
+    current_screen = [old_screen]
+    handle = _ChangingWindow()
+    monkeypatch.setattr(window, "screen", lambda: current_screen[0])
+    monkeypatch.setattr(window, "windowHandle", lambda: handle)
+    try:
+        window._sync_window_width_limit()
+        natural_limit = window.maximumWidth()
+        assert natural_limit > 540
+        window.resize(natural_limit, 520)
+        current_screen[0] = new_screen
+        handle.screenChanged.emit(new_screen)
+        qtbot.waitUntil(lambda: window.maximumWidth() == 540)
+        assert window.width() == 540
+
+        new_screen.set_available_width(480)
+        qtbot.waitUntil(lambda: window.maximumWidth() == 480)
+        assert window.width() == 480
+        current_screen[0] = old_screen
+        handle.screenChanged.emit(old_screen)
+        qtbot.waitUntil(lambda: window.maximumWidth() == natural_limit)
+        assert window.width() == 480
+        window.resize(610, 520)
+        assert window.width() == 610
+    finally:
+        window.close()
         client.close()

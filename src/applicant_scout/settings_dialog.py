@@ -4,24 +4,28 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 import json
 from pathlib import Path
 import subprocess
 import sys
 import threading
 import uuid
+import weakref
 
 from PyQt6.QtCore import (
     QEvent,
     QObject,
     QPoint,
     QProcess,
+    QRect,
     QSignalBlocker,
     QSize,
     Qt,
     QTimer,
     QUrl,
     pyqtSignal,
+    pyqtSlot,
 )
 from PyQt6.QtGui import (
     QAction,
@@ -70,6 +74,7 @@ from .screenshots_path_probe import (
 )
 from .window_geometry import clamp_geometry_to_screens, clamp_rect_to_bounds
 from .usage import UsageClient, UsagePersistenceError
+from .updater import UpdateProgress
 
 
 CredentialTester = Callable[[str, str, str], str]
@@ -579,6 +584,7 @@ class SettingsUpdateResult:
     message: str
     installer_handoff: bool = False
     installer_launch: object | None = None
+    cancelled: bool = False
 
 
 ActionReturn = str | SettingsUpdateResult
@@ -593,6 +599,7 @@ class _AsyncActionResult:
     success_payload: object | None = None
     keep_disabled: bool = False
     installer_launch: object | None = None
+    cancelled: bool = False
 
 
 class _AsyncSignals(QObject):
@@ -662,6 +669,12 @@ def _initial_screenshots_path(cfg: Config) -> str:
         return str(COMMON_WOW_RETAIL_ROOTS[0] / "Screenshots")
 
 
+def _cancel_dialog_probe(owner_ref: weakref.ReferenceType[SettingsDialog], *_args: object) -> None:
+    owner = owner_ref()
+    if owner is not None:
+        owner._cancel_screenshots_validation_process()
+
+
 class SettingsDialog(QDialog):
     usageConsentChanged = pyqtSignal(bool)
     valuesChanged = pyqtSignal(object)
@@ -681,6 +694,7 @@ class SettingsDialog(QDialog):
         open_logs: SimpleAction | None = None,
         clear_cache: SimpleAction | None = None,
         check_updates: UpdateAction | None = None,
+        cancel_update: Callable[[], bool] | None = None,
         hide_to_tray_on_close: bool = True,
         usage_client: UsageClient | None = None,
         parent: QWidget | None = None,
@@ -700,6 +714,8 @@ class SettingsDialog(QDialog):
         self._open_logs = open_logs
         self._clear_cache = clear_cache
         self._check_updates = check_updates
+        self._cancel_update = cancel_update
+        self._update_cancel_requested = False
         self._last_values_apply_succeeded = True
         self._latest_update_version: str | None = None
         self._signals = _AsyncSignals(self)
@@ -733,9 +749,11 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_process_timeout.timeout.connect(
             self._handle_screenshots_validation_timeout
         )
-        self.destroyed.connect(
-            lambda _object=None: self._cancel_screenshots_validation_process()
-        )
+        cancel_probe = partial(_cancel_dialog_probe, weakref.ref(self))
+        self.destroyed.connect(cancel_probe)
+        # Keep teardown callbacks rooted while cyclic GC clears Qt wrappers.
+        # They retain only weak owners and never resurrect the dialog.
+        weakref.finalize(self, cancel_probe).atexit = False
         self._screenshots_warning_timer = QTimer(self)
         self._screenshots_warning_timer.setSingleShot(True)
         self._screenshots_warning_timer.setInterval(SCREENSHOTS_WARNING_DEBOUNCE_MS)
@@ -1068,6 +1086,13 @@ class SettingsDialog(QDialog):
         )
         footer_layout.addWidget(self.autosave_hint, stretch=1)
         footer_layout.addWidget(self.status_label, stretch=1)
+        self.cancel_update_button = QPushButton("Cancel", footer)
+        self.cancel_update_button.setObjectName("cancelUpdate")
+        self.cancel_update_button.setAccessibleName("Cancel update download")
+        self.cancel_update_button.setToolTip("Cancel before the installer starts.")
+        self.cancel_update_button.clicked.connect(self._cancel_update_download)
+        self.cancel_update_button.hide()
+        footer_layout.addWidget(self.cancel_update_button)
         self.test_button = QPushButton("Test WCL", footer)
         self.test_button.setObjectName("testWcl")
         _set_tooltip_and_accessibility(
@@ -1388,7 +1413,13 @@ class SettingsDialog(QDialog):
         )
 
     def set_update_in_progress(self, in_progress: bool) -> None:
+        if in_progress == self._update_in_progress:
+            self._refresh_settings_interaction_state()
+            return
         self._update_in_progress = in_progress
+        self._update_cancel_requested = False
+        self.cancel_update_button.setVisible(in_progress and self._cancel_update is not None)
+        self.cancel_update_button.setEnabled(in_progress)
         if in_progress:
             self._autosave_timer.stop()
         self._refresh_settings_interaction_state()
@@ -1408,6 +1439,25 @@ class SettingsDialog(QDialog):
         else:
             self.set_update_available(self._latest_update_version)
             self._refresh_settings_interaction_state()
+
+    def set_update_progress(self, progress: UpdateProgress) -> None:
+        if not self._update_in_progress:
+            return
+        cancellable = progress.phase != "installing" and self._cancel_update is not None
+        self.cancel_update_button.setVisible(cancellable)
+        self.cancel_update_button.setEnabled(cancellable and not self._update_cancel_requested)
+        if not self._update_cancel_requested:
+            self._set_status(progress.message, busy=True)
+
+    def _cancel_update_download(self) -> None:
+        if self._cancel_update is None or not self._update_in_progress:
+            return
+        if self._cancel_update():
+            self._update_cancel_requested = True
+            self.cancel_update_button.setEnabled(False)
+            self._set_status("Cancelling download…", busy=True)
+        else:
+            self.cancel_update_button.hide()
 
     def _settings_interactions_enabled(self) -> bool:
         return not self._update_in_progress and not self._cache_action_in_progress
@@ -1775,28 +1825,41 @@ class SettingsDialog(QDialog):
         result_path = _screenshots_path_probe_result_path(token)
         self._screenshots_validation_process_result_path = result_path
         self._screenshots_validation_started_generation = generation
-        process.finished.connect(
-            lambda exit_code, exit_status, active_process=process, output=result_path: (
-                self._finish_screenshots_validation_process(
-                    active_process,
-                    output,
-                    exit_code,
-                    exit_status,
-                )
-            )
-        )
-        process.errorOccurred.connect(
-            lambda error, active_process=process, output=result_path: (
-                self._handle_screenshots_validation_process_error(
-                    active_process,
-                    output,
-                    error,
-                )
-            )
-        )
+        process.setProperty("screenshotsProbeResultPath", str(result_path))
+        # QObject slots disconnect when the dialog dies. Closures retaining the
+        # dialog/process can instead run during cyclic GC with cleared cells.
+        process.finished.connect(self._screenshots_validation_process_finished)
+        process.errorOccurred.connect(self._screenshots_validation_process_error)
+        cleanup_result = partial(SettingsDialog._remove_screenshots_validation_result, result_path)
+        process.destroyed.connect(cleanup_result)
+        # The finalizer covers Python GC; destroyed also cleans after QProcess
+        # has stopped its child, including an output written during teardown.
+        weakref.finalize(process, cleanup_result).atexit = False
         program, arguments = _screenshots_path_probe_program_args(path, token)
         process.start(program, arguments)
         self._screenshots_validation_process_timeout.start()
+
+    @pyqtSlot(int, QProcess.ExitStatus)
+    def _screenshots_validation_process_finished(
+        self, exit_code: int, exit_status: QProcess.ExitStatus,
+    ) -> None:
+        process = self.sender()
+        if isinstance(process, QProcess):
+            result_path = process.property("screenshotsProbeResultPath")
+            if isinstance(result_path, str):
+                self._finish_screenshots_validation_process(
+                    process, Path(result_path), exit_code, exit_status,
+                )
+
+    @pyqtSlot(QProcess.ProcessError)
+    def _screenshots_validation_process_error(self, error: QProcess.ProcessError) -> None:
+        process = self.sender()
+        if isinstance(process, QProcess):
+            result_path = process.property("screenshotsProbeResultPath")
+            if isinstance(result_path, str):
+                self._handle_screenshots_validation_process_error(
+                    process, Path(result_path), error,
+                )
 
     def _cancel_screenshots_validation_process(self) -> None:
         process = self._screenshots_validation_process
@@ -1855,7 +1918,7 @@ class SettingsDialog(QDialog):
         return generation, path
 
     @staticmethod
-    def _remove_screenshots_validation_result(path: Path | None) -> None:
+    def _remove_screenshots_validation_result(path: Path | None, *_args: object) -> None:
         if path is None:
             return
         try:
@@ -2012,15 +2075,18 @@ class SettingsDialog(QDialog):
                     message = result.message
                     keep_disabled = result.installer_handoff
                     installer_launch = result.installer_launch
+                    cancelled = result.cancelled
                 else:
                     message = result
                     installer_launch = None
+                    cancelled = False
                 outcome = _AsyncActionResult(
                     button,
                     message,
                     success_payload=success_payload,
                     keep_disabled=keep_disabled,
                     installer_launch=installer_launch,
+                    cancelled=cancelled,
                 )
             except Exception as exc:  # noqa: BLE001
                 outcome = _AsyncActionResult(
@@ -2074,7 +2140,10 @@ class SettingsDialog(QDialog):
                 return
         self._set_status(raw.message, error=raw.error)
         if raw.button is self.update_button:
-            if raw.error:
+            if raw.cancelled:
+                raw.button.setEnabled(True)
+                self.updateFinished.emit(False)
+            elif raw.error:
                 raw.button.setEnabled(True)
                 self.updateFinished.emit(True)
             elif raw.keep_disabled:
@@ -2111,9 +2180,16 @@ class SettingsDialog(QDialog):
         popup.setStyleSheet(_SETTINGS_STYLESHEET)
         popup.setWindowTitle("Warcraft Logs API client example")
         popup.setModal(True)
-        popup.setMinimumWidth(720)
+        screen = self.screen()
+        available = screen.availableGeometry() if screen is not None else QRect(0, 0, 1024, 768)
+        width_limit = max(1, available.width() - 24)
+        height_limit = max(1, available.height() - 40)
+        popup.setMaximumSize(width_limit, height_limit)
 
-        layout = QVBoxLayout(popup)
+        outer = QVBoxLayout(popup)
+        outer.setContentsMargins(8, 8, 8, 8)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
@@ -2196,19 +2272,22 @@ class SettingsDialog(QDialog):
         else:
             image.setPixmap(
                 pixmap.scaledToWidth(
-                    900,
+                    min(900, max(200, width_limit - 64)),
                     Qt.TransformationMode.SmoothTransformation,
                 )
             )
 
         scroll = QScrollArea()
+        scroll.setObjectName("wclExampleScroll")
         scroll.setWidgetResizable(True)
-        scroll.setWidget(image)
-        layout.addWidget(scroll)
+        scroll.setWidget(content)
+        layout.addWidget(image)
+        outer.addWidget(scroll)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(popup.reject)
-        layout.addWidget(buttons)
+        outer.addWidget(buttons)
+        popup.resize(min(720, width_limit), min(680, height_limit))
         return popup
 
     def _copyable_value_row(
@@ -2332,7 +2411,7 @@ class SettingsDialog(QDialog):
         self.updateStarted.emit()
         self._start_async_action(
             button=self.update_button,
-            busy_text="Installing update...",
+            busy_text="Checking update…",
             error_prefix="Update failed",
             action=check_updates,
         )

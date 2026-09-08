@@ -1,5 +1,32 @@
 # ApplicantScout Companion Release Notes
 
+## 0.17.0 - 09-Sep-2026
+
+Paired release with ApplicantScout addon `0.10.1`.
+
+### Improved and fixed
+
+- Keep the table compact, with visible roles, numeric parses and explanations
+  available on hover. Neutral `~` Fit estimates are distinct from WCL colours.
+- Sort applications by the listing's M+ or raid percentile, keeping grouped
+  applicants together.
+- Adapt maximum width to the visible content and screen. Scroll long cards in
+  short windows and show complete raid values in narrow ones.
+- Match raid results to the applying specialization and keep displayed
+  percentiles consistent with their colour bands.
+- Prevent older screenshot results from replacing newer applicant data.
+- Show update progress and allow cancellation before the installer starts.
+- Keep the WCL setup example usable on small screens.
+- Safely finish background folder checks when Settings closes.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.10.1`.
+- Installer: `ApplicantScoutCompanionSetup-0.17.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.17.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.17.0-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.17.0-release-manifest.json`
+
 ## 0.16.0 - 08-Sep-2026
 
 Paired release with ApplicantScout addon `0.10.0`.

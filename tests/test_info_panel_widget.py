@@ -61,7 +61,6 @@ from applicant_scout.metric_preferences import (
 from applicant_scout.scoring import CONTEXT_MPLUS, PackageFit, package_fit
 from applicant_scout.screenshot import DecodedListing, Snapshot
 from applicant_scout.state import (
-    DEFAULT_WINDOW_WIDTH,
     WINDOW_GEOMETRY_LAYOUT_VERSION,
     AppState,
     Applicant,
@@ -204,7 +203,7 @@ def test_ready_panel_renders_identity_metrics_and_dungeons(qtbot):
     name_label, key_label, wcl_key_label, value_label = panel._dungeon_rows[0]
     assert name_label.text() == "Pit of Saron"
     assert key_label.text() == ""
-    assert wcl_key_label.text() == "WCL +14"
+    assert wcl_key_label.text() == "+14"
     assert value_label.text() == "100/80"
     assert name_label.width() == DUNGEON_NAME_WIDTH
     assert key_label.width() == DUNGEON_KEY_WIDTH
@@ -239,7 +238,7 @@ def test_raid_listing_panel_shows_disabled_target_badge_with_estimated_fit(qtbot
     assert panel._metric_labels["N"].isHidden()
     assert panel._metric_labels["H"].isHidden()
     assert not panel._metric_labels["Fit"].isHidden()
-    assert panel._metric_labels["Fit"].text().startswith("Fit estimate · Heroic: Estimate ")
+    assert panel._metric_labels["Fit"].text().startswith("Fit · Heroic: Estimate ")
     assert panel._metric_labels["M"].text() == "Mythic 70/60"
     assert not panel._metric_labels["M"].isHidden()
     assert panel._status_label.text() != "No Warcraft Logs data"
@@ -493,7 +492,7 @@ def test_mplus_detail_widths_restore_after_raid_detail(qtbot):
     panel._on_detail_mode_clicked("mplus")
 
     assert panel._dungeon_rows[0][0].text() == "Pit of Saron"
-    assert panel._dungeon_rows[0][2].text() == "WCL +14"
+    assert panel._dungeon_rows[0][2].text() == "+14"
     assert panel._dungeon_rows[0][3].text() == "100/80"
     assert panel._dungeon_rows[0][1].width() == DUNGEON_KEY_WIDTH
     assert panel._dungeon_rows[0][3].width() == DUNGEON_METRIC_WIDTH
@@ -603,7 +602,7 @@ def test_narrow_raid_header_keeps_manual_action_readable(
         for width in (300, 388, 650, 300):
             window.resize(width, 800)
             qtbot.wait(1)
-            assert window.width() == width
+            assert window.width() == min(width, window.maximumWidth())
             assert button.text() == "Load boss details"
             assert button.width() >= button.sizeHint().width()
             assert button.mapTo(panel, QPoint()).x() + button.width() <= panel.width() - 10
@@ -1742,9 +1741,60 @@ def test_context_dungeon_rows_colour_the_printed_percentile(qtbot):
     panel.setApplicantData(app, listing)
 
     _name_label, _rio_label, wcl_key_label, value_label = panel._dungeon_rows[0]
-    assert wcl_key_label.text() == "WCL +16"
-    assert value_label.text() == "83 1 run"
+    assert wcl_key_label.text() == "+16"
+    assert value_label.text() == "83"
+    assert "1 logged run" in value_label.toolTip()
+    assert value_label.accessibleDescription() == value_label.toolTip()
     assert percentile_colour(83.0) in value_label.styleSheet()
+
+
+@pytest.mark.parametrize("context", ["mplus", "unknown"])
+def test_single_run_value_tooltip_routes_and_clears_on_reuse(qtbot, tmp_path, monkeypatch, context):
+    client = WCLClient(WCLAuth("client", "secret", tmp_path))
+    window = OverlayWindow(AppState(), client, CharacterCache(tmp_path), tmp_path)
+    qtbot.addWidget(window)
+    panel = window._panel
+    listing = _listing() if context == "mplus" else None
+    entry = dict(name="Skyreach", parse_percent=44.0, median_percent=None, key_level=16, run_count=1)
+    app = _app(mplus_dps_breakdown=[entry])
+    rendered = []
+    monkeypatch.setattr(
+        overlay_mod, "_render_tooltip",
+        lambda parent, text, pos: rendered.append((parent, text, pos)) or True,
+    )
+    try:
+        panel.setApplicantData(app, listing)
+        value = panel._dungeon_rows[0][3]
+        assert value.text() == "44"
+        assert "1 logged run" in value.toolTip()
+        assert "no repeat-run median" in value.accessibleDescription()
+        assert value in window._action_tooltip_widgets
+        position = QPoint(70, 90)
+        event = QHelpEvent(QEvent.Type.ToolTip, QPoint(4, 5), position)
+        assert window.eventFilter(value, event)
+        assert rendered == [(value, value.toolTip(), position)]
+
+        for updates, expected in (
+            (dict(parse_percent=79.0, median_percent=65.0, run_count=3), "79/65"),
+            (dict(parse_percent=52.0, median_percent=None, run_count=0), "52"),
+        ):
+            panel.setApplicantData(_app(mplus_dps_breakdown=[entry | updates]), listing)
+            assert value.text() == expected
+            assert value.toolTip() == ""
+            assert value.accessibleDescription() == ""
+
+        panel.setApplicantData(app, listing)
+        panel.setApplicantData(_app(), _raid_listing())
+        assert value.toolTip() == ""
+        assert value.accessibleDescription() == ""
+        panel.setApplicantData(app, listing)
+        panel.setPlaceholder()
+        assert value.isHidden()
+        assert value.toolTip() == ""
+        assert value.accessibleDescription() == ""
+    finally:
+        window.close()
+        client.close()
 
 
 def test_panel_renders_rio_and_wcl_dungeon_rows_side_by_side(qtbot):
@@ -1778,14 +1828,14 @@ def test_panel_renders_rio_and_wcl_dungeon_rows_side_by_side(qtbot):
 
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
-    assert rio_label.text() == "RIO +15"
-    assert wcl_key_label.text() == "WCL +12"
+    assert rio_label.text() == "+15"
+    assert wcl_key_label.text() == "+12"
     assert wcl_label.text() == "42/38"
 
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[1]
     assert name_label.text() == "Pit of Saron"
-    assert rio_label.text() == "RIO +16"
-    assert wcl_key_label.text() == "WCL +14"
+    assert rio_label.text() == "+16"
+    assert wcl_key_label.text() == "+14"
     assert wcl_label.text() == "71/62"
 
 
@@ -1827,8 +1877,8 @@ def test_panel_prioritises_target_dungeon_by_activity_id_when_listing_name_is_lo
 
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Kings' Rest"
-    assert rio_label.text() == "RIO +15"
-    assert wcl_key_label.text() == "WCL +12"
+    assert rio_label.text() == "+15"
+    assert wcl_key_label.text() == "+12"
     assert wcl_label.text() == "42/38"
 
 
@@ -1858,8 +1908,8 @@ def test_panel_merges_localized_rio_row_with_wcl_activity_id_mapping(qtbot):
 
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Kings' Rest"
-    assert rio_label.text() == "RIO +15"
-    assert wcl_key_label.text() == "WCL +12"
+    assert rio_label.text() == "+15"
+    assert wcl_key_label.text() == "+12"
     assert wcl_label.text() == "42/38"
     assert panel._dungeon_rows[1][0].isHidden()
 
@@ -1886,7 +1936,7 @@ def test_panel_renders_rio_dungeon_rows_when_wcl_has_no_logs(qtbot):
     assert panel._state_stage.isHidden()
     name_label, rio_label, wcl_key_label, wcl_label = panel._dungeon_rows[0]
     assert name_label.text() == "Skyreach"
-    assert rio_label.text() == "RIO +15"
+    assert rio_label.text() == "+15"
     assert wcl_key_label.text() == ""
     assert wcl_label.text() == ""
 
@@ -1916,9 +1966,9 @@ def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
 
     assert "Not found on Warcraft Logs" in panel._status_label.text()
     assert "RaiderIO only" in panel._status_label.text()
-    assert panel._metric_labels["Fit"].text().startswith("Fit estimate · +16:")
+    assert panel._metric_labels["Fit"].text().startswith("Fit · +16:")
     fit = scoring_mod.candidate_fit(app, listing)
-    assert panel._metric_labels["Fit"].text() == f"Fit estimate · +16: {round(fit.score)}"
+    assert panel._metric_labels["Fit"].text() == f"Fit · +16: ~{round(fit.score)}"
     assert "DPS" not in panel._metric_labels["Fit"].text()
     assert panel._metric_labels["M+"].isHidden()
     assert "RIO" not in panel._metric_labels["Fit"].text()
@@ -1945,8 +1995,10 @@ def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
 
     panel.setApplicantData(app, listing)
 
-    assert panel._metric_labels["Fit"].text().startswith("Fit estimate · +16:")
-    assert panel._status_label.text() == (
+    assert panel._metric_labels["Fit"].text().startswith("Fit · +16:")
+    assert panel._status_label.isHidden()
+    assert panel._mplus_fit_status_text(app, listing) in panel._metric_labels["Fit"].toolTip()
+    assert panel._mplus_fit_status_text(app, listing) == (
         "Target +16 · best nearby +16 · same dungeon RIO +16\n"
         "Evidence strength 75% · 8/8 qualifying dungeons · RaiderIO only"
     )
@@ -1967,10 +2019,10 @@ def test_panel_explains_missing_nearby_and_same_dungeon_evidence(qtbot):
 
     panel.setApplicantData(app, _listing())
 
-    assert "no nearby key evidence" in panel._status_label.text()
-    assert "no same-dungeon evidence" in panel._status_label.text()
-    assert "limit: score-only evidence" in panel._status_label.text()
-    assert "Evidence strength 30%" in panel._status_label.text()
+    assert "no nearby key evidence" in panel._metric_labels["Fit"].toolTip()
+    assert "no same-dungeon evidence" in panel._metric_labels["Fit"].toolTip()
+    assert "limit: score-only evidence" in panel._metric_labels["Fit"].toolTip()
+    assert "Evidence strength 30%" in panel._metric_labels["Fit"].toolTip()
 
 
 def test_fit_explanation_is_available_to_mouse_and_clears_with_context(qtbot):
@@ -1979,12 +2031,13 @@ def test_fit_explanation_is_available_to_mouse_and_clears_with_context(qtbot):
     panel.setApplicantData(_app(), _listing())
 
     badge = panel._metric_labels["Fit"]
-    assert badge.text().startswith("Fit estimate · +16:")
+    assert badge.text().startswith("Fit · +16:")
     assert badge in panel.tooltip_widgets()
     assert "not a WCL parse percentile" in badge.toolTip()
     assert "success probability" in badge.accessibleDescription()
-    assert "counts once" in panel._status_label.toolTip()
-    assert "\nEvidence strength" in panel._status_label.text()
+    assert "counts once" in badge.toolTip()
+    assert "\nEvidence strength" in badge.toolTip()
+    assert panel._status_label.isHidden()
 
     panel.setApplicantData(_app(), None)
     assert badge.toolTip() == ""
@@ -2017,12 +2070,12 @@ def test_zero_fit_keeps_evidence_and_damage_metric_explanation(qtbot, role):
 
     panel.setApplicantData(applicant, listing)
 
-    assert panel._metric_labels["Fit"].text() == "Fit estimate · +16: 0"
+    assert panel._metric_labels["Fit"].text() == "Fit · +16: ~0"
     assert panel._metric_labels["M+"].text() == "M+ DPS 20/20 +16"
-    assert "same dungeon WCL +16" in panel._status_label.text()
-    assert "limit:" in panel._status_label.text()
+    assert "same dungeon WCL +16" in panel._metric_labels["Fit"].toolTip()
+    assert "limit:" in panel._metric_labels["Fit"].toolTip()
     assert "measure damage" in panel._metric_labels["Fit"].toolTip()
-    assert "healing, survival, or utility" in panel._status_label.toolTip()
+    assert "healing, survival, or utility" in panel._metric_labels["Fit"].toolTip()
 
 
 def test_group_explanation_uses_overlay_tooltip_routing(qtbot, tmp_path, monkeypatch):
@@ -2069,7 +2122,7 @@ def test_panel_keeps_grey_same_dungeon_quality_visible(qtbot):
 
     panel.setApplicantData(app, _listing())
 
-    text = panel._status_label.text()
+    text = panel._metric_labels["Fit"].toolTip()
     assert "no nearby key evidence" in text
     assert "same dungeon WCL +20 31 1 run" in text
     assert "limit: weak WCL evidence" in text
@@ -2093,7 +2146,7 @@ def test_panel_does_not_label_far_key_as_nearby_and_omits_generic_dungeon(qtbot)
 
     panel.setApplicantData(app, listing)
 
-    text = panel._status_label.text()
+    text = panel._metric_labels["Fit"].toolTip()
     assert "no nearby key evidence" in text
     assert "best evidence" not in text
     assert "same dungeon" not in text
@@ -2114,8 +2167,9 @@ def test_panel_accessibility_metadata_tracks_mplus_raid_and_error_status(qtbot):
     panel.setApplicantData(_app(), _listing())
 
     assert panel._status_label.accessibleName() == ""
-    assert "Target +16" in panel._status_label.text()
-    assert "not a success probability" in panel._status_label.accessibleDescription()
+    assert panel._status_label.isHidden()
+    assert "Target +16" in panel._metric_labels["Fit"].toolTip()
+    assert "not a success probability" in panel._metric_labels["Fit"].accessibleDescription()
 
     panel.setApplicantData(
         _app(),
@@ -2189,18 +2243,20 @@ def test_panel_evidence_copy_reflows_at_content_safe_width_with_eight_rows(qtbot
     panel.setMinimumHeight(target_height)
     panel.setMaximumHeight(target_height)
     panel.show()
-    compact_width = panel.minimumSizeHint().width()
+    compact_width = overlay_mod.USER_MIN_WINDOW_WIDTH
 
     for width in (650, compact_width, 650):
         panel.resize(width, target_height)
+        QApplication.processEvents()
+        target_height = panel.target_height()
+        panel.setFixedHeight(target_height)
         QApplication.processEvents()
         assert panel.width() == width
         last_name = panel._dungeon_rows[7][0]
         last_bottom = last_name.mapTo(panel, QPoint(0, 0)).y() + last_name.height()
         assert not last_name.isHidden()
-        assert panel._status_label.minimumSizeHint().height() <= (
-            panel._status_label.height()
-        )
+        assert panel._status_label.isHidden()
+        assert "Evidence strength" in panel._metric_labels["Fit"].toolTip()
         assert last_bottom <= panel.contentsRect().bottom()
         assert panel.target_height() == target_height
 
@@ -2224,10 +2280,10 @@ def test_panel_renders_group_package_line(qtbot):
 
     panel.setApplicantData(_app(), package=package)
 
-    assert panel._package_label.text() == (
-        "Group FIT 73 · 1T/0H/1DPS · high 91 · avg 74 · low 52 · "
-        "evidence strength 68%"
-    )
+    assert panel._package_label.text() == "Group (2) · Fit ~73"
+    assert "1T/0H/1DPS" in panel._package_label.toolTip()
+    assert "high 91 · avg 74 · low 52" in panel._package_label.toolTip()
+    assert "evidence strength 68%" in panel._package_label.toolTip()
     assert panel._package_label.accessibleName() == ""
     assert "68 percent" in panel._package_label.accessibleDescription()
     assert "not a success probability" in (
@@ -2270,11 +2326,11 @@ def test_panel_renders_real_mplus_package_without_blank_label(qtbot):
 
     panel.setApplicantData(follower, listing, package=package)
 
-    assert panel._package_label.text().startswith("Group fit ")
-    assert " · hi/avg/low " in panel._package_label.text()
-    assert " · 0T/0H/2DPS" in panel._package_label.text()
-    assert " · evidence strength " in panel._package_label.text()
-    assert " · this low" in panel._package_label.text()
+    assert panel._package_label.text() == f"Group (2) · Fit ~{round(package.score)}"
+    assert " · hi/avg/low " in panel._package_label.toolTip()
+    assert " · 0T/0H/2DPS" in panel._package_label.toolTip()
+    assert " · evidence strength " in panel._package_label.toolTip()
+    assert " · this low" in panel._package_label.toolTip()
     assert "Group  " not in panel._package_label.text()
     assert not panel._package_label.isHidden()
 
@@ -2304,7 +2360,7 @@ def test_panel_explains_incomplete_group_member_statuses(qtbot):
 
     panel.setApplicantData(_app(fetch_status="loading"), _listing(), package=package)
 
-    text = panel._package_label.text()
+    text = panel._package_label.toolTip()
     assert "1T/1H/2DPS" in text
     assert "unknown 1" in text
     assert "loading 2" in text
@@ -2387,7 +2443,7 @@ def test_malformed_mplus_breakdown_renders_safe_fallbacks(qtbot):
 
     assert panel._dungeon_rows[0][0].text() == "Valid"
     assert panel._dungeon_rows[0][1].text() == ""
-    assert panel._dungeon_rows[0][2].text() == "WCL +12"
+    assert panel._dungeon_rows[0][2].text() == "+12"
     assert panel._dungeon_rows[0][3].text() == "72/60"
     assert panel._dungeon_rows[1][0].text() == "Bad Cache"
     assert panel._dungeon_rows[1][1].text() == ""
@@ -2615,7 +2671,7 @@ def test_panel_explains_error_mplus_fit_uses_raiderio_only(qtbot):
 
     panel.setApplicantData(app, listing)
 
-    assert panel._metric_labels["Fit"].text().startswith("Fit estimate · +16:")
+    assert panel._metric_labels["Fit"].text().startswith("Fit · +16:")
     assert panel._status_label.text() == "WCL error: bad token · RaiderIO only"
     assert not panel._status_label.isHidden()
     assert panel._state_stage.isHidden()
@@ -2703,7 +2759,12 @@ def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
-    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    window = OverlayWindow(
+        AppState(), client, cache, tmp_path,
+        metric_preferences=MetricPreferences(
+            mplus=True, raid_normal=True, raid_heroic=True, raid_mythic=True,
+        ),
+    )
     qtbot.addWidget(window)
     footer = window._status_label.parentWidget()
     assert footer is not None
@@ -2716,6 +2777,7 @@ def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
     )
 
     try:
+        assert window.maximumWidth() >= overlay_mod.STATUS_ROW_SINGLE_LINE_MIN_WIDTH
         window.show()
         qtbot.waitUntil(window.isVisible, timeout=1000)
 
@@ -2723,7 +2785,7 @@ def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
             window.minimumWidth(),
             overlay_mod.STATUS_ROW_SINGLE_LINE_MIN_WIDTH - 1,
             overlay_mod.STATUS_ROW_SINGLE_LINE_MIN_WIDTH,
-            650,
+            window.maximumWidth(),
             window.minimumWidth(),
         ):
             window.resize(width, 240)
@@ -3157,29 +3219,29 @@ def test_panel_height_change_batches_window_updates_to_avoid_hover_jitter(
     panel_mutations: list[bool] = []
     geometry_mutations: list[bool] = []
     original_updates = window.setUpdatesEnabled
-    original_minimum = window._panel.setMinimumHeight
-    original_maximum = window._panel.setMaximumHeight
+    original_fixed = window._panel.setFixedHeight
+    original_viewport = window._panel_scroll.setFixedHeight
     original_geometry = window._set_geometry_without_persist
 
     def record_updates(enabled: bool) -> None:
         update_states.append(enabled)
         original_updates(enabled)
 
-    def record_minimum(height: int) -> None:
+    def record_fixed(height: int) -> None:
         panel_mutations.append(window.updatesEnabled())
-        original_minimum(height)
+        original_fixed(height)
 
-    def record_maximum(height: int) -> None:
+    def record_viewport(height: int) -> None:
         panel_mutations.append(window.updatesEnabled())
-        original_maximum(height)
+        original_viewport(height)
 
     def record_geometry(x: int, y: int, w: int, h: int) -> None:
         geometry_mutations.append(window.updatesEnabled())
         original_geometry(x, y, w, h)
 
     monkeypatch.setattr(window, "setUpdatesEnabled", record_updates)
-    monkeypatch.setattr(window._panel, "setMinimumHeight", record_minimum)
-    monkeypatch.setattr(window._panel, "setMaximumHeight", record_maximum)
+    monkeypatch.setattr(window._panel, "setFixedHeight", record_fixed)
+    monkeypatch.setattr(window._panel_scroll, "setFixedHeight", record_viewport)
     monkeypatch.setattr(window, "_set_geometry_without_persist", record_geometry)
 
     try:
@@ -3194,8 +3256,8 @@ def test_panel_height_change_batches_window_updates_to_avoid_hover_jitter(
 
         assert panel_mutations
         assert geometry_mutations
-        assert panel_mutations == [False, False]
-        assert geometry_mutations == [False]
+        assert not any(panel_mutations)
+        assert not any(geometry_mutations)
         assert update_states[0] is False
         assert update_states[-1] is True
     finally:
@@ -5906,6 +5968,8 @@ def test_overlay_table_mplus_column_consumes_right_edge(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     try:
+        limit = window.maximumWidth()
+        window.resize(limit - 8, window.height())
         window.show()
         qtbot.waitUntil(lambda: window._table.viewport().width() > 0, timeout=1000)
         QApplication.processEvents()
@@ -5917,7 +5981,7 @@ def test_overlay_table_mplus_column_consumes_right_edge(qtbot, tmp_path):
         assert window._table.columnWidth(COL_MPLUS) > 88
 
         initial_mplus_width = window._table.columnWidth(COL_MPLUS)
-        window.resize(DEFAULT_WINDOW_WIDTH + 120, window.height())
+        window.resize(limit, window.height())
         QApplication.processEvents()
 
         resized_widths = [
@@ -5925,6 +5989,13 @@ def test_overlay_table_mplus_column_consumes_right_edge(qtbot, tmp_path):
         ]
         assert sum(resized_widths) == window._table.viewport().width()
         assert window._table.columnWidth(COL_MPLUS) > initial_mplus_width
+
+        window.resize(5000, window.height())
+        window._refresh_table()
+        QApplication.processEvents()
+        assert window.width() == window.maximumWidth() == limit
+        assert window._table.columnWidth(COL_MPLUS) == resized_widths[COL_MPLUS]
+        assert window._table.horizontalScrollBar().maximum() == 0
     finally:
         client.close()
 
@@ -5946,7 +6017,7 @@ def test_overlay_panel_uses_group_package_fit_for_any_member(qtbot, tmp_path):
         window._sync_delegate_and_panel()
 
         assert window._panel._package_label.text().startswith("Group ")
-        assert "0T/0H/2DPS" in window._panel._package_label.text()
+        assert "0T/0H/2DPS" in window._panel._package_label.toolTip()
         assert not window._panel._package_label.isHidden()
     finally:
         client.close()
@@ -5985,7 +6056,7 @@ def test_overlay_group_package_status_counts_follow_member_fetch_state(qtbot, tm
         window._hover_id = "10:1"
         window._sync_delegate_and_panel()
 
-        text = window._panel._package_label.text()
+        text = window._panel._package_label.toolTip()
         assert "1T/1H/1DPS" in text
         assert "loading 1" in text
         assert "error 1" in text
@@ -5994,7 +6065,7 @@ def test_overlay_group_package_status_counts_follow_member_fetch_state(qtbot, tm
         window._refresh_table()
         window._sync_delegate_and_panel()
 
-        text = window._panel._package_label.text()
+        text = window._panel._package_label.toolTip()
         assert "1T/1H/1DPS" in text
         assert "loading" not in text
         assert "error 1" in text
@@ -6115,17 +6186,15 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
                 last_name.mapTo(window._panel, QPoint(0, 0)).y()
                 + last_name.height()
             )
-            assert window.width() == width
+            assert window.width() == min(width, window.maximumWidth())
             assert window._panel.height() >= window._panel.target_height()
             assert label.wordWrap()
-            assert "1T/1H/0DPS" in label.text()
-            assert "evidence strength 68%" in label.text()
+            assert label.text() == "Group (2) · Fit ~73"
+            assert "1T/1H/0DPS" in label.toolTip()
+            assert "evidence strength 68%" in label.toolTip()
             assert label.heightForWidth(label.width()) <= label.height()
-            assert status.heightForWidth(status.width()) <= status.height()
-            if width == 300:
-                assert label.height() >= label.fontMetrics().height() * 2
-            assert label.geometry().bottom() < status.geometry().top()
-            assert status.geometry().bottom() < window._panel._dungeon_widget.y()
+            assert status.isHidden()
+            assert label.geometry().bottom() < window._panel._dungeon_widget.y()
             assert last_bottom <= window._panel.contentsRect().bottom()
     finally:
         client.close()
@@ -6180,7 +6249,7 @@ def test_overlay_mplus_detail_rows_reflow_across_supported_widths(
             labels = panel._dungeon_rows[0]
             rects = [label.geometry() for label in labels]
             grid_rect = panel._dungeon_widget.contentsRect()
-            assert window.width() == width
+            assert window.width() == min(width, window.maximumWidth())
             assert panel._dungeon_widget.width() == grid_rect.width()
             assert all(label.text() for label in labels)
             assert rects[0].left() >= grid_rect.left()
@@ -6362,14 +6431,14 @@ def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
                 table_top = current_table_top
             else:
                 assert abs(current_table_top - table_top) <= 4
-            assert window.width() == width
+            assert window.width() == min(width, window.maximumWidth())
             assert panel.height() >= panel.target_height()
-            assert "1T/1H/0DPS" in package.text()
-            assert "Evidence strength" in status.text()
+            assert package.text().startswith("Group (2) · Fit ")
+            assert "1T/1H/0DPS" in package.toolTip()
+            assert "Evidence strength" in panel._metric_labels["Fit"].toolTip()
+            assert status.isHidden()
             assert package.heightForWidth(package.width()) <= package.height()
-            assert status.heightForWidth(status.width()) <= status.height()
-            assert package.geometry().bottom() < status.geometry().top()
-            assert status.geometry().bottom() < panel._dungeon_widget.y()
+            assert package.geometry().bottom() < panel._dungeon_widget.y()
             assert last_bottom <= panel.contentsRect().bottom()
     finally:
         client.close()
@@ -6607,7 +6676,7 @@ def test_package_cell_keeps_package_and_individual_mplus_for_every_group_member(
         for row, item in ((owner_row, owner_item), (follower_row, follower_item)):
             app = state.applicants[window._id_by_row[row]]
             expected = overlay_mod._fit_cell_visuals(app, state.listing)[0]
-            assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == f"Player {expected}"
+            assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == expected
             assert window._table.item(row, COL_MPLUS).text() == "80/62 +14"
         assert owner_item.data(MPLUS_INDIVIDUAL_BG_ROLE)
         assert follower_item.data(MPLUS_INDIVIDUAL_BG_ROLE)
@@ -6639,7 +6708,7 @@ def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
         item = window._table.item(error_row, COL_FIT)
 
         assert window._table.item(error_row, COL_MPLUS).text() == placeholder
-        assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == f"Player {placeholder}"
+        assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == placeholder
         assert item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
     finally:
         client.close()
@@ -6713,7 +6782,9 @@ def test_raid_listing_table_keeps_raw_evidence_coloured_and_fit_separate(
         assert mythic_item.text() == "—"
         assert mythic_item.background().style() == Qt.BrushStyle.NoBrush
         fit_item = window._table.item(row, COL_FIT)
-        assert fit_item.text().startswith("Estimate ")
+        assert fit_item.text().startswith("~")
+        assert fit_item.text()[1:].isdigit()
+        assert fit_item.background().color().name() == overlay_mod.FIT_BACKGROUND
         assert fit_item.background().style() != Qt.BrushStyle.NoBrush
         assert window._fetches_in_flight == {}
         assert window._raid_boss_fetches_in_flight == {}
@@ -7068,7 +7139,7 @@ def test_refresh_table_reuses_member_fits_from_package_sort(
             item = window._table.item(window._row_for_id[applicant_id], COL_FIT)
             assert item is not None
             if applicant_id.startswith("10:"):
-                assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == f"Player {expected_text}"
+                assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == expected_text
             else:
                 assert item.text() == expected_text
     finally:
@@ -7179,6 +7250,7 @@ def test_metric_column_widths_skip_noop_but_measure_changed_parse_text(
     qtbot.addWidget(window)
     original = window._metric_column_required_width
     measured: list[int] = []
+    visible_columns = [COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT]
 
     def counted_width(column: int) -> int:
         measured.append(column)
@@ -7188,7 +7260,7 @@ def test_metric_column_widths_skip_noop_but_measure_changed_parse_text(
 
     try:
         window._refresh_table()
-        assert measured == [COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT]
+        assert measured == visible_columns
 
         measured.clear()
         window._refresh_table()
@@ -7196,13 +7268,13 @@ def test_metric_column_widths_skip_noop_but_measure_changed_parse_text(
 
         state.applicants["10:1"].mplus_dps = 91.0
         window._refresh_table()
-        assert measured == [COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT]
+        assert measured == visible_columns
 
         measured.clear()
 
         state.applicants["10:1"].raid_normal = 99.0
         window._refresh_table()
-        assert measured == [COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT]
+        assert measured == visible_columns
     finally:
         client.close()
 
@@ -7245,6 +7317,13 @@ def test_metric_column_width_shrinks_after_widest_row_is_removed(qtbot, tmp_path
     qtbot.addWidget(window)
 
     try:
+        window._refresh_table()
+        wide_item = window._table.item(window._row_for_id["10:1"], COL_N)
+        # Exercise content expansion even when the default font fits the base width.
+        wide_font = wide_item.font()
+        wide_font.setPointSizeF(18.0)
+        wide_item.setFont(wide_font)
+        window._metric_column_widths_dirty = True
         window._refresh_table()
         wide_width = window._table.columnWidth(COL_N)
 
@@ -7536,4 +7615,167 @@ def test_role_filter_title_count_uses_visible_group_applications(qtbot, tmp_path
 
         assert window._title_bar.title_label.text().endswith("(1 / 2)")
     finally:
+        client.close()
+
+
+@pytest.mark.parametrize("width", [300, 650, 752])
+def test_compact_detail_headers_align_and_follow_mode_changes(qtbot, width):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(mplus=True, raid_normal=True, raid_heroic=True, raid_mythic=True),
+    )
+    qtbot.addWidget(panel)
+    panel.setApplicantData(_app(), _raid_listing())
+    panel.resize(width, 500)
+    panel.show()
+    QApplication.processEvents()
+
+    for mode, titles in (
+        ("raid", ("Boss", "Kills", "", "Parse")),
+        ("mplus", ("Dungeon", "Best key", "Logged key", "DPS parse")),
+        ("raid", ("Boss", "Kills", "", "Parse")),
+    ):
+        panel._on_detail_mode_clicked(mode)
+        QApplication.processEvents()
+        assert tuple(label.text() for label in panel._detail_headers) == titles
+        assert panel._detail_legend.isHidden()
+        for column, (header, body) in enumerate(
+            zip(panel._detail_headers, panel._dungeon_rows[0], strict=True)
+        ):
+            if not titles[column]:
+                assert header.isHidden()
+                continue
+            assert header.isVisible()
+            assert header.x() == body.x()
+            assert header.width() == body.width()
+            assert header.geometry().bottom() < body.geometry().top()
+            assert header.fontMetrics().horizontalAdvance(header.text()) <= header.contentsRect().width()
+            assert header.toolTip() == header.accessibleDescription()
+        if mode == "mplus":
+            assert panel._dungeon_rows[0][2].text() == "+14"
+            assert "RaiderIO" in panel._detail_headers[1].toolTip()
+        else:
+            assert "RaiderIO" not in panel._detail_headers[1].toolTip()
+            assert "overall / item level" in panel._detail_headers[3].toolTip()
+
+    panel.setPlaceholder()
+    assert all(not header.isVisible() for header in panel._detail_headers)
+
+
+def test_compact_fit_tooltips_replace_evidence_across_rows_errors_and_loading(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    first = _app(
+        name="First-Realm",
+        mplus_dps_breakdown=[dict(
+            name="Skyreach", key_level=18, parse_percent=80.0,
+            median_percent=70.0, run_count=2,
+        )],
+    )
+    panel.setApplicantData(first, _listing())
+    badge = panel._metric_labels["Fit"]
+    assert "same dungeon WCL +18" in badge.toolTip()
+    assert panel._status_label.isHidden()
+
+    second = _app(
+        name="Second-Realm",
+        fetch_status="error",
+        error_message="quota exhausted",
+        mplus_dps=None,
+        mplus_dps_median=None,
+        mplus_dps_breakdown=[],
+        rio_profile=True,
+        rio_dungeons=[dict(name="Skyreach", key_level=15)],
+    )
+    panel.setApplicantData(second, _listing())
+    assert not badge.isHidden()
+    assert "same dungeon RIO +15" in badge.toolTip()
+    assert "WCL +18" not in badge.toolTip()
+    assert badge.toolTip() == badge.accessibleDescription()
+    assert "quota exhausted" in panel._status_label.text()
+    assert not panel._status_label.isHidden()
+
+    panel.setApplicantData(replace(second, fetch_status="loading"), _listing())
+    assert badge.isHidden()
+    assert badge.toolTip() == ""
+    assert badge.accessibleDescription() == ""
+    assert "quota exhausted" not in panel._status_label.text()
+
+    panel.setApplicantData(first, _listing())
+    assert "WCL +18" in badge.toolTip()
+    assert "RIO +15" not in badge.toolTip()
+    panel.setPlaceholder()
+    assert badge.toolTip() == ""
+    assert badge.accessibleDescription() == ""
+
+
+def test_compact_group_summary_keeps_actionable_status_and_clears_old_tooltip(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    partial = PackageFit(
+        context=CONTEXT_MPLUS, score=48.0, display="G4 48", size=4,
+        tank_count=1, healer_count=1, dps_count=2, loading_count=1, error_count=1,
+        confidence=0.31,
+    )
+    panel.setApplicantData(_app(), _listing(), package=partial)
+    label = panel._package_label
+    assert label.text() == "Group (4) · Fit ~48 · 1 loading · 1 error"
+    assert "1T/1H/2DPS" in label.toolTip()
+    assert "1 member loading" in label.accessibleDescription()
+
+    ready = replace(partial, loading_count=0, error_count=0)
+    panel.setApplicantData(_app(name="Other-Realm"), _listing(), package=ready)
+    assert label.text() == "Group (4) · Fit ~48"
+    assert "loading" not in label.toolTip()
+    assert "WCL error" not in label.accessibleDescription()
+    panel.setApplicantData(_app(), _listing(), package=None)
+    assert label.isHidden()
+    assert label.toolTip() == ""
+    assert label.accessibleDescription() == ""
+
+
+def test_compact_headers_route_tooltips_and_hidden_legends_use_no_layout_space(
+    qtbot, tmp_path, monkeypatch
+):
+    client = WCLClient(WCLAuth("client", "secret", tmp_path))
+    window = OverlayWindow(AppState(), client, CharacterCache(tmp_path), tmp_path)
+    qtbot.addWidget(window)
+    rendered = []
+    monkeypatch.setattr(
+        overlay_mod, "_render_tooltip",
+        lambda parent, text, pos: rendered.append((parent, text, pos)) or True,
+    )
+    try:
+        window.show()
+        QApplication.processEvents()
+        panel = window._panel
+        panel.setApplicantData(
+            _app(), _listing(),
+            package=PackageFit(context=CONTEXT_MPLUS, score=42, display="G4 42", size=4),
+        )
+        QApplication.processEvents()
+        visible_text = "\n".join(
+            label.text() for label in panel.findChildren(QLabel) if label.isVisible()
+        )
+        assert "Evidence strength" not in visible_text
+        assert "success probability" not in visible_text
+        assert "RIO = completed key" not in visible_text
+        assert panel._status_label.isHidden()
+        for legend in (window._metric_legend, panel._detail_legend):
+            assert legend.isHidden()
+            layout = legend.parentWidget().layout()
+            index = layout.indexOf(legend)
+            assert index >= 0
+            assert layout.itemAt(index).isEmpty()
+
+        header = panel._detail_headers[1]
+        assert header in window._action_tooltip_widgets
+        assert header in panel.tooltip_widgets()
+        position = QPoint(70, 90)
+        event = QHelpEvent(QEvent.Type.ToolTip, QPoint(4, 5), position)
+        assert window.eventFilter(header, event)
+        assert rendered == [(header, header.toolTip(), position)]
+        assert "RaiderIO" in header.toolTip()
+    finally:
+        window.close()
         client.close()

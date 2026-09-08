@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import stat
 import threading
@@ -600,9 +601,83 @@ def test_character_ranks_query_omits_disabled_raid_variables():
 
     assert "$raidZoneID" not in query
     assert "$raidMetric" not in query
+    assert "$specName" not in query
     assert "zoneRankings" not in query
     assert "encounterRankings" in query
     assert "metric: dps" in query
+
+
+@pytest.mark.parametrize("with_mplus", [False, True])
+@pytest.mark.parametrize(
+    "spec_id,role,spec_name,metric",
+    [(71, "DAMAGER", "Arms", "dps"), (73, "TANK", "Protection", "dps"),
+     (257, "HEALER", "Holy", "hps")],
+)
+def test_raid_summaries_request_applying_spec_for_every_role_and_scope(
+    with_mplus, spec_id, role, spec_name, metric,
+):
+    client, http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
+    prefs = MetricPreferences(mplus=with_mplus)
+
+    result = client.fetch_character_ranks(
+        "Scout", "ravencrest", spec_id=spec_id, role=role, metric_preferences=prefs,
+    )
+
+    request = http.calls[0]["json"]
+    assert request["variables"]["specName"] == spec_name
+    assert request["variables"]["raidMetric"] == metric
+    raid_lines = [line for line in request["query"].splitlines() if "zoneRankings" in line]
+    assert len(raid_lines) == 3
+    assert all("specName: $specName" in line for line in raid_lines)
+    assert "$specName: String!" in request["query"]
+    assert result.raid_heroic == pytest.approx(81.0)
+
+
+@pytest.mark.parametrize("spec_id,expected", [(71, 46.2), (72, 99.0)])
+def test_raid_summary_does_not_borrow_other_spec_performance(spec_id, expected):
+    # One boss with an Arms parse and a stronger Fury parse: without the server
+    # spec filter the zone aggregate reports the stronger result for both specs.
+    by_spec = {"Arms": 46.2, "Fury": 99.0}
+
+    class SpecAwareHTTP(_FakeHTTP):
+        def post(self, url, *, json, headers):
+            spec_name = json["variables"].get("specName")
+            filters_spec = "specName: $specName" in json["query"]
+            best = by_spec[spec_name] if filters_spec and spec_name else max(by_spec.values())
+            self._body = _wcl_payload({
+                "raidHeroic": {
+                    "bestPerformanceAverage": best,
+                    "medianPerformanceAverage": best,
+                },
+            })
+            return super().post(url, json=json, headers=headers)
+
+    client, _http = _client_for_payload({})
+    client._http = SpecAwareHTTP({})
+    prefs = MetricPreferences(
+        mplus=False, raid_normal=False, raid_heroic=True, raid_mythic=False,
+    )
+    result = client.fetch_character_ranks(
+        "Scout", "ravencrest", spec_id=spec_id, role="DAMAGER", metric_preferences=prefs,
+    )
+
+    assert result.raid_heroic == pytest.approx(expected)
+    assert result.raid_heroic_median == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("spec_id", [-1, 0, 999999])
+@pytest.mark.parametrize("with_mplus", [False, True])
+def test_unknown_spec_raid_summary_is_empty_without_a_request(spec_id, with_mplus):
+    client, http = _client_for_payload(_wcl_payload(_character()))
+
+    result = client.fetch_character_ranks(
+        "Unknown", "ravencrest", spec_id=spec_id,
+        metric_preferences=MetricPreferences(mplus=with_mplus),
+    )
+
+    assert result == CharacterRanks.empty()
+    assert http.calls == []
+    assert client.last_quota is None
 
 
 def test_raid_boss_detail_query_uses_two_aliases_per_enabled_boss():
@@ -1160,7 +1235,7 @@ def test_fetch_character_ranks_spec_zero_mplus_only_returns_empty_without_http()
     assert result == CharacterRanks.empty()
 
 
-def test_fetch_character_ranks_spec_zero_omits_mplus_but_keeps_raid_query():
+def test_fetch_character_ranks_spec_zero_omits_all_queries():
     client, http = _client_for_payload(_wcl_payload(_character()))
     prefs = MetricPreferences(
         mplus=True,
@@ -1177,20 +1252,11 @@ def test_fetch_character_ranks_spec_zero_omits_mplus_but_keeps_raid_query():
         metric_preferences=prefs,
     )
 
-    assert len(http.calls) == 1
-    query = http.calls[0]["json"]["query"]
-    assert "encounterRankings" not in query
-    assert "raidNormal: zoneRankings" not in query
-    assert "raidHeroic: zoneRankings" in query
-    assert "raidMythic: zoneRankings" not in query
-    assert result.raid_heroic == pytest.approx(81.0)
-    assert result.mplus_dps is None
-    assert result.mplus_hps is None
-    assert result.mplus_dps_breakdown == []
-    assert result.mplus_hps_breakdown == []
+    assert http.calls == []
+    assert result == CharacterRanks.empty()
 
 
-def test_fetch_character_ranks_unmapped_positive_spec_omits_mplus_but_keeps_raid_query():
+def test_fetch_character_ranks_unmapped_positive_spec_omits_all_queries():
     client, http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
     prefs = MetricPreferences(
         mplus=True,
@@ -1207,15 +1273,8 @@ def test_fetch_character_ranks_unmapped_positive_spec_omits_mplus_but_keeps_raid
         metric_preferences=prefs,
     )
 
-    assert len(http.calls) == 1
-    query = http.calls[0]["json"]["query"]
-    assert "encounterRankings" not in query
-    assert "raidHeroic: zoneRankings" in query
-    assert result.raid_heroic == pytest.approx(81.0)
-    assert result.mplus_dps is None
-    assert result.mplus_hps is None
-    assert result.mplus_dps_breakdown == []
-    assert result.mplus_hps_breakdown == []
+    assert http.calls == []
+    assert result == CharacterRanks.empty()
 
 
 def test_fetch_character_ranks_second_401_is_auth_error_kind():
@@ -3724,6 +3783,26 @@ def test_character_cache_get_discards_entries_with_malformed_fetched_at(tmp_path
     assert loaded.get("Other", "ravencrest", "EU", 71, "DAMAGER") is not None
 
 
+def test_character_cache_discards_v7_mixed_spec_raid_summary(tmp_path):
+    prefs = MetricPreferences(mplus=False)
+    cache = CharacterCache(tmp_path)
+    cache.put(
+        "Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER",
+        metric_preferences=prefs,
+    )
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+    # The old cache already had spec IDs in its keys, but raid values inside
+    # those entries were fetched for all specs and must not survive this fix.
+    raw["__version__"] = 7
+    cache._path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = CharacterCache(tmp_path)
+
+    assert loaded.get(
+        "Scout", "ravencrest", "EU", 71, "DAMAGER", metric_preferences=prefs,
+    ) is None
+
+
 def test_character_cache_get_discards_entries_with_future_fetched_at(tmp_path):
     cache = CharacterCache(tmp_path)
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
@@ -5068,3 +5147,31 @@ def test_headline_default_constructed_dungeonperf_excluded():
     best, median = _compute_mplus_headline(breakdown)
     assert best is None
     assert median is None
+
+
+def test_current_raid_cache_preserves_spec_and_metric_role_isolation(tmp_path):
+    broad = MetricPreferences(mplus=False)
+    heroic = MetricPreferences(
+        mplus=False, raid_normal=False, raid_heroic=True, raid_mythic=False,
+    )
+    cache = CharacterCache(tmp_path)
+    entries = [(256, "HEALER", 46.2), (257, "HEALER", 99.0), (257, "DAMAGER", 30.0)]
+    for spec_id, role, percentile in entries:
+        cache.put(
+            "Scout", "ravencrest", "EU", spec_id,
+            replace(_ranks(), raid_heroic=percentile), role=role,
+            metric_preferences=broad,
+        )
+
+    loaded = CharacterCache(tmp_path)
+    for spec_id, role, percentile in entries:
+        result = loaded.get(
+            "Scout", "ravencrest", "EU", spec_id, role, metric_preferences=heroic,
+        )
+        assert result is not None
+        assert result.raid_heroic == pytest.approx(percentile)
+        assert result.raid_normal is None
+        assert result.raid_mythic is None
+    assert loaded.get(
+        "Scout", "ravencrest", "EU", 258, "HEALER", metric_preferences=heroic,
+    ) is None

@@ -156,7 +156,7 @@ def test_zero_parse_is_visible_and_missing_median_does_not_invent_a_sample_size(
     assert overlay_presenters.mplus_metric_display_text(80, None, 0) == "80"
 
 
-def test_single_run_detail_and_aggregate_use_different_sample_labels():
+def test_single_run_summary_stays_numeric_and_details_keep_sample_count():
     assert overlay_presenters.mplus_metric_display_text(80, None, 1) == "80 1 run"
     assert (
         overlay_presenters.mplus_metric_display_text(
@@ -165,7 +165,7 @@ def test_single_run_detail_and_aggregate_use_different_sample_labels():
             1,
             headline=True,
         )
-        == "80 1/dungeon"
+        == "80"
     )
     assert overlay_presenters.mplus_metric_display_text(80, 62, 3) == "80/62"
     app = _app(
@@ -182,7 +182,7 @@ def test_single_run_detail_and_aggregate_use_different_sample_labels():
             for name, key in (("Pit of Saron", 14), ("Skyreach", 12))
         ],
     )
-    assert overlay._mplus_cell_visuals(app, _listing("raid"))[0] == "80 1/dungeon +14"
+    assert overlay._mplus_cell_visuals(app, _listing("raid"))[0] == "80 +14"
 
 
 def test_boss_kills_and_overall_ilvl_parses_have_distinct_notation():

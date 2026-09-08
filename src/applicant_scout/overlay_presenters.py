@@ -97,11 +97,11 @@ def raid_cell_visuals(
     median_pct = safe_percent(median)
     if best_pct is None and median_pct is None:
         return "—", "#5d5d5d", None
-    best_str = f"{int(round(best_pct))}" if best_pct is not None else "—"
+    best_str = f"{int(best_pct)}" if best_pct is not None else "—"
     text = (
         best_str
         if median_pct is None
-        else f"{best_str}/{int(round(median_pct))}"
+        else f"{best_str}/{int(median_pct)}"
     )
     bg = percentile_colour(best_pct) if best_pct is not None else None
     fg = text_colour_for_bg(bg) if bg is not None else None
@@ -208,7 +208,7 @@ def wcl_dungeon_rows_by_name(
                 rows[row_key] = {
                     "name": row.dungeon_name,
                     "key_level": row.key_level,
-                    "text": row.text.replace(" N=1", " 1 run"),
+                    "text": mplus_metric_display_text(row.best_percent, row.median_percent, row.run_count),
                     "colour": row.colour,
                 }
         return rows
@@ -324,8 +324,8 @@ def raid_boss_parse_rows_by_encounter(
 def raid_parse_pair_text(overall: float | None, ilvl: float | None) -> str:
     if overall is None and ilvl is None:
         return ""
-    left = str(int(round(overall))) if overall is not None else "-"
-    right = str(int(round(ilvl))) if ilvl is not None else "-"
+    left = str(int(overall)) if overall is not None else "-"
+    right = str(int(ilvl)) if ilvl is not None else "-"
     return f"{left} / {right}"
 
 
@@ -374,9 +374,15 @@ def mplus_dungeon_metric_text(entry: object) -> str:
 def mplus_metric_display_text(
     best: object, median: object, run_count: object, *, headline: bool = False
 ) -> str:
-    """Name single-run evidence without implying an aggregate has one total run."""
-    text = mplus_metric_text(best, median, run_count)
-    return text.replace(" N=1", " 1/dungeon" if headline else " 1 run")
+    """Keep summary cells numeric; show sample counts in the dungeon details."""
+    # Flooring keeps the displayed percentile in the same band as its raw colour.
+    best_pct, median_pct = safe_percent(best), safe_percent(median)
+    text = mplus_metric_text(
+        int(best_pct) if best_pct is not None else None,
+        int(median_pct) if median_pct is not None else None,
+        run_count,
+    )
+    return text.replace(" N=1", "" if headline else " 1 run")
 
 
 def format_age(delta_sec: float) -> str:

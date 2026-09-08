@@ -161,8 +161,8 @@ def _mplus_listing() -> Listing:
 
 
 def test_column_width_contract_is_compact():
-    assert COLUMN_WIDTHS == [74, 112, 44, 84, 70, 70, 70, 132, 102]
-    assert sum(COLUMN_WIDTHS) == 758
+    assert COLUMN_WIDTHS == [74, 112, 44, 84, 64, 64, 64, 112, 90]
+    assert sum(COLUMN_WIDTHS) == 708
     assert NAME_COLUMN_MAX_WIDTH == 126
     assert DEFAULT_WINDOW_WIDTH == 572
     assert WINDOW_GEOMETRY_LAYOUT_VERSION == 5
@@ -194,10 +194,10 @@ def test_mplus_and_fit_header_tooltips_distinguish_evidence_from_estimates():
     tip = HEADER_TOOLTIPS[COL_MPLUS].casefold()
     assert "best / median" in tip
     assert "dps for every role" in tip
-    assert "1/dungeon" in tip
+    assert "single-run samples" in tip
     fit_tip = HEADER_TOOLTIPS[COL_FIT].casefold()
     assert "not a wcl percentile" in fit_tip
-    assert "group / player" in fit_tip
+    assert "shared estimate is on the left" in fit_tip
 
 
 @pytest.mark.parametrize(
@@ -318,7 +318,7 @@ def test_mplus_cell_visuals_median_missing_keeps_key_suffix():
     assert text == "80 +14"
 
 
-def test_mplus_cell_visuals_all_single_run_marks_low_evidence():
+def test_mplus_cell_visuals_all_single_run_keeps_summary_numeric():
     text, _fg, _bg = _mplus_cell_visuals(
         _app(
             mplus_dps=80.0,
@@ -342,7 +342,7 @@ def test_mplus_cell_visuals_all_single_run_marks_low_evidence():
         )
     )
 
-    assert text == "80 1/dungeon +14"
+    assert text == "80 +14"
 
 
 def test_mplus_cell_visuals_run_count_zero_cache_does_not_mark_n1():
@@ -394,7 +394,7 @@ def test_mplus_cell_visuals_single_run_healer_uses_dps_breakdown():
         )
     )
 
-    assert text == "99 1/dungeon +20"
+    assert text == "99 +20"
 
 
 @pytest.mark.parametrize(

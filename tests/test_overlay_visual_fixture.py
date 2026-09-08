@@ -230,6 +230,28 @@ def test_overlay_visual_fixture_settles_with_reserved_panel_height(qtbot, tmp_pa
 
 
 @pytest.mark.parametrize("scenario_name", sorted(OVERLAY_VISUAL_SCENARIOS))
+def test_visual_fixture_waits_for_scroll_card_and_table_geometry(qtbot, tmp_path, scenario_name):
+    _state, window, client = create_overlay_visual_window(tmp_path, scenario_name)
+    qtbot.addWidget(window)
+    try:
+        show_overlay_visual_window(window, scenario_name, process_events=QApplication.processEvents)
+        card = window._panel_scroll
+        table = window._table
+        assert card.geometry().bottom() < table.geometry().top()
+        assert card.viewport().height() <= card.height()
+        # Initial show grows above the existing table, preserving its usable rows.
+        # A viewport-only resize callback must not consume that pending expansion.
+        assert window.height() > overlay_mod.DEFAULT_WINDOW_HEIGHT
+        assert window._table.viewport().height() >= overlay_mod.APPLICANT_ROW_HEIGHT * 6
+        before = (card.geometry(), table.geometry(), card.viewport().geometry())
+        # Grabbing must not depend on one more pending layout pass.
+        QApplication.processEvents()
+        assert (card.geometry(), table.geometry(), card.viewport().geometry()) == before
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("scenario_name", sorted(OVERLAY_VISUAL_SCENARIOS))
 def test_overlay_visual_fixture_uses_content_safe_width_for_enabled_metrics(
     qtbot, tmp_path, scenario_name
 ):

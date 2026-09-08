@@ -99,6 +99,7 @@ class PackageFit:
     error_count: int = 0
     not_found_count: int = 0
     restricted_count: int = 0
+    parse_percentile: float | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,9 @@ class MPlusDungeonFit:
     score: float
     text: str
     colour: str
+    best_percent: float | None = None
+    median_percent: float | None = None
+    run_count: int = 0
 
 
 def detect_listing_context(listing: Listing | None) -> str:
@@ -179,6 +183,23 @@ def candidate_fit(applicant: Applicant, listing: Listing | None) -> CandidateFit
     return CandidateFit(context=CONTEXT_UNKNOWN)
 
 
+def listing_parse_percentile(applicant: Applicant, listing: Listing | None) -> float | None:
+    """Visible best percentile for the listing; unavailable rows never rank from stale data."""
+    if applicant.fetch_status != "ready" or listing is None:
+        return None
+    context = detect_listing_context(listing)
+    if context == CONTEXT_MPLUS or (context == CONTEXT_UNKNOWN and listing.category_id == 2):
+        return safe_percent(role_mplus_view(applicant)[2])
+    if context == CONTEXT_RAID:
+        target = RAID_TARGET_BY_DIFFICULTY_ID.get(listing.difficulty_id, "")
+        return safe_percent({
+            "N": applicant.raid_normal,
+            "H": applicant.raid_heroic,
+            "M": applicant.raid_mythic,
+        }.get(target))
+    return None
+
+
 def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> PackageFit:
     members = list(applicants)
     if not members:
@@ -195,6 +216,13 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
     error_count = sum(member.fetch_status == "error" for member in members)
     not_found_count = sum(member.fetch_status == "not_found" for member in members)
     restricted_count = sum(member.fetch_status == "restricted" for member in members)
+    parses = [listing_parse_percentile(member, listing) for member in members]
+    # Keep an application together without letting one strong member hide missing
+    # or weaker logs. Zero is a real parse; None means incomplete evidence.
+    parse_percentile = (
+        min(value for value in parses if value is not None)
+        if all(value is not None for value in parses) else None
+    )
     if context == CONTEXT_UNKNOWN:
         member_scores = tuple(float(effective_rio_score(a)) for a in members)
         score = float(max(member_scores, default=0.0))
@@ -222,6 +250,7 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
             error_count=error_count,
             not_found_count=not_found_count,
             restricted_count=restricted_count,
+            parse_percentile=parse_percentile,
         )
 
     fits = tuple(candidate_fit(member, listing) for member in members)
@@ -268,6 +297,7 @@ def package_fit(applicants: Iterable[Applicant], listing: Listing | None) -> Pac
         error_count=error_count,
         not_found_count=not_found_count,
         restricted_count=restricted_count,
+        parse_percentile=parse_percentile,
     )
 
 
@@ -299,6 +329,9 @@ def mplus_dungeon_fit_rows(
                 # The row is ordered by context fit, but the badge text is the
                 # raw WCL percentile. Keep the colour tied to the printed value.
                 colour=percentile_colour(best_percent),
+                best_percent=safe_percent(bracket.get("parse_percent")),
+                median_percent=safe_percent(bracket.get("median_percent")),
+                run_count=nonnegative_int(bracket.get("run_count")),
             )
             if best_row is None or row.score > best_row.score:
                 best_row = row
