@@ -101,6 +101,39 @@ def _write_cache_payload(tmp_path, payload: dict) -> None:
     )
 
 
+@pytest.mark.parametrize("transition", ["clear", "invalidate", "source-round-trip"])
+def test_snapshot_prepared_before_cache_transition_cannot_replace_newer_snapshot(
+    tmp_path, monkeypatch, transition
+):
+    source_a = live_snapshot_source_identity(tmp_path / "screenshots-a")
+    source_b = live_snapshot_source_identity(tmp_path / "screenshots-b")
+    writer = LiveSnapshotCacheWriter(tmp_path, source_id=source_a, defer_saves=False)
+    old_snapshot = _live_snapshot()
+    new_snapshot = replace(old_snapshot, applicants=[])
+    original_build = cache_mod._operation_for_snapshot
+
+    def build_with_transition(snap, **kwargs):
+        operation = original_build(snap, **kwargs)
+        if snap is old_snapshot:
+            if transition == "clear":
+                assert writer.clear()
+            elif transition == "invalidate":
+                writer.invalidate()
+            else:
+                assert writer.rebind_source(source_b)
+                assert writer.rebind_source(source_a)
+            writer.submit(new_snapshot, now=101.0)
+        return operation
+
+    monkeypatch.setattr(cache_mod, "_operation_for_snapshot", build_with_transition)
+    writer.submit(old_snapshot, now=100.0)
+    assert writer.close()
+    restored = load_live_snapshot(tmp_path, expected_source_id=source_a, now=102.0)
+    assert restored is not None
+    assert restored.saved_at == 101.0
+    assert restored.snapshot.applicants == []
+
+
 def test_save_and_load_live_snapshot_round_trips_without_source(tmp_path):
     snap = _live_snapshot()
 

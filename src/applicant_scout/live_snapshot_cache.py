@@ -386,6 +386,7 @@ class LiveSnapshotCacheWriter:
     def submit(self, snap: Snapshot, *, now: float | None = None) -> None:
         with self._lock:
             source_id = self._source_id
+            generation = self._generation
         operation = _operation_for_snapshot(snap, source_id=source_id, now=now)
         if operation is None:
             return
@@ -393,7 +394,9 @@ class LiveSnapshotCacheWriter:
         with self._lock:
             if self._closed:
                 return
-            if operation.source_id != self._source_id:
+            # Building outside the lock may overlap a clear or A -> B -> A
+            # source switch. The same source name does not revive old work.
+            if generation != self._generation or operation.source_id != self._source_id:
                 return
             operation = self._coalesce_operation_locked(operation)
             if operation is None:
