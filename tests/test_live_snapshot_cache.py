@@ -122,10 +122,12 @@ def test_save_and_load_live_snapshot_round_trips_without_source(tmp_path):
 
 @pytest.mark.parametrize("write_mode", ["sync", "writer"])
 @pytest.mark.parametrize("operation_kind", ["partial", "clear"])
+@pytest.mark.parametrize("now", [float("nan"), pytest.param(10**400, id="oversized-integer")])
 def test_invalid_timestamp_preserves_existing_live_snapshot_cache(
     tmp_path,
     write_mode: str,
     operation_kind: str,
+    now,
 ):
     original = _live_snapshot()
     assert save_live_snapshot(tmp_path, original, now=100.0)
@@ -140,10 +142,10 @@ def test_invalid_timestamp_preserves_existing_live_snapshot_cache(
     )
 
     if write_mode == "sync":
-        assert not save_live_snapshot(tmp_path, incoming, now=float("nan"))
+        assert not save_live_snapshot(tmp_path, incoming, now=now)
     else:
         writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
-        writer.submit(incoming, now=float("nan"))
+        writer.submit(incoming, now=now)
 
     restored = load_live_snapshot(tmp_path, now=101.0)
     assert restored is not None
@@ -563,7 +565,7 @@ def test_load_live_snapshot_rejects_wrong_scalar_types_from_disk(tmp_path):
     assert not _cache_path(tmp_path).exists()
 
 
-@pytest.mark.parametrize("saved_at", [float("nan"), float("inf"), 130.0])
+@pytest.mark.parametrize("saved_at", [float("nan"), float("inf"), 130.0, pytest.param(10**400, id="oversized-integer")])
 def test_load_live_snapshot_rejects_nonfinite_or_future_saved_at(tmp_path, saved_at):
     payload = _cache_payload(tmp_path)
     payload["saved_at"] = saved_at

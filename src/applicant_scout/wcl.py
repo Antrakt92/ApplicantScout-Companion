@@ -398,8 +398,8 @@ class WCLAuth:
             if (
                 isinstance(expires_at, bool)
                 or not isinstance(expires_at, (int, float))
-                or not math.isfinite(float(expires_at))
-                or float(expires_at) <= 0.0
+                or (expires_at := _safe_nonnegative_finite_float(expires_at)) is None
+                or expires_at <= 0.0
             ):
                 return None
             if (
@@ -410,7 +410,7 @@ class WCLAuth:
                 return None
             return _Token(
                 access_token=access_token.strip(),
-                expires_at=float(expires_at),
+                expires_at=expires_at,
                 client_fingerprint=client_fingerprint,
             )
         except (json.JSONDecodeError, TypeError, ValueError, OSError):
@@ -593,7 +593,7 @@ def _safe_nonnegative_finite_float(v) -> Optional[float]:
         return None
     try:
         f = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not math.isfinite(f) or f < 0.0:
         return None
@@ -1334,13 +1334,8 @@ def _safe_nonnegative_cache_int(v) -> int:
 
 
 def _safe_cache_percent(v) -> Optional[float]:
-    if isinstance(v, bool) or v is None:
-        return None
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(f) or f < 0.0 or f > 100.0:
+    f = _safe_nonnegative_finite_float(v)
+    if f is None or f > 100.0:
         return None
     return f
 
@@ -1605,8 +1600,8 @@ def _process_encounter_ranks(
         rp = r.get("rankPercent")
         if isinstance(rp, bool) or not isinstance(rp, (int, float)):
             continue
-        pct = float(rp)
-        if not math.isfinite(pct) or pct < 0.0 or pct > 100.0:
+        pct = _safe_cache_percent(rp)
+        if pct is None:
             continue
         by_key.setdefault(bd, []).append(pct)
 
@@ -2042,7 +2037,7 @@ class CharacterCache:
             if (
                 isinstance(entry.fetched_at, bool)
                 or not isinstance(entry.fetched_at, (int, float))
-                or not math.isfinite(float(entry.fetched_at))
+                or _safe_nonnegative_finite_float(entry.fetched_at) is None
             ):
                 _log.debug("Discarding corrupt cache entry for key=%s", k)
                 continue

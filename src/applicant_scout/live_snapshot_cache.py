@@ -979,7 +979,10 @@ def _strict_timestamp_field(data: dict[str, Any], key: str) -> float:
 def _coerce_timestamp(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("timestamp is not numeric")
-    timestamp = float(value)
+    try:
+        timestamp = float(value)
+    except OverflowError:
+        raise ValueError("timestamp is not finite") from None
     if not math.isfinite(timestamp):
         raise ValueError("timestamp is not finite")
     return timestamp

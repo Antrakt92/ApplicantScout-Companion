@@ -101,6 +101,54 @@ def test_atomic_write_text_failed_flush_preserves_old_file_and_cleans_temp(
     assert _temp_files(target) == []
 
 
+@pytest.mark.parametrize("binary", [False, True])
+def test_failed_atomic_write_does_not_close_another_writers_reused_descriptor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, binary: bool
+):
+    target = tmp_path / "cache.json"
+    target.write_text("old-cache", encoding="utf-8")
+    original_fdopen = os.fdopen
+    unrelated_fd: list[int] = []
+
+    class FileWithConcurrentOpen:
+        def __init__(self, *args, **kwargs):
+            self.handle = original_fdopen(*args, **kwargs)
+
+        def __enter__(self):
+            return self.handle.__enter__()
+
+        def __exit__(self, *args):
+            try:
+                return self.handle.__exit__(*args)
+            finally:
+                # Model another writer opening a file as soon as close releases
+                # the descriptor; the OS can immediately recycle its number.
+                unrelated_fd.append(os.open(tmp_path / "other-cache", os.O_CREAT | os.O_RDWR))
+
+    def fail_fsync(_fd: int) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(atomic_io.os, "fdopen", FileWithConcurrentOpen)
+    monkeypatch.setattr(atomic_io.os, "fsync", fail_fsync)
+
+    try:
+        with pytest.raises(OSError, match="disk full"):
+            if binary:
+                atomic_write_bytes(target, b"new-cache")
+            else:
+                atomic_write_text(target, "new-cache")
+
+        os.fstat(unrelated_fd[0])
+        assert target.read_text(encoding="utf-8") == "old-cache"
+        assert _temp_files(target) == []
+    finally:
+        for fd in unrelated_fd:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def test_atomic_write_text_private_mode_chmods_temp_and_target(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

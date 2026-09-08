@@ -1283,9 +1283,9 @@ def _weighted_sum_top(values: list[float], weights: list[float]) -> float:
 def _raid_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
     target = RAID_TARGET_BY_DIFFICULTY_ID.get(listing.difficulty_id, "")
     raid = {
-        "N": _raid_perf(applicant.raid_normal, applicant.raid_normal_median),
-        "H": _raid_perf(applicant.raid_heroic, applicant.raid_heroic_median),
-        "M": _raid_perf(applicant.raid_mythic, applicant.raid_mythic_median),
+        "N": raid_performance_score(applicant.raid_normal, applicant.raid_normal_median),
+        "H": raid_performance_score(applicant.raid_heroic, applicant.raid_heroic_median),
+        "M": raid_performance_score(applicant.raid_mythic, applicant.raid_mythic_median),
     }
     order = ["N", "H", "M"]
     target_idx = order.index(target) if target in order else -1
@@ -1525,7 +1525,8 @@ def _mplus_rio_fit(score: int, target_key: int) -> float:
     return _clamp(55.0 + (score - (1700.0 + target_key * 100.0)) / 18.0, 0.0, 105.0)
 
 
-def _raid_perf(best: float | None, median: float | None) -> float | None:
+def raid_performance_score(best: float | None, median: float | None) -> float | None:
+    """Weight raid evidence consistently for fit scoring and its explanation."""
     clean_best = safe_percent(best)
     clean_median = safe_percent(median)
     if clean_best is None and clean_median is None:

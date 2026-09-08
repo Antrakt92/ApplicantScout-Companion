@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Ignore malformed cached timestamps without preventing startup or discarding
+  other valid character data.
+- Preserve other file writes when saving settings or caches fails.
+- Show the raid difficulty evidence actually used by the Fit calculation.
+
 ## 0.15.1 - 05-Sep-2026
 
 Paired release with ApplicantScout addon `0.9.15`.

@@ -22,6 +22,7 @@ from .scoring import (
     nonnegative_int,
     normalise_dungeon_name,
     positive_int,
+    raid_performance_score,
     role_mplus_view,
     safe_percent,
 )
@@ -139,9 +140,7 @@ def raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> st
     best_score = -1.0
     for key in candidate_keys:
         best, median = raid_values_for_key(applicant, key)
-        score = safe_percent(best)
-        if score is None:
-            score = safe_percent(median)
+        score = raid_performance_score(best, median)
         if score is not None and score > best_score:
             best_key = key
             best_score = score

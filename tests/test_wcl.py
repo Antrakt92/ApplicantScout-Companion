@@ -155,7 +155,10 @@ def test_zone_avg_non_dict_data_returns_none():
     assert _zone_avg("bad") is None  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), -1.0, 100.1])
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), float("inf"), -1.0, 100.1, pytest.param(10**400, id="oversized-integer")],
+)
 def test_zone_avg_rejects_malformed_percentiles(bad_value):
     assert _zone_avg({"bestPerformanceAverage": bad_value}) is None
 
@@ -399,6 +402,18 @@ def test_process_ranks_empty_spec_name():
 def test_process_ranks_no_matching_spec():
     enc = {"ranks": [_rank(spec="Mistweaver")]}
     assert _process_encounter_ranks(enc, "Brewmaster", "X") is None
+
+
+def test_process_ranks_ignores_oversized_percentile_and_keeps_valid_evidence():
+    result = _process_encounter_ranks(
+        {"ranks": [_rank(percent=10**400), _rank(percent=75.0)]},
+        "Brewmaster",
+        "Test dungeon",
+    )
+
+    assert result is not None
+    assert result.parse_percent == 75.0
+    assert result.run_count == 1
 
 
 def test_process_ranks_single_run():
@@ -3457,7 +3472,8 @@ def test_character_cache_ttl_override_is_instance_local(tmp_path):
     assert CharacterCache.TTL_SECONDS == 12 * 60 * 60
 
 
-def test_character_cache_get_sanitizes_scalar_percentiles(tmp_path):
+@pytest.mark.parametrize("invalid_percentile", ["bad", pytest.param(10**400, id="oversized-integer")])
+def test_character_cache_get_sanitizes_scalar_percentiles(tmp_path, invalid_percentile):
     cache = CharacterCache(tmp_path)
     cache.put(
         "Scout",
@@ -3484,7 +3500,7 @@ def test_character_cache_get_sanitizes_scalar_percentiles(tmp_path):
             "raid_heroic": True,
             "raid_mythic": "101",
             "raid_normal_median": float("nan"),
-            "raid_heroic_median": "bad",
+            "raid_heroic_median": invalid_percentile,
             "raid_mythic_median": "-1",
             "mplus_dps": "62",
             "mplus_hps": float("inf"),
@@ -3615,17 +3631,20 @@ def test_character_cache_get_discards_entries_missing_required_scalars(tmp_path)
     assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
 
 
-def test_character_cache_get_discards_entries_with_malformed_fetched_at(tmp_path):
+@pytest.mark.parametrize("fetched_at", ["bad", pytest.param(10**400, id="oversized-integer")])
+def test_character_cache_get_discards_entries_with_malformed_fetched_at(tmp_path, fetched_at):
     cache = CharacterCache(tmp_path)
     cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    cache.put("Other", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
     raw = json.loads(cache._path.read_text(encoding="utf-8"))
     key = CharacterCache._key("Scout", "ravencrest", "EU", 71, "DAMAGER")
-    raw["entries"][key]["fetched_at"] = "bad"
+    raw["entries"][key]["fetched_at"] = fetched_at
     cache._path.write_text(json.dumps(raw), encoding="utf-8")
 
     loaded = CharacterCache(tmp_path)
 
     assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+    assert loaded.get("Other", "ravencrest", "EU", 71, "DAMAGER") is not None
 
 
 def test_character_cache_get_discards_entries_with_future_fetched_at(tmp_path):
@@ -4761,7 +4780,7 @@ def test_oauth_cached_token_invalid_access_token_is_ignored_and_refreshed(
 
 @pytest.mark.parametrize(
     "expires_at",
-    ["123", True, float("nan"), float("inf"), -1],
+    ["123", True, float("nan"), float("inf"), -1, pytest.param(10**400, id="oversized-integer")],
 )
 def test_oauth_cached_token_invalid_expires_at_is_ignored_and_refreshed(
     monkeypatch: pytest.MonkeyPatch, tmp_path, expires_at

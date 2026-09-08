@@ -226,7 +226,8 @@ def _atomic_write(
                     f"Could not secure temporary private file for {path.name}"
                 )
         write_contents(fd)
-        fd = -1
+        owned_fd, fd = fd, -1
+        os.close(owned_fd)
         os.replace(temp_path, path)
         temp_path = None
         if private and not (_is_windows() and parent_private_ready):
@@ -254,7 +255,8 @@ def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
     """
 
     def _write(fd: int) -> None:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        # The outer transaction owns the descriptor even if flushing fails.
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
@@ -271,7 +273,7 @@ def atomic_write_bytes(path: Path, contents: bytes, *, private: bool = False) ->
     """Replace ``path`` with exact bytes or leave the old file intact."""
 
     def _write(fd: int) -> None:
-        with os.fdopen(fd, "wb") as handle:
+        with os.fdopen(fd, "wb", closefd=False) as handle:
             handle.write(contents)
             handle.flush()
             os.fsync(handle.fileno())

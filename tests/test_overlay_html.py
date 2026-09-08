@@ -29,6 +29,7 @@ from applicant_scout.overlay import (
 from applicant_scout.overlay_presenters import (
     mplus_dungeon_metric_text,
     mplus_sort_key,
+    raid_fit_evidence_text,
 )
 from applicant_scout.state import (
     DEFAULT_WINDOW_HEIGHT,
@@ -38,6 +39,7 @@ from applicant_scout.state import (
     Listing,
     WindowGeometry,
 )
+from applicant_scout.scoring import candidate_fit
 from applicant_scout.window_geometry import clamp_rect_to_bounds
 
 
@@ -102,6 +104,47 @@ def _app(**overrides) -> Applicant:
         fetch_status="ready",
     )
     return replace(base, **overrides)
+
+
+@pytest.mark.parametrize(
+    ("target", "source", "overrides", "expected"),
+    [
+        (
+            "N", "raid_higher_fallback",
+            {"raid_heroic": 99.0, "raid_heroic_median": 1.0,
+             "raid_mythic": 80.0, "raid_mythic_median": 80.0},
+            "M 80/80",
+        ),
+        (
+            "M", "raid_lower_fallback",
+            {"raid_normal": 80.0, "raid_normal_median": 80.0,
+             "raid_heroic": 99.0, "raid_heroic_median": 1.0},
+            "N 80/80",
+        ),
+        (
+            "N", "raid_higher_fallback",
+            {"raid_heroic": None, "raid_heroic_median": 90.0,
+             "raid_mythic": 80.0, "raid_mythic_median": 80.0},
+            "M 80/80",
+        ),
+    ],
+)
+def test_raid_fallback_evidence_uses_the_same_weighted_performance_as_fit(
+    target, source, overrides, expected,
+):
+    raid_values = {
+        "raid_normal": None, "raid_normal_median": None,
+        "raid_heroic": None, "raid_heroic_median": None,
+        "raid_mythic": None, "raid_mythic_median": None,
+    }
+    applicant = _app(**(raid_values | overrides))
+    listing = Listing(
+        activity_id=1, dungeon_name="Raid", listing_name="Raid", comment="",
+        category_id=3, difficulty_id={"N": 14, "M": 16}[target],
+    )
+    fit = candidate_fit(applicant, listing)
+    assert fit.source == source
+    assert raid_fit_evidence_text(applicant, fit.target_raid, fit.source) == expected
 
 
 def _mplus_listing() -> Listing:
