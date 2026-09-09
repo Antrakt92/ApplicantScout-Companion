@@ -58,13 +58,17 @@ D:\Games\World of Warcraft\_retail_\Screenshots
 This is where WoW saves screenshots taken in game. If the folder does not exist
 yet, take one normal screenshot in WoW, then select the folder it creates.
 
-Choose the WCL data you want in Settings: Mythic+, or the raid difficulties you
-use. Settings save automatically. The optional RaiderIO addon provides extra
-local dungeon and raid information when it is installed.
+Mythic+, all raid difficulties and **Start and stop with WoW** start checked
+when no preferences are saved. Disable anything you do not want; saved choices
+are preserved. WoW sync adds a Windows sign-in helper after setup. The optional
+RaiderIO addon supplies extra local dungeon and raid information.
 
-**Share basic usage statistics** is optional and unchecked. It helps us see
-whether setup succeeds and the overlay gets used; it is not required to start.
-See [what is shared and how to turn it off](PRIVACY.md).
+**Share usage statistics** also starts checked when no choice is saved.
+It is optional and can be disabled here. This build has no configured collection
+service, so it sends no usage reports. See [what is shared and how to turn it off](PRIVACY.md).
+
+Click **Start companion** to save your first setup. Later changes in Settings
+save automatically; the usage-sharing choice always saves immediately.
 
 ## 4. Check the first results
 

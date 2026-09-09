@@ -7,12 +7,12 @@ from applicant_scout.metric_preferences import (
 )
 
 
-def test_default_metric_preferences_enable_only_mplus():
+def test_default_metric_preferences_enable_all_scouting_metrics():
     assert DEFAULT_METRIC_PREFERENCES == MetricPreferences(
         mplus=True,
-        raid_normal=False,
-        raid_heroic=False,
-        raid_mythic=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
     )
 
 

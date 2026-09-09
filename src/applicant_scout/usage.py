@@ -21,6 +21,7 @@ from .atomic_io import atomic_write_text
 
 # Empty until a reviewed collection service and its privacy notice are available.
 USAGE_ENDPOINT = ""
+DEFAULT_USAGE_CONSENT = True
 USAGE_EVENTS = frozenset(
     {"consent_started", "version_seen", "setup_completed", "addon_received", "wcl_result"}
 )
@@ -132,7 +133,26 @@ class UsageClient:
         except (OSError, ValueError, TypeError, UnicodeError):
             saved_consent = False
             self._failed = True
-        if consent is not None and consent != saved_consent:
+        if saved_consent is None:
+            initial_consent = DEFAULT_USAGE_CONSENT if consent is None else consent is True
+            try:
+                # Persist missing preferences before reporting; a saved opt-out
+                # must survive restart even when collection is unavailable.
+                self._write_state(
+                    initial_consent,
+                    self._install_id if initial_consent else "",
+                    self._seen if initial_consent else [],
+                )
+            except OSError as exc:
+                self._failed = True
+                if consent is not None:
+                    raise UsagePersistenceError(
+                        "Could not save the usage preference. Reporting is off for this session."
+                    ) from exc
+            else:
+                if initial_consent:
+                    self._enable()
+        elif consent is not None and consent != saved_consent:
             self.set_consent(consent)
         elif saved_consent:
             self._enable()
@@ -228,22 +248,23 @@ class UsageClient:
     def _current(self, generation: int) -> bool:
         return self._consent and not self._closed and generation == self._generation
 
-    def _load(self) -> bool:
+    def _load(self) -> bool | None:
         try:
             with self._path.open("r", encoding="utf-8") as source:
                 raw = source.read(_MAX_STATE_BYTES + 1)
         except FileNotFoundError:
-            return False
+            return None
         else:
             if len(raw.encode("utf-8")) > _MAX_STATE_BYTES:
                 raise ValueError("Usage state is too large")
             state = json.loads(raw)
             if (
                 not isinstance(state, dict) or type(state.get("schema")) is not int
-                or state.get("schema") != 1 or type(state.get("consent")) is not bool
+                or state.get("schema") != 1
+                or "consent" in state and type(state["consent"]) is not bool
             ):
                 raise ValueError("Invalid usage state")
-            if not state["consent"]:
+            if state.get("consent") is False:
                 return False
             install_id = state.get("install_id", "")
             if not isinstance(install_id, str) or (
@@ -258,7 +279,7 @@ class UsageClient:
                     raise ValueError("Invalid usage reservation")
             self._install_id = install_id
             self._seen = seen
-            return True
+            return state.get("consent")
 
     @staticmethod
     def _valid_seen_key(key: str) -> bool:

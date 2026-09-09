@@ -9,8 +9,9 @@ if "QT_QPA_PLATFORM" not in os.environ:
     os.environ["QT_QPA_PLATFORM"] = "windows" if sys.platform == "win32" else "offscreen"
 
 import pytest
+from PyQt6.QtCore import QPoint, QRect, Qt
 from PyQt6.QtGui import QColor, QImage
-from PyQt6.QtWidgets import QApplication, QLineEdit, QPushButton, QToolButton
+from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton, QToolButton, QWidget
 
 from applicant_scout import __version__
 from scripts import render_settings_dialog_fixture
@@ -195,9 +196,78 @@ def test_settings_visual_fixture_first_run_uses_real_metric_defaults(qtbot):
     qtbot.addWidget(dialog)
 
     assert dialog.mplus_check.isChecked()
-    assert not dialog.raid_normal_check.isChecked()
-    assert not dialog.raid_heroic_check.isChecked()
-    assert not dialog.raid_mythic_check.isChecked()
+    assert dialog.raid_normal_check.isChecked()
+    assert dialog.raid_heroic_check.isChecked()
+    assert dialog.raid_mythic_check.isChecked()
+    assert dialog.sync_with_wow_check.isChecked()
+
+
+@pytest.mark.parametrize("scenario, height_limit", [("normal-default", 510), ("first-run", 660)])
+def test_settings_compact_body_keeps_footer_next_to_content(qtbot, scenario, height_limit):
+    dialog = create_settings_visual_dialog(scenario)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    QApplication.processEvents()
+    assert dialog.height() <= height_limit
+    if scenario == "first-run":
+        assert dialog.autosave_hint.text() == "Saved when you start"
+        assert "usage statistics choice saves immediately" in dialog.autosave_hint.accessibleDescription()
+        assert dialog.findChild(QLabel, "settingsHeroEyebrow") is None
+        assert "save" not in dialog.findChild(QLabel, "settingsHeroText").text().lower()
+    else:
+        assert dialog.autosave_hint.text() == "Valid changes save automatically"
+    usage = dialog.findChild(QWidget, "usageStatisticsSection")
+    footer = dialog.findChild(QWidget, "settingsFooter")
+    assert usage is not None and footer is not None
+    usage_bottom = usage.mapTo(dialog, QPoint(0, usage.height())).y()
+    footer_top = footer.mapTo(dialog, QPoint()).y()
+    assert 0 <= footer_top - usage_bottom <= 24
+    assert dialog.body_scroll.verticalScrollBar().maximum() == 0
+    privacy = dialog.findChild(QLabel, "usagePrivacyLink")
+    unavailable = dialog.findChild(QLabel, "usageUnavailableStatus")
+    assert privacy is not None and unavailable is not None
+    assert privacy.openExternalLinks() and "PRIVACY.md" in privacy.text()
+    assert "Events expire after 90 days" in dialog.usage_check.toolTip()
+    assert "Existing choices are preserved" in dialog.usage_check.accessibleDescription()
+    assert dialog.usage_check.isChecked() and dialog.usage_check.isEnabled()
+    for control in (dialog.usage_check, privacy, unavailable):
+        rect = QRect(control.mapTo(usage, QPoint()), control.size())
+        assert usage.rect().contains(rect)
+    assert unavailable.fontMetrics().horizontalAdvance(unavailable.text()) <= unavailable.width()
+
+
+def test_compact_first_run_actions_stay_reachable_when_body_scrolls(qtbot):
+    dialog = create_settings_visual_dialog("first-run")
+    qtbot.addWidget(dialog)
+    dialog.resize(dialog.minimumWidth(), 360)
+    dialog.show()
+    QApplication.processEvents()
+    assert dialog.height() == 360
+    assert dialog.body_scroll.verticalScrollBar().maximum() > 0
+    assert dialog.body_scroll.horizontalScrollBar().maximum() == 0
+    for control in (dialog.test_button, dialog.start_button, dialog.setup_quit_button):
+        assert control is not None and control.isVisible()
+        assert dialog.rect().contains(QRect(control.mapTo(dialog, QPoint()), control.size()))
+
+
+def test_settings_keyboard_order_follows_credentials_then_help_and_scouting(qtbot):
+    dialog = create_settings_visual_dialog("normal-default")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.activateWindow()
+    dialog.client_id_edit.setFocus()
+    QApplication.processEvents()
+    privacy = dialog.findChild(QLabel, "usagePrivacyLink")
+    expected = (
+        dialog.client_secret_edit, dialog.reveal_secret_button, dialog.region_combo,
+        dialog.wcl_clients_link, dialog.wcl_example_button, dialog.screenshots_edit,
+        dialog.browse_button, dialog.raid_normal_check, dialog.raid_heroic_check,
+        dialog.raid_mythic_check, dialog.mplus_check, dialog.sync_with_wow_check,
+        dialog.usage_check, privacy,
+    )
+    for control in expected:
+        qtbot.keyClick(dialog.focusWidget(), Qt.Key.Key_Tab)
+        assert dialog.focusWidget() is control
 
 
 def test_settings_visual_fixture_titles_are_version_stable(qtbot):

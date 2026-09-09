@@ -1345,7 +1345,7 @@ def test_load_config_round_trips_metric_preferences(
     )
 
 
-def test_load_config_defaults_to_mplus_only_for_first_run(
+def test_load_config_defaults_to_all_scouting_options_for_first_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     _clean_load_config_env(monkeypatch, tmp_path)
@@ -1354,10 +1354,65 @@ def test_load_config_defaults_to_mplus_only_for_first_run(
 
     assert cfg.metric_preferences == MetricPreferences(
         mplus=True,
-        raid_normal=False,
-        raid_heroic=False,
-        raid_mythic=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
     )
+    assert cfg.sync_with_wow is True
+
+
+def test_config_dataclass_defaults_match_first_run_scouting_choices(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    assert cfg.metric_preferences == MetricPreferences(True, True, True, True)
+    assert cfg.sync_with_wow is True
+
+
+@pytest.mark.parametrize("source", ["config", "process"])
+def test_missing_scouting_keys_enable_defaults_without_overriding_saved_false(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    explicit_off = {
+        "APSCOUT_FETCH_MPLUS": "0",
+        "APSCOUT_FETCH_RAID_HEROIC": "false",
+        "APSCOUT_SYNC_WITH_WOW": "off",
+    }
+    if source == "config":
+        path = user_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(f'{key}="{value}"' for key, value in explicit_off.items()),
+            encoding="utf-8",
+        )
+    else:
+        for key, value in explicit_off.items():
+            monkeypatch.setenv(key, value)
+    cfg = load_config()
+    assert cfg.metric_preferences == MetricPreferences(False, True, False, True)
+    assert cfg.sync_with_wow is False
+
+
+def test_legacy_config_missing_scouting_keys_round_trips_new_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('APSCOUT_REGION="US"\n', encoding="utf-8")
+    cfg = load_config()
+    assert cfg.metric_preferences == MetricPreferences(True, True, True, True)
+    assert cfg.sync_with_wow is True
+    assert path.read_text(encoding="utf-8") == 'APSCOUT_REGION="US"\n'
+    save_config_values(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    restored = load_config()
+    assert restored.metric_preferences == cfg.metric_preferences
+    assert restored.sync_with_wow is True
 
 
 def test_load_config_rejects_all_wcl_metric_flags_disabled_from_user_config(
@@ -1456,7 +1511,7 @@ def test_load_config_rejects_malformed_user_config_env(
         load_config()
 
 
-def test_save_config_defaults_write_mplus_only_scope(
+def test_save_config_defaults_write_all_scouting_options_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
@@ -1469,9 +1524,10 @@ def test_save_config_defaults_write_mplus_only_scope(
 
     saved = config_path.read_text(encoding="utf-8")
     assert 'APSCOUT_FETCH_MPLUS="1"' in saved
-    assert 'APSCOUT_FETCH_RAID_NORMAL="0"' in saved
-    assert 'APSCOUT_FETCH_RAID_HEROIC="0"' in saved
-    assert 'APSCOUT_FETCH_RAID_MYTHIC="0"' in saved
+    assert 'APSCOUT_FETCH_RAID_NORMAL="1"' in saved
+    assert 'APSCOUT_FETCH_RAID_HEROIC="1"' in saved
+    assert 'APSCOUT_FETCH_RAID_MYTHIC="1"' in saved
+    assert 'APSCOUT_SYNC_WITH_WOW="1"' in saved
 
 
 def test_load_config_round_trips_sync_with_wow(
@@ -1541,7 +1597,7 @@ def test_load_config_rejects_invalid_sync_with_wow_from_user_config_before_legac
         ("false", False),
         ("no", False),
         ("off", False),
-        ("", False),
+        ("", True),
     ],
 )
 def test_load_config_accepts_sync_with_wow_bool_tokens(
@@ -4547,7 +4603,7 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
     assert main_mod._run_first_run_settings(
         cfg,
     )
-    assert calls == ["shortcut", "save", "watcher:False"]
+    assert calls == ["save", "shortcut", "watcher:False"]
 
 
 def test_first_run_wow_sync_disable_stops_current_session_watcher_after_save(
@@ -4598,7 +4654,7 @@ def test_first_run_wow_sync_disable_stops_current_session_watcher_after_save(
     assert main_mod._run_first_run_settings(
         cfg,
     )
-    assert calls == ["shortcut:False", "save", "watcher-stop"]
+    assert calls == ["save", "shortcut:False", "watcher-stop"]
 
 
 def test_persist_settings_values_preserves_process_env_overridden_saved_values(
@@ -4800,7 +4856,7 @@ def test_persist_settings_values_writes_to_cfg_config_path(
     assert saved["config_path"] == cfg.config_path
 
 
-def test_first_run_wow_sync_enable_save_failure_rolls_back_shortcut(
+def test_first_run_wow_sync_enable_save_failure_does_not_touch_shortcut(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     cfg = _cfg(tmp_path)
@@ -4858,12 +4914,12 @@ def test_first_run_wow_sync_enable_save_failure_rolls_back_shortcut(
     assert not main_mod._run_first_run_settings(
         cfg,
     )
-    assert calls == ["shortcut:True", "save", "shortcut:False"]
+    assert calls == ["save"]
     assert len(warnings) == 1
     assert "save failed" in warnings[0]
 
 
-def test_first_run_wow_sync_disable_save_failure_restores_previous_enabled_shortcut(
+def test_first_run_wow_sync_disable_save_failure_does_not_touch_shortcut(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     cfg = _cfg(tmp_path)
@@ -4921,7 +4977,7 @@ def test_first_run_wow_sync_disable_save_failure_restores_previous_enabled_short
     assert not main_mod._run_first_run_settings(
         cfg,
     )
-    assert calls == ["shortcut:False", "save", "shortcut:True"]
+    assert calls == ["save"]
     assert len(warnings) == 1
     assert "save failed" in warnings[0]
 
@@ -4955,14 +5011,18 @@ def test_first_run_wow_sync_save_failure_warns_when_rollback_fails(
 
             return Values()
 
-    def configure(enabled: bool) -> None:
-        calls.append(f"shortcut:{enabled}")
-        if enabled is False:
-            raise RuntimeError("rollback failed")
+    def restore(_snapshot) -> None:
+        calls.append("restore-config")
+        raise RuntimeError("rollback failed")
 
     monkeypatch.setattr(main_mod, "SettingsDialog", FakeDialog)
     monkeypatch.setattr(main_mod, "_app_icon", lambda: object())
-    monkeypatch.setattr(main_mod, "configure_wow_sync_startup", configure)
+    monkeypatch.setattr(main_mod, "_restore_persisted_config_snapshot", restore)
+    monkeypatch.setattr(
+        main_mod,
+        "configure_wow_sync_startup",
+        lambda enabled: calls.append(f"shortcut:{enabled}"),
+    )
     monkeypatch.setattr(
         main_mod,
         "_persist_settings_values",
@@ -4979,7 +5039,7 @@ def test_first_run_wow_sync_save_failure_warns_when_rollback_fails(
     assert not main_mod._run_first_run_settings(
         cfg,
     )
-    assert calls == ["shortcut:True", "save", "shortcut:False"]
+    assert calls == ["save", "restore-config"]
     assert len(warnings) == 1
     assert "save failed" in warnings[0]
     assert "rollback failed" in warnings[0]
@@ -5032,7 +5092,8 @@ def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
     assert not main_mod._run_first_run_settings(
         cfg,
     )
-    assert calls == []
+    assert calls == ["save"]
+    assert cfg.config_path is not None and not cfg.config_path.exists()
     assert len(warnings) == 1
     assert "shortcut failed" in warnings[0]
 

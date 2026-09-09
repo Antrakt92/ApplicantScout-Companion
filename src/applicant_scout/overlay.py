@@ -2072,9 +2072,7 @@ class ApplicantInfoPanel(QFrame):
             wcl_key.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
-            value.setAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            )
+            value.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._dungeon_grid.addWidget(name, row + 1, 0)
             self._dungeon_grid.addWidget(rio_key, row + 1, 1)
             self._dungeon_grid.addWidget(wcl_key, row + 1, 2)
@@ -2862,14 +2860,11 @@ class ApplicantInfoPanel(QFrame):
         widths = self._fit_detail_row_widths(preferred, minimum)
         for label, width in zip(labels, widths, strict=True):
             label.setFixedWidth(width)
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         if raid:
             rio_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         else:
             rio_label.setAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            )
-            value_label.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
         wcl_key_label.setAlignment(

@@ -280,6 +280,18 @@ def test_overlay_visual_fixture_uses_content_safe_width_for_enabled_metrics(
         )
         scroll_bar = window._table.horizontalScrollBar()
         assert scroll_bar is None or scroll_bar.maximum() == 0
+        if scenario_name in {
+            "applicants-default", "party-manual-key",
+            "party-no-listing-manual-key", "wcl-retry",
+        }:
+            for column in (COL_N, COL_H, COL_M, COL_MPLUS):
+                assert not window._table.isColumnHidden(column)
+                item = window._table.item(0, column)
+                assert item is not None
+                assert viewport.rect().contains(window._table.visualItemRect(item))
+        role_item = window._table.item(0, overlay_mod.COL_SPEC)
+        assert role_item is not None
+        assert viewport.rect().contains(window._table.visualItemRect(role_item))
     finally:
         client.close()
 

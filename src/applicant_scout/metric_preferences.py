@@ -46,12 +46,7 @@ class MetricPreferences:
         ]
         return ".".join(parts)
 
-DEFAULT_METRIC_PREFERENCES = MetricPreferences(
-    mplus=True,
-    raid_normal=False,
-    raid_heroic=False,
-    raid_mythic=False,
-)
+DEFAULT_METRIC_PREFERENCES = MetricPreferences()
 
 
 def effective_wcl_preferences_for_spec(

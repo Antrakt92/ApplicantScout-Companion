@@ -78,7 +78,7 @@ def _visual_config(
         config_dir=Path(r"C:\ApplicantScoutFixture\config"),
         metric_preferences=metric_preferences,
         screenshots_path=None,
-        sync_with_wow=False,
+        sync_with_wow=first_run,
     )
 
 
@@ -187,8 +187,7 @@ def create_settings_visual_dialog(
     usage = UsageClient(
         Path(usage_state.name),
         __version__,
-        endpoint="https://usage.example.invalid/v1/events",
-        _sender=lambda _endpoint, _payload: 204,
+        endpoint="",
     )
     try:
         dialog = SettingsDialog(

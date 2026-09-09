@@ -3469,7 +3469,7 @@ def _persist_settings_values(
         saved_values,
         "APSCOUT_SYNC_WITH_WOW",
         values.sync_with_wow,
-        default=False,
+        default=True,
     )
     cache_ttl_seconds = _saved_config_cache_ttl_for_process_override(
         saved_values,
@@ -3710,6 +3710,38 @@ def _run_first_run_settings(
         return False
     values = dialog.values()
     try:
+        persisted_snapshot = _capture_persisted_config_snapshot(cfg)
+    except (OSError, RuntimeError) as exc:
+        log.warning("Could not snapshot first-run settings: %s", exc)
+        QMessageBox.warning(
+            None,
+            "ApplicantScout settings",
+            f"Settings were not changed because the previous config could not be read: {exc}",
+        )
+        return False
+
+    def rollback_config() -> str:
+        try:
+            _restore_persisted_config_snapshot(persisted_snapshot)
+        except Exception as exc:  # noqa: BLE001 - preserve the original failure too
+            log.warning("Could not restore first-run config after failed apply: %s", exc)
+            return f" The configuration rollback also failed: {exc}"
+        return ""
+
+    # WHY: a fresh checked default is not evidence that a startup shortcut existed.
+    # Save before touching it; failed saves preserve its exact bytes or absence.
+    try:
+        _persist_settings_values(cfg, values)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not persist first-run settings: %s", exc)
+        rollback_error = rollback_config()
+        QMessageBox.warning(
+            None,
+            "ApplicantScout settings",
+            f"Settings could not be saved: {exc}.{rollback_error}",
+        )
+        return False
+    try:
         configure_wow_sync_startup(values.sync_with_wow)
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         log.warning("Could not configure WoW lifecycle startup shortcut: %s", exc)
@@ -3720,36 +3752,15 @@ def _run_first_run_settings(
                 "Settings were saved, but the WoW startup shortcut could not be "
                 f"updated: {exc}",
             )
-            _persist_settings_values(cfg, values)
             _stop_current_session_watcher_best_effort()
             return True
+        rollback_error = rollback_config()
+        outcome = rollback_error or " The previous configuration was restored."
         QMessageBox.warning(
             None,
             "ApplicantScout settings",
-            f"Settings were not saved because the WoW startup shortcut could not be updated: {exc}",
-        )
-        return False
-    try:
-        _persist_settings_values(cfg, values)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Could not persist first-run settings: %s", exc)
-        rollback_error = ""
-        try:
-            configure_wow_sync_startup(cfg.sync_with_wow)
-        except Exception as rollback_exc:  # noqa: BLE001
-            rollback_error = (
-                f" The WoW startup shortcut rollback also failed: {rollback_exc}"
-            )
-            log.warning(
-                "Could not roll back WoW lifecycle startup shortcut after "
-                "settings save failure: %s",
-                rollback_exc,
-            )
-        QMessageBox.warning(
-            None,
-            "ApplicantScout settings",
-            "Settings were not saved because the config file could not be "
-            f"updated: {exc}.{rollback_error}",
+            "Settings could not be applied because the WoW startup shortcut could "
+            f"not be updated: {exc}.{outcome}",
         )
         return False
     if values.sync_with_wow:

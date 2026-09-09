@@ -158,9 +158,11 @@ there while you review the group.
 
 ## Trust And Local Data
 
-**Optional usage statistics are off by default.** In Settings you can choose to
-share a random installation ID, version and daily setup/use milestones. Names,
-screenshots and credentials are excluded. You can turn sharing off at any time.
+**Optional usage statistics start enabled when no preference has been saved.**
+Existing choices are preserved. Reports contain a random installation ID, version
+and daily setup/use milestones. Names, screenshots and credentials are excluded.
+Turn sharing off at any time in Settings. This build has no configured collection
+service, so it sends no usage reports.
 Read [what is shared and retained](docs/PRIVACY.md).
 
 ApplicantScout Companion does not ask for Blizzard credentials or account
@@ -209,6 +211,11 @@ Use the Settings button in the companion title bar to edit WCL credentials,
 region fallback, screenshots path, WCL data scope, WoW lifecycle sync, cache,
 or logs. Settings save automatically as you change them.
 
+Mythic+, all raid difficulties and **Start and stop with WoW** start enabled
+when their preferences are unset. Your saved choices are preserved. After setup,
+WoW sync adds a Windows sign-in helper that starts the companion with WoW and
+closes it after WoW exits. Turn it off for manual launch and quit.
+
 When the system tray is available, closing the settings window hides it back to
 the tray; use the tray menu's **Quit ApplicantScout** action to close the
 companion completely. If the system tray is unavailable, closing Settings quits
@@ -246,10 +253,10 @@ APSCOUT_SCREENSHOTS_PATH=C:\Games\World of Warcraft\_retail_\Screenshots
 APSCOUT_REGION=EU
 APSCOUT_CACHE_TTL_SECONDS=43200
 APSCOUT_FETCH_MPLUS=1
-APSCOUT_FETCH_RAID_NORMAL=0
-APSCOUT_FETCH_RAID_HEROIC=0
-APSCOUT_FETCH_RAID_MYTHIC=0
-APSCOUT_SYNC_WITH_WOW=0
+APSCOUT_FETCH_RAID_NORMAL=1
+APSCOUT_FETCH_RAID_HEROIC=1
+APSCOUT_FETCH_RAID_MYTHIC=1
+APSCOUT_SYNC_WITH_WOW=1
 ```
 
 `APSCOUT_SCREENSHOTS_PATH` must point at the active WoW retail

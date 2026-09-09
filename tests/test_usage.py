@@ -54,18 +54,121 @@ def drain(instance):
     wait_until(lambda: not instance._pending)
 
 
-def test_no_identity_no_disk_no_replay_before_consent(tmp_path):
+def test_explicit_optout_has_no_identity_or_replay_before_enabling(tmp_path):
     sender = Recorder()
-    instance = client(tmp_path, sender)
+    instance = client(tmp_path, sender, consent=False)
     assert not instance.consent_enabled
     assert not instance.record("addon_received")
     assert not instance.record("wcl_result")
-    assert list(tmp_path.iterdir()) == []
+    assert json.loads((tmp_path / "usage.json").read_text()) == {"schema": 1, "consent": False}
+    assert sender.events == []
     instance.set_consent(True)
     assert instance.consent_enabled
     drain(instance)
     assert [event["event"] for event in sender.events] == ["consent_started", "version_seen"]
     instance.close()
+
+
+@pytest.mark.parametrize("initial_state", [None, {"schema": 1}])
+def test_missing_usage_preference_defaults_on_and_is_saved_before_any_event(
+    tmp_path, initial_state,
+):
+    path = tmp_path / usage.USAGE_STATE_FILENAME
+    if initial_state is not None:
+        path.write_text(json.dumps(initial_state), encoding="utf-8")
+    observed = []
+
+    def sender(_endpoint, payload):
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["consent"] is True
+        assert saved["install_id"] == payload["install_id"]
+        observed.append(payload)
+        return 204
+
+    instance = client(tmp_path, sender)
+    try:
+        assert instance.consent_enabled
+        drain(instance)
+        assert [event["event"] for event in observed] == ["consent_started", "version_seen"]
+    finally:
+        instance.close()
+
+
+def test_default_usage_selection_remains_on_without_collection_service(tmp_path):
+    sender = Recorder()
+    instance = usage.UsageClient(tmp_path, "0.17.1", endpoint="", _sender=sender)
+    assert instance.consent_enabled
+    assert not instance.collection_available
+    assert instance._thread is None
+    assert not instance.record("addon_received")
+    assert sender.events == []
+    assert json.loads((tmp_path / "usage.json").read_text()) == {
+        "schema": 1, "consent": True, "install_id": "", "seen": [],
+    }
+    instance.close()
+
+
+def test_saved_optout_survives_default_on_restart_and_deletes_identity(tmp_path):
+    instance = client(tmp_path, Recorder())
+    drain(instance)
+    instance.set_consent(False)
+    instance.close()
+    assert json.loads((tmp_path / "usage.json").read_text()) == {"schema": 1, "consent": False}
+    sender = Recorder()
+    restarted = client(tmp_path, sender)
+    assert not restarted.consent_enabled
+    assert not restarted.record("addon_received")
+    assert restarted._thread is None
+    assert sender.events == []
+    restarted.close()
+
+
+def test_default_consent_save_failure_disables_reporting_without_aborting_startup(
+    tmp_path, monkeypatch,
+):
+    def failed_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(usage, "atomic_write_text", failed_write)
+    sender = Recorder()
+    instance = client(tmp_path, sender)
+    assert not instance.consent_enabled
+    assert not instance.record("addon_received")
+    assert instance._thread is None
+    assert sender.events == []
+    instance.close()
+
+
+@pytest.mark.parametrize("state", [
+    "{}", '{"schema": 2}', '{"schema": 1, "consent": null}',
+    '{"schema": 1, "install_id": "invalid"}', '{"schema": 1, "seen": ["invalid"]}',
+])
+def test_only_valid_missing_consent_uses_default_and_corrupt_state_is_not_rewritten(tmp_path, state):
+    path = tmp_path / "usage.json"
+    path.write_text(state, encoding="utf-8")
+    sender = Recorder()
+    instance = client(tmp_path, sender)
+    assert not instance.consent_enabled
+    assert not instance.record("addon_received")
+    assert sender.events == []
+    assert path.read_text(encoding="utf-8") == state
+    instance.close()
+
+
+def test_missing_consent_migration_preserves_valid_identity_and_acknowledged_events(tmp_path):
+    sender = Recorder()
+    instance = client(tmp_path, sender, _day=lambda: "2026-09-09")
+    drain(instance)
+    instance.close()
+    path = tmp_path / "usage.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    del state["consent"]
+    path.write_text(json.dumps(state), encoding="utf-8")
+    restarted = client(tmp_path, sender, _day=lambda: "2026-09-09")
+    drain(restarted)
+    assert len(sender.events) == 2
+    assert json.loads(path.read_text())["install_id"] == state["install_id"]
+    restarted.close()
 
 
 @pytest.mark.parametrize("saved_consent", [False, True])
@@ -278,7 +381,7 @@ def test_consent_save_failure_stays_off(tmp_path, monkeypatch):
     def failed_write(*_args, **_kwargs):
         raise OSError("disk full")
 
-    instance = client(tmp_path, Recorder())
+    instance = client(tmp_path, Recorder(), consent=False)
     monkeypatch.setattr(usage, "atomic_write_text", failed_write)
     with pytest.raises(usage.UsagePersistenceError, match="Reporting is off"):
         instance.set_consent(True)

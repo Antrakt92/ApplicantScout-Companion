@@ -111,7 +111,7 @@ def test_first_run_dialog_title_keeps_setup_context_and_version(qtbot, tmp_path:
     assert dialog.windowTitle() == f"ApplicantScout Companion · First-run setup · v{__version__}"
 
 
-def test_settings_dialog_first_run_defaults_to_mplus_only(qtbot, tmp_path: Path):
+def test_settings_dialog_first_run_defaults_to_all_metrics(qtbot, tmp_path: Path):
     cfg = _cfg(tmp_path)
     dialog = SettingsDialog(cfg, first_run=True)
     qtbot.addWidget(dialog)
@@ -121,9 +121,9 @@ def test_settings_dialog_first_run_defaults_to_mplus_only(qtbot, tmp_path: Path)
     assert cfg.metric_preferences == DEFAULT_METRIC_PREFERENCES
     assert values.metric_preferences == MetricPreferences(
         mplus=True,
-        raid_normal=False,
-        raid_heroic=False,
-        raid_mythic=False,
+        raid_normal=True,
+        raid_heroic=True,
+        raid_mythic=True,
     )
 
 
@@ -260,7 +260,7 @@ def test_settings_dialog_has_wow_lifecycle_checkbox_near_bottom(qtbot, tmp_path:
 
     assert checkbox is not None
     assert checkbox.text() == "Start and stop with WoW"
-    assert not checkbox.isChecked()
+    assert checkbox.isChecked()
     checkbox.setChecked(True)
     assert dialog.values().sync_with_wow is True
 
@@ -317,9 +317,10 @@ def test_first_run_dialog_explains_wcl_client_creation(qtbot, tmp_path: Path):
         label.text() for label in dialog.findChildren(type(dialog.status_label))
     )
 
-    assert "http://localhost" in visible_text
-    assert "Public Client" in visible_text
-    assert "unchecked" in visible_text
+    setup_help = dialog.wcl_example_button.parentWidget().toolTip()
+    assert "http://localhost" in setup_help
+    assert "Public Client" in setup_help
+    assert "unchecked" in setup_help
     assert "Client ID" in visible_text
     assert "Client Secret" in visible_text
 
@@ -1190,7 +1191,7 @@ def test_settings_dialog_suggests_wow_screenshots_folder_from_chatlog_path(
     assert dialog.screenshots_edit.placeholderText().startswith("Example:")
     assert dialog.screenshots_edit.toolTip()
     assert any(
-        label.text() == "WoW Screenshots folder"
+        label.text() == "Screenshots"
         for label in dialog.findChildren(type(dialog.status_label))
     )
 
@@ -1366,7 +1367,7 @@ def test_settings_dialog_uses_wow_native_sections_and_focus_treatment(
         label.text()
         for label in dialog.findChildren(QLabel, "settingsSectionTitle")
     }
-    assert section_titles == {"WARCRAFT LOGS", "SCOUTING", "OPTIONAL USAGE STATISTICS"}
+    assert section_titles == {"WARCRAFT LOGS", "SCOUTING"}
     stylesheet = dialog.styleSheet()
     assert "#warcraftLogsSection" in stylesheet
     assert "#scoutingSection" in stylesheet
@@ -2672,10 +2673,10 @@ def test_settings_dialog_emits_values_changed_for_immediate_controls(qtbot, tmp_
     seen = []
     dialog.valuesChanged.connect(seen.append)
 
-    dialog.sync_with_wow_check.setChecked(True)
+    dialog.sync_with_wow_check.setChecked(False)
 
     qtbot.waitUntil(lambda: bool(seen), timeout=1000)
-    assert seen[-1].sync_with_wow is True
+    assert seen[-1].sync_with_wow is False
 
 
 def test_settings_dialog_emits_validated_credentials_after_successful_test(

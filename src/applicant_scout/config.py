@@ -48,7 +48,7 @@ class Config:
     config_path: Path | None = None
     log_dir: Path | None = None
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES
-    sync_with_wow: bool = False
+    sync_with_wow: bool = True
     draft_wcl_client_id: str = ""
     draft_wcl_client_secret: str = ""
 
@@ -320,7 +320,7 @@ def save_config_values(
     screenshots_path: str = "",
     cache_ttl_seconds: int | None = None,
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
-    sync_with_wow: bool = False,
+    sync_with_wow: bool = True,
     chatlog_path: str = "",
     config_path: Path | None = None,
 ) -> Path:
@@ -439,8 +439,8 @@ def load_config() -> Config:
     )
     sync_with_wow = _parse_bool_setting(
         "APSCOUT_SYNC_WITH_WOW",
-        _value(values, "APSCOUT_SYNC_WITH_WOW", "0"),
-        default=False,
+        _value(values, "APSCOUT_SYNC_WITH_WOW", ""),
+        default=True,
     )
 
     return Config(

@@ -168,11 +168,6 @@ QDialog#wclSetupExampleDialog {
     border: 1px solid rgba(205, 128, 82, 220);
     border-radius: 6px;
 }
-#settingsHeroEyebrow {
-    color: #f0c77c;
-    font-size: 10px;
-    font-weight: 700;
-}
 #settingsHeroTitle {
     color: #fff5e8;
     font-size: 18px;
@@ -198,6 +193,7 @@ QDialog#wclSetupExampleDialog {
     font-weight: 700;
 }
 #settingsSectionHint,
+#usageUnavailableStatus,
 #settingsAutosaveHint,
 #releaseNotesSubtitle {
     color: #aaa59d;
@@ -555,17 +551,18 @@ def _settings_section(
     section = QWidget(parent)
     section.setObjectName(object_name)
     layout = QVBoxLayout(section)
-    layout.setContentsMargins(14, 11, 14, 13)
-    layout.setSpacing(8)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(7)
 
     section_title = QLabel(title, section)
     section_title.setObjectName("settingsSectionTitle")
     layout.addWidget(section_title)
 
-    section_hint = QLabel(hint, section)
-    section_hint.setObjectName("settingsSectionHint")
-    section_hint.setWordWrap(True)
-    layout.addWidget(section_hint)
+    if hint:
+        section_hint = QLabel(hint, section)
+        section_hint.setObjectName("settingsSectionHint")
+        section_hint.setWordWrap(True)
+        layout.addWidget(section_hint)
     return section, layout
 
 
@@ -615,7 +612,21 @@ class _SettingsScrollArea(QScrollArea):
             return super().sizeHint()
         hint = content.sizeHint()
         frame = self.frameWidth() * 2
-        return QSize(hint.width() + frame, hint.height() + frame)
+        viewport = self.viewport()
+        parent = self.parentWidget()
+        outer = parent.layout() if parent is not None else None
+        margins = outer.contentsMargins() if outer is not None else None
+        minimum_viewport_width = parent.minimumWidth() if parent is not None else 0
+        if margins is not None:
+            minimum_viewport_width -= margins.left() + margins.right() + frame
+        # Before the first layout the viewport is only ~100px wide. Measure at
+        # least the dialog's supported width, without querying its own sizeHint.
+        width = max(
+            content.minimumSizeHint().width(), minimum_viewport_width,
+            viewport.width() if viewport is not None else hint.width(),
+        )
+        wrapped_height = content.heightForWidth(width)
+        return QSize(hint.width() + frame, (wrapped_height if wrapped_height >= 0 else hint.height()) + frame)
 
 
 @dataclass(frozen=True)
@@ -776,7 +787,8 @@ class SettingsDialog(QDialog):
         body.setObjectName("settingsBody")
         root = QVBoxLayout(body)
         root.setContentsMargins(14, 13, 14, 14)
-        root.setSpacing(11)
+        root.setSpacing(9)
+        root.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         if first_run:
             hero = QWidget(body)
@@ -784,60 +796,68 @@ class SettingsDialog(QDialog):
             hero_layout = QVBoxLayout(hero)
             hero_layout.setContentsMargins(14, 11, 14, 12)
             hero_layout.setSpacing(3)
-            hero_eyebrow = QLabel("FIRST-RUN SETUP", hero)
-            hero_eyebrow.setObjectName("settingsHeroEyebrow")
-            hero_layout.addWidget(hero_eyebrow)
             hero_title = QLabel("Connect ApplicantScout", hero)
             hero_title.setObjectName("settingsHeroTitle")
             hero_layout.addWidget(hero_title)
             intro = QLabel(
-                "Add Warcraft Logs credentials and your WoW Screenshots folder. "
-                "Every valid change saves automatically."
+                "Add Warcraft Logs credentials and your WoW Screenshots folder."
             )
             intro.setObjectName("settingsHeroText")
             intro.setWordWrap(True)
             hero_layout.addWidget(intro)
             root.addWidget(hero)
 
-        usage_section, usage_root = _settings_section(
-            body,
-            object_name="usageStatisticsSection",
-            title="OPTIONAL USAGE STATISTICS",
-            hint=(
-                "Share a random installation ID, app version and daily setup/use milestones "
-                "to help improve setup. No names, screenshots, credentials or folder paths. "
-                "Events expire after 90 days."
-            ),
-        )
-        self.usage_check = QCheckBox("Share basic usage statistics", usage_section)
+        usage_section = QWidget(body)
+        usage_section.setObjectName("usageStatisticsSection")
+        usage_root = QHBoxLayout(usage_section)
+        usage_root.setContentsMargins(12, 9, 12, 9)
+        usage_root.setSpacing(10)
+        self.usage_check = QCheckBox("Share usage statistics", usage_section)
         self.usage_check.setObjectName("shareUsageStatistics")
         self.usage_check.setChecked(bool(usage_client and usage_client.consent_enabled))
         self.usage_check.setEnabled(usage_client is not None)
-        self.usage_check.setAccessibleDescription(
-            "Optional. Off by default. Changes save immediately, even if setup is incomplete. "
+        usage_details = (
+            "Optional; enabled when no choice is saved. Existing choices are preserved. "
+            "Shares a random installation ID, app version and daily setup/use milestones. "
+            "No names, screenshots, credentials or folder paths. Events expire after 90 days. "
+            "Changes save immediately, even if setup is incomplete. "
             "Turning this off stops future reporting and clears queued events and the local ID."
         )
+        self.usage_check.setToolTip(usage_details)
+        self.usage_check.setAccessibleDescription(usage_details)
         self.usage_check.toggled.connect(self._change_usage_consent)
         usage_root.addWidget(self.usage_check)
+        usage_root.addStretch(1)
         usage_privacy = QLabel(
             '<a href="https://github.com/Antrakt92/ApplicantScout-Companion/blob/main/docs/PRIVACY.md">'
-            'What is shared and how to turn it off</a>', usage_section
+            'Privacy</a>', usage_section
         )
+        usage_privacy.setObjectName("usagePrivacyLink")
+        usage_privacy.setToolTip(usage_details)
+        usage_privacy.setAccessibleName("Usage statistics privacy details")
         usage_privacy.setOpenExternalLinks(True)
+        usage_privacy.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+        )
+        usage_privacy.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         usage_privacy.setWordWrap(True)
         usage_root.addWidget(usage_privacy)
         if usage_client is not None and not usage_client.collection_available:
             usage_unavailable = QLabel(
-                "Usage reporting is disabled for this build or installation.", usage_section
+                "Reporting unavailable", usage_section
             )
-            usage_unavailable.setWordWrap(True)
-            usage_root.addWidget(usage_unavailable)
+            usage_unavailable.setObjectName("usageUnavailableStatus")
+            usage_unavailable.setToolTip(
+                "Sending is disabled for this build or installation."
+            )
+            usage_root.insertWidget(1, usage_unavailable)
 
         wcl_section, wcl_root = _settings_section(
             body,
             object_name="warcraftLogsSection",
             title="WARCRAFT LOGS",
-            hint="Connect the private API client used to fetch applicant performance.",
+            hint="",
         )
         root.addWidget(wcl_section)
 
@@ -875,14 +895,12 @@ class SettingsDialog(QDialog):
         self.wcl_example_button.clicked.connect(self._show_wcl_setup_example)
         wcl_link_layout.addWidget(self.wcl_example_button)
         wcl_link_layout.addStretch(1)
-        wcl_root.addWidget(wcl_link_row)
-        credentials_help = QLabel(
+        credentials_help = (
             "Create a Warcraft Logs API client with Redirect URL "
             f"{WCL_CREATE_CLIENT_REDIRECT_URL} and leave Public Client unchecked. Copy the "
-            "generated Client ID and Client Secret into the fields below."
+            "generated Client ID and Client Secret into the credential fields."
         )
-        credentials_help.setWordWrap(True)
-        wcl_root.addWidget(credentials_help)
+        wcl_link_row.setToolTip(credentials_help)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -904,7 +922,7 @@ class SettingsDialog(QDialog):
         self.client_id_edit.setAccessibleDescription(
             "Client ID generated by the private Warcraft Logs API client."
         )
-        form.addRow("WCL Client ID", self.client_id_edit)
+        form.addRow("Client ID", self.client_id_edit)
 
         self.client_secret_edit = QLineEdit(display_client_secret)
         self.client_secret_edit.setObjectName("wclClientSecret")
@@ -930,7 +948,7 @@ class SettingsDialog(QDialog):
         self.reveal_secret_button.toggled.connect(self._set_client_secret_visible)
         self._set_client_secret_visible(False)
         secret_layout.addWidget(self.reveal_secret_button)
-        form.addRow("WCL Client Secret", secret_row)
+        form.addRow("Client Secret", secret_row)
         QWidget.setTabOrder(self.client_secret_edit, self.reveal_secret_button)
 
         self.region_combo = QComboBox()
@@ -946,12 +964,13 @@ class SettingsDialog(QDialog):
         region_idx = self.region_combo.findText((cfg.region or "EU").upper())
         self.region_combo.setCurrentIndex(max(0, region_idx))
         form.addRow("Region fallback", self.region_combo)
+        wcl_root.addWidget(wcl_link_row)
 
         scouting_section, scouting_root = _settings_section(
             body,
             object_name="scoutingSection",
             title="SCOUTING",
-            hint="Choose the local screenshot source and the data shown in applicant rows.",
+            hint="",
         )
         root.addWidget(scouting_section)
         scouting_form = QFormLayout()
@@ -990,7 +1009,7 @@ class SettingsDialog(QDialog):
         )
         self.browse_button.clicked.connect(self._browse_screenshots)
         path_layout.addWidget(self.browse_button)
-        scouting_form.addRow("WoW Screenshots folder", path_row)
+        scouting_form.addRow("Screenshots", path_row)
 
         metrics_row = QWidget(scouting_section)
         metrics_layout = QHBoxLayout(metrics_row)
@@ -1005,7 +1024,7 @@ class SettingsDialog(QDialog):
             "Fetch and show Mythic+ dungeon parses."
         )
         self.mplus_check.setChecked(prefs.mplus)
-        self.raid_normal_check = QCheckBox("Raid N")
+        self.raid_normal_check = QCheckBox("Normal")
         self.raid_normal_check.setObjectName("fetchRaidNormal")
         self.raid_normal_check.setToolTip("Fetch and show Normal raid parses.")
         self.raid_normal_check.setAccessibleName("Fetch Normal raid data")
@@ -1013,7 +1032,7 @@ class SettingsDialog(QDialog):
             "Fetch and show Normal raid parses."
         )
         self.raid_normal_check.setChecked(prefs.raid_normal)
-        self.raid_heroic_check = QCheckBox("Raid H")
+        self.raid_heroic_check = QCheckBox("Heroic")
         self.raid_heroic_check.setObjectName("fetchRaidHeroic")
         self.raid_heroic_check.setToolTip("Fetch and show Heroic raid parses.")
         self.raid_heroic_check.setAccessibleName("Fetch Heroic raid data")
@@ -1021,7 +1040,7 @@ class SettingsDialog(QDialog):
             "Fetch and show Heroic raid parses."
         )
         self.raid_heroic_check.setChecked(prefs.raid_heroic)
-        self.raid_mythic_check = QCheckBox("Raid M")
+        self.raid_mythic_check = QCheckBox("Mythic")
         self.raid_mythic_check.setObjectName("fetchRaidMythic")
         self.raid_mythic_check.setToolTip("Fetch and show Mythic raid parses.")
         self.raid_mythic_check.setAccessibleName("Fetch Mythic raid data")
@@ -1037,7 +1056,7 @@ class SettingsDialog(QDialog):
         ):
             metrics_layout.addWidget(checkbox)
         metrics_layout.addStretch(1)
-        scouting_form.addRow("WCL data", metrics_row)
+        scouting_form.addRow("Parses", metrics_row)
 
         self.sync_with_wow_check = QCheckBox("Start and stop with WoW")
         self.sync_with_wow_check.setObjectName("syncWithWow")
@@ -1052,7 +1071,6 @@ class SettingsDialog(QDialog):
         scouting_form.addRow("", self.sync_with_wow_check)
 
         root.addWidget(usage_section)
-        root.addStretch(1)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("settingsStatus")
@@ -1078,11 +1096,14 @@ class SettingsDialog(QDialog):
         self.support_button.setFixedSize(26, 24)
         self.support_button.clicked.connect(self._open_support)
         footer_layout.addWidget(self.support_button)
-        self.autosave_hint = QLabel("Valid changes save automatically", footer)
+        self.autosave_hint = QLabel(
+            "Saved when you start" if first_run else "Valid changes save automatically", footer
+        )
         self.autosave_hint.setObjectName("settingsAutosaveHint")
-        self.autosave_hint.setAccessibleName("Automatic save status")
+        self.autosave_hint.setAccessibleName("Settings save status")
         self.autosave_hint.setAccessibleDescription(
-            "Valid settings changes save automatically."
+            "Settings are saved when you start the companion. The usage statistics choice saves immediately."
+            if first_run else "Valid settings changes save automatically."
         )
         footer_layout.addWidget(self.autosave_hint, stretch=1)
         footer_layout.addWidget(self.status_label, stretch=1)
@@ -1144,6 +1165,17 @@ class SettingsDialog(QDialog):
         self.body_scroll.setWidget(body)
         outer.addWidget(self.body_scroll, stretch=1)
         outer.addWidget(actions)
+        focus_order = (
+            self.client_id_edit, self.client_secret_edit, self.reveal_secret_button,
+            self.region_combo, self.wcl_clients_link, self.wcl_example_button,
+            self.screenshots_edit, self.browse_button, self.raid_normal_check,
+            self.raid_heroic_check, self.raid_mythic_check, self.mplus_check,
+            self.sync_with_wow_check, self.usage_check, usage_privacy,
+            self.support_button, self.cancel_update_button, self.test_button,
+            self.more_actions_button,
+        )
+        for current, following in zip(focus_order, focus_order[1:]):
+            QWidget.setTabOrder(current, following)
         self._connect_value_change_signals()
         self._schedule_screenshots_warning(self.screenshots_edit.text())
         self.client_id_edit.setFocus(Qt.FocusReason.OtherFocusReason)

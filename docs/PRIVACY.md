@@ -1,19 +1,24 @@
 # Optional usage statistics
 
 ApplicantScout Companion can share a few usage milestones to help us understand
-whether people get through setup and use the overlay. **Sharing is off by default.**
-The addon and companion work without it.
+whether people get through setup and use the overlay. **Sharing starts enabled
+when no preference has been saved.** Existing saved choices are preserved, and
+the addon and companion work with sharing turned off.
+
+This build has no configured collection service, so it sends no usage reports.
 
 ## Your choice
 
-In Companion Settings, use **Share basic usage statistics**. The choice saves
+In Companion Settings, use **Share usage statistics**. The choice saves
 immediately, separately from your Warcraft Logs credentials, even if setup is
-incomplete. Closing setup without selecting the checkbox does not enable sharing.
+incomplete. Clear the checkbox to disable sharing; simply closing Settings does
+not change the choice. An unreadable or malformed saved preference leaves
+reporting off.
 
 Turning it off stops future reporting and retries, discards queued events, and
 removes the local reporting ID and history. A request already in progress may
 finish. Events already received are not deleted immediately; they expire from
-the reporting database within 90 days. If you opt in again, a new ID is created.
+the reporting database within 90 days. If you enable sharing again, a new ID is created.
 
 If Windows prevents saving the choice, the app stops reporting for that session
 and shows an error. The previously saved choice may return after restarting, so
@@ -59,7 +64,7 @@ This is limited, pseudonymous reporting, not a claim of complete anonymity.
 
 Active installations over 7 or 30 days means participating installations that
 received fresh addon data during that period. It does not count every user:
-people may decline sharing or block requests. Reinstalling, opting in again or
+people may disable sharing or block requests. Reinstalling, enabling sharing again or
 using another computer can create another ID. Seeing a new version does not
 prove that the automatic updater installed it.
 

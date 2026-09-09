@@ -1,5 +1,13 @@
 # ApplicantScout Companion Release Notes
 
+## Unreleased
+
+- Make Settings more compact, with setup fields and preferences easier to scan.
+- Start all scouting options and optional usage sharing enabled when no choice
+  is saved, while preserving existing choices. Reporting remains inactive in
+  builds without a configured collection service.
+- Preserve the previous startup configuration if first-time setup cannot be saved.
+
 ## 0.17.1 - 09-Sep-2026
 
 Paired release with ApplicantScout addon `0.10.2`.
