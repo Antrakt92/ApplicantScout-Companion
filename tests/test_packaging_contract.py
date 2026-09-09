@@ -1987,6 +1987,27 @@ def test_release_workflow_separates_read_only_build_from_narrow_draft_writer():
     )
 
 
+def test_release_notes_keep_history_and_exclude_unreleased(tmp_path: Path):
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    step = _step_block(_job_block(workflow, "build"), "Extract release notes")
+    run = step.split("        run: |\n", 1)[1]
+    script = "\n".join(line[10:] for line in run.splitlines() if line.strip())
+    path = tmp_path / "extract.ps1"
+    path.write_text('$ErrorActionPreference = "Stop"\n' + script, encoding="utf-8")
+    history = "## 1.2.3 - 10-Sep-2026\n\n- Current.\n\n## 1.0.0 - 01-Jan-2026\n\n- Initial.\n"
+    (tmp_path / "RELEASE_NOTES.md").write_bytes(
+        ("# Release notes\n\n## Unreleased\n\n- Future work.\n\n" + history).replace("\n", "\r\n").encode()
+    )
+    (tmp_path / "dist").mkdir()
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(path)], cwd=tmp_path,
+        env={**os.environ, "GITHUB_REF_NAME": "v1.2.3"},
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "dist" / "release-body.md").read_bytes() == history.encode()
+
+
 def test_release_workflow_carries_exact_tag_copy_through_authoritative_manifest():
     workflow = _read_repo_text(".github/workflows/release.yml")
     build = _job_block(workflow, "build")
