@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 
 if "QT_QPA_PLATFORM" not in os.environ:
     os.environ["QT_QPA_PLATFORM"] = "windows" if sys.platform == "win32" else "offscreen"
@@ -203,9 +204,17 @@ def test_settings_visual_fixture_first_run_uses_real_metric_defaults(qtbot):
 
 
 @pytest.mark.parametrize("scenario, height_limit", [("normal-default", 510), ("first-run", 660)])
-def test_settings_compact_body_keeps_footer_next_to_content(qtbot, scenario, height_limit):
+def test_settings_compact_body_keeps_footer_next_to_content(qtbot, monkeypatch, scenario, height_limit):
+    # Qt's automatic initial size is capped at two thirds of the host screen.
+    # Measure the unscrolled form at its preferred size on a controlled screen;
+    # constrained-screen scrolling is covered separately below.
+    screen = SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1600, 900))
+    monkeypatch.setattr(QApplication, "screens", lambda: [screen])
+    monkeypatch.setattr(QApplication, "primaryScreen", lambda: screen)
     dialog = create_settings_visual_dialog(scenario)
     qtbot.addWidget(dialog)
+    dialog.ensurePolished()
+    dialog.resize(dialog.sizeHint())
     dialog.show()
     QApplication.processEvents()
     assert dialog.height() <= height_limit
@@ -222,7 +231,8 @@ def test_settings_compact_body_keeps_footer_next_to_content(qtbot, scenario, hei
     usage_bottom = usage.mapTo(dialog, QPoint(0, usage.height())).y()
     footer_top = footer.mapTo(dialog, QPoint()).y()
     assert 0 <= footer_top - usage_bottom <= 24
-    assert dialog.body_scroll.verticalScrollBar().maximum() == 0
+    scrollbar = dialog.body_scroll.verticalScrollBar()
+    assert scrollbar is not None and scrollbar.maximum() == 0
     privacy = dialog.findChild(QLabel, "usagePrivacyLink")
     unavailable = dialog.findChild(QLabel, "usageUnavailableStatus")
     assert privacy is not None and unavailable is not None
@@ -236,18 +246,40 @@ def test_settings_compact_body_keeps_footer_next_to_content(qtbot, scenario, hei
     assert unavailable.fontMetrics().horizontalAdvance(unavailable.text()) <= unavailable.width()
 
 
-def test_compact_first_run_actions_stay_reachable_when_body_scrolls(qtbot):
-    dialog = create_settings_visual_dialog("first-run")
+@pytest.mark.parametrize("scenario", ["normal-default", "first-run"])
+def test_compact_actions_and_form_stay_reachable_on_small_screen(qtbot, monkeypatch, scenario):
+    bounds = QRect(0, 0, 800, 360)
+    screen = SimpleNamespace(availableGeometry=lambda: bounds)
+    monkeypatch.setattr(QApplication, "screens", lambda: [screen])
+    monkeypatch.setattr(QApplication, "primaryScreen", lambda: screen)
+    dialog = create_settings_visual_dialog(scenario)
     qtbot.addWidget(dialog)
-    dialog.resize(dialog.minimumWidth(), 360)
+    dialog.resize(dialog.minimumWidth(), 700)
     dialog.show()
     QApplication.processEvents()
     assert dialog.height() == 360
-    assert dialog.body_scroll.verticalScrollBar().maximum() > 0
-    assert dialog.body_scroll.horizontalScrollBar().maximum() == 0
-    for control in (dialog.test_button, dialog.start_button, dialog.setup_quit_button):
+    assert bounds.contains(dialog.geometry())
+    vertical = dialog.body_scroll.verticalScrollBar()
+    horizontal = dialog.body_scroll.horizontalScrollBar()
+    assert vertical is not None and vertical.maximum() > 0
+    assert horizontal is not None and horizontal.maximum() == 0
+    actions = [dialog.test_button]
+    if scenario == "first-run":
+        assert dialog.start_button is not None and dialog.setup_quit_button is not None
+        actions.extend([dialog.start_button, dialog.setup_quit_button])
+    for control in actions:
         assert control is not None and control.isVisible()
         assert dialog.rect().contains(QRect(control.mapTo(dialog, QPoint()), control.size()))
+    viewport = dialog.body_scroll.viewport()
+    body = dialog.body_scroll.widget()
+    assert viewport is not None and body is not None
+    for control in (dialog.client_id_edit, dialog.client_secret_edit, dialog.screenshots_edit,
+                    dialog.sync_with_wow_check, dialog.usage_check):
+        # Scroll the whole control into view; ensureWidgetVisible on QLineEdit
+        # follows its cursor rectangle rather than the complete field.
+        vertical.setValue(control.mapTo(body, QPoint()).y())
+        QApplication.processEvents()
+        assert viewport.rect().contains(QRect(control.mapTo(viewport, QPoint()), control.size()))
 
 
 def test_settings_keyboard_order_follows_credentials_then_help_and_scouting(qtbot):

@@ -335,6 +335,9 @@ class _ChangingScreen(QObject):
     def availableGeometry(self) -> QRect:
         return self.bounds
 
+    def geometry(self) -> QRect:
+        return self.bounds
+
     def set_available_width(self, width: int) -> None:
         self.bounds.setWidth(width)
         self.availableGeometryChanged.emit(self.bounds)
@@ -346,13 +349,17 @@ def test_overlay_available_screen_width_change_updates_live_resize_limit(
     window, client = _overlay(tmp_path, qtbot)
     screen = _ChangingScreen(1600)
     monkeypatch.setattr(window, "screen", lambda: screen)
+    monkeypatch.setattr(overlay_mod.QGuiApplication, "screens", lambda: [screen])
+    monkeypatch.setattr(overlay_mod.QGuiApplication, "primaryScreen", lambda: screen)
     try:
         window._sync_window_width_limit()
         natural_limit = window.maximumWidth()
         assert natural_limit > 540
         window.resize(natural_limit, 520)
         screen.set_available_width(540)
-        qtbot.waitUntil(lambda: window.maximumWidth() == 540)
+        # Native window geometry can settle after Qt has changed the constraint.
+        # Wait for the observed resize, not just the new maximum-width property.
+        qtbot.waitUntil(lambda: window.maximumWidth() == 540 and window.width() == 540)
         assert window.width() == 540
         assert window.height() == 520
         window.resize(5000, 520)
@@ -382,6 +389,8 @@ def test_overlay_window_screen_change_uses_new_monitor_width(
     handle = _ChangingWindow()
     monkeypatch.setattr(window, "screen", lambda: current_screen[0])
     monkeypatch.setattr(window, "windowHandle", lambda: handle)
+    monkeypatch.setattr(overlay_mod.QGuiApplication, "screens", lambda: current_screen)
+    monkeypatch.setattr(overlay_mod.QGuiApplication, "primaryScreen", lambda: current_screen[0])
     try:
         window._sync_window_width_limit()
         natural_limit = window.maximumWidth()
@@ -389,11 +398,11 @@ def test_overlay_window_screen_change_uses_new_monitor_width(
         window.resize(natural_limit, 520)
         current_screen[0] = new_screen
         handle.screenChanged.emit(new_screen)
-        qtbot.waitUntil(lambda: window.maximumWidth() == 540)
+        qtbot.waitUntil(lambda: window.maximumWidth() == 540 and window.width() == 540)
         assert window.width() == 540
 
         new_screen.set_available_width(480)
-        qtbot.waitUntil(lambda: window.maximumWidth() == 480)
+        qtbot.waitUntil(lambda: window.maximumWidth() == 480 and window.width() == 480)
         assert window.width() == 480
         current_screen[0] = old_screen
         handle.screenChanged.emit(old_screen)

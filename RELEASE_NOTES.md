@@ -1,12 +1,26 @@
 # ApplicantScout Companion Release Notes
 
-## Unreleased
+## 0.18.0 - 10-Sep-2026
+
+Paired release with ApplicantScout addon `0.10.3`.
+
+### Improved and fixed
 
 - Make Settings more compact, with setup fields and preferences easier to scan.
 - Start all scouting options and optional usage sharing enabled when no choice
   is saved, while preserving existing choices. Reporting remains inactive in
   builds without a configured collection service.
 - Preserve the previous startup configuration if first-time setup cannot be saved.
+- Center dungeon parse values in the detail card.
+- Keep the complete release history available in release notes.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.10.3`.
+- Installer: `ApplicantScoutCompanionSetup-0.18.0.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.18.0.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.18.0-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.18.0-release-manifest.json`
 
 ## 0.17.1 - 09-Sep-2026
 
