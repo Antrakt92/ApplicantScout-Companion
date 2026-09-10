@@ -1,8 +1,8 @@
 # ApplicantScout Companion Release Notes
 
-## 0.18.0 - 10-Sep-2026
+## 0.18.1 - 10-Sep-2026
 
-Paired release with ApplicantScout addon `0.10.3`.
+Paired release with ApplicantScout addon `0.10.4`.
 
 ### Improved and fixed
 
@@ -16,11 +16,11 @@ Paired release with ApplicantScout addon `0.10.3`.
 
 ### Release Assets
 
-- Requires the ApplicantScout WoW addon `0.10.3`.
-- Installer: `ApplicantScoutCompanionSetup-0.18.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.18.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.18.0-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.18.0-release-manifest.json`
+- Requires the ApplicantScout WoW addon `0.10.4`.
+- Installer: `ApplicantScoutCompanionSetup-0.18.1.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.18.1.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.18.1-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.18.1-release-manifest.json`
 
 ## 0.17.1 - 09-Sep-2026
 
