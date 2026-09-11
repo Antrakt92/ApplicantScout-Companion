@@ -19,8 +19,7 @@ import httpx
 from .atomic_io import atomic_write_text
 
 
-# Empty until a reviewed collection service and its privacy notice are available.
-USAGE_ENDPOINT = ""
+USAGE_ENDPOINT = "https://applicantscout-usage.applicantscout-usage-service.workers.dev/v1/events"
 DEFAULT_USAGE_CONSENT = True
 USAGE_EVENTS = frozenset(
     {"consent_started", "version_seen", "setup_completed", "addon_received", "wcl_result"}

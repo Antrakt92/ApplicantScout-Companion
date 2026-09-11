@@ -1,5 +1,26 @@
 # ApplicantScout Companion Release Notes
 
+## 0.18.2 - 11-Sep-2026
+
+Paired release with ApplicantScout addon `0.10.5`.
+
+### Improved and fixed
+
+- Connect optional usage statistics to the reporting service. Participating
+  installations can now report daily setup and overlay-use milestones.
+- Preserve saved sharing choices across updates and exclude earlier activity.
+  Turn sharing off in Settings at any time.
+- Explain what is sent, Cloudflare hosting, 90-day active retention and the
+  additional seven-day recovery window in the privacy notice.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.10.5`.
+- Installer: `ApplicantScoutCompanionSetup-0.18.2.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.18.2.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.18.2-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.18.2-release-manifest.json`
+
 ## 0.18.1 - 10-Sep-2026
 
 Paired release with ApplicantScout addon `0.10.4`.

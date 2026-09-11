@@ -237,7 +237,8 @@ def test_settings_compact_body_keeps_footer_next_to_content(qtbot, monkeypatch, 
     unavailable = dialog.findChild(QLabel, "usageUnavailableStatus")
     assert privacy is not None and unavailable is not None
     assert privacy.openExternalLinks() and "PRIVACY.md" in privacy.text()
-    assert "Events expire after 90 days" in dialog.usage_check.toolTip()
+    assert "active storage after 90 UTC days" in dialog.usage_check.toolTip()
+    assert "recovery history can last 7 more days" in dialog.usage_check.toolTip()
     assert "Existing choices are preserved" in dialog.usage_check.accessibleDescription()
     assert dialog.usage_check.isChecked() and dialog.usage_check.isEnabled()
     for control in (dialog.usage_check, privacy, unavailable):

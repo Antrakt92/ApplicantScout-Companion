@@ -16,6 +16,20 @@ import applicant_scout.usage as usage
 ENDPOINT = "https://usage.example.com/v1/events"
 
 
+def test_shipped_client_has_a_production_endpoint_and_preserves_optout(tmp_path):
+    assert usage.valid_usage_endpoint(usage.USAGE_ENDPOINT)
+    assert usage.USAGE_ENDPOINT.endswith(".workers.dev/v1/events")
+    assert "acceptance" not in usage.USAGE_ENDPOINT
+    sender = Recorder()
+    instance = usage.UsageClient(tmp_path, "0.18.2", consent=False, _sender=sender)
+    try:
+        assert instance.collection_available
+        assert not instance.record("addon_received")
+        assert sender.events == []
+    finally:
+        instance.close()
+
+
 @pytest.fixture(autouse=True)
 def fast_private_writes(monkeypatch):
     def write(path, text, *, private):
@@ -121,6 +135,40 @@ def test_saved_optout_survives_default_on_restart_and_deletes_identity(tmp_path)
     assert restarted._thread is None
     assert sender.events == []
     restarted.close()
+
+
+@pytest.mark.parametrize("saved_consent", [False, True])
+def test_update_from_unconfigured_release_preserves_choice_and_only_reports_new_activity(
+    tmp_path, saved_consent,
+):
+    sender = Recorder()
+    old = usage.UsageClient(
+        tmp_path, "0.18.1", endpoint="", consent=saved_consent, _sender=sender,
+        _day=lambda: "2026-09-10",
+    )
+    try:
+        assert not old.record("addon_received")
+        assert sender.events == []
+    finally:
+        old.close()
+
+    updated = client(tmp_path, sender, version="0.18.2", _day=lambda: "2026-09-11")
+    try:
+        assert updated.collection_available
+        assert updated.consent_enabled is saved_consent
+        assert updated.record("addon_received") is saved_consent
+        drain(updated)
+        if saved_consent:
+            assert [event["event"] for event in sender.events] == [
+                "consent_started", "version_seen", "addon_received",
+            ]
+            assert all(event["version"] == "0.18.2" for event in sender.events)
+            assert all(event["day"] == "2026-09-11" for event in sender.events)
+            assert len({event["install_id"] for event in sender.events}) == 1
+        else:
+            assert sender.events == []
+    finally:
+        updated.close()
 
 
 def test_default_consent_save_failure_disables_reporting_without_aborting_startup(

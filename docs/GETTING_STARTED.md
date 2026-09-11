@@ -64,8 +64,9 @@ are preserved. WoW sync adds a Windows sign-in helper after setup. The optional
 RaiderIO addon supplies extra local dungeon and raid information.
 
 **Share usage statistics** also starts checked when no choice is saved.
-It is optional and can be disabled here. This build has no configured collection
-service, so it sends no usage reports. See [what is shared and how to turn it off](PRIVACY.md).
+It is optional and can be disabled here. Participating installations send daily
+setup/use milestones to the ApplicantScout service hosted on Cloudflare.
+See [what is shared and how to turn it off](PRIVACY.md).
 
 Click **Start companion** to save your first setup. Later changes in Settings
 save automatically; the usage-sharing choice always saves immediately.

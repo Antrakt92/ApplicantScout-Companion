@@ -5,7 +5,8 @@ whether people get through setup and use the overlay. **Sharing starts enabled
 when no preference has been saved.** Existing saved choices are preserved, and
 the addon and companion work with sharing turned off.
 
-This build has no configured collection service, so it sends no usage reports.
+Packaged builds with sharing enabled report to the ApplicantScout service hosted
+on Cloudflare Workers and D1. See the [hosted privacy notice](https://applicantscout-usage.applicantscout-usage-service.workers.dev/privacy).
 
 ## Your choice
 
@@ -18,7 +19,8 @@ reporting off.
 Turning it off stops future reporting and retries, discards queued events, and
 removes the local reporting ID and history. A request already in progress may
 finish. Events already received are not deleted immediately; they expire from
-the reporting database within 90 days. If you enable sharing again, a new ID is created.
+active reporting storage within 90 UTC days. Recovery history may retain deleted
+records for up to seven additional days. Enabling sharing again creates a new ID.
 
 If Windows prevents saving the choice, the app stops reporting for that session
 and shows an error. The previously saved choice may return after restarting, so
@@ -55,11 +57,16 @@ The collection service converts the random ID to a keyed hash before storing it.
 It stores that hash, milestone, version and date. Its private dashboard shows
 aggregate counts. The current UTC date and previous 89 dates are retained;
 older events are removed from the active reporting database.
+Cloudflare D1 Time Travel on the Free plan may retain deleted rows in recovery
+history for up to seven additional days. We do not create separate exports or
+backup copies of the events.
 
 Like any Internet request, sending an event exposes network metadata such as
-the connection's IP address to the hosting and network providers. The usage
-service does not write IP addresses, raw installation IDs or request bodies to
-its application logs. Its temporary rate limiter uses short-lived address hashes.
+the connection's IP address to Cloudflare and network providers. Worker request
+logging is disabled. The usage service does not write IP addresses, raw
+installation IDs or request bodies to application logs. Its temporary rate
+limiter uses short-lived address hashes. Cloudflare may retain operational or
+security metadata under its [privacy policy](https://www.cloudflare.com/privacypolicy/).
 This is limited, pseudonymous reporting, not a claim of complete anonymity.
 
 Active installations over 7 or 30 days means participating installations that

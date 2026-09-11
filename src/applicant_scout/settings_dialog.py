@@ -819,7 +819,8 @@ class SettingsDialog(QDialog):
         usage_details = (
             "Optional; enabled when no choice is saved. Existing choices are preserved. "
             "Shares a random installation ID, app version and daily setup/use milestones. "
-            "No names, screenshots, credentials or folder paths. Events expire after 90 days. "
+            "No names, screenshots, credentials or folder paths. "
+            "Events leave active storage after 90 UTC days; recovery history can last 7 more days. "
             "Changes save immediately, even if setup is incomplete. "
             "Turning this off stops future reporting and clears queued events and the local ID."
         )

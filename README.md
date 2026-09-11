@@ -161,8 +161,8 @@ there while you review the group.
 **Optional usage statistics start enabled when no preference has been saved.**
 Existing choices are preserved. Reports contain a random installation ID, version
 and daily setup/use milestones. Names, screenshots and credentials are excluded.
-Turn sharing off at any time in Settings. This build has no configured collection
-service, so it sends no usage reports.
+Turn sharing off at any time in Settings. Participating packaged builds send
+reports to the ApplicantScout service hosted on Cloudflare.
 Read [what is shared and retained](docs/PRIVACY.md).
 
 ApplicantScout Companion does not ask for Blizzard credentials or account
