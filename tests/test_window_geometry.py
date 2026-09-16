@@ -7,6 +7,7 @@ import pytest
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtWidgets import QApplication
 
 import applicant_scout.overlay as overlay_mod
 import applicant_scout.settings_dialog as settings_mod
@@ -370,6 +371,46 @@ def test_overlay_available_screen_width_change_updates_live_resize_limit(
         assert window.width() == 540
         window.resize(610, 520)
         assert window.width() == 610
+    finally:
+        window.close()
+        client.close()
+
+
+@pytest.mark.parametrize("event_type", [QEvent.Type.StyleChange, QEvent.Type.FontChange])
+@pytest.mark.parametrize("remeasure_before_topology", [True, False])
+def test_unchanged_content_remeasure_preserves_width_when_screen_grows(
+    monkeypatch, qtbot, tmp_path: Path, event_type, remeasure_before_topology,
+):
+    window, client = _overlay(tmp_path, qtbot)
+    screen = _ChangingScreen(1600)
+    monkeypatch.setattr(window, "screen", lambda: screen)
+    monkeypatch.setattr(overlay_mod.QGuiApplication, "screens", lambda: [screen])
+    monkeypatch.setattr(overlay_mod.QGuiApplication, "primaryScreen", lambda: screen)
+    try:
+        window._sync_window_width_limit()
+        natural_limit = window.maximumWidth()
+        intrinsic_limit = window._content_width_limit
+        assert natural_limit > 540
+        window.resize(natural_limit, 520)
+        screen.set_available_width(540)
+        qtbot.waitUntil(lambda: window.maximumWidth() == 540 and window.width() == 540)
+
+        # Both callbacks are deferred. A style/font notification can arrive before
+        # or after the screen signal without changing the content's measured width.
+        if remeasure_before_topology:
+            QApplication.sendEvent(window._table, QEvent(event_type))
+        screen.set_available_width(1600)
+        if not remeasure_before_topology:
+            QApplication.sendEvent(window._table, QEvent(event_type))
+        qtbot.waitUntil(
+            lambda: not window._column_remeasure_pending
+            and not window._geometry_clamp_pending
+        )
+
+        assert window._content_width_limit == intrinsic_limit
+        assert window.maximumWidth() == natural_limit
+        assert window.width() == 540
+        assert window.height() == 520
     finally:
         window.close()
         client.close()

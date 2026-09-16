@@ -5917,12 +5917,15 @@ class OverlayWindow(QMainWindow):
         # background result must not shrink the window under the user's pointer.
         if measurement_key == self._width_layout_key:
             natural_width = max(natural_width, self._content_width_limit)
+        content_grew = natural_width > self._content_width_limit
         self._content_width_limit = natural_width
         self._width_layout_key = measurement_key
         self._column_measurement_key = measurement_key
         self._metric_column_widths_dirty = False
         if hasattr(self, "_syncing_width_limit"):
-            self._sync_window_width_limit(follow_content=True)
+            # A queued style remeasure may run before a screen-growth callback.
+            # Only actual content growth should widen a window at its old ceiling.
+            self._sync_window_width_limit(follow_content=content_grew)
 
     def _raid_metric_row_width_signature(self, row: int) -> tuple:
         signature = []
