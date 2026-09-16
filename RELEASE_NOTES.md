@@ -1,5 +1,24 @@
 # ApplicantScout Companion Release Notes
 
+## 0.18.3 - 16-Sep-2026
+
+Paired release with ApplicantScout addon `0.10.6`.
+
+### Improved and fixed
+
+- Fix unexpected overlay width changes after screen-size updates.
+- Ship the QR decoder with a verified libiconv build and complete source and
+  license records for its native dependencies.
+- Clarify setup instructions and third-party notices.
+
+### Release Assets
+
+- Requires the ApplicantScout WoW addon `0.10.6`.
+- Installer: `ApplicantScoutCompanionSetup-0.18.3.exe`
+- Installer checksum: `ApplicantScoutCompanionSetup-0.18.3.exe.sha256`
+- Portable archive: `ApplicantScoutCompanion-0.18.3-portable.zip`
+- Immutable manifest: `ApplicantScoutCompanion-0.18.3-release-manifest.json`
+
 ## 0.18.2 - 11-Sep-2026
 
 Paired release with ApplicantScout addon `0.10.5`.
