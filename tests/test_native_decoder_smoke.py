@@ -229,15 +229,21 @@ def test_cli_missing_file_is_json_failure(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Real DLL baseline needs Windows")
-def test_retained_replacement_matches_real_installed_baseline():
+def test_retained_replacement_matches_real_installed_baseline(pytestconfig):
     import importlib.metadata
 
     package = importlib.metadata.distribution("pyzbar")
     iconv = Path(package.locate_file("pyzbar/libiconv.dll"))
     zbar = Path(package.locate_file("pyzbar/libzbar-64.dll"))
-    encoder = ROOT.parent / "ApplicantScout-Addon/libs/qrencode.lua"
-    lua = shutil.which("lua5.1")
-    if not iconv.is_file() or not zbar.is_file() or not encoder.is_file() or lua is None:
+    explicit_addon = pytestconfig.getoption("--native-addon-root")
+    explicit_lua = pytestconfig.getoption("--native-lua51")
+    addon = Path(explicit_addon) if explicit_addon else ROOT.parent / "ApplicantScout-Addon"
+    encoder = addon / "libs/qrencode.lua"
+    lua = explicit_lua or shutil.which("lua5.1")
+    if (not iconv.is_file() or not zbar.is_file() or not encoder.is_file()
+            or lua is None or not Path(lua).is_file()):
+        if explicit_addon or explicit_lua:
+            pytest.fail("Configured native decoder inputs are missing; cannot skip the required check")
         pytest.skip("Installed wheel DLLs, paired addon and Lua 5.1 required")
     before = (smoke.digest(iconv), smoke.digest(zbar))
     report = smoke.run_smoke(iconv, zbar, encoder, Path(lua))

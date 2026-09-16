@@ -68,7 +68,7 @@ if ($DependencyAdvisoryChecks) {
 
 Write-Host "== Python tests =="
 Invoke-NativeChecked -Label "Python tests" -Command {
-    & $Python -m pytest
+    & $Python -m pytest --native-lua51 $Lua51 --native-addon-root $AddonRoot
 }
 
 if ($SeasonalOnlineChecks) {
