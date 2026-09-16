@@ -1630,8 +1630,9 @@ def test_release_checklist_documents_optional_signing_gate():
     assert "unsigned" in checklist.lower()
 
 
-def test_readme_explains_signing_ready_but_unsigned_until_certificate():
-    readme = _read_repo_text("README.md")
+def test_contributor_guide_explains_signing_ready_but_unsigned_until_certificate():
+    assert "(CONTRIBUTING.md)" in _read_repo_text("README.md")
+    readme = _read_repo_text("CONTRIBUTING.md")
 
     assert "signing-ready release pipeline" in readme
     assert "APSCOUT_SIGNING_CERT_SHA1" in readme
@@ -3334,8 +3335,9 @@ def test_companion_gitignore_does_not_hide_public_release_or_doc_inputs():
         assert not _git_check_ignore(path), f"{path} should not be ignored"
 
 
-def test_readme_documents_current_wire_support():
-    readme = _read_repo_text("README.md")
+def test_linked_reference_documents_current_wire_support():
+    assert "(docs/REFERENCE.md" in _read_repo_text("README.md")
+    readme = _read_repo_text("docs/REFERENCE.md")
 
     assert "ordinary logical APS1 snapshots through v9" in readme
     assert "applicant-partial authority frames on v11" in readme
@@ -3347,8 +3349,9 @@ def test_readme_documents_current_wire_support():
     assert "wire payloads through v5" not in readme
 
 
-def test_readme_documents_snapshot_action_requires_enabled_addon():
-    readme = _read_repo_text("README.md")
+def test_linked_reference_documents_snapshot_action_requires_enabled_addon():
+    assert "(docs/REFERENCE.md" in _read_repo_text("README.md")
+    readme = _read_repo_text("docs/REFERENCE.md")
 
     assert (
         "/apscout shotnow        request snapshot while enabled; defers in combat/M+/boss fights"
@@ -3361,8 +3364,9 @@ def test_readme_documents_snapshot_action_requires_enabled_addon():
     assert "/apscout shotnow        force snapshot now\n" not in readme
 
 
-def test_readme_discloses_optional_raiderio_local_reads_and_cache():
-    readme = _read_repo_text("README.md")
+def test_linked_reference_discloses_optional_raiderio_local_reads_and_cache():
+    assert "(docs/REFERENCE.md" in _read_repo_text("README.md")
+    readme = _read_repo_text("docs/REFERENCE.md")
 
     _assert_copy_contains(readme, "_retail_\\Interface\\AddOns\\RaiderIO\\db")
     _assert_copy_contains(
@@ -3371,8 +3375,9 @@ def test_readme_discloses_optional_raiderio_local_reads_and_cache():
     _assert_copy_contains(readme, "reads optional local RaiderIO data")
 
 
-def test_readme_documents_support_output_redaction():
-    readme = _read_repo_text("README.md")
+def test_linked_reference_documents_support_output_redaction():
+    assert "(docs/REFERENCE.md" in _read_repo_text("README.md")
+    readme = _read_repo_text("docs/REFERENCE.md")
 
     for sensitive_surface in (
         "/apscout status",
@@ -3404,8 +3409,9 @@ def test_readme_documents_support_output_redaction():
         _assert_copy_contains(readme, private_detail)
 
 
-def test_readme_documents_residual_qr_screenshot_cleanup_path():
-    readme = _read_repo_text("README.md")
+def test_linked_reference_documents_residual_qr_screenshot_cleanup_path():
+    assert "(docs/REFERENCE.md" in _read_repo_text("README.md")
+    readme = _read_repo_text("docs/REFERENCE.md")
 
     for phrase in (
         "QR screenshots may remain",
@@ -3758,8 +3764,9 @@ def test_readme_wcl_setup_includes_client_creation_screenshot():
     assert "Public Client: leave unchecked" in readme
 
 
-def test_readme_documents_verified_self_update_flow():
-    readme = _read_repo_text("README.md")
+def test_linked_reference_documents_verified_self_update_flow():
+    assert "(docs/REFERENCE.md" in _read_repo_text("README.md")
+    readme = _read_repo_text("docs/REFERENCE.md")
 
     assert "does not self-replace" not in readme
     assert "checks for updates hourly" in readme

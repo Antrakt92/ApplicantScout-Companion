@@ -36,19 +36,10 @@ Blizzard password.
 
 ## What You Can Check
 
-- **Applicants:** Warcraft Logs performance, RaiderIO score, role, and item
-  level while your listing fills.
-- **Grouped applications:** each member's results and a combined Fit estimate
-  for players applying together.
-- **Party view:** the current party or raid after invites or after joining a
-  group.
-- **Dungeon and raid experience:** target-key Fit and dungeon history for
-  Mythic+, or progress and Fit for raid listings.
-
-Missing logs and limited run history are shown explicitly. Fit helps compare
-the available results; it does not predict whether the group will finish a key.
-M+ WCL values measure damage for all roles, including healers and tanks.
-See [Overlay data](#overlay-data) for the limits of each metric.
+- Applicants' Warcraft Logs results, RaiderIO score, role and item level.
+- Each member of a grouped application, with a combined Fit estimate.
+- Your current party or raid after invites or after joining a group.
+- Dungeon history, raid progress and results for the applying specialization.
 
 ## Quick Start
 
@@ -80,316 +71,81 @@ See [Overlay data](#overlay-data) for the limits of each metric.
 5. Reload WoW, enable ApplicantScout, then host a Mythic+ or raid listing or
    join a group. The overlay updates when applicant or roster snapshots arrive.
 
-## How The Companion Fits
-
-WoW addons cannot query Warcraft Logs directly from inside the game client, so
-ApplicantScout is split intentionally:
-
-- The addon watches Blizzard UI state and emits compact `APS1` QR snapshots.
-- WoW writes normal screenshots.
-- The companion watches only the configured Screenshots folder, decodes
-  ApplicantScout QR payloads, fetches WCL data, reads optional local RaiderIO
-  data, and updates the overlay.
-
-The QR frame appears only during the screenshot capture window so it stays out
-of the way between snapshots.
-
-QR transport pauses completely before LFG polling or payload/QR work during
-combat, for the full active Mythic+ run, and during raid boss encounters. It
-remains available out of combat in a raid, so you can keep recruiting between
-pulls.
-
-ApplicantScout temporarily raises screenshot quality and uses JPG format only
-during each QR capture, then restores your prior screenshot settings after the
-screenshot. `/apscout off` and the next `/reload` also restore an interrupted
-capture lease defensively.
-
 ## Overlay Data
 
-The **Fit** column shows a neutral estimate such as **~65** for the target key or
-raid difficulty, including a combined rating for grouped applicants. **Normal**, **Heroic**,
-**Mythic**, and **M+** show the player's WCL results in every context. Each
-available parse keeps its percentile colour, independently of Fit. Raid and M+
-results belong to the applying specialization. Raid healers use HPS; other raid
-roles and every M+ role use DPS. Displayed percentiles round down so the number
-stays in the same colour band as the underlying result.
+Fit estimates how the available evidence matches the target key or raid difficulty.
+It is not a success probability or a Warcraft Logs percentile. Missing logs and
+limited run history stay visible as missing or limited evidence.
 
-Applications sort by the M+ best percentile for a dungeon listing, or by the
-selected raid difficulty's best percentile. The arrow marks the sorting column.
-Grouped applicants stay together and use their lowest member percentile;
-groups with missing parses follow those with complete results. Fit remains a
-separate estimate and breaks ties or orders applicants without a parse.
+M+ WCL values measure damage for every role, including healers and tanks. They do
+not measure healing, survival, interrupts or utility. Raid healers use HPS; other
+raid roles use DPS. Results belong to the applying specialization.
 
-The table's parse pairs read **best / median**. Raid values are WCL's performance
-averages across encounters. A missing median stays missing; it does not prove
-there was only one log. M+ summaries show the available numeric result; the
-dungeon value tooltips identify single-run samples when there is no repeat-run median.
-Dungeon columns separate the best completed key, the logged key, and the DPS
-parse. Hover Fit or the group summary for the evidence behind the estimate.
-The **+key** beside that summary is the highest key represented in those WCL
-results, not necessarily the run that produced the best percentile.
+Applications sort by the listing's WCL percentile and grouped applicants stay
+together. Fit is a separate estimate. Read [what each column and score means](docs/OVERLAY.md).
 
-In the boss details, **N / H / M** mean Normal / Heroic / Mythic. **H×2** means
-two Heroic kills recorded by RaiderIO. The **Parse** header tooltip identifies
-boss pairs as **overall / item level**, comparing the result with all matching logs and with
-the matching item-level bracket. Boss details load only when requested.
+## How It Works
 
-**M+ Fit is an estimate of how the available evidence matches the target key,
-not a success probability or a Warcraft Logs percentile.** Named dungeon
-evidence from RaiderIO and WCL is combined once per dungeon; unnamed summaries
-are treated conservatively when their overlap is unknown. Hover the Fit badge
-for evidence strength, dungeon coverage and the limits of the estimate. Strong
-evidence can support a low Fit when the completed keys are below the target.
-M+ WCL values measure damage for every role, including tanks and healers; they
-do not assess healing, survival, interrupts, or other utility. A low Fit is a
-limit of the available evidence, not a verdict on the player's overall skill.
+The addon sends group data through QR codes in ordinary WoW screenshots. The
+companion reads the configured Screenshots folder locally and requests Warcraft
+Logs results. Screenshots are not uploaded for those lookups. The optional
+RaiderIO addon provides additional local dungeon and raid information.
 
-The RIO column shows the applying character's current score. If the RaiderIO
-addon is installed in WoW and exposes a higher current-season main score for an
-alt, the overlay can display `current [main]` and use the stronger context for
-sorting fallback support. RaiderIO dungeon summaries and highest timed keys
-also feed the M+ scorecard and hover/detail context when local RaiderIO data is
-available.
-
-Party view can use the current group leader's keystone as the automatic Mythic+
-target key. A manual Party key override still takes priority, raid contexts
-ignore leader-key calibration, and manually clicking Party keeps the overlay
-there while you review the group.
+Updates pause in combat, throughout an active Mythic+ run and during raid boss
+encounters. You can recruit between raid pulls. Screenshot settings are restored
+after each capture; the companion cleans up screenshots it recognizes as
+ApplicantScout data. See [transport and cleanup details](docs/REFERENCE.md).
 
 ## Trust And Local Data
 
 **Optional usage statistics start enabled when no preference has been saved.**
-Existing choices are preserved. Reports contain a random installation ID, version
-and daily setup/use milestones. Names, screenshots and credentials are excluded.
-Turn sharing off at any time in Settings. Participating packaged builds send
-reports to the ApplicantScout service hosted on Cloudflare.
-Read [what is shared and retained](docs/PRIVACY.md).
+Saved choices are preserved. Turn sharing off in Settings at any time. Reports
+contain a random installation ID, version and daily setup/use milestones;
+names, screenshots and credentials are excluded. Read [what is sent and retained](docs/PRIVACY.md).
 
-ApplicantScout Companion does not ask for Blizzard credentials or account
-access. It does not read WoW memory, inject code, automate gameplay, or send
-chat messages for transport.
+Warcraft Logs requests include the character and realm needed for the lookup.
+The app stores WCL credentials, caches and logs under your Windows user profile.
+It does not ask for your Blizzard password, read WoW memory or automate gameplay.
+Do not post credentials, caches or unredacted logs/screenshots in support issues.
+See [local files and what to redact](docs/REFERENCE.md#trust-and-local-data).
 
-Local files:
+Current Windows builds are unsigned. SmartScreen may warn or show an unknown
+publisher. Download from the linked GitHub release and proceed only if you trust
+the source. The `.sha256` sidecar verifies file integrity, not publisher identity.
 
-- Config and WCL Client ID/Secret:
-  `%LOCALAPPDATA%\applicant-scout\config\config.env`
-- Optional usage preference and reporting ID:
-  `%LOCALAPPDATA%\applicant-scout\config\usage.json`
-- OAuth token cache and WCL character cache:
-  `%LOCALAPPDATA%\applicant-scout\cache\`
-- Decoded local RaiderIO lookup payload cache:
-  `%LOCALAPPDATA%\applicant-scout\cache\raiderio-local`
-- Logs:
-  `%LOCALAPPDATA%\applicant-scout\logs\`
+## Settings And Updates
 
-If the RaiderIO addon is installed, the companion can read local RaiderIO addon
-database files under `_retail_\Interface\AddOns\RaiderIO\db` to enrich
-score/progress context.
+Settings lets you choose the Screenshots folder, WCL data types and usage sharing.
+Mythic+, all raid difficulties and **Start and stop with WoW** start enabled when
+no preference is saved. Your saved choices are preserved. WoW sync adds a Windows
+sign-in helper after setup; turn it off for manual launch and quit.
 
-Before sharing support material publicly, redact `/apscout status` output,
-`/apscout taintcheck` output, companion logs, QR screenshots, manual decode
-output, `config.env`, `token.json`, `character-cache.json`,
-`last-live-snapshot.json`, and `screenshot-manual-index-v2-*.json`. Treat the
-entire `%LOCALAPPDATA%\applicant-scout\config\` and
-`%LOCALAPPDATA%\applicant-scout\cache\` directories as private; do not attach
-either directory wholesale. These files can include WCL Client ID/Secret,
-OAuth access token, character names, realm names, applicant/roster snapshots,
-listing titles/comments, screenshots folder paths, absolute screenshot file
-paths, keystone/listing metadata, and WCL/RaiderIO evidence.
-
-QR screenshots may remain if the companion is absent, interrupted, pointed at
-the wrong folder, or the Screenshots folder is synced/shared before cleanup.
-
-Current Windows builds are unsigned. SmartScreen can warn on first install
-and may show an unknown publisher. Download from the linked GitHub release
-and proceed only if you trust the source.
-The `.sha256` sidecar verifies file integrity, not publisher identity.
-
-## Settings
-
-Use the Settings button in the companion title bar to edit WCL credentials,
-region fallback, screenshots path, WCL data scope, WoW lifecycle sync, cache,
-or logs. Settings save automatically as you change them.
-
-Mythic+, all raid difficulties and **Start and stop with WoW** start enabled
-when their preferences are unset. Your saved choices are preserved. After setup,
-WoW sync adds a Windows sign-in helper that starts the companion with WoW and
-closes it after WoW exits. Turn it off for manual launch and quit.
-
-When the system tray is available, closing the settings window hides it back to
-the tray; use the tray menu's **Quit ApplicantScout** action to close the
-companion completely. If the system tray is unavailable, closing Settings quits
-the companion so it cannot keep running without a visible control surface.
-
-### Keyboard and assistive access
-
-Choose **Show overlay** from the system tray to activate the overlay for
-keyboard use. The compact in-game launcher restores the overlay in passive mode
-without entering its keyboard focus chain.
-
-Once activated, use `Tab` / `Shift+Tab` to move through Settings, Hide,
-Applicants/Party, the manual key field, role filters, available detail actions,
-and the applicant table. Buttons accept `Space` or `Enter`; the manual key field
-and its step buttons accept keyboard input. In the table, `Up`, `Down`, `Home`,
-`End`, and page keys move the visible row preview, `Enter` or `Space` pins it,
-and `Escape` clears the pin. Hidden actions are skipped automatically. Launcher
-drag, title-bar window drag, and the resize grip remain pointer-only geometry
-controls; restoring, hiding, and reviewing applicant data have keyboard paths.
-
-The overlay's maximum width follows its visible columns, text and font size,
-within the current screen's available width. Narrower manual sizes are preserved;
-oversized saved widths are reduced. Background updates do not shrink the window
-while browsing the same view.
-The detail card scrolls independently when the window is short, leaving the
-table available. Badges wrap and raid detail values stack in narrow windows.
-
-Developer/source runs may still use a repo-local `.env` when the local config
-file does not exist. Environment variables override both files.
-
-Optional `.env` / `config.env` values:
-
-```env
-APSCOUT_SCREENSHOTS_PATH=C:\Games\World of Warcraft\_retail_\Screenshots
-APSCOUT_REGION=EU
-APSCOUT_CACHE_TTL_SECONDS=43200
-APSCOUT_FETCH_MPLUS=1
-APSCOUT_FETCH_RAID_NORMAL=1
-APSCOUT_FETCH_RAID_HEROIC=1
-APSCOUT_FETCH_RAID_MYTHIC=1
-APSCOUT_SYNC_WITH_WOW=1
-```
-
-`APSCOUT_SCREENSHOTS_PATH` must point at the active WoW retail
-`_retail_\Screenshots` folder. `APSCOUT_FETCH_*` flags match the WCL data
-checkboxes from Settings. Disabled metrics are not included in Warcraft Logs
-API requests.
-
-## Updates
-
-ApplicantScout Companion checks for updates hourly. When an installable stable
-GitHub Release is available, Settings shows a blue download button. Clicking it
-downloads the installer and verifies its `.sha256` checksum. Settings shows
-checking, download progress, verification and installation stages. **Cancel**
-stops the download before installer handoff; the update remains available to retry.
-
-Current unsigned builds can still launch from the in-app updater after checksum
-verification. The `.sha256` sidecar verifies file integrity; it does not prove
-publisher identity. If the companion is running, the installer closes it and
-relaunches it after the update. Portable ZIP artifacts are published for
-manual/dev use but are not launched by the in-app updater.
-
-Normal installs use the per-user directory
-`%LOCALAPPDATA%\Programs\ApplicantScout Companion`, so routine installs and
-updates should not require UAC elevation.
-
-## In-Game Commands
-
-The Group Finder panel stays focused on everyday applicant scouting, playstyle,
-and Auto Hi controls. Advanced diagnostics and QR recovery remain available
-through the slash commands below.
-
-```text
-/apscout on | off       enable/disable capture
-/apscout toggle         flip enabled state
-/apscout config         open/close settings panel
-/apscout setup          show companion download and setup
-/apscout status         show current state + QR diagnostics
-/apscout playstyle [off|learning|relaxed|competitive|carry] set M+ default playstyle
-/apscout reset          clear transport cache, queue fresh snapshot
-/apscout shotnow        request snapshot while enabled; defers in combat/M+/boss fights
-/apscout qrvisible      toggle persistent QR always-visible mode; off clears it
-/apscout qrmove         toggle QR move mode (Alt+drag QR frame)
-/apscout qrreset        reset QR frame position to top-left
-/apscout taintcheck     probe C_LFGList field secret-tagging
-/apscout debug [on|off] toggle debug logging
-/apscout competitive [on|off] legacy alias for Competitive / Off
-```
-
-## Troubleshooting
-
-- Companion starts but overlay stays empty: open Settings -> Open logs and
-  confirm the `Screenshots:` line points at the active `_retail_\Screenshots`
-  folder.
-- Want the companion to follow your game session: enable
-  `Start and stop with WoW` in Settings.
-- Companion reports a screenshot setup error: open Settings and set the active
-  `_retail_\Screenshots` folder. If `APSCOUT_SCREENSHOTS_PATH` is set as a
-  process environment variable, correct or remove that override first.
-- WoW side looks idle: run `/apscout status` and check that ApplicantScout is
-  enabled while you are hosting a listing or reviewing Party view.
-- Need a manual sync: keep ApplicantScout enabled and run `/apscout shotnow`;
-  the request waits until combat, an active M+ run, or a boss encounter ends. If
-  applicant state looks stale, run `/apscout reset` while transport is active.
-- QR frame is in the way: run `/apscout qrmove`, Alt-drag it, then run the same
-  command again to lock it. Use `/apscout qrreset` to restore the default
-  position.
-- WCL cells stay empty: open Settings and use Test WCL.
-- Screenshot cleanup is marker-safe: the watcher deletes only screenshots that
-  decode to an ApplicantScout `APS1` payload. Manual screenshots and unrelated
-  QR screenshots are left alone. QR screenshots may remain if the companion is
-  absent, interrupted, pointed at the wrong folder, or the Screenshots folder is
-  synced/shared before cleanup.
-
-## Version Compatibility
-
-ApplicantScout Companion supports the latest published ApplicantScout WoW addon
-release. This source tree supports ordinary logical APS1 snapshots through v9,
-applicant-partial authority frames on v11, and bounded v10 overflow fragment
-envelopes. Fragmented snapshots are applied only after exact reassembly of the
-complete inner logical payload.
-
-## Development
-
-```powershell
-.venv\Scripts\pip install -e .[dev] -c constraints-release.txt
-.\scripts\check.ps1
-```
-
-Build Windows artifacts:
-
-```powershell
-.\scripts\build-windows.ps1
-```
-
-The installer path requires Inno Setup 6.x (`iscc.exe` on `PATH`). The full
-build emits `dist\ApplicantScoutCompanionSetup-<version>.exe`, its matching
-`dist\ApplicantScoutCompanionSetup-<version>.exe.sha256` checksum sidecar, and
-the portable ZIP. Use `.\scripts\build-windows.ps1 -SkipInstaller` for a
-portable ZIP-only smoke build.
-
-ApplicantScout has a signing-ready release pipeline. Public Windows builds stay
-unsigned until a code-signing certificate is configured.
-
-If a code-signing certificate is installed in the Windows certificate store,
-set `APSCOUT_SIGNING_CERT_SHA1` to its certificate thumbprint before running the
-build. The script signs the installer with `signtool` before `.sha256`
-generation; without that variable the installer is intentionally left unsigned.
-
-Decode a saved screenshot manually:
-
-```powershell
-.venv\Scripts\python -m applicant_scout.screenshot C:\path\to\WoWScrnShot.jpg
-```
-
-Check or remove saved ApplicantScout QR screenshots:
-
-```powershell
-applicant-scout cleanup-screenshots
-applicant-scout cleanup-screenshots --delete
-```
+The companion checks for updates hourly. Settings offers a download button for
+stable releases and verifies the installer's checksum before starting the update.
+Use **Quit ApplicantScout** in the tray menu to stop it completely.
+Read [settings, keyboard controls and updates](docs/REFERENCE.md#settings).
 
 ## Support
 
-Use GitHub Issues in `Antrakt92/ApplicantScout-Companion` for companion setup,
-installer, WCL, or overlay issues and `Antrakt92/ApplicantScout-Addon` for
-in-game addon issues.
+Start with the [setup guide](docs/GETTING_STARTED.md) or
+[troubleshooting](docs/REFERENCE.md#troubleshooting). For a manual sync, keep
+ApplicantScout enabled and run `/apscout shotnow` out of combat; capture also
+waits until an active Mythic+ run or boss encounter ends.
+
+[Report a companion issue](https://github.com/Antrakt92/ApplicantScout-Companion/issues)
+for setup, installation, WCL or overlay problems. Use
+[addon issues](https://github.com/Antrakt92/ApplicantScout-Addon/issues) for in-game
+problems. Report vulnerabilities through the private route in [SECURITY.md](SECURITY.md).
+
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for a complete source setup, checks and
+Windows build requirements. [Release history](RELEASE_NOTES.md) lists changes;
+[the documentation index](docs/README.md) links the full reference.
 
 ## License
 
-ApplicantScout Companion source code is MIT licensed; see `LICENSE`.
-
-Windows builds also bundle third-party runtime components. See
-`THIRD-PARTY-NOTICES.md` and the bundled `licenses/` directory in release
-artifacts. PyQt is GPL v3 or commercial licensed, not LGPL; public binary
-redistribution must be compatible with the PyQt license path used for the
-build.
+ApplicantScout Companion source is [MIT licensed](LICENSE). Windows builds also
+include software under other licenses, including GPL PyQt. See
+[third-party notices and source access](THIRD-PARTY-NOTICES.md) and the bundled
+`licenses/` directory for the applicable terms.

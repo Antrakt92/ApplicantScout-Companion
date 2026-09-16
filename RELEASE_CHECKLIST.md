@@ -57,6 +57,15 @@ proves the immutable public copy and assets.
    raid zone/encounter constants, reports the post-query quota snapshot, and
    fails if fewer than 50 points remain.
 
+## Native dependency source evidence
+
+Before another binary release, resolve the ZBar/libiconv source revisions,
+patches and build recipe behind pyzbar's bundled DLLs, and the Qt wheel's source
+and build configuration. Provide matching source materials and instructions
+alongside the release. The [source-access notice](THIRD-PARTY-NOTICES.md#source-access)
+records the verified routes and remaining gaps. License-file collection alone
+does not satisfy this evidence gate.
+
 ## Build
 
 1. Commit release-prep changes first. `scripts\build-windows.ps1` refuses dirty
