@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $false
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$PythonCommand = (Get-Command $Python -CommandType Application -ErrorAction Stop).Source
+$PythonCommand = (Get-Command $Python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 if (($Download -and $Archive) -or (-not $Download -and -not $Archive)) {
     throw "Choose exactly one of -Archive or -Download."
 }
@@ -55,9 +55,9 @@ try {
     if ($env:VSCMD_ARG_TGT_ARCH -ne "x64" -or $env:VSCMD_ARG_HOST_ARCH -ne "x64") {
         throw "VS2022 did not select the x64 host and target toolchain."
     }
-    $Compiler = (Get-Command cl.exe -CommandType Application -ErrorAction Stop).Source
-    $Linker = (Get-Command link.exe -CommandType Application -ErrorAction Stop).Source
-    $Dumpbin = (Get-Command dumpbin.exe -CommandType Application -ErrorAction Stop).Source
+    $Compiler = (Get-Command cl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $Linker = (Get-Command link.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $Dumpbin = (Get-Command dumpbin.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $VsPrefix = $VsInstance.installationPath.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     foreach ($Tool in @($Compiler, $Linker, $Dumpbin)) {
         if (-not $Tool.StartsWith($VsPrefix, [StringComparison]::OrdinalIgnoreCase)) {

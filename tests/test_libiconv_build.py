@@ -5,6 +5,9 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tarfile
 
 import pytest
@@ -158,3 +161,58 @@ def test_preparation_retains_stock_c_and_records_generated_inputs(tmp_path, monk
     assert "_libiconv_version @1 DATA" in (output / "artifact/libiconv.def").read_text()
     with pytest.raises(builder.PreparationError, match="already exists"):
         builder.prepare(payload, output)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows application lookup contract")
+def test_build_resolvers_select_one_executable_when_path_contains_two(tmp_path):
+    pwsh = shutil.which("pwsh")
+    assert pwsh is not None, "PowerShell 7 is required for the Windows build regression"
+    first = tmp_path / "first tools"
+    second = tmp_path / "second tools"
+    for directory in (first, second):
+        directory.mkdir()
+        for filename in ("python.exe", "cl.exe", "link.exe", "dumpbin.exe"):
+            (directory / filename).write_bytes(b"not executed: command lookup fixture")
+    probe = tmp_path / "resolve.ps1"
+    probe.write_text(r'''
+param([string]$BuildScript, [string]$FirstDir, [string]$SecondDir)
+$ErrorActionPreference = "Stop"
+$env:PATH = $FirstDir + [IO.Path]::PathSeparator + $SecondDir
+$env:PATHEXT = ".EXE"
+$Tokens = $null
+$ParseErrors = $null
+$Ast = [Management.Automation.Language.Parser]::ParseFile($BuildScript, [ref]$Tokens, [ref]$ParseErrors)
+if ($ParseErrors.Count) { throw "Build script has parse errors." }
+$Python = "python"
+$Resolved = @{}
+foreach ($Name in @("PythonCommand", "Compiler", "Linker", "Dumpbin")) {
+    $Assignments = @($Ast.FindAll({
+        param($Node)
+        $Node -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $Node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $Node.Left.VariablePath.UserPath -eq $Name
+    }, $true))
+    if ($Assignments.Count -ne 1) { throw "Expected one resolver assignment for $Name." }
+    # Execute the real assignment, not a test copy of its Get-Command pipeline.
+    . ([scriptblock]::Create($Assignments[0].Extent.Text))
+    $Value = Get-Variable -Name $Name -ValueOnly
+    if ($Value -isnot [string]) { throw "$Name resolved to multiple commands instead of one string." }
+    $Resolved[$Name] = $Value
+}
+$AllPython = @(Get-Command python -CommandType Application -ErrorAction Stop)
+if ($AllPython.Count -ne 2) { throw "Fixture did not create two Python application matches." }
+$Resolved | ConvertTo-Json -Compress
+''', encoding="utf-8")
+    result = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(probe), str(SCRIPT.with_name("build-libiconv.ps1")),
+         str(first), str(second)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    resolved = json.loads(result.stdout)
+    assert resolved == {
+        name: str(first / filename) for name, filename in (
+            ("PythonCommand", "python.exe"), ("Compiler", "cl.exe"),
+            ("Linker", "link.exe"), ("Dumpbin", "dumpbin.exe"),
+        )
+    }
