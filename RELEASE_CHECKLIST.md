@@ -59,12 +59,26 @@ proves the immutable public copy and assets.
 
 ## Native dependency source evidence
 
-Before another binary release, resolve the ZBar/libiconv source revisions,
-patches and build recipe behind pyzbar's bundled DLLs, and the Qt wheel's source
-and build configuration. Provide matching source materials and instructions
-alongside the release. The [source-access notice](THIRD-PARTY-NOTICES.md#source-access)
-records the verified routes and remaining gaps. License-file collection alone
-does not satisfy this evidence gate.
+Before tagging, run:
+
+```powershell
+.\.venv\Scripts\python scripts\check_native_sources.py --installed --require-complete
+```
+
+This checks `packaging/native-source-provenance.json` against the pinned package
+versions and actual DLL bytes, then rejects missing source/build evidence. The
+build and publish workflows repeat the completeness check; release artifact
+builds also require `-RequireNativeSources`.
+
+Obtain and retain the pinned source archives, complete patches, license texts
+and build instructions. The [source-access notice](THIRD-PARTY-NOTICES.md#source-access)
+and [native source record](docs/NATIVE-SOURCES.md) distinguish verified ZBar/Qt
+routes, including the retained sources and controlled libiconv build. Historical
+compiler details that only limit reproducibility are documented separately.
+Update the
+record only after evidence is obtained or replacement binaries are deliberately
+built and tested. An empty list of unresolved items is a reviewed assertion;
+the checker does not prove legal compliance or reproduce upstream builds.
 
 ## Build
 
@@ -74,7 +88,7 @@ does not satisfy this evidence gate.
    if you want to test the exact Windows artifacts locally:
 
    ```powershell
-   .\scripts\build-windows.ps1
+   .\scripts\build-windows.ps1 -RequireNativeSources
    .\scripts\check-release-version.ps1 -Tag v<companion version> -RequireAssets
    ```
 

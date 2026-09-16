@@ -762,7 +762,7 @@ def test_frozen_build_isolates_dll_discovery_and_probes_real_startup_imports():
     )
     assert "Assert-FrozenStartupImports -Exe $Exe" in build_script
     assert "--collect-all pyzbar" not in build_script
-    assert '"libiconv.dll"' in build_script
+    assert 'Join-Path $RepoRoot "packaging\\native\\libiconv\\libiconv.dll"' in build_script
     assert '"libzbar-64.dll"' in build_script
     assert '--add-binary "$PyzbarIconv;pyzbar"' in build_script
     assert '--add-binary "$PyzbarZbar;pyzbar"' in build_script
@@ -1308,6 +1308,36 @@ def test_release_license_artifacts_exist_and_are_copied_into_dist():
     assert "THIRD-PARTY-NOTICES.md" in build_script
     assert "RELEASE_NOTES.md" in build_script
     assert "LICENSE" in build_script
+
+
+def test_native_source_evidence_gates_release_and_publication():
+    release = _read_repo_text(".github/workflows/release.yml")
+    publish = _read_repo_text(".github/workflows/publish-release.yml")
+    build = _read_repo_text("scripts/build-windows.ps1")
+    for workflow in (release, publish):
+        gate = _step_block(workflow, "Verify native source evidence")
+        assert "python scripts/check_native_sources.py --require-complete" in gate
+    _assert_order(
+        release, "Verify native source evidence", "Install release dependencies",
+        "Build unsigned Windows artifacts",
+    )
+    _assert_order(publish, "Verify native source evidence", "Verify successful release workflow run")
+    assert ".\\scripts\\build-windows.ps1 -SkipChecks -RequireNativeSources" in release
+    _assert_order(
+        build, "Invoke-WithIsolatedBuildEnvironment -BasePrefix $BasePythonPrefix -Action {",
+        'Invoke-NativeChecked -Label "Verify native source provenance"',
+        "    Invoke-PyInstaller\n",
+    )
+    assert '@("--installed")' in build
+    assert 'if ($RequireNativeSources) { $SourceArgs += "--require-complete" }' in build
+    assert '"docs\\NATIVE-SOURCES.md"' in build
+    _assert_order(
+        build, "    Invoke-PyInstaller\n",
+        'Invoke-NativeChecked -Label "Verify packaged native source coverage"',
+        "    Assert-FrozenStartupImports -Exe $Exe",
+    )
+    assert '@("--payload-root", (Join-Path $AppDir "_internal"))' in build
+    assert 'if ($RequireNativeSources) { $PayloadSourceArgs += "--require-complete" }' in build
 
 
 def test_release_build_uses_pinned_constraints():
@@ -2726,6 +2756,7 @@ def test_publish_release_workflow_pins_external_actions_to_commit_shas():
     assert Counter(action for action, _ in action_refs) == Counter(
         {
             "actions/checkout": 1,
+            "actions/setup-python": 1,
             "actions/download-artifact": 1,
         }
     )

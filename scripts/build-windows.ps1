@@ -3,6 +3,7 @@ param(
     [switch]$SkipInstaller,
     [switch]$SkipPortable,
     [switch]$AllowDirtyReleaseInputs,
+    [switch]$RequireNativeSources,
     [switch]$RequireSigning
 )
 
@@ -72,6 +73,19 @@ function Copy-DependencyLicenseArtifacts {
     Copy-Item -LiteralPath $PythonLicense `
         -Destination (Join-Path $PythonLicenseDir "LICENSE.txt") `
         -Force
+    foreach ($SourceDoc in @("NATIVE-SOURCES.md", "NATIVE-QT-SOURCES.md")) {
+        Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\$SourceDoc") `
+            -Destination (Join-Path $LicenseDir $SourceDoc) -Force
+    }
+    $NativeNotices = Join-Path $RepoRoot "packaging\native-license-notices"
+    if (-not (Test-Path -LiteralPath (Join-Path $NativeNotices "README.md") -PathType Leaf)) {
+        throw "Missing native dependency notice source map: $NativeNotices"
+    }
+    $NativeLicenseDir = Join-Path $LicenseDir "native"
+    New-Item -ItemType Directory -Path $NativeLicenseDir -Force | Out-Null
+    Get-ChildItem -LiteralPath $NativeNotices -File | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $NativeLicenseDir -Force
+    }
 }
 
 function Write-PayloadVersionMarker {
@@ -190,6 +204,9 @@ function Assert-CleanReleaseInputs {
         "scripts\smoke-installer-upgrade.ps1",
         "scripts\verify_frozen_runtime.py",
         "scripts\collect_dependency_licenses.py",
+        "scripts\check_native_sources.py",
+        "docs\NATIVE-SOURCES.md",
+        "docs\NATIVE-QT-SOURCES.md",
         "scripts\export_public_visual_assets.py",
         "scripts\overlay_visual_fixture.py",
         "scripts\render_overlay_fixture.py",
@@ -375,7 +392,7 @@ function Invoke-WithIsolatedBuildEnvironment {
 
 function Invoke-PyInstaller {
     $PyzbarDir = Join-Path $RepoRoot ".venv\Lib\site-packages\pyzbar"
-    $PyzbarIconv = Join-Path $PyzbarDir "libiconv.dll"
+    $PyzbarIconv = Join-Path $RepoRoot "packaging\native\libiconv\libiconv.dll"
     $PyzbarZbar = Join-Path $PyzbarDir "libzbar-64.dll"
     foreach ($NativeDecoder in @($PyzbarIconv, $PyzbarZbar)) {
         if (-not (Test-Path -LiteralPath $NativeDecoder -PathType Leaf)) {
@@ -742,6 +759,11 @@ $BasePythonPrefix = Get-VenvBasePrefix
 $BuildState = @{}
 Invoke-WithIsolatedBuildEnvironment -BasePrefix $BasePythonPrefix -Action {
     Assert-ReleaseConstraints
+    Invoke-NativeChecked -Label "Verify native source provenance" -Command {
+        $SourceArgs = @("--installed")
+        if ($RequireNativeSources) { $SourceArgs += "--require-complete" }
+        & $Python (Join-Path $RepoRoot "scripts\check_native_sources.py") @SourceArgs
+    }
     $VersionOutput = Invoke-NativeChecked -Label "Read applicant_scout.__version__" -Command {
         & $Python -c "import applicant_scout; print(applicant_scout.__version__)" 2>$null
     }
@@ -765,6 +787,11 @@ Invoke-WithIsolatedBuildEnvironment -BasePrefix $BasePythonPrefix -Action {
         throw "Build did not produce expected executable: $Exe"
     }
     Assert-FrozenRuntimeLayout -AppDir $AppDir -BasePrefix $BasePythonPrefix
+    Invoke-NativeChecked -Label "Verify packaged native source coverage" -Command {
+        $PayloadSourceArgs = @("--payload-root", (Join-Path $AppDir "_internal"))
+        if ($RequireNativeSources) { $PayloadSourceArgs += "--require-complete" }
+        & $Python (Join-Path $RepoRoot "scripts\check_native_sources.py") @PayloadSourceArgs
+    }
     Assert-FrozenStartupImports -Exe $Exe
     Copy-ReleaseTextArtifacts -TargetDir $AppDir
     Copy-DependencyLicenseArtifacts -TargetDir $AppDir -BasePrefix $BasePythonPrefix

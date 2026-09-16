@@ -1,0 +1,10 @@
+*.dll binary
+*.gz binary
+generated/*.h text eol=lf
+*.def text eol=lf
+COPYING* text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+# Preserve the pinned upstream license and generated input bytes.
+COPYING.LIB whitespace=-blank-at-eol
+generated/config.h whitespace=-blank-at-eof

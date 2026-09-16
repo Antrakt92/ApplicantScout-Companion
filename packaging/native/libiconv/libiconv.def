@@ -1,0 +1,11 @@
+LIBRARY libiconv
+EXPORTS
+    _libiconv_version @1 DATA
+    iconv_canonicalize @2
+    libiconv @3
+    libiconv_close @4
+    libiconv_open @5
+    libiconv_open_into @6
+    libiconvctl @7
+    libiconvlist @8
+    locale_charset @9

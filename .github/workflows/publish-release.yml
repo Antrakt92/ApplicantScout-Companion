@@ -101,6 +101,17 @@ jobs:
             $Utf8NoBom
           )
 
+      - name: Set up Python for source evidence
+        # actions/setup-python v7.0.0 pinned to the upstream release commit.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+
+      - name: Verify native source evidence
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: python scripts/check_native_sources.py --require-complete
+
       - name: Verify successful release workflow run
         id: release-run
         shell: pwsh

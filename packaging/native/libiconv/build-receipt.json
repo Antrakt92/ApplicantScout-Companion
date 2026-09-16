@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "component": "GNU libiconv",
+  "version": "1.14",
+  "target": "Windows x86-64",
+  "binary": {
+    "path": "libiconv.dll",
+    "sha256": "5e684c9b6943ed5f30bc7f3a6e3de9942bfa12f68b9fb20dedb3472af8a999c6",
+    "size_bytes": 1055744
+  },
+  "source": {
+    "url": "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.14.tar.gz",
+    "archive": "libiconv-1.14.tar.gz",
+    "sha256": "72b24ded17d687193c3366d0ebe7cde1e6b18f0df8c55438ac95be39e8a30613",
+    "size_bytes": 4984397,
+    "implementation_patches": [],
+    "compiled_source_files": {
+      "lib/iconv.c": "f8040bea7a45c2db0b5e11af558ae5cf5c026834d6f5af12e8dc52cdc72710bf",
+      "libcharset/lib/localcharset.c": "a7c297bdf85e8319cb26621d6390bb98245fe856040d415f7c12ce4783d29cf4",
+      "lib/relocatable.c": "db7d7e4212d1cafcfaaf897cbbc77b9abaffda998348bd6eb2f9cf90bac056e7"
+    }
+  },
+  "retained_files": {
+    "COPYING": {
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "size_bytes": 35147
+    },
+    "COPYING.LIB": {
+      "sha256": "56bdea73b6145ef6ac5259b3da390b981d840c24cb03b8e1cbc678de7ecfa18d",
+      "size_bytes": 25291
+    },
+    "generated/config.h": {
+      "sha256": "a9857e5a02780049991b47b052f5fbed54b516a52882060f7bc5f22f80ed60f4",
+      "size_bytes": 29394
+    },
+    "generated/configmake.h": {
+      "sha256": "0d6e638c4a71782c2a6efafd23308254f33bb9c67593bf90eb3ee96fec6a81ba",
+      "size_bytes": 18
+    },
+    "generated/iconv.h": {
+      "sha256": "26183d61d756d9090ce0bc213847035ed595fe6b4ec596afba9b295e57e612b2",
+      "size_bytes": 9373
+    },
+    "generated/localcharset.h": {
+      "sha256": "8e1e2a246e9be6c2331d9edbda5699e0cd40eb472bf3c3ba02aa086a14110021",
+      "size_bytes": 1395
+    },
+    "libiconv-1.14.tar.gz": {
+      "sha256": "72b24ded17d687193c3366d0ebe7cde1e6b18f0df8c55438ac95be39e8a30613",
+      "size_bytes": 4984397
+    },
+    "libiconv.def": {
+      "sha256": "31ee77244351c5ff99c8af5f4e862f51a1839f24ef5fda88cae6b853f4d2dfa5",
+      "size_bytes": 227
+    },
+    "libiconv.dll": {
+      "sha256": "5e684c9b6943ed5f30bc7f3a6e3de9942bfa12f68b9fb20dedb3472af8a999c6",
+      "size_bytes": 1055744
+    }
+  },
+  "build": {
+    "repository": "https://github.com/Antrakt92/ApplicantScout-Companion",
+    "workflow": ".github/workflows/native-decoder.yml",
+    "commit": "03882887989ebedfe8d224fe99669560ccfdee47",
+    "run_id": "35107186695",
+    "run_attempt": "1",
+    "run_url": "https://github.com/Antrakt92/ApplicantScout-Companion/actions/runs/35107186695",
+    "recipe_files": {
+      "scripts/build-libiconv.ps1": {
+        "artifact_sha256": "0c04c48e28f9462073d39ae491622d8d7d8684d45dbdf48f0ac15b166573e31b",
+        "lf_normalized_sha256": "2d22d09de58ae93faffd3a17da06214461841a7b3fce5cf5317a02a18805e4b8"
+      },
+      "scripts/prepare_libiconv.py": {
+        "artifact_sha256": "7fadd17c2cfd12c3aa598f70394ac51a381ac04255867e94873ab8088edca6eb",
+        "lf_normalized_sha256": "66821d19fb78b9d43ac1a25b49dfeda47a7a9c10e7deabfca8e9a221de8f2bbe"
+      }
+    },
+    "toolchain": {
+      "github_hosted_image": "windows-2022",
+      "image_version": "20260907.297.1",
+      "visual_studio_version": "17.14.37614.0",
+      "vc_tools_version": "14.44.35207",
+      "windows_sdk_version": "10.0.26100.0",
+      "powershell_version": "7.6.5",
+      "compiler": {
+        "name": "cl.exe",
+        "version": "19.44.35228.0",
+        "sha256": "88c8344236a27a6e727e0a8edc49aaa2690bdc7a9464b9d18cc7abe70a9f1c0d"
+      },
+      "linker": {
+        "name": "link.exe",
+        "version": "14.44.35228.0",
+        "sha256": "ca11e6c45debd34bf652dfe984c5360a531a005ed78bf72852330c9c2590cf0d"
+      }
+    },
+    "argument_normalization": "Original absolute candidate paths are replaced by ../ relative to the objects/ working directory; path separators are normalized to /. All option values and ordering are otherwise retained. Executables are identified by name, version and hash instead of machine installation paths.",
+    "working_directory": "objects",
+    "compiler_arguments": [
+      "/nologo",
+      "/Bv",
+      "/TC",
+      "/O2",
+      "/Oi",
+      "/Gy",
+      "/GF",
+      "/MT",
+      "/W3",
+      "/DNDEBUG",
+      "/D_CRT_SECURE_NO_WARNINGS",
+      "/I../artifact/generated",
+      "/I../source/libiconv-1.14/lib",
+      "/I../source/libiconv-1.14/libcharset/lib",
+      "/c",
+      "../source/libiconv-1.14/lib/iconv.c",
+      "../source/libiconv-1.14/libcharset/lib/localcharset.c",
+      "../source/libiconv-1.14/lib/relocatable.c"
+    ],
+    "linker_arguments": [
+      "/nologo",
+      "/DLL",
+      "/MACHINE:X64",
+      "/INCREMENTAL:NO",
+      "/OPT:REF",
+      "/OPT:ICF",
+      "/DYNAMICBASE",
+      "/NXCOMPAT",
+      "/OUT:../artifact/libiconv.dll",
+      "/IMPLIB:../artifact/libiconv.lib",
+      "/DEF:../artifact/libiconv.def",
+      "iconv.obj",
+      "localcharset.obj",
+      "relocatable.obj",
+      "kernel32.lib"
+    ]
+  },
+  "validation": {
+    "status": "native-smoke-passed",
+    "zbar_sha256": "43ecda0a3e803ffadeab912f5ecaa2655a8a51c6af1c4286bf9ef21cc90a4b04",
+    "runs": [
+      {
+        "passed": true,
+        "conversion_cases": 18,
+        "qr_cases": 22
+      },
+      {
+        "passed": true,
+        "conversion_cases": 18,
+        "qr_cases": 22
+      }
+    ],
+    "compiler_warning_review": {
+      "status": "reviewed for bounded ZBar QR inputs",
+      "counts": {
+        "C4311": 522,
+        "C4267": 13,
+        "C4244": 9,
+        "C4018": 7,
+        "C4090": 1
+      },
+      "findings": [
+        "C4311 expressions are constant offsets within small generated string pools, not truncated live pointers.",
+        "Local-buffer lengths and the JOHAB conversion return are bounded at the reviewed narrowing sites.",
+        "Legacy size_t-to-int conversion paths are not accepted as general-purpose support for inputs above INT_MAX; ZBar QR inputs remain below that bound."
+      ],
+      "suppressed_warnings": []
+    },
+    "limits": [
+      "These checks cover the selected encoding and QR corpus, not every supported encoding or live game capture.",
+      "The receipt records a successful build; an independent bit-for-bit rebuild has not been demonstrated.",
+      "The original command did not request deterministic PE timestamps."
+    ],
+    "abi": {
+      "machine": "AMD64",
+      "export_count": 9,
+      "original_export_names_and_ordinals_preserved": true,
+      "version_data": "0x010e",
+      "import_libraries": [
+        "KERNEL32.dll"
+      ]
+    }
+  }
+}

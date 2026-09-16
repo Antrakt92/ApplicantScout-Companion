@@ -324,8 +324,10 @@ def test_payload_root_rejects_junction_ancestry_before_resolution(
     assert (external / "sentinel.txt").read_text(encoding="utf-8") == "outside"
 
 
+@pytest.mark.parametrize("injected_name", ("LICENSE.dll", "README.md", "NATIVE-SOURCES.md"))
 def test_packaged_extras_are_exact_text_only_and_collect_can_reverify_them(
     tmp_path: Path,
+    injected_name: str,
 ):
     app_dir = tmp_path / "dist" / "ApplicantScout"
     executable = app_dir / "ApplicantScout.exe"
@@ -355,11 +357,18 @@ def test_packaged_extras_are_exact_text_only_and_collect_can_reverify_them(
     dependency_license = app_dir / "licenses" / "example" / "LICENSE.txt"
     dependency_license.parent.mkdir(parents=True)
     dependency_license.write_text("dependency license\n", encoding="utf-8")
+    for relative in (
+        "licenses/NATIVE-SOURCES.md", "licenses/NATIVE-QT-SOURCES.md",
+        "licenses/native/README.md",
+    ):
+        source_doc = app_dir / relative
+        source_doc.parent.mkdir(parents=True, exist_ok=True)
+        source_doc.write_text("source and build evidence\n", encoding="utf-8")
 
     extras = verify_packaged_extras(app_dir)
     verify_collect_membership(app_dir, collect, allowed_extra_files=extras)
 
-    injected = app_dir / "licenses" / "example" / "LICENSE.dll"
+    injected = app_dir / "licenses" / "example" / injected_name
     injected.write_bytes(b"MZ unsafe")
     with pytest.raises(
         FrozenRuntimeVerificationError,

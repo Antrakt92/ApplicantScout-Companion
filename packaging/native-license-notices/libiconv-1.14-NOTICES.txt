@@ -1,0 +1,148 @@
+GNU libiconv 1.14 library notices
+================================
+
+Source archive: https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.14.tar.gz
+SHA-256: 72b24ded17d687193c3366d0ebe7cde1e6b18f0df8c55438ac95be39e8a30613
+
+The library files below specify Library GPL version 2 or later. The original
+license text is reproduced in libiconv-1.14-COPYING.LIB.txt. These GNU source
+notices do not establish the complete corresponding patched sources for the
+historical Windows DLL. See the accompanying native source record.
+
+
+Source files:
+  include/iconv.h.build.in
+
+/* Copyright (C) 1999-2003, 2005-2006, 2008-2011 Free Software Foundation, Inc.
+   This file is part of the GNU LIBICONV Library.
+
+   The GNU LIBICONV Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version 2
+   of the License, or (at your option) any later version.
+
+   The GNU LIBICONV Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with the GNU LIBICONV Library; see the file COPYING.LIB.
+   If not, write to the Free Software Foundation, Inc., 51 Franklin Street,
+   Fifth Floor, Boston, MA 02110-1301, USA.  */
+
+
+Source files:
+  lib/iconv.c
+
+/*
+ * Copyright (C) 1999-2008, 2011 Free Software Foundation, Inc.
+ * This file is part of the GNU LIBICONV Library.
+ *
+ * The GNU LIBICONV Library is free software; you can redistribute it
+ * and/or modify it under the terms of the GNU Library General Public
+ * License as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * The GNU LIBICONV Library is distributed in the hope that it will be
+ * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Library General Public License for more details.
+ *
+ * You should have received a copy of the GNU Library General Public
+ * License along with the GNU LIBICONV Library; see the file COPYING.LIB.
+ * If not, write to the Free Software Foundation, Inc., 51 Franklin Street,
+ * Fifth Floor, Boston, MA 02110-1301, USA.
+ */
+
+
+Source files:
+  lib/relocatable.c
+
+/* Provide relocatable packages.
+   Copyright (C) 2003-2006, 2008-2011 Free Software Foundation, Inc.
+   Written by Bruno Haible <bruno@clisp.org>, 2003.
+
+   This program is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Library General Public License as published
+   by the Free Software Foundation; either version 2, or (at your option)
+   any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301,
+   USA.  */
+
+
+Source files:
+  lib/relocatable.h
+
+/* Provide relocatable packages.
+   Copyright (C) 2003, 2005, 2008-2011 Free Software Foundation, Inc.
+   Written by Bruno Haible <bruno@clisp.org>, 2003.
+
+   This program is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Library General Public License as published
+   by the Free Software Foundation; either version 2, or (at your option)
+   any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301,
+   USA.  */
+
+
+Source files:
+  libcharset/include/localcharset.h.build.in
+
+/* Determine a canonical name for the current locale's character encoding.
+   Copyright (C) 2000-2003 Free Software Foundation, Inc.
+   This file is part of the GNU CHARSET Library.
+
+   This program is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Library General Public License as published
+   by the Free Software Foundation; either version 2, or (at your option)
+   any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301,
+   USA.  */
+
+
+Source files:
+  libcharset/lib/localcharset.c
+
+/* Determine a canonical name for the current locale's character encoding.
+
+   Copyright (C) 2000-2006, 2008-2010 Free Software Foundation, Inc.
+
+   This program is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Library General Public License as published
+   by the Free Software Foundation; either version 2, or (at your option)
+   any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301,
+   USA.  */

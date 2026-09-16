@@ -155,6 +155,11 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Verify native source evidence
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: python scripts/check_native_sources.py --require-complete
+
       - name: Check pinned dependency advisories before installation
         shell: pwsh
         working-directory: ApplicantScout-Companion
@@ -188,7 +193,7 @@ jobs:
       - name: Build unsigned Windows artifacts
         shell: pwsh
         working-directory: ApplicantScout-Companion
-        run: .\scripts\build-windows.ps1 -SkipChecks
+        run: .\scripts\build-windows.ps1 -SkipChecks -RequireNativeSources
 
       - name: Smoke-test clean and contaminated installer upgrades
         shell: pwsh

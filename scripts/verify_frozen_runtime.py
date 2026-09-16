@@ -51,6 +51,11 @@ PACKAGED_ROOT_EXTRAS = frozenset(
     }
 )
 PACKAGED_LICENSE_SUFFIXES = frozenset({"", ".html", ".md", ".rst", ".txt"})
+PACKAGED_SOURCE_DOCUMENTS = frozenset({
+    "licenses/NATIVE-SOURCES.md",
+    "licenses/NATIVE-QT-SOURCES.md",
+    "licenses/native/README.md",
+})
 
 
 class FrozenRuntimeVerificationError(RuntimeError):
@@ -283,7 +288,8 @@ def verify_packaged_extras(app_dir: Path) -> set[str]:
         name = path.name.casefold()
         suffix = path.suffix.casefold()
         if (
-            not any(token in name for token in ("license", "copying", "notice"))
+            (relative not in PACKAGED_SOURCE_DOCUMENTS
+             and not any(token in name for token in ("license", "copying", "notice")))
             or suffix not in PACKAGED_LICENSE_SUFFIXES
             or path.stat().st_size <= 0
         ):
@@ -467,6 +473,7 @@ def verify_frozen_runtime(
         allowed_files=(
             toc_dir / "ApplicantScout.exe",
             toc_dir / "base_library.zip",
+            repo_root / "packaging" / "native" / "libiconv" / "libiconv.dll",
         ),
         forbidden_roots=(
             base_prefix / "Lib" / "site-packages",

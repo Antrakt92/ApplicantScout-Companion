@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "components": [
+    {
+      "name": "ZBar 0.10 Windows fork",
+      "package": "pyzbar",
+      "version": "0.1.9",
+      "binaries": [
+        {
+          "path": "pyzbar/libzbar-64.dll",
+          "sha256": "43ecda0a3e803ffadeab912f5ecaa2655a8a51c6af1c4286bf9ef21cc90a4b04"
+        }
+      ],
+      "sources": [
+        {
+          "url": "https://codeload.github.com/NaturalHistoryMuseum/ZBarWin64/tar.gz/720e4577eedf6d6173c146f8494db75583503d94",
+          "sha256": "248611c3da46a77cca2d2ddf91b1cd7f4f9512a0ddb4b32bc579fec08d3e98e6"
+        }
+      ],
+      "build_instructions": "docs/NATIVE-SOURCES.md",
+      "unresolved": []
+    },
+    {
+      "name": "libiconv 1.14 controlled Windows build",
+      "package": "pyzbar",
+      "version": "0.1.9",
+      "binaries": [
+        {
+          "path": "pyzbar/libiconv.dll",
+          "sha256": "5e684c9b6943ed5f30bc7f3a6e3de9942bfa12f68b9fb20dedb3472af8a999c6",
+          "build_input": "packaging/native/libiconv/libiconv.dll",
+          "installed_sha256": "2843567e3fe8c035884dcc6366628ece2f683380e6b1d64763bacf8fc617e17c"
+        }
+      ],
+      "sources": [
+        {
+          "url": "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.14.tar.gz",
+          "sha256": "72b24ded17d687193c3366d0ebe7cde1e6b18f0df8c55438ac95be39e8a30613",
+          "local_path": "packaging/native/libiconv/libiconv-1.14.tar.gz"
+        }
+      ],
+      "build_instructions": "packaging/native/libiconv/README.md",
+      "unresolved": []
+    },
+    {
+      "name": "Qt 6.11.2 libraries and plugins",
+      "package": "PyQt6-Qt6",
+      "version": "6.11.2",
+      "binaries": [
+        {
+          "path": "PyQt6/Qt6/bin/Qt6Core.dll",
+          "sha256": "22c113a5644b875b2c85482723cd5d2e6a3a4029169778fcc78adde08ef3b6aa"
+        },
+        {
+          "path": "PyQt6/Qt6/bin/Qt6Gui.dll",
+          "sha256": "19265a4e76efc12ef5f5bcf59be6c6a5b9b59ec4c89660797738bd2da7f719cc"
+        },
+        {
+          "path": "PyQt6/Qt6/bin/Qt6Network.dll",
+          "sha256": "75ff0896a618f4f5b602f391eb4917a55fd738b2e751d2cf18244a0de3619184"
+        },
+        {
+          "path": "PyQt6/Qt6/bin/Qt6Pdf.dll",
+          "sha256": "c68882fca099e0647455e8612f6e8e28f584badd58977553687ea6b9ebea86bb"
+        },
+        {
+          "path": "PyQt6/Qt6/bin/Qt6Svg.dll",
+          "sha256": "1052c17a9df0eb82023e0e4c369bbd0af58e4c5fea3c27a4b5ee83b60c015492"
+        },
+        {
+          "path": "PyQt6/Qt6/bin/Qt6Widgets.dll",
+          "sha256": "e6d0b7e2e697de6ad985b97f9ed8b381c1c2172fcae87b6ab08455b3b7330f32"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/generic/qtuiotouchplugin.dll",
+          "sha256": "a0b971771417d60c6c2dedf66d06f6e99bd3236aa1aa6949c7e4e08d51fb69f9"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/iconengines/qsvgicon.dll",
+          "sha256": "7879ba1d2f293ad09c515de736add8c1023b0a4e80e2301d1283555efc2e8828"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qgif.dll",
+          "sha256": "de1c1ea34cbc4156ce452023470e2145af4855128756d081d56e9a0997d0dda8"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qicns.dll",
+          "sha256": "2a5651332d5bc3d47bd171ad68feb5bb9d14471cf9223227cac557706df11771"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qico.dll",
+          "sha256": "af98cacb134525fab15cf2146a4e6b90266f14493e72e4d51df89a5caadea157"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qjpeg.dll",
+          "sha256": "a8854ac38d2bb83e8018bdcbfc93420a876251b3d2a79933e1a3c9a8ed2a24cb"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qpdf.dll",
+          "sha256": "3983e4dd27ef4cedfec35212eb8e1a28a38f1b909bcadbe040776d15ca836ffc"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qsvg.dll",
+          "sha256": "486b395e23e258d03d54cdba045f129e9b1321f9ff12f99fe58293e0351b8caf"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qtga.dll",
+          "sha256": "a9a4e7031f7dc4b57888dd2a7571c01091fa291ba99dc9344957b84a24c747a2"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qtiff.dll",
+          "sha256": "000a6ed1cd0b9f0fea0e2778c1ff42064aa1c68bb6dd40a3bbd6fda8afe3ba77"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qwbmp.dll",
+          "sha256": "b3bfd939b254b6159e04e5043e348d0be3b8d2c8da8301ec5f8cc7276a9ef479"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/imageformats/qwebp.dll",
+          "sha256": "8f8f6614fa95ed25aee9e7f7cde64716171028f7cd06cce9b1ad5854e13446ed"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/networkinformation/qnetworklistmanager.dll",
+          "sha256": "2f7c43bb4ec05e9f23a326ac69e84a6df071cdf7cc0bf87cde98f81958ad9bae"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/platforms/qminimal.dll",
+          "sha256": "3a41a14b6f168db68fb441621a787f894b275e57f667d0b00e3b1e7fa6952fe9"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/platforms/qoffscreen.dll",
+          "sha256": "95391476bba1d0b50cc822b93d7509341024cc7c18cd615f82e471a3e3a61caa"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/platforms/qwindows.dll",
+          "sha256": "d94c584a18829d11fbf3aefd07e7b1e189e0cf063a0515826960037efa7465df"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/styles/qmodernwindowsstyle.dll",
+          "sha256": "f6b88d403d7175f5b830d4958264690e5c8bbaf0148e1ccf42d52704b0480792"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/tls/qcertonlybackend.dll",
+          "sha256": "ff0f1a60ec60fc23ec74ff5d325ddef05c1ed68fc89466bffc1d874c7c544adb"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/tls/qopensslbackend.dll",
+          "sha256": "0248155d03aa5722e2c644393d1cc7ff1ada42a6ddd9808db7a0823d55f87adf"
+        },
+        {
+          "path": "PyQt6/Qt6/plugins/tls/qschannelbackend.dll",
+          "sha256": "761178263b47a5f05e151806bb5854d9e5c9cbc67d08187724d80f9e317471f8"
+        }
+      ],
+      "sources": [
+        {
+          "url": "https://download.qt.io/archive/qt/6.11/6.11.2/single/qt-everywhere-src-6.11.2.tar.xz",
+          "sha256": "6dcfbca271d76a6502741a2c0dc6fc98ef7dd0b7b4cfd0abcebb285a86a26f33"
+        }
+      ],
+      "build_instructions": "docs/NATIVE-QT-SOURCES.md",
+      "unresolved": []
+    },
+    {
+      "name": "Mesa 11.2.2 and LLVM 3.6.2 software OpenGL",
+      "package": "PyQt6-Qt6",
+      "version": "6.11.2",
+      "binaries": [
+        {
+          "path": "PyQt6/Qt6/bin/opengl32sw.dll",
+          "sha256": "b04de4541863bc7d8879040a78889c4849c1b1da2784c4630f734c146c2998ce"
+        }
+      ],
+      "sources": [
+        {
+          "url": "https://archive.mesa3d.org/older-versions/11.x/11.2.2/mesa-11.2.2.tar.xz",
+          "sha256": "40e148812388ec7c6d7b6657d5a16e2e8dabba8b97ddfceea5197947647bdfb4"
+        },
+        {
+          "url": "https://releases.llvm.org/3.6.2/llvm-3.6.2.src.tar.xz",
+          "sha256": "f60dc158bfda6822de167e87275848969f0558b3134892ff54fced87e4667b94"
+        }
+      ],
+      "build_instructions": "docs/NATIVE-QT-SOURCES.md",
+      "unresolved": []
+    },
+    {
+      "name": "PyQt6 bindings",
+      "package": "PyQt6",
+      "version": "6.11.0",
+      "binaries": [
+        {
+          "path": "PyQt6/QtCore.pyd",
+          "sha256": "91dd5166110b88a4f4d3acda6fe6c10ed699882dd3602328a59e9f656cc766b1"
+        },
+        {
+          "path": "PyQt6/QtGui.pyd",
+          "sha256": "cf5ae37fd119fb29a53f1f2cea1362fdf036d940191be45d83da0f98ce8752b8"
+        },
+        {
+          "path": "PyQt6/QtNetwork.pyd",
+          "sha256": "dc8a352ee9e67efa05bb7c59a266171faa0c0c40e0015fac9b31a9a6d058ec49"
+        },
+        {
+          "path": "PyQt6/QtWidgets.pyd",
+          "sha256": "4f81361816e94e1ae05f178085b22d5b9b19e417713b1966dd481a4017aa3b21"
+        }
+      ],
+      "sources": [
+        {
+          "url": "https://files.pythonhosted.org/packages/8b/47/b25c13eca5bebc6505394d0223e46d7ebf0c57dcac2ed908d7d19b18ab6b/pyqt6-6.11.0.tar.gz",
+          "sha256": "45dd60aa69976de1918b5ced6b4e7b6a25abd2a919ecef5fd5826ecc76718889"
+        }
+      ],
+      "build_instructions": "docs/NATIVE-QT-SOURCES.md",
+      "unresolved": []
+    },
+    {
+      "name": "PyQt6 SIP runtime",
+      "package": "PyQt6-sip",
+      "version": "13.12.0",
+      "binaries": [
+        {
+          "path": "PyQt6/sip.cp313-win_amd64.pyd",
+          "sha256": "0bd49319478525c63082c324e92ade3c9f3e83fdd458f2d610988e3b75109ccf"
+        }
+      ],
+      "sources": [
+        {
+          "url": "https://files.pythonhosted.org/packages/d1/23/16c583dbb6b53e0494dfcf7d1a44778c82e324edda62326727b37f1a5b34/pyqt6_sip-13.12.0.tar.gz",
+          "sha256": "a7ad45c1e3cec3a2473d37ea9870b6c3baeccc560298623c8eb59265714c06e2"
+        }
+      ],
+      "build_instructions": "docs/NATIVE-QT-SOURCES.md",
+      "unresolved": []
+    }
+  ]
+}

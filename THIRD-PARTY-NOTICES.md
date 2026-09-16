@@ -23,6 +23,8 @@ Missing-license placeholders are never accepted as release license coverage.
 | PyQt6-Qt6 | Qt runtime bundled by PyQt wheels | LGPL v3 |
 | PyQt6-sip | PyQt support module | BSD-2-Clause |
 | pyzbar / zbar | QR decoding and native zbar library | MIT / LGPL-2.1 |
+| libiconv | Character-set conversion used by ZBar | GNU Library GPL v2 or later |
+| Mesa / LLVM | Software OpenGL fallback supplied by Qt | MIT / University of Illinois NCSA and component notices |
 | Pillow | Image loading for screenshots | HPND-style Pillow license |
 | httpx / httpcore / anyio | HTTP client stack | BSD/MIT-style licenses |
 | certifi | CA certificate bundle | MPL-2.0 |
@@ -48,30 +50,39 @@ not the moving main branch. That tag contains the build scripts and
 explains the development and packaging steps. Use the corresponding tagged
 instructions when rebuilding a release that includes them.
 
-The following routes identify source for the dependency versions pinned for
-Companion 0.18.2. Check a different release's constraints before using them.
+The following routes identify source for the current dependency pins. For an
+older release, use its tagged constraints and source notice.
 
 | Component | Source route |
 | --- | --- |
 | PyQt6 6.11.0 | [PyPI source distribution and SHA-256](https://pypi.org/project/PyQt6/6.11.0/#files); the source archive includes its build configuration. |
-| Qt 6.11.2 (PyQt6-Qt6) | [Qt 6.11.2 source archives](https://download.qt.io/archive/qt/6.11/6.11.2/single/). Matching version alone does not establish the wheel publisher's exact configuration or patches. |
+| Qt 6.11.2 (PyQt6-Qt6) | [Qt 6.11.2 source archives](https://download.qt.io/archive/qt/6.11/6.11.2/single/). The [Qt evidence](docs/NATIVE-QT-SOURCES.md) maps DLL bytes to official binaries, source revisions and build configuration. |
 | PyQt6-sip 13.12.0 | [PyPI source distribution](https://pypi.org/project/PyQt6-sip/13.12.0/#files). |
 | pyzbar 0.1.9 | [Tagged wrapper source](https://github.com/NaturalHistoryMuseum/pyzbar/tree/v0.1.9). Its [build script](https://github.com/NaturalHistoryMuseum/pyzbar/blob/v0.1.9/build.sh) identifies the Windows DLL download. |
-| ZBar and libiconv Windows DLLs | [Upstream binary release 0.1](https://github.com/NaturalHistoryMuseum/barcode-reader-dlls/releases/tag/0.1), used by pyzbar's wheel build. This is binary provenance, not a corresponding-source archive. |
+| ZBar Windows DLL | [ZBarWin64 source commit](https://github.com/NaturalHistoryMuseum/ZBarWin64/tree/720e4577eedf6d6173c146f8494db75583503d94), whose v0.10 release wheel contains the same DLL bytes; includes the VS2013/x64 build project. |
+| libiconv Windows DLL | [Retained GNU sources, generated configuration and build receipt](packaging/native/libiconv/README.md) for the controlled Windows build. |
 
 For other Python packages, use the exact version in `constraints-release.txt`
 and that version's PyPI source distribution or upstream source tag. The bundled
 `licenses/` directory records the runtime license texts; build-only packages are
 not all included in the application.
 
-### Remaining native-library evidence
+### Native-library source records
 
-The linked Windows DLL release does not identify exact ZBar/libiconv source
-revisions, patches or a reproducible build recipe. We have not established that
-an arbitrary current ZBar or libiconv release corresponds to those DLLs. The Qt
-source-version link also does not document the exact wheel build configuration.
-These links improve source discovery; they are not a claim that complete
-corresponding-source obligations have been verified. Before another binary
-release, resolve the native source/build provenance and provide the matching
-source materials and instructions with the release. Do not treat the presence
-of license texts alone as proof that this work is complete.
+The [native source record](docs/NATIVE-SOURCES.md) provides binary hashes, pinned
+source archives and build instructions. [Qt evidence](docs/NATIVE-QT-SOURCES.md)
+maps the bundled Qt libraries and plugins to official installer archives and
+source revisions, including their compiler and configuration records. Copies of
+these documents are included under `licenses/` in new Windows builds.
+
+The original pyzbar libiconv DLL has been replaced in new Windows packages by
+a build from retained GNU sources and explicit Windows configuration. The
+source checker binds that replacement to its build input and packaged bytes.
+Incomplete or changed records block release and publication; license texts
+alone do not satisfy the check.
+
+Qt component, QtPdf, Mesa, LLVM and libiconv source notices are included under
+`licenses/native/`. Mesa/LLVM's original
+compiler flags and PyQt's original compiler invocation remain reproduction
+limits, as described in the Qt evidence. No byte-for-byte source rebuild is
+claimed.

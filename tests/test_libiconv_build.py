@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+from importlib import metadata
 import hashlib
 import io
 import json
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tarfile
 
@@ -216,3 +218,106 @@ $Resolved | ConvertTo-Json -Compress
             ("Linker", "link.exe"), ("Dumpbin", "dumpbin.exe"),
         )
     }
+
+
+@pytest.fixture
+def retained_build():
+    directory = SCRIPT.parents[1] / "packaging/native/libiconv"
+    receipt = json.loads((directory / "build-receipt.json").read_text(encoding="utf-8"))
+    return directory, receipt
+
+
+def test_retained_build_files_match_receipt_bytes_and_sizes(retained_build):
+    directory, receipt = retained_build
+    expected = {
+        "COPYING", "COPYING.LIB", "generated/config.h", "generated/configmake.h",
+        "generated/iconv.h", "generated/localcharset.h", "libiconv-1.14.tar.gz",
+        "libiconv.def", "libiconv.dll",
+    }
+    assert set(receipt["retained_files"]) == expected
+    for name, identity in receipt["retained_files"].items():
+        data = (directory / name).read_bytes()
+        assert len(data) == identity["size_bytes"], name
+        assert hashlib.sha256(data).hexdigest() == identity["sha256"], name
+    for section, path_key in (("binary", "path"), ("source", "archive")):
+        identity = receipt[section]
+        retained = receipt["retained_files"][identity[path_key]]
+        assert identity["sha256"] == retained["sha256"]
+        assert identity["size_bytes"] == retained["size_bytes"]
+
+
+def test_retained_headers_and_export_definition_reproduce_from_pinned_source(retained_build):
+    directory, receipt = retained_build
+    source = receipt["source"]
+    assert receipt["version"] == "1.14"
+    assert source["url"] == builder.SOURCE_URL
+    data = (directory / source["archive"]).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == source["sha256"] == builder.SOURCE_SHA256
+    assert source["implementation_patches"] == []
+    assert set(source["compiled_source_files"]) == set(builder.SOURCES)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+        builder.checked_members(archive)
+
+        def upstream(name):
+            stream = archive.extractfile(f"{builder.SOURCE_ROOT}/{name}")
+            assert stream is not None, name
+            return stream.read()
+
+        for name, digest in source["compiled_source_files"].items():
+            assert hashlib.sha256(upstream(name)).hexdigest() == digest, name
+        for name in ("COPYING", "COPYING.LIB"):
+            assert (directory / name).read_bytes() == upstream(name)
+        generated = builder.generated_headers(
+            upstream("config.h.in").decode("utf-8"),
+            upstream("include/iconv.h.in").decode("utf-8"),
+            upstream("libcharset/include/localcharset.h.in").decode("utf-8"),
+        )
+    assert set(generated) == {"config.h", "configmake.h", "iconv.h", "localcharset.h"}
+    for name, text in generated.items():
+        assert (directory / "generated" / name).read_bytes() == text.encode("utf-8"), name
+    definition = "LIBRARY libiconv\nEXPORTS\n" + "".join(
+        f"    {entry}\n" for entry in builder.EXPORTS
+    )
+    assert (directory / "libiconv.def").read_bytes() == definition.encode("ascii")
+
+
+def test_retained_build_recipe_matches_current_code_after_checkout_eol_normalization(retained_build):
+    _, receipt = retained_build
+    recipes = receipt["build"]["recipe_files"]
+    assert set(recipes) == {"scripts/build-libiconv.ps1", "scripts/prepare_libiconv.py"}
+    for name, identity in recipes.items():
+        normalized = (SCRIPT.parents[1] / name).read_bytes().replace(b"\r\n", b"\n")
+        assert hashlib.sha256(normalized).hexdigest() == identity["lf_normalized_sha256"], (
+            f"{name} changed after the retained DLL build; review/rebuild and update its evidence"
+        )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Pinned pyzbar Windows binary ABI")
+def test_retained_dll_preserves_the_pinned_zbar_import_abi(retained_build):
+    # pefile is already a pinned Windows build dependency; this never loads DLLs.
+    import pefile
+
+    directory, receipt = retained_build
+    distribution = metadata.distribution("pyzbar")
+    zbar_path = Path(distribution.locate_file("pyzbar/libzbar-64.dll"))
+    zbar_data = zbar_path.read_bytes()
+    assert hashlib.sha256(zbar_data).hexdigest() == receipt["validation"]["zbar_sha256"]
+    with pefile.PE(data=zbar_data) as zbar, pefile.PE(data=(directory / "libiconv.dll").read_bytes()) as iconv:
+        assert zbar.FILE_HEADER.Machine == iconv.FILE_HEADER.Machine == 0x8664
+        imports = [entry for entry in zbar.DIRECTORY_ENTRY_IMPORT if entry.dll.lower() == b"libiconv.dll"]
+        assert len(imports) == 1
+        required = {symbol.name for symbol in imports[0].imports}
+        assert required == {b"libiconv", b"libiconv_open", b"libiconv_close"}
+        exports = {symbol.name: symbol for symbol in iconv.DIRECTORY_ENTRY_EXPORT.symbols}
+        assert {name: symbol.ordinal for name, symbol in exports.items()} == {
+            b"_libiconv_version": 1, b"iconv_canonicalize": 2, b"libiconv": 3,
+            b"libiconv_close": 4, b"libiconv_open": 5, b"libiconv_open_into": 6,
+            b"libiconvctl": 7, b"libiconvlist": 8, b"locale_charset": 9,
+        }
+        assert required <= exports.keys()
+        assert all(symbol.forwarder is None for symbol in exports.values())
+        assert {entry.dll.lower() for entry in iconv.DIRECTORY_ENTRY_IMPORT} == {b"kernel32.dll"}
+        version_rva = exports[b"_libiconv_version"].address
+        assert struct.unpack("<I", iconv.get_data(version_rva, 4))[0] == 0x010E
+        section = iconv.get_section_by_rva(version_rva)
+        assert section is not None and not section.Characteristics & 0x20000000
