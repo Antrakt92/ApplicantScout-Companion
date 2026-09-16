@@ -216,6 +216,14 @@ class DecodedRosterMember:
     def is_raid_member(self) -> bool:
         return bool(self.flags & 0x02)
 
+    @property
+    def raid_difficulty_id(self) -> int | None:
+        # An additive roster-flag extension keeps older decoders compatible.
+        # None is a legacy row; zero explicitly clears unsupported/unknown context.
+        if not self.is_raid_member or not self.flags & 0x10:
+            return None
+        return (0, 14, 15, 16)[(self.flags & 0x0C) >> 2]
+
 
 @dataclass
 class DecodedListing:

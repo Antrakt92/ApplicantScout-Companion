@@ -516,6 +516,18 @@ jobs:
       EXPECTED_MANIFEST_SHA256: ${{ needs.verify.outputs.manifest_sha256 }}
       EXPECTED_MANIFEST_SIZE: ${{ needs.verify.outputs.manifest_size }}
     steps:
+      - name: Checkout release copy policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-copy-policy
+          persist-credentials: false
+
+      - name: Set up Python for release copy verification
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+
       - name: Verify published release assets
         shell: pwsh
         env:
@@ -528,6 +540,10 @@ jobs:
           $ExpectedReleaseBody = [System.Text.Encoding]::UTF8.GetString(
             [Convert]::FromBase64String([string]$Manifest.releaseCopy.body.contentBase64)
           )
+          $CopyManifestPath = Join-Path $env:RUNNER_TEMP "release-copy-manifest.json"
+          $CopyReleasePath = Join-Path $env:RUNNER_TEMP "release-copy-public.json"
+          $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText($CopyManifestPath, ($Manifest | ConvertTo-Json -Depth 10), $Utf8NoBom)
           $Expected = @{}
           foreach ($File in @($Manifest.files)) {
             $Expected[[string]$File.name] = @{
@@ -546,14 +562,22 @@ jobs:
             $Release = gh api `
               -H "X-GitHub-Api-Version: 2026-03-10" `
               "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+            $ReleaseReadSucceeded = $LASTEXITCODE -eq 0
+            $BodyMatches = [string]$Release.body -ceq $ExpectedReleaseBody
+            if ($ReleaseReadSucceeded -and -not $BodyMatches) {
+              [System.IO.File]::WriteAllText($CopyReleasePath, ($Release | ConvertTo-Json -Depth 10), $Utf8NoBom)
+              python release-copy-policy/scripts/release_copy.py verify-body `
+                --manifest $CopyManifestPath --release-json $CopyReleasePath
+              $BodyMatches = $LASTEXITCODE -eq 0
+            }
             if (
-              $LASTEXITCODE -eq 0 -and
+              $ReleaseReadSucceeded -and
               -not [bool]$Release.draft -and
               -not [bool]$Release.prerelease -and
               $Release.immutable -is [bool] -and
               $Release.immutable -and
               [string]$Release.name -ceq $ExpectedReleaseTitle -and
-              [string]$Release.body -ceq $ExpectedReleaseBody
+              $BodyMatches
             ) {
               $Assets = @($Release.assets)
               $Valid = $Assets.Count -eq $Expected.Count

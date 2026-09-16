@@ -60,8 +60,15 @@ yet, take one normal screenshot in WoW, then select the folder it creates.
 
 Mythic+, all raid difficulties and **Start and stop with WoW** start checked
 when no preferences are saved. Disable anything you do not want; saved choices
-are preserved. WoW sync adds a Windows sign-in helper after setup. The optional
+are preserved. A background helper starts at Windows sign-in and waits for WoW;
+the companion opens with the game and closes when it exits. The optional
 RaiderIO addon supplies extra local dungeon and raid information.
+
+If Settings shows **Windows has blocked the WoW launch watcher**, click
+**Enable watcher**. If its startup entry is missing, click **Repair watcher**.
+You can also enable
+**ApplicantScout Companion** in Windows Settings → Apps → Startup. Opening the
+companion manually does not override a startup restriction set in Windows.
 
 **Share usage statistics** also starts checked when no choice is saved.
 It is optional and can be disabled here. Participating installations send daily

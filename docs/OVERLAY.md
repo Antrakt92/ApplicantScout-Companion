@@ -1,6 +1,6 @@
 # Reading the overlay
 
-The **Fit** column shows a neutral estimate such as **~65** for the target key or
+The **Fit** column shows an estimate such as **~65** for the target key or
 raid difficulty, including a combined rating for grouped applicants. **Normal**, **Heroic**,
 **Mythic**, and **M+** show the player's WCL results in every context. Each
 available parse keeps its percentile colour, independently of Fit. Raid and M+
@@ -8,8 +8,26 @@ results belong to the applying specialization. Raid healers use HPS; other raid
 roles and every M+ role use DPS. Displayed percentiles round down so the number
 stays in the same colour band as the underlying result.
 
-Applications sort by the M+ best percentile for a dungeon listing, or by the
-selected raid difficulty's best percentile. The arrow marks the sorting column.
+Fit uses the same colour thresholds: grey below 25, green from 25, blue from 50,
+purple from 75, orange from 95, pink from 99, and gold at 100. Its colour follows
+the displayed estimate, including the combined estimate for grouped applicants.
+Changing the target key updates both Fit and its colour. Missing Fit stays neutral.
+
+Click any column heading to sort; click it again to reverse the order. Numbers
+start highest first; names and specs start alphabetically. Specs with the same
+label are separated by class. The arrow shows the
+current order. Applicants and Party remember separate choices for the session,
+including when data refreshes. Missing values stay at the bottom in either
+direction. Parse columns sort by the best percentile, the first number in the
+pair. RIO uses the higher character or main score when available.
+
+Joint applications stay together. Numeric columns use the lowest member value;
+Fit uses the combined group estimate. Text columns use the alphabetically first
+member value. If a sorted column is hidden in Settings, the default order applies
+until that column is shown again.
+
+Before a heading is clicked, applications sort by the M+ best percentile for a
+dungeon listing, or by the selected raid difficulty's best percentile.
 Grouped applicants stay together and use their lowest member percentile;
 groups with missing parses follow those with complete results. Fit remains a
 separate estimate and breaks ties or orders applicants without a parse.
@@ -47,8 +65,18 @@ available.
 
 Party view can use the current group leader's keystone as the automatic Mythic+
 target key. A manual Party key override still takes priority, raid contexts
-ignore leader-key calibration, and manually clicking Party keeps the overlay
-there while you review the group.
+ignore leader-key calibration. Changing the target key recalculates Fit; WCL
+parse values and colours stay unchanged.
+
+For raid groups, Party uses the raid difficulty selected in WoW: Normal,
+Heroic, or Mythic. Inside a raid, the instance's actual difficulty takes
+priority. Fit works without a Group Finder listing and updates when the
+difficulty changes. Raid groups with fewer than six players also qualify.
+Unsupported or unavailable difficulty leaves Fit empty.
+
+Applicants and Party stay on the tab you are viewing when applicants arrive,
+the group changes, or a listing closes. The first data received can select Party
+when there is no listing or applicant data. After that, use the tabs to switch.
 
 
 [Back to ApplicantScout Companion](../README.md)

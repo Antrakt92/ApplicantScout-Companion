@@ -371,6 +371,37 @@ def _roster_decoded(
 # ─── Composite-id construction ──────────────────────────────────────────────
 
 
+def test_raid_difficulty_refresh_preserves_parses_and_emits_roster_change():
+    state = AppState()
+    sm = StateMachine(state)
+    changes = []
+    sm.rosterChanged.connect(lambda: changes.append(True))
+    for flags, difficulty in [(0x16, 14), (0x1A, 15), (0x1E, 16), (0x12, 0), (2, None), (0, None)]:
+        sm.apply_snapshot(Snapshot(listing=None, version=None, roster=[
+            _roster_decoded("Raider-Realm", flags=flags),
+        ]))
+        member = next(iter(state.party_members.values()))
+        assert member.raid_difficulty_id == difficulty
+        if len(changes) > 1:
+            assert member.fetch_status == "ready"
+            assert member.raid_heroic == 85
+        member.fetch_status = "ready"
+        member.raid_heroic = 85
+    assert len(changes) == 6
+
+
+def test_partial_roster_keeps_raid_difficulty_until_authoritative_clear():
+    state = AppState()
+    sm = StateMachine(state)
+    sm.apply_snapshot(Snapshot(listing=None, version=None, roster=[
+        _roster_decoded("Raider-Realm", flags=0x1A),
+    ]))
+    sm.apply_snapshot(Snapshot(listing=None, version=None, roster_unavailable=True))
+    assert next(iter(state.party_members.values())).raid_difficulty_id == 15
+    sm.apply_snapshot(Snapshot(listing=None, version=None, terminal_clear=True))
+    assert state.party_members == {}
+
+
 def test_two_member_group_creates_two_state_entries_with_composite_keys():
     state = AppState()
     sm = StateMachine(state)

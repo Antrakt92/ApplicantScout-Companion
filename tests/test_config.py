@@ -4591,7 +4591,7 @@ def test_first_run_settings_with_wow_sync_enabled_starts_current_session_watcher
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
-        lambda _enabled: calls.append("shortcut"),
+        lambda _enabled, **_kwargs: calls.append("shortcut"),
     )
     monkeypatch.setattr(
         main_mod,
@@ -4642,7 +4642,7 @@ def test_first_run_wow_sync_disable_stops_current_session_watcher_after_save(
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
-        lambda enabled: calls.append(f"shortcut:{enabled}"),
+        lambda enabled, **_kwargs: calls.append(f"shortcut:{enabled}"),
     )
     monkeypatch.setattr(
         main_mod,
@@ -4890,7 +4890,7 @@ def test_first_run_wow_sync_enable_save_failure_does_not_touch_shortcut(
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
-        lambda enabled: calls.append(f"shortcut:{enabled}"),
+        lambda enabled, **_kwargs: calls.append(f"shortcut:{enabled}"),
     )
     monkeypatch.setattr(
         main_mod,
@@ -4953,7 +4953,7 @@ def test_first_run_wow_sync_disable_save_failure_does_not_touch_shortcut(
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
-        lambda enabled: calls.append(f"shortcut:{enabled}"),
+        lambda enabled, **_kwargs: calls.append(f"shortcut:{enabled}"),
     )
     monkeypatch.setattr(
         main_mod,
@@ -5021,7 +5021,7 @@ def test_first_run_wow_sync_save_failure_warns_when_rollback_fails(
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
-        lambda enabled: calls.append(f"shortcut:{enabled}"),
+        lambda enabled, **_kwargs: calls.append(f"shortcut:{enabled}"),
     )
     monkeypatch.setattr(
         main_mod,
@@ -5081,7 +5081,7 @@ def test_first_run_wow_sync_failure_does_not_persist_enabled_sync(
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
-        lambda _enabled: (_ for _ in ()).throw(RuntimeError("shortcut failed")),
+        lambda _enabled, **_kwargs: (_ for _ in ()).throw(RuntimeError("shortcut failed")),
     )
     monkeypatch.setattr(
         main_mod.QMessageBox,
@@ -5134,7 +5134,7 @@ def test_first_run_wow_sync_disable_cleanup_failure_still_saves_settings(
     monkeypatch.setattr(
         main_mod,
         "configure_wow_sync_startup",
-        lambda _enabled: (_ for _ in ()).throw(RuntimeError("shortcut cleanup failed")),
+        lambda _enabled, **_kwargs: (_ for _ in ()).throw(RuntimeError("shortcut cleanup failed")),
     )
     monkeypatch.setattr(
         main_mod.QMessageBox,

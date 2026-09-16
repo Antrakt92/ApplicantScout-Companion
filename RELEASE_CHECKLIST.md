@@ -165,6 +165,13 @@ the queue to publish multiple drafts.
    the manifest copy in the same operation that makes the release public, then
    verifies the immutable published release still matches it.
 
+   Historical schema-2 manifests through `v0.18.3` retain their original body
+   bytes. The public-copy verifier also accepts removal of their exact generated
+   download lists through `scripts/release_copy.py`; all other text, titles,
+   manifest bytes and asset checks remain exact. New releases use clean notes
+   and accept no alternate body. Editing a historical body does not rewrite the
+   notes already inside its immutable installer or portable archive.
+
    If the workflow fails before any draft exists, use **Re-run failed jobs**;
    the draft writer reuses the exact build-attempt artifact. Do not rerun all
    jobs after a draft exists. An existing or partially uploaded draft makes the

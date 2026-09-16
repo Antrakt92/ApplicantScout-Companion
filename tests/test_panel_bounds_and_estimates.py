@@ -135,13 +135,13 @@ def test_selected_dungeon_bracket_uses_unrounded_percentile_for_display(qtbot, t
     assert row["colour"] == percentile_colour(49.9)
 
 
-def test_fit_estimate_uses_tilde_and_neutral_style_without_muting_wcl(qtbot, tmp_path):
+def test_fit_estimate_uses_tilde_and_percentile_palette_without_muting_wcl(qtbot, tmp_path):
     window = _window(qtbot, tmp_path)
     fit_item = window._table.item(0, overlay.COL_FIT)
     raid_item = window._table.item(0, overlay.COL_H)
     assert fit_item.text().startswith("~")
     assert fit_item.text()[1:].isdigit()
-    assert fit_item.background().color().name() == overlay.FIT_BACKGROUND
+    assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
     assert raid_item.background().color().name() == percentile_colour(67.9)
     assert window._panel._metric_labels["Fit"].text().startswith("Fit · Heroic: ~")
     assert "estimate" in window._panel._metric_labels["Fit"].accessibleDescription()

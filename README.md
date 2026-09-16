@@ -117,8 +117,11 @@ the source. The `.sha256` sidecar verifies file integrity, not publisher identit
 
 Settings lets you choose the Screenshots folder, WCL data types and usage sharing.
 Mythic+, all raid difficulties and **Start and stop with WoW** start enabled when
-no preference is saved. Your saved choices are preserved. WoW sync adds a Windows
-sign-in helper after setup; turn it off for manual launch and quit.
+no preference is saved. Your saved choices are preserved. A background helper
+starts at Windows sign-in and waits for WoW. The companion opens when the game
+starts and closes when it exits; turn sync off for manual launch and quit.
+If Windows blocks the watcher, Settings shows a warning and an **Enable watcher**
+button. A missing startup entry can be restored with **Repair watcher**.
 
 The companion checks for updates hourly. Settings offers a download button for
 stable releases and verifies the installer's checksum before starting the update.

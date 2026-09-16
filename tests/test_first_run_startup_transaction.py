@@ -41,7 +41,8 @@ def first_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         def values(self):
             return values
 
-    def configure(enabled):
+    def configure(enabled, *, restore_windows_approval):
+        assert restore_windows_approval is enabled
         calls.append(f"shortcut:{enabled}")
         if enabled:
             shortcut.write_bytes(b"new shortcut")
@@ -58,6 +59,22 @@ def first_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     for key in main_mod._settings_env_override_keys():
         monkeypatch.delenv(key, raising=False)
     return SimpleNamespace(cfg=cfg, values=values, shortcut=shortcut, calls=calls, warnings=warnings)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_first_run_restores_windows_approval_only_for_explicit_enable(
+    first_run, monkeypatch, enabled
+):
+    requests = []
+    first_run.values.sync_with_wow = enabled
+
+    def configure(value, *, restore_windows_approval):
+        requests.append((value, restore_windows_approval))
+
+    monkeypatch.setattr(main_mod, "configure_wow_sync_startup", configure)
+    assert main_mod._run_first_run_settings(first_run.cfg) is True
+    assert requests == [(enabled, enabled)]
+    assert first_run.calls == (["watcher"] if enabled else ["stop"])
 
 
 @pytest.mark.parametrize("old_shortcut", [None, b"\x00original shortcut\xff"])
@@ -88,7 +105,8 @@ def test_enable_shortcut_failure_restores_exact_config(first_run, monkeypatch, o
         path.write_bytes(original)
     first_run.shortcut.write_bytes(b"old shortcut")
 
-    def fail_shortcut(_enabled):
+    def fail_shortcut(_enabled, *, restore_windows_approval):
+        assert restore_windows_approval is _enabled
         assert _read_env_file(path)["APSCOUT_SYNC_WITH_WOW"] == "1"
         raise RuntimeError("shortcut denied")
 
@@ -104,7 +122,8 @@ def test_disable_cleanup_failure_is_saved_before_success_message(first_run, monk
     first_run.values.sync_with_wow = False
     first_run.shortcut.write_bytes(b"old shortcut")
 
-    def fail_shortcut(_enabled):
+    def fail_shortcut(_enabled, *, restore_windows_approval):
+        assert restore_windows_approval is _enabled
         assert _read_env_file(first_run.cfg.config_path)["APSCOUT_SYNC_WITH_WOW"] == "0"
         raise RuntimeError("cleanup denied")
 
@@ -118,7 +137,8 @@ def test_disable_cleanup_failure_is_saved_before_success_message(first_run, monk
 def test_disable_save_and_cleanup_failure_does_not_claim_saved(first_run, monkeypatch):
     first_run.values.sync_with_wow = False
 
-    def fail_shortcut(_enabled):
+    def fail_shortcut(_enabled, *, restore_windows_approval):
+        assert restore_windows_approval is _enabled
         raise RuntimeError("cleanup denied")
 
     def fail_save(*_args, **_kwargs):
@@ -132,7 +152,8 @@ def test_disable_save_and_cleanup_failure_does_not_claim_saved(first_run, monkey
 
 
 def test_enable_failure_reports_config_rollback_failure(first_run, monkeypatch):
-    def fail_shortcut(_enabled):
+    def fail_shortcut(_enabled, *, restore_windows_approval):
+        assert restore_windows_approval is _enabled
         raise RuntimeError("shortcut denied")
 
     def fail_restore(_snapshot):

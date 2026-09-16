@@ -355,7 +355,10 @@ def fit_label(score: float) -> str:
 
 
 def fit_colour(score: float) -> str:
-    return percentile_colour(score)
+    """Colour the rounded estimate shown in Fit, without changing its numeric score."""
+    if not math.isfinite(score):
+        return percentile_colour(None)
+    return percentile_colour(round(score))
 
 
 def _is_terminal_fetch_status(status: str) -> bool:

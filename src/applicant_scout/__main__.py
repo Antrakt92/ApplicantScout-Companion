@@ -114,10 +114,12 @@ from .wcl import (
 from .wow_lifecycle import (
     WATCH_WOW_ARG,
     configure_wow_sync_startup,
+    enable_wow_sync_startup_approval,
     is_wow_foreground,
     is_wow_running,
     start_wow_sync_watcher,
     stop_current_session_watcher,
+    wow_sync_startup_state,
 )
 
 
@@ -991,6 +993,7 @@ class StateMachine(QObject):
             subgroup=decoded.subgroup,
             is_self=decoded.is_self,
             is_raid_member=decoded.is_raid_member,
+            raid_difficulty_id=decoded.raid_difficulty_id,
         )
         self._record_rio_transport_fields(
             member,
@@ -2505,17 +2508,20 @@ class _WowSyncStartupConfigurator(QObject):
         parent: QObject | None = None,
         *,
         configure: Callable[[bool], object] | None = None,
+        enable_approval: Callable[[], None] | None = None,
         runner: Callable[[Callable[[], None]], None] | None = None,
         notify: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._configure = configure or configure_wow_sync_startup
+        self._enable_approval = enable_approval or enable_wow_sync_startup_approval
         self._runner = runner
         self._state_lock = threading.Lock()
         self._work_lock = threading.Lock()
         self._close_lock = threading.Lock()
         self._generation = 0
         self._desired_enabled: bool | None = None
+        self._desired_restore_windows_approval = False
         self._applied_enabled: bool | None = None
         self._closed = False
         self._close_error: Exception | None = None
@@ -2531,15 +2537,24 @@ class _WowSyncStartupConfigurator(QObject):
         self,
         enabled: bool,
         *,
+        restore_windows_approval: bool = False,
+        on_success: Callable[[], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
     ) -> int:
         with self._close_lock:
-            return self._request_locked(enabled, on_error=on_error)
+            return self._request_locked(
+                enabled,
+                restore_windows_approval=enabled and restore_windows_approval,
+                on_success=on_success,
+                on_error=on_error,
+            )
 
     def _request_locked(
         self,
         enabled: bool,
         *,
+        restore_windows_approval: bool,
+        on_success: Callable[[], None] | None,
         on_error: Callable[[Exception], None] | None,
     ) -> int:
         with self._state_lock:
@@ -2548,9 +2563,12 @@ class _WowSyncStartupConfigurator(QObject):
             self._generation += 1
             generation = self._generation
             self._desired_enabled = enabled
+            self._desired_restore_windows_approval = restore_windows_approval
 
         def _worker() -> None:
-            self._apply_generation(generation, enabled, on_error)
+            self._apply_generation(
+                generation, enabled, restore_windows_approval, on_success, on_error
+            )
 
         if self._runner is not None:
             self._runner(_worker)
@@ -2586,16 +2604,29 @@ class _WowSyncStartupConfigurator(QObject):
         self,
         generation: int,
         enabled: bool,
+        restore_windows_approval: bool,
+        on_success: Callable[[], None] | None,
         on_error: Callable[[Exception], None] | None,
     ) -> None:
         with self._work_lock:
             if not self._is_current(generation):
                 return
             with self._state_lock:
-                if self._applied_enabled == enabled:
-                    return
+                needs_configure = (
+                    self._applied_enabled != enabled or restore_windows_approval
+                )
             try:
-                self._configure(enabled)
+                if needs_configure:
+                    self._configure(enabled)
+                with self._state_lock:
+                    self._applied_enabled = enabled
+                    if self._closed or self._generation != generation:
+                        return
+                    # A newer disable cannot interleave between this generation
+                    # check and the explicit Windows approval change.
+                    if restore_windows_approval:
+                        self._enable_approval()
+                        self._desired_restore_windows_approval = False
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 if not self._is_current(generation):
                     return
@@ -2612,8 +2643,12 @@ class _WowSyncStartupConfigurator(QObject):
 
                     self._notify(_deliver_current_error)
                 return
-            with self._state_lock:
-                self._applied_enabled = enabled
+            if on_success is not None:
+                def _deliver_current_success() -> None:
+                    if self._is_current(generation):
+                        on_success()
+
+                self._notify(_deliver_current_success)
 
     def close(self) -> Exception | None:
         with self._close_lock:
@@ -2627,9 +2662,14 @@ class _WowSyncStartupConfigurator(QObject):
             with self._work_lock:
                 with self._state_lock:
                     applied_enabled = self._applied_enabled
-                if desired_enabled is not None and applied_enabled != desired_enabled:
+                    restore_windows_approval = self._desired_restore_windows_approval
+                if desired_enabled is not None and (
+                    applied_enabled != desired_enabled or restore_windows_approval
+                ):
                     try:
                         self._configure(desired_enabled)
+                        if desired_enabled and restore_windows_approval:
+                            self._enable_approval()
                     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                         self._close_error = exc
                         log.warning(
@@ -2639,6 +2679,7 @@ class _WowSyncStartupConfigurator(QObject):
                     else:
                         with self._state_lock:
                             self._applied_enabled = desired_enabled
+                            self._desired_restore_windows_approval = False
 
             while True:
                 with self._state_lock:
@@ -3742,7 +3783,10 @@ def _run_first_run_settings(
         )
         return False
     try:
-        configure_wow_sync_startup(values.sync_with_wow)
+        configure_wow_sync_startup(
+            values.sync_with_wow,
+            restore_windows_approval=values.sync_with_wow,
+        )
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         log.warning("Could not configure WoW lifecycle startup shortcut: %s", exc)
         if not values.sync_with_wow:
@@ -4185,6 +4229,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             check_updates=_check_updates_with_handoff,
             cancel_update=_cancel_update_download,
+            wow_startup_state=wow_sync_startup_state,
             hide_to_tray_on_close=tray_controller is not None,
             parent=window,
         )
@@ -4196,6 +4241,38 @@ def main(argv: list[str] | None = None) -> int:
         def _forget_dialog() -> None:
             nonlocal settings_dialog
             settings_dialog = None
+
+        def _request_startup_shortcut(enabled: bool) -> None:
+            dialog.set_wow_sync_repair_pending(True)
+
+            def _refresh_startup_status() -> None:
+                if settings_dialog is dialog:
+                    dialog.set_wow_sync_repair_pending(False)
+                    dialog.refresh_wow_sync_status()
+
+            def _report_startup_shortcut_error(exc: Exception) -> None:
+                if settings_dialog is not dialog:
+                    return
+                _refresh_startup_status()
+                dialog.set_status(
+                    "Settings saved, but the WoW startup shortcut could "
+                    f"not be updated: {exc}",
+                    error=True,
+                )
+
+            try:
+                wow_sync_startup_configurator.request(
+                    enabled,
+                    restore_windows_approval=enabled,
+                    on_success=_refresh_startup_status,
+                    on_error=_report_startup_shortcut_error,
+                )
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                _report_startup_shortcut_error(exc)
+
+        def _repair_wow_startup() -> None:
+            if cfg.sync_with_wow:
+                _request_startup_shortcut(True)
 
         def _apply_settings_values(values, *, apply_credentials: bool) -> None:
             nonlocal auth
@@ -4244,27 +4321,12 @@ def main(argv: list[str] | None = None) -> int:
             wow_exit_timer = result.wow_exit_timer
             overrides = result.overrides
             path_warning = dialog.current_screenshots_warning()
-            if startup_shortcut_changed:
-                desired_sync_with_wow = cfg.sync_with_wow
-
-                def _report_startup_shortcut_error(exc: Exception) -> None:
-                    if settings_dialog is not dialog:
-                        return
-                    dialog.set_status(
-                        "Settings saved, but the WoW startup shortcut could "
-                        f"not be updated: {exc}",
-                        error=True,
-                    )
-
-                wow_sync_startup_configurator.request(
-                    desired_sync_with_wow,
-                    on_error=_report_startup_shortcut_error,
-                )
             if apply_credentials:
                 status_text, status_error = _settings_wcl_test_success_status(
                     overrides,
                     path_warning=path_warning,
                 )
+                dialog.set_status(status_text, error=status_error)
             else:
                 status_text, status_error, status_warning = _settings_autosave_status(
                     overrides,
@@ -4276,8 +4338,8 @@ def main(argv: list[str] | None = None) -> int:
                     error=status_error,
                     warning=status_warning,
                 )
-                return
-            dialog.set_status(status_text, error=status_error)
+            if startup_shortcut_changed:
+                _request_startup_shortcut(cfg.sync_with_wow)
 
         def _handle_values_changed(values) -> None:
             _apply_settings_values(values, apply_credentials=False)
@@ -4292,6 +4354,7 @@ def main(argv: list[str] | None = None) -> int:
                 tray_controller.set_update_available(None)
 
         dialog.valuesChanged.connect(_handle_values_changed)
+        dialog.wowSyncRepairRequested.connect(_repair_wow_startup)
 
         def _usage_consent_changed(enabled: bool) -> None:
             if window.usage_activity is not None:

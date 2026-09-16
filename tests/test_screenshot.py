@@ -1130,6 +1130,18 @@ def test_v6_roster_block_parses_current_party_members():
     assert member.role == 1
 
 
+@pytest.mark.parametrize("flags, expected", [(2, None), (0x12, 0), (0x16, 14), (0x1A, 15), (0x1F, 16), (0x1C, None), (0x0E, None)])
+def test_roster_raid_difficulty_flags(flags, expected):
+    body = _build_body_v7([], [_build_roster_block(
+        unit_index=1, flags=flags, subgroup=1, class_id=8, spec_id=62,
+        ilvl=320, score=3000, main_score=0, role=2, name="Mage-Realm",
+    )])
+    snap = _parse_payload(body, wire_ver=0x09)
+    assert snap.roster[0].raid_difficulty_id == expected
+    assert snap.roster[0].is_raid_member == bool(flags & 2)
+    assert snap.roster[0].is_self == bool(flags & 1)
+
+
 def test_v6_roster_block_accepts_full_raid_size():
     roster = [
         _build_roster_block(

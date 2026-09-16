@@ -36,6 +36,7 @@ from PyQt6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QResizeEvent,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -53,6 +54,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTextBrowser,
     QToolButton,
     QVBoxLayout,
@@ -629,6 +631,30 @@ class _SettingsScrollArea(QScrollArea):
         return QSize(hint.width() + frame, (wrapped_height if wrapped_height >= 0 else hint.height()) + frame)
 
 
+class _FittedExampleImage(QLabel):
+    """Fit the original screenshot without giving its pixel size to the layout."""
+
+    def __init__(self, pixmap: QPixmap) -> None:
+        super().__init__()
+        self._source_pixmap = pixmap
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setMinimumSize(1, 1)
+        self._fit_pixmap()
+
+    def _fit_pixmap(self) -> None:
+        if not self._source_pixmap.isNull():
+            self.setPixmap(self._source_pixmap.scaled(
+                self.contentsRect().size().boundedTo(self._source_pixmap.size()),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+
+    def resizeEvent(self, event: QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._fit_pixmap()
+
+
 @dataclass(frozen=True)
 class _ScreenshotsValidationResult:
     generation: int
@@ -696,6 +722,7 @@ class SettingsDialog(QDialog):
     updateCompleted = pyqtSignal()
     updateHandoffStarted = pyqtSignal(str, object)
     changelogRequested = pyqtSignal()
+    wowSyncRepairRequested = pyqtSignal()
     def __init__(
         self,
         cfg: Config,
@@ -708,6 +735,7 @@ class SettingsDialog(QDialog):
         cancel_update: Callable[[], bool] | None = None,
         hide_to_tray_on_close: bool = True,
         usage_client: UsageClient | None = None,
+        wow_startup_state: Callable[[], str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -715,6 +743,8 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(_SETTINGS_STYLESHEET)
         self._first_run = first_run
         self._usage_client = usage_client
+        self._wow_startup_state = wow_startup_state
+        self._wow_sync_repair_pending = False
         self._hide_to_tray_on_close = hide_to_tray_on_close
         self._update_in_progress = False
         self._cache_action_in_progress = False
@@ -1062,14 +1092,39 @@ class SettingsDialog(QDialog):
         self.sync_with_wow_check = QCheckBox("Start and stop with WoW")
         self.sync_with_wow_check.setObjectName("syncWithWow")
         self.sync_with_wow_check.setToolTip(
-            "Start ApplicantScout when WoW starts and quit it when WoW closes."
+            "Open Companion when WoW starts and close it when WoW exits. "
+            "At Windows sign-in, only a hidden watcher starts; the Companion "
+            "window stays closed until WoW runs."
         )
         self.sync_with_wow_check.setAccessibleName("Synchronize with WoW")
         self.sync_with_wow_check.setAccessibleDescription(
-            "Start ApplicantScout when WoW starts and quit it when WoW closes."
+            self.sync_with_wow_check.toolTip()
         )
         self.sync_with_wow_check.setChecked(cfg.sync_with_wow)
         scouting_form.addRow("", self.sync_with_wow_check)
+
+        self._wow_startup_warning_row = QWidget(self)
+        startup_layout = QHBoxLayout(self._wow_startup_warning_row)
+        startup_layout.setContentsMargins(0, 0, 0, 0)
+        self.wow_startup_status_label = QLabel(self._wow_startup_warning_row)
+        self.wow_startup_status_label.setWordWrap(True)
+        self.wow_startup_status_label.setAccessibleName("WoW launch watcher status")
+        startup_layout.addWidget(self.wow_startup_status_label, 1)
+        self.wow_startup_repair_button = QPushButton(
+            "Enable watcher", self._wow_startup_warning_row
+        )
+        self.wow_startup_repair_button.setToolTip(
+            "Allow Windows to start the hidden WoW watcher at sign-in. "
+            "This does not open Companion until WoW starts."
+        )
+        self.wow_startup_repair_button.clicked.connect(self._request_wow_sync_repair)
+        startup_layout.addWidget(self.wow_startup_repair_button)
+        scouting_form.addRow(self._wow_startup_warning_row)
+        self.sync_with_wow_check.toggled.connect(self.refresh_wow_sync_status)
+        self._wow_startup_status_timer = QTimer(self)
+        self._wow_startup_status_timer.setInterval(3000)
+        self._wow_startup_status_timer.timeout.connect(self._poll_wow_startup_status)
+        self.refresh_wow_sync_status()
 
         root.addWidget(usage_section)
 
@@ -1390,11 +1445,64 @@ class SettingsDialog(QDialog):
     def showEvent(self, event):  # type: ignore[override]
         self._clamp_runtime_geometry()
         super().showEvent(event)
+        self.refresh_wow_sync_status()
+        if self._wow_startup_state is not None and not self._first_run:
+            self._wow_startup_status_timer.start()
         if (
             self._screenshots_validation_ready_generation
             != self._screenshots_validation_generation
         ):
             self._start_screenshots_validation(self.screenshots_edit.text().strip())
+
+    def _poll_wow_startup_status(self) -> None:
+        if self.isVisible():
+            self.refresh_wow_sync_status()
+        else:
+            self._wow_startup_status_timer.stop()
+
+    def refresh_wow_sync_status(self) -> None:
+        if (
+            self._first_run
+            or self._wow_startup_state is None
+            or not self.sync_with_wow_check.isChecked()
+        ):
+            self._wow_startup_warning_row.hide()
+            return
+        if self._wow_sync_repair_pending:
+            message = "Enabling background WoW detection…"
+            state = "pending"
+        else:
+            try:
+                state = self._wow_startup_state()
+            except OSError:
+                state = "unknown"
+            message = {
+                "enabled": "",
+                "disabled": "Windows has blocked the WoW launch watcher.",
+                "missing": "The WoW launch watcher is not set up.",
+                "unsupported": "Automatic WoW detection requires Windows.",
+            }.get(state, "Could not check the WoW launch watcher.")
+        self.wow_startup_status_label.setText(message)
+        self._wow_startup_warning_row.setVisible(bool(message))
+        self.wow_startup_repair_button.setText(
+            "Enable watcher" if state == "disabled" else "Repair watcher"
+        )
+        self.wow_startup_repair_button.setVisible(state != "unsupported")
+        self.wow_startup_repair_button.setEnabled(
+            not self._wow_sync_repair_pending and self._settings_interactions_enabled()
+        )
+
+    def set_wow_sync_repair_pending(self, pending: bool) -> None:
+        self._wow_sync_repair_pending = pending
+        self.refresh_wow_sync_status()
+
+    def _request_wow_sync_repair(self) -> None:
+        if (
+            self.sync_with_wow_check.isChecked()
+            and not self._wow_sync_repair_pending
+            and self._settings_interactions_enabled()
+        ):
+            self.wowSyncRepairRequested.emit()
 
     def _change_usage_consent(self, enabled: bool) -> None:
         if self._usage_client is None:
@@ -1537,6 +1645,9 @@ class SettingsDialog(QDialog):
         self.logs_action.setEnabled(enabled)
         self.changelog_action.setEnabled(enabled)
         self.cache_action.setEnabled(enabled and not self._cache_action_in_progress)
+        self.wow_startup_repair_button.setEnabled(
+            enabled and not self._wow_sync_repair_pending
+        )
 
     def accept(self) -> None:  # type: ignore[override]
         if self._cache_action_in_progress:
@@ -2240,6 +2351,7 @@ class SettingsDialog(QDialog):
         values_form = QFormLayout()
         values_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         values_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        values_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         layout.addLayout(values_form)
 
         app_name_edit = QLineEdit(WCL_CREATE_CLIENT_APP_NAME)
@@ -2292,35 +2404,23 @@ class SettingsDialog(QDialog):
         values_form.addRow("Public Client", public_client)
         layout.addWidget(copy_status)
 
-        image = QLabel()
-        image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image.setObjectName("wclSetupExampleImage")
         pixmap = QPixmap(str(WCL_CREATE_CLIENT_EXAMPLE_PATH))
+        image = _FittedExampleImage(pixmap)
+        image.setObjectName("wclSetupExampleImage")
         if pixmap.isNull():
             image.setText(
                 "Example screenshot is unavailable. Use Redirect URL "
                 f"{WCL_CREATE_CLIENT_REDIRECT_URL} and leave Public Client unchecked."
             )
             image.setWordWrap(True)
-        else:
-            image.setPixmap(
-                pixmap.scaledToWidth(
-                    min(900, max(200, width_limit - 64)),
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-
-        scroll = QScrollArea()
-        scroll.setObjectName("wclExampleScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(content)
-        layout.addWidget(image)
-        outer.addWidget(scroll)
+            image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        outer.addWidget(content)
+        outer.addWidget(image, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(popup.reject)
         outer.addWidget(buttons)
-        popup.resize(min(720, width_limit), min(680, height_limit))
+        popup.resize(min(600, width_limit), min(500, height_limit))
         return popup
 
     def _copyable_value_row(
@@ -2332,6 +2432,7 @@ class SettingsDialog(QDialog):
         status: QLabel,
     ) -> QWidget:
         row = QWidget(self)
+        row.setMinimumWidth(220)
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(6)

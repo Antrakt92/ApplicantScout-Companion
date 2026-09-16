@@ -24,6 +24,7 @@ from PyQt6.QtCore import (
     QObject,
     QPoint,
     QRect,
+    QRectF,
 )
 from PyQt6.QtGui import (
     QColor,
@@ -37,7 +38,9 @@ from PyQt6.QtGui import (
     QMouseEvent,
     QPalette,
     QPainter,
+    QPainterPath,
     QPixmap,
+    QRegion,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -102,10 +105,12 @@ from .scoring import (
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
+    fit_colour,
     listing_dungeon_keys,
     package_fit,
     positive_int,
     role_mplus_view,
+    safe_percent,
 )
 from .state import (
     Applicant,
@@ -168,7 +173,6 @@ RAID_COMPACT_KILL_WIDTH = 74
 RAID_COMPACT_METRIC_WIDTH = 130
 METRIC_COLUMN_TEXT_PADDING = 14
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT = range(9)
-FIT_BACKGROUND = "#292c36"
 FIT_GROUP_BACKGROUND = "#343946"
 RAID_COL_BY_TARGET = {"N": COL_N, "H": COL_H, "M": COL_M}
 WINDOW_CHROME_WIDTH = 12
@@ -1264,6 +1268,7 @@ class OverlayLauncher(_KeyboardButton):
             | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setObjectName("overlayLauncher")
         self.setFixedSize(LAUNCHER_SIZE, LAUNCHER_SIZE)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -1283,6 +1288,13 @@ class OverlayLauncher(_KeyboardButton):
         self._drag_timer = QTimer(self)
         self._drag_timer.setInterval(LAUNCHER_DRAG_POLL_MS)
         self._drag_timer.timeout.connect(self._poll_drag_cursor)
+        # Match the stylesheet's rounded frame for both painting and native hit testing.
+        outline = QPainterPath()
+        outline.addRoundedRect(QRectF(self.rect()), 11, 11)
+        self.setMask(QRegion(outline.toFillPolygon().toPolygon()))
+
+    def hitButton(self, pos: QPoint) -> bool:  # noqa: N802
+        return self.mask().contains(pos)
 
     def show_at(self, pos: QPoint) -> None:
         if self._drag_active:
@@ -1357,6 +1369,9 @@ class OverlayLauncher(_KeyboardButton):
             self._finish_drag(emit_click=True)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if not self.hitButton(event.position().toPoint()):
+            event.ignore()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_global_pos = event.globalPosition().toPoint()
             self._press_window_pos = self.pos()
@@ -1454,7 +1469,7 @@ class SourceTabBar(QWidget):
             layout.addWidget(button)
         self._key_label = QLabel("Key")
         self._key_label.setObjectName("targetKeyLabel")
-        self._key_label.setToolTip("Manual Mythic+ key level for fit scoring.")
+        self._key_label.setToolTip("Target key for Fit. WCL parse colours stay unchanged.")
         self._key_label.setAccessibleName("Manual Mythic Plus target key label")
         key_label_font = self._key_label.font()
         key_label_font.setBold(True)
@@ -1479,7 +1494,7 @@ class SourceTabBar(QWidget):
             "Use Up or Down to set the current Mythic Plus key level. Zero means unknown."
         )
         self._key_spin.setToolTip(
-            "Set the current Mythic+ key when the addon cannot read it from your own listing."
+            "Set the target Mythic+ key for Fit. This does not change WCL parses or their colours."
         )
         key_spin_font = self._key_spin.font()
         key_spin_font.setBold(True)
@@ -2355,7 +2370,7 @@ class ApplicantInfoPanel(QFrame):
             )
             if count > 0
         )
-        bg = FIT_GROUP_BACKGROUND
+        bg = _package_fit_colour(package)
         self._set_badge(self._package_label, " · ".join(summary), bg, _text_colour_for_bg(bg))
 
         description_parts = []
@@ -3210,7 +3225,6 @@ class OverlayWindow(QMainWindow):
         self._wcl_client = wcl_client
         self._cache = cache
         self._config_dir = config_dir
-        self._listing_present = state.listing is not None
         # WHY: when a raid listing closes after the group forms, Party still
         # needs the last raid difficulty for fit scoring until the roster ends.
         self._last_raid_listing: Listing | None = (
@@ -3280,7 +3294,8 @@ class OverlayWindow(QMainWindow):
         layout.addWidget(self._title_bar)
 
         self._active_tab = "applicants"
-        self._party_tab_auto_selected = False
+        self._source_tab_initialized = bool(self._state.listing or self._state.count())
+        self._sort_by_tab: dict[str, tuple[int, bool]] = {}
         self._hover_by_tab: dict[str, str | None] = {
             "applicants": None,
             "party": None,
@@ -3362,12 +3377,18 @@ class OverlayWindow(QMainWindow):
         for col, tip_text in enumerate(HEADER_TOOLTIPS):
             header_item = self._table.horizontalHeaderItem(col)
             if header_item is not None:
-                header_item.setToolTip(tip_text)
+                header_item.setToolTip(
+                    f"{tip_text}\nClick to sort; click again to reverse the order."
+                )
         # The header is a separate QHeaderView child. Install an event filter on
         # its viewport so QHelpEvents route to OverlayWindow.eventFilter and its
         # reliable screen-parented QToolTip.showText path.
         header_widget = self._table.horizontalHeader()
         if header_widget is not None:
+            # Sort the source rows ourselves so joint applications stay together
+            # and hover/pin identities follow their rows through the rebuild.
+            header_widget.setSectionsClickable(True)
+            header_widget.sectionClicked.connect(self._on_sort_column_clicked)
             header_vp = header_widget.viewport()
             if header_vp is not None:
                 header_vp.installEventFilter(self)
@@ -3910,15 +3931,90 @@ class OverlayWindow(QMainWindow):
             self.raise_()
 
     def _on_source_tab_changed(self, key: str) -> None:
+        self._source_tab_initialized = True
         if key == self._active_tab:
-            if key == "party":
-                self._party_tab_auto_selected = False
             return
-        self._select_tab_state(key, auto_selected=False)
+        self._select_tab_state(key)
         self._refresh_table()
         self._update_title()
 
-    def _select_tab_state(self, key: str, *, auto_selected: bool) -> None:
+    def _on_sort_column_clicked(self, column: int) -> None:
+        if not 0 <= column < len(COLUMN_HEADERS) or self._table.isColumnHidden(column):
+            return
+        previous = self._sort_by_tab.get(self._active_tab)
+        descending = column not in {COL_SPEC, COL_NAME}
+        if previous is not None and previous[0] == column:
+            descending = not previous[1]
+        self._sort_by_tab[self._active_tab] = (column, descending)
+        self._metric_column_widths_dirty = True
+        self._refresh_table()
+
+    def _active_manual_sort(self) -> tuple[int, bool] | None:
+        selected = self._sort_by_tab.get(self._active_tab)
+        if selected is not None and not self._table.isColumnHidden(selected[0]):
+            return selected
+        return None
+
+    def _sort_rows_by_selected_column(
+        self,
+        rows: list[Applicant],
+        listing: Listing | None,
+        package_fits: dict[str, PackageFit],
+        candidate_fits: dict[str, CandidateFit],
+    ) -> list[Applicant]:
+        selected = self._active_manual_sort()
+        if selected is None:
+            return rows
+        column, descending = selected
+        unready_groups = {
+            _split_composite(row.applicant_id)[0]
+            for row in rows
+            if row.fetch_status != "ready"
+        }
+
+        def value_for(applicant: Applicant) -> float | str | None:
+            if column == COL_SPEC:
+                label = SPEC_SHORT_NAMES.get(applicant.spec_id, f"#{applicant.spec_id}")
+                # Shared labels such as Frost or Prot still represent distinct specs.
+                return f"{label}\0{applicant.cls}\0{applicant.spec_id:04d}"
+            if column == COL_NAME:
+                return applicant.name.split("-", 1)[0]
+            if column == COL_ILVL:
+                return applicant.ilvl or None
+            if column == COL_RIO:
+                return effective_rio_score(applicant) or None
+            if column == COL_FIT:
+                raw_aid, _ = _split_composite(applicant.applicant_id)
+                package = package_fits.get(raw_aid)
+                if package is not None and package.display and (
+                    package.context == CONTEXT_MPLUS or raw_aid not in unready_groups
+                ):
+                    return package.score
+                if applicant.fetch_status in {"loading", "pending"}:
+                    return None
+                fit = candidate_fits.get(applicant.applicant_id)
+                if fit is None:
+                    fit = candidate_fit(applicant, listing)
+                    candidate_fits[applicant.applicant_id] = fit
+                return fit.score if fit.display else None
+            if applicant.fetch_status != "ready":
+                return None
+            if column == COL_MPLUS:
+                return role_mplus_view(applicant)[2]
+            return safe_percent({
+                COL_N: applicant.raid_normal,
+                COL_H: applicant.raid_heroic,
+                COL_M: applicant.raid_mythic,
+            }.get(column))
+
+        return _overlay_rows.sort_rows_by_value(
+            rows,
+            value_for=value_for,
+            descending=descending,
+            grouped=self._active_tab == "applicants",
+        )
+
+    def _select_tab_state(self, key: str) -> None:
         if key not in self._hover_by_tab:
             return
         if key != self._active_tab:
@@ -3931,7 +4027,6 @@ class OverlayWindow(QMainWindow):
             self._pinned_id = self._pinned_by_tab.get(key)
             self._keyboard_id = self._keyboard_by_tab.get(key)
             self._keyboard_preview_active = False
-        self._party_tab_auto_selected = auto_selected
         self._tab_bar.set_active(key, emit=False)
         self._update_table_accessibility_context()
 
@@ -3997,6 +4092,21 @@ class OverlayWindow(QMainWindow):
             for member in self._state.party_members.values()
         )
 
+    def _party_raid_difficulty_id(self) -> int | None:
+        difficulties = {
+            getattr(member, "raid_difficulty_id", None)
+            for member in self._state.party_members.values()
+        }
+        if not difficulties or difficulties == {None}:
+            return None
+        if len(difficulties) == 1:
+            difficulty = next(iter(difficulties))
+            if difficulty in (14, 15, 16):
+                return difficulty
+        # Mixed or explicitly unavailable context must not revive a previous
+        # raid difficulty while a roster refresh is incomplete.
+        return 0
+
     def _should_show_target_key_control(self) -> bool:
         listing = self._state.listing
         if listing is not None and detect_listing_context(listing) == CONTEXT_RAID:
@@ -4005,18 +4115,17 @@ class OverlayWindow(QMainWindow):
             return False
         return not self._party_roster_is_raid()
 
-    def _restore_applicants_after_party_fallback(self) -> None:
-        if self._active_tab != "party" or not self._party_tab_auto_selected:
+    def _initialize_source_tab(self) -> None:
+        # Choose a useful first view, then leave navigation to the user even
+        # when a listing ends, the roster empties, or new applicants arrive.
+        if self._source_tab_initialized:
             return
-        self._select_tab_state("applicants", auto_selected=False)
-        self._clear_role_filter()
-
-    def _should_auto_select_party(self) -> bool:
-        return (
-            self._state.listing is None
-            and self._state.count() == 0
-            and len(self._state.party_members) > 0
-        )
+        if self._state.listing is not None or self._state.count():
+            self._source_tab_initialized = True
+        elif self._state.party_members:
+            self._source_tab_initialized = True
+            self._select_tab_state("party")
+            self._clear_role_filter()
 
     def on_applicant_added(self, applicant: Applicant) -> None:
         if applicant.applicant_id in self._pending_removed_applicant_ids:
@@ -4027,7 +4136,7 @@ class OverlayWindow(QMainWindow):
             ):
                 self._keyboard_id = None
                 self._keyboard_preview_active = False
-        self._restore_applicants_after_party_fallback()
+        self._initialize_source_tab()
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
         # "loading" before _refresh_table reads it. Otherwise the cell briefly
         # renders the default "pending" state (which displays as "no data") for
@@ -4037,7 +4146,7 @@ class OverlayWindow(QMainWindow):
         self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_updated(self, applicant: Applicant) -> None:
-        self._restore_applicants_after_party_fallback()
+        self._initialize_source_tab()
         # Re-fetch ONLY when fetch_status is "pending" — apply_snapshot resets
         # to pending on (a) newly seen applicant id and (b) spec_id change.
         # Other field updates (score, ilvl, role) don't invalidate WCL data, so
@@ -4098,20 +4207,20 @@ class OverlayWindow(QMainWindow):
                 self._schedule_overlay_refresh(update_title=True)
                 return
             if has_party:
-                self._select_tab_state("party", auto_selected=True)
-                self._clear_role_filter()
+                self._initialize_source_tab()
                 self._schedule_overlay_refresh(update_title=True, maybe_show=True)
                 return
             self.show_launcher_only()
 
     def on_listing_changed(self) -> None:
         listing = self._state.listing
-        if detect_listing_context(listing) == CONTEXT_RAID:
+        if self._party_roster_is_raid() and self._party_raid_difficulty_id() == 0:
+            self._last_raid_listing = None
+        elif detect_listing_context(listing) == CONTEXT_RAID:
             self._last_raid_listing = listing
         elif listing is not None:
             self._last_raid_listing = None
-        listing_created = listing is not None and not self._listing_present
-        self._listing_present = listing is not None
+        self._initialize_source_tab()
         if (
             self._manual_target_key is not None
             and listing is not None
@@ -4132,13 +4241,6 @@ class OverlayWindow(QMainWindow):
         # listing comment edits would re-show the window otherwise.
         if self._state.listing is None:
             return
-        if (
-            listing_created
-            and self._active_tab == "party"
-            and self._party_tab_auto_selected
-        ):
-            self._select_tab_state("applicants", auto_selected=False)
-            self._clear_role_filter()
         if self._state.count() > 0:
             self._maybe_show()
 
@@ -4241,7 +4343,7 @@ class OverlayWindow(QMainWindow):
                 member = self._state.party_members.get(applicant_id)
                 if member is not None and member.fetch_status in {"pending", "loading"}:
                     self._launch_fetch(member)
-            self._select_tab_state("party", auto_selected=True)
+            self._initialize_source_tab()
             self._schedule_overlay_refresh(update_title=True, maybe_show=True)
             return
         # Only hide if there's also no active listing or Party roster. EMPTY
@@ -4257,6 +4359,10 @@ class OverlayWindow(QMainWindow):
             self._party_roster_is_raid() if self._state.party_members else None
         )
         if not self._last_decode_roster_unavailable:
+            if self._party_raid_difficulty_id() is not None:
+                # Current roster context supersedes remembered LFG context,
+                # including an explicit unknown or unsupported difficulty.
+                self._last_raid_listing = None
             if (
                 self._state.listing is None
                 and self._last_authoritative_roster_is_raid is True
@@ -4294,16 +4400,10 @@ class OverlayWindow(QMainWindow):
             self._schedule_overlay_refresh(update_title=True, maybe_show=False)
             self.show_launcher_only()
             return
-        if self._active_tab == "party" and len(self._state.party_members) == 0:
-            self._select_tab_state("applicants", auto_selected=False)
-            self._clear_role_filter()
-        should_show_party = self._should_auto_select_party()
-        if should_show_party:
-            self._select_tab_state("party", auto_selected=True)
-            self._clear_role_filter()
+        self._initialize_source_tab()
         self._schedule_overlay_refresh(
             update_title=True,
-            maybe_show=should_show_party,
+            maybe_show=self._active_tab == "party" and bool(self._state.party_members),
         )
 
     def note_decode(self, snap: object) -> None:
@@ -4835,6 +4935,21 @@ class OverlayWindow(QMainWindow):
         return self._state.applicants
 
     def _effective_listing(self) -> Listing | None:
+        if self._active_tab == "party" and self._party_roster_is_raid():
+            difficulty = self._party_raid_difficulty_id()
+            if difficulty is not None:
+                return Listing(
+                    activity_id=0,
+                    dungeon_name="Raid",
+                    listing_name="",
+                    comment="",
+                    category_id=3,
+                    difficulty_id=difficulty,
+                )
+            # Older addons did not send the group's selected difficulty.
+            if detect_listing_context(self._state.listing) == CONTEXT_RAID:
+                return self._state.listing
+            return self._last_raid_listing
         leader_target_key = self._leader_target_key()
         if self._manual_target_key is None or not self._can_apply_manual_target_key():
             if self._state.listing is not None and leader_target_key > 0:
@@ -5617,7 +5732,7 @@ class OverlayWindow(QMainWindow):
         self._accessible_interaction_state_by_id = current_state
 
     def _refresh_table(self) -> None:
-        """Refresh the table sorted by effective RIO score DESC.
+        """Refresh the table using the selected or default source order.
         Full rebuild when row identity/order changes; otherwise only rows whose
         render key changed are rewritten. This keeps burst snapshots from
         recreating every QTableWidgetItem when the visible order is stable.
@@ -5668,6 +5783,9 @@ class OverlayWindow(QMainWindow):
                 package_fit_cache=self._package_fit_cache_by_raw,
                 fit_cache_context=self._metric_preferences.cache_key(),
             )
+        sorted_applicants = self._sort_rows_by_selected_column(
+            sorted_applicants, listing, sorted_package_fit_by_raw, sorted_candidate_fit_by_id
+        )
         self._group_size_by_raw = {}
         self._group_position_by_id = {}
         self._group_ready_by_raw = {}
@@ -6016,9 +6134,17 @@ class OverlayWindow(QMainWindow):
         )
         table_header = self._table.horizontalHeader()
         if table_header is not None:
-            table_header.setSortIndicator(sort_column, Qt.SortOrder.DescendingOrder)
+            selected = self._active_manual_sort()
+            descending = True
+            if selected is not None:
+                sort_column, descending = selected
+            table_header.setSortIndicator(
+                sort_column,
+                Qt.SortOrder.DescendingOrder if descending else Qt.SortOrder.AscendingOrder,
+            )
             table_header.setSortIndicatorShown(
-                self._active_tab == "applicants" and not self._table.isColumnHidden(sort_column)
+                (selected is not None or self._active_tab == "applicants")
+                and not self._table.isColumnHidden(sort_column)
             )
         target = _raid_target_key_for_listing(listing)
         target_name = {"N": "Normal", "H": "Heroic", "M": "Mythic"}.get(target, "")
@@ -7081,7 +7207,7 @@ def _fit_cell_visuals(
             return "?", "#ff5555", None
         return "—", "#888", None
     text = f"~{int(round(current_fit.score))}"
-    bg = FIT_BACKGROUND
+    bg = fit_colour(current_fit.score)
     return text, _text_colour_for_bg(bg) if bg else None, bg
 
 
@@ -7195,7 +7321,7 @@ def _mplus_group_cell(
     fit: CandidateFit | None = None,
 ) -> QTableWidgetItem:
     package_text = f"G{package.size} ~{int(round(package.score))}"
-    package_bg = FIT_GROUP_BACKGROUND
+    package_bg = _package_fit_colour(package)
     individual_text, individual_fg, individual_bg = _fit_cell_visuals(
         applicant, listing, fit=fit
     )
@@ -7208,6 +7334,12 @@ def _mplus_group_cell(
     item.setData(MPLUS_INDIVIDUAL_BG_ROLE, individual_bg or "")
     item.setFont(_metric_cell_font(item.font(), bold=True))
     return item
+
+
+def _package_fit_colour(package: PackageFit) -> str:
+    if not any(member.display for member in package.member_fits):
+        return FIT_GROUP_BACKGROUND
+    return fit_colour(package.score)
 
 
 def _format_age(delta_sec: float) -> str:

@@ -1289,7 +1289,7 @@ def test_party_raid_detail_completion_survives_listing_clear(qtbot, tmp_path):
 
     try:
         window._pool = queued_pool
-        window._select_tab_state("party", auto_selected=False)
+        window._select_tab_state("party")
         window._refresh_table()
         window._hover_id = member.applicant_id
         window._sync_delegate_and_panel()
@@ -5693,7 +5693,7 @@ def test_delayed_roster_after_last_applicant_removed_keeps_open_listing_on_appli
         assert not window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert window._active_tab == "applicants"
-        assert not window._party_tab_auto_selected
+        assert window._source_tab_initialized
     finally:
         if QWidget.mouseGrabber() is window._launcher:
             window._launcher.releaseMouse()
@@ -6784,7 +6784,7 @@ def test_raid_listing_table_keeps_raw_evidence_coloured_and_fit_separate(
         fit_item = window._table.item(row, COL_FIT)
         assert fit_item.text().startswith("~")
         assert fit_item.text()[1:].isdigit()
-        assert fit_item.background().color().name() == overlay_mod.FIT_BACKGROUND
+        assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
         assert fit_item.background().style() != Qt.BrushStyle.NoBrush
         assert window._fetches_in_flight == {}
         assert window._raid_boss_fetches_in_flight == {}
@@ -7553,7 +7553,7 @@ def test_role_update_clears_hidden_hover_and_pin_under_active_filter(qtbot, tmp_
         client.close()
 
 
-def test_applicant_tab_pin_cache_clears_when_listing_clears_to_party(
+def test_applicant_tab_pin_cache_clears_when_listing_clears_while_viewing_party(
     qtbot, tmp_path
 ):
     auth = WCLAuth("client", "secret", tmp_path)
@@ -7570,6 +7570,7 @@ def test_applicant_tab_pin_cache_clears_when_listing_clears_to_party(
         window._refresh_table()
         window._on_cell_clicked(window._row_for_id["42"], 0)
         assert window._pinned_by_tab["applicants"] == "42"
+        window._on_source_tab_changed("party")
 
         state.clear_all()
         state.listing = None

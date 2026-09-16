@@ -83,8 +83,9 @@ or logs. Settings save automatically as you change them.
 
 Mythic+, all raid difficulties and **Start and stop with WoW** start enabled
 when their preferences are unset. Your saved choices are preserved. After setup,
-WoW sync adds a Windows sign-in helper that starts the companion with WoW and
-closes it after WoW exits. Turn it off for manual launch and quit.
+WoW sync adds a background helper at Windows sign-in. It waits for WoW, then
+opens the companion; the companion closes after WoW exits. Turn sync off for
+manual launch and quit.
 
 When the system tray is available, closing the settings window hides it back to
 the tray; use the tray menu's **Quit ApplicantScout** action to close the
@@ -184,6 +185,10 @@ through the slash commands below.
   folder.
 - Want the companion to follow your game session: enable
   `Start and stop with WoW` in Settings.
+- The option is checked but startup does not work: check the Windows startup
+  status shown below it. Click **Enable watcher** or **Repair watcher** if
+  offered. If Windows refuses the change, enable **ApplicantScout Companion**
+  in Windows Settings → Apps → Startup.
 - Companion reports a screenshot setup error: open Settings and set the active
   `_retail_\Screenshots` folder. If `APSCOUT_SCREENSHOTS_PATH` is set as a
   process environment variable, correct or remove that override first.
@@ -209,6 +214,11 @@ release. This source tree supports ordinary logical APS1 snapshots through v9,
 applicant-partial authority frames on v11, and bounded v10 overflow fragment
 envelopes. Fragmented snapshots are applied only after exact reassembly of the
 complete inner logical payload.
+
+Roster flags also carry raid difficulty without adding bytes to the payload:
+bit `0x10` marks observed context, and bits `0x0C` encode unknown (`0`), Normal
+(`4`), Heroic (`8`), or Mythic (`12`). These bits apply only to raid members
+(`0x02`). Older rows omit `0x10`; older companions ignore the added bits.
 
 Decode a saved screenshot manually:
 

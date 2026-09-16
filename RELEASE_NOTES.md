@@ -1,5 +1,25 @@
 # ApplicantScout Companion Release Notes
 
+## 0.19.0 - 16-Sep-2026
+
+Paired release with ApplicantScout addon `0.11.0`.
+
+### Improved
+
+- Show raid Fit in Party without a Group Finder listing. Use the selected raid
+  difficulty outside a raid and the instance's actual difficulty inside it.
+- Sort by any column. Click again to reverse the order; grouped applications
+  stay together and missing values stay last.
+- Keep Applicants or Party selected when the roster, applicants, or listing changes.
+- Colour Fit estimates using the same thresholds as Warcraft Logs percentiles.
+  Changing the target key or raid difficulty updates Fit and its colour.
+- Detect when Windows blocks the WoW launch watcher and offer a repair in
+  Settings. The watcher stays in the background until WoW starts.
+- Fit the Warcraft Logs setup example to its window, keeping Copy buttons
+  visible without horizontal scrolling.
+- Remove opaque corners from the collapsed launcher.
+- Remove repeated download-file lists from release notes.
+
 ## 0.18.3 - 16-Sep-2026
 
 Paired release with ApplicantScout addon `0.10.6`.
@@ -10,14 +30,6 @@ Paired release with ApplicantScout addon `0.10.6`.
 - Ship the QR decoder with a verified libiconv build and complete source and
   license records for its native dependencies.
 - Clarify setup instructions and third-party notices.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.10.6`.
-- Installer: `ApplicantScoutCompanionSetup-0.18.3.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.18.3.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.18.3-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.18.3-release-manifest.json`
 
 ## 0.18.2 - 11-Sep-2026
 
@@ -32,14 +44,6 @@ Paired release with ApplicantScout addon `0.10.5`.
 - Explain what is sent, Cloudflare hosting, 90-day active retention and the
   additional seven-day recovery window in the privacy notice.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.10.5`.
-- Installer: `ApplicantScoutCompanionSetup-0.18.2.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.18.2.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.18.2-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.18.2-release-manifest.json`
-
 ## 0.18.1 - 10-Sep-2026
 
 Paired release with ApplicantScout addon `0.10.4`.
@@ -53,14 +57,6 @@ Paired release with ApplicantScout addon `0.10.4`.
 - Preserve the previous startup configuration if first-time setup cannot be saved.
 - Center dungeon parse values in the detail card.
 - Keep the complete release history available in release notes.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.10.4`.
-- Installer: `ApplicantScoutCompanionSetup-0.18.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.18.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.18.1-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.18.1-release-manifest.json`
 
 ## 0.17.1 - 09-Sep-2026
 
@@ -80,14 +76,6 @@ Paired release with ApplicantScout addon `0.10.2`.
 - Show update progress and allow cancellation before the installer starts.
 - Keep the WCL setup example usable on small screens.
 - Safely finish background folder checks when Settings closes.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.10.2`.
-- Installer: `ApplicantScoutCompanionSetup-0.17.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.17.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.17.1-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.17.1-release-manifest.json`
 
 ## 0.16.0 - 08-Sep-2026
 
@@ -117,14 +105,6 @@ Paired release with ApplicantScout addon `0.10.0`.
 - Prevent interrupted cache writes from restoring a cleared applicant snapshot.
 - Keep optional reporting failures from interrupting startup or Settings.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.10.0`.
-- Installer: `ApplicantScoutCompanionSetup-0.16.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.16.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.16.0-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.16.0-release-manifest.json`
-
 ## 0.15.2 - 08-Sep-2026
 
 Paired release with ApplicantScout addon `0.9.16`.
@@ -141,14 +121,6 @@ Paired release with ApplicantScout addon `0.9.16`.
 ### Maintenance
 
 - Update the packaged dependencies and build tools.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.16`.
-- Installer: `ApplicantScoutCompanionSetup-0.15.2.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.15.2.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.15.2-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.15.2-release-manifest.json`
 
 ## 0.15.1 - 05-Sep-2026
 
@@ -195,14 +167,6 @@ Paired release with ApplicantScout addon `0.9.15`.
 - Pinned Python dependencies are checked against known PyPI advisories before
   release installation and artifact builds; incomplete checks block the build.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.15`.
-- Installer: `ApplicantScoutCompanionSetup-0.15.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.15.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.15.1-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.15.1-release-manifest.json`
-
 ## 0.14.7 - 02-Sep-2026
 
 Paired release with ApplicantScout addon `0.9.13`. This patch refreshes bundled
@@ -218,14 +182,6 @@ libraries without changing the overlay workflow or APS1 payload compatibility.
 - The paired addon retains its existing Mythic+ background-work suppression;
   its gameplay logic is unchanged.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.13`.
-- Installer: `ApplicantScoutCompanionSetup-0.14.7.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.14.7.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.14.7-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.14.7-release-manifest.json`
-
 ## 0.14.6 - 02-Sep-2026
 
 Paired release with ApplicantScout addon `0.9.12`, which reduces in-game
@@ -239,14 +195,6 @@ background work during Mythic+ and spreads QR encoding across frames.
   QR work prematurely or leave normal tracking paused indefinitely.
 - QR error correction avoids redundant calculations without changing APS1
   compatibility. Companion runtime behavior and dependency versions are unchanged.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.12`.
-- Installer: `ApplicantScoutCompanionSetup-0.14.6.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.14.6.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.14.6-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.14.6-release-manifest.json`
 
 ## 0.14.5 - 30-Aug-2026
 
@@ -275,14 +223,6 @@ failures without blocking the overlay.
 - Local release builds run source checks before entering the artifact-isolated
   Python environment, so repository test helpers remain available while frozen
   runtime discovery stays isolated.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.11`.
-- Installer: `ApplicantScoutCompanionSetup-0.14.5.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.14.5.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.14.5-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.14.5-release-manifest.json`
 
 ## 0.14.4 - 28-Aug-2026
 
@@ -330,14 +270,6 @@ screenshot decoder failures.
   bundle the CPython license explicitly, and ship only runtime plus incorporated
   bootloader dependency notices instead of the test/build environment.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.10`.
-- Installer: `ApplicantScoutCompanionSetup-0.14.4.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.14.4.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.14.4-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.14.4-release-manifest.json`
-
 ## 0.14.1 - 27-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.7`. This patch keeps QR transport
@@ -359,14 +291,6 @@ current while removing avoidable in-game work during combat and active runs.
 - Identical redundant deliveries reuse the already rendered QR, avoiding a
   second encode and texture pass while preserving two physical screenshots.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.7`.
-- Installer: `ApplicantScoutCompanionSetup-0.14.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.14.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.14.1-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.14.1-release-manifest.json`
-
 ## 0.14.0 - 21-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.6`. This release makes the live
@@ -387,14 +311,6 @@ scouting window denser, steadier, and more legible during rapid applicant review
 - Dark class colours use contrast-aware text, and populated raid views reserve
   enough width to avoid an immediate horizontal scrollbar.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.6`.
-- Installer: `ApplicantScoutCompanionSetup-0.14.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.14.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.14.0-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.14.0-release-manifest.json`
-
 ## 0.13.5 - 21-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.5`. This patch updates all
@@ -411,26 +327,10 @@ seasonal evidence and listing fallbacks for Midnight Season 2.
 - Dungeon-name matching now handles punctuation consistently, so Kings' Rest
   evidence merges and sorts correctly for localized and activity-ID listings.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.5`.
-- Installer: `ApplicantScoutCompanionSetup-0.13.5.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.13.5.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.13.5-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.13.5-release-manifest.json`
-
 ## 0.13.4 - 12-Aug-2026
 
 Paired release with ApplicantScout addon `0.9.4`. This release accompanies the
 addon's Retail Midnight 12.1.0-only compatibility metadata.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.4`.
-- Installer: `ApplicantScoutCompanionSetup-0.13.4.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.13.4.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.13.4-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.13.4-release-manifest.json`
 
 ## 0.13.3 - 03-Aug-2026
 
@@ -461,14 +361,6 @@ cache, watcher, and shutdown failures.
 - Draft verification now retries bounded transient GitHub read failures without
   repeating asset creation or publication.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.3`.
-- Installer: `ApplicantScoutCompanionSetup-0.13.3.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.13.3.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.13.3-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.13.3-release-manifest.json`
-
 ## 0.13.1 - 28-Jul-2026
 
 Paired release with ApplicantScout addon `0.9.1`. This patch keeps screenshot
@@ -496,14 +388,6 @@ showing the intended Mythic+ damage evidence for every role.
 - Snapshot ownership, updater validation, seasonal checks, and visual fixture
   rendering now share their canonical helpers, reducing divergent behavior
   between runtime, tools, and tests.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.1`.
-- Installer: `ApplicantScoutCompanionSetup-0.13.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.13.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.13.1-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.13.1-release-manifest.json`
 
 ## 0.13.0 - 25-Jul-2026
 
@@ -544,14 +428,6 @@ lifecycle changes, while making updater and publication failures fail closed.
   immutable writer after delayed GitHub propagation or a transient read error.
 - Watcher shutdown coverage proves that failed screenshot-path validation
   cannot leak a replacement watcher into later configuration work.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.9.0`.
-- Installer: `ApplicantScoutCompanionSetup-0.13.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.13.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.13.0-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.13.0-release-manifest.json`
 
 ## 0.12.1 - 23-Jul-2026
 
@@ -594,14 +470,6 @@ produced it.
 - Public support guidance now treats the complete local config/cache directories
   and live-snapshot/manual-index files as private diagnostic data.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.8.1`.
-- Installer: `ApplicantScoutCompanionSetup-0.12.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.12.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.12.1-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.12.1-release-manifest.json`
-
 ## 0.11.1 - 20-Jul-2026
 
 Paired release with ApplicantScout addon `0.7.1`. This patch restores automatic
@@ -623,14 +491,6 @@ from suppressing every later capture until `/reload`.
 - QR recovery validates the complete APS1 payload and checksum before claiming
   a screenshot, and skips the expensive full-screen scan after successful
   top-left recovery.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.7.1`.
-- Installer: `ApplicantScoutCompanionSetup-0.11.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.11.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.11.1-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.11.1-release-manifest.json`
 
 ## 0.11.0 - 20-Jul-2026
 
@@ -687,14 +547,6 @@ keeping normal and terminal snapshots on APS1 v9.
   undeclared environment copy.
 - The narrow publisher now downloads and verifies the exact draft assets,
   hashes, sizes, title, and body immediately before immutable publication.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.7.0`.
-- Installer: `ApplicantScoutCompanionSetup-0.11.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.11.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.11.0-portable.zip`
-- Immutable manifest: `ApplicantScoutCompanion-0.11.0-release-manifest.json`
 
 ## 0.10.1 - 18-Jul-2026
 
@@ -759,13 +611,6 @@ a keyboard or assistive technology.
 - `/apscout status` exposes the current QR phase, job age, recovery count, and
   texture cleanup high-water mark for support diagnostics.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.6.1`.
-- Installer: `ApplicantScoutCompanionSetup-0.10.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.10.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.10.1-portable.zip`
-
 ## 0.9.2 - 15-Jul-2026
 
 Paired release with ApplicantScout addon `0.5.2`. This patch restores reliable
@@ -792,13 +637,6 @@ state visible instead of presenting an older count as current.
 - Release publication now requires updater smoke from the latest published
   stable companion rather than accepting any older baseline.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.5.2`.
-- Installer: `ApplicantScoutCompanionSetup-0.9.2.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.9.2.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.9.2-portable.zip`
-
 ## 0.9.1 - 08-Jul-2026
 
 Paired release with ApplicantScout addon `0.5.1`. This patch makes Warcraft
@@ -820,13 +658,6 @@ footer accurate while manual raid-detail work is running.
 - The WCL footer now counts manual raid boss-detail fetches while quota data is
   still pending instead of reporting idle.
 - Role-filter copy now describes the default unfiltered state more clearly.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.5.1`.
-- Installer: `ApplicantScoutCompanionSetup-0.9.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.9.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.9.1-portable.zip`
 
 ## 0.9.0 - 03-Jul-2026
 
@@ -855,13 +686,6 @@ addon has to omit roster rows from a dense QR snapshot.
   whole private form buffer, while still blocking local paths and copy markers
   from public text.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.5.0`.
-- Installer: `ApplicantScoutCompanionSetup-0.9.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.9.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.9.0-portable.zip`
-
 ## 0.8.6 - 18-Jun-2026
 
 Companion-only reliability patch paired with the already published
@@ -884,13 +708,6 @@ ApplicantScout addon `0.4.9`. No addon update is required for this release.
   role-filter status, or snapshot logs.
 - Screenshot decode logs now say `applicant_rows` where the value is row count,
   making group snapshots easier to interpret while debugging.
-
-### Notes
-
-- Requires the ApplicantScout WoW addon `0.4.9`.
-- Installer: `ApplicantScoutCompanionSetup-0.8.6.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.8.6.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.8.6-portable.zip`
 
 ## 0.8.5 - 12-Jun-2026
 
@@ -939,13 +756,6 @@ Windows build path.
   before public artifacts are prepared.
 - Paired addon `0.4.8` hardens secret-tagged Midnight unit API reads and keeps
   active transport heartbeats running through temporary LFG-read lockdown.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.4.8`.
-- Installer: `ApplicantScoutCompanionSetup-0.8.5.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.8.5.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.8.5-portable.zip`
 
 ## 0.8.4 - 02-Jun-2026
 
@@ -1028,13 +838,6 @@ pauses.
   guards screenshots by completed paint generation, and reuses addon-side
   RaiderIO M+ summaries during large applicant payloads.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.4.7`.
-- Installer: `ApplicantScoutCompanionSetup-0.8.4.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.8.4.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.8.4-portable.zip`
-
 ## 0.8.2 - 30-May-2026
 
 Self-update restoration patch paired with ApplicantScout addon `0.4.5`. This
@@ -1047,13 +850,6 @@ builds.
 - Restored one-click in-app updates for unsigned installer releases after
   `.sha256` verification; checksums verify file integrity, not publisher
   identity.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.4.5`.
-- Installer: `ApplicantScoutCompanionSetup-0.8.2.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.8.2.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.8.2-portable.zip`
 
 ## 0.8.1 - 30-May-2026
 
@@ -1074,13 +870,6 @@ Warcraft Logs retry handling and refreshing anonymized public visual assets.
 - Made temporary Warcraft Logs OAuth outages reuse the normal rate-limit/server
   retry blocks, and added a scoped Retry WCL action for malformed or GraphQL
   row/detail failures.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.4.4`.
-- Installer: `ApplicantScoutCompanionSetup-0.8.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.8.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.8.1-portable.zip`
 
 ## 0.8.0 - 28-May-2026
 
@@ -1135,13 +924,6 @@ and Warcraft Logs resilience.
 - Fixed malformed or incomplete Warcraft Logs raid alias responses being treated
   as valid empty raid evidence.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.4.3`.
-- Installer: `ApplicantScoutCompanionSetup-0.8.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.8.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.8.0-portable.zip`
-
 ## 0.7.1 - 26-May-2026
 
 Reliability, updater, and startup-polish release paired with ApplicantScout
@@ -1180,13 +962,6 @@ screenshot scanning, and release-train validation more predictable.
 - Hardened paired release gates so companion releases validate the required
   addon version, release assets, and release notes before publishing.
 - Fixed release-check coverage around deterministic raid-detail retry expiry.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.4.2`.
-- Installer: `ApplicantScoutCompanionSetup-0.7.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.7.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.7.1-portable.zip`
 
 ## 0.7.0 - 24-May-2026
 
@@ -1245,13 +1020,6 @@ evidence instead of looking like the primary recommendation.
 - Fixed raid listings where a green M+ support row could be mistaken for the
   raid recommendation.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.4.1`.
-- Installer: `ApplicantScoutCompanionSetup-0.7.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.7.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.7.0-portable.zip`
-
 ## 0.6.0 - 23-May-2026
 
 Leader-key and party-context release paired with ApplicantScout addon `0.4.0`.
@@ -1307,13 +1075,6 @@ automatic Mythic+ target-key calibration from the current group leader.
 - Fixed several release/setup hardening edges around paired addon metadata,
   local cache handling, and update validation.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.4.0`.
-- Installer: `ApplicantScoutCompanionSetup-0.6.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.6.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.6.0-portable.zip`
-
 ## 0.5.5 - 22-May-2026
 
 Release and log-rollover hardening patch paired with the latest addon roster
@@ -1327,13 +1088,6 @@ transport fix.
   accept a newer already-published addon release.
 - Hardened paired release validation around addon metadata before publishing
   companion installer assets.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.3.4`.
-- Installer: `ApplicantScoutCompanionSetup-0.5.5.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.5.5.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.5.5-portable.zip`
 
 ## 0.5.4 - 21-May-2026
 
@@ -1372,13 +1126,6 @@ temporarily lacks spec context.
 - The paired addon now prioritizes empty applicant-list clears after applicants
   were previously shown, so the overlay does not keep a stale applicant visible
   while the in-game list is already empty.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.3.3`.
-- Installer: `ApplicantScoutCompanionSetup-0.5.4.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.5.4.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.5.4-portable.zip`
 
 ## 0.5.1 - 20-May-2026
 
@@ -1431,13 +1178,6 @@ and update/install lifecycle predictable during real WoW foreground changes.
 - Hardened config, updater, screenshot, Warcraft Logs, cache, and malformed
   snapshot boundaries that could leave stale UI state or unclear runtime
   errors.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.3.2`.
-- Installer: `ApplicantScoutCompanionSetup-0.5.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.5.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.5.1-portable.zip`
 
 ## 0.5.0 - 18-May-2026
 
@@ -1497,13 +1237,6 @@ and hover explanations match the evidence more closely.
 - Fixed malformed local RaiderIO profile records so one bad record no longer
   breaks local dungeon-row enrichment for the rest of the overlay.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.3.1`.
-- Installer: `ApplicantScoutCompanionSetup-0.5.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.5.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.5.0-portable.zip`
-
 ## 0.4.0 - 18-May-2026
 
 Party roster overlay release for reviewing the current group or raid alongside
@@ -1544,13 +1277,6 @@ normal Mythic+ applicants.
 - Fixed background visibility edge cases around the collapsed launcher and WoW
   foreground detection.
 
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.3.0`.
-- Installer: `ApplicantScoutCompanionSetup-0.4.0.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.4.0.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.4.0-portable.zip`
-
 ## 0.3.2 - 17-May-2026
 
 Screenshot decode startup/performance release for faster first overlay display
@@ -1564,13 +1290,6 @@ during live applicant waves.
 - Screenshot processing now logs slow stable-file wait and decode stages, making
   it clear whether future startup delays come from WoW writing the JPG or from
   the QR decoder itself.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.2.2`.
-- Installer: `ApplicantScoutCompanionSetup-0.3.2.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.3.2.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.3.2-portable.zip`
 
 ## 0.3.1 - 17-May-2026
 
@@ -1586,13 +1305,6 @@ slow, timing out, or returning transient server errors.
   of hammering the API.
 - Moved cached WCL lookups back onto the worker path so opening/updating the
   overlay stays responsive even with a large local character cache.
-
-### Release Assets
-
-- Requires the ApplicantScout WoW addon `0.2.1`.
-- Installer: `ApplicantScoutCompanionSetup-0.3.1.exe`
-- Installer checksum: `ApplicantScoutCompanionSetup-0.3.1.exe.sha256`
-- Portable archive: `ApplicantScoutCompanion-0.3.1-portable.zip`
 
 ## 0.3.0 - 17-May-2026
 
@@ -1696,10 +1408,6 @@ live applicant scouting.
 - Requires the ApplicantScout WoW addon `0.2.0`.
 - Supports ApplicantScout wire payloads through v5, keeping RaiderIO dungeon
   rows as companion-side local enrichment instead of QR transport data.
-- In-app updates require GitHub Release assets named
-  `ApplicantScoutCompanionSetup-0.3.0.exe` and
-  `ApplicantScoutCompanionSetup-0.3.0.exe.sha256`.
-
 ## 0.2.4 - 16-May-2026
 
 Live Mythic+ context and Warcraft Logs retry hardening for applicant sorting.
@@ -1727,10 +1435,6 @@ Live Mythic+ context and Warcraft Logs retry hardening for applicant sorting.
 
 - Requires the ApplicantScout WoW addon `0.1.6`.
 - Supports ApplicantScout wire payloads through v4.
-- In-app updates require GitHub Release assets named
-  `ApplicantScoutCompanionSetup-0.2.4.exe` and
-  `ApplicantScoutCompanionSetup-0.2.4.exe.sha256`.
-
 ## 0.2.3 - 15-May-2026
 
 Screenshot transport and update-flow hardening for live applicant sessions.
@@ -1759,10 +1463,6 @@ Screenshot transport and update-flow hardening for live applicant sessions.
 
 - Requires the ApplicantScout WoW addon `0.1.5`.
 - Supports ApplicantScout wire payloads through v4.
-- In-app updates require GitHub Release assets named
-  `ApplicantScoutCompanionSetup-0.2.3.exe` and
-  `ApplicantScoutCompanionSetup-0.2.3.exe.sha256`.
-
 ## 0.2.2 - 15-May-2026
 
 Mythic+ fit scoring is now more honest about weak logs, sparse evidence, and
@@ -1809,10 +1509,6 @@ low-key farm parses, with a smoother in-app update prompt.
 
 - Requires the ApplicantScout WoW addon `0.1.4`.
 - Supports ApplicantScout wire payloads through v4.
-- In-app updates require GitHub Release assets named
-  `ApplicantScoutCompanionSetup-0.2.2.exe` and
-  `ApplicantScoutCompanionSetup-0.2.2.exe.sha256`.
-
 ## 0.2.1 - 15-May-2026
 
 Small companion polish release for supportability.
@@ -1827,10 +1523,6 @@ Small companion polish release for supportability.
 
 - Requires the ApplicantScout WoW addon `0.1.3`.
 - Supports ApplicantScout wire payloads through v4.
-- In-app updates require GitHub Release assets named
-  `ApplicantScoutCompanionSetup-0.2.1.exe` and
-  `ApplicantScoutCompanionSetup-0.2.1.exe.sha256`.
-
 ## 0.2.0 - 15-May-2026
 
 Overlay polish, safer updates, and clearer release compatibility for
@@ -1870,10 +1562,6 @@ ApplicantScout addon `0.1.3`.
 
 - Requires the ApplicantScout WoW addon `0.1.3`.
 - Supports ApplicantScout wire payloads through v4.
-- In-app updates require GitHub Release assets named
-  `ApplicantScoutCompanionSetup-0.2.0.exe` and
-  `ApplicantScoutCompanionSetup-0.2.0.exe.sha256`.
-
 ## 0.1.0 - 10-May-2026
 
 Initial Windows companion build for ApplicantScout addon `0.1.0`.

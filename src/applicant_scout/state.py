@@ -179,6 +179,8 @@ class RosterMember(Applicant):
     subgroup: int = 0
     is_self: bool = False
     is_raid_member: bool = False
+    # None = older addon; 0 = observed but unsupported/unknown difficulty.
+    raid_difficulty_id: int | None = None
 
 
 @dataclass

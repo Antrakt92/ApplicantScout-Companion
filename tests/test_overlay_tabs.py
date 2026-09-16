@@ -8,14 +8,18 @@ from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QFontMetrics
 
 from applicant_scout.__main__ import StateMachine
+from applicant_scout.constants import percentile_colour
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.overlay import (
+    COL_SPEC,
+    COL_NAME,
+    COL_ILVL,
+    COL_N,
     COL_H,
     COL_M,
     COL_MPLUS,
     COL_FIT,
     COL_RIO,
-    FIT_BACKGROUND,
     INFO_PANEL_PREFERRED_HEIGHT,
     METRIC_COLUMN_TEXT_PADDING,
     MPLUS_TARGET_KEY_MAX,
@@ -44,6 +48,69 @@ class _FakeWCLClient:
 
 class _FakeCache:
     pass
+
+
+@pytest.mark.parametrize("selected_tab", ["applicants", "party"])
+@pytest.mark.parametrize("event", ["cleared", "roster", "roster_empty", "listing", "added", "updated", "removed"])
+def test_selected_source_tab_survives_data_updates(qtbot, tmp_path, selected_tab, event):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+    qtbot.mouseClick(win._tab_bar._buttons[selected_tab], Qt.MouseButton.LeftButton)
+
+    if event == "cleared":
+        win.on_cleared()
+    elif event == "roster":
+        win.on_roster_changed()
+    elif event == "roster_empty":
+        state.party_members.clear()
+        state.listing = _listing()
+        win.on_roster_changed()
+    elif event == "listing":
+        state.listing = _listing()
+        win.on_listing_changed()
+    elif event in {"added", "updated"}:
+        applicant = _app("7:1", "Applicant-Realm")
+        state.applicants[applicant.applicant_id] = applicant
+        getattr(win, f"on_applicant_{event}")(applicant)
+    else:
+        win.on_applicant_removed("7:1")
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == selected_tab
+    assert win._tab_bar._buttons[selected_tab].isChecked()
+
+
+@pytest.mark.parametrize("empty_cycle", [False, True])
+def test_initial_party_selection_survives_listing_and_applicant_updates(qtbot, tmp_path, empty_cycle):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._active_tab == "party"
+
+    if empty_cycle:
+        state.party_members.clear()
+        win.on_roster_changed()
+        win.on_cleared()
+        win._flush_overlay_refresh()
+        assert win._active_tab == "party"
+        state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+        win.on_roster_changed()
+
+    state.listing = _listing()
+    win.on_listing_changed()
+    applicant = _app("7:1", "Applicant-Realm")
+    state.applicants[applicant.applicant_id] = applicant
+    win.on_applicant_added(applicant)
+    win.on_applicant_updated(applicant)
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "party"
+    assert win._id_by_row == ["host-realm"]
 
 
 def _app(applicant_id: str, name: str, role: str = "DAMAGER") -> Applicant:
@@ -177,6 +244,211 @@ def _window(tmp_path, qtbot, state: AppState) -> OverlayWindow:
     qtbot.addWidget(win)
     qtbot.addWidget(win._launcher)
     return win
+
+
+def _click_sort_header(qtbot, win, column):
+    header = win._table.horizontalHeader()
+    point = QPoint(
+        header.sectionViewportPosition(column) + header.sectionSize(column) // 2,
+        header.height() // 2,
+    )
+    qtbot.mouseClick(header.viewport(), Qt.MouseButton.LeftButton, pos=point)
+
+
+def _sorting_window(qtbot, tmp_path, source):
+    state = AppState()
+    state.listing = _listing()
+    low = _ready_mplus_member("1:1")
+    low.name, low.spec_id, low.ilvl, low.score = "Alpha-Realm", 71, 310, 1500
+    low.raid_normal, low.raid_heroic, low.raid_mythic, low.mplus_dps = 9, 12, 3, 10
+    low.mplus_dps_median = 8
+    low.mplus_dps_breakdown = [{"key_level": 5, "parse_percent": 10, "run_count": 3}]
+    high = _ready_mplus_member("2:1")
+    high.name, high.spec_id, high.ilvl, high.score = "Zeta-Realm", 62, 340, 3300
+    high.raid_normal, high.raid_heroic, high.raid_mythic, high.mplus_dps = 99, 88, 90, 95
+    high.mplus_dps_median = 90
+    high.mplus_dps_breakdown = [{"key_level": 15, "parse_percent": 95, "run_count": 3}]
+    target = state.applicants if source == "applicants" else state.party_members
+    target.update({low.applicant_id: low, high.applicant_id: high})
+    win = _window(tmp_path, qtbot, state)
+    win._on_source_tab_changed(source)
+    win.resize(1400, 700)
+    win.show()
+    win._refresh_table()
+    return win, state, low, high
+
+
+@pytest.mark.parametrize("source", ["applicants", "party"])
+@pytest.mark.parametrize("column", [COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_FIT, COL_N, COL_H, COL_M, COL_MPLUS])
+def test_every_header_sorts_both_directions(qtbot, tmp_path, source, column):
+    win, _state, low, high = _sorting_window(qtbot, tmp_path, source)
+    first_order = [low.applicant_id, high.applicant_id] if column == COL_NAME else [high.applicant_id, low.applicant_id]
+
+    _click_sort_header(qtbot, win, column)
+
+    assert win._id_by_row == first_order
+    header = win._table.horizontalHeader()
+    assert header.isSortIndicatorShown()
+    assert header.sortIndicatorSection() == column
+    assert header.sortIndicatorOrder() == (
+        Qt.SortOrder.AscendingOrder if column in {COL_SPEC, COL_NAME} else Qt.SortOrder.DescendingOrder
+    )
+
+    _click_sort_header(qtbot, win, column)
+
+    assert win._id_by_row == list(reversed(first_order))
+    assert win._active_tab == source
+
+
+@pytest.mark.parametrize("source", ["applicants", "party"])
+def test_manual_sort_survives_refresh_and_keeps_pin_identity(qtbot, tmp_path, source):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, source)
+    win._on_cell_clicked(win._row_for_id[low.applicant_id], COL_NAME)
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert win._id_by_row == [high.applicant_id, low.applicant_id]
+    low.ilvl = 350
+    state.listing = _listing(key_level=15)
+    win.on_listing_changed()
+    if source == "party":
+        win.on_roster_changed()
+    else:
+        win.on_applicant_updated(low)
+    win._flush_overlay_refresh()
+
+    assert win._id_by_row == [low.applicant_id, high.applicant_id]
+    assert win._pinned_id == low.applicant_id
+    assert win._table.horizontalHeader().sortIndicatorSection() == COL_ILVL
+
+
+def test_manual_sort_is_separate_for_each_tab(qtbot, tmp_path):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    state.party_members.update({low.applicant_id: low, high.applicant_id: high})
+    _click_sort_header(qtbot, win, COL_NAME)
+    win._on_source_tab_changed("party")
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert win._id_by_row == [high.applicant_id, low.applicant_id]
+    win._on_source_tab_changed("applicants")
+    assert win._id_by_row == [low.applicant_id, high.applicant_id]
+    assert win._table.horizontalHeader().sortIndicatorSection() == COL_NAME
+    win._on_source_tab_changed("party")
+    assert win._id_by_row == [high.applicant_id, low.applicant_id]
+    assert win._table.horizontalHeader().sortIndicatorSection() == COL_ILVL
+
+
+def test_spec_sort_separates_same_label_specializations(qtbot, tmp_path):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, "party")
+    low.spec_id, low.cls = 64, "MAGE"
+    high.spec_id, high.cls = 64, "MAGE"
+    other = _member("3:1", "FrostDk-Realm", score=2500)
+    other.spec_id, other.cls = 251, "DEATHKNIGHT"
+    other.fetch_status = "ready"
+    state.party_members[other.applicant_id] = other
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._id_by_row == [high.applicant_id, other.applicant_id, low.applicant_id]
+
+    _click_sort_header(qtbot, win, COL_SPEC)
+    assert win._id_by_row == [other.applicant_id, high.applicant_id, low.applicant_id]
+    _click_sort_header(qtbot, win, COL_SPEC)
+    assert win._id_by_row == [high.applicant_id, low.applicant_id, other.applicant_id]
+
+
+@pytest.mark.parametrize("column", [COL_FIT, COL_N, COL_H, COL_M, COL_MPLUS])
+def test_parse_header_keeps_unavailable_rows_last(qtbot, tmp_path, column):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    unknown = _app("3:1", "Missing-Realm")
+    unknown.raid_normal = unknown.raid_heroic = unknown.raid_mythic = unknown.mplus_dps = 100
+    unknown.fetch_status = "loading"
+    state.applicants[unknown.applicant_id] = unknown
+    win.on_applicant_added(unknown)
+    win._flush_overlay_refresh()
+    _click_sort_header(qtbot, win, column)
+    assert win._id_by_row == [high.applicant_id, low.applicant_id, unknown.applicant_id]
+    _click_sort_header(qtbot, win, column)
+    assert win._id_by_row == [low.applicant_id, high.applicant_id, unknown.applicant_id]
+
+
+def test_header_sort_keeps_joint_applications_together(qtbot, tmp_path):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    partner = _app("1:2", "Partner-Realm")
+    partner.ilvl = 360
+    partner.fetch_status = "ready"
+    state.applicants[partner.applicant_id] = partner
+    win.on_applicant_added(partner)
+    win._flush_overlay_refresh()
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert win._id_by_row == [high.applicant_id, low.applicant_id, partner.applicant_id]
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert win._id_by_row == [low.applicant_id, partner.applicant_id, high.applicant_id]
+    assert win._group_size_by_raw["1"] == 2
+
+
+@pytest.mark.parametrize("column", [COL_N, COL_H, COL_M])
+@pytest.mark.parametrize("invalid", [-1, 150])
+def test_raid_header_treats_out_of_range_parses_as_missing(qtbot, tmp_path, column, invalid):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    unknown = _app("3:1", "Invalid-Realm")
+    unknown.fetch_status = "ready"
+    unknown.raid_normal = unknown.raid_heroic = unknown.raid_mythic = invalid
+    state.applicants[unknown.applicant_id] = unknown
+    win._refresh_table()
+    assert win._table.item(win._row_for_id[unknown.applicant_id], column).text() == "—"
+    _click_sort_header(qtbot, win, column)
+    assert win._id_by_row == [high.applicant_id, low.applicant_id, unknown.applicant_id]
+    _click_sort_header(qtbot, win, column)
+    assert win._id_by_row == [low.applicant_id, high.applicant_id, unknown.applicant_id]
+
+
+def test_hidden_manual_sort_column_resumes_when_shown_again(qtbot, tmp_path):
+    win, _state, _low, _high = _sorting_window(qtbot, tmp_path, "party")
+    _click_sort_header(qtbot, win, COL_MPLUS)
+    _click_sort_header(qtbot, win, COL_MPLUS)
+    win.apply_metric_preferences(MetricPreferences(mplus=False), refetch_missing=False)
+    header = win._table.horizontalHeader()
+    assert not header.isSortIndicatorShown()
+    win.apply_metric_preferences(MetricPreferences(mplus=True), refetch_missing=False)
+    assert header.isSortIndicatorShown()
+    assert header.sortIndicatorSection() == COL_MPLUS
+    assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+
+
+@pytest.mark.parametrize("raid", [False, True])
+def test_fit_sort_uses_only_the_group_estimate_that_is_displayed(qtbot, tmp_path, raid):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    partner = _app("2:2", "Partner-Realm")
+    partner.score = 3300
+    partner.fetch_status = "loading"
+    state.applicants[partner.applicant_id] = partner
+    if raid:
+        state.listing = _listing(key_level=0, category_id=3, difficulty_id=15)
+        win.on_listing_changed()
+    win.on_applicant_added(partner)
+    win._flush_overlay_refresh()
+
+    _click_sort_header(qtbot, win, COL_FIT)
+
+    group_text = win._table.item(win._row_for_id[high.applicant_id], COL_FIT).text()
+    if raid:
+        assert not group_text.startswith("G2")
+        assert win._table.item(win._row_for_id[partner.applicant_id], COL_FIT).text() == "…"
+        assert win._id_by_row == [low.applicant_id, high.applicant_id, partner.applicant_id]
+    else:
+        assert group_text.startswith("G2")
+        assert win._id_by_row == [high.applicant_id, partner.applicant_id, low.applicant_id]
+    _click_sort_header(qtbot, win, COL_FIT)
+    assert win._id_by_row == [low.applicant_id, high.applicant_id, partner.applicant_id]
+
+
+def test_parse_sort_keeps_partially_missing_application_last(qtbot, tmp_path):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    partner = _app("2:2", "Partner-Realm")
+    partner.fetch_status = "ready"
+    state.applicants[partner.applicant_id] = partner
+    win.on_applicant_added(partner)
+    win._flush_overlay_refresh()
+    for _ in range(2):
+        _click_sort_header(qtbot, win, COL_N)
+        assert win._id_by_row == [low.applicant_id, high.applicant_id, partner.applicant_id]
 
 
 @pytest.mark.parametrize(
@@ -444,7 +716,7 @@ def test_slot_identity_replacement_clears_applicant_interaction_state(
         qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
         win._on_cell_clicked(0, 0)
         assert win._active_tab == "party"
-        assert not win._party_tab_auto_selected
+        assert win._source_tab_initialized
         assert win._pinned_id == "host-realm"
         assert win._pinned_by_tab["party"] == "host-realm"
 
@@ -533,7 +805,7 @@ def test_roster_only_update_prepares_party_tab_without_forcing_overlay_open(
     assert win._table.rowCount() == 1
 
 
-def test_listing_created_after_roster_only_state_switches_back_to_applicants(
+def test_listing_created_preserves_initial_party_tab_and_filter(
     qtbot, tmp_path
 ):
     state = AppState()
@@ -552,9 +824,9 @@ def test_listing_created_after_roster_only_state_switches_back_to_applicants(
     win.on_listing_changed()
     win._flush_overlay_refresh()
 
-    assert win._active_tab == "applicants"
-    assert win._id_by_row == []
-    assert win._role_filter == set()
+    assert win._active_tab == "party"
+    assert win._id_by_row == ["host-realm"]
+    assert win._role_filter == {"TANK"}
 
 
 def test_party_tab_rio_cell_shows_current_and_main_scores(qtbot, tmp_path):
@@ -601,6 +873,7 @@ def test_cleared_raid_listing_preserves_party_raid_difficulty(qtbot, tmp_path):
     member.raid_heroic_median = 82.0
     state.party_members["host-realm"] = member
     win = _window(tmp_path, qtbot, state)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
     win.apply_metric_preferences(
         MetricPreferences(
             mplus=True,
@@ -636,6 +909,7 @@ def test_authoritative_party_replacement_clears_preserved_raid_context(
     state = AppState()
     sm = StateMachine(state)
     win = _window(tmp_path, qtbot, state)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
     sm.listingChanged.connect(win.on_listing_changed)
     sm.cleared.connect(win.on_cleared)
     sm.rosterChanged.connect(win.on_roster_changed)
@@ -682,6 +956,7 @@ def test_same_small_raid_party_refresh_keeps_preserved_raid_context(qtbot, tmp_p
     state = AppState()
     sm = StateMachine(state)
     win = _window(tmp_path, qtbot, state)
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
     sm.listingChanged.connect(win.on_listing_changed)
     sm.cleared.connect(win.on_cleared)
     sm.rosterChanged.connect(win.on_roster_changed)
@@ -824,7 +1099,7 @@ def test_cleared_listing_resets_role_filter_before_next_applicant_session(
     assert win._title_bar.title_label.text().endswith("(1)")
 
 
-def test_last_applicant_removed_preserves_visible_party_roster(qtbot, tmp_path):
+def test_last_applicant_removed_preserves_visible_applicants_tab(qtbot, tmp_path):
     state = AppState()
     state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
@@ -836,9 +1111,9 @@ def test_last_applicant_removed_preserves_visible_party_roster(qtbot, tmp_path):
     win._flush_overlay_refresh()
 
     assert win.isVisible()
-    assert win._active_tab == "party"
-    assert win._table.rowCount() == 1
-    assert win._id_by_row == ["host-realm"]
+    assert win._active_tab == "applicants"
+    assert win._table.rowCount() == 0
+    assert win._id_by_row == []
 
 
 def test_last_applicant_removed_keeps_applicants_tab_while_listing_open(
@@ -859,10 +1134,10 @@ def test_last_applicant_removed_keeps_applicants_tab_while_listing_open(
     assert win._active_tab == "applicants"
     assert win._table.rowCount() == 0
     assert win._id_by_row == []
-    assert not win._party_tab_auto_selected
+    assert win._source_tab_initialized
 
 
-def test_last_applicant_removed_does_not_carry_applicant_filter_into_party_auto_switch(
+def test_last_applicant_removed_preserves_applicants_tab_and_filter(
     qtbot, tmp_path
 ):
     state = AppState()
@@ -881,13 +1156,13 @@ def test_last_applicant_removed_does_not_carry_applicant_filter_into_party_auto_
         row for row in range(win._table.rowCount()) if not win._table.isRowHidden(row)
     ]
     assert win.isVisible()
-    assert win._active_tab == "party"
-    assert win._id_by_row == ["host-realm"]
-    assert visible_rows == [0]
-    assert win._role_filter == set()
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == []
+    assert visible_rows == []
+    assert win._role_filter == {"DAMAGER"}
 
 
-def test_new_applicant_after_party_auto_switch_returns_to_applicants(
+def test_new_applicant_preserves_initial_party_tab_and_filter(
     qtbot, tmp_path
 ):
     state = AppState()
@@ -907,12 +1182,12 @@ def test_new_applicant_after_party_auto_switch_returns_to_applicants(
     win.on_applicant_added(state.applicants["7:1"])
     win._flush_overlay_refresh()
 
-    assert win._active_tab == "applicants"
-    assert win._id_by_row == ["7:1"]
-    assert win._role_filter == set()
+    assert win._active_tab == "party"
+    assert win._id_by_row == ["host-realm"]
+    assert win._role_filter == {"TANK"}
 
 
-def test_clicking_auto_selected_party_tab_makes_it_manual(qtbot, tmp_path):
+def test_clicking_initial_party_tab_keeps_it_selected(qtbot, tmp_path):
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
     state.party_members["host-realm"].fetch_status = "ready"
@@ -922,12 +1197,12 @@ def test_clicking_auto_selected_party_tab_makes_it_manual(qtbot, tmp_path):
     win.on_roster_changed()
     win._flush_overlay_refresh()
     assert win._active_tab == "party"
-    assert win._party_tab_auto_selected
+    assert win._source_tab_initialized
 
     qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
 
     assert win._active_tab == "party"
-    assert not win._party_tab_auto_selected
+    assert win._source_tab_initialized
 
     state.applicants["7:1"] = _app("7:1", "Applicant-Realm", "DAMAGER")
     win.on_applicant_added(state.applicants["7:1"])
@@ -937,7 +1212,7 @@ def test_clicking_auto_selected_party_tab_makes_it_manual(qtbot, tmp_path):
     assert win._id_by_row == ["host-realm"]
 
 
-def test_applicant_update_after_party_auto_switch_returns_to_applicants(
+def test_applicant_update_preserves_initial_party_tab(
     qtbot, tmp_path
 ):
     state = AppState()
@@ -954,8 +1229,8 @@ def test_applicant_update_after_party_auto_switch_returns_to_applicants(
     win.on_applicant_updated(state.applicants["7:1"])
     win._flush_overlay_refresh()
 
-    assert win._active_tab == "applicants"
-    assert win._id_by_row == ["7:1"]
+    assert win._active_tab == "party"
+    assert win._id_by_row == ["host-realm"]
 
 
 def test_new_applicant_does_not_override_manual_party_tab(qtbot, tmp_path):
@@ -968,7 +1243,7 @@ def test_new_applicant_does_not_override_manual_party_tab(qtbot, tmp_path):
     win._refresh_table()
     qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
     assert win._active_tab == "party"
-    assert not win._party_tab_auto_selected
+    assert win._source_tab_initialized
 
     state.applicants["8:1"] = _app("8:1", "New-Realm")
     win.on_applicant_added(state.applicants["8:1"])
@@ -1013,7 +1288,7 @@ def test_snapshot_removal_then_roster_keeps_applicants_tab_while_listing_open(
     assert win._active_tab == "applicants"
     assert win._table.rowCount() == 0
     assert win._id_by_row == []
-    assert not win._party_tab_auto_selected
+    assert win._source_tab_initialized
 
 
 def test_empty_roster_update_hides_party_only_overlay(qtbot, tmp_path):
@@ -1050,7 +1325,7 @@ def test_delayed_roster_update_does_not_carry_applicant_filter_into_party_auto_s
     assert visible_rows == [0]
 
 
-def test_empty_roster_switches_back_to_applicants_when_applicants_remain(
+def test_empty_roster_preserves_party_tab_when_applicants_remain(
     qtbot, tmp_path
 ):
     state = AppState()
@@ -1067,8 +1342,8 @@ def test_empty_roster_switches_back_to_applicants_when_applicants_remain(
     win._flush_overlay_refresh()
 
     assert win.isVisible()
-    assert win._active_tab == "applicants"
-    assert win._id_by_row == ["7:1"]
+    assert win._active_tab == "party"
+    assert win._id_by_row == []
 
 
 def test_empty_roster_clears_party_pin_cache_before_same_member_returns(
@@ -1525,7 +1800,7 @@ def test_raid_listing_separates_fit_from_coloured_raw_parses(
     fit_item = win._table.item(0, COL_FIT)
     assert fit_item.text().startswith("~")
     assert fit_item.text()[1:].isdigit()
-    assert fit_item.background().color().name() == FIT_BACKGROUND
+    assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
     assert "82/82" in win._table.item(0, COL_H).text()
     assert win._table.item(0, COL_MPLUS).text() == "44 +18"
     _text, _fg, mplus_bg = _mplus_cell_visuals(applicant, win._effective_listing())
@@ -1602,7 +1877,7 @@ def test_raid_listing_forces_disabled_target_column_with_estimated_fit(
     fit_item = win._table.item(0, COL_FIT)
     assert fit_item.text().startswith("~")
     assert fit_item.text()[1:].isdigit()
-    assert fit_item.background().color().name() == FIT_BACKGROUND
+    assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
     assert win._table.item(0, COL_H).text() == "—"
     assert win._table.item(0, COL_M).text() == "70/60"
     win._on_cell_clicked(0, COL_FIT)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
+import math
 
 from .constants import group_id_colour
 from .scoring import (
@@ -96,6 +97,48 @@ def highest_mplus_key_level(breakdown: Iterable[object]) -> int:
     for entry in breakdown:
         highest = max(highest, mplus_key_level(entry))
     return highest
+
+
+def sort_rows_by_value(
+    rows: Iterable[Applicant],
+    *,
+    value_for: Callable[[Applicant], float | str | None],
+    descending: bool,
+    grouped: bool,
+) -> list[Applicant]:
+    """Sort stably with groups intact and missing evidence last in either direction."""
+    groups: list[list[Applicant]] = []
+    members_by_id: dict[str, list[Applicant]] = {}
+    for row in rows:
+        if grouped:
+            raw_id, _ = split_composite(row.applicant_id)
+            if raw_id not in members_by_id:
+                members_by_id[raw_id] = []
+                groups.append(members_by_id[raw_id])
+            members_by_id[raw_id].append(row)
+        else:
+            groups.append([row])
+
+    present: list[tuple[tuple[int, float | str], list[Applicant]]] = []
+    missing: list[list[Applicant]] = []
+    for members in groups:
+        values: list[tuple[int, float | str]] = []
+        for member in members:
+            value = value_for(member)
+            if isinstance(value, str):
+                values.append((1, value.casefold()))
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                if isinstance(value, int) or math.isfinite(value):
+                    values.append((0, value))
+        # A partial group must not rank from only its members with usable data.
+        if len(values) != len(members) or len({kind for kind, _ in values}) != 1:
+            missing.append(members)
+        else:
+            present.append((min(values), members))
+
+    present.sort(key=lambda item: item[0], reverse=descending)
+    ordered_groups = [members for _, members in present] + missing
+    return [member for members in ordered_groups for member in members]
 
 
 def sort_applicants_grouped_with_package_fits(

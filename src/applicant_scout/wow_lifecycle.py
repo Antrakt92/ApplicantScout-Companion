@@ -10,14 +10,17 @@ import io
 import os
 from os import replace as _replace_file
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import threading
+from typing import Literal
 
 
 STARTUP_SHORTCUT_NAME = "ApplicantScout Companion.lnk"
 STARTUP_SHORTCUT_CONFIG_TIMEOUT_SECONDS = 15
 STARTUP_SHORTCUT_STAGING_DIR_NAME = ".ApplicantScoutShortcutTmp"
+_STARTUP_APPROVAL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
 WATCH_WOW_ARG = "--watch-wow"
 WOW_PROCESS_NAMES = ("Wow.exe", "WowT.exe")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -133,6 +136,83 @@ def _startup_folder() -> Path:
 
 def startup_shortcut_path() -> Path:
     return _startup_folder() / STARTUP_SHORTCUT_NAME
+
+
+def _startup_approval_state(value: object, value_type: int, binary_type: int) -> Literal[
+    "enabled", "disabled", "unknown"
+]:
+    if value_type != binary_type or not isinstance(value, bytes) or len(value) != 12:
+        return "unknown"
+    state = int.from_bytes(value[:4], "little")
+    if state in {2, 6, 8}:
+        return "enabled"
+    if state in {1, 3, 7, 9}:
+        return "disabled"
+    return "unknown"
+
+
+def wow_sync_startup_state(*, shortcut_path: Path | None = None) -> Literal[
+    "enabled", "disabled", "missing", "unknown", "unsupported"
+]:
+    """Read this user's shortcut and Windows approval without changing either."""
+    if sys.platform != "win32":
+        return "unsupported"
+    shortcut = shortcut_path or startup_shortcut_path()
+    if shortcut.name.casefold() != STARTUP_SHORTCUT_NAME.casefold():
+        return "unknown"
+    try:
+        shortcut_stat = shortcut.stat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unknown"
+    if not stat.S_ISREG(shortcut_stat.st_mode):
+        return "unknown"
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _STARTUP_APPROVAL_KEY, 0, winreg.KEY_QUERY_VALUE
+        ) as key:
+            value, value_type = winreg.QueryValueEx(key, STARTUP_SHORTCUT_NAME)
+    except FileNotFoundError:
+        return "enabled"
+    except (ImportError, OSError, TypeError, ValueError):
+        return "unknown"
+    return _startup_approval_state(value, value_type, winreg.REG_BINARY)
+
+
+def enable_wow_sync_startup_approval(*, shortcut_path: Path | None = None) -> None:
+    """Restore this shortcut's Windows approval only after an explicit user action."""
+    state = wow_sync_startup_state(shortcut_path=shortcut_path)
+    if state == "enabled":
+        return
+    if state != "disabled":
+        raise OSError(f"Cannot enable ApplicantScout Windows startup: state is {state}.")
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _STARTUP_APPROVAL_KEY, 0,
+            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+        ) as key:
+            # Re-read after opening for writes so a newly changed or malformed
+            # Windows value is never deleted based only on an earlier snapshot.
+            value, value_type = winreg.QueryValueEx(key, STARTUP_SHORTCUT_NAME)
+            current = _startup_approval_state(value, value_type, winreg.REG_BINARY)
+            if current == "unknown":
+                raise OSError("The Windows startup approval value is not recognized.")
+            if current == "disabled":
+                winreg.DeleteValue(key, STARTUP_SHORTCUT_NAME)
+    except FileNotFoundError:
+        pass
+    except (ImportError, OSError, TypeError, ValueError) as exc:
+        raise OSError(
+            "Could not enable ApplicantScout Windows startup. "
+            "Enable ApplicantScout Companion in Windows Settings > Apps > Startup."
+        ) from exc
+    if wow_sync_startup_state(shortcut_path=shortcut_path) != "enabled":
+        raise OSError("Windows startup approval did not become enabled for ApplicantScout.")
 
 
 def companion_launch_spec() -> LaunchSpec:
@@ -366,6 +446,7 @@ def configure_wow_sync_startup(
     executable_path: Path | None = None,
     arguments: tuple[str, ...] | None = None,
     shortcut_path: Path | None = None,
+    restore_windows_approval: bool = False,
 ) -> Path | None:
     """Create/remove a per-user Startup shortcut for WoW lifecycle mode."""
     shortcut = shortcut_path or startup_shortcut_path()
@@ -384,6 +465,8 @@ def configure_wow_sync_startup(
         arguments=launch_arguments,
         shortcut_path=shortcut,
     )
+    if restore_windows_approval:
+        enable_wow_sync_startup_approval(shortcut_path=shortcut)
     return shortcut
 
 

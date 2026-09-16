@@ -493,7 +493,7 @@ $ReleaseNotesVersion = $TopReleaseNotesMatch.Groups[1].Value
 $TopReleaseNotesEntry = $TopReleaseNotesMatch.Value
 $PairedAddonLineMatch = [regex]::Match(
     $TopReleaseNotesEntry,
-    '(?m)^-\s+Requires the ApplicantScout WoW addon\s+`([^`]+)`\.\s*$'
+    '(?m)^Paired release with ApplicantScout addon[ \t]+`([^`]+)`\.[^\r\n]*\r?$'
 )
 $PairedAddonVersion = $null
 $IsCompanionOnlyPatch = [regex]::IsMatch(
@@ -532,11 +532,8 @@ if ($ReleaseNotesVersion -ne $TagVersion) {
 if ($ConstraintsVersion -ne $TagVersion) {
     $Errors += "constraints-release.txt header is $ConstraintsVersion, expected $TagVersion from tag $TagName."
 }
-if (-not $TopReleaseNotesEntry.Contains($InstallerName)) {
-    $Errors += "RELEASE_NOTES.md top entry does not mention expected installer asset $InstallerName."
-}
-if (-not $TopReleaseNotesEntry.Contains($ChecksumName)) {
-    $Errors += "RELEASE_NOTES.md top entry does not mention expected checksum asset $ChecksumName."
+if ($ReleaseNotesText -match '(?im)^###\s+Release Assets\s*$|^-\s+(Installer|Installer checksum|Portable archive|Immutable manifest):') {
+    $Errors += "RELEASE_NOTES.md must not repeat generated release asset lists."
 }
 if (-not $PairedAddonLineMatch.Success) {
     $Errors += "RELEASE_NOTES.md top entry does not mention the paired ApplicantScout addon version."

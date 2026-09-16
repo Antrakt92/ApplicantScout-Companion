@@ -121,7 +121,7 @@ def _top_release_notes_entry() -> str:
 
 def _paired_addon_version() -> str:
     match = re.search(
-        r"Requires the ApplicantScout WoW addon `([0-9]+\.[0-9]+\.[0-9]+)`",
+        r"Paired release with ApplicantScout addon `([0-9]+\.[0-9]+\.[0-9]+)`",
         _top_release_notes_entry(),
     )
     assert match is not None
@@ -2755,8 +2755,8 @@ def test_publish_release_workflow_pins_external_actions_to_commit_shas():
 
     assert Counter(action for action, _ in action_refs) == Counter(
         {
-            "actions/checkout": 1,
-            "actions/setup-python": 1,
+            "actions/checkout": 2,
+            "actions/setup-python": 2,
             "actions/download-artifact": 1,
         }
     )
@@ -3474,30 +3474,19 @@ def test_release_version_check_rejects_stale_constraints_header(tmp_path):
     )
 
 
-def test_release_version_check_rejects_stale_release_notes_asset_names(tmp_path):
+def test_release_version_check_rejects_repeated_asset_lists(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
-    stale_version = _previous_patch_version(project_version)
     notes = repo / "RELEASE_NOTES.md"
     notes.write_text(
-        notes.read_text(encoding="utf-8")
-        .replace(
-            f"ApplicantScoutCompanionSetup-{project_version}.exe",
-            f"ApplicantScoutCompanionSetup-{stale_version}.exe",
-            1,
-        )
-        .replace(
-            f"ApplicantScoutCompanionSetup-{project_version}.exe.sha256",
-            f"ApplicantScoutCompanionSetup-{stale_version}.exe.sha256",
-            1,
-        ),
+        notes.read_text(encoding="utf-8") + f"\n### Release Assets\n\n- Installer: `ApplicantScoutCompanionSetup-{project_version}.exe`\n",
         encoding="utf-8",
     )
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}")
 
     assert result.returncode != 0
-    assert "RELEASE_NOTES.md top entry does not mention expected installer asset" in (
+    assert "RELEASE_NOTES.md must not repeat generated release asset lists" in (
         result.stdout + result.stderr
     )
 
@@ -3525,7 +3514,7 @@ def test_release_version_check_rejects_missing_top_paired_addon_copy(tmp_path):
     repo = _copy_release_check_fixture(tmp_path)
     project_version = _project_version()
     paired_line = (
-        f"- Requires the ApplicantScout WoW addon `{_paired_addon_version()}`."
+        f"Paired release with ApplicantScout addon `{_paired_addon_version()}`."
     )
     notes = repo / "RELEASE_NOTES.md"
     notes.write_text(
@@ -3547,8 +3536,8 @@ def test_release_version_check_rejects_malformed_top_paired_addon_version(tmp_pa
     notes = repo / "RELEASE_NOTES.md"
     notes.write_text(
         notes.read_text(encoding="utf-8").replace(
-            f"ApplicantScout WoW addon `{_paired_addon_version()}`",
-            "ApplicantScout WoW addon `0.3`",
+            f"Paired release with ApplicantScout addon `{_paired_addon_version()}`",
+            "Paired release with ApplicantScout addon `0.3`",
             1,
         ),
         encoding="utf-8",
