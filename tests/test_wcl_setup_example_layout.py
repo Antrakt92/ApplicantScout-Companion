@@ -45,9 +45,16 @@ def test_wcl_example_fits_image_and_keeps_copy_buttons_visible(qtbot, tmp_path, 
     assert initial_width <= 640
 
 
-def test_wcl_example_can_shrink_after_showing_and_growing(qtbot, tmp_path):
+@pytest.mark.parametrize("available_height", [None, 728])
+def test_wcl_example_can_shrink_after_showing_and_growing(qtbot, tmp_path, monkeypatch, available_height):
     dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
     qtbot.addWidget(dialog)
+    if available_height is not None:
+        class SmallScreen:
+            def availableGeometry(self):
+                return QRect(0, 0, 1024, available_height)
+
+        monkeypatch.setattr(dialog, "screen", lambda: SmallScreen())
     popup = dialog._build_wcl_setup_example_dialog()
     qtbot.addWidget(popup)
     popup.show()
@@ -56,8 +63,9 @@ def test_wcl_example_can_shrink_after_showing_and_growing(qtbot, tmp_path):
     for width, height in ((600, 620), (900, 700), (380, 420), (560, 480)):
         popup.resize(width, height)
         qtbot.waitUntil(lambda: image.pixmap().size().width() <= image.width())
-        assert popup.width() == width
-        assert popup.height() == height
+        # The popup deliberately caps its size to the available work area.
+        assert popup.width() == min(width, popup.maximumWidth())
+        assert popup.height() == min(height, popup.maximumHeight())
         assert image.pixmap().width() <= image.contentsRect().width()
         assert image.pixmap().height() <= image.contentsRect().height()
         for name in ("copyWclExampleApplicationName", "copyWclExampleRedirectUrl"):
