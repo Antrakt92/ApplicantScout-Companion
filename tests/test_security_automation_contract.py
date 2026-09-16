@@ -60,7 +60,7 @@ def test_dependabot_covers_python_and_github_actions_on_a_bounded_schedule():
     assert config.count('          - "*"') == 2
     actions_config = config.split('package-ecosystem: "github-actions"', 1)[1]
     cooldown = actions_config.split("    cooldown:\n", 1)[1].split("    groups:", 1)[0]
-    assert '      exclude:\n        - "github/codeql-action/*"' in cooldown
+    assert "exclude:" not in cooldown, "All actions must observe the release cooldown"
 
 
 def test_security_policy_documents_python_and_lua_coverage_boundary():
