@@ -1,0 +1,39 @@
+name: Build native decoder candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  libiconv-candidate:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source
+        # actions/checkout v7.0.1 pinned to the upstream release commit.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        # actions/setup-python v7.0.0 pinned to the upstream release commit.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+          architecture: x64
+
+      - name: Build isolated libiconv candidate
+        shell: pwsh
+        run: ./scripts/build-libiconv.ps1 -Download
+
+      - name: Upload candidate and build evidence
+        if: always()
+        # actions/upload-artifact v7.0.1 pinned to the upstream release commit.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: libiconv-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/native-decoder/artifact/
+          if-no-files-found: warn
+          retention-days: 14
