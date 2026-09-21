@@ -1,7 +1,7 @@
 # Release build constraints for ApplicantScout Companion 0.19.1.
 # Refresh deliberately before publishing a new release artifact.
 altgraph==0.17.5
-anyio==4.14.2
+anyio==4.15.1
 build==1.5.0
 certifi==2026.7.22
 colorama==0.4.6
@@ -11,7 +11,7 @@ httpx==0.28.1
 idna==3.19
 iniconfig==2.3.0
 nodeenv==1.10.0
-numpy==2.5.2
+numpy==2.5.3
 packaging==26.3
 pefile==2024.8.26
 Pillow==12.3.0
@@ -26,7 +26,7 @@ PyQt6-sip==13.12.0
 pyright==1.1.411
 pytest==9.1.1
 pytest-qt==4.5.0
-ruff==0.16.5
+ruff==0.16.6
 pywin32-ctypes==0.2.3
 pyzbar==0.1.9
 python-dotenv==1.2.3
