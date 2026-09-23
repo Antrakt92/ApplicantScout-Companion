@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -346,6 +347,30 @@ def save_config_values(
         lines.append(_env_line("APSCOUT_CHATLOG_PATH", chatlog_path))
     atomic_write_text(target, "".join(lines), private=True)
     return target
+
+
+def save_discovered_screenshots_path(path: Path, *, config_path: Path | None = None) -> None:
+    """Change only the saved path, preserving other local settings verbatim."""
+    target = config_path or user_config_path()
+    source = target if target.is_file() else _legacy_env_path()
+    if source is None:
+        raise ConfigError("No saved settings to update with the discovered WoW path")
+    try:
+        contents = source.read_text(encoding="utf-8")
+        replacement = _env_line("APSCOUT_SCREENSHOTS_PATH", str(path))
+        lines = contents.splitlines(keepends=True)
+        matched = False
+        for index, line in enumerate(lines):
+            if re.match(r"^\s*(?:export\s+)?APSCOUT_SCREENSHOTS_PATH\s*=", line):
+                lines[index] = replacement
+                matched = True
+        if not matched:
+            if contents and not contents.endswith(("\n", "\r")):
+                lines.append("\n")
+            lines.append(replacement)
+        atomic_write_text(target, "".join(lines), private=True)
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(f"Could not save discovered WoW Screenshots folder: {exc}") from exc
 
 
 def _parse_cache_ttl_seconds(raw: str | None) -> int | None:

@@ -44,6 +44,7 @@ from .config import (
     read_user_config_values,
     resolve_screenshots_path,
     save_config_values,
+    save_discovered_screenshots_path,
     screenshots_path_candidate,
     user_config_path,
     user_log_dir,
@@ -120,6 +121,11 @@ from .wow_lifecycle import (
     start_wow_sync_watcher,
     stop_current_session_watcher,
     wow_sync_startup_state,
+)
+from .wow_install_discovery import (
+    DISCOVER_WOW_ARG,
+    run_bounded_discovery,
+    run_discovery_command,
 )
 
 
@@ -3845,6 +3851,28 @@ def _load_startup_config() -> tuple[Config, Path, bool] | None:
             screenshots_dir = screenshots_path_candidate(cfg)
             warning = run_bounded_screenshots_path_probe(screenshots_dir)
             if warning is not None:
+                if (
+                    cfg.screenshots_path is not None
+                    and screenshots_dir.name.casefold() == "screenshots"
+                    and screenshots_dir.parent.name.casefold() == "_retail_"
+                    and not str(screenshots_dir).startswith("\\\\")
+                    and (
+                        "_retail_ folder does not exist" in warning
+                        or "_retail_ folder has no WoW install markers" in warning
+                    )
+                    and os.environ.get("APSCOUT_SCREENSHOTS_PATH") is None
+                ):
+                    discovered = run_bounded_discovery(screenshots_dir)
+                    if (
+                        discovered is not None
+                        and discovered != screenshots_dir
+                        and run_bounded_screenshots_path_probe(discovered) is None
+                    ):
+                        save_discovered_screenshots_path(
+                            discovered, config_path=cfg.config_path
+                        )
+                        log.info("Found moved WoW Screenshots folder: %s", discovered)
+                        return replace(cfg, screenshots_path=discovered), discovered, startup_settings_shown
                 raise ConfigError(warning)
             return cfg, screenshots_dir, startup_settings_shown
         except ConfigError as exc:
@@ -3901,6 +3929,8 @@ def _run_cleanup_screenshots_command(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if args and args[0] == DISCOVER_WOW_ARG:
+        return run_discovery_command(args[1]) if len(args) == 2 else 2
     if args and args[0] == SCREENSHOTS_PATH_PROBE_ARG:
         if len(args) != 3:
             return 2

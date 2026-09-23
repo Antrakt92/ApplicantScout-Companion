@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
+import json
 import logging
 from pathlib import Path
 import re
@@ -4316,6 +4317,42 @@ def test_load_startup_config_routes_disconnected_storage_through_bounded_probe(
 
     assert loaded is None
     assert calls == [f"probe:{screenshots}", "warning", "settings"]
+
+
+def test_load_startup_config_repairs_moved_wow_without_rewriting_other_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    old = tmp_path / "old" / "World of Warcraft" / "_retail_" / "Screenshots"
+    new = tmp_path / "new" / "World of Warcraft" / "_retail_" / "Screenshots"
+    cfg = _cfg(tmp_path, screenshots_path=old)
+    assert cfg.config_path is not None
+    cfg.config_path.parent.mkdir()
+    original = 'WCL_CLIENT_SECRET="example"\nCUSTOM_SETTING="keep me"\n'
+    cfg.config_path.write_text(
+        original + f'APSCOUT_SCREENSHOTS_PATH="{old}"\n', encoding="utf-8"
+    )
+    monkeypatch.delenv("APSCOUT_SCREENSHOTS_PATH", raising=False)
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(main_mod, "run_bounded_discovery", lambda path: new if path == old else None)
+    monkeypatch.setattr(
+        main_mod, "run_bounded_screenshots_path_probe",
+        lambda path: None if path == new else (
+            "Screenshots folder warning: _retail_ folder does not exist."
+        ),
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox, "warning",
+        lambda *_args: pytest.fail("A unique moved install should not require setup"),
+    )
+
+    loaded = main_mod._load_startup_config()
+
+    assert loaded is not None
+    assert loaded[0].screenshots_path == new
+    assert loaded[1:] == (new, False)
+    assert cfg.config_path.read_text(encoding="utf-8") == (
+        original + f"APSCOUT_SCREENSHOTS_PATH={json.dumps(str(new))}\n"
+    )
 
 
 def test_load_startup_config_prompts_for_saved_suspicious_screenshots_override(
