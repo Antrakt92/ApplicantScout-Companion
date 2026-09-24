@@ -13,6 +13,9 @@ proves the immutable public copy and assets.
    `RELEASE_NOTES.md`, and README wire-compatibility copy. Keep exact paired
    release versions in `RELEASE_NOTES.md`; README install links should continue
    to use `releases/latest`.
+   Keep all version history in `RELEASE_NOTES.md` and packaged copies. The
+   GitHub Release body contains only the tagged version's notes, preceded by
+   direct links to that version's Windows installer and portable ZIP.
 2. Confirm the paired addon release train is prepared. Companion
    `<companion version>` pairs with ApplicantScout addon `<paired addon version>`;
    the addon `CHANGELOG.md` top entry must name Companion `<companion version>`.

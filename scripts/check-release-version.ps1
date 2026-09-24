@@ -580,12 +580,12 @@ if ($RequireAssets) {
     if (Test-Path -LiteralPath $PortablePath) {
         $Errors += Test-PortableZipContract `
             -PortablePath $PortablePath `
-            -ExpectedRoot "ApplicantScout" `
+            -ExpectedRoot "ApplicantScoutCompanion" `
             -RequiredEntries @(
-                "ApplicantScout/ApplicantScout.exe",
-                "ApplicantScout/LICENSE",
-                "ApplicantScout/THIRD-PARTY-NOTICES.md",
-                "ApplicantScout/RELEASE_NOTES.md"
+                "ApplicantScoutCompanion/ApplicantScoutCompanion.exe",
+                "ApplicantScoutCompanion/LICENSE",
+                "ApplicantScoutCompanion/THIRD-PARTY-NOTICES.md",
+                "ApplicantScoutCompanion/RELEASE_NOTES.md"
             )
     }
 }

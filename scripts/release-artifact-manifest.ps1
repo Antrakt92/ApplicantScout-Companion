@@ -25,10 +25,10 @@ param(
 $ErrorActionPreference = "Stop"
 $Repository = "Antrakt92/ApplicantScout-Companion"
 $RequiredPortableEntries = @(
-    "ApplicantScout/ApplicantScout.exe",
-    "ApplicantScout/LICENSE",
-    "ApplicantScout/RELEASE_NOTES.md",
-    "ApplicantScout/THIRD-PARTY-NOTICES.md"
+    "ApplicantScoutCompanion/ApplicantScoutCompanion.exe",
+    "ApplicantScoutCompanion/LICENSE",
+    "ApplicantScoutCompanion/RELEASE_NOTES.md",
+    "ApplicantScoutCompanion/THIRD-PARTY-NOTICES.md"
 )
 
 if ($Tag -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {

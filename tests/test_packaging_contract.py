@@ -307,12 +307,12 @@ def _release_input_paths(build_script: str) -> set[str]:
 def _write_valid_portable_zip(
     archive: Path,
     *,
-    root: str = "ApplicantScout",
+    root: str = "ApplicantScoutCompanion",
     omit: set[str] | None = None,
     extra_entries: dict[str, bytes] | None = None,
 ) -> None:
     entries = {
-        f"{root}/ApplicantScout.exe": b"exe-bytes",
+        f"{root}/ApplicantScoutCompanion.exe": b"exe-bytes",
         f"{root}/LICENSE": b"license text",
         f"{root}/THIRD-PARTY-NOTICES.md": b"third-party notices",
         f"{root}/RELEASE_NOTES.md": b"release notes",
@@ -434,6 +434,10 @@ def test_inno_script_requires_build_env_version_and_source_dir():
     assert "APSCOUT_INNO_SOURCE_DIR" in script
     assert re.search(r"#error\s+\"Missing APSCOUT_INNO_VERSION", script)
     assert re.search(r"#error\s+\"Missing APSCOUT_INNO_SOURCE_DIR", script)
+    assert "AppVerName={#MyAppName} {#MyAppVersion}" in script
+    assert "AppVersion={#MyAppVersion}" in script
+    assert "VersionInfoVersion={#MyAppVersion}" in script
+    assert "VersionInfoProductVersion={#MyAppVersion}" in script
 
 
 def test_build_script_checks_native_command_exit_codes_and_restores_inno_env():
@@ -603,6 +607,9 @@ def test_artifact_name_contract_stays_aligned():
     updater = _read_repo_text("src/applicant_scout/updater.py")
 
     assert "ApplicantScoutCompanion-$Version-portable.zip" in build_script
+    assert "Rename-Item" in build_script
+    assert '-NewName "ApplicantScoutCompanion"' in build_script
+    assert '-NewName "ApplicantScoutCompanion.exe"' in build_script
     assert "ApplicantScoutCompanionSetup-$Version.exe.sha256" in build_script
     assert "System.Security.Cryptography.SHA256" in signer
     assert "ApplicantScoutCompanionSetup-{#MyAppVersion}" in inno_script
@@ -1801,9 +1808,10 @@ def test_release_artifact_manifest_binds_build_bundle_to_tag_and_commit(tmp_path
         "release-body.md",
     }
     assert {entry["name"] for entry in manifest["portableEntries"]} >= {
-        "ApplicantScout/LICENSE",
-        "ApplicantScout/THIRD-PARTY-NOTICES.md",
-        "ApplicantScout/RELEASE_NOTES.md",
+        "ApplicantScoutCompanion/ApplicantScoutCompanion.exe",
+        "ApplicantScoutCompanion/LICENSE",
+        "ApplicantScoutCompanion/THIRD-PARTY-NOTICES.md",
+        "ApplicantScoutCompanion/RELEASE_NOTES.md",
     }
 
     verified = _run_release_manifest(
@@ -1873,7 +1881,7 @@ def test_release_artifact_manifest_rejects_tag_commit_asset_and_notice_drift(tmp
     _write_valid_portable_zip(
         root / names["portable"],
         extra_entries={
-            "ApplicantScout/THIRD-PARTY-NOTICES.md": b"changed notices",
+            "ApplicantScoutCompanion/THIRD-PARTY-NOTICES.md": b"changed notices",
         },
     )
     changed_notice = _run_release_manifest(
@@ -2018,14 +2026,15 @@ def test_release_workflow_separates_read_only_build_from_narrow_draft_writer():
     )
 
 
-def test_release_notes_keep_history_and_exclude_unreleased(tmp_path: Path):
+def test_release_body_has_current_notes_and_direct_downloads(tmp_path: Path):
     workflow = _read_repo_text(".github/workflows/release.yml")
     step = _step_block(_job_block(workflow, "build"), "Extract release notes")
     run = step.split("        run: |\n", 1)[1]
     script = "\n".join(line[10:] for line in run.splitlines() if line.strip())
     path = tmp_path / "extract.ps1"
     path.write_text('$ErrorActionPreference = "Stop"\n' + script, encoding="utf-8")
-    history = "## 1.2.3 - 10-Sep-2026\n\n- Current.\n\n## 1.0.0 - 01-Jan-2026\n\n- Initial.\n"
+    current = "## 1.2.3 - 10-Sep-2026\n\n- Current."
+    history = current + "\n\n## 1.0.0 - 01-Jan-2026\n\n- Initial.\n"
     (tmp_path / "RELEASE_NOTES.md").write_bytes(
         ("# Release notes\n\n## Unreleased\n\n- Future work.\n\n" + history).replace("\n", "\r\n").encode()
     )
@@ -2036,7 +2045,14 @@ def test_release_notes_keep_history_and_exclude_unreleased(tmp_path: Path):
         capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert (tmp_path / "dist" / "release-body.md").read_bytes() == history.encode()
+    body = (tmp_path / "dist" / "release-body.md").read_text(encoding="utf-8")
+    release_url = "https://github.com/Antrakt92/ApplicantScout-Companion/releases/download/v1.2.3"
+    assert f"[Windows installer]({release_url}/ApplicantScoutCompanionSetup-1.2.3.exe)" in body
+    assert f"[Portable ZIP]({release_url}/ApplicantScoutCompanion-1.2.3-portable.zip)" in body
+    assert body.endswith(current + "\n")
+    assert "## 1.0.0" not in body
+    assert "Future work" not in body
+    assert history in (tmp_path / "RELEASE_NOTES.md").read_text(encoding="utf-8")
 
 
 def test_release_workflow_carries_exact_tag_copy_through_authoritative_manifest():
@@ -2855,6 +2871,7 @@ def test_release_version_check_rejects_stale_paired_addon_release_train_copy(tmp
     notes = repo / "RELEASE_NOTES.md"
     notes.write_text(
         notes.read_text(encoding="utf-8")
+        .replace("Companion-only patch.", "Patch.", 1)
         .replace("Companion-only reliability patch", "Reliability patch", 1)
         .replace(" No addon update is required for this release.", "", 1),
         encoding="utf-8",
@@ -3654,7 +3671,7 @@ def test_release_version_check_require_assets_rejects_wrong_portable_root(tmp_pa
 
     assert result.returncode != 0
     output = (result.stdout + result.stderr).lower()
-    assert "applicantscout/" in output
+    assert "applicantscoutcompanion/" in output
     assert "other/" in output
 
 
@@ -3673,7 +3690,7 @@ def test_release_version_check_require_assets_rejects_content_only_portable_zip(
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
     assert result.returncode != 0
-    assert "applicantscout/" in (result.stdout + result.stderr).lower()
+    assert "applicantscoutcompanion/" in (result.stdout + result.stderr).lower()
 
 
 def test_release_version_check_require_assets_rejects_missing_portable_required_entry(
@@ -3684,13 +3701,13 @@ def test_release_version_check_require_assets_rejects_missing_portable_required_
     _, _, portable_name = _write_release_assets(repo)
     _write_valid_portable_zip(
         repo / "dist" / portable_name,
-        omit={"ApplicantScout/RELEASE_NOTES.md"},
+        omit={"ApplicantScoutCompanion/RELEASE_NOTES.md"},
     )
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
     assert result.returncode != 0
-    assert "ApplicantScout/RELEASE_NOTES.md" in result.stdout + result.stderr
+    assert "ApplicantScoutCompanion/RELEASE_NOTES.md" in result.stdout + result.stderr
 
 
 def test_release_version_check_require_assets_rejects_portable_zip_traversal_entry(
@@ -3701,7 +3718,7 @@ def test_release_version_check_require_assets_rejects_portable_zip_traversal_ent
     _, _, portable_name = _write_release_assets(repo)
     _write_valid_portable_zip(
         repo / "dist" / portable_name,
-        extra_entries={"ApplicantScout/../evil.txt": b"bad"},
+        extra_entries={"ApplicantScoutCompanion/../evil.txt": b"bad"},
     )
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
@@ -3718,13 +3735,13 @@ def test_release_version_check_require_assets_rejects_portable_zip_without_licen
     _, _, portable_name = _write_release_assets(repo)
     _write_valid_portable_zip(
         repo / "dist" / portable_name,
-        omit={"ApplicantScout/licenses/PyQt6/LICENSE.txt"},
+        omit={"ApplicantScoutCompanion/licenses/PyQt6/LICENSE.txt"},
     )
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
 
     assert result.returncode != 0
-    assert "ApplicantScout/licenses/" in result.stdout + result.stderr
+    assert "ApplicantScoutCompanion/licenses/" in result.stdout + result.stderr
 
 
 def test_release_version_check_rejects_missing_license_placeholder(tmp_path):
@@ -3734,7 +3751,7 @@ def test_release_version_check_rejects_missing_license_placeholder(tmp_path):
     _write_valid_portable_zip(
         repo / "dist" / portable_name,
         extra_entries={
-            "ApplicantScout/LiCeNsEs/NoLicenseWheel/no-license-file-found.TxT": (
+            "ApplicantScoutCompanion/LiCeNsEs/NoLicenseWheel/no-license-file-found.TxT": (
                 b"No license file found."
             )
         },
@@ -3752,8 +3769,8 @@ def test_release_version_check_rejects_empty_dependency_license(tmp_path):
     _, _, portable_name = _write_release_assets(repo)
     _write_valid_portable_zip(
         repo / "dist" / portable_name,
-        omit={"ApplicantScout/licenses/PyQt6/LICENSE.txt"},
-        extra_entries={"ApplicantScout/licenses/Empty/LICENSE.txt": b""},
+        omit={"ApplicantScoutCompanion/licenses/PyQt6/LICENSE.txt"},
+        extra_entries={"ApplicantScoutCompanion/licenses/Empty/LICENSE.txt": b""},
     )
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")

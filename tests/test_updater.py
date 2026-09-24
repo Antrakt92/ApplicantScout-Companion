@@ -1239,9 +1239,9 @@ def test_launch_update_installer_does_not_install_into_portable_directory(
 ):
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     installer.write_text("", encoding="utf-8")
-    portable_dir = tmp_path / "ApplicantScoutPortable"
+    portable_dir = tmp_path / "ApplicantScoutCompanion"
     portable_dir.mkdir()
-    current_exe = str(portable_dir / "ApplicantScout.exe")
+    current_exe = str(portable_dir / "ApplicantScoutCompanion.exe")
     calls: list[list[str]] = []
 
     class FakePopen:

@@ -24,10 +24,11 @@ The companion watches one selected client at a time.
 **[Download the Windows installer](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest)**
 · **[Setup guide](docs/GETTING_STARTED.md)**
 
-Choose `ApplicantScoutCompanionSetup-*.exe` under **Assets** on the download
-page. The installer is the usual choice; use the portable ZIP if you prefer to
-unpack and run the app yourself. Current Windows builds are unsigned, so
-SmartScreen may warn. See [Trust and local data](#trust-and-local-data).
+On the release page, use **Windows installer** near the top. The portable ZIP
+is there too if you prefer to unpack and run the app yourself. Open its
+`ApplicantScoutCompanion` folder and launch `ApplicantScoutCompanion.exe`;
+checksums and other files remain under **Assets**. Current Windows builds are
+unsigned, so SmartScreen may warn. See [Trust and local data](#trust-and-local-data).
 
 Setup requires a free Warcraft Logs account and an API Client ID/Secret.
 The guide shows how to create them. ApplicantScout does not ask for your

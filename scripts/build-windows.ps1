@@ -814,7 +814,36 @@ if (-not $SkipPortable) {
     if (Test-Path -LiteralPath $Archive) {
         Remove-Item -LiteralPath $Archive
     }
-    Compress-Archive -LiteralPath $AppDir -DestinationPath $Archive -Force
+    $PortableStageRoot = Join-Path $RepoRoot ("build\portable-stage-" + [guid]::NewGuid().ToString("N"))
+    try {
+        New-Item -ItemType Directory -Path $PortableStageRoot | Out-Null
+        Copy-Item -LiteralPath $AppDir -Destination $PortableStageRoot -Recurse
+        $PortableAppDir = Join-Path $PortableStageRoot "ApplicantScout"
+        if (-not (Test-Path -LiteralPath $PortableAppDir -PathType Container)) {
+            throw "Portable staging copy is missing the PyInstaller application directory."
+        }
+        Rename-Item -LiteralPath $PortableAppDir -NewName "ApplicantScoutCompanion"
+        $PortableAppDir = Join-Path $PortableStageRoot "ApplicantScoutCompanion"
+        $PortableExe = Join-Path $PortableAppDir "ApplicantScout.exe"
+        if (-not (Test-Path -LiteralPath $PortableExe -PathType Leaf)) {
+            throw "Portable staging copy is missing ApplicantScout.exe."
+        }
+        Rename-Item -LiteralPath $PortableExe -NewName "ApplicantScoutCompanion.exe"
+        Compress-Archive -LiteralPath $PortableAppDir -DestinationPath $Archive -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $PortableStageRoot) {
+            $BuildRoot = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "build")).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+            $ResolvedStageRoot = (Resolve-Path -LiteralPath $PortableStageRoot).Path
+            $BuildPrefix = $BuildRoot + [System.IO.Path]::DirectorySeparatorChar
+            $StageLeaf = Split-Path -Leaf $ResolvedStageRoot
+            if (-not $ResolvedStageRoot.StartsWith($BuildPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+                $StageLeaf -notmatch '^portable-stage-[0-9a-f]{32}$') {
+                throw "Refusing to remove portable staging directory outside the generated build path."
+            }
+            Remove-Item -LiteralPath $ResolvedStageRoot -Recurse -Force
+        }
+    }
 }
 
 if (-not $SkipInstaller) {

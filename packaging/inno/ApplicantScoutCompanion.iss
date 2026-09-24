@@ -21,7 +21,13 @@
 [Setup]
 AppId={{9A68DF9E-3784-42A2-9B9B-F99024F1C37F}
 AppName={#MyAppName}
+AppVerName={#MyAppName} {#MyAppVersion}
 AppVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoDescription=ApplicantScout Companion Setup
+VersionInfoProductName={#MyAppName}
+VersionInfoCompany=Antrakt
 AppPublisher=Antrakt
 DefaultDirName={localappdata}\Programs\ApplicantScout Companion
 DefaultGroupName=ApplicantScout Companion

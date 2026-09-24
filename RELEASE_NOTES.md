@@ -1,5 +1,19 @@
 # ApplicantScout Companion Release Notes
 
+## 0.20.1 - 24-Sep-2026
+
+Companion-only patch.
+Paired release with ApplicantScout addon `0.12.0`.
+
+### Improved
+
+- Put direct installer and portable ZIP links at the top of GitHub Release
+  notes, followed by the current version's changes.
+- Give the portable download an `ApplicantScoutCompanion` folder and
+  `ApplicantScoutCompanion.exe` entry point.
+- Show the build version in the setup filename, Windows file properties,
+  installer display name, and installed-app version.
+
 ## 0.20.0 - 24-Sep-2026
 
 Paired release with ApplicantScout addon `0.12.0`.
