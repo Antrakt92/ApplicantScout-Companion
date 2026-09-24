@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import applicant_scout.screenshot as screenshot_mod
 from applicant_scout.screenshot import (
@@ -5628,3 +5628,109 @@ def test_watcher_retries_replacement_created_during_snapshot_callback(
         b"replacement-manual-screenshot",
     ]
     assert image_path.read_bytes() == b"replacement-manual-screenshot"
+
+
+def _synthetic_recovery_qr(version: int, module_px: int = 6, quiet: int = 4):
+    modules = 17 + 4 * version
+    total = (modules + 2 * quiet) * module_px
+    img = Image.new("L", (total, total), 255)
+    draw = ImageDraw.Draw(img)
+
+    def finder(cx: int, cy: int) -> None:
+        for y in range(7):
+            for x in range(7):
+                if x in (0, 6) or y in (0, 6) or (2 <= x <= 4 and 2 <= y <= 4):
+                    draw.rectangle(
+                        [
+                            (cx + x) * module_px,
+                            (cy + y) * module_px,
+                            (cx + x + 1) * module_px - 1,
+                            (cy + y + 1) * module_px - 1,
+                        ],
+                        fill=0,
+                    )
+
+    finder(quiet, quiet)
+    finder(quiet + modules - 7, quiet)
+    finder(quiet, quiet + modules - 7)
+    for index in range(8, modules - 8):
+        if index % 2 == 0:
+            draw.rectangle(
+                [
+                    (quiet + index) * module_px,
+                    (quiet + 6) * module_px,
+                    (quiet + index + 1) * module_px - 1,
+                    (quiet + 7) * module_px - 1,
+                ],
+                fill=0,
+            )
+            draw.rectangle(
+                [
+                    (quiet + 6) * module_px,
+                    (quiet + index) * module_px,
+                    (quiet + 7) * module_px - 1,
+                    (quiet + index + 1) * module_px - 1,
+                ],
+                fill=0,
+            )
+    return img
+
+
+def test_qr_recovery_narrows_versions_by_measured_side():
+    versions = list(screenshot_mod._qr_recovery_candidate_versions(390))
+    assert 10 in versions
+    assert len(versions) < 40
+    assert versions == sorted(versions)
+    assert list(screenshot_mod._qr_recovery_candidate_versions(100_000)) == []
+
+
+def test_qr_recovery_perfect_score_exits_early(monkeypatch: pytest.MonkeyPatch):
+    calls = []
+    original = screenshot_mod._sample_qr_recovery_candidate
+
+    def counting(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        screenshot_mod, "_sample_qr_recovery_candidate", counting
+    )
+    with _synthetic_recovery_qr(10) as img:
+        with screenshot_mod._normalized_top_left_qr(img) as recovered:
+            assert recovered is not None
+    assert 0 < len(calls) < 120
+
+
+def test_manual_index_caps_keys_with_fifo_eviction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setattr(screenshot_mod, "_MANUAL_INDEX_MAX_KEYS", 5)
+    index = screenshot_mod._ManualScreenshotIndex(tmp_path / "index.json")
+    keys = [
+        screenshot_mod._ScreenshotWorkKey(f"WoWScrnShot_{i:04d}.jpg", 1000 + i, 500)
+        for i in range(7)
+    ]
+    for key in keys:
+        index.note_manual(key, flush=False)
+
+    current = index.snapshot()
+    assert len(current) == 5
+    assert keys[-1] in current
+    assert keys[0] not in current
+    assert keys[1] not in current
+
+
+def test_manual_index_scan_view_prunes_missing_in_one_pass(tmp_path: Path):
+    index = screenshot_mod._ManualScreenshotIndex(tmp_path / "index.json")
+    present = screenshot_mod._ScreenshotWorkKey("WoWScrnShot_0001.jpg", 1000, 500)
+    stale = screenshot_mod._ScreenshotWorkKey("WoWScrnShot_0002.jpg", 1001, 500)
+    deferred = screenshot_mod._ScreenshotWorkKey("WoWScrnShot_0003.jpg", 1002, 500)
+    index.note_manual(present, flush=False)
+    index.note_manual(stale, flush=False)
+    index.note_deferred(deferred, flush=False)
+
+    manual, deferred_keys = index.scan_view({present, deferred})
+
+    assert manual == frozenset({present})
+    assert deferred_keys == frozenset({deferred})
+    assert index.snapshot() == {present, deferred}

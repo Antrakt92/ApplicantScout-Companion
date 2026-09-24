@@ -33,9 +33,15 @@ def _temp_files(path: Path) -> list[Path]:
 def _reset_atomic_io_caches():
     atomic_io._CURRENT_USER_SID_CACHE = None
     atomic_io._PRIVATE_ACL_CACHE.clear()
+    atomic_io.set_startup_privatization_deferred(False)
+    with atomic_io._PRIVATE_ACL_LOCK:
+        atomic_io._DEFERRED_PRIVATE_PATHS.clear()
     yield
     atomic_io._CURRENT_USER_SID_CACHE = None
     atomic_io._PRIVATE_ACL_CACHE.clear()
+    atomic_io.set_startup_privatization_deferred(False)
+    with atomic_io._PRIVATE_ACL_LOCK:
+        atomic_io._DEFERRED_PRIVATE_PATHS.clear()
 
 
 def test_atomic_write_text_replaces_file_contents(tmp_path: Path):
@@ -695,3 +701,92 @@ def test_atomic_write_text_uses_target_directory_for_temp_file(
     atomic_write_text(target, "ok")
 
     assert seen == [(f".{target.name}.", os.fspath(tmp_path))]
+
+
+def test_apply_private_file_mode_skips_mutations_when_dacl_matches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    spawns: list[list[str]] = []
+
+    monkeypatch.setattr(type(target), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io, "_current_user_sid", lambda: "*S-1-5-21-1-2-3-1007"
+    )
+    monkeypatch.setattr(
+        atomic_io, "_windows_dacl_matches_private", lambda _p, _s, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda args, **_kwargs: spawns.append(args) or _Completed(returncode=0),
+    )
+
+    assert apply_private_file_mode(target)
+    assert spawns == []
+
+
+def test_apply_private_file_mode_falls_back_to_mutations_on_dacl_check_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(type(target), "chmod", lambda _self, _mode: None)
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io, "_current_user_sid", lambda: "*S-1-5-21-1-2-3-1007"
+    )
+    monkeypatch.setattr(
+        atomic_io, "_windows_dacl_matches_private", lambda _p, _s, **_kwargs: False
+    )
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda args, **_kwargs: commands.append(args) or _Completed(returncode=0),
+    )
+
+    assert apply_private_file_mode(target)
+    assert len(commands) == 4
+
+
+def test_startup_deferral_records_without_spawns_and_flush_applies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    target = tmp_path / "token.json"
+    target.write_text("secret", encoding="utf-8")
+    spawns: list[list[str]] = []
+    mutations: list[list[str]] = []
+
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        atomic_io, "_current_user_sid", lambda: "*S-1-5-21-1-2-3-1007"
+    )
+    monkeypatch.setattr(
+        atomic_io.subprocess,
+        "run",
+        lambda args, **_kwargs: spawns.append(args) or _Completed(returncode=0),
+    )
+
+    atomic_io.set_startup_privatization_deferred(True)
+    try:
+        assert apply_private_file_mode(target)
+        assert spawns == []
+        assert len(atomic_io._DEFERRED_PRIVATE_PATHS) == 1
+        assert not atomic_io._PRIVATE_ACL_CACHE
+    finally:
+        atomic_io.set_startup_privatization_deferred(False)
+
+    # Flush runs the identical mutation sequence exactly once.
+    monkeypatch.setattr(
+        atomic_io,
+        "_run_icacls",
+        lambda args: mutations.append(args) or True,
+    )
+    assert atomic_io.flush_deferred_privatization() == 1
+    assert atomic_io.flush_deferred_privatization() == 0
+    assert len(mutations) == 4
+    assert atomic_io._PRIVATE_ACL_CACHE

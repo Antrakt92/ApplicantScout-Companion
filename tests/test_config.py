@@ -2875,12 +2875,18 @@ def test_screenshots_path_candidate_does_not_touch_configured_storage(
     assert config_mod.screenshots_path_candidate(cfg) == screenshots
 
 
-def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
+def test_main_defers_invalid_screenshots_path_verification_to_background(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    # H1: an invalid inferred path no longer blocks startup on the GUI
+    # thread. Startup trusts the saved path; the probe/discovery runs in a
+    # background worker and surfaces through the deferred verification run.
     _stub_setup_logging(monkeypatch)
     root = _retail_root(tmp_path)
     cfg = _cfg(tmp_path, chatlog_path=root / "Logs" / "WoWChatLog.txt")
+    probe_calls: list[tuple[Path, int]] = []
+    probe_done = threading.Event()
+    main_thread_id = threading.get_ident()
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
     monkeypatch.setattr(
         main_mod,
@@ -2896,12 +2902,25 @@ def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
     )
     monkeypatch.setattr(
         main_mod,
-        "_run_first_run_settings",
-        lambda *_args, **_kwargs: False,
+        "run_bounded_screenshots_path_probe",
+        lambda path: (
+            probe_calls.append((path, threading.get_ident()))
+            or probe_done.set()
+            or "Screenshots folder warning: folder does not exist."
+        ),
     )
+    monkeypatch.setattr(main_mod, "run_bounded_discovery", lambda _path: None)
     monkeypatch.setattr(main_mod.QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod, "_set_windows_app_user_model_id", lambda: None
+    )
+
+    from unittest.mock import MagicMock
+    import signal as signal_mod
 
     class FakeApp:
+        aboutToQuit = None
+
         def __init__(self, *_args, **_kwargs):
             pass
 
@@ -2911,16 +2930,35 @@ def test_main_returns_before_startup_when_inferred_screenshots_path_is_invalid(
         def setWindowIcon(self, _icon) -> None:
             pass
 
+        def quit(self) -> None:
+            pass
+
     monkeypatch.setattr(main_mod, "QApplication", FakeApp)
+    for name in (
+        "QTimer", "_WowSyncStartupConfigurator", "WCLAuth",
+        "CharacterCache", "LiveSnapshotCacheWriter", "WCLClient", "StateMachine",
+        "_raiderio_reader_for_screenshots_path", "OverlayWindow",
+        "_validate_oauth_async", "_app_icon", "UpdateSignals",
+        "_UpdateHandoffRecoveryController",
+    ):
+        monkeypatch.setattr(main_mod, name, MagicMock())
+    monkeypatch.setattr(signal_mod, "signal", MagicMock())
+    monkeypatch.setattr(main_mod, "_create_tray_controller", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_mod, "_restore_live_snapshot_cache", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(main_mod, "_start_initial_screenshot_watcher", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_run_application_event_loop",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(main_mod.UsageClient, "__init__", lambda *_a, **_k: None)
+    monkeypatch.setattr(main_mod.UsageClient, "record", lambda *_a, **_k: False)
+    monkeypatch.setattr(main_mod.UsageClient, "close", lambda *_a, **_k: None)
 
-    def fail_if_called(*_args, **_kwargs):
-        raise AssertionError("startup continued after ConfigError")
-
-    monkeypatch.setattr(main_mod, "WCLAuth", fail_if_called)
-    monkeypatch.setattr(main_mod, "WCLClient", fail_if_called)
-    monkeypatch.setattr(main_mod, "ScreenshotWatcher", fail_if_called)
-
-    assert main_mod.main() == 1
+    assert main_mod.main([]) == 0
+    assert probe_done.wait(timeout=10.0)
+    assert probe_calls
+    assert all(thread_id != main_thread_id for _, thread_id in probe_calls)
     assert not (root / "Screenshots").exists()
 
 
@@ -3927,7 +3965,7 @@ def test_main_surfaces_file_logging_setup_failure_after_qapplication_exists(
         "_create_control_server",
         lambda *_args, **_kwargs: object(),
     )
-    monkeypatch.setattr(main_mod, "_load_startup_config", lambda: None)
+    monkeypatch.setattr(main_mod, "_load_startup_config", lambda **_kwargs: None)
 
     assert main_mod.main([]) == 1
     assert warnings == [
@@ -4149,7 +4187,7 @@ def usage_main_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         timeline.append("usage-init")
         return usage_client
 
-    def load_startup():
+    def load_startup(**_kwargs):
         timeline.append("config-ready")
         return cfg, cfg.screenshots_path, False
 
@@ -4158,6 +4196,18 @@ def usage_main_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(main_mod, "UsageClient", create_usage)
     monkeypatch.setattr(main_mod, "user_config_path", lambda: cfg.config_dir / "config.env")
     monkeypatch.setattr(main_mod, "_load_startup_config", load_startup)
+    # H1: the background verifier is real in this harness; keep its worker
+    # hermetic (no subprocesses) while still proving it is scheduled.
+    monkeypatch.setattr(
+        main_mod, "run_bounded_screenshots_path_probe", lambda _path: None
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_discovery",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("a clean trusted path must not be rediscovered")
+        ),
+    )
     monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
     monkeypatch.setattr(main_mod, "_prepare_wow_watch_mode", lambda args: (args, False, None))
     monkeypatch.setattr(main_mod, "_send_control_command", lambda *_args, **_kwargs: SimpleNamespace(
@@ -4194,7 +4244,7 @@ def test_main_usage_records_setup_only_after_config_ready_and_closes(usage_main_
 def test_main_usage_startup_cancel_closes_without_setup(
     usage_main_harness, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(main_mod, "_load_startup_config", lambda: None)
+    monkeypatch.setattr(main_mod, "_load_startup_config", lambda **_kwargs: None)
     assert main_mod.main([]) == 1
     assert usage_main_harness.timeline == ["owned", "usage-init", "usage-close"]
     usage_main_harness.run_loop.assert_not_called()
@@ -11365,3 +11415,128 @@ def test_wcl_credential_test_ignores_shared_cached_token(
     )
     assert seen_cache_dirs
     assert (cache_dir / "token.json").read_text(encoding="utf-8") == "old-token"
+
+def test_load_startup_config_fast_path_trusts_saved_path_without_probe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cfg = _cfg(tmp_path, screenshots_path=tmp_path / "Screenshots")
+
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_screenshots_path_probe",
+        lambda _path: pytest.fail("fast path must not spawn the probe"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_discovery",
+        lambda _path: pytest.fail("fast path must not run discovery"),
+    )
+
+    assert main_mod._load_startup_config(verify_screenshots_path=False) == (
+        cfg,
+        tmp_path / "Screenshots",
+        False,
+    )
+
+
+def test_verify_startup_screenshots_dir_repairs_moved_wow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, client_name: str = "_retail_"
+):
+    old = tmp_path / "old" / "World of Warcraft" / client_name / "Screenshots"
+    new = tmp_path / "new" / "World of Warcraft" / client_name / "Screenshots"
+    cfg = _cfg(tmp_path, screenshots_path=old)
+    assert cfg.config_path is not None
+    cfg.config_path.parent.mkdir()
+    original = "WCL_CLIENT_SECRET=\"example\"\nCUSTOM_SETTING=\"keep me\"\n"
+    cfg.config_path.write_text(
+        original + f"APSCOUT_SCREENSHOTS_PATH=\"{old}\"\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("APSCOUT_SCREENSHOTS_PATH", raising=False)
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(main_mod, "run_bounded_discovery", lambda path: new if path == old else None)
+    monkeypatch.setattr(
+        main_mod,
+        "run_bounded_screenshots_path_probe",
+        lambda path: None if path == new else (
+            f"Screenshots folder warning: {client_name} folder does not exist."
+        ),
+    )
+
+    outcome = main_mod._verify_startup_screenshots_dir(cfg, old)
+
+    assert outcome.kind == "repaired"
+    assert outcome.cfg.screenshots_path == new
+    assert outcome.screenshots_dir == new
+
+
+def test_send_control_command_defaults_to_both_endpoints_with_scoped_override(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    seen: list[tuple[str, int]] = []
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.server_name = ""
+
+        def connectToServer(self, server_name: str) -> None:
+            self.server_name = server_name
+
+        def waitForConnected(self, timeout_ms: int) -> bool:
+            seen.append((self.server_name, timeout_ms))
+            return False
+
+        def errorString(self) -> str:
+            return "no server"
+
+    monkeypatch.setattr(main_mod, "QLocalSocket", FakeSocket)
+
+    main_mod._send_control_command(
+        main_mod.CONTROL_SHOW_SETTINGS_COMMAND,
+        timeout_ms=main_mod._DUPLICATE_PROBE_TIMEOUT_MS,
+        server_names=(main_mod.CONTROL_SERVER_NAME,),
+    )
+
+    assert seen == [(main_mod.CONTROL_SERVER_NAME, main_mod._DUPLICATE_PROBE_TIMEOUT_MS)]
+    assert main_mod._DUPLICATE_PROBE_TIMEOUT_MS <= 100
+
+
+def test_wow_lifecycle_timer_reuses_single_long_lived_check_thread(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    callbacks_a: list = []
+    callbacks_b: list = []
+    scans: list[str] = []
+
+    class FakeApp:
+        def quit(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks_a))
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        running_checker=lambda: scans.append("scan") or True,
+    )
+    monkeypatch.setattr(main_mod, "QTimer", _lifecycle_timer_factory(callbacks_b))
+    main_mod._start_wow_lifecycle_timer(
+        FakeApp(),
+        has_seen_wow=True,
+        running_checker=lambda: scans.append("scan") or True,
+    )
+
+    callbacks_a[0]()
+    callbacks_b[0]()
+    executor = main_mod._WOW_LIFECYCLE_CHECK_EXECUTOR
+    assert executor is not None
+    executor._pending.join()
+
+    assert scans == ["scan", "scan"]
+    workers = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "ApplicantScoutWoWLifecycleCheck"
+    ]
+    assert len(workers) == 1
+
+    monkeypatch.setattr(main_mod, "_WOW_LIFECYCLE_CHECK_EXECUTOR", None)

@@ -19,6 +19,7 @@ from applicant_scout.live_snapshot_cache import (
 )
 from applicant_scout.screenshot import (
     DecodedApplicant,
+    DecodedLeaderKey,
     DecodedListing,
     DecodedRosterMember,
     DecodedVersion,
@@ -1746,7 +1747,7 @@ def test_live_snapshot_writer_close_waits_for_dequeued_failed_clear_and_retries(
     assert load_live_snapshot(tmp_path, now=102.0) is None
 
 
-def test_live_snapshot_writer_close_retries_failed_final_clear(
+def test_live_snapshot_writer_close_makes_single_final_attempt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
@@ -1769,6 +1770,10 @@ def test_live_snapshot_writer_close_retries_failed_final_clear(
     )
     writer.submit(Snapshot(listing=None, version=None), now=101.0)
 
+    # M7: the quit path makes a single attempt and requeues the failed final
+    # operation instead of retrying in-close; a later close() retries once.
+    assert not writer.close()
+    assert calls == 1
     assert writer.close()
     assert calls == 2
     assert load_live_snapshot(tmp_path, now=102.0) is None
@@ -1816,3 +1821,81 @@ def test_live_snapshot_writer_close_times_out_but_can_finish_later(
     assert writer.close()
     assert calls == 2
     assert load_live_snapshot(tmp_path, now=102.0) is None
+
+
+def test_snapshot_digest_covers_all_serialized_fields():
+    from dataclasses import fields as dataclass_fields
+
+    # H5: _snapshot_digest_key must mirror _snapshot_to_dict field-for-field.
+    # A new field here without a digest update silently drops changed
+    # snapshots, so this pins the contract instead of trusting memory.
+    assert {f.name for f in dataclass_fields(DecodedListing)} == {
+        "activity_id", "key_level", "dungeon_name", "listing_name",
+        "comment", "category_id", "difficulty_id",
+    }
+    assert {f.name for f in dataclass_fields(DecodedVersion)} == {
+        "addon_version", "game_version", "region_id", "player_name",
+    }
+    assert {f.name for f in dataclass_fields(DecodedLeaderKey)} == {
+        "key_level", "challenge_map_id", "player_name",
+    }
+    assert {f.name for f in dataclass_fields(DecodedApplicant)} == {
+        "applicant_id", "class_id", "spec_id", "ilvl", "score", "role",
+        "name", "main_score", "rio_profile", "rio_best_key",
+        "rio_best_dungeon_key", "rio_timed_at_or_above",
+        "rio_timed_at_or_above_minus1", "rio_timed_at_or_above_minus2",
+        "rio_completed_at_or_above_minus1", "rio_dungeon_count",
+        "rio_dungeons", "member_idx",
+    }
+    assert {f.name for f in dataclass_fields(DecodedRosterMember)} == {
+        "unit_index", "flags", "subgroup", "class_id", "spec_id", "ilvl",
+        "score", "main_score", "rio_profile", "rio_best_key",
+        "rio_best_dungeon_key", "rio_timed_at_or_above",
+        "rio_timed_at_or_above_minus1", "rio_timed_at_or_above_minus2",
+        "rio_completed_at_or_above_minus1", "rio_dungeon_count",
+        "role", "name", "rio_dungeons",
+    }
+
+
+def test_submit_skips_serialization_for_unchanged_resubmit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    to_dict_calls = []
+    original_to_dict = cache_mod._snapshot_to_dict
+
+    def counting_to_dict(snap):
+        to_dict_calls.append(snap)
+        return original_to_dict(snap)
+
+    monkeypatch.setattr(cache_mod, "_snapshot_to_dict", counting_to_dict)
+    writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+    snap = _live_snapshot()
+
+    writer.submit(snap, now=100.0)
+    assert len(to_dict_calls) == 1
+    # Steady-state resubmit inside the suppression window: no rebuild.
+    writer.submit(snap, now=100.5)
+    assert len(to_dict_calls) == 1
+    # A changed snapshot still serializes.
+    writer.submit(replace(snap, applicants=[]), now=101.0)
+    assert len(to_dict_calls) == 2
+    assert writer.close()
+
+
+def test_submit_reserializes_unchanged_snapshot_after_suppression_window(tmp_path):
+    original_to_dict = cache_mod._snapshot_to_dict
+    calls = []
+    cache_mod._snapshot_to_dict = lambda snap: calls.append(snap) or original_to_dict(snap)
+    try:
+        writer = LiveSnapshotCacheWriter(tmp_path, defer_saves=False)
+        snap = _live_snapshot()
+        writer.submit(snap, now=100.0)
+        # Outside the duplicate window the resubmit refreshes saved_at.
+        writer.submit(snap, now=200.0)
+        assert len(calls) == 2
+        restored = load_live_snapshot(tmp_path, now=201.0)
+        assert restored is not None
+        assert restored.saved_at == 200.0
+        assert writer.close()
+    finally:
+        cache_mod._snapshot_to_dict = original_to_dict

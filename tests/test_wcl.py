@@ -5175,3 +5175,52 @@ def test_current_raid_cache_preserves_spec_and_metric_role_isolation(tmp_path):
     assert loaded.get(
         "Scout", "ravencrest", "EU", 258, "HEALER", metric_preferences=heroic,
     ) is None
+
+
+def test_character_cache_load_caps_entries_with_oldest_eviction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    now = 1_000_000.0
+    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    monkeypatch.setattr(CharacterCache, "MAX_ENTRIES", 3)
+    entries = {
+        CharacterCache._key(f"Name{i}", "ravencrest", "EU", 71, "DAMAGER"): {
+            "fetched_at": now - (100 - i * 10),
+            "ranks": _ranks().__dict__,
+        }
+        for i in range(5)
+    }
+    cache_file = tmp_path / "character-cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "__version__": _CACHE_VERSION,
+                "__query_fingerprint__": wcl_mod._character_cache_query_fingerprint(),
+                "entries": entries,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = CharacterCache(tmp_path)
+
+    assert len(loaded._data) == 3
+    assert CharacterCache._key("Name0", "ravencrest", "EU", 71, "DAMAGER") not in loaded._data
+    assert CharacterCache._key("Name1", "ravencrest", "EU", 71, "DAMAGER") not in loaded._data
+    assert CharacterCache._key("Name4", "ravencrest", "EU", 71, "DAMAGER") in loaded._data
+
+
+def test_character_cache_put_evicts_oldest_beyond_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    monkeypatch.setattr(CharacterCache, "MAX_ENTRIES", 2)
+    cache = CharacterCache(tmp_path)
+
+    cache.put("First", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    first_key = CharacterCache._key("First", "ravencrest", "EU", 71, "DAMAGER")
+    cache._data[first_key].fetched_at -= 100
+    cache.put("Second", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    cache.put("Third", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+
+    assert len(cache._data) == 2
+    assert first_key not in cache._data

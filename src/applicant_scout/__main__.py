@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,8 @@ from .atomic_io import (
     apply_private_directory_mode,
     apply_private_file_mode,
     atomic_write_bytes,
+    flush_deferred_privatization,
+    set_startup_privatization_deferred,
 )
 from .config import (
     Config,
@@ -147,6 +150,9 @@ UPDATE_QUIT_BLOCKED_MESSAGE = (
 )
 WOW_EXIT_POLL_MS = 5000
 WOW_EXIT_MISSES_BEFORE_QUIT = 3
+# H2: pre-QApplication duplicate probe budget. One scoped connect only; the
+# legacy endpoint stays covered by _create_control_server after startup.
+_DUPLICATE_PROBE_TIMEOUT_MS = 75
 UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 UPDATE_HANDOFF_POLL_INTERVAL_MS = 1_000
@@ -221,6 +227,58 @@ class _WCLRegionRuntime:
 class _WowLifecycleSignals(QObject):
     checked = pyqtSignal(bool)
     checkFailed = pyqtSignal()
+
+
+class _StartupVerificationSignals(QObject):
+    verified = pyqtSignal(object)
+
+
+class _WowLifecycleCheckExecutor:
+    """Single long-lived thread for periodic WoW lifecycle checks (M6).
+
+    Previously every 5s timer tick spawned (and reaped) a throwaway thread.
+    One daemon worker draining a queue performs the same checks in order
+    without per-tick thread churn. Checks never overlap: the timer-side
+    ``checking`` flag still suppresses a new submission while one is queued.
+    """
+
+    def __init__(self) -> None:
+        self._pending: queue.Queue[Callable[[], None]] = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._drain,
+            name="ApplicantScoutWoWLifecycleCheck",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _drain(self) -> None:
+        while True:
+            worker = self._pending.get()
+            try:
+                worker()
+            except Exception as exc:  # noqa: BLE001 - keep the loop alive
+                log.warning("WoW lifecycle check failed: %s", exc)
+            finally:
+                self._pending.task_done()
+
+    def submit(self, worker: Callable[[], None]) -> None:
+        self._pending.put(worker)
+
+
+_WOW_LIFECYCLE_CHECK_EXECUTOR: _WowLifecycleCheckExecutor | None = None
+_WOW_LIFECYCLE_CHECK_EXECUTOR_LOCK = threading.Lock()
+
+
+def _run_wow_lifecycle_check(worker: Callable[[], None]) -> None:
+    global _WOW_LIFECYCLE_CHECK_EXECUTOR
+    executor = _WOW_LIFECYCLE_CHECK_EXECUTOR
+    if executor is None:
+        with _WOW_LIFECYCLE_CHECK_EXECUTOR_LOCK:
+            executor = _WOW_LIFECYCLE_CHECK_EXECUTOR
+            if executor is None:
+                executor = _WowLifecycleCheckExecutor()
+                _WOW_LIFECYCLE_CHECK_EXECUTOR = executor
+    executor.submit(worker)
 
 
 @dataclass(frozen=True)
@@ -385,13 +443,20 @@ def _set_windows_app_user_model_id() -> None:
 
 
 def _send_control_command(
-    command: bytes, *, timeout_ms: int = 2000
+    command: bytes,
+    *,
+    timeout_ms: int = 2000,
+    server_names: tuple[str, ...] | None = None,
 ) -> _ControlCommandResult:
     return _runtime_control.send_control_command(
         command,
         timeout_ms=timeout_ms,
         socket_factory=QLocalSocket,
-        server_names=(CONTROL_SERVER_NAME, LEGACY_CONTROL_SERVER_NAME),
+        server_names=(
+            (CONTROL_SERVER_NAME, LEGACY_CONTROL_SERVER_NAME)
+            if server_names is None
+            else server_names
+        ),
     )
 
 
@@ -406,7 +471,7 @@ def _control_command_acknowledged(result: _ControlCommandResult) -> bool:
     return _runtime_control.control_command_acknowledged(result)
 
 
-def _has_running_instance(timeout_ms: int = 200) -> bool:
+def _has_running_instance(timeout_ms: int = 100) -> bool:
     return _runtime_control.has_running_instance(
         timeout_ms=timeout_ms,
         socket_factory=QLocalSocket,
@@ -517,6 +582,37 @@ def _start_daemon_thread(
     on_start_error: Callable[[Exception], None] | None = None,
 ) -> threading.Thread | None:
     """Launch optional background work without stranding caller-owned state."""
+    try:
+        worker = threading.Thread(target=target, name=name, daemon=True)
+        worker.start()
+    except Exception as exc:  # noqa: BLE001 - local worker launch boundary
+        log.warning("Could not start %s thread: %s", name, exc)
+        if on_start_error is not None:
+            try:
+                on_start_error(exc)
+            except Exception as callback_exc:  # noqa: BLE001 - preserve GUI loop
+                log.warning(
+                    "Could not recover after %s thread start failure: %s",
+                    name,
+                    callback_exc,
+                )
+        return None
+    return worker
+
+
+def _start_startup_background_thread(
+    target: Callable[[], None],
+    *,
+    name: str,
+    on_start_error: Callable[[Exception], None] | None = None,
+) -> threading.Thread | None:
+    """Launch startup-path background work on its own seam (H1/H3).
+
+    Update flows intercept the generic _start_daemon_thread launcher in
+    tests; startup verification and ACL privatization must not appear in
+    their worker queues, so they start here instead. Same fire-and-forget
+    error handling.
+    """
     try:
         worker = threading.Thread(target=target, name=name, daemon=True)
         worker.start()
@@ -2325,13 +2421,9 @@ def _start_wow_lifecycle_timer(
     check_wow_running = running_checker or _default_wow_running_checker
     signals = _WowLifecycleSignals()
     state = {"checking": False, "active": True, "rearm_failed": False}
-    run_async = async_runner or (
-        lambda worker: threading.Thread(
-            target=worker,
-            name="ApplicantScoutWoWLifecycleCheck",
-            daemon=True,
-        ).start()
-    )
+    # M6: one long-lived checker thread (queue-backed) instead of spawning a
+    # thread per timer tick. Injected runners (tests) keep working unchanged.
+    run_async = async_runner or _run_wow_lifecycle_check
 
     def _handle_wow_running(running: bool) -> None:
         nonlocal observed_wow, missing_wow_scans
@@ -3935,7 +4027,192 @@ def _run_first_run_settings(
     return True
 
 
-def _load_startup_config() -> tuple[Config, Path, bool] | None:
+@dataclass(frozen=True)
+class _StartupScreenshotsVerification:
+    """Outcome of the (possibly background) screenshots-path probe (H1)."""
+
+    kind: str  # "ok" | "repaired" | "warning" | "env_error"
+    cfg: Config
+    screenshots_dir: Path
+    message: str | None = None
+
+
+def _verify_startup_screenshots_dir(
+    cfg: Config, screenshots_dir: Path
+) -> _StartupScreenshotsVerification:
+    """Probe + moved-install discovery without any UI (H1 worker body).
+
+    Same decision logic the synchronous startup path used to run inline;
+    callers surface ``warning``/``env_error`` on the GUI thread.
+    """
+    warning = run_bounded_screenshots_path_probe(screenshots_dir)
+    if warning is None:
+        return _StartupScreenshotsVerification("ok", cfg, screenshots_dir)
+    if (
+        cfg.screenshots_path is not None
+        and screenshots_dir.name.casefold() == "screenshots"
+        and screenshots_dir.parent.name.casefold() in WOW_CLIENT_ROOT_NAMES
+        and not str(screenshots_dir).startswith("\\\\")
+        and (
+            "folder does not exist" in warning
+            or "folder has no WoW install markers" in warning
+        )
+        and os.environ.get("APSCOUT_SCREENSHOTS_PATH") is None
+    ):
+        discovered = run_bounded_discovery(screenshots_dir)
+        if (
+            discovered is not None
+            and discovered != screenshots_dir
+            and run_bounded_screenshots_path_probe(discovered) is None
+        ):
+            save_discovered_screenshots_path(
+                discovered, config_path=cfg.config_path
+            )
+            log.info("Found moved WoW Screenshots folder: %s", discovered)
+            return _StartupScreenshotsVerification(
+                "repaired",
+                replace(cfg, screenshots_path=discovered),
+                discovered,
+            )
+    if os.environ.get("APSCOUT_SCREENSHOTS_PATH") is not None:
+        return _StartupScreenshotsVerification(
+            "env_error", cfg, screenshots_dir, warning
+        )
+    return _StartupScreenshotsVerification(
+        "warning", cfg, screenshots_dir, warning
+    )
+
+
+def _startup_env_override_message(warning: str) -> str:
+    return (
+        f"{warning}\n\n"
+        "APSCOUT_SCREENSHOTS_PATH is set in the process environment. "
+        "Correct or remove that environment override before saved "
+        "settings can take effect."
+    )
+
+
+def _surface_startup_verification(
+    outcome: _StartupScreenshotsVerification,
+) -> None:
+    """Show a background probe outcome on the GUI thread (H1 callback).
+
+    The watcher keeps running on the trusted saved path for this session; a
+    repaired moved install is already persisted and takes effect on restart.
+    """
+    if outcome.kind == "ok":
+        return
+    if outcome.kind == "repaired":
+        log.warning(
+            "WoW Screenshots folder moved to %s; saved for the next start. "
+            "This session keeps watching %s.",
+            outcome.screenshots_dir,
+            outcome.screenshots_dir,
+        )
+        QMessageBox.information(
+            None,
+            "ApplicantScout setup",
+            f"Found moved WoW Screenshots folder:\n{outcome.screenshots_dir}\n\n"
+            "It was saved and will be used after a restart.",
+        )
+        return
+    message = outcome.message or ""
+    if outcome.kind == "env_error":
+        _show_config_error(_startup_env_override_message(message))
+        return
+    QMessageBox.warning(None, "ApplicantScout setup", message)
+
+
+class _StartupScreenshotsVerificationRun:
+    """One background probe run; its outcome surfaces exactly once (H1)."""
+
+    def __init__(
+        self,
+        cfg: Config,
+        screenshots_dir: Path,
+    ) -> None:
+        self._cfg = cfg
+        self._screenshots_dir = screenshots_dir
+        self._lock = threading.Lock()
+        self._outcome: _StartupScreenshotsVerification | None = None
+        self._surfaced = False
+        self._signals: _StartupVerificationSignals | None = None
+
+    def start(self, signals: _StartupVerificationSignals) -> None:
+        self._signals = signals
+        signals.verified.connect(self._on_verified)
+        _start_startup_background_thread(
+            self._run,
+            name="ApplicantScoutStartupPathVerify",
+            on_start_error=lambda _exc: self._run_sync_fallback(),
+        )
+
+    def _run(self) -> None:
+        try:
+            outcome = _verify_startup_screenshots_dir(
+                self._cfg, self._screenshots_dir
+            )
+        except Exception as exc:  # noqa: BLE001 - surfacing boundary
+            log.warning("Background screenshots path check failed: %s", exc)
+            outcome = _StartupScreenshotsVerification(
+                "warning",
+                self._cfg,
+                self._screenshots_dir,
+                f"Screenshots folder warning: could not check path: {exc}",
+            )
+        with self._lock:
+            self._outcome = outcome
+        signals = self._signals
+        if signals is not None:
+            signals.verified.emit(outcome)
+
+    def _run_sync_fallback(self) -> None:
+        # Thread launch failed: keep today's gating, on the GUI thread.
+        self._run()
+        self.surface()
+
+    def _on_verified(self, _outcome: object) -> None:
+        self.surface()
+
+    def surface(self) -> bool:
+        """Surface a ready outcome; safe from any thread, effective on GUI."""
+        with self._lock:
+            if self._surfaced or self._outcome is None:
+                return False
+            self._surfaced = True
+            outcome = self._outcome
+        _surface_startup_verification(outcome)
+        return True
+
+
+def _start_startup_screenshots_verification(
+    cfg: Config,
+    screenshots_dir: Path,
+    signals: _StartupVerificationSignals,
+) -> _StartupScreenshotsVerificationRun:
+    run = _StartupScreenshotsVerificationRun(cfg, screenshots_dir)
+    run.start(signals)
+    return run
+
+
+def _flush_startup_file_privatization() -> None:
+    """Apply startup-deferred ACL mutations off the GUI thread (H3)."""
+    set_startup_privatization_deferred(False)
+    try:
+        flushed = flush_deferred_privatization()
+    except Exception:  # noqa: BLE001 - best-effort hardening boundary
+        log.exception("Background file privatization failed.")
+        return
+    if flushed:
+        log.info(
+            "Applied deferred file privatization for %d path(s).",
+            flushed,
+        )
+
+
+def _load_startup_config(
+    *, verify_screenshots_path: bool = True
+) -> tuple[Config, Path, bool] | None:
     startup_settings_shown = False
     try:
         cfg = load_config()
@@ -3953,42 +4230,25 @@ def _load_startup_config() -> tuple[Config, Path, bool] | None:
                 _show_config_error(str(exc))
                 return None
             continue
-        try:
-            screenshots_dir = screenshots_path_candidate(cfg)
-            warning = run_bounded_screenshots_path_probe(screenshots_dir)
-            if warning is not None:
-                if (
-                    cfg.screenshots_path is not None
-                    and screenshots_dir.name.casefold() == "screenshots"
-                    and screenshots_dir.parent.name.casefold() in WOW_CLIENT_ROOT_NAMES
-                    and not str(screenshots_dir).startswith("\\\\")
-                    and (
-                        "folder does not exist" in warning
-                        or "folder has no WoW install markers" in warning
-                    )
-                    and os.environ.get("APSCOUT_SCREENSHOTS_PATH") is None
-                ):
-                    discovered = run_bounded_discovery(screenshots_dir)
-                    if (
-                        discovered is not None
-                        and discovered != screenshots_dir
-                        and run_bounded_screenshots_path_probe(discovered) is None
-                    ):
-                        save_discovered_screenshots_path(
-                            discovered, config_path=cfg.config_path
-                        )
-                        log.info("Found moved WoW Screenshots folder: %s", discovered)
-                        return replace(cfg, screenshots_path=discovered), discovered, startup_settings_shown
-                raise ConfigError(warning)
+        screenshots_dir = screenshots_path_candidate(cfg)
+        if not verify_screenshots_path:
+            # H1 fast path: trust the saved path so the GUI thread never
+            # blocks on probe/discovery subprocesses. Verification runs in a
+            # background worker after the window/tray exist (see
+            # _start_startup_screenshots_verification).
             return cfg, screenshots_dir, startup_settings_shown
+        verification = _verify_startup_screenshots_dir(cfg, screenshots_dir)
+        if verification.kind in ("ok", "repaired"):
+            return (
+                verification.cfg,
+                verification.screenshots_dir,
+                startup_settings_shown,
+            )
+        try:
+            raise ConfigError(verification.message or "")
         except ConfigError as exc:
-            if os.environ.get("APSCOUT_SCREENSHOTS_PATH") is not None:
-                _show_config_error(
-                    f"{exc}\n\n"
-                    "APSCOUT_SCREENSHOTS_PATH is set in the process environment. "
-                    "Correct or remove that environment override before saved "
-                    "settings can take effect."
-                )
+            if verification.kind == "env_error":
+                _show_config_error(_startup_env_override_message(str(exc)))
                 return None
             QMessageBox.warning(None, "ApplicantScout setup", str(exc))
             if not _run_first_run_settings(cfg):
@@ -4053,7 +4313,14 @@ def main(argv: list[str] | None = None) -> int:
         return early_exit
     duplicate_command = _duplicate_launch_command(args, wow_watch_mode=wow_watch_mode)
     if duplicate_command is not None:
-        result = _send_control_command(duplicate_command, timeout_ms=200)
+        # H2 fast path: a single scoped connect with a short timeout, before
+        # QApplication exists. The legacy endpoint is still probed after
+        # startup by _create_control_server, so older instances keep working.
+        result = _send_control_command(
+            duplicate_command,
+            timeout_ms=_DUPLICATE_PROBE_TIMEOUT_MS,
+            server_names=(CONTROL_SERVER_NAME,),
+        )
         if _control_command_acknowledged(result):
             return 0
         if result.connected and result.written and result.response is None:
@@ -4213,6 +4480,10 @@ def main(argv: list[str] | None = None) -> int:
         None,
     )
 
+    # H3: from here on, Windows ACL mutations are recorded (chmod still
+    # applies) and flushed from a background thread after the tray exists.
+    # Same end state, ordered later. Earlier exits keep synchronous behavior.
+    set_startup_privatization_deferred(True)
     usage_client = UsageClient(
         user_config_path().parent,
         __version__,
@@ -4221,14 +4492,33 @@ def main(argv: list[str] | None = None) -> int:
     setattr(app, "_usage_client", usage_client)
     if about_to_quit is not None:
         about_to_quit.connect(usage_client.close)
-    loaded = _load_startup_config()
+    # H1: trust the saved path so probe/discovery subprocesses never block the
+    # GUI thread; verification runs in the background after first paint.
+    loaded = _load_startup_config(verify_screenshots_path=False)
     if loaded is None:
         usage_client.close()
+        # H3: same end state on early exit — harden anything recorded so far.
+        set_startup_privatization_deferred(False)
+        try:
+            flush_deferred_privatization()
+        except Exception:  # noqa: BLE001 - early-exit hardening boundary
+            log.exception("Could not flush deferred file privatization.")
         if isinstance(runtime_owner, _RuntimeOwner):
             runtime_owner.close()
         return 1
 
     cfg, screenshots_dir, startup_settings_shown = loaded
+    startup_verification_signals = _StartupVerificationSignals()
+    startup_verification = _start_startup_screenshots_verification(
+        cfg,
+        screenshots_dir,
+        startup_verification_signals,
+    )
+    setattr(
+        app,
+        "_applicant_scout_startup_verification",
+        (startup_verification, startup_verification_signals),
+    )
     usage_client.record("setup_completed")
     region = cfg.region or REGION_ID_TO_WCL.get(3, "EU")  # default EU
     region_runtime = _WCLRegionRuntime(region)
@@ -4660,6 +4950,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     if tray_controller is None:
         log.info("System tray indicator disabled.")
+    # H3: window/tray exist — harden recorded paths off the GUI thread.
+    _start_startup_background_thread(
+        _flush_startup_file_privatization,
+        name="ApplicantScoutACLPrivatize",
+    )
     if cfg.sync_with_wow:
         wow_exit_timer = _start_wow_lifecycle_timer(
             app,
@@ -4726,6 +5021,9 @@ def main(argv: list[str] | None = None) -> int:
 
         QTimer.singleShot(0, _show_screenshots_recovery)
 
+    # H1: surface an already-finished background probe before the watcher
+    # starts (non-blocking); later arrivals notify via the verified signal.
+    startup_verification.surface()
     watcher = _start_initial_screenshot_watcher(
         screenshots_dir,
         machine,

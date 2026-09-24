@@ -1907,6 +1907,10 @@ class CharacterCache:
     # APSCOUT_CACHE_TTL_SECONDS override is stored per CharacterCache instance.
     TTL_SECONDS = 12 * 60 * 60
     NOT_FOUND_TTL_SECONDS = 30 * 60
+    # H4: TTL alone lets region x realm x name x spec x role x prefs (plus
+    # rb:/nf: variants) explode without bound. Cap entries with
+    # oldest-fetched_at eviction; steady-state LFG traffic stays far below.
+    MAX_ENTRIES = 1500
 
     def __init__(
         self,
@@ -2040,22 +2044,50 @@ class CharacterCache:
         for k, v in entries.items():
             if not isinstance(v, dict):
                 continue
+            # H4: prune expired entries from the raw payload first — no
+            # _CacheEntry construction (and no asdict-shaped validation cost)
+            # for entries that cannot survive anyway.
+            fetched_at = v.get("fetched_at")
+            if (
+                isinstance(fetched_at, bool)
+                or not isinstance(fetched_at, (int, float))
+                or _safe_nonnegative_finite_float(fetched_at) is None
+            ):
+                _log.debug("Discarding corrupt cache entry for key=%s", k)
+                continue
+            if not self._entry_is_fresh_raw(k, float(fetched_at), now=now):
+                continue
             try:
                 entry = _CacheEntry(**v)
             except (TypeError, ValueError):
                 _log.debug("Discarding corrupt cache entry for key=%s", k)
                 continue
-            if (
-                isinstance(entry.fetched_at, bool)
-                or not isinstance(entry.fetched_at, (int, float))
-                or _safe_nonnegative_finite_float(entry.fetched_at) is None
-            ):
-                _log.debug("Discarding corrupt cache entry for key=%s", k)
-                continue
-            if not self._entry_is_fresh(k, entry, now=now):
-                continue
             result[k] = entry
+        self._cap_entries(result)
         return result
+
+    @staticmethod
+    def _cap_entries(data: dict[str, _CacheEntry]) -> None:
+        """Evict oldest-fetched_at entries beyond MAX_ENTRIES (H4)."""
+        overflow = len(data) - CharacterCache.MAX_ENTRIES
+        if overflow <= 0:
+            return
+        oldest = sorted(data.items(), key=lambda item: (item[1].fetched_at, item[0]))
+        for key, _entry in oldest[:overflow]:
+            data.pop(key, None)
+
+    def _ttl_for_key(self, key: str) -> int:
+        return (
+            self._not_found_ttl_seconds()
+            if key.startswith("nf:")
+            else self._ttl_seconds
+        )
+
+    def _entry_is_fresh_raw(self, key: str, fetched_at: float, *, now: float) -> bool:
+        age = now - fetched_at
+        if age < 0:
+            return False
+        return age <= self._ttl_for_key(key)
 
     def _entry_is_fresh(
         self,
@@ -2064,15 +2096,18 @@ class CharacterCache:
         *,
         now: float,
     ) -> bool:
-        age = now - entry.fetched_at
-        if age < 0:
+        fetched_at = entry.fetched_at
+        if (
+            isinstance(fetched_at, bool)
+            or not isinstance(fetched_at, (int, float))
+            or _safe_nonnegative_finite_float(fetched_at) is None
+        ):
             return False
-        ttl = (
-            self._not_found_ttl_seconds()
-            if key.startswith("nf:")
-            else self._ttl_seconds
-        )
-        return age <= ttl
+        return self._entry_is_fresh_raw(key, float(fetched_at), now=now)
+
+    def _evict_oldest_locked(self) -> None:
+        # Caller must hold self._lock.
+        self._cap_entries(self._data)
 
     def _prune_expired_locked(self, now: float) -> bool:
         # Caller must hold self._lock.
@@ -2474,6 +2509,7 @@ class CharacterCache:
                 self._data[key] = _CacheEntry(
                     fetched_at=time.time(), ranks=asdict(ranks)
                 )
+            self._evict_oldest_locked()
             self._save_epoch += 1
             flush_now = self._schedule_save_locked()
         if flush_now:
@@ -2513,6 +2549,7 @@ class CharacterCache:
                 fetched_at=time.time(),
                 raid_boss_details=sanitized,
             )
+            self._evict_oldest_locked()
             self._save_epoch += 1
             flush_now = self._schedule_save_locked()
         if flush_now:

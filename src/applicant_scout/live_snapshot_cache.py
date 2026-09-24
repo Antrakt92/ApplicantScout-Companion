@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import wraps
 import json
 import logging
@@ -37,7 +37,6 @@ LIVE_SNAPSHOT_CACHE_SCHEMA = 2
 LIVE_SNAPSHOT_CACHE_TTL_SECONDS = 90.0
 LIVE_SNAPSHOT_RESTORE_GRACE_SECONDS = 30.0
 LIVE_SNAPSHOT_CLOSE_TIMEOUT_SECONDS = 2.0
-LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS = 2
 LIVE_SNAPSHOT_DUPLICATE_SUPPRESSION_SECONDS = 2.0
 _UNSCOPED_SOURCE_ID = "unscoped"
 _LIVE_SNAPSHOT_FILE_LOCK = threading.RLock()
@@ -69,6 +68,110 @@ class _PendingLiveSnapshotCacheOperation:
     source_id: str
     saved_at: float | None = None
     content: dict[str, Any] | None = None
+    # H5: cheap value digest of the snapshot a "save" was built from. Lets
+    # submit() skip the full asdict + deep-== when the steady-state resubmit
+    # provably duplicates the last saved snapshot (see _snapshot_digest_key).
+    digest: tuple[Any, ...] | None = None
+
+
+def _freeze_digest_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple(sorted((key, _freeze_digest_value(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_digest_value(item) for item in value)
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    return repr(value)
+
+
+def _snapshot_digest_key(snap: Snapshot) -> tuple[Any, ...]:
+    """Cheap value key mirroring _snapshot_to_dict field-for-field (H5).
+
+    Scalar tuple reads (~10us for a 40-applicant snapshot) instead of a full
+    asdict (~140us) plus deep dict comparison. Digest equality implies
+    identical serialized content, so suppressing on digest equality can never
+    drop a changed snapshot. If a field is ever added to the decoded
+    dataclasses, test_snapshot_digest_covers_all_serialized_fields fails and
+    points here.
+    """
+    listing = snap.listing
+    version = snap.version
+    leader_key = snap.leader_key
+    return (
+        bool(snap.terminal_clear),
+        bool(snap.lfg_unavailable),
+        bool(snap.roster_unavailable),
+        bool(snap.applicants_unavailable),
+        (
+            listing.activity_id,
+            listing.key_level,
+            listing.dungeon_name,
+            listing.listing_name,
+            listing.comment,
+            listing.category_id,
+            listing.difficulty_id,
+        )
+        if listing is not None
+        else None,
+        (
+            version.addon_version,
+            version.game_version,
+            version.region_id,
+            version.player_name,
+        )
+        if version is not None
+        else None,
+        (leader_key.key_level, leader_key.challenge_map_id, leader_key.player_name)
+        if leader_key is not None
+        else None,
+        tuple(
+            (
+                applicant.applicant_id,
+                applicant.class_id,
+                applicant.spec_id,
+                applicant.ilvl,
+                applicant.score,
+                applicant.role,
+                applicant.name,
+                applicant.main_score,
+                applicant.rio_profile,
+                applicant.rio_best_key,
+                applicant.rio_best_dungeon_key,
+                applicant.rio_timed_at_or_above,
+                applicant.rio_timed_at_or_above_minus1,
+                applicant.rio_timed_at_or_above_minus2,
+                applicant.rio_completed_at_or_above_minus1,
+                applicant.rio_dungeon_count,
+                _freeze_digest_value(applicant.rio_dungeons),
+                applicant.member_idx,
+            )
+            for applicant in snap.applicants
+        ),
+        tuple(
+            (
+                member.unit_index,
+                member.flags,
+                member.subgroup,
+                member.class_id,
+                member.spec_id,
+                member.ilvl,
+                member.score,
+                member.main_score,
+                member.rio_profile,
+                member.rio_best_key,
+                member.rio_best_dungeon_key,
+                member.rio_timed_at_or_above,
+                member.rio_timed_at_or_above_minus1,
+                member.rio_timed_at_or_above_minus2,
+                member.rio_completed_at_or_above_minus1,
+                member.rio_dungeon_count,
+                member.role,
+                member.name,
+                _freeze_digest_value(member.rio_dungeons),
+            )
+            for member in snap.roster
+        ),
+    )
 
 
 def live_snapshot_cache_path(cache_dir: Path) -> Path:
@@ -345,6 +448,7 @@ class LiveSnapshotCacheWriter:
         self._generation = 0
         self._last_saved_content: dict[str, Any] | None = None
         self._last_saved_at: float | None = None
+        self._last_saved_digest: tuple[Any, ...] | None = None
         self._latest_logical_operation: (
             _PendingLiveSnapshotCacheOperation | None
         ) = None
@@ -367,6 +471,7 @@ class LiveSnapshotCacheWriter:
                 self._pending = None
                 self._last_saved_content = None
                 self._last_saved_at = None
+                self._last_saved_digest = None
                 clear_operation = _PendingLiveSnapshotCacheOperation(
                     "clear",
                     next_source_id,
@@ -387,9 +492,32 @@ class LiveSnapshotCacheWriter:
         with self._lock:
             source_id = self._source_id
             generation = self._generation
-        operation = _operation_for_snapshot(snap, source_id=source_id, now=now)
+        try:
+            observed_at = _coerce_timestamp(time.time() if now is None else now)
+        except ValueError as exc:
+            _log.warning(
+                "Ignoring live snapshot cache operation with invalid timestamp: %s",
+                exc,
+            )
+            return
+        # H5: cheap digest first — a steady-state resubmit that provably
+        # duplicates the last saved snapshot skips the full asdict build and
+        # the deep content comparison entirely.
+        digest = _snapshot_digest_key(snap)
+        with self._lock:
+            if self._closed:
+                return
+            # Building outside the lock may overlap a clear or A -> B -> A
+            # source switch. The same source name does not revive old work.
+            if generation != self._generation or source_id != self._source_id:
+                return
+            if self._suppress_unchanged_save_locked(digest, observed_at):
+                return
+        operation = _operation_for_snapshot(snap, source_id=source_id, now=observed_at)
         if operation is None:
             return
+        if operation.kind == "save":
+            operation = replace(operation, digest=digest)
         flush_now = False
         with self._lock:
             if self._closed:
@@ -411,6 +539,31 @@ class LiveSnapshotCacheWriter:
                 flush_now = True
         if flush_now:
             self.flush()
+
+    def _suppress_unchanged_save_locked(
+        self, digest: tuple[Any, ...], observed_at: float
+    ) -> bool:
+        """Skip a resubmit the duplicate filter would provably drop (H5).
+
+        Caller must hold self._lock with a current generation/source. Mirrors
+        _is_recent_duplicate_locked's save branch without building the full
+        operation: digest equality implies identical serialized content, so a
+        pending-free writer whose latest logical and last saved snapshots share
+        this digest performs no write and changes no state for the resubmit.
+        """
+        if self._pending is not None:
+            return False
+        latest = self._latest_logical_operation
+        if (
+            latest is None
+            or latest.kind != "save"
+            or latest.digest != digest
+        ):
+            return False
+        if self._last_saved_digest != digest or self._last_saved_at is None:
+            return False
+        elapsed = observed_at - self._last_saved_at
+        return 0.0 <= elapsed <= LIVE_SNAPSHOT_DUPLICATE_SUPPRESSION_SECONDS
 
     def flush(self) -> bool:
         # WHY: claim and requeue under the write barrier so close cannot observe
@@ -439,6 +592,7 @@ class LiveSnapshotCacheWriter:
             self._pending = None
             self._last_saved_content = None
             self._last_saved_at = None
+            self._last_saved_digest = None
             self._latest_logical_operation = None
         with self._write_lock:
             pass
@@ -454,6 +608,7 @@ class LiveSnapshotCacheWriter:
                 self._pending = None
                 self._last_saved_content = None
                 self._last_saved_at = None
+                self._last_saved_digest = None
                 operation = _PendingLiveSnapshotCacheOperation(
                     "clear",
                     self._source_id,
@@ -488,15 +643,17 @@ class LiveSnapshotCacheWriter:
             if operation is None:
                 return True
 
-            for _attempt in range(LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS):
-                if self._perform_operation(operation):
-                    self._record_successful_operation(operation, generation)
-                    return True
+            # M7: single attempt on the quit path — no in-close retry. A failed
+            # final operation is requeued, so a later close() (or flush())
+            # still gets its chance; the quit path itself never pays for
+            # repeated doomed writes.
+            if self._perform_operation(operation):
+                self._record_successful_operation(operation, generation)
+                return True
 
             self._requeue_failed_operation(operation, generation)
             _log.warning(
-                "Failed to drain the live snapshot cache writer after %d attempts.",
-                LIVE_SNAPSHOT_CLOSE_RETRY_ATTEMPTS,
+                "Failed to drain the live snapshot cache writer on close."
             )
             return False
         finally:
@@ -635,9 +792,11 @@ class LiveSnapshotCacheWriter:
             if operation.kind == "save":
                 self._last_saved_content = operation.content
                 self._last_saved_at = operation.saved_at
+                self._last_saved_digest = operation.digest
                 return
             self._last_saved_content = None
             self._last_saved_at = None
+            self._last_saved_digest = None
 
 
 def _operation_for_snapshot(

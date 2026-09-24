@@ -10,6 +10,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 
@@ -24,6 +25,22 @@ _CURRENT_USER_SID_CACHE: str | None = None
 _PRIVATE_ACL_CACHE: set[
     tuple[str, bool, tuple[int | None, int | None, int | None] | None]
 ] = set()
+# Guards _PRIVATE_ACL_CACHE and the deferred startup set below: privatization
+# now also runs on a background thread after startup (see H3), so the cache
+# and the pending set need a lock where the GUI-thread-only path did not.
+_PRIVATE_ACL_LOCK = threading.Lock()
+# Startup deferral (H3): while set, Windows ACL mutations are recorded instead
+# of applied so config/usage/cache init on the startup path costs chmod only.
+# flush_deferred_privatization() applies the identical mutations later from a
+# background thread. Same end state, ordered later. Off by default.
+_STARTUP_ACL_DEFERRED = False
+_DEFERRED_PRIVATE_PATHS: set[tuple[str, bool]] = set()
+# Exact-match expectations for the zero-spawn already-private check.
+_FULL_CONTROL_MASK = 0x1F01FF
+_ACCESS_ALLOWED_ACE_TYPE = 0
+_OBJECT_INHERIT_ACE_FLAG = 0x1
+_CONTAINER_INHERIT_ACE_FLAG = 0x2
+_SE_DACL_PROTECTED = 0x1000
 
 
 def _is_windows() -> bool:
@@ -91,6 +108,10 @@ def _apply_windows_private_acl(path: Path, *, directory: bool) -> bool:
     user_sid = _cached_current_user_sid()
     if user_sid is None:
         return False
+    # H3 fast path: a descriptor that already matches needs no subprocess at
+    # all (previously: whoami [cached] + icacls /save + up to 3 mutations).
+    if _windows_dacl_matches_private(path, user_sid, directory=directory):
+        return True
     path_text = os.fspath(path)
     grants = [
         "icacls",
@@ -140,6 +161,210 @@ def _apply_windows_private_acl(path: Path, *, directory: bool) -> bool:
     return True
 
 
+def set_startup_privatization_deferred(enabled: bool) -> None:
+    """Defer Windows ACL mutations to flush_deferred_privatization() (H3).
+
+    While deferred, apply_private_*_mode performs chmod only and records the
+    path; the identical icacls mutations run later on a background thread.
+    Same end state, ordered later. Never weakens the final descriptor.
+    """
+    global _STARTUP_ACL_DEFERRED
+    with _PRIVATE_ACL_LOCK:
+        _STARTUP_ACL_DEFERRED = bool(enabled)
+
+
+def flush_deferred_privatization() -> int:
+    """Apply recorded Windows ACL mutations; return the privatized count."""
+    with _PRIVATE_ACL_LOCK:
+        pending = sorted(_DEFERRED_PRIVATE_PATHS)
+        _DEFERRED_PRIVATE_PATHS.clear()
+    applied = 0
+    for path_text, directory in pending:
+        path = Path(path_text)
+        try:
+            exists = path.exists()
+        except OSError:
+            continue
+        if not exists:
+            continue
+        if _is_windows():
+            if _apply_windows_private_acl(path, directory=directory):
+                with _PRIVATE_ACL_LOCK:
+                    _PRIVATE_ACL_CACHE.add(
+                        _private_acl_cache_key(path, directory=directory)
+                    )
+                applied += 1
+        else:
+            applied += 1
+    return applied
+
+
+def _expected_private_sids(
+    user_sid: str,
+) -> tuple[bytes | None, bytes | None, bytes | None]:
+    import ctypes
+
+    def _sid_bytes(text: str) -> bytes | None:
+        sid = ctypes.c_void_p()
+        convert = ctypes.windll.advapi32.ConvertStringSidToSidW
+        convert.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)]
+        convert.restype = ctypes.c_int
+        if not convert(text, ctypes.byref(sid)):
+            return None
+        length = ctypes.windll.advapi32.GetLengthSid(sid)
+        raw = ctypes.string_at(sid, length)
+        ctypes.windll.kernel32.LocalFree(sid)
+        return raw
+
+    return (
+        _sid_bytes(user_sid.lstrip("*")),
+        _sid_bytes(_WINDOWS_SYSTEM_SID.lstrip("*")),
+        _sid_bytes(_WINDOWS_ADMINISTRATORS_SID.lstrip("*")),
+    )
+
+
+def _windows_dacl_matches_private(
+    path: Path, user_sid: str, *, directory: bool
+) -> bool:
+    """Zero-spawn already-private check (H3 fast path).
+
+    Reads the DACL via GetNamedSecurityInfoW and requires an exact match:
+    protected (no inheritance), exactly three ACCESS_ALLOWED ACEs with full
+    control for the current user, SYSTEM, and Administrators, with
+    (OI)(CI) inheritance flags on directories and none on files. Anything
+    else — including any API failure — returns False so the caller falls
+    back to the full icacls mutation sequence. Fail-closed, never weakens.
+    """
+    if not _is_windows():
+        return False
+    try:
+        import ctypes
+
+        advapi32 = ctypes.windll.advapi32
+        kernel32 = ctypes.windll.kernel32
+        path_text = os.fspath(path)
+        security_info = 0x4  # DACL_SECURITY_INFORMATION
+        dacl = ctypes.c_void_p()
+        descriptor = ctypes.c_void_p()
+        GetNamedSecurityInfoW = advapi32.GetNamedSecurityInfoW
+        GetNamedSecurityInfoW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_int,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        GetNamedSecurityInfoW.restype = ctypes.c_uint
+        if GetNamedSecurityInfoW(
+            path_text, 1, security_info, None, None,
+            ctypes.byref(dacl), None, ctypes.byref(descriptor),
+        ) != 0:
+            return False
+        try:
+            control = ctypes.c_ushort()
+            GetSecurityDescriptorControl = advapi32.GetSecurityDescriptorControl
+            GetSecurityDescriptorControl.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_ushort),
+                ctypes.POINTER(ctypes.c_ulong),
+            ]
+            GetSecurityDescriptorControl.restype = ctypes.c_int
+            revision = ctypes.c_ulong()
+            if not GetSecurityDescriptorControl(
+                descriptor, ctypes.byref(control), ctypes.byref(revision)
+            ):
+                return False
+            if not control.value & _SE_DACL_PROTECTED:
+                return False
+            GetSecurityDescriptorDacl = advapi32.GetSecurityDescriptorDacl
+            GetSecurityDescriptorDacl.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.POINTER(ctypes.c_int),
+            ]
+            GetSecurityDescriptorDacl.restype = ctypes.c_int
+            present = ctypes.c_int()
+            defaulted = ctypes.c_int()
+            if not GetSecurityDescriptorDacl(
+                descriptor, ctypes.byref(present),
+                ctypes.byref(dacl), ctypes.byref(defaulted),
+            ):
+                return False
+            if not present.value or not dacl.value:
+                return False
+            class _AclSizeInformation(ctypes.Structure):
+                _fields_ = (
+                    ("AceCount", ctypes.c_ulong),
+                    ("AclBytesInUse", ctypes.c_ulong),
+                    ("AclBytesFree", ctypes.c_ulong),
+                )
+
+            size_info = _AclSizeInformation()
+            GetAclInformation = advapi32.GetAclInformation
+            GetAclInformation.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+            ]
+            GetAclInformation.restype = ctypes.c_int
+            if not GetAclInformation(
+                dacl, ctypes.byref(size_info), ctypes.sizeof(size_info), 2
+            ):
+                return False
+            if size_info.AceCount != 3:
+                return False
+            expected_flags = (
+                (_OBJECT_INHERIT_ACE_FLAG | _CONTAINER_INHERIT_ACE_FLAG)
+                if directory
+                else 0
+            )
+            expected_sids = _expected_private_sids(user_sid)
+            if any(item is None for item in expected_sids):
+                return False
+            expected_buffers = [
+                ctypes.create_string_buffer(item or b"") for item in expected_sids
+            ]
+            matched = [False, False, False]
+            GetAce = advapi32.GetAce
+            GetAce.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+            GetAce.restype = ctypes.c_int
+            EqualSid = advapi32.EqualSid
+            EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            EqualSid.restype = ctypes.c_int
+            for index in range(3):
+                ace_ptr = ctypes.c_void_p()
+                if not GetAce(dacl, index, ctypes.byref(ace_ptr)):
+                    return False
+                base = ace_ptr.value
+                if base is None:
+                    return False
+                ace_type = ctypes.c_ubyte.from_address(base).value
+                ace_flags = ctypes.c_ubyte.from_address(base + 1).value
+                mask = ctypes.c_ulong.from_address(base + 4).value
+                if (
+                    ace_type != _ACCESS_ALLOWED_ACE_TYPE
+                    or ace_flags != expected_flags
+                    or mask != _FULL_CONTROL_MASK
+                ):
+                    return False
+                sid_ptr = base + 8
+                for slot, expected_buf in enumerate(expected_buffers):
+                    if matched[slot]:
+                        continue
+                    if EqualSid(ctypes.c_void_p(sid_ptr), expected_buf):
+                        matched[slot] = True
+                        break
+                else:
+                    return False
+            return all(matched)
+        finally:
+            kernel32.LocalFree(descriptor)
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 def _private_acl_cache_key(
     path: Path,
     *,
@@ -171,17 +396,28 @@ def _private_acl_cache_key(
 
 def _apply_private_path_mode(path: Path, *, mode: int, directory: bool) -> bool:
     cache_key = _private_acl_cache_key(path, directory=directory)
-    if cache_key in _PRIVATE_ACL_CACHE:
-        return True
+    with _PRIVATE_ACL_LOCK:
+        if cache_key in _PRIVATE_ACL_CACHE:
+            return True
     try:
         path.chmod(mode)
     except OSError:
         # Best-effort only; Windows ACLs and filesystem policy can reject chmod.
         pass
     if _is_windows():
+        with _PRIVATE_ACL_LOCK:
+            deferred = _STARTUP_ACL_DEFERRED
+            if deferred:
+                # H3: chmod is done; the identical icacls mutations are recorded
+                # for the post-startup background flush (same end state, later).
+                _DEFERRED_PRIVATE_PATHS.add(
+                    (os.path.normcase(os.path.abspath(os.fspath(path))), directory)
+                )
+                return True
         acl_applied = _apply_windows_private_acl(path, directory=directory)
         if acl_applied:
-            _PRIVATE_ACL_CACHE.add(cache_key)
+            with _PRIVATE_ACL_LOCK:
+                _PRIVATE_ACL_CACHE.add(cache_key)
         return acl_applied
     return True
 

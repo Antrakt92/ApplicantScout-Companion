@@ -30,6 +30,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import struct
 import sys
@@ -37,6 +38,7 @@ import threading
 import time
 import zlib
 from collections.abc import Callable, Iterator
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional, cast
@@ -157,6 +159,11 @@ _TRANSIENT_SCAN_MAX_RETRIES = 2
 # reconsidered exactly once by the new decoder rather than hidden forever.
 _MANUAL_INDEX_VERSION = 2
 _MANUAL_INDEX_FILE_PREFIX = f"screenshot-manual-index-v{_MANUAL_INDEX_VERSION}"
+# M5: fingerprints are write-once per decoder revision, but a pathological
+# Screenshots folder (years of captures) could still grow the JSON without
+# bound. FIFO cap keeps the file small; evicted fingerprints are simply
+# re-examined once by a later scan.
+_MANUAL_INDEX_MAX_KEYS = 10000
 
 
 # ─── Decoded data model ─────────────────────────────────────────────────────
@@ -505,6 +512,37 @@ def _render_normalized_qr(sampled: Image.Image) -> Image.Image:
     return normalized
 
 
+def _qr_recovery_candidate_versions(side: int) -> range:
+    """Narrow QR versions by measured side before sampling (M3).
+
+    A hypothesis with ``modules = 17 + 4*version`` and ``quiet`` border
+    modules only survives _sample_qr_recovery_candidate when
+    ``side / (modules + 2*quiet)`` falls inside the accepted module-pixel
+    window. Solve that window for the version range per quiet zone and take
+    the union: versions outside it score nothing, so skipping them is
+    behavior-preserving while cutting the worst case from 120 hypotheses.
+    """
+    low = 10**9
+    high = -(10**9)
+    for quiet in _QR_RECOVERY_QUIET_ZONES:
+        raw_low = (
+            side / _QR_RECOVERY_MAX_MODULE_PX - 2 * quiet - _QR_MODULES_BASE
+        ) / _QR_MODULES_PER_VERSION
+        raw_high = (
+            side / _QR_RECOVERY_MIN_MODULE_PX - 2 * quiet - _QR_MODULES_BASE
+        ) / _QR_MODULES_PER_VERSION
+        # WHY: the epsilon keeps float-division drift from excluding a version
+        # whose module size sits exactly on the acceptance boundary.
+        # Over-inclusion is harmless (the sampler still scores fairly).
+        low = min(low, math.ceil(raw_low - 1e-9))
+        high = max(high, math.floor(raw_high + 1e-9))
+    low = max(low, _QR_MIN_VERSION)
+    high = min(high, _QR_MAX_VERSION)
+    if low > high:
+        return range(0)
+    return range(low, high + 1)
+
+
 def _normalized_top_left_qr(img: Image.Image) -> Image.Image | None:
     """Recover a QR whose fractional UI scale blurred module boundaries.
 
@@ -528,7 +566,11 @@ def _normalized_top_left_qr(img: Image.Image) -> Image.Image | None:
             return None
 
         with gray.crop((0, 0, side, side)) as square:
-            for version in range(_QR_MIN_VERSION, _QR_MAX_VERSION + 1):
+            # M3: versions iterate ascending, so the first zero-error
+            # (finder + timing) candidate is the global minimum — no later
+            # hypothesis can beat (0, version, quiet).
+            perfect = False
+            for version in _qr_recovery_candidate_versions(side):
                 for quiet in _QR_RECOVERY_QUIET_ZONES:
                     candidate = _sample_qr_recovery_candidate(
                         square,
@@ -542,8 +584,13 @@ def _normalized_top_left_qr(img: Image.Image) -> Image.Image | None:
                         if best is not None:
                             best[1].close()
                         best = candidate
+                        if best[0][0] == 0:
+                            perfect = True
+                            break
                     else:
                         candidate[1].close()
+                if perfect:
+                    break
 
         if best is None:
             return None
@@ -1698,6 +1745,9 @@ class _ManualScreenshotIndex:
         self._keys: set[_ScreenshotWorkKey] = set()
         self._deferred_keys: set[_ScreenshotWorkKey] = set()
         self._deferred_cursor: _ScreenshotWorkKey | None = None
+        # M5: insertion order for FIFO cap eviction (fingerprints are
+        # write-once, so insertion order approximates recency).
+        self._insertion_order: deque[_ScreenshotWorkKey] = deque()
         self._dirty = False
 
     def _load_locked(self) -> None:
@@ -1738,6 +1788,14 @@ class _ManualScreenshotIndex:
                 ):
                     continue
                 target.add(_ScreenshotWorkKey(entry[0], entry[1], entry[2]))
+        # M5: persisted entries are already sorted; replay that order for
+        # FIFO cap eviction (each fingerprint tracked exactly once).
+        self._insertion_order.extend(
+            sorted(
+                self._keys | self._deferred_keys,
+                key=lambda item: (item.path, item.mtime_ns, item.size),
+            )
+        )
         if (
             isinstance(deferred_cursor, list)
             and len(deferred_cursor) == 3
@@ -1797,10 +1855,12 @@ class _ManualScreenshotIndex:
             self._load_locked()
             if key not in self._keys:
                 self._keys.add(key)
+                self._insertion_order.append(key)
                 self._dirty = True
             if key in self._deferred_keys:
                 self._deferred_keys.discard(key)
                 self._dirty = True
+            self._evict_overflow_locked()
             if flush:
                 self._flush_locked()
 
@@ -1809,9 +1869,53 @@ class _ManualScreenshotIndex:
             self._load_locked()
             if key not in self._deferred_keys:
                 self._deferred_keys.add(key)
+                if key not in self._keys:
+                    self._insertion_order.append(key)
                 self._dirty = True
+            self._evict_overflow_locked()
             if flush:
                 self._flush_locked()
+
+    def _evict_overflow_locked(self) -> None:
+        """FIFO-cap fingerprints so the JSON stays bounded (M5)."""
+        while len(self._keys) + len(self._deferred_keys) > _MANUAL_INDEX_MAX_KEYS:
+            if not self._insertion_order:
+                break
+            oldest = self._insertion_order.popleft()
+            if oldest not in self._keys and oldest not in self._deferred_keys:
+                continue
+            self._keys.discard(oldest)
+            self._deferred_keys.discard(oldest)
+            if self._deferred_cursor == oldest:
+                self._deferred_cursor = None
+            self._dirty = True
+
+    def is_deferred(self, key: _ScreenshotWorkKey) -> bool:
+        """Membership check without copying the deferred set (M5)."""
+        with self._lock:
+            self._load_locked()
+            return key in self._deferred_keys
+
+    def scan_view(
+        self, current: set[_ScreenshotWorkKey]
+    ) -> tuple[frozenset[_ScreenshotWorkKey], frozenset[_ScreenshotWorkKey]]:
+        """Prune-then-view in one locked pass (M5).
+
+        Replaces baseline snapshot + prune_missing + two re-snapshots per
+        backlog scan with a single pass: stale fingerprints drop against the
+        live directory listing, and the caller gets immutable views without
+        further full-set copies.
+        """
+        with self._lock:
+            self._load_locked()
+            stale = (self._keys | self._deferred_keys) - current
+            if stale:
+                self._keys.difference_update(stale)
+                self._deferred_keys.difference_update(stale)
+                if self._deferred_cursor in stale:
+                    self._deferred_cursor = None
+                self._dirty = True
+            return frozenset(self._keys), frozenset(self._deferred_keys)
 
     def forget_deferred(self, key: _ScreenshotWorkKey, *, flush: bool) -> None:
         with self._lock:
@@ -1847,6 +1951,7 @@ class _ManualScreenshotIndex:
             self._keys.clear()
             self._deferred_keys.clear()
             self._deferred_cursor = None
+            self._insertion_order.clear()
             self._loaded = True
             self._dirty = False
             if self._state_path is None:
@@ -2717,7 +2822,6 @@ class ScreenshotWatcher(QObject):
         now = time.time()
         apply_cutoff = now - 60
         fragment_cutoff = now - APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS
-        baseline_manual_keys = self._manual_index.snapshot()
         all_files: list[tuple[Path, os.stat_result]] = []
         for p in _iter_screenshot_candidates(self._dir):
             try:
@@ -2727,14 +2831,14 @@ class ScreenshotWatcher(QObject):
         current_keys = {
             _work_key_from_stat(path, stat_result) for path, stat_result in all_files
         }
-        self._manual_index.prune_missing(baseline_manual_keys, current_keys)
-        # Pruning can remove a persisted deferred authority barrier whose file
-        # was rotated or deleted while the companion was stopped. All retry and
-        # manual decisions in this pass must use the post-prune state, or the
-        # stale key makes every remaining candidate look older than an unknown
-        # screenshot that no longer exists.
-        current_manual_keys = self._manual_index.snapshot()
-        current_deferred_keys = self._manual_index.deferred_snapshot()
+        # M5: prune + view in one locked pass (was: baseline snapshot,
+        # prune, then two more full-set snapshots per scan). Pruning can
+        # remove a persisted deferred authority barrier whose file was
+        # rotated or deleted while stopped, so every retry/manual decision
+        # below uses this post-prune view.
+        current_manual_keys, current_deferred_keys = self._manual_index.scan_view(
+            current_keys
+        )
         try:
             if not all_files:
                 return
@@ -3192,7 +3296,7 @@ class ScreenshotWatcher(QObject):
             )
             claim.request_retry_for_changed_generation(decoded_key)
             return False
-        was_deferred = decoded_key in self._manual_index.deferred_snapshot()
+        was_deferred = self._manual_index.is_deferred(decoded_key)
         if (
             decode_succeeded
             and current_stat is not None
