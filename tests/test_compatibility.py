@@ -1,5 +1,6 @@
 from applicant_scout.compatibility import (
     MINIMUM_ADDON_VERSION,
+    PAIRED_ADDON_VERSION,
     addon_version_warning,
 )
 
@@ -13,9 +14,19 @@ def test_older_addon_version_gets_actionable_warning():
     assert "/reload" in warning
 
 
-def test_current_or_newer_addon_version_is_accepted():
+def test_paired_addon_version_is_accepted():
     assert addon_version_warning(MINIMUM_ADDON_VERSION) is None
-    assert addon_version_warning("v99.0.0") is None
+    assert addon_version_warning(PAIRED_ADDON_VERSION) is None
+    assert addon_version_warning(f"v{PAIRED_ADDON_VERSION}") is None
+
+
+def test_newer_addon_version_warns_to_update_companion():
+    warning = addon_version_warning("0.13.0")
+
+    assert warning is not None
+    assert "0.13.0" in warning
+    assert PAIRED_ADDON_VERSION in warning
+    assert "/reload" in warning
 
 
 def test_missing_or_malformed_addon_version_does_not_false_alarm():

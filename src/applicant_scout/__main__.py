@@ -4317,6 +4317,8 @@ def main(argv: list[str] | None = None) -> int:
                 QSystemTrayIcon.MessageIcon.Warning,
                 7000,
             )
+        if window is not None:
+            window.set_update_available(pending_update_version)
 
     def _handle_update_handoff_started(
         message: str, installer_launch: object | None
@@ -4488,6 +4490,7 @@ def main(argv: list[str] | None = None) -> int:
             pending_update_version = None
             if tray_controller is not None:
                 tray_controller.set_update_available(None)
+            window.set_update_available(None)
 
         dialog.valuesChanged.connect(_handle_values_changed)
         dialog.wowSyncRepairRequested.connect(_repair_wow_startup)
@@ -4588,6 +4591,8 @@ def main(argv: list[str] | None = None) -> int:
             settings_dialog.set_update_available(None)
         if tray_controller is not None:
             tray_controller.set_update_available(None)
+        if window is not None:
+            window.set_update_available(None)
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",
@@ -4619,6 +4624,8 @@ def main(argv: list[str] | None = None) -> int:
         pending_update_version = decision.pending_update_version
         if tray_controller is not None:
             tray_controller.set_update_available(pending_update_version)
+        if window is not None:
+            window.set_update_available(pending_update_version)
         if settings_dialog is not None:
             settings_dialog.set_update_available(pending_update_version)
             if update_quit_gate.update_in_progress:

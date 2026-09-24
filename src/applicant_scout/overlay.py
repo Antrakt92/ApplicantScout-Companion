@@ -3678,6 +3678,7 @@ class OverlayWindow(QMainWindow):
         self._last_decode_applicants_unavailable = False
         self._last_decode_roster_unavailable = False
         self._addon_version_warning: str | None = None
+        self._pending_app_update_version: str | None = None
         self._restored_listing_pending = False
         self._restored_applicants_pending = False
         self._restored_roster_pending = False
@@ -4595,6 +4596,11 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_reason = reason
         self._refresh_health_label()
 
+    def set_update_available(self, latest_version: str | None) -> None:
+        """Mirror the tray/settings update badge onto the health indicator."""
+        self._pending_app_update_version = latest_version
+        self._refresh_health_label()
+
     def _reflow_status_row(self, window_width: int) -> None:
         """Keep all three status chips readable at the supported 300px width."""
         compact = window_width < STATUS_ROW_SINGLE_LINE_MIN_WIDTH
@@ -4702,8 +4708,21 @@ class OverlayWindow(QMainWindow):
         if self._addon_version_warning:
             self._health_label.setText("Addon update")
             self._set_status_chip_state(self._health_label, "warning")
-            self._health_label.setToolTip(self._addon_version_warning)
-            self._health_label.setAccessibleDescription(self._addon_version_warning)
+            detail = self._addon_version_warning
+            if self._pending_app_update_version:
+                detail += (
+                    "\n"
+                    + _app_update_message(self._pending_app_update_version)
+                )
+            self._health_label.setToolTip(detail)
+            self._health_label.setAccessibleDescription(detail)
+            return
+        if self._pending_app_update_version:
+            self._health_label.setText("App update")
+            self._set_status_chip_state(self._health_label, "warning")
+            detail = _app_update_message(self._pending_app_update_version)
+            self._health_label.setToolTip(detail)
+            self._health_label.setAccessibleDescription(detail)
             return
         last = self._last_decode_time
         if (
@@ -7407,6 +7426,13 @@ def _package_fit_colour(package: PackageFit) -> str:
     if not any(member.display for member in package.member_fits):
         return FIT_GROUP_BACKGROUND
     return fit_colour(package.score)
+
+
+def _app_update_message(latest_version: str) -> str:
+    return (
+        f"ApplicantScout Companion {latest_version} is available.\n"
+        "Open Settings to install the update."
+    )
 
 
 def _format_age(delta_sec: float) -> str:

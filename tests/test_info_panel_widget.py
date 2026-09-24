@@ -4304,6 +4304,80 @@ def test_health_label_warns_when_paired_addon_is_outdated(
         client.close()
 
 
+def test_health_label_shows_pending_companion_update(monkeypatch, qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
+        current_snapshot = type(
+            "CurrentSnapshot",
+            (),
+            {
+                "version": type(
+                    "Version", (), {"addon_version": MINIMUM_ADDON_VERSION}
+                )(),
+                "roster_unavailable": False,
+            },
+        )()
+
+        window.note_decode(current_snapshot)
+        assert window._health_label.text() == "Shot 0s ago"
+
+        window.set_update_available("0.21.0")
+
+        assert window._health_label.text() == "App update"
+        assert window._health_label.property("statusState") == "warning"
+        assert "0.21.0" in window._health_label.toolTip()
+        assert (
+            window._health_label.accessibleDescription()
+            == window._health_label.toolTip()
+        )
+
+        window.set_update_available(None)
+
+        assert window._health_label.text() == "Shot 0s ago"
+        assert window._health_label.property("statusState") == "neutral"
+        assert window._health_label.toolTip() == ""
+    finally:
+        client.close()
+
+
+def test_health_label_combines_addon_warning_with_pending_update(
+    monkeypatch, qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "time", lambda: 100.0)
+        old_snapshot = type(
+            "OldSnapshot",
+            (),
+            {
+                "version": type("Version", (), {"addon_version": "0.5.1"})(),
+                "roster_unavailable": False,
+            },
+        )()
+
+        window.note_decode(old_snapshot)
+        window.set_update_available("0.21.0")
+
+        assert window._health_label.text() == "Addon update"
+        assert window._health_label.property("statusState") == "warning"
+        assert "0.5.1" in window._health_label.toolTip()
+        assert "0.21.0" in window._health_label.toolTip()
+        assert "/reload" in window._health_label.toolTip()
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize(
     ("category_id", "difficulty_id", "listing_name"),
     [
