@@ -230,6 +230,8 @@ jobs:
             "- [Windows installer]($ReleaseUrl/$InstallerName)"
             "- [Portable ZIP]($ReleaseUrl/$PortableName)"
             ""
+            "> Other files below (manifest, .sha256, source code) are integrity artifacts — you don't need to download them."
+            ""
             $CurrentNotes
           ) -join "`n"
           $CanonicalBody += "`n"

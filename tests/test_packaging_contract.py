@@ -2049,6 +2049,7 @@ def test_release_body_has_current_notes_and_direct_downloads(tmp_path: Path):
     release_url = "https://github.com/Antrakt92/ApplicantScout-Companion/releases/download/v1.2.3"
     assert f"[Windows installer]({release_url}/ApplicantScoutCompanionSetup-1.2.3.exe)" in body
     assert f"[Portable ZIP]({release_url}/ApplicantScoutCompanion-1.2.3-portable.zip)" in body
+    assert "integrity artifacts" in body
     assert body.endswith(current + "\n")
     assert "## 1.0.0" not in body
     assert "Future work" not in body
