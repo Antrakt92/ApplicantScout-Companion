@@ -438,6 +438,9 @@ def test_mouse_click_ends_keyboard_preview_and_pins_the_clicked_identity(
     try:
         window._on_table_keyboard_navigated(window._row_for_id["healer"])
         window._on_cell_clicked(window._row_for_id["tank"], COL_NAME)
+        # Click applies the stripe synchronously; panel content follows on
+        # the next event-loop tick by design (overlay interaction coalescing).
+        QApplication.processEvents()
 
         assert not window._keyboard_preview_active
         assert window._hover_id == "tank"

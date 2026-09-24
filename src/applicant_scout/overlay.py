@@ -9,7 +9,7 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -194,6 +194,10 @@ INFO_PANEL_DETAIL_BASE_ROWS = 9
 INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT = 17
 LAUNCHER_SIZE = 42
 GAME_FOREGROUND_POLL_MS = 500
+# Event-driven quota refresh (fetch completions push the latest snapshot
+# directly); this fallback only advances the reset countdown and the
+# "shot Xs ago" chip when quota/decode state exists. Idle windows stop it.
+QUOTA_FALLBACK_POLL_MS = 30000
 LAUNCHER_DRAG_POLL_MS = 16
 LAUNCHER_DRAG_RELEASE_GRACE_S = 1.0
 LAUNCHER_FOREGROUND_GRACE_S = 3.0
@@ -206,6 +210,10 @@ MPLUS_INDIVIDUAL_TEXT_ROLE = Qt.ItemDataRole.UserRole + 22
 MPLUS_INDIVIDUAL_FG_ROLE = Qt.ItemDataRole.UserRole + 23
 MPLUS_INDIVIDUAL_BG_ROLE = Qt.ItemDataRole.UserRole + 24
 ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE = Qt.ItemDataRole.UserRole + 30
+# Stamped font signature for width-cache keys (H4). Storing the font string
+# at render time keeps measurement signatures cheap: building them from
+# live item.font().toString() per cell costs as much as the shaping itself.
+CELL_FONT_SIG_ROLE = Qt.ItemDataRole.UserRole + 31
 MPLUS_GROUP_LANE_MAX_WIDTH = 72
 MPLUS_GROUP_LANE_MIN_WIDTH = 42
 MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 40
@@ -242,12 +250,56 @@ def _role_icon(role: str) -> QIcon | None:
     return _ROLE_ICON_CACHE[role]
 
 
+# Shared cell-font instances per (source font, bold). Callers must not mutate
+# the returned QFont. Keyed by a cheap font signature (attribute reads, not
+# toString()), so font/theme changes naturally miss and rebuild without
+# explicit invalidation.
+_CELL_FONT_CACHE: dict[tuple, QFont] = {}
+_FONT_SIG_CACHE: dict[tuple, str] = {}
+
+
+def _font_sig_of(font: QFont) -> str:
+    """Stable font identity without building toString() per call."""
+    key = (
+        font.family(),
+        font.pointSizeF(),
+        font.pixelSize(),
+        font.weight(),
+        font.fixedPitch(),
+    )
+    sig = _FONT_SIG_CACHE.get(key)
+    if sig is None:
+        sig = font.toString()
+        _FONT_SIG_CACHE[key] = sig
+    return sig
+
+
+def _font_cache_key(source: QFont, bold: bool) -> tuple:
+    return (
+        source.family(),
+        source.pointSizeF(),
+        source.pixelSize(),
+        source.weight(),
+        source.bold(),
+        bold,
+    )
+
+
 def _bold_cell_font(base: QFont | None = None) -> QFont:
-    font = QFont(base or QApplication.font())
-    if font.pointSize() <= 0 and font.pixelSize() <= 0:
-        font = QFont(QApplication.font())
-    font.setBold(True)
-    return font
+    # Shared instance per source font: callers must not mutate the result.
+    # The table font is uniform, so steady-state renders hit the cache and
+    # skip QFont construction entirely.
+    source = base or QApplication.font()
+    key = ("bold",) + _font_cache_key(source, True)
+    cached = _CELL_FONT_CACHE.get(key)
+    if cached is None:
+        font = QFont(source)
+        if font.pointSize() <= 0 and font.pixelSize() <= 0:
+            font = QFont(QApplication.font())
+        font.setBold(True)
+        _CELL_FONT_CACHE[key] = font
+        return font
+    return cached
 
 
 def _metric_cell_font(
@@ -255,18 +307,26 @@ def _metric_cell_font(
     *,
     bold: bool | None = None,
 ) -> QFont:
+    # Shared instance per (source font, bold): avoids the per-cell
+    # QFontDatabase.systemFont query that dominated row rendering.
     source = QFont(base or QApplication.font())
     if source.pointSize() <= 0 and source.pixelSize() <= 0:
         source = QFont(QApplication.font())
-    font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-    if source.pixelSize() > 0:
-        font.setPixelSize(source.pixelSize())
-    elif source.pointSizeF() > 0:
-        font.setPointSizeF(source.pointSizeF())
-    font.setBold(source.bold() if bold is None else bold)
-    font.setStyleHint(QFont.StyleHint.Monospace)
-    font.setFixedPitch(True)
-    return font
+    resolved_bold = source.bold() if bold is None else bold
+    key = ("metric",) + _font_cache_key(source, resolved_bold)
+    cached = _CELL_FONT_CACHE.get(key)
+    if cached is None:
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        if source.pixelSize() > 0:
+            font.setPixelSize(source.pixelSize())
+        elif source.pointSizeF() > 0:
+            font.setPointSizeF(source.pointSizeF())
+        font.setBold(resolved_bold)
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setFixedPitch(True)
+        _CELL_FONT_CACHE[key] = font
+        return font
+    return cached
 
 
 # Per-column legend shown when the user hovers a header cell. Keep this to
@@ -810,6 +870,20 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         self._pinned_row = -1
         self._keyboard_row = -1
         self._group_marker_by_row: dict[int, _GroupMarker] = {}
+        # First non-hidden column owns the interaction tint. Repainting the
+        # tint in every column costs one fillRect per cell per hover change;
+        # the 3px edge bar stays in this column only as well so a single
+        # column repaint carries the whole interaction state.
+        self._first_visible_column = COL_SPEC
+        # elidedText() shapes text on every group-cell paint; cache by
+        # (text, available width) while the delegate font is unchanged.
+        self._elide_cache: dict[tuple[str, int], str] = {}
+        self._elide_cache_font_key = ""
+
+    def set_first_visible_column(self, column: int) -> None:
+        if column != self._first_visible_column:
+            self._first_visible_column = column
+            self._elide_cache.clear()
 
     def set_rows(
         self, hover_row: int, pinned_row: int, keyboard_row: int = -1
@@ -915,18 +989,20 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         if painter is None:
             return
         r = option.rect
-        # Per-cell hover/pin stripe at x=0..2 — paints in EVERY column
-        # deliberately: interaction state needs constant visual reinforcement
-        # (cursor moves, eye scans columns). Pinned wins on same row.
-        if index.row() == self._pinned_row:
-            painter.fillRect(r, QColor(229, 204, 128, 18))
-            painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#e5cc80"))
-        elif index.row() == self._hover_row:
-            painter.fillRect(r, QColor(255, 255, 255, 10))
-            painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#ffffff"))
-        elif index.row() == self._keyboard_row:
-            painter.fillRect(r, QColor(102, 217, 239, 13))
-            painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#66d9ef"))
+        # Interaction stripe lives in the FIRST visible column only — one
+        # tint + one edge bar per row instead of per cell. Pinned wins on
+        # the same row. Other columns keep their percentile backgrounds
+        # untouched so hover sweeps do not repaint the whole table width.
+        if index.column() == self._first_visible_column:
+            if index.row() == self._pinned_row:
+                painter.fillRect(r, QColor(229, 204, 128, 18))
+                painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#e5cc80"))
+            elif index.row() == self._hover_row:
+                painter.fillRect(r, QColor(255, 255, 255, 10))
+                painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#ffffff"))
+            elif index.row() == self._keyboard_row:
+                painter.fillRect(r, QColor(102, 217, 239, 13))
+                painter.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#66d9ef"))
         # Group bracket at x=3..9, COLUMN 0 ONLY. The wider rail + caps answer
         # "these adjacent rows are one application" without adding table text.
         if index.column() == COL_SPEC and group_marker is not None:
@@ -944,6 +1020,12 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         self.initStyleOption(opt, index)
         rect = opt.rect
         width = max(1, rect.width())
+        font_key = opt.font.toString()
+        if font_key != self._elide_cache_font_key:
+            self._elide_cache_font_key = font_key
+            self._elide_cache.clear()
+        elif len(self._elide_cache) > 512:
+            self._elide_cache.clear()
         package_text = str(index.data(MPLUS_PACKAGE_TEXT_ROLE) or "")
         package_bg = str(index.data(MPLUS_PACKAGE_BG_ROLE) or "#2a2a33")
         individual_text = str(index.data(MPLUS_INDIVIDUAL_TEXT_ROLE) or "")
@@ -1005,23 +1087,34 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
             painter.drawText(
                 text_rect.adjusted(4, 0, -4, 0),
                 Qt.AlignmentFlag.AlignCenter,
-                opt.fontMetrics.elidedText(
-                    package_text,
-                    Qt.TextElideMode.ElideRight,
-                    max(1, text_rect.width() - 8),
+                self._cached_elided_text(
+                    opt, package_text, max(1, text_rect.width() - 8)
                 ),
             )
         painter.setPen(QColor(individual_text_colour))
         painter.drawText(
             individual_rect.adjusted(4, 0, -4, 0),
             Qt.AlignmentFlag.AlignCenter,
-            opt.fontMetrics.elidedText(
-                individual_text,
-                Qt.TextElideMode.ElideRight,
-                max(1, individual_rect.width() - 8),
+            self._cached_elided_text(
+                opt, individual_text, max(1, individual_rect.width() - 8)
             ),
         )
         painter.restore()
+
+    def _cached_elided_text(
+        self, opt: QStyleOptionViewItem, text: str, width: int
+    ) -> str:
+        """Cache shaped elided text by (text, width) for the current font."""
+        key = (text, width)
+        cached = self._elide_cache.get(key)
+        if cached is None:
+            cached = opt.fontMetrics.elidedText(
+                text,
+                Qt.TextElideMode.ElideRight,
+                max(1, width),
+            )
+            self._elide_cache[key] = cached
+        return cached
 
 
 class _KeyboardButton(QPushButton):
@@ -1361,6 +1454,12 @@ class OverlayLauncher(_KeyboardButton):
             return
         if self._drag_button_up_since is None:
             self._drag_button_up_since = time.monotonic()
+            # Lost-release fallback path only (reliable releases finish
+            # synchronously in mouseReleaseEvent). Persist the settled
+            # position NOW so a crash during the grace window cannot lose
+            # it; the grace below only delays click/dragFinished delivery.
+            if self._dragged:
+                self.positionChanged.emit()
             return
         if (
             time.monotonic() - self._drag_button_up_since
@@ -3608,6 +3707,31 @@ class OverlayWindow(QMainWindow):
         # Used by hover/click signal handlers to translate row index → id.
         self._id_by_row: list[str] = []
         self._row_render_key_by_id: dict[str, tuple] = {}
+        # Hover/click coalescing (H1/M6): cellEntered fires per crossed cell
+        # and click pins need instant stripe feedback. Identity assignment
+        # stays synchronous; only the heavy delegate+panel+geometry sync is
+        # deferred to the next event-loop tick so a hover sweep pays it once.
+        self._hover_sync_pending = False
+        self._pin_sync_pending = False
+        # Cached cell fonts (H2): _metric_cell_font() memoizes per source
+        # font at module level; the table font is uniform so steady-state
+        # renders share three instances. Keyed by font string, so
+        # FontChange/StyleChange naturally rebuilds without invalidation.
+        # Column measurement caches (H4): QFontMetrics per font signature and
+        # per-(column, row) text widths so steady-state refreshes reuse widths
+        # for rows whose content did not change. Cleared on full rebuilds
+        # (row indices move) and font/layout changes.
+        self._column_metrics_cache: dict[str, QFontMetrics] = {}
+        self._metric_cell_width_cache: dict[int, dict[str, tuple[str, int]]] = {}
+        # H4 dirty-row tracking: _refresh_table records which applicant ids
+        # were re-rendered (None = full rebuild). Measurement then takes Qt
+        # reads only for those rows and reuses cached widths for the rest,
+        # so a single fetch completion does not re-shape the whole table.
+        self._metric_dirty_ids: set[str] | None = None
+        # Status-row and title guards (L9/L10): labels and title recompute on
+        # every flush; skip the Qt writes when nothing changed.
+        self._status_chip_cache: dict[int, tuple[str, str, str]] = {}
+        self._title_cache_key: tuple | None = None
         self._group_size_by_raw: dict[str, int] = {}
         self._group_position_by_id: dict[str, int] = {}
         self._package_fit_by_raw: dict[str, PackageFit] = {}
@@ -3685,11 +3809,11 @@ class OverlayWindow(QMainWindow):
         self._restored_snapshot_saved_at: float | None = None
         self._restored_snapshot_deadline: float | None = None
 
-        # Bottom status-row poller — fires both quota and health refreshes on
-        # the same 1s cadence. 1Hz keeps "shot Xs ago" smooth (vs 3s jumps);
-        # both refresh slots are O(1) string format. quota itself is updated
-        # on every WCL fetch via rateLimitData GraphQL field — timer just
-        # pushes the latest snapshot to the label.
+        # Bottom status-row poller — event-driven quota/health refreshes plus
+        # this fallback cadence. WCL fetch completions push the latest quota
+        # snapshot immediately; the timer only advances the reset countdown
+        # and the "shot Xs ago" counter, faster while fetches are in flight.
+        # See _update_quota_polling: idle windows stop the timer entirely.
         self._wcl_retry_timer = QTimer(self)
         self._wcl_retry_timer.setSingleShot(True)
         self._wcl_retry_timer.timeout.connect(self._retry_failed_wcl_fetches)
@@ -3697,7 +3821,7 @@ class OverlayWindow(QMainWindow):
         self._raid_boss_retry_timer.setSingleShot(True)
         self._raid_boss_retry_timer.timeout.connect(self._retry_ready_raid_boss_fetches)
         self._quota_timer = QTimer(self)
-        self._quota_timer.setInterval(1000)
+        self._quota_timer.setInterval(QUOTA_FALLBACK_POLL_MS)
         self._quota_timer.timeout.connect(self._refresh_status_row)
         self._quota_timer.start()
         self._foreground_timer = QTimer(self)
@@ -3834,6 +3958,7 @@ class OverlayWindow(QMainWindow):
             self._launcher.show_at(self._default_launcher_position())
         else:
             self._launcher.hide()
+        self._update_foreground_polling()
 
     def restore_from_launcher(self) -> None:
         self._restore_from_launcher(activate=False, require_game_foreground=True)
@@ -3879,6 +4004,7 @@ class OverlayWindow(QMainWindow):
         if activate:
             self.activateWindow()
             QTimer.singleShot(0, self._focus_accessibility_entry)
+        self._update_foreground_polling()
 
     def _is_game_foreground(self) -> bool:
         try:
@@ -3903,6 +4029,63 @@ class OverlayWindow(QMainWindow):
         if not self._foreground_timer.isActive():
             self._foreground_timer.start()
 
+    def _update_foreground_polling(self) -> None:
+        """Stop the 500ms game-foreground poll when nothing is visible.
+
+        Both the overlay and the launcher hidden means there is no surface
+        whose visibility could change — polling would only burn wakeups.
+        Restarted on snapshot arrival (note_decode/note_snapshot_applied)
+        and whenever a surface shows again. Never touches the timer during
+        a launcher drag (drag pause owns it there)."""
+        if getattr(self, "_closed", True):
+            return
+        if not hasattr(self, "_foreground_timer"):
+            # __init__ shows the launcher before timers exist; the
+            # constructor starts them explicitly right after creating them.
+            return
+        if self._launcher.is_dragging():
+            return
+        overlay_visible = self.isVisible() and not self._collapsed_to_launcher
+        if overlay_visible or self._launcher.isVisible():
+            if not self._foreground_timer.isActive():
+                self._foreground_timer.start()
+        elif self._foreground_timer.isActive():
+            self._foreground_timer.stop()
+
+    def _update_quota_polling(self) -> None:
+        """Keep the status-row timer event-driven with a slow fallback.
+
+        Fetches in flight need a live "N active" chip (1s cadence); settled
+        quota/decode state only needs the reset countdown and "shot Xs ago"
+        advanced occasionally (30s fallback). Fully idle windows — no
+        in-flight fetches, no quota snapshot, no decode yet — stop the timer
+        until the next fetch or snapshot restarts it."""
+        if getattr(self, "_closed", True):
+            return
+        if not hasattr(self, "_quota_timer"):
+            return
+        in_flight = bool(self._fetches_in_flight) or bool(
+            self._raid_boss_fetches_in_flight
+        )
+        quota_data = getattr(self._wcl_client, "last_quota", None) is not None
+        decode_data = self._last_decode_time is not None
+        if in_flight:
+            if (
+                not self._quota_timer.isActive()
+                or self._quota_timer.interval() != 1000
+            ):
+                self._quota_timer.setInterval(1000)
+                self._quota_timer.start()
+        elif quota_data or decode_data:
+            if (
+                not self._quota_timer.isActive()
+                or self._quota_timer.interval() != QUOTA_FALLBACK_POLL_MS
+            ):
+                self._quota_timer.setInterval(QUOTA_FALLBACK_POLL_MS)
+                self._quota_timer.start()
+        elif self._quota_timer.isActive():
+            self._quota_timer.stop()
+
     def _sync_game_foreground_visibility(self) -> None:
         if self._closed:
             return
@@ -3920,14 +4103,17 @@ class OverlayWindow(QMainWindow):
             self._open_overlay_foreground_loss_grace_until = (
                 now + OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S
             )
+            self._update_foreground_polling()
             return
         if open_overlay_visible and not foreground:
             if self._open_overlay_foreground_loss_grace_until <= 0.0:
                 self._open_overlay_foreground_loss_grace_until = (
                     now + OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S
                 )
+                self._update_foreground_polling()
                 return
             if now < self._open_overlay_foreground_loss_grace_until:
+                self._update_foreground_polling()
                 return
         else:
             self._open_overlay_foreground_loss_grace_until = 0.0
@@ -3957,9 +4143,11 @@ class OverlayWindow(QMainWindow):
             ):
                 self._launcher_visible_after_non_game_foreground = False
                 self._launcher.hide()
+                self._update_foreground_polling()
                 return
             if not foreground and self.isVisible() and not self.isActiveWindow():
                 self.hide()
+                self._update_foreground_polling()
             return
         self._game_foreground = foreground
         if not foreground:
@@ -3967,6 +4155,7 @@ class OverlayWindow(QMainWindow):
             self._launcher.hide()
             if self.isVisible() and not self.isActiveWindow():
                 self.hide()
+            self._update_foreground_polling()
             return
         self._launcher_visible_after_non_game_foreground = False
         if self._collapsed_to_launcher:
@@ -3974,6 +4163,7 @@ class OverlayWindow(QMainWindow):
         else:
             self.show()
             self.raise_()
+        self._update_foreground_polling()
 
     def _on_source_tab_changed(self, key: str) -> None:
         self._source_tab_initialized = True
@@ -4016,6 +4206,18 @@ class OverlayWindow(QMainWindow):
             for row in rows
             if row.fetch_status != "ready"
         }
+        if column == COL_FIT and self._active_tab != "party":
+            # M8: compute each missing fit ONCE per refresh instead of once
+            # per sort probe (plus once more per cell render). value_for
+            # below becomes a pure lookup over this shared dict.
+            for applicant in rows:
+                if (
+                    applicant.applicant_id not in candidate_fits
+                    and applicant.fetch_status not in {"loading", "pending"}
+                ):
+                    candidate_fits[applicant.applicant_id] = candidate_fit(
+                        applicant, listing
+                    )
 
         def value_for(applicant: Applicant) -> float | str | None:
             if column == COL_SPEC:
@@ -4029,6 +4231,10 @@ class OverlayWindow(QMainWindow):
             if column == COL_RIO:
                 return effective_rio_score(applicant) or None
             if column == COL_FIT:
+                # Party rows have no package fit; order by the shared
+                # per-refresh candidate dict (precomputed in _refresh_table
+                # when FIT is visible or sorted). Lazy fallback keeps direct
+                # callers correct when the dict was not prefilled.
                 raw_aid, _ = _split_composite(applicant.applicant_id)
                 package = package_fits.get(raw_aid)
                 if package is not None and package.display and (
@@ -4483,6 +4689,10 @@ class OverlayWindow(QMainWindow):
         )
         self._tab_bar.set_party_count_stale(self._last_decode_roster_unavailable)
         self._refresh_health_label()
+        # A fresh snapshot is live evidence: resume polling a stopped
+        # foreground/quota timer so visibility and status chips track it.
+        self._update_foreground_polling()
+        self._update_quota_polling()
 
     def note_snapshot_applied(self, snap: object) -> None:
         """Reconcile provisional restored rows after a fresh snapshot applies.
@@ -4541,7 +4751,9 @@ class OverlayWindow(QMainWindow):
             self._restored_snapshot_deadline = None
         self._refresh_health_label()
         if reconcile_applicants or reconcile_roster:
-            self._schedule_overlay_refresh(maybe_show=True)
+            self._schedule_overlay_refresh(update_title=False, maybe_show=True)
+        self._update_foreground_polling()
+        self._update_quota_polling()
 
     def note_restored_snapshot(
         self,
@@ -4650,6 +4862,26 @@ class OverlayWindow(QMainWindow):
         self._refresh_auth_label()
         self._refresh_health_label()
 
+    def _set_status_chip_text(
+        self, label: QLabel, text: str, tooltip: str, accessible: str
+    ) -> None:
+        """Write a status chip only when (text, tooltip, accessible) changed.
+
+        L9: the quota/health/auth chips refresh on every flush and timer
+        tick; Qt relayouts and fires accessibility updates on each write,
+        so steady-state identical writes are skipped."""
+        key = id(label)
+        value = (text, tooltip, accessible)
+        if self._status_chip_cache.get(key) == value:
+            return
+        self._status_chip_cache[key] = value
+        if label.text() != text:
+            label.setText(text)
+        if label.toolTip() != tooltip:
+            label.setToolTip(tooltip)
+        if label.accessibleDescription() != accessible:
+            label.setAccessibleDescription(accessible)
+
     @staticmethod
     def _set_status_chip_state(label: QLabel, state: str) -> None:
         """Apply a semantic QSS state and force Qt to re-evaluate selectors."""
@@ -4682,47 +4914,47 @@ class OverlayWindow(QMainWindow):
             wait = (
                 _format_duration(max(0.0, deadline - time.time())) if deadline else "?"
             )
-            self._health_label.setText("Shot restored")
             self._set_status_chip_state(self._health_label, "active")
             detail = (
                 "Restored a recent live snapshot while waiting for a fresh QR.\n"
                 f"Snapshot age: {age}; clears in {wait} if no fresh QR arrives."
             )
-            self._health_label.setToolTip(detail)
-            self._health_label.setAccessibleDescription(detail)
+            self._set_status_chip_text(
+                self._health_label, "Shot restored", detail, detail
+            )
             return
         if failed_at is not None and (
             self._last_decode_time is None or failed_at >= self._last_decode_time
         ):
             delta = max(0.0, time.time() - failed_at)
-            self._health_label.setText("Shot failed")
-            self._set_status_chip_state(self._health_label, "critical")
             detail = (
                 f"{self._last_decode_failed_path}\n"
                 f"{self._last_decode_failed_reason}\n"
                 f"{_format_age(delta)}"
             )
-            self._health_label.setToolTip(detail)
-            self._health_label.setAccessibleDescription(detail)
+            self._set_status_chip_text(
+                self._health_label, "Shot failed", detail, detail
+            )
+            self._set_status_chip_state(self._health_label, "critical")
             return
         if self._addon_version_warning:
-            self._health_label.setText("Addon update")
-            self._set_status_chip_state(self._health_label, "warning")
             detail = self._addon_version_warning
             if self._pending_app_update_version:
                 detail += (
                     "\n"
                     + _app_update_message(self._pending_app_update_version)
                 )
-            self._health_label.setToolTip(detail)
-            self._health_label.setAccessibleDescription(detail)
+            self._set_status_chip_text(
+                self._health_label, "Addon update", detail, detail
+            )
+            self._set_status_chip_state(self._health_label, "warning")
             return
         if self._pending_app_update_version:
-            self._health_label.setText("App update")
-            self._set_status_chip_state(self._health_label, "warning")
             detail = _app_update_message(self._pending_app_update_version)
-            self._health_label.setToolTip(detail)
-            self._health_label.setAccessibleDescription(detail)
+            self._set_status_chip_text(
+                self._health_label, "App update", detail, detail
+            )
+            self._set_status_chip_state(self._health_label, "warning")
             return
         last = self._last_decode_time
         if (
@@ -4730,8 +4962,6 @@ class OverlayWindow(QMainWindow):
             or self._last_decode_roster_unavailable
         ) and last is not None:
             delta = max(0.0, time.time() - last)
-            self._health_label.setText("Shot partial")
-            self._set_status_chip_state(self._health_label, "warning")
             stale_surfaces: list[str] = []
             if self._last_decode_lfg_unavailable:
                 stale_surfaces.append("Group Finder listing and Applicants")
@@ -4745,23 +4975,29 @@ class OverlayWindow(QMainWindow):
                 + " data; last known state is retained.\n"
                 + _format_age(delta)
             )
-            self._health_label.setToolTip(detail)
-            self._health_label.setAccessibleDescription(detail)
+            self._set_status_chip_text(
+                self._health_label, "Shot partial", detail, detail
+            )
+            self._set_status_chip_state(self._health_label, "warning")
             return
         if last is None:
-            self._health_label.setText("Shot —")
-            self._set_status_chip_state(self._health_label, "neutral")
-            self._health_label.setToolTip("")
-            self._health_label.setAccessibleDescription(
-                "No screenshot has been decoded yet."
+            self._set_status_chip_text(
+                self._health_label,
+                "Shot —",
+                "",
+                "No screenshot has been decoded yet.",
             )
+            self._set_status_chip_state(self._health_label, "neutral")
             return
         delta = max(0.0, time.time() - last)
         age = _format_age(delta)
-        self._health_label.setText(f"Shot {age}")
+        self._set_status_chip_text(
+            self._health_label,
+            f"Shot {age}",
+            "",
+            f"Last screenshot decoded {age}.",
+        )
         self._set_status_chip_state(self._health_label, "neutral")
-        self._health_label.setToolTip("")
-        self._health_label.setAccessibleDescription(f"Last screenshot decoded {age}.")
 
     def _refresh_auth_label(self) -> None:
         status = getattr(self._wcl_client, "connection_status", None)
@@ -4831,10 +5067,8 @@ class OverlayWindow(QMainWindow):
             text = "Auth —"
             chip_state = "neutral"
             detail = "Warcraft Logs credentials have not been checked in this session."
-        self._auth_label.setText(text)
+        self._set_status_chip_text(self._auth_label, text, detail, detail)
         self._set_status_chip_state(self._auth_label, chip_state)
-        self._auth_label.setToolTip(detail)
-        self._auth_label.setAccessibleDescription(detail)
 
     def _refresh_quota_label(self) -> None:
         """Pull the latest quota snapshot into the compact quota chip.
@@ -4852,19 +5086,19 @@ class OverlayWindow(QMainWindow):
             )
             if in_flight > 0:
                 suffix = "request" if in_flight == 1 else "requests"
-                self._status_label.setText(f"WCL {in_flight} active")
                 detail = (
                     f"{in_flight} Warcraft Logs {suffix} in progress; quota "
                     "will appear after the first response."
                 )
-                self._status_label.setToolTip(detail)
-                self._status_label.setAccessibleDescription(detail)
+                self._set_status_chip_text(
+                    self._status_label, f"WCL {in_flight} active", detail, detail
+                )
                 self._set_status_chip_state(self._status_label, "active")
             else:
-                self._status_label.setText("WCL —/—")
                 detail = "No Warcraft Logs quota data yet; no requests are active."
-                self._status_label.setToolTip(detail)
-                self._status_label.setAccessibleDescription(detail)
+                self._set_status_chip_text(
+                    self._status_label, "WCL —/—", detail, detail
+                )
                 self._set_status_chip_state(self._status_label, "neutral")
             return
         spent = int(round(q.points_spent))
@@ -4877,13 +5111,14 @@ class OverlayWindow(QMainWindow):
         # Floor the display so it cannot advertise the next urgency threshold
         # before the exact ratio has actually crossed it.
         percent = int(max(0.0, ratio) * 100) if q.limit_per_hour > 0 else None
-        self._status_label.setText(
-            f"WCL {percent}%" if percent is not None else "WCL —%"
-        )
         reset_detail = f"resets in {reset_min}m" if reset_min > 0 else "resetting now"
         detail = f"Warcraft Logs quota: {spent} of {limit} points used; {reset_detail}."
-        self._status_label.setToolTip(detail)
-        self._status_label.setAccessibleDescription(detail)
+        self._set_status_chip_text(
+            self._status_label,
+            f"WCL {percent}%" if percent is not None else "WCL —%",
+            detail,
+            detail,
+        )
         # Color escalation
         if ratio >= 0.9:
             self._set_status_chip_state(self._status_label, "critical")
@@ -5131,7 +5366,7 @@ class OverlayWindow(QMainWindow):
             selection_source,
             self._active_tab,
             visible_id,
-            _freeze_render_value(applicant),
+            _overlay_rows.rendered_applicant_key(applicant),
             _listing_render_key(listing),
             _freeze_render_value(package),
             visible_id == self._pinned_id,
@@ -5178,6 +5413,19 @@ class OverlayWindow(QMainWindow):
             requested_height = self._panel.target_height()
             target_height = max(requested_height, self._panel_reserved_height)
             self._panel_reserved_height = target_height
+            if (
+                allow_window_resize
+                and target_height == self._panel_anchor_target_height
+                and self._panel.height() == target_height
+            ):
+                # Steady-state hover: same card height as the current anchor
+                # with the panel already sized. Skips the O(rows) rowHeight
+                # scan, setFixedHeight, and root-layout activation — the
+                # ~5ms hover cost. Reservation bookkeeping above already ran
+                # so a later taller card still grows. Resize-driven calls
+                # (allow_window_resize=False) always run: the viewport below
+                # must follow the new window height.
+                return
             natural_changed = self._panel.minimumHeight() != target_height
             if natural_changed:
                 self._panel.setFixedHeight(target_height)
@@ -5407,6 +5655,50 @@ class OverlayWindow(QMainWindow):
             return  # de-dup same-row entries
         self._hover_id = new_id
         self._hover_by_tab[self._active_tab] = new_id
+        # Coalesce the heavy delegate+panel+geometry sync: a hover sweep
+        # crosses many cells per frame but only the last identity matters.
+        self._request_hover_sync()
+
+    def _request_hover_sync(self) -> None:
+        if self._hover_sync_pending:
+            return
+        self._hover_sync_pending = True
+        QTimer.singleShot(0, self._flush_hover_sync)
+
+    def _flush_hover_sync(self) -> None:
+        self._hover_sync_pending = False
+        if self._closed:
+            return
+        self._sync_delegate_and_panel()
+
+    def _sync_interaction_stripe_now(self) -> None:
+        """Apply delegate hover/pin/keyboard rows + viewport repaint only.
+
+        Instant feedback path for clicks: the stripe must move on mousedown
+        even though panel content and geometry follow on the next tick."""
+        hover_row = self._row_for_id.get(self._hover_id, -1) if self._hover_id else -1
+        pinned_row = (
+            self._row_for_id.get(self._pinned_id, -1) if self._pinned_id else -1
+        )
+        keyboard_row = (
+            self._row_for_id.get(self._keyboard_id, -1)
+            if self._keyboard_preview_active and self._keyboard_id
+            else -1
+        )
+        changed_rows = self._delegate.set_rows(hover_row, pinned_row, keyboard_row)
+        self._sync_row_accessible_descriptions()
+        self._update_table_interaction_rows(changed_rows)
+
+    def _request_pin_sync(self) -> None:
+        if self._pin_sync_pending:
+            return
+        self._pin_sync_pending = True
+        QTimer.singleShot(0, self._flush_pin_sync)
+
+    def _flush_pin_sync(self) -> None:
+        self._pin_sync_pending = False
+        if self._closed:
+            return
         self._sync_delegate_and_panel()
 
     def _on_cell_clicked(self, row: int, _col: int) -> None:
@@ -5427,7 +5719,9 @@ class OverlayWindow(QMainWindow):
             return
         self._pinned_id = applicant_id
         self._pinned_by_tab[self._active_tab] = self._pinned_id
-        self._sync_delegate_and_panel()
+        # Stripe now (cheap, synchronous), panel + geometry on next tick.
+        self._sync_interaction_stripe_now()
+        self._request_pin_sync()
 
     def _on_table_keyboard_navigated(self, row: int) -> None:
         if not (0 <= row < len(self._id_by_row)) or self._table.isRowHidden(row):
@@ -5600,9 +5894,11 @@ class OverlayWindow(QMainWindow):
             self._launcher.hide()
             if not self.isActiveWindow():
                 self.hide()
+            self._update_foreground_polling()
             return
         if self._collapsed_to_launcher:
             self._launcher.show_at(self._default_launcher_position())
+            self._update_foreground_polling()
             return
         if not self.isVisible():
             g = self.geometry()
@@ -5615,24 +5911,47 @@ class OverlayWindow(QMainWindow):
             )
             self.show()
             self.raise_()
+        self._update_foreground_polling()
 
-    def _row_render_key(self, applicant: Applicant, listing: Listing | None) -> tuple:
+    def _row_render_key(
+        self,
+        applicant: Applicant,
+        listing: Listing | None,
+        *,
+        listing_key: object = None,
+    ) -> tuple:
         raw_aid, _ = _split_composite(applicant.applicant_id)
-        applicant_key = tuple(
-            (field.name, _freeze_render_value(getattr(applicant, field.name)))
-            for field in fields(applicant)
-            if field.name not in _TABLE_DETAIL_ONLY_APPLICANT_FIELDS
-        )
         return (
             self._active_tab,
-            applicant_key,
-            _listing_render_key(listing),
+            _overlay_rows.rendered_applicant_key(applicant),
+            listing_key if listing_key is not None else _listing_render_key(listing),
             self._metric_preferences.cache_key(),
             self._manual_target_key,
             self._group_size_by_raw.get(raw_aid, 1),
             self._group_ready_by_raw.get(raw_aid, False),
             _freeze_render_value(self._package_fit_by_raw.get(raw_aid)),
         )
+
+    def _reuse_cell_item(self, row: int, col: int, text: str) -> QTableWidgetItem:
+        """Return the live cell item, creating it only for fresh rows.
+
+        Re-rendering a changed row updates items in place instead of
+        allocating 9 new QTableWidgetItems + setItem insert churn per row.
+        """
+        item = self._table.item(row, col)
+        if item is None:
+            item = QTableWidgetItem(text)
+            self._table.setItem(row, col, item)
+        elif item.text() != text:
+            item.setText(text)
+        return item
+
+    @staticmethod
+    def _set_item_data_if_changed(
+        item: QTableWidgetItem, role: Qt.ItemDataRole | int, value: object
+    ) -> None:
+        if item.data(role) != value:
+            item.setData(role, value)
 
     def _render_row(
         self,
@@ -5646,54 +5965,67 @@ class OverlayWindow(QMainWindow):
 
         Per-cell tooltips removed: applicant data now lives in the top
         ApplicantInfoPanel which is row-hover/pin driven. Cell items are
-        plain text + colour only."""
+        plain text + colour only.
+
+        Items are updated in place when the row already exists: re-rendering
+        a changed row rewrites text/roles without reallocating 9 items and
+        without re-querying the system font per cell (see the cached cell
+        fonts). Accessible roles are rewritten only when their value
+        changed — they fire accessibility events on every write."""
+        set_data = self._set_item_data_if_changed
         spec_text = SPEC_SHORT_NAMES.get(applicant.spec_id, f"#{applicant.spec_id}")
-        spec_item = QTableWidgetItem(spec_text)
+        spec_item = self._reuse_cell_item(row, COL_SPEC, spec_text)
         spec_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        spec_item.setData(Qt.ItemDataRole.UserRole, applicant.role)
+        set_data(spec_item, Qt.ItemDataRole.UserRole, applicant.role)
         icon = _role_icon(applicant.role)
         if icon is not None:
-            spec_item.setIcon(icon)
+            if spec_item.icon().cacheKey() != icon.cacheKey():
+                spec_item.setIcon(icon)
         # Class-coloured cell background mirrors the panel's `_class_pill` so
         # the table and info-panel use the same visual language for class
         # identity. Foreground follows the same contrast helper as the panel so
         # dark DK/DH colours remain readable while pale class colours stay dark.
         # Hover/pin stripes are painted by `_HoverHighlightDelegate` on top.
         cls_hex = CLASS_COLOURS.get(applicant.cls, "#888888")
-        spec_item.setBackground(QColor(cls_hex))
-        spec_item.setForeground(QColor(_text_colour_for_bg(cls_hex)))
-        spec_item.setFont(_bold_cell_font(spec_item.font()))
-        self._table.setItem(row, COL_SPEC, spec_item)
+        _set_cell_background(spec_item, cls_hex)
+        _set_cell_foreground(spec_item, _text_colour_for_bg(cls_hex))
+        spec_item.setFont(_bold_cell_font(self._table.font()))
+        _stamp_cell_font_sig(spec_item)
 
         # Display Charname only (without -Realm) for compactness; full in panel
         display_name = applicant.name.split("-", 1)[0]
-        name_item = QTableWidgetItem(display_name)
-        name_item.setForeground(QColor(CLASS_COLOURS.get(applicant.cls, "#FFFFFF")))
-        f = _bold_cell_font(name_item.font())
-        name_item.setFont(f)
-        self._table.setItem(row, COL_NAME, name_item)
+        name_item = self._reuse_cell_item(row, COL_NAME, display_name)
+        _set_cell_foreground(
+            name_item, CLASS_COLOURS.get(applicant.cls, "#FFFFFF")
+        )
+        name_item.setFont(_bold_cell_font(self._table.font()))
+        _stamp_cell_font_sig(name_item)
 
         # iLvl + RIO numeric cells. RIO shows the applying character's score,
         # plus a higher RaiderIO main score in brackets when available.
-        ilvl_item = QTableWidgetItem(str(applicant.ilvl) if applicant.ilvl else "—")
+        ilvl_item = self._reuse_cell_item(
+            row, COL_ILVL, str(applicant.ilvl) if applicant.ilvl else "—"
+        )
         ilvl_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        ilvl_item.setFont(_metric_cell_font(ilvl_item.font()))
-        self._table.setItem(row, COL_ILVL, ilvl_item)
+        ilvl_item.setFont(_metric_cell_font(self._table.font(), bold=False))
+        _stamp_cell_font_sig(ilvl_item)
 
         rio_score = effective_rio_score(applicant)
-        rio_item = QTableWidgetItem(_presenters.rio_table_text(applicant))
+        rio_item = self._reuse_cell_item(
+            row, COL_RIO, _presenters.rio_table_text(applicant)
+        )
         rio_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        rio_item.setFont(
-            _metric_cell_font(rio_item.font(), bold=True)
-        )  # bold — primary scouting signal alongside name
+        # bold — primary scouting signal alongside name
+        rio_item.setFont(_metric_cell_font(self._table.font(), bold=True))
+        _stamp_cell_font_sig(rio_item)
         # Tier-band foreground colour (gold/purple/blue/green/white) matches
         # RaiderIO addon's score-tier visual language, mirrors raid percentile
         # cell palette so eye-tracking across columns reads consistently.
-        rio_item.setForeground(QColor(rio_score_colour(rio_score)))
+        _set_cell_foreground(rio_item, rio_score_colour(rio_score))
         history_text = _presenters.rio_history_text(applicant)
-        if history_text:
-            rio_item.setToolTip(f"Raider.IO · {history_text}")
-        self._table.setItem(row, COL_RIO, rio_item)
+        history_tip = f"Raider.IO · {history_text}" if history_text else ""
+        if rio_item.toolTip() != history_tip:
+            rio_item.setToolTip(history_tip)
         self._table.setRowHeight(row, self._rio_cell_height(rio_item))
 
         raw_aid, _ = _split_composite(applicant.applicant_id)
@@ -5709,10 +6041,24 @@ class OverlayWindow(QMainWindow):
             ("M", COL_M, applicant.raid_mythic, applicant.raid_mythic_median),
         ]
         for _raid_key, col, best, median in raid_cells:
-            self._table.setItem(
-                row, col, _raid_dual_cell(best, median, applicant.fetch_status)
+            existing = self._table.item(row, col)
+            filled = _raid_dual_cell(
+                best,
+                median,
+                applicant.fetch_status,
+                item=existing,
             )
-        self._table.setItem(row, COL_MPLUS, _mplus_dual_cell(applicant, listing, fit=fit))
+            if existing is None:
+                self._table.setItem(row, col, filled)
+        existing = self._table.item(row, COL_MPLUS)
+        filled = _mplus_dual_cell(
+            applicant,
+            listing,
+            fit=fit,
+            item=existing,
+        )
+        if existing is None:
+            self._table.setItem(row, COL_MPLUS, filled)
         if (
             listing_context in {CONTEXT_MPLUS, CONTEXT_RAID}
             and package is not None
@@ -5723,10 +6069,26 @@ class OverlayWindow(QMainWindow):
                 or self._group_ready_by_raw.get(raw_aid, False)
             )
         ):
-            fit_item = _mplus_group_cell(package, applicant, listing, fit=fit)
+            existing = self._table.item(row, COL_FIT)
+            filled = _mplus_group_cell(
+                package,
+                applicant,
+                listing,
+                fit=fit,
+                item=existing,
+            )
+            if existing is None:
+                self._table.setItem(row, COL_FIT, filled)
         else:
-            fit_item = _fit_cell(applicant, listing, fit=fit)
-        self._table.setItem(row, COL_FIT, fit_item)
+            existing = self._table.item(row, COL_FIT)
+            filled = _fit_cell(
+                applicant,
+                listing,
+                fit=fit,
+                item=existing,
+            )
+            if existing is None:
+                self._table.setItem(row, COL_FIT, filled)
 
         accessible_headers = (
             "Specialization",
@@ -5755,6 +6117,22 @@ class OverlayWindow(QMainWindow):
             description += (
                 f" Group application member {group_position} of {group_size}."
             )
+        # Interaction suffix mirrors _sync_row_accessible_descriptions so a
+        # re-rendered pinned/keyboard row keeps its full description without
+        # waiting for the next sync pass.
+        interaction_state = ""
+        if applicant.applicant_id == self._pinned_id:
+            interaction_state = "Pinned."
+        if (
+            self._keyboard_preview_active
+            and applicant.applicant_id == self._keyboard_id
+        ):
+            interaction_state = f"{interaction_state} Keyboard preview.".strip()
+        expected_description = (
+            f"{description} {interaction_state}"
+            if interaction_state
+            else description
+        )
         for column, header in enumerate(accessible_headers):
             item = self._table.item(row, column)
             if item is None:
@@ -5771,12 +6149,17 @@ class OverlayWindow(QMainWindow):
                 value = f"Group package {package_text}; individual {individual_text}"
             else:
                 value = item.text() or "No data"
-            item.setData(
+            # Accessible writes fire OS accessibility events: only rewrite on
+            # actual value change, not on every row refresh.
+            set_data(
+                item,
                 Qt.ItemDataRole.AccessibleTextRole,
                 f"{header}: {value}",
             )
-            item.setData(ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE, description)
-            item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, description)
+            set_data(item, ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE, description)
+            set_data(
+                item, Qt.ItemDataRole.AccessibleDescriptionRole, expected_description
+            )
 
     def _sync_row_accessible_descriptions(self) -> None:
         current_state: dict[str, str] = {}
@@ -5798,10 +6181,12 @@ class OverlayWindow(QMainWindow):
                 base = item.data(ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE) or ""
                 state = current_state.get(applicant_id, "")
                 suffix = f" {state}" if state else ""
-                item.setData(
-                    Qt.ItemDataRole.AccessibleDescriptionRole,
-                    f"{base}{suffix}".strip(),
-                )
+                expected = f"{base}{suffix}".strip()
+                if item.data(Qt.ItemDataRole.AccessibleDescriptionRole) != expected:
+                    item.setData(
+                        Qt.ItemDataRole.AccessibleDescriptionRole,
+                        expected,
+                    )
         self._accessible_interaction_state_by_id = current_state
 
     def _refresh_table(self) -> None:
@@ -5841,10 +6226,28 @@ class OverlayWindow(QMainWindow):
 
         listing = self._effective_listing()
         self._apply_metric_column_visibility()
+        # Frozen once per refresh: _row_render_key needs it per row and
+        # freezing the same listing 30× dominated the same-order path.
+        listing_key = _listing_render_key(listing)
         sorted_package_fit_by_raw: dict[str, PackageFit] = {}
         sorted_candidate_fit_by_id: dict[str, CandidateFit] = {}
         if self._active_tab == "party":
             sorted_applicants = sort_roster_members(self._state.party_members.values())
+            # M8: compute each member fit ONCE per refresh and share it
+            # between manual FIT sorting and cell rendering, instead of one
+            # candidate_fit per sort probe plus one per cell.
+            manual_sort = self._active_manual_sort()
+            if not self._table.isColumnHidden(COL_FIT) or (
+                manual_sort is not None and manual_sort[0] == COL_FIT
+            ):
+                for member in sorted_applicants:
+                    if (
+                        member.applicant_id not in sorted_candidate_fit_by_id
+                        and member.fetch_status not in {"loading", "pending"}
+                    ):
+                        sorted_candidate_fit_by_id[member.applicant_id] = (
+                            candidate_fit(member, listing)
+                        )
         else:
             (
                 sorted_applicants,
@@ -5896,10 +6299,11 @@ class OverlayWindow(QMainWindow):
             and self._id_by_row == new_id_by_row
         )
         new_render_key_by_id: dict[str, tuple] = {}
+        dirty_ids: set[str] = set()
         if same_rows:
             for row, applicant in enumerate(sorted_applicants):
                 self._row_for_id[applicant.applicant_id] = row
-                row_key = self._row_render_key(applicant, listing)
+                row_key = self._row_render_key(applicant, listing, listing_key=listing_key)
                 new_render_key_by_id[applicant.applicant_id] = row_key
                 if self._row_render_key_by_id.get(applicant.applicant_id) != row_key:
                     previous_raid_width_signature = (
@@ -5910,10 +6314,12 @@ class OverlayWindow(QMainWindow):
                         applicant,
                         fit=sorted_candidate_fit_by_id.get(applicant.applicant_id),
                     )
+                    dirty_ids.add(applicant.applicant_id)
                     if previous_raid_width_signature != (
                         self._raid_metric_row_width_signature(row)
                     ):
                         self._metric_column_widths_dirty = True
+            self._metric_dirty_ids = dirty_ids
         else:
             self._metric_column_widths_dirty = True
             # Reset delegate to "no highlight anywhere" BEFORE we tear down items.
@@ -5922,20 +6328,35 @@ class OverlayWindow(QMainWindow):
             # rebuild marker reset. Symmetric with set_group_markers({}) below.
             self._delegate.set_rows(-1, -1, -1)
             self._delegate.set_group_markers({})
-            self._table.setRowCount(len(sorted_applicants))
+            # M7: same-count reorder must not tear down every row. setRowCount
+            # runs only when the count actually changes; positions keeping the
+            # same applicant with an unchanged render key keep their items.
+            old_id_by_row = self._id_by_row
+            old_render_key_by_id = self._row_render_key_by_id
+            if self._table.rowCount() != len(sorted_applicants):
+                self._table.setRowCount(len(sorted_applicants))
             self._row_for_id.clear()
             self._id_by_row = new_id_by_row
+            rendered_ids: set[str] = set()
             for row, applicant in enumerate(sorted_applicants):
                 self._row_for_id[applicant.applicant_id] = row
+                row_key = self._row_render_key(
+                    applicant, listing, listing_key=listing_key
+                )
+                new_render_key_by_id[applicant.applicant_id] = row_key
+                if (
+                    row < len(old_id_by_row)
+                    and old_id_by_row[row] == applicant.applicant_id
+                    and old_render_key_by_id.get(applicant.applicant_id) == row_key
+                ):
+                    continue
                 self._render_row(
                     row,
                     applicant,
                     fit=sorted_candidate_fit_by_id.get(applicant.applicant_id),
                 )
-                new_render_key_by_id[applicant.applicant_id] = self._row_render_key(
-                    applicant,
-                    listing,
-                )
+                rendered_ids.add(applicant.applicant_id)
+            self._metric_dirty_ids = rendered_ids
         self._row_render_key_by_id = new_render_key_by_id
         self._maybe_grow_name_column(sorted_applicants)
         self._auto_size_metric_columns()
@@ -6098,6 +6519,7 @@ class OverlayWindow(QMainWindow):
             self._metric_column_widths_dirty = True
         if not self._metric_column_widths_dirty:
             return
+        self._prune_metric_width_cache()
         for row in range(self._table.rowCount()):
             item = self._table.item(row, COL_RIO)
             if item is not None:
@@ -6139,6 +6561,41 @@ class OverlayWindow(QMainWindow):
             signature.append((item.text(), item.font().toString()))
         return tuple(signature)
 
+    def _column_font_metrics(self, font: QFont) -> QFontMetrics:
+        """Share QFontMetrics per font signature (H4).
+
+        QFontMetrics construction hits font matching per call; the table
+        uses a handful of distinct fonts, so steady-state measurement reuses
+        instances. QFontMetrics is implicitly shared — safe to cache."""
+        key = _font_sig_of(font)
+        metrics = self._column_metrics_cache.get(key)
+        if metrics is None:
+            metrics = QFontMetrics(font)
+            self._column_metrics_cache[key] = metrics
+        return metrics
+
+    @staticmethod
+    def _metric_cell_width_signature(col: int, item: QTableWidgetItem) -> str:
+        font_sig = item.data(CELL_FONT_SIG_ROLE)
+        if not isinstance(font_sig, str):
+            font_sig = item.font().toString()
+        parts = [item.text(), font_sig]
+        if col == COL_SPEC and not item.icon().isNull():
+            parts.append("\x0016px-icon")
+        if col == COL_FIT:
+            parts.append(str(item.data(MPLUS_PACKAGE_TEXT_ROLE) or ""))
+            parts.append(str(item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) or ""))
+        return "\x00".join(parts)
+
+    def _prune_metric_width_cache(self) -> None:
+        row_count = self._table.rowCount()
+        live_ids = set(self._id_by_row)
+        for col, cached in self._metric_cell_width_cache.items():
+            if len(cached) > 2 * row_count + 16:
+                for applicant_id in list(cached):
+                    if applicant_id not in live_ids:
+                        del cached[applicant_id]
+
     def _metric_column_required_width(self, col: int) -> int:
         width = COLUMN_WIDTHS[col]
         if col == COL_NAME:
@@ -6146,7 +6603,7 @@ class OverlayWindow(QMainWindow):
         header_item = self._table.horizontalHeaderItem(col)
         if header_item is not None:
             header = self._table.horizontalHeader()
-            header_metrics = header.fontMetrics() if header is not None else self._table.fontMetrics()
+            header_metrics = self._column_font_metrics(header.font() if header is not None else self._table.font())
             header_style = header.style() if header is not None else None
             arrow_width = (
                 header_style.pixelMetric(QStyle.PixelMetric.PM_HeaderMarkSize)
@@ -6158,37 +6615,66 @@ class OverlayWindow(QMainWindow):
                 header_metrics.horizontalAdvance(header_item.text())
                 + METRIC_COLUMN_TEXT_PADDING + arrow_width,
             )
+        # Per-(column, applicant) width cache: steady-state refreshes reuse
+        # the width of rows whose text/font/roles did not change instead of
+        # re-shaping every cell (the old O(rows×cols) horizontalAdvance).
+        # Keyed by applicant id so reorder without content change still hits.
+        # _refresh_table reports re-rendered ids; untouched rows reuse their
+        # cached width with zero Qt reads. Missing entries (new rows, font
+        # changes clear the cache) always fall through to measurement.
+        col_cache = self._metric_cell_width_cache.setdefault(col, {})
+        dirty = self._metric_dirty_ids
         for row in range(self._table.rowCount()):
+            applicant_id = (
+                self._id_by_row[row] if row < len(self._id_by_row) else None
+            )
+            if (
+                applicant_id is not None
+                and dirty is not None
+                and applicant_id not in dirty
+            ):
+                cached_clean = col_cache.get(applicant_id)
+                if cached_clean is not None:
+                    width = max(width, cached_clean[1])
+                    continue
             item = self._table.item(row, col)
             if item is None:
                 continue
+            signature = self._metric_cell_width_signature(col, item)
+            if applicant_id is not None:
+                cached = col_cache.get(applicant_id)
+                if cached is not None and cached[0] == signature:
+                    width = max(width, cached[1])
+                    continue
             text = item.text()
             if col == COL_FIT and isinstance(item.data(MPLUS_PACKAGE_TEXT_ROLE), str):
-                package_width = QFontMetrics(item.font()).horizontalAdvance(
+                font_metrics = self._column_font_metrics(item.font())
+                package_width = font_metrics.horizontalAdvance(
                     str(item.data(MPLUS_PACKAGE_TEXT_ROLE))
                 )
-                individual_width = QFontMetrics(item.font()).horizontalAdvance(
+                individual_width = font_metrics.horizontalAdvance(
                     str(item.data(MPLUS_INDIVIDUAL_TEXT_ROLE))
                 )
-                width = max(
-                    width,
+                text_width = (
                     min(MPLUS_GROUP_LANE_MAX_WIDTH, max(MPLUS_GROUP_LANE_MIN_WIDTH, package_width + 12))
-                    + max(MPLUS_INDIVIDUAL_LANE_MIN_WIDTH, individual_width + 12) + 1,
+                    + max(MPLUS_INDIVIDUAL_LANE_MIN_WIDTH, individual_width + 12) + 1
                 )
                 # The delegate paints two lanes, not the combined item text.
+            elif not text:
                 continue
-            if not text:
-                continue
-            metrics = QFontMetrics(item.font())
-            lines = text.split("\n") if col == COL_RIO else [text]
-            text_width = max(metrics.horizontalAdvance(line) for line in lines) + METRIC_COLUMN_TEXT_PADDING
-            if col == COL_NAME:
-                text_width = min(NAME_COLUMN_MAX_WIDTH, text_width)
-            elif col == COL_SPEC and not item.icon().isNull():
-                text_width += self._table.iconSize().width() + 4
-            elif col == COL_RIO and "\n" not in text:
-                # Preserve the compact current-score width when history is absent.
-                text_width = min(text_width, QFontMetrics(item.font()).horizontalAdvance("9999 [9999]") + METRIC_COLUMN_TEXT_PADDING)
+            else:
+                metrics = self._column_font_metrics(item.font())
+                lines = text.split("\n") if col == COL_RIO else [text]
+                text_width = max(metrics.horizontalAdvance(line) for line in lines) + METRIC_COLUMN_TEXT_PADDING
+                if col == COL_NAME:
+                    text_width = min(NAME_COLUMN_MAX_WIDTH, text_width)
+                elif col == COL_SPEC and not item.icon().isNull():
+                    text_width += self._table.iconSize().width() + 4
+                elif col == COL_RIO and "\n" not in text:
+                    # Preserve the compact current-score width when history is absent.
+                    text_width = min(text_width, self._column_font_metrics(item.font()).horizontalAdvance("9999 [9999]") + METRIC_COLUMN_TEXT_PADDING)
+            if applicant_id is not None:
+                col_cache[applicant_id] = (signature, text_width)
             width = max(width, text_width)
         return width
 
@@ -6247,6 +6733,12 @@ class OverlayWindow(QMainWindow):
         )
         if current_visibility != previous_visibility:
             self._metric_column_widths_dirty = True
+        # M5: the delegate paints the interaction stripe in the first
+        # visible column only; keep it aligned with column visibility.
+        for col in range(self._table.columnCount()):
+            if not self._table.isColumnHidden(col):
+                self._delegate.set_first_visible_column(col)
+                break
         self._apply_metric_minimum_width()
 
     def _apply_metric_minimum_width(self) -> None:
@@ -6531,6 +7023,7 @@ class OverlayWindow(QMainWindow):
         if self._pool is not None:
             self._pool.start(task)
             self._refresh_quota_label()
+            self._update_quota_polling()
         return True
 
     def _row_source_for(self, applicant: Applicant) -> str:
@@ -6602,6 +7095,7 @@ class OverlayWindow(QMainWindow):
         applicant.wcl_error_kind = ""
         if self._coalesce_fetch_if_target_in_flight(identity):
             self._refresh_quota_label()
+            self._update_quota_polling()
             return
         self._mark_fetch_in_flight(identity)
         self._mark_fetch_waiting_on_target(identity)
@@ -6622,6 +7116,7 @@ class OverlayWindow(QMainWindow):
             )
             self._pool.start(task)
             self._refresh_quota_label()
+            self._update_quota_polling()
 
     def _on_fetch_done(
         self,
@@ -6646,6 +7141,7 @@ class OverlayWindow(QMainWindow):
         if was_current:
             self._discard_fetch_by_storage_key(fetched_identity.storage_key)
         self._refresh_quota_label()
+        self._update_quota_polling()
         applicant = self._row_for_fetch_identity(fetched_identity)
         if applicant is None:
             return
@@ -6790,6 +7286,7 @@ class OverlayWindow(QMainWindow):
             return
         self._discard_raid_boss_fetch_if_current(fetched_identity)
         self._refresh_quota_label()
+        self._update_quota_polling()
         applicant = self._row_for_fetch_identity(fetched_identity)
         if applicant is None:
             return
@@ -6869,7 +7366,42 @@ class OverlayWindow(QMainWindow):
             message=error,
         )
 
+    def _compute_title_key(self) -> tuple:
+        """Cheap fingerprint of everything _update_title renders.
+
+        L10: the title scan runs per flush; identical fingerprints skip the
+        Qt writes. Role pairs (not just counts) keep filter-aware
+        "(visible / total)" counts exact across role changes."""
+        listing = self._effective_listing()
+        if self._active_tab == "party":
+            roles = tuple(
+                sorted(
+                    (member_id, member.role)
+                    for member_id, member in self._state.party_members.items()
+                )
+            )
+        else:
+            roles = tuple(
+                sorted(
+                    (applicant_id, applicant.role)
+                    for applicant_id, applicant in self._state.applicants.items()
+                )
+            )
+        return (
+            self._active_tab,
+            _listing_render_key(listing),
+            _listing_render_key(self._last_raid_listing),
+            roles,
+            self._manual_target_key,
+            self._leader_target_key(),
+            tuple(sorted(self._role_filter)),
+        )
+
     def _update_title(self) -> None:
+        cache_key = self._compute_title_key()
+        if cache_key == self._title_cache_key:
+            return
+        self._title_cache_key = cache_key
         self._tab_bar.set_counts(
             applicants=_application_count(self._state.applicants),
             party=len(self._state.party_members),
@@ -6997,6 +7529,10 @@ class OverlayWindow(QMainWindow):
             and obj in (self._table, self._table.horizontalHeader())
         ):
             self._metric_column_widths_dirty = True
+            # Cell-width cache keys off font strings; font changes rebuild it
+            # via the measurement-key path in _auto_size_metric_columns.
+            self._column_metrics_cache.clear()
+            self._metric_cell_width_cache.clear()
             if not self._column_remeasure_pending:
                 self._column_remeasure_pending = True
                 QTimer.singleShot(0, self._auto_size_metric_columns)
@@ -7248,20 +7784,53 @@ def _text_colour_for_bg(bg_hex: str | None) -> str:
     return _presenters.text_colour_for_bg(bg_hex)
 
 
+def _set_cell_foreground(item: QTableWidgetItem, colour: str | None) -> None:
+    """Apply an optional foreground, restoring the view default when absent.
+
+    Fresh items start role-free; reused rows must clear a stale colour when
+    the new state carries none (e.g. parse → error), otherwise the old tint
+    would survive the state change."""
+    if colour is None:
+        if item.data(Qt.ItemDataRole.ForegroundRole) is not None:
+            item.setData(Qt.ItemDataRole.ForegroundRole, None)
+    elif item.foreground().color() != QColor(colour):
+        item.setForeground(QColor(colour))
+
+
+def _set_cell_background(item: QTableWidgetItem, colour: str | None) -> None:
+    if colour is None:
+        if item.data(Qt.ItemDataRole.BackgroundRole) is not None:
+            item.setData(Qt.ItemDataRole.BackgroundRole, None)
+    elif item.background().color() != QColor(colour):
+        item.setBackground(QColor(colour))
+
+
+def _stamp_cell_font_sig(item: QTableWidgetItem) -> None:
+    """Record the live font string for cheap width-cache signatures."""
+    item.setData(CELL_FONT_SIG_ROLE, _font_sig_of(item.font()))
+
+
 def _raid_dual_cell(
     best: float | None,
     median: float | None,
     fetch_status: str,
+    *,
+    item: QTableWidgetItem | None = None,
 ) -> QTableWidgetItem:
-    """Show WCL best/median performance averages and the best percentile colour."""
+    """Show WCL best/median performance averages and the best percentile colour.
+
+    Pass an existing `item` to update a live row in place instead of
+    allocating; callers without one get a fresh item as before."""
     text, fg, bg = _raid_cell_visuals(best, median, fetch_status)
-    item = QTableWidgetItem(text)
+    if item is None:
+        item = QTableWidgetItem(text)
+    elif item.text() != text:
+        item.setText(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-    if fg is not None:
-        item.setForeground(QColor(fg))
-    if bg is not None:
-        item.setBackground(QColor(bg))
+    _set_cell_foreground(item, fg)
+    _set_cell_background(item, bg)
     item.setFont(_metric_cell_font(item.font(), bold=bg is not None))
+    _stamp_cell_font_sig(item)
     return item
 
 
@@ -7302,15 +7871,29 @@ def _fit_cell(
     listing: Listing | None = None,
     *,
     fit: CandidateFit | None = None,
+    item: QTableWidgetItem | None = None,
 ) -> QTableWidgetItem:
     text, fg, bg = _fit_cell_visuals(applicant, listing, fit=fit)
-    item = QTableWidgetItem(text)
+    if item is None:
+        item = QTableWidgetItem(text)
+    elif item.text() != text:
+        item.setText(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-    if bg is not None:
-        item.setBackground(QColor(bg))
-    if fg is not None:
-        item.setForeground(QColor(fg))
+    # A reused row may previously have held a group package cell: drop its
+    # lane roles so the delegate paints (and readers announce) a plain cell.
+    for role in (
+        MPLUS_PACKAGE_TEXT_ROLE,
+        MPLUS_PACKAGE_BG_ROLE,
+        MPLUS_INDIVIDUAL_TEXT_ROLE,
+        MPLUS_INDIVIDUAL_FG_ROLE,
+        MPLUS_INDIVIDUAL_BG_ROLE,
+    ):
+        if item.data(role) is not None:
+            item.setData(role, None)
+    _set_cell_foreground(item, fg)
+    _set_cell_background(item, bg)
     item.setFont(_metric_cell_font(item.font(), bold=bg is not None))
+    _stamp_cell_font_sig(item)
     return item
 
 
@@ -7386,16 +7969,19 @@ def _mplus_dual_cell(
     listing: Listing | None = None,
     *,
     fit: CandidateFit | None = None,
+    item: QTableWidgetItem | None = None,
 ) -> QTableWidgetItem:
     """Qt adapter over the pure M+ headline render boundary."""
     text, fg, bg = _mplus_cell_visuals(applicant, listing, fit=fit)
-    item = QTableWidgetItem(text)
+    if item is None:
+        item = QTableWidgetItem(text)
+    elif item.text() != text:
+        item.setText(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-    if fg is not None:
-        item.setForeground(QColor(fg))
-    if bg is not None:
-        item.setBackground(QColor(bg))
+    _set_cell_foreground(item, fg)
+    _set_cell_background(item, bg)
     item.setFont(_metric_cell_font(item.font(), bold=bg is not None))
+    _stamp_cell_font_sig(item)
     return item
 
 
@@ -7405,20 +7991,31 @@ def _mplus_group_cell(
     listing: Listing | None = None,
     *,
     fit: CandidateFit | None = None,
+    item: QTableWidgetItem | None = None,
 ) -> QTableWidgetItem:
     package_text = f"G{package.size} ~{int(round(package.score))}"
     package_bg = _package_fit_colour(package)
     individual_text, individual_fg, individual_bg = _fit_cell_visuals(
         applicant, listing, fit=fit
     )
-    item = QTableWidgetItem(f"{package_text} | {individual_text}")
+    combined = f"{package_text} | {individual_text}"
+    if item is None:
+        item = QTableWidgetItem(combined)
+    elif item.text() != combined:
+        item.setText(combined)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-    item.setData(MPLUS_PACKAGE_TEXT_ROLE, package_text)
-    item.setData(MPLUS_PACKAGE_BG_ROLE, package_bg)
-    item.setData(MPLUS_INDIVIDUAL_TEXT_ROLE, individual_text)
-    item.setData(MPLUS_INDIVIDUAL_FG_ROLE, individual_fg or "")
-    item.setData(MPLUS_INDIVIDUAL_BG_ROLE, individual_bg or "")
+    if item.data(MPLUS_PACKAGE_TEXT_ROLE) != package_text:
+        item.setData(MPLUS_PACKAGE_TEXT_ROLE, package_text)
+    if item.data(MPLUS_PACKAGE_BG_ROLE) != package_bg:
+        item.setData(MPLUS_PACKAGE_BG_ROLE, package_bg)
+    if item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) != individual_text:
+        item.setData(MPLUS_INDIVIDUAL_TEXT_ROLE, individual_text)
+    if item.data(MPLUS_INDIVIDUAL_FG_ROLE) != (individual_fg or ""):
+        item.setData(MPLUS_INDIVIDUAL_FG_ROLE, individual_fg or "")
+    if item.data(MPLUS_INDIVIDUAL_BG_ROLE) != (individual_bg or ""):
+        item.setData(MPLUS_INDIVIDUAL_BG_ROLE, individual_bg or "")
     item.setFont(_metric_cell_font(item.font(), bold=True))
+    _stamp_cell_font_sig(item)
     return item
 
 

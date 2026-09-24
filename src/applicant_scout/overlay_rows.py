@@ -24,6 +24,57 @@ _SUNK_STATES: frozenset[str] = frozenset({"error", "not_found", "restricted"})
 _PROVISIONAL_STATES: frozenset[str] = frozenset({"loading", "pending"})
 _MPLUS_CATEGORY_ID = 2
 
+#: Applicant fields excluded from row render keys. `raid_boss_parses` feeds
+#: only the info-panel raid detail view, never table cells; `rio_transport_*`
+#: are provenance shadows of the displayed RIO fields, not displayed values.
+_NON_RENDERED_APPLICANT_FIELDS: frozenset[str] = frozenset(
+    {
+        "raid_boss_parses",
+        "rio_transport_score",
+        "rio_transport_profile",
+        "rio_transport_dungeons",
+    }
+)
+
+# Rendered field names per dataclass type, resolved once. fields() and
+# is_dataclass() introspection per row per refresh dominated _refresh_table
+# once keys narrowed to field granularity — the shape never changes at
+# runtime, so cache it by type.
+_RENDERED_FIELD_NAMES_BY_TYPE: dict[type, tuple[str, ...]] = {}
+
+# Exact scalar types returned as-is by freeze_render_value.
+_FREEZE_ATOM_TYPES: frozenset[type] = frozenset({str, int, float, bool, type(None)})
+
+
+def _rendered_field_names(applicant: Applicant) -> tuple[str, ...]:
+    cls = type(applicant)
+    names = _RENDERED_FIELD_NAMES_BY_TYPE.get(cls)
+    if names is None:
+        if is_dataclass(applicant) and not isinstance(applicant, type):
+            names = tuple(
+                field.name
+                for field in fields(applicant)
+                if field.name not in _NON_RENDERED_APPLICANT_FIELDS
+            )
+        else:
+            names = ()
+        _RENDERED_FIELD_NAMES_BY_TYPE[cls] = names
+    return names
+
+
+def rendered_applicant_key(applicant: Applicant) -> tuple:
+    """Freeze only the fields that table cells or the info panel render.
+
+    Whole-object freezes re-hash the large `raid_boss_parses` detail payload
+    on every hover tick and fetch completion even though no cell reads it.
+    Identity (`applicant_id`) stays in the key; row identity/order changes
+    are still detected by the caller's id lists, not by this key.
+    """
+    return tuple(
+        (name, freeze_render_value(getattr(applicant, name)))
+        for name in _rendered_field_names(applicant)
+    )
+
 
 @dataclass(frozen=True)
 class GroupMarker:
@@ -57,6 +108,11 @@ def application_count(applicant_ids: Iterable[str]) -> int:
 
 
 def freeze_render_value(value: object) -> object:
+    # Fast path: table/panel state is overwhelmingly scalars. Exact-type
+    # membership is cheaper than the isinstance chain + is_dataclass probe
+    # below, which only containers and dataclass payloads need.
+    if type(value) in _FREEZE_ATOM_TYPES:
+        return value
     if is_dataclass(value) and not isinstance(value, type):
         return tuple(
             (field.name, freeze_render_value(getattr(value, field.name)))
@@ -180,7 +236,7 @@ def sort_applicants_grouped_with_package_fits(
             fit_cache_key = (
                 fit_cache_context,
                 listing_render_key(listing),
-                tuple(freeze_render_value(member) for member in members),
+                tuple(rendered_applicant_key(member) for member in members),
             )
             cached_fit = (
                 package_fit_cache.get(raw_aid)
