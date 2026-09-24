@@ -119,6 +119,7 @@ def _window(qtbot, tmp_path, tab, group_size, context, *, boundary_values=False)
 @pytest.mark.parametrize("tab", ["applicants", "party"])
 @pytest.mark.parametrize("group_size", [1, 2, 3, 4])
 @pytest.mark.parametrize("context", ["raid", "mplus"])
+@pytest.mark.real_display
 def test_all_raid_and_mplus_columns_fit_at_maximum_width_without_hiding_roles(
     qtbot, tmp_path, tab, group_size, context
 ):
@@ -154,6 +155,7 @@ def test_all_raid_and_mplus_columns_fit_at_maximum_width_without_hiding_roles(
 
 
 @pytest.mark.parametrize("context", ["raid", "mplus"])
+@pytest.mark.real_display
 def test_roles_return_after_narrow_scrolled_table_expands_to_maximum_width(
     qtbot, tmp_path, context
 ):
@@ -182,6 +184,7 @@ def test_roles_return_after_narrow_scrolled_table_expands_to_maximum_width(
 
 @pytest.mark.parametrize("context", ["raid", "mplus"])
 @pytest.mark.parametrize("boundary_values", [False, True])
+@pytest.mark.real_display
 def test_all_columns_fit_940_physical_pixels_at_current_windows_scale(
     qtbot, tmp_path, context, boundary_values
 ):
@@ -237,6 +240,7 @@ class _TextRecordingPainter(QPainter):
 
 
 @pytest.mark.parametrize("context", ["raid", "mplus"])
+@pytest.mark.real_display
 def test_group_fit_paints_complete_scores_at_940_physical_pixels(
     qtbot, tmp_path, context
 ):
@@ -295,6 +299,7 @@ def test_content_width_limit_shrinks_when_fewer_metric_columns_are_enabled(
     assert not window._table.item(0, overlay.COL_SPEC).icon().isNull()
 
 
+@pytest.mark.real_display
 def test_content_width_limit_accounts_for_long_names_and_valid_boundary_metrics(qtbot, tmp_path):
     compact = _window(qtbot, tmp_path / "compact", "applicants", 1, "mplus")
     boundary = _window(
@@ -338,6 +343,7 @@ def test_content_width_limit_is_stable_for_loading_and_unchanged_updates(qtbot, 
 
 
 
+@pytest.mark.real_display
 def test_content_width_limit_remeasures_larger_metric_header_font(qtbot, tmp_path):
     window = _window(qtbot, tmp_path, "applicants", 1, "mplus")
     original_limit = window.maximumWidth()
@@ -355,6 +361,7 @@ def test_content_width_limit_remeasures_larger_metric_header_font(qtbot, tmp_pat
     assert window._table.horizontalScrollBar().maximum() == 0
 
 
+@pytest.mark.real_display
 def test_content_growth_during_reorder_preserves_hover_pin_and_cached_fits(
     qtbot, tmp_path, monkeypatch,
 ):

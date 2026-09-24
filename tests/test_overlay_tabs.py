@@ -458,6 +458,7 @@ def test_parse_sort_keeps_partially_missing_application_last(qtbot, tmp_path):
     "applicants,party,stale", [(0, 0, False), (99, 40, True), (200, 40, True)]
 )
 @pytest.mark.parametrize("key_level", [0, MPLUS_TARGET_KEY_MAX])
+@pytest.mark.real_display
 def test_source_controls_fit_minimum_window_and_restore_on_resize(
     qtbot, tmp_path, applicants, party, stale, key_level
 ):

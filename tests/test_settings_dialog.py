@@ -1389,6 +1389,7 @@ def test_settings_dialog_uses_wow_native_sections_and_focus_treatment(
     assert ":focus" in stylesheet
 
 
+@pytest.mark.real_display
 def test_first_run_settings_scroll_when_available_height_is_small(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
     qtbot.addWidget(dialog)

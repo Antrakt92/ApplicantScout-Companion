@@ -251,6 +251,7 @@ def test_visual_fixture_waits_for_scroll_card_and_table_geometry(qtbot, tmp_path
         client.close()
 
 
+@pytest.mark.real_display
 @pytest.mark.parametrize("scenario_name", sorted(OVERLAY_VISUAL_SCENARIOS))
 def test_overlay_visual_fixture_uses_content_safe_width_for_enabled_metrics(
     qtbot, tmp_path, scenario_name
@@ -390,6 +391,7 @@ def test_metrics_raid_only_visual_scenario_hides_disabled_columns(qtbot, tmp_pat
         client.close()
 
 
+@pytest.mark.real_display
 def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
     state, window, client = create_overlay_visual_window(tmp_path, "raid-listing")
     qtbot.addWidget(window)

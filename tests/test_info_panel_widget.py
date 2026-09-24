@@ -244,6 +244,7 @@ def test_raid_listing_panel_shows_disabled_target_badge_with_estimated_fit(qtbot
     assert panel._status_label.text() != "No Warcraft Logs data"
 
 
+@pytest.mark.real_display
 def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
     panel = ApplicantInfoPanel(
         None,
@@ -294,6 +295,7 @@ def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
     assert value_label.alignment() & Qt.AlignmentFlag.AlignHCenter
 
 
+@pytest.mark.real_display
 def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     panel = ApplicantInfoPanel(
         None,
@@ -373,6 +375,7 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     assert last_bottom <= panel.contentsRect().bottom()
 
 
+@pytest.mark.real_display
 def test_raid_panel_places_tidebound_progress_on_nymrissa(qtbot):
     panel = ApplicantInfoPanel(
         None,
@@ -465,6 +468,7 @@ def test_raid_listing_panel_remembers_manual_mplus_detail_tab(qtbot):
     assert panel._dungeon_rows[0][0].text() == "Pit of Saron"
 
 
+@pytest.mark.real_display
 def test_mplus_detail_widths_restore_after_raid_detail(qtbot):
     panel = ApplicantInfoPanel(None, MetricPreferences())
     qtbot.addWidget(panel)
@@ -1796,6 +1800,7 @@ def test_panel_shows_local_rio_history_only_when_present(qtbot):
     assert panel._rio_history_row.isHidden()
 
 
+@pytest.mark.real_display
 def test_panel_history_and_current_score_fit_at_minimum_width(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
@@ -2497,6 +2502,7 @@ def test_panel_hides_group_package_line_for_solo(qtbot):
     assert panel._package_label.isHidden()
 
 
+@pytest.mark.real_display
 def test_healer_panel_uses_dps_breakdown_and_ignores_legacy_hps(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
@@ -2819,6 +2825,7 @@ def test_ready_no_data_shows_compact_status(qtbot):
     assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
 
 
+@pytest.mark.real_display
 def test_panel_external_text_labels_use_plain_text(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
@@ -2870,6 +2877,7 @@ def test_overlay_window_minimum_size_allows_user_compact_resize(qtbot, tmp_path)
         client.close()
 
 
+@pytest.mark.real_display
 def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
@@ -7809,6 +7817,7 @@ def test_role_filter_title_count_uses_visible_group_applications(qtbot, tmp_path
 
 
 @pytest.mark.parametrize("width", [300, 650, 752])
+@pytest.mark.real_display
 def test_compact_detail_headers_align_and_follow_mode_changes(qtbot, width):
     panel = ApplicantInfoPanel(
         None,

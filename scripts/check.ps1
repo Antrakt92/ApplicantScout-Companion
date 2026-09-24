@@ -71,6 +71,20 @@ Invoke-NativeChecked -Label "Python tests" -Command {
     & $Python -m pytest tests --native-lua51 $Lua51 --native-addon-root $AddonRoot
 }
 
+Write-Host "== Python tests (real display) =="
+Invoke-NativeChecked -Label "Python tests (real display)" -Command {
+    # Layout-sensitive real_display tests need native font metrics, so they
+    # skip under the suite's default offscreen platform and run here instead.
+    $env:APSCOUT_REAL_DISPLAY = "1"
+    Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+    try {
+        & $Python -m pytest tests -m real_display --native-lua51 $Lua51 --native-addon-root $AddonRoot
+    }
+    finally {
+        Remove-Item Env:\APSCOUT_REAL_DISPLAY -ErrorAction SilentlyContinue
+    }
+}
+
 if ($SeasonalOnlineChecks) {
     Write-Host "== Seasonal online checks =="
     Invoke-NativeChecked -Label "Seasonal activity IDs" -Command {

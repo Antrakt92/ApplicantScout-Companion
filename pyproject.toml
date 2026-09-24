@@ -38,6 +38,9 @@ applicant_scout = ["assets/*", "assets/role_icons/*.png"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "real_display: needs a real display (native font/layout metrics); skipped under the default offscreen platform, run explicitly",
+]
 
 [tool.ruff.lint]
 # Keep the reviewed rule set stable when Ruff changes its defaults.

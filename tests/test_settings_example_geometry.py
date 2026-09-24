@@ -173,6 +173,7 @@ def test_missing_example_image_keeps_instructions_and_close_reachable(
 
 
 @pytest.mark.parametrize("missing_image", [False, True])
+@pytest.mark.real_display
 def test_wcl_example_can_grow_then_shrink_to_small_work_area(
     qtbot, tmp_path, monkeypatch, missing_image
 ):
@@ -199,6 +200,7 @@ def test_wcl_example_can_grow_then_shrink_to_small_work_area(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows release-runner style matrix")
+@pytest.mark.real_display
 def test_wcl_example_controls_with_windows_release_runner_style(qapp):
     # CI uses Windows Server at 100% scaling; a Windows 11 developer desktop at
     # 125% has different cursor/border rounding. Isolate the second QApplication

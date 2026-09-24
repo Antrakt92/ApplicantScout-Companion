@@ -247,6 +247,7 @@ def test_settings_compact_body_keeps_footer_next_to_content(qtbot, monkeypatch, 
     assert unavailable.fontMetrics().horizontalAdvance(unavailable.text()) <= unavailable.width()
 
 
+@pytest.mark.real_display
 @pytest.mark.parametrize("scenario", ["normal-default", "first-run"])
 def test_compact_actions_and_form_stay_reachable_on_small_screen(qtbot, monkeypatch, scenario):
     bounds = QRect(0, 0, 800, 360)
