@@ -3,7 +3,7 @@
     "exclude": [".venv", "**/__pycache__"],
     "venvPath": ".",
     "venv": ".venv",
-    "pythonVersion": "3.13",
+    "pythonVersion": "3.14",
     "typeCheckingMode": "basic",
 
     // Defensive isinstance guards (e.g. _dict_to_dungeon_perf, CharacterRanks.empty

@@ -1731,7 +1731,7 @@ def test_release_workflow_runs_existing_gates_before_verified_draft():
     assert "contents: read" in build
     assert "contents: write" not in build
     assert "contents: write" in draft
-    assert "python-version: '3.13'" in build
+    assert "python-version: '3.14'" in build
     assert "constraints-release.txt" in build
     assert (
         ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in build
@@ -3168,7 +3168,7 @@ def test_windows_vs2026_canary_runs_both_package_paths_without_publishing():
     )
     assert "path: ApplicantScout-Companion" in companion_checkout
     assert "path: ApplicantScout-Addon" in addon_checkout
-    assert "python-version: '3.13'" in canary
+    assert "python-version: '3.14'" in canary
     assert (
         ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in canary
     )

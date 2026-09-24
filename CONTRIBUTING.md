@@ -7,14 +7,14 @@ use [private security reporting](SECURITY.md).
 
 ## Set up a Windows checkout
 
-Use Git, Python 3.13 (64-bit), PowerShell and Lua 5.1. Keep both repositories as
+Use Git, Python 3.14 (64-bit), PowerShell and Lua 5.1. Keep both repositories as
 siblings; the companion gate checks their shared transport and release contracts.
 
 ```powershell
 git clone https://github.com/Antrakt92/ApplicantScout-Companion.git
 git clone https://github.com/Antrakt92/ApplicantScout-Addon.git
 cd ApplicantScout-Companion
-py -3.13 -m venv .venv
+py -3.14 -m venv .venv
 .\.venv\Scripts\python -m pip install -r constraints-release.txt
 .\.venv\Scripts\python -m pip install -e '.[dev]' -c constraints-release.txt
 ```
