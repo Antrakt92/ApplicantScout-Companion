@@ -80,6 +80,21 @@ def test_is_wow_running_detects_retail_process(
     assert calls[0] == ["tasklist", "/FO", "CSV", "/NH"]
 
 
+def test_is_wow_running_detects_ptr_process(
+    monkeypatch: pytest.MonkeyPatch,
+    _tasklist_fallback: None,
+):
+    monkeypatch.setattr(
+        wow_lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Completed(
+            stdout='"WowT.exe","10","Console","1","120,000 K"\n'
+        ),
+    )
+
+    assert wow_lifecycle.is_wow_running()
+
+
 def test_is_wow_running_rejects_near_match_process_name(
     monkeypatch: pytest.MonkeyPatch,
     _tasklist_fallback: None,

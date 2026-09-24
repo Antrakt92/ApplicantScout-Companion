@@ -6,11 +6,13 @@ import pytest
 
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QFontMetrics
+from PyQt6.QtWidgets import QApplication
 
 from applicant_scout.__main__ import StateMachine
 from applicant_scout.constants import percentile_colour
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.overlay import (
+    APPLICANT_ROW_HEIGHT,
     COL_SPEC,
     COL_NAME,
     COL_ILVL,
@@ -26,6 +28,7 @@ from applicant_scout.overlay import (
     _mplus_cell_visuals,
     _fit_cell_visuals,
     OverlayWindow,
+    USER_MIN_WINDOW_WIDTH,
 )
 from applicant_scout.scoring import CONTEXT_RAID, detect_listing_context
 from applicant_scout.screenshot import (
@@ -842,6 +845,124 @@ def test_party_tab_rio_cell_shows_current_and_main_scores(qtbot, tmp_path):
     qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
 
     assert win._table.item(0, COL_RIO).text() == "2443 [3468]"
+
+
+@pytest.mark.parametrize("tab", ["applicants", "party"])
+def test_rio_cell_shows_season_history_at_minimum_width_and_shrinks_when_missing(
+    qtbot, tmp_path, tab
+):
+    state = AppState()
+    if tab == "party":
+        player = _member("gladgee-tarrenmill", "Gladgee-TarrenMill", score=2443,
+                         main_score=3468)
+        state.party_members[player.applicant_id] = player
+    else:
+        player = _app("42:1", "Gladgee-TarrenMill")
+        player.score = 2443
+        player.main_score = 3468
+        state.applicants[player.applicant_id] = player
+    player.rio_previous_score = 3485
+    player.rio_previous_season = 0
+    player.rio_main_previous_score = 4020
+    player.rio_main_previous_season = 0
+    player.rio_warband_previous_score = 4024
+    player.rio_warband_previous_season = 0
+    win = _window(tmp_path, qtbot, state)
+    if tab == "party":
+        qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    else:
+        win._refresh_table()
+    win.show()
+    win.resize(USER_MIN_WINDOW_WIDTH, max(win.height(), 650))
+    QApplication.processEvents()
+
+    item = win._table.item(0, COL_RIO)
+    lines = item.text().splitlines()
+    assert lines == [
+        "2443 [3468]",
+        "S1 4024",
+    ]
+    font_metrics = QFontMetrics(item.font())
+    assert all(
+        font_metrics.horizontalAdvance(line) + 4 <= win._table.columnWidth(COL_RIO)
+        for line in lines
+    )
+    assert win._table.rowHeight(0) >= font_metrics.lineSpacing() * len(lines)
+
+    player.score = 4300
+    win._refresh_table()
+    QApplication.processEvents()
+    assert win._table.item(0, COL_RIO).text() == "4300"
+    assert win._table.rowHeight(0) == APPLICANT_ROW_HEIGHT
+
+    player.score = 2443
+    win._refresh_table()
+    QApplication.processEvents()
+    assert win._table.item(0, COL_RIO).text() == "2443 [3468]\nS1 4024"
+
+    player.rio_previous_score = 0
+    player.rio_previous_season = None
+    player.rio_main_previous_score = 0
+    player.rio_main_previous_season = None
+    player.rio_warband_previous_score = 0
+    player.rio_warband_previous_season = None
+    win._refresh_table()
+    QApplication.processEvents()
+    assert win._table.item(0, COL_RIO).text() == "2443 [3468]"
+    assert win._table.rowHeight(0) == APPLICANT_ROW_HEIGHT
+
+
+def test_party_rio_tooltip_omits_missing_local_history(qtbot, tmp_path):
+    state = AppState()
+    member = _member("alt-realm", "Alt-Realm", score=2443)
+    member.rio_previous_score = 2876
+    member.rio_previous_season = 2
+    state.party_members["alt-realm"] = member
+    win = _window(tmp_path, qtbot, state)
+
+    qtbot.mouseClick(win._tab_bar._buttons["party"], Qt.MouseButton.LeftButton)
+    assert win._table.item(0, COL_RIO).text() == "2443\nS3 2876"
+    assert win._table.item(0, COL_RIO).toolTip() == "Raider.IO · past S3 ~2876"
+
+    member.rio_previous_score = 3485
+    member.rio_previous_season = 0
+    member.rio_main_previous_score = 4020
+    member.rio_main_previous_season = 0
+    member.rio_warband_previous_score = 4024
+    member.rio_warband_previous_season = 0
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._table.item(0, COL_RIO).text() == (
+        "2443\nS1 4024"
+    )
+    assert win._table.item(0, COL_RIO).toolTip() == (
+        "Raider.IO · past S1 ~3485 · main past S1 ~4020 · warband past S1 ~4024"
+    )
+
+    member.rio_previous_score = 0
+    member.rio_previous_season = None
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._table.item(0, COL_RIO).text() == (
+        "2443\nS1 4024"
+    )
+    assert win._table.item(0, COL_RIO).toolTip() == (
+        "Raider.IO · main past S1 ~4020 · warband past S1 ~4024"
+    )
+
+    member.rio_main_previous_score = 0
+    member.rio_main_previous_season = None
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._table.item(0, COL_RIO).text() == "2443\nS1 4024"
+    assert win._table.item(0, COL_RIO).toolTip() == "Raider.IO · warband past S1 ~4024"
+
+    member.rio_warband_previous_score = 0
+    member.rio_warband_previous_season = None
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._table.item(0, COL_RIO).text() == "2443"
+    assert win._table.item(0, COL_RIO).toolTip() == ""
 
 
 def test_cleared_snapshot_preserves_visible_party_roster(qtbot, tmp_path):
@@ -1954,3 +2075,76 @@ def test_empty_roster_clears_manual_target_key(qtbot, tmp_path):
 
     assert win._manual_target_key is None
     assert win._tab_bar._key_spin.value() == 0
+
+
+@pytest.mark.parametrize(
+    "main_score,main_season,warband_score,warband_season,expected",
+    [
+        (3590, 0, 0, None, "S1 3590"),
+        (4210, 0, 4024, 0, "S1 4210"),
+        (4020, 0, 4024, 0, "S1 4024"),
+        (4210, 1, 4024, 0, "S2 4210"),
+        (4210, 0, 4210, 1, "S2 4210"),
+        (9999, None, 4024, 0, "S1 4024"),
+        (0, None, 0, None, ""),
+    ],
+)
+def test_rio_table_uses_highest_main_or_warband_history(
+    main_score, main_season, warband_score, warband_season, expected
+):
+    from applicant_scout.overlay_presenters import rio_table_text
+
+    member = _member("alt-realm", "Alt-Realm", score=3126)
+    member.rio_main_previous_score = main_score
+    member.rio_main_previous_season = main_season
+    member.rio_warband_previous_score = warband_score
+    member.rio_warband_previous_season = warband_season
+    assert rio_table_text(member) == "3126" + ("\n" + expected if expected else "")
+
+
+@pytest.mark.parametrize(
+    "personal_score,personal_season,main_score,warband_score,expected",
+    [
+        (3240, 0, 0, 0, "S1 3240"),
+        (2781, 0, 0, 0, "S1 2781"),
+        (4500, 1, 4210, 4024, "S2 4500"),
+        (2781, 0, 4210, 4024, "S1 4210"),
+        (2781, 0, 4020, 4024, "S1 4024"),
+        (9999, None, 4020, 4024, "S1 4024"),
+    ],
+)
+def test_rio_table_considers_personal_history_with_main_and_warband(
+    personal_score, personal_season, main_score, warband_score, expected
+):
+    from applicant_scout.overlay_presenters import rio_table_text
+
+    member = _member("alt-realm", "Alt-Realm", score=2772)
+    member.rio_previous_score = personal_score
+    member.rio_previous_season = personal_season
+    member.rio_main_previous_score = main_score
+    member.rio_main_previous_season = 0
+    member.rio_warband_previous_score = warband_score
+    member.rio_warband_previous_season = 0
+    assert rio_table_text(member) == "2772\n" + expected
+
+
+@pytest.mark.parametrize(
+    "current_score,history_score,expected",
+    [
+        (3215, 2824, "3215"),
+        (3215, 3215, "3215\nS1 3215"),
+        (3215, 3500, "3215\nS1 3500"),
+        (0, 2824, "[4000]\nS1 2824"),
+    ],
+)
+def test_rio_table_hides_history_below_current_character_score(
+    current_score, history_score, expected
+):
+    from applicant_scout.overlay_presenters import rio_table_text
+
+    member = _member("alt-realm", "Alt-Realm", score=current_score)
+    member.rio_previous_score = history_score
+    member.rio_previous_season = 0
+    if not current_score:
+        member.main_score = 4000
+    assert rio_table_text(member) == expected

@@ -17,6 +17,10 @@ experience in one table, with missing data clearly marked.
 [ApplicantScout WoW addon](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest).
 You need both installed and running to receive group data.**
 
+Supports Retail 12.1.0 and PTR 12.1.5. For PTR, install the addon in that
+client's AddOns folder and select its `Screenshots` folder in Companion Settings.
+The companion watches one selected client at a time.
+
 **[Download the Windows installer](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest)**
 · **[Setup guide](docs/GETTING_STARTED.md)**
 
@@ -40,6 +44,8 @@ Blizzard password.
 - Each member of a grouped application, with a combined Fit estimate.
 - Your current party or raid after invites or after joining a group.
 - Dungeon history, raid progress and results for the applying specialization.
+- Available past-season RaiderIO ratings, with the highest shown below the
+  current score when it is at least as high. Requires the local RaiderIO addon.
 
 ## Quick Start
 
@@ -89,7 +95,8 @@ together. Fit is a separate estimate. Read [what each column and score means](do
 The addon sends group data through QR codes in ordinary WoW screenshots. The
 companion reads the configured Screenshots folder locally and requests Warcraft
 Logs results. Screenshots are not uploaded for those lookups. The optional
-RaiderIO addon provides additional local dungeon and raid information.
+RaiderIO addon provides additional local dungeon, raid and past-season score
+information. Missing historical data stays hidden; it does not affect Fit.
 
 Updates pause in combat, throughout an active Mythic+ run and during raid boss
 encounters. You can recruit between raid pulls. Screenshot settings are restored

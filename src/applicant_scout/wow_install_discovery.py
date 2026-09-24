@@ -1,4 +1,4 @@
-"""Find a moved Retail installation without scanning whole drives."""
+"""Find a moved WoW client installation without scanning whole drives."""
 
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-from .screenshots_path_probe import _looks_like_wow_retail_root
+from .screenshots_path_probe import (
+    WOW_CLIENT_ROOT_NAMES,
+    _looks_like_wow_client_root,
+)
 from .wow_lifecycle import _PROCESSENTRY32W
 
 
@@ -61,7 +64,7 @@ def _running_wow_roots() -> list[Path]:
                             handle, 0, buffer, ctypes.byref(length)
                         ):
                             image = Path(buffer.value)
-                            if image.parent.name.casefold() == "_retail_":
+                            if image.parent.name.casefold() in WOW_CLIENT_ROOT_NAMES:
                                 roots.append(image.parent)
                     finally:
                         kernel32.CloseHandle(handle)
@@ -92,13 +95,16 @@ def _fixed_drive_roots() -> list[Path]:
 
 
 def discover_wow_screenshots(previous: Path) -> Path | None:
-    """Prefer the running client; otherwise accept one unambiguous local install."""
+    """Find the same client flavor on another drive, if unambiguous."""
     previous = Path(previous)
+    client_name = previous.parent.name.casefold()
+    if previous.name.casefold() != "screenshots" or client_name not in WOW_CLIENT_ROOT_NAMES:
+        return None
 
     def valid(root: Path) -> bool:
         return (
-            root.name.casefold() == "_retail_"
-            and _looks_like_wow_retail_root(root)
+            root.name.casefold() == client_name
+            and _looks_like_wow_client_root(root)
             and (root / "Screenshots").is_dir()
         )
 
@@ -113,16 +119,15 @@ def discover_wow_screenshots(previous: Path) -> Path | None:
     # Preserve a custom folder layout after a drive-letter move, then try the
     # usual Battle.net install locations. No recursive walk or network drives.
     relative_locations = [
-        Path("Games") / "World of Warcraft" / "_retail_",
-        Path("World of Warcraft") / "_retail_",
-        Path("Program Files (x86)") / "World of Warcraft" / "_retail_",
-        Path("Program Files") / "World of Warcraft" / "_retail_",
+        Path("Games") / "World of Warcraft" / client_name,
+        Path("World of Warcraft") / client_name,
+        Path("Program Files (x86)") / "World of Warcraft" / client_name,
+        Path("Program Files") / "World of Warcraft" / client_name,
     ]
-    if previous.parent.name.casefold() == "_retail_" and previous.name.casefold() == "screenshots":
-        try:
-            relative_locations.insert(0, previous.parent.relative_to(previous.anchor))
-        except ValueError:
-            pass
+    try:
+        relative_locations.insert(0, previous.parent.relative_to(previous.anchor))
+    except ValueError:
+        pass
     found: list[Path] = []
     for drive in _fixed_drive_roots():
         for relative in dict.fromkeys(relative_locations):

@@ -846,6 +846,130 @@ def test_local_rio_profile_fills_missing_roster_score():
     assert member.rio_profile is True
 
 
+def test_local_rio_history_updates_and_clears_for_applicant_and_roster():
+    class HistoryReader:
+        previous_score = 3520
+        previous_score_season = 0
+        main_previous_score = 4210
+        main_previous_score_season = 0
+        warband_previous_score = 4024
+        warband_previous_score_season = 0
+        fail = False
+
+        def lookup_profile(self, *_args: object, **_kwargs: object) -> object:
+            if self.fail:
+                raise OSError("RaiderIO DB temporarily unavailable")
+            return type(
+                "Profile",
+                (),
+                {
+                    "current_score": 2600,
+                    "previous_score": self.previous_score,
+                    "previous_score_season": self.previous_score_season,
+                    "main_previous_score": self.main_previous_score,
+                    "main_previous_score_season": self.main_previous_score_season,
+                    "warband_previous_score": self.warband_previous_score,
+                    "warband_previous_score_season": self.warband_previous_score_season,
+                    "dungeons": [],
+                    "raid_progress": {},
+                    "has_mplus_profile": True,
+                },
+            )()
+
+    reader = HistoryReader()
+    state = AppState()
+    sm = StateMachine(state, rio_reader=reader)
+    snap = Snapshot(
+        listing=_listing(),
+        version=_version("Dmss-Ragnaros"),
+        applicants=[_decoded(aid=42, member_idx=1, name="Chinie")],
+        roster=[_roster_decoded("Chinie")],
+    )
+
+    sm.apply_snapshot(snap)
+    for row in (state.applicants["42:1"], state.party_members["chinie"]):
+        assert (row.rio_previous_score, row.rio_previous_season) == (3520, 0)
+        assert (row.rio_main_previous_score, row.rio_main_previous_season) == (
+            4210,
+            0,
+        )
+        assert (row.rio_warband_previous_score, row.rio_warband_previous_season) == (
+            4024,
+            0,
+        )
+
+    reader.fail = True
+    sm.apply_snapshot(snap)
+    for row in (state.applicants["42:1"], state.party_members["chinie"]):
+        assert (row.rio_previous_score, row.rio_previous_season) == (3520, 0)
+        assert (row.rio_main_previous_score, row.rio_main_previous_season) == (
+            4210,
+            0,
+        )
+        assert (row.rio_warband_previous_score, row.rio_warband_previous_season) == (
+            4024,
+            0,
+        )
+
+    reader.fail = False
+    reader.previous_score = 0
+    reader.previous_score_season = 0
+    sm.apply_snapshot(snap)
+    for row in (state.applicants["42:1"], state.party_members["chinie"]):
+        assert (row.rio_previous_score, row.rio_previous_season) == (0, None)
+        assert (row.rio_main_previous_score, row.rio_main_previous_season) == (
+            4210,
+            0,
+        )
+        assert (row.rio_warband_previous_score, row.rio_warband_previous_season) == (
+            4024,
+            0,
+        )
+
+    reader.main_previous_score = 0
+    reader.main_previous_score_season = 0
+    sm.apply_snapshot(snap)
+    for row in (state.applicants["42:1"], state.party_members["chinie"]):
+        assert (row.rio_previous_score, row.rio_previous_season) == (0, None)
+        assert (row.rio_main_previous_score, row.rio_main_previous_season) == (0, None)
+        assert (row.rio_warband_previous_score, row.rio_warband_previous_season) == (
+            4024,
+            0,
+        )
+
+    reader.warband_previous_score = 0
+    reader.warband_previous_score_season = 0
+    sm.apply_snapshot(snap)
+    for row in (state.applicants["42:1"], state.party_members["chinie"]):
+        assert (row.rio_previous_score, row.rio_previous_season) == (0, None)
+        assert (row.rio_main_previous_score, row.rio_main_previous_season) == (0, None)
+        assert (row.rio_warband_previous_score, row.rio_warband_previous_season) == (
+            0,
+            None,
+        )
+
+    reader.previous_score = 3520
+    reader.main_previous_score = 4210
+    reader.warband_previous_score = 4024
+    sm.apply_snapshot(snap)
+    reader.fail = True
+    sm.apply_snapshot(
+        Snapshot(
+            listing=_listing(),
+            version=_version("Dmss-Ragnaros"),
+            applicants=[_decoded(aid=42, member_idx=1, name="Other")],
+            roster=[_roster_decoded("Other")],
+        )
+    )
+    for row in (state.applicants["42:1"], state.party_members["other"]):
+        assert (row.rio_previous_score, row.rio_previous_season) == (0, None)
+        assert (row.rio_main_previous_score, row.rio_main_previous_season) == (0, None)
+        assert (row.rio_warband_previous_score, row.rio_warband_previous_season) == (
+            0,
+            None,
+        )
+
+
 def test_new_applicant_enriches_explicit_hyphenated_realm_from_local_reader():
     state = AppState()
     sm = StateMachine(state, rio_reader=_FakeRioReader())

@@ -97,6 +97,19 @@ def test_settings_dialog_exposes_config_values(qtbot, tmp_path: Path):
     assert values.sync_with_wow is True
 
 
+def test_settings_dialog_shows_selected_ptr_screenshots_folder(qtbot, tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    ptr_root = tmp_path / "World of Warcraft" / "_ptr_"
+    (ptr_root / "Interface" / "AddOns").mkdir(parents=True)
+    cfg.screenshots_path = ptr_root / "Screenshots"
+
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    assert dialog.values().screenshots_path == str(ptr_root / "Screenshots")
+    assert "_ptr_" in dialog.screenshots_edit.toolTip()
+
+
 def test_settings_dialog_title_shows_companion_version(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)

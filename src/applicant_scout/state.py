@@ -32,6 +32,14 @@ class Applicant:
     score: int
     role: str  # TANK / HEALER / DAMAGER
     main_score: int = 0
+    # Optional, approximate historical score from the local RaiderIO addon DB.
+    # The season is RaiderIO's zero-based season index; neither value is QR data.
+    rio_previous_score: int = 0
+    rio_previous_season: Optional[int] = None
+    rio_main_previous_score: int = 0
+    rio_main_previous_season: Optional[int] = None
+    rio_warband_previous_score: int = 0
+    rio_warband_previous_season: Optional[int] = None
     # Compact target-relative RaiderIO completion summary from addon wire v5.
     # Counts are computed by the addon against the active listing key at
     # screenshot time, so they are evidence for this listing snapshot rather

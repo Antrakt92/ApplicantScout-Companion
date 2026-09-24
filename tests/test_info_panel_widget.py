@@ -1722,6 +1722,121 @@ def test_panel_renders_current_and_better_main_score(qtbot):
     assert panel._rio_label.text() == "RIO 2443 · main 3468"
 
 
+def test_panel_shows_local_rio_history_only_when_present(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+
+    panel.setApplicantData(_app(rio_previous_score=2876, rio_previous_season=2))
+    assert panel._rio_label.text() == "RIO 2443"
+    assert panel._rio_history_label.text() == "past S3 ~2876"
+
+    panel.setApplicantData(_app(score=0, rio_previous_score=2876, rio_previous_season=2))
+    assert panel._rio_label.text() == ""
+    assert panel._rio_history_label.text() == "RIO past S3 ~2876"
+    assert not panel._rio_history_row.isHidden()
+
+    panel.setApplicantData(
+        _app(
+            rio_previous_score=3485,
+            rio_previous_season=0,
+            rio_main_previous_score=4020,
+            rio_main_previous_season=0,
+            rio_warband_previous_score=4024,
+            rio_warband_previous_season=0,
+        )
+    )
+    assert panel._rio_history_label.text() == "past S1 ~3485"
+    assert panel._rio_main_history_label.text() == "main past S1 ~4020"
+    assert panel._rio_warband_history_label.text() == "warband past S1 ~4024"
+    assert not panel._rio_history_row.isHidden()
+    for label in (
+        panel._rio_history_label,
+        panel._rio_main_history_label,
+        panel._rio_warband_history_label,
+    ):
+        assert "color: #f2d08a" in label.styleSheet()
+        assert "background-color: #29251b" in label.styleSheet()
+
+    panel.setApplicantData(
+        _app(rio_main_previous_score=4210, rio_main_previous_season=0)
+    )
+    assert panel._rio_history_label.text() == ""
+    assert panel._rio_main_history_label.text() == "main past S1 ~4210"
+    assert panel._rio_warband_history_label.text() == ""
+
+    panel.setApplicantData(
+        _app(score=0, rio_main_previous_score=4210, rio_main_previous_season=0)
+    )
+    assert panel._rio_label.text() == ""
+    assert panel._rio_history_label.text() == ""
+    assert panel._rio_main_history_label.text() == "RIO main past S1 ~4210"
+
+    panel.setApplicantData(
+        _app(rio_warband_previous_score=4024, rio_warband_previous_season=0)
+    )
+    assert panel._rio_history_label.text() == ""
+    assert panel._rio_main_history_label.text() == ""
+    assert panel._rio_warband_history_label.text() == "warband past S1 ~4024"
+
+    panel.setApplicantData(
+        _app(score=0, rio_warband_previous_score=4024, rio_warband_previous_season=0)
+    )
+    assert panel._rio_label.text() == ""
+    assert panel._rio_warband_history_label.text() == "RIO warband past S1 ~4024"
+
+    panel.setApplicantData(_app())
+    assert panel._rio_label.text() == "RIO 2443"
+    assert panel._rio_history_label.text() == ""
+    assert panel._rio_main_history_label.text() == ""
+    assert panel._rio_warband_history_label.text() == ""
+    assert panel._rio_history_row.isHidden()
+
+    panel.setApplicantData(_app(rio_warband_previous_score=4024, rio_warband_previous_season=0))
+    panel.setPlaceholder()
+    assert panel._rio_history_row.isHidden()
+
+
+def test_panel_history_and_current_score_fit_at_minimum_width(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setStyleSheet(overlay_mod._STYLESHEET)
+    panel.setApplicantData(
+        _app(
+            main_score=3468,
+            rio_previous_score=3485,
+            rio_previous_season=0,
+            rio_main_previous_score=4020,
+            rio_main_previous_season=0,
+            rio_warband_previous_score=4024,
+            rio_warband_previous_season=0,
+        )
+    )
+    font = panel._rio_label.font()
+    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3.0)
+    panel._rio_label.setFont(font)
+    panel._rio_history_label.setFont(font)
+    panel._rio_main_history_label.setFont(font)
+    panel._rio_warband_history_label.setFont(font)
+    panel.show()
+    panel.resize(overlay_mod.USER_MIN_WINDOW_WIDTH, panel.target_height())
+    QApplication.processEvents()
+
+    assert panel._rio_label.sizeHint().width() <= panel._rio_label.width()
+    assert panel._rio_history_label.sizeHint().width() <= panel._rio_history_label.width()
+    assert (
+        panel._rio_main_history_label.sizeHint().width()
+        <= panel._rio_main_history_label.width()
+    )
+    assert (
+        panel._rio_warband_history_label.sizeHint().width()
+        <= panel._rio_warband_history_label.width()
+    )
+    assert panel._rio_history_row.isVisibleTo(panel)
+    assert panel._rio_history_row.mapTo(panel, QPoint(0, 0)).y() < (
+        panel._metric_labels["M+"].mapTo(panel, QPoint(0, 0)).y()
+    )
+
+
 def test_context_dungeon_rows_colour_the_printed_percentile(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)

@@ -9,14 +9,15 @@ from pathlib import Path
 
 
 SCREENSHOTS_PATH_PROBE_ARG = "--internal-screenshots-path-probe"
+WOW_CLIENT_ROOT_NAMES = frozenset({"_retail_", "_ptr_", "_xptr_"})
 
 
-def _looks_like_wow_retail_root(retail_root: Path) -> bool:
-    file_markers = (retail_root / "Wow.exe",)
+def _looks_like_wow_client_root(client_root: Path) -> bool:
+    file_markers = (client_root / "Wow.exe", client_root / "WowT.exe")
     dir_markers = (
-        retail_root / "Interface",
-        retail_root / "Interface" / "AddOns",
-        retail_root / "WTF",
+        client_root / "Interface",
+        client_root / "Interface" / "AddOns",
+        client_root / "WTF",
     )
     return any(marker.is_file() for marker in file_markers) or any(
         marker.is_dir() for marker in dir_markers
@@ -30,13 +31,15 @@ def screenshots_path_health_warning(path: Path) -> str | None:
     if path.name.lower() != "screenshots":
         problems.append("folder is not named Screenshots")
 
-    retail_root = path.parent if path.parent.name.lower() == "_retail_" else None
-    if retail_root is None:
-        problems.append(r"path is not directly under a _retail_ folder")
-    elif not retail_root.exists():
-        problems.append(r"_retail_ folder does not exist")
-    elif not _looks_like_wow_retail_root(retail_root):
-        problems.append(r"_retail_ folder has no WoW install markers")
+    client_root = (
+        path.parent if path.parent.name.casefold() in WOW_CLIENT_ROOT_NAMES else None
+    )
+    if client_root is None:
+        problems.append(r"path is not directly under a _retail_, _ptr_, or _xptr_ folder")
+    elif not client_root.exists():
+        problems.append(f"{client_root.name} folder does not exist")
+    elif not _looks_like_wow_client_root(client_root):
+        problems.append(f"{client_root.name} folder has no WoW install markers")
 
     if not problems:
         return None

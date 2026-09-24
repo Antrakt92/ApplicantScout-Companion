@@ -1023,11 +1023,11 @@ class SettingsDialog(QDialog):
             r"Example: C:\Program Files (x86)\World of Warcraft\_retail_\Screenshots"
         )
         self.screenshots_edit.setToolTip(
-            r"Select WoW's in-game Screenshots folder under _retail_\Screenshots."
+            "Select the active WoW client's Screenshots folder under _retail_, _ptr_, or _xptr_."
         )
         self.screenshots_edit.setAccessibleName("WoW Screenshots folder")
         self.screenshots_edit.setAccessibleDescription(
-            r"Path to WoW's _retail_\Screenshots folder."
+            r"Path to the active _retail_, _ptr_, or _xptr_ Screenshots folder."
         )
         self.screenshots_edit.textChanged.connect(self._handle_screenshots_text_changed)
         path_layout.addWidget(self.screenshots_edit, stretch=1)

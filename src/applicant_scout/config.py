@@ -19,7 +19,8 @@ from .atomic_io import (
 from .constants import REGION_ID_TO_WCL
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .screenshots_path_probe import (
-    _looks_like_wow_retail_root,
+    WOW_CLIENT_ROOT_NAMES,
+    _looks_like_wow_client_root,
     screenshots_path_health_warning,
 )
 
@@ -67,8 +68,8 @@ COMMON_WOW_RETAIL_ROOTS = (
 
 def _screenshots_setup_message(details: str) -> str:
     return (
-        f"{details}. Set APSCOUT_SCREENSHOTS_PATH to your active "
-        r"_retail_\Screenshots folder."
+        f"{details}. Set APSCOUT_SCREENSHOTS_PATH to the Screenshots folder "
+        "in the active _retail_, _ptr_, or _xptr_ client."
     )
 
 
@@ -81,25 +82,25 @@ def _default_chatlog_path() -> Path:
     return candidates[0]
 
 
-def _retail_root_from_legacy_path(path: Path) -> Path:
-    """Infer _retail_ root from legacy chatlog path or Logs directory."""
+def _client_root_from_legacy_path(path: Path) -> Path:
+    """Infer a WoW client root from a legacy chatlog path or Logs directory."""
     if path.name.lower() == "wowchatlog.txt" and path.parent.name.lower() == "logs":
-        retail_root = path.parent.parent
+        client_root = path.parent.parent
     elif path.name.lower() == "logs":
-        retail_root = path.parent
+        client_root = path.parent
     else:
         raise ConfigError(
             _screenshots_setup_message(
                 f"Cannot infer Screenshots folder from legacy path {path}"
             )
         )
-    if retail_root.name.lower() != "_retail_":
+    if client_root.name.casefold() not in WOW_CLIENT_ROOT_NAMES:
         raise ConfigError(
             _screenshots_setup_message(
-                f"Legacy path {path} is not under a _retail_ folder"
+                f"Legacy path {path} is not under a supported WoW client folder"
             )
         )
-    return retail_root
+    return client_root
 
 
 def screenshots_path_validation_error(path: Path) -> str | None:
@@ -111,8 +112,8 @@ def screenshots_path_candidate(cfg: Config) -> Path:
     """Derive the configured Screenshots path without touching the filesystem."""
     if cfg.screenshots_path is not None:
         return Path(cfg.screenshots_path)
-    retail_root = _retail_root_from_legacy_path(Path(cfg.chatlog_path))
-    return retail_root / "Screenshots"
+    client_root = _client_root_from_legacy_path(Path(cfg.chatlog_path))
+    return client_root / "Screenshots"
 
 
 def resolve_screenshots_path(cfg: Config) -> Path:
@@ -130,17 +131,17 @@ def resolve_screenshots_path(cfg: Config) -> Path:
         return screenshots_path
 
     screenshots_path = screenshots_path_candidate(cfg)
-    retail_root = screenshots_path.parent
-    if not retail_root.exists() or not retail_root.is_dir():
+    client_root = screenshots_path.parent
+    if not client_root.exists() or not client_root.is_dir():
         raise ConfigError(
             _screenshots_setup_message(
-                f"Inferred WoW retail root does not exist: {retail_root}"
+                f"Inferred WoW client root does not exist: {client_root}"
             )
         )
-    if not _looks_like_wow_retail_root(retail_root):
+    if not _looks_like_wow_client_root(client_root):
         raise ConfigError(
             _screenshots_setup_message(
-                f"Inferred WoW retail root does not look like a WoW install: {retail_root}"
+                f"Inferred WoW client root does not look like a WoW install: {client_root}"
             )
         )
     return screenshots_path

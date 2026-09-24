@@ -1,5 +1,38 @@
 # ApplicantScout Companion Release Notes
 
+## 0.20.0 - 24-Sep-2026
+
+Paired release with ApplicantScout addon `0.12.0`.
+
+### Added
+
+- Support Retail 12.1.0 and PTR 12.1.5 with the same addon package. Select the
+  desired client's Screenshots folder in Companion Settings; its local RaiderIO
+  data is read from the same installation.
+- Show approximate past-season Raider.IO scores from the installed RaiderIO
+  addon for applicants and party members, including character, main and Warband history.
+  Missing local data stays hidden; no extra API requests are needed.
+- Show the highest available historical score below the current RIO rating as
+  `S1 4024`. Hide it when it is lower than the character's current rating.
+  Keep the table compact with at most two lines per player; details and tooltips
+  identify each available score's source and season. History does not affect
+  Fit or sorting.
+- Thanks to @yoyo-boop862 for the historical Raider.IO suggestion in #22.
+
+### Fixed
+
+- Find WoW's Screenshots folder again after the game moves to another drive.
+- Keep historical ratings through roster and applicant refreshes, and clear
+  them when a row belongs to a different player.
+- In the paired addon, drag Group Finder from its background, title or buttons
+  while preserving normal clicks, text entry and controls with their own drag
+  actions. Movement remains unavailable in combat.
+- Keep other open windows stationary while Group Finder moves, including
+  windows managed by NoAutoClose or EllesmereUI. Use BlizzMove's movement when
+  it is enabled.
+- Keep Group Finder's position for the current UI session only. Reloading
+  returns it to the default position without restoring an old saved location.
+
 ## 0.19.1 - 16-Sep-2026
 
 Paired release with ApplicantScout addon `0.11.1`.

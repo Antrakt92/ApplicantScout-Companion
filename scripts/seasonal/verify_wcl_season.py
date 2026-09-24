@@ -38,6 +38,12 @@ from scripts.seasonal._shared import quote_display_string
 
 DEFAULT_MINIMUM_REMAINING_POINTS = 50.0
 
+# WCL zone 53 already lists Kith'ix while the encounter is still 12.1.5 PTR
+# content. Blizzard: https://us.forums.blizzard.com/en/wow/t/ptr-raid-testing-heroic-kithix-10-30/2351272
+# Remove this exact exception and add the boss to CURRENT_RAID_ENCOUNTERS when
+# The Unbinding of Kith'ix goes live; other metadata drift still fails closed.
+UPCOMING_PTR_RAID_ENCOUNTERS = frozenset({(3513, "Kith'ix")})
+
 
 class SeasonalWCLVerificationError(RuntimeError):
     """Actionable seasonal verification failure."""
@@ -324,7 +330,9 @@ def validate_current_constants(zones: dict[int, ZoneSnapshot]) -> None:
             for _alias, encounter_id, name in CURRENT_RAID_ENCOUNTERS
         ),
     )
-    _assert_encounter_set("Raid", actual_raid, expected_raid)
+    _assert_encounter_set(
+        "Raid", actual_raid - UPCOMING_PTR_RAID_ENCOUNTERS, expected_raid
+    )
 
 
 def require_quota_floor(quota: QuotaSnapshot, minimum_remaining: float) -> None:

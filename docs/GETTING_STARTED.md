@@ -26,6 +26,9 @@ and extract it so the file is at
 `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`.
 GitHub's automatic **Source code** ZIP is not the install package.
 
+The same addon supports Retail 12.1.0 and PTR 12.1.5. For PTR, use its
+`_ptr_\Interface\AddOns` or `_xptr_\Interface\AddOns` folder instead.
+
 ## 2. Connect Warcraft Logs
 
 You need a free Warcraft Logs account. ApplicantScout does not ask for your
@@ -49,7 +52,9 @@ Windows user profile and uses them to authenticate with Warcraft Logs.
 ## 3. Choose the WoW Screenshots folder
 
 In companion Settings, select the `Screenshots` folder inside the `_retail_`
-folder for the WoW installation you play. For example:
+folder for the WoW installation you play. For PTR, select its `_ptr_\Screenshots`
+or `_xptr_\Screenshots` folder instead. The companion watches one selected
+client at a time and reads RaiderIO data from that same client. Retail example:
 
 ```text
 D:\Games\World of Warcraft\_retail_\Screenshots

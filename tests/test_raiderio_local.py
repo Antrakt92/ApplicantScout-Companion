@@ -355,6 +355,8 @@ def test_reader_decodes_current_303_bit_mplus_provider_record(
 
     assert profile is not None
     assert profile.current_score == 3456
+    assert profile.previous_score == 2876
+    assert profile.previous_score_season == 2
     assert profile.dungeons == [
         {"name": "Kings' Rest", "key_level": 15},
         {"name": "Temple of Sethraliss", "key_level": 12},
@@ -376,6 +378,65 @@ def test_reader_decodes_current_303_bit_mplus_provider_record(
         )
         for field in meta.encoding_order
     ) == 303
+
+
+@pytest.mark.parametrize(
+    (
+        "character_previous",
+        "main_previous",
+        "warband_previous",
+        "expected_character",
+        "expected_main",
+        "expected_warband",
+    ),
+    [
+        ((3485, 0), (421, 0), (0, 3), (3485, 0), (4210, 0), (0, None)),
+        ((3485, 0), (402, 0), (4024, 0), (3485, 0), (4020, 0), (4024, 0)),
+        ((0, 3), (421, 0), (0, 2), (0, None), (4210, 0), (0, None)),
+        ((0, 2), (0, 3), (4024, 0), (0, None), (0, None), (4024, 0)),
+        ((0, 2), (0, 3), (0, 3), (0, None), (0, None), (0, None)),
+    ],
+)
+def test_reader_decodes_character_main_and_warband_previous_season_scores(
+    tmp_path: Path,
+    character_previous: tuple[int, int],
+    main_previous: tuple[int, int],
+    warband_previous: tuple[int, int],
+    expected_character: tuple[int, int | None],
+    expected_main: tuple[int, int | None],
+    expected_warband: tuple[int, int | None],
+):
+    # Field 7 stores main in tens; field 13 stores exact Warband score.
+    record = _pack_bits(
+        [
+            (3456, 13),
+            (character_previous[0], 13),
+            (character_previous[1], 2),
+            (main_previous[0], 10),
+            (main_previous[1], 2),
+            (warband_previous[0], 13),
+            (warband_previous[1], 2),
+            (0, 8),
+            (0, 8),
+        ],
+        9,
+    )
+    _write_test_db(
+        tmp_path,
+        record + record,
+        record_size=9,
+        encoding_order=(1, 3, 7, 13, 10),
+    )
+
+    profile = RaiderIOLocalReader(tmp_path).lookup_profile("Chinie", "Ragnaros", "EU")
+
+    assert profile is not None
+    assert profile.current_score == 3456
+    assert (profile.previous_score, profile.previous_score_season) == expected_character
+    assert (profile.main_previous_score, profile.main_previous_score_season) == expected_main
+    assert (profile.warband_previous_score, profile.warband_previous_score_season) == (
+        expected_warband
+    )
 
 
 def test_reader_uses_dynamic_keystone_milestone_count(tmp_path: Path):
@@ -405,6 +466,10 @@ def test_reader_uses_dynamic_keystone_milestone_count(tmp_path: Path):
 
     assert profile is not None
     assert profile.current_score == 3074
+    assert profile.previous_score == 0
+    assert profile.previous_score_season is None
+    assert profile.warband_previous_score == 0
+    assert profile.warband_previous_score_season is None
     assert profile.dungeons == [{"name": "Pit of Saron", "key_level": 12}]
 
 

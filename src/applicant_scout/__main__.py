@@ -66,7 +66,7 @@ from .raiderio_local import (
     LOOKUP_PAYLOAD_CACHE_DIR_NAME,
     RaiderIOLocalReader,
     clear_lookup_payload_cache,
-    retail_root_from_screenshots_path,
+    wow_client_root_from_screenshots_path,
 )
 from .screenshot import (
     DecodedRosterMember,
@@ -80,6 +80,7 @@ from .screenshot import (
     screenshot_cleanup_exit_code,
     system_exit_code,
 )
+from .screenshots_path_probe import WOW_CLIENT_ROOT_NAMES
 from .settings_dialog import (
     ReleaseNotesDialog,
     SCREENSHOTS_PATH_PROBE_ARG,
@@ -748,6 +749,29 @@ class StateMachine(QObject):
         return max(score, profile_score)
 
     @staticmethod
+    def _rio_previous_from_profile(
+        profile, *, source: str = "character"
+    ) -> tuple[int, int | None]:
+        if profile is None or profile is _RIO_LOOKUP_FAILED:
+            return 0, None
+        if not getattr(profile, "has_mplus_profile", True):
+            return 0, None
+        prefix = {"character": "previous", "main": "main_previous",
+                  "warband": "warband_previous"}[source]
+        score = getattr(profile, f"{prefix}_score", 0)
+        season = getattr(profile, f"{prefix}_score_season", None)
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, int)
+            or score <= 0
+            or isinstance(season, bool)
+            or not isinstance(season, int)
+            or not 0 <= season <= 3
+        ):
+            return 0, None
+        return score, season
+
+    @staticmethod
     def _rio_profile_flag_from_profile(profile, decoded_flag: bool) -> bool:
         if decoded_flag:
             return True
@@ -802,17 +826,36 @@ class StateMachine(QObject):
         rows = self._rio_dungeon_rows_from_profile(profile, transport_rows)
         raid_progress = self._rio_raid_progress_from_profile(profile)
         score = self._rio_score_from_profile(profile, transport_score)
+        previous_score, previous_season = self._rio_previous_from_profile(profile)
+        main_previous_score, main_previous_season = self._rio_previous_from_profile(
+            profile, source="main"
+        )
+        warband_previous_score, warband_previous_season = self._rio_previous_from_profile(
+            profile, source="warband"
+        )
         rio_profile = self._rio_profile_flag_from_profile(profile, transport_profile)
         if (
             rows == target.rio_dungeons
             and raid_progress == target.rio_raid_progress
             and score == target.score
+            and previous_score == target.rio_previous_score
+            and previous_season == target.rio_previous_season
+            and main_previous_score == target.rio_main_previous_score
+            and main_previous_season == target.rio_main_previous_season
+            and warband_previous_score == target.rio_warband_previous_score
+            and warband_previous_season == target.rio_warband_previous_season
             and rio_profile == target.rio_profile
         ):
             return False
         target.rio_dungeons = rows
         target.rio_raid_progress = raid_progress
         target.score = score
+        target.rio_previous_score = previous_score
+        target.rio_previous_season = previous_season
+        target.rio_main_previous_score = main_previous_score
+        target.rio_main_previous_season = main_previous_season
+        target.rio_warband_previous_score = warband_previous_score
+        target.rio_warband_previous_season = warband_previous_season
         target.rio_profile = rio_profile
         return True
 
@@ -863,7 +906,7 @@ class StateMachine(QObject):
     @staticmethod
     def _capture_local_rio_fields(
         source: Applicant,
-    ) -> tuple[int, bool, list[dict], dict[str, dict]]:
+    ) -> tuple[int, bool, list[dict], dict[str, dict], int, int | None, int, int | None, int, int | None]:
         score = source.score if isinstance(source.score, int) else 0
         return (
             score,
@@ -874,14 +917,31 @@ class StateMachine(QObject):
                 for difficulty, data in source.rio_raid_progress.items()
                 if isinstance(data, dict)
             },
+            source.rio_previous_score,
+            source.rio_previous_season,
+            source.rio_main_previous_score,
+            source.rio_main_previous_season,
+            source.rio_warband_previous_score,
+            source.rio_warband_previous_season,
         )
 
     @staticmethod
     def _preserve_local_rio_fields(
-        fields: tuple[int, bool, list[dict], dict[str, dict]],
+        fields: tuple[int, bool, list[dict], dict[str, dict], int, int | None, int, int | None, int, int | None],
         target: Applicant,
     ) -> None:
-        score, rio_profile, rio_dungeons, rio_raid_progress = fields
+        (
+            score,
+            rio_profile,
+            rio_dungeons,
+            rio_raid_progress,
+            previous_score,
+            previous_season,
+            main_previous_score,
+            main_previous_season,
+            warband_previous_score,
+            warband_previous_season,
+        ) = fields
         target_score = target.score if isinstance(target.score, int) else 0
         if score > target_score:
             target.score = score
@@ -894,6 +954,12 @@ class StateMachine(QObject):
                 str(difficulty): dict(data)
                 for difficulty, data in rio_raid_progress.items()
             }
+        target.rio_previous_score = previous_score
+        target.rio_previous_season = previous_season
+        target.rio_main_previous_score = main_previous_score
+        target.rio_main_previous_season = main_previous_season
+        target.rio_warband_previous_score = warband_previous_score
+        target.rio_warband_previous_season = warband_previous_season
 
     def _local_rio_identity_stable(
         self,
@@ -971,6 +1037,13 @@ class StateMachine(QObject):
     ) -> RosterMember:
         cls_name = CLASS_ID_TO_NAME.get(decoded.class_id, "?")
         role_name = ROLE_BYTE_TO_NAME.get(decoded.role, "DAMAGER")
+        previous_score, previous_season = self._rio_previous_from_profile(rio_profile)
+        main_previous_score, main_previous_season = self._rio_previous_from_profile(
+            rio_profile, source="main"
+        )
+        warband_previous_score, warband_previous_season = self._rio_previous_from_profile(
+            rio_profile, source="warband"
+        )
         member = RosterMember(
             applicant_id=self._roster_key(decoded.name),
             name=decoded.name,
@@ -980,6 +1053,12 @@ class StateMachine(QObject):
             score=self._rio_score_from_profile(rio_profile, decoded.score),
             role=role_name,
             main_score=decoded.main_score,
+            rio_previous_score=previous_score,
+            rio_previous_season=previous_season,
+            rio_main_previous_score=main_previous_score,
+            rio_main_previous_season=main_previous_season,
+            rio_warband_previous_score=warband_previous_score,
+            rio_warband_previous_season=warband_previous_season,
             rio_profile=self._rio_profile_flag_from_profile(
                 rio_profile, decoded.rio_profile
             ),
@@ -1502,6 +1581,15 @@ class StateMachine(QObject):
             existing = self._state.applicants.get(aid)
             rio_profile = self._rio_profile_for(da.name)
             if existing is None:
+                previous_score, previous_season = self._rio_previous_from_profile(
+                    rio_profile
+                )
+                main_previous_score, main_previous_season = self._rio_previous_from_profile(
+                    rio_profile, source="main"
+                )
+                warband_previous_score, warband_previous_season = self._rio_previous_from_profile(
+                    rio_profile, source="warband"
+                )
                 applicant = Applicant(
                     applicant_id=aid,
                     name=da.name,
@@ -1511,6 +1599,12 @@ class StateMachine(QObject):
                     score=self._rio_score_from_profile(rio_profile, da.score),
                     role=role_name,
                     main_score=da.main_score,
+                    rio_previous_score=previous_score,
+                    rio_previous_season=previous_season,
+                    rio_main_previous_score=main_previous_score,
+                    rio_main_previous_season=main_previous_season,
+                    rio_warband_previous_score=warband_previous_score,
+                    rio_warband_previous_season=warband_previous_season,
                     rio_profile=self._rio_profile_flag_from_profile(
                         rio_profile, da.rio_profile
                     ),
@@ -1575,6 +1669,18 @@ class StateMachine(QObject):
                 existing.score = self._rio_score_from_profile(rio_profile, da.score)
                 existing.role = role_name
                 existing.main_score = da.main_score
+                (
+                    existing.rio_previous_score,
+                    existing.rio_previous_season,
+                ) = self._rio_previous_from_profile(rio_profile)
+                (
+                    existing.rio_main_previous_score,
+                    existing.rio_main_previous_season,
+                ) = self._rio_previous_from_profile(rio_profile, source="main")
+                (
+                    existing.rio_warband_previous_score,
+                    existing.rio_warband_previous_season,
+                ) = self._rio_previous_from_profile(rio_profile, source="warband")
                 existing.rio_profile = self._rio_profile_flag_from_profile(
                     rio_profile, da.rio_profile
                 )
@@ -3166,10 +3272,10 @@ def _raiderio_reader_for_screenshots_path(
     *,
     cache_dir: Path | None = None,
 ) -> RaiderIOLocalReader | None:
-    retail_root = retail_root_from_screenshots_path(path)
-    if retail_root is None:
+    client_root = wow_client_root_from_screenshots_path(path)
+    if client_root is None:
         return None
-    return RaiderIOLocalReader(retail_root, cache_dir=cache_dir)
+    return RaiderIOLocalReader(client_root, cache_dir=cache_dir)
 
 
 class _ReaderBoundMachine:
@@ -3854,11 +3960,11 @@ def _load_startup_config() -> tuple[Config, Path, bool] | None:
                 if (
                     cfg.screenshots_path is not None
                     and screenshots_dir.name.casefold() == "screenshots"
-                    and screenshots_dir.parent.name.casefold() == "_retail_"
+                    and screenshots_dir.parent.name.casefold() in WOW_CLIENT_ROOT_NAMES
                     and not str(screenshots_dir).startswith("\\\\")
                     and (
-                        "_retail_ folder does not exist" in warning
-                        or "_retail_ folder has no WoW install markers" in warning
+                        "folder does not exist" in warning
+                        or "folder has no WoW install markers" in warning
                     )
                     and os.environ.get("APSCOUT_SCREENSHOTS_PATH") is None
                 ):

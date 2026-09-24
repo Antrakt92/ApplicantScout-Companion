@@ -21,6 +21,7 @@ from .atomic_io import (
     atomic_write_bytes,
 )
 from .constants import MPLUS_RAIDERIO_DUNGEON_ORDER
+from .screenshots_path_probe import WOW_CLIENT_ROOT_NAMES
 
 
 _log = logging.getLogger("applicant_scout.raiderio_local")
@@ -98,6 +99,12 @@ class RaiderIOLocalProfile:
     dungeons: list[dict]
     raid_progress: dict[str, dict]
     has_mplus_profile: bool = True
+    previous_score: int = 0
+    previous_score_season: int | None = None
+    main_previous_score: int = 0
+    main_previous_score_season: int | None = None
+    warband_previous_score: int = 0
+    warband_previous_score_season: int | None = None
 
 
 @dataclass(frozen=True)
@@ -624,6 +631,12 @@ class _RegionDB:
             current_score=mplus_profile.current_score,
             dungeons=mplus_profile.dungeons,
             raid_progress=raid_progress,
+            previous_score=mplus_profile.previous_score,
+            previous_score_season=mplus_profile.previous_score_season,
+            main_previous_score=mplus_profile.main_previous_score,
+            main_previous_score_season=mplus_profile.main_previous_score_season,
+            warband_previous_score=mplus_profile.warband_previous_score,
+            warband_previous_score_season=mplus_profile.warband_previous_score_season,
         )
 
     @staticmethod
@@ -734,11 +747,13 @@ def _read_provider_header(path: Path) -> str:
         return handle.read(_PROVIDER_HEADER_MAX_CHARS)
 
 
-def retail_root_from_screenshots_path(path: Path) -> Path | None:
+def wow_client_root_from_screenshots_path(path: Path) -> Path | None:
     path = Path(path)
-    for parent in (path, *path.parents):
-        if parent.name.lower() == "_retail_":
-            return parent
+    if (
+        path.name.casefold() == "screenshots"
+        and path.parent.name.casefold() in WOW_CLIENT_ROOT_NAMES
+    ):
+        return path.parent
     return None
 
 
@@ -1279,6 +1294,12 @@ def _decode_profile(
 ) -> RaiderIOLocalProfile:
     bit_offset = 0
     current_score = 0
+    previous_score = 0
+    previous_score_season: int | None = None
+    main_previous_score: int = 0
+    main_previous_score_season: int | None = None
+    warband_previous_score: int = 0
+    warband_previous_score_season: int | None = None
     dungeon_rows: list[dict] = []
     for field in meta.encoding_order:
         if field == 1:
@@ -1286,16 +1307,24 @@ def _decode_profile(
         elif field in {2, 4, 6, 8, 15, 16}:
             _, bit_offset = _read_bits(record, bit_offset, 7)
         elif field == 3:
-            _, bit_offset = _read_bits(record, bit_offset, 13)
-            _, bit_offset = _read_bits(record, bit_offset, 2)
+            previous_score, bit_offset = _read_bits(record, bit_offset, 13)
+            season, bit_offset = _read_bits(record, bit_offset, 2)
+            if previous_score > 0:
+                previous_score_season = season
         elif field in {5, 12}:
             _, bit_offset = _read_bits(record, bit_offset, 13)
         elif field == 7:
-            _, bit_offset = _read_bits(record, bit_offset, 10)
-            _, bit_offset = _read_bits(record, bit_offset, 2)
+            value, bit_offset = _read_bits(record, bit_offset, 10)
+            # RaiderIO stores the main's historical score in tens.
+            main_previous_score = value * 10
+            season, bit_offset = _read_bits(record, bit_offset, 2)
+            if main_previous_score > 0:
+                main_previous_score_season = season
         elif field == 13:
-            _, bit_offset = _read_bits(record, bit_offset, 13)
-            _, bit_offset = _read_bits(record, bit_offset, 2)
+            warband_previous_score, bit_offset = _read_bits(record, bit_offset, 13)
+            season, bit_offset = _read_bits(record, bit_offset, 2)
+            if warband_previous_score > 0:
+                warband_previous_score_season = season
         elif field == 9:
             if meta.keystone_milestone_levels is None:
                 raise ValueError("RaiderIO M+ milestone metadata missing")
@@ -1309,7 +1338,15 @@ def _decode_profile(
         elif field == 14:
             _, bit_offset = _read_dungeon_rows(record, bit_offset, dungeon_names)
     return RaiderIOLocalProfile(
-        current_score=current_score, dungeons=dungeon_rows, raid_progress={}
+        current_score=current_score,
+        dungeons=dungeon_rows,
+        raid_progress={},
+        previous_score=previous_score,
+        previous_score_season=previous_score_season,
+        main_previous_score=main_previous_score,
+        main_previous_score_season=main_previous_score_season,
+        warband_previous_score=warband_previous_score,
+        warband_previous_score_season=warband_previous_score_season,
     )
 
 

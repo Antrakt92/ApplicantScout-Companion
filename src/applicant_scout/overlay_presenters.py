@@ -37,6 +37,44 @@ def rio_display_text(applicant: Applicant) -> str:
     return str(applicant.score) if applicant.score else "—"
 
 
+def _rio_history_values(applicant: Applicant) -> list[tuple[str, int, int]]:
+    histories = (
+        ("character", applicant.rio_previous_score, applicant.rio_previous_season),
+        ("main", applicant.rio_main_previous_score, applicant.rio_main_previous_season),
+        ("warband", applicant.rio_warband_previous_score, applicant.rio_warband_previous_season),
+    )
+    return [
+        (owner, score, season)
+        for owner, score, season in histories
+        if isinstance(score, int) and not isinstance(score, bool) and score > 0
+        and isinstance(season, int) and not isinstance(season, bool) and 0 <= season <= 3
+    ]
+
+
+def rio_history_text(applicant: Applicant, *, source: str | None = None) -> str:
+    parts = []
+    for owner, score, season in _rio_history_values(applicant):
+        if source is not None and source != owner:
+            continue
+        prefix = "" if owner == "character" else f"{owner} "
+        parts.append(f"{prefix}past S{season + 1} ~{score}")
+    return " · ".join(parts)
+
+
+def rio_table_text(applicant: Applicant) -> str:
+    lines = [rio_display_text(applicant)]
+    histories = [
+        (score, owner == "warband", season)
+        for owner, score, season in _rio_history_values(applicant)
+    ]
+    if histories:
+        # Keep the winning score's season; Warband wins equal-score ties.
+        score, _, season = max(histories)
+        if score >= applicant.score:
+            lines.append(f"S{season + 1} {score}")
+    return "\n".join(lines)
+
+
 def rio_panel_text(applicant: Applicant) -> str:
     if applicant.main_score > applicant.score and applicant.score:
         return f"RIO {applicant.score} · main {applicant.main_score}"

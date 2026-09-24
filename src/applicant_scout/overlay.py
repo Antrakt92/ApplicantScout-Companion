@@ -1966,6 +1966,28 @@ class ApplicantInfoPanel(QFrame):
             identity_layout.addWidget(label)
         outer.addWidget(identity)
 
+        self._rio_history_row = QWidget(self)
+        history_layout = _BadgeFlowLayout(self._rio_history_row)
+        history_layout.setContentsMargins(0, 0, 0, 0)
+        history_layout.setSpacing(4)
+        self._rio_history_label = QLabel("")
+        self._rio_main_history_label = QLabel("")
+        self._rio_warband_history_label = QLabel("")
+        for label in (
+            self._rio_history_label,
+            self._rio_main_history_label,
+            self._rio_warband_history_label,
+        ):
+            label.setObjectName("infoRioHistory")
+            label.setStyleSheet(
+                "color: #f2d08a; background-color: #29251b; "
+                "border: 1px solid #57482d; border-radius: 3px; "
+                "padding: 2px 5px; font-weight: bold;"
+            )
+            history_layout.addWidget(label)
+        self._rio_history_row.hide()
+        outer.addWidget(self._rio_history_row)
+
         metrics = QWidget(self)
         metrics_layout = _BadgeFlowLayout(metrics)
         metrics_layout.setContentsMargins(0, 0, 0, 0)
@@ -2205,11 +2227,15 @@ class ApplicantInfoPanel(QFrame):
             self._role_label,
             self._ilvl_label,
             self._rio_label,
+            self._rio_history_label,
+            self._rio_main_history_label,
+            self._rio_warband_history_label,
         ):
             label.setText("")
             label.setVisible(False)
         self._set_action_visible(self._unpin_button, False)
         self._set_action_visible(self._wcl_retry_button, False)
+        self._rio_history_row.hide()
         for label in self._metric_labels.values():
             label.setText("")
             label.setToolTip("")
@@ -2267,8 +2293,9 @@ class ApplicantInfoPanel(QFrame):
         self._ilvl_label.setText(f"ilvl {applicant.ilvl}" if applicant.ilvl else "")
         self._ilvl_label.setVisible(bool(applicant.ilvl))
         rio_score = effective_rio_score(applicant)
-        if rio_score:
-            self._rio_label.setText(_presenters.rio_panel_text(applicant))
+        current_text = _presenters.rio_panel_text(applicant)
+        if current_text:
+            self._rio_label.setText(current_text)
             self._rio_label.setStyleSheet(
                 f"color: {rio_score_colour(rio_score)}; font-weight: bold;"
             )
@@ -2276,6 +2303,23 @@ class ApplicantInfoPanel(QFrame):
         else:
             self._rio_label.setText("")
             self._rio_label.setVisible(False)
+        has_rio_label = bool(current_text)
+        has_history = False
+        for label, source in (
+            (self._rio_history_label, "character"),
+            (self._rio_main_history_label, "main"),
+            (self._rio_warband_history_label, "warband"),
+        ):
+            history_text = _presenters.rio_history_text(applicant, source=source)
+            if history_text:
+                label.setText(history_text if has_rio_label else f"RIO {history_text}")
+                label.setVisible(True)
+                has_rio_label = True
+                has_history = True
+            else:
+                label.setText("")
+                label.setVisible(False)
+        self._rio_history_row.setVisible(has_history)
 
     def _set_package(
         self,
@@ -5140,9 +5184,15 @@ class OverlayWindow(QMainWindow):
             )
             header = self._table.horizontalHeader()
             header_height = header.height() if header is not None else 28
-            one_row = header_height + APPLICANT_ROW_HEIGHT + 2
+            visible_heights = [
+                self._table.rowHeight(row) for row in range(self._table.rowCount())
+                if not self._table.isRowHidden(row)
+            ]
+            first_height = visible_heights[0] if visible_heights else APPLICANT_ROW_HEIGHT
+            second_height = visible_heights[1] if len(visible_heights) > 1 else APPLICANT_ROW_HEIGHT
+            one_row = header_height + first_height + 2
             self._table.setMinimumHeight(one_row)
-            table_reserve = header_height + APPLICANT_ROW_HEIGHT * 2 + 2
+            table_reserve = header_height + first_height + second_height + 2
             screen = self.screen()
             available = screen.availableGeometry() if screen is not None else self.geometry()
 
@@ -5612,7 +5662,7 @@ class OverlayWindow(QMainWindow):
         self._table.setItem(row, COL_ILVL, ilvl_item)
 
         rio_score = effective_rio_score(applicant)
-        rio_item = QTableWidgetItem(_rio_display_text(applicant))
+        rio_item = QTableWidgetItem(_presenters.rio_table_text(applicant))
         rio_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         rio_item.setFont(
             _metric_cell_font(rio_item.font(), bold=True)
@@ -5621,7 +5671,11 @@ class OverlayWindow(QMainWindow):
         # RaiderIO addon's score-tier visual language, mirrors raid percentile
         # cell palette so eye-tracking across columns reads consistently.
         rio_item.setForeground(QColor(rio_score_colour(rio_score)))
+        history_text = _presenters.rio_history_text(applicant)
+        if history_text:
+            rio_item.setToolTip(f"Raider.IO · {history_text}")
         self._table.setItem(row, COL_RIO, rio_item)
+        self._table.setRowHeight(row, self._rio_cell_height(rio_item))
 
         raw_aid, _ = _split_composite(applicant.applicant_id)
         listing = self._effective_listing()
@@ -6003,6 +6057,13 @@ class OverlayWindow(QMainWindow):
             self._table.setColumnWidth(COL_NAME, target)
             self._apply_metric_minimum_width()
 
+    @staticmethod
+    def _rio_cell_height(item: QTableWidgetItem) -> int:
+        lines = item.text().count("\n") + 1
+        if lines == 1:
+            return APPLICANT_ROW_HEIGHT
+        return max(APPLICANT_ROW_HEIGHT, QFontMetrics(item.font()).lineSpacing() * lines + 8)
+
     def _auto_size_metric_columns(self) -> None:
         """Measure intrinsic columns once per data/layout change, never from stretch."""
         self._column_remeasure_pending = False
@@ -6018,6 +6079,10 @@ class OverlayWindow(QMainWindow):
             self._metric_column_widths_dirty = True
         if not self._metric_column_widths_dirty:
             return
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, COL_RIO)
+            if item is not None:
+                self._table.setRowHeight(row, self._rio_cell_height(item))
         required_width = 0
         for col in range(self._table.columnCount()):
             if self._table.isColumnHidden(col):
@@ -6095,13 +6160,15 @@ class OverlayWindow(QMainWindow):
                 continue
             if not text:
                 continue
-            text_width = QFontMetrics(item.font()).horizontalAdvance(text) + METRIC_COLUMN_TEXT_PADDING
+            metrics = QFontMetrics(item.font())
+            lines = text.split("\n") if col == COL_RIO else [text]
+            text_width = max(metrics.horizontalAdvance(line) for line in lines) + METRIC_COLUMN_TEXT_PADDING
             if col == COL_NAME:
                 text_width = min(NAME_COLUMN_MAX_WIDTH, text_width)
             elif col == COL_SPEC and not item.icon().isNull():
                 text_width += self._table.iconSize().width() + 4
-            elif col == COL_RIO:
-                # Main-character context may elide; it must not widen the whole overlay.
+            elif col == COL_RIO and "\n" not in text:
+                # Preserve the compact current-score width when history is absent.
                 text_width = min(text_width, QFontMetrics(item.font()).horizontalAdvance("9999 [9999]") + METRIC_COLUMN_TEXT_PADDING)
             width = max(width, text_width)
         return width

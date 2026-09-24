@@ -116,8 +116,10 @@ with the installed Retail client. From the addon checkout run:
 .\scripts\check-retail-client-interface.ps1 -WowExecutablePath '<path-to-Wow.exe>'
 ```
 
-The check requires one exact Interface value and a matching README compatibility
-line. Resolve any mismatch against the installed client before creating tags.
+The check requires a valid, duplicate-free Interface list containing the installed
+client's exact Interface and matching README compatibility lines. Every additional
+supported client, including PTR, needs its own verified build/Interface evidence;
+do not add future values by guessing. Resolve mismatches before creating tags.
 
 Before creating or pushing release tags, enable **Release immutability** under
 the companion repository's release settings. Configure the repository secret

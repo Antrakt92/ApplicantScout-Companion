@@ -910,6 +910,32 @@ def test_explicit_nonexistent_screenshots_override_returns_path(tmp_path: Path):
     assert not explicit.exists()
 
 
+@pytest.mark.parametrize("client_name", ["_ptr_", "_xptr_"])
+def test_explicit_ptr_screenshots_uses_selected_client(
+    tmp_path: Path, client_name: str,
+):
+    client_root = tmp_path / "World of Warcraft" / client_name
+    (client_root / "Interface" / "AddOns").mkdir(parents=True)
+    selected = client_root / "Screenshots"
+
+    assert resolve_screenshots_path(_cfg(tmp_path, screenshots_path=selected)) == selected
+    assert screenshots_path_health_warning(selected) is None
+    assert not selected.exists()
+
+
+@pytest.mark.parametrize("client_name", ["_ptr_", "_xptr_"])
+def test_ptr_chatlog_infers_same_client_screenshots_from_wowt_marker(
+    tmp_path: Path, client_name: str,
+):
+    client_root = tmp_path / "World of Warcraft" / client_name
+    (client_root / "WowT.exe").parent.mkdir(parents=True)
+    (client_root / "WowT.exe").touch()
+
+    assert resolve_screenshots_path(
+        _cfg(tmp_path, chatlog_path=client_root / "Logs" / "WoWChatLog.txt")
+    ) == client_root / "Screenshots"
+
+
 def test_explicit_suspicious_screenshots_override_raises_without_creating_path(
     tmp_path: Path,
 ):
@@ -2817,10 +2843,10 @@ def test_load_config_missing_credentials_returns_incomplete_config(
     assert not (tmp_path / ".env").exists()
 
 
-def test_malformed_legacy_path_outside_retail_logs_raises(tmp_path: Path):
+def test_malformed_legacy_path_outside_client_logs_raises(tmp_path: Path):
     chatlog = tmp_path / "Logs" / "WoWChatLog.txt"
 
-    with pytest.raises(ConfigError, match="not under a _retail_ folder"):
+    with pytest.raises(ConfigError, match="not under a supported WoW client folder"):
         resolve_screenshots_path(_cfg(tmp_path, chatlog_path=chatlog))
 
 
@@ -4319,11 +4345,12 @@ def test_load_startup_config_routes_disconnected_storage_through_bounded_probe(
     assert calls == [f"probe:{screenshots}", "warning", "settings"]
 
 
+@pytest.mark.parametrize("client_name", ["_retail_", "_ptr_"])
 def test_load_startup_config_repairs_moved_wow_without_rewriting_other_settings(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, client_name: str,
 ):
-    old = tmp_path / "old" / "World of Warcraft" / "_retail_" / "Screenshots"
-    new = tmp_path / "new" / "World of Warcraft" / "_retail_" / "Screenshots"
+    old = tmp_path / "old" / "World of Warcraft" / client_name / "Screenshots"
+    new = tmp_path / "new" / "World of Warcraft" / client_name / "Screenshots"
     cfg = _cfg(tmp_path, screenshots_path=old)
     assert cfg.config_path is not None
     cfg.config_path.parent.mkdir()
@@ -4337,7 +4364,7 @@ def test_load_startup_config_repairs_moved_wow_without_rewriting_other_settings(
     monkeypatch.setattr(
         main_mod, "run_bounded_screenshots_path_probe",
         lambda path: None if path == new else (
-            "Screenshots folder warning: _retail_ folder does not exist."
+            f"Screenshots folder warning: {client_name} folder does not exist."
         ),
     )
     monkeypatch.setattr(
@@ -4353,6 +4380,23 @@ def test_load_startup_config_repairs_moved_wow_without_rewriting_other_settings(
     assert cfg.config_path.read_text(encoding="utf-8") == (
         original + f"APSCOUT_SCREENSHOTS_PATH={json.dumps(str(new))}\n"
     )
+
+
+def test_load_startup_config_preserves_valid_selected_retail_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    retail = _retail_root(tmp_path) / "Screenshots"
+    cfg = _cfg(tmp_path, screenshots_path=retail)
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        main_mod, "run_bounded_screenshots_path_probe", lambda _path: None,
+    )
+    monkeypatch.setattr(
+        main_mod, "run_bounded_discovery",
+        lambda _path: pytest.fail("A valid selected client must not be rediscovered"),
+    )
+
+    assert main_mod._load_startup_config() == (cfg, retail, False)
 
 
 def test_load_startup_config_prompts_for_saved_suspicious_screenshots_override(
@@ -9644,18 +9688,21 @@ def test_screenshot_runtime_keeps_new_reader_when_old_watcher_stop_fails(
     assert stops == ["old"]
 
 
-def test_raiderio_reader_for_screenshots_path_passes_cache_dir(
+@pytest.mark.parametrize("client_name", ["_retail_", "_ptr_", "_xptr_"])
+def test_raiderio_reader_for_screenshots_path_passes_selected_client_root_and_cache_dir(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    client_name: str,
 ):
-    screenshots_dir = _retail_root(tmp_path) / "Screenshots"
+    client_root = tmp_path / "World of Warcraft" / client_name
+    screenshots_dir = client_root / "Screenshots"
     screenshots_dir.mkdir(parents=True)
     cache_dir = tmp_path / "cache"
     seen: list[tuple[Path, Path | None]] = []
 
     class FakeReader:
-        def __init__(self, retail_root: Path, *, cache_dir: Path | None = None):
-            seen.append((retail_root, cache_dir))
+        def __init__(self, root: Path, *, cache_dir: Path | None = None):
+            seen.append((root, cache_dir))
 
     monkeypatch.setattr(main_mod, "RaiderIOLocalReader", FakeReader)
 
@@ -9665,7 +9712,13 @@ def test_raiderio_reader_for_screenshots_path_passes_cache_dir(
     )
 
     assert isinstance(reader, FakeReader)
-    assert seen == [(_retail_root(tmp_path), cache_dir)]
+    assert seen == [(client_root, cache_dir)]
+
+
+def test_raiderio_reader_rejects_nested_screenshots_path(tmp_path: Path):
+    nested = _retail_root(tmp_path) / "Interface" / "AddOns" / "Screenshots"
+
+    assert main_mod._raiderio_reader_for_screenshots_path(nested) is None
 
 
 def test_settings_saved_status_preserves_screenshots_path_warning():

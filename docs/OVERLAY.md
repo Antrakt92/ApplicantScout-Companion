@@ -61,7 +61,17 @@ addon is installed in WoW and exposes a higher current-season main score for an
 alt, the overlay can display `current [main]` and use the stronger context for
 sorting fallback support. RaiderIO dungeon summaries and highest timed keys
 also feed the M+ scorecard and hover/detail context when local RaiderIO data is
-available.
+available. When that local database has a past-season score, the RIO cell
+tooltip and player detail show its season and approximate score. A main's
+past-season score is labelled `main`; warband history is labelled `warband`.
+The RIO column shows the highest available past-season character, main or warband score
+with its season beneath the current score, hiding it when it is lower than
+the applying character's current score and keeping
+each row to at most two lines, for example `3064 [3568]` above `S1 4024`.
+The detail card also shows
+separate history badges. Missing values are omitted
+from both views; historical scores do not change Fit or
+sorting.
 
 Party view can use the current group leader's keystone as the automatic Mythic+
 target key. A manual Party key override still takes priority, raid contexts

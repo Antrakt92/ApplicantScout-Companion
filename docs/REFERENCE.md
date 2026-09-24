@@ -130,8 +130,10 @@ APSCOUT_FETCH_RAID_MYTHIC=1
 APSCOUT_SYNC_WITH_WOW=1
 ```
 
-`APSCOUT_SCREENSHOTS_PATH` must point at the active WoW retail
-`_retail_\Screenshots` folder. `APSCOUT_FETCH_*` flags match the WCL data
+`APSCOUT_SCREENSHOTS_PATH` must point at the selected WoW client's
+`_retail_\Screenshots`, `_ptr_\Screenshots` or `_xptr_\Screenshots` folder.
+Only one client is watched at a time; local RaiderIO data comes from that client.
+`APSCOUT_FETCH_*` flags match the WCL data
 checkboxes from Settings. Disabled metrics are not included in Warcraft Logs
 API requests.
 

@@ -335,6 +335,8 @@ def _valid_wcl_season_payload() -> dict[str, Any]:
         for _alias, encounter_id, name in CURRENT_RAID_ENCOUNTERS
     ]
     assert raid_rows[-1][0] == 3379
+    # WCL publishes 12.1.5 PTR metadata before the encounter is live in 12.1.0.
+    raid_rows.append((3513, "Kith'ix"))
     return {
         "data": {
             "rateLimitData": {
@@ -376,7 +378,7 @@ def test_wcl_season_query_requests_quota_and_each_zone_once():
         assert query.count(f"zone_{zone_id}: zone(id: {zone_id})") == 1
 
 
-def test_wcl_season_payload_matches_current_constants():
+def test_wcl_season_payload_matches_current_constants_with_known_ptr_encounter():
     zone_ids = verify_wcl_season.seasonal_zone_ids()
 
     zones, quota = verify_wcl_season.extract_payload(
@@ -386,6 +388,51 @@ def test_wcl_season_payload_matches_current_constants():
     verify_wcl_season.require_quota_floor(quota, 50.0)
 
     assert quota.remaining_points == pytest.approx(3574.5)
+
+
+def test_wcl_season_payload_rejects_renamed_ptr_encounter():
+    payload = _valid_wcl_season_payload()
+    encounters = payload["data"]["worldData"][f"zone_{CURRENT_RAID_ZONE_ID}"]["encounters"]
+    encounters[-1]["name"] = "Kithix"
+
+    zones, _quota = verify_wcl_season.extract_payload(
+        payload, verify_wcl_season.seasonal_zone_ids()
+    )
+    with pytest.raises(
+        verify_wcl_season.SeasonalWCLVerificationError,
+        match="Raid encounter constants are stale",
+    ):
+        verify_wcl_season.validate_current_constants(zones)
+
+
+def test_wcl_season_payload_rejects_unrecognized_raid_encounter():
+    payload = _valid_wcl_season_payload()
+    encounters = payload["data"]["worldData"][f"zone_{CURRENT_RAID_ZONE_ID}"]["encounters"]
+    encounters.append({"id": 99999, "name": "Unannounced Boss"})
+
+    zones, _quota = verify_wcl_season.extract_payload(
+        payload, verify_wcl_season.seasonal_zone_ids()
+    )
+    with pytest.raises(
+        verify_wcl_season.SeasonalWCLVerificationError,
+        match="Raid encounter constants are stale",
+    ):
+        verify_wcl_season.validate_current_constants(zones)
+
+
+def test_wcl_season_payload_rejects_missing_current_raid_encounter():
+    payload = _valid_wcl_season_payload()
+    encounters = payload["data"]["worldData"][f"zone_{CURRENT_RAID_ZONE_ID}"]["encounters"]
+    encounters.pop(0)
+
+    zones, _quota = verify_wcl_season.extract_payload(
+        payload, verify_wcl_season.seasonal_zone_ids()
+    )
+    with pytest.raises(
+        verify_wcl_season.SeasonalWCLVerificationError,
+        match="Raid encounter constants are stale",
+    ):
+        verify_wcl_season.validate_current_constants(zones)
 
 
 def test_wcl_season_payload_rejects_stale_encounter_name():
