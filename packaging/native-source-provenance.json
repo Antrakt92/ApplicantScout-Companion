@@ -221,8 +221,8 @@
       "version": "13.12.0",
       "binaries": [
         {
-          "path": "PyQt6/sip.cp313-win_amd64.pyd",
-          "sha256": "0bd49319478525c63082c324e92ade3c9f3e83fdd458f2d610988e3b75109ccf"
+          "path": "PyQt6/sip.cp314-win_amd64.pyd",
+          "sha256": "d7d00826059baca83cc6320461a3a3800d6897c90eac88117e71e8500df60674"
         }
       ],
       "sources": [
