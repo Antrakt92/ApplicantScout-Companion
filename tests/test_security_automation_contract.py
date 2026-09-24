@@ -51,16 +51,13 @@ def test_dependabot_covers_python_and_github_actions_on_a_bounded_schedule():
     assert config.count('interval: "weekly"') == 2
     assert config.count("open-pull-requests-limit: 1") == 1
     assert config.count("open-pull-requests-limit: 2") == 1
-    assert config.count("default-days: 14") == 2
+    assert "cooldown:" not in config
     assert "python-dependencies:" in config
     assert "codeql-actions:" in config
     assert '          - "github/codeql-action/*"' in config
     assert "workflow-actions:" in config
     assert config.index("codeql-actions:") < config.index("workflow-actions:")
     assert config.count('          - "*"') == 2
-    actions_config = config.split('package-ecosystem: "github-actions"', 1)[1]
-    cooldown = actions_config.split("    cooldown:\n", 1)[1].split("    groups:", 1)[0]
-    assert "exclude:" not in cooldown, "All actions must observe the release cooldown"
 
 
 def test_security_policy_documents_python_and_lua_coverage_boundary():
