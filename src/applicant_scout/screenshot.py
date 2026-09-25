@@ -40,6 +40,7 @@ import zlib
 from collections.abc import Callable, Iterator
 from collections import deque
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -2451,6 +2452,52 @@ class _SnapshotFragmentAssembler:
             )
 
 
+class BacklogAction(Enum):
+    """Decision for one backlog candidate: skip it or decode its generation."""
+
+    SKIP = "skip"
+    PROCEED = "proceed"
+
+
+@dataclass
+class BacklogScanCtx:
+    """Mutable per-phase state for the backlog scan.
+
+    Carries the phase inputs (retry fairness, apply window) together with the
+    running accumulators, so the classify/handle helpers stay pure moves of
+    the original phase body without changing authority semantics.
+    """
+
+    recent: bool
+    retry_window_active: bool
+    selected_deferred_keys: set[_ScreenshotWorkKey]
+    snapshot_apply_cutoff_ns: int | None
+    remaining: int = 0
+    apply_closed: bool = False
+    authority_blocked: bool = False
+    deleted: int = 0
+    fragment_frontier_active: bool = False
+    incomplete_scans: int = 0
+    deferred_failure: tuple[Path, str, SnapshotSource] | None = None
+
+
+@dataclass
+class GenerationOutcome:
+    """What the orchestrator must do after one decoded generation.
+
+    ``terminate`` returns from the phase immediately (the claim is already
+    released by the orchestrator's finally block); ``stop_scan`` finishes
+    this iteration's post-processing first, then returns. Either way the
+    phase reports stop_scan=True to its caller. ``retry_owned_generation``
+    re-arms one preserved generation for the coalesced rescan that follows
+    barrier resolution.
+    """
+
+    terminate: bool = False
+    stop_scan: bool = False
+    retry_owned_generation: _ScreenshotWorkKey | None = None
+
+
 class ScreenshotWatcher(QObject):
     """Watches Screenshots/ folder via watchdog Observer. On each new JPG/TGA:
     waits for write to complete, decodes QR, emits snapshotReceived(Snapshot)
@@ -2986,6 +3033,273 @@ class ScreenshotWatcher(QObject):
         finally:
             self._manual_index.flush()
 
+    def _classify_backlog_candidate(
+        self,
+        path: Path,
+        claim: _ScreenshotWorkClaim | None,
+        ctx: BacklogScanCtx,
+    ) -> BacklogAction:
+        """Decide whether one backlog candidate is decoded or skipped.
+
+        Pre-claim gate (``claim is None``): unstable recent files are never
+        claimed, so a file that is still being written stays available to
+        later passes and the live observer. Post-claim gates: manual
+        fingerprints and the deferred retry window. The retry-window skip
+        preserves snapshot authority by marking ``ctx.authority_blocked``.
+        Consumes no scan budget; the orchestrator decrements ``ctx.remaining``
+        only on PROCEED.
+        """
+        if claim is None:
+            if ctx.recent and not _wait_for_stable_size(path):
+                _log.info(
+                    "backlog: skipping unstable recent screenshot %s",
+                    path.name,
+                )
+                return BacklogAction.SKIP
+            return BacklogAction.PROCEED
+        if self._manual_index.contains(claim.key):
+            return BacklogAction.SKIP
+        if ctx.retry_window_active and claim.key not in ctx.selected_deferred_keys:
+            # Retry fairness must never change snapshot authority. A
+            # skipped newer generation remains unresolved, so preserve
+            # every older owned screenshot until a rotated pass classifies it.
+            ctx.authority_blocked = True
+            return BacklogAction.SKIP
+        return BacklogAction.PROCEED
+
+    def _handle_decoded_generation(
+        self,
+        claim: _ScreenshotWorkClaim,
+        decoded_key: _ScreenshotWorkKey,
+        result: DecodeResult,
+        decode_succeeded: bool,
+        ctx: BacklogScanCtx,
+    ) -> GenerationOutcome:
+        """Apply one decoded backlog generation; pure move of the phase body.
+
+        ``decoded_key`` is the pre-decode generation (the decode retry loop
+        may refresh ``claim`` past it) and ``decode_succeeded`` records
+        whether any decode attempt ran the real decoder; both are required to
+        preserve generation-fairness semantics. Mutates only ``ctx``
+        accumulators (apply/authority/fragment/deferred state). Never consumes
+        scan budget and never releases the claim; the orchestrator owns
+        ``remaining``, claim release, retry re-arm, and phase returns.
+        """
+        outcome = GenerationOutcome()
+        path = claim.path
+        generation_current = self._finalize_decode_result(
+            claim,
+            decoded_key,
+            result,
+            decode_succeeded=decode_succeeded,
+            flush=False,
+        )
+        source = self._source_from_stat(path, claim.stat_result)
+        delete_current_marker = result.fragment is None
+        if not generation_current:
+            pass
+        elif result.decoder_unavailable:
+            if (
+                ctx.recent
+                and not ctx.apply_closed
+                and not ctx.authority_blocked
+                and not ctx.fragment_frontier_active
+            ):
+                if not self._emit_decode_failed(
+                    path,
+                    result.error_reason or "QR decoder unavailable",
+                    source,
+                ):
+                    outcome.terminate = True
+                    return outcome
+                ctx.apply_closed = True
+            outcome.stop_scan = True
+        elif result.scan_incomplete:
+            # A native/image exception does not establish ownership.
+            # Persist a separate deferred fingerprint (not a manual
+            # classification) so later starts advance through the
+            # backlog. Bound new failures per pass to avoid minutes of
+            # retry waits when the decoder itself is unavailable.
+            self._manual_index.note_deferred(decoded_key, flush=False)
+            if ctx.recent:
+                # A current listing discovered during startup should not
+                # require a companion restart after a transient decoder
+                # failure. Historical cleanup stays restart-bounded.
+                self._schedule_incomplete_scan_retry(path, source)
+            ctx.incomplete_scans += 1
+            ctx.authority_blocked = True
+            outcome.stop_scan = (
+                ctx.incomplete_scans >= _BACKLOG_INCOMPLETE_SCAN_LIMIT
+            )
+        elif result.error_reason is not None and not result.has_marker:
+            if (
+                ctx.recent
+                and not ctx.apply_closed
+                and not ctx.authority_blocked
+                and not ctx.fragment_frontier_active
+            ):
+                if not self._emit_decode_failed(
+                    path,
+                    result.error_reason,
+                    source,
+                ):
+                    outcome.terminate = True
+                    return outcome
+                ctx.apply_closed = True
+        elif result.fragment is not None:
+            if ctx.authority_blocked:
+                delete_current_marker = False
+            elif not ctx.recent or ctx.apply_closed:
+                delete_current_marker = True
+            else:
+                fragment_outcome = self._fragment_assembler.accept_fragment(
+                    self._fragment_with_source(result.fragment, source),
+                    path,
+                    now=self._fragment_clock(),
+                )
+                if fragment_outcome.error_reason is not None:
+                    ctx.fragment_frontier_active = False
+                    self._cancel_fragment_expiry()
+                    if not self._emit_decode_failed(
+                        path,
+                        fragment_outcome.error_reason,
+                        source,
+                    ):
+                        outcome.terminate = True
+                        return outcome
+                    ctx.deleted += self._delete_retired_fragment_files(
+                        fragment_outcome.retired_files
+                    )
+                    ctx.apply_closed = True
+                elif fragment_outcome.snapshot is not None:
+                    ctx.fragment_frontier_active = False
+                    self._cancel_fragment_expiry()
+                    assembled_source = fragment_outcome.snapshot.source
+                    is_fresh = (
+                        ctx.snapshot_apply_cutoff_ns is not None
+                        and assembled_source is not None
+                        and assembled_source.mtime_ns
+                        >= ctx.snapshot_apply_cutoff_ns
+                    )
+                    if is_fresh:
+                        if not self._emit_snapshot(fragment_outcome.snapshot):
+                            outcome.terminate = True
+                            return outcome
+                        ctx.deleted += self._delete_retired_fragment_files(
+                            fragment_outcome.retired_files
+                        )
+                        _log.info(
+                            "backlog: applied assembled snapshot ending at %s",
+                            path.name,
+                        )
+                        ctx.apply_closed = True
+                    else:
+                        ctx.deleted += self._delete_retired_fragment_files(
+                            fragment_outcome.retired_files
+                        )
+                else:
+                    ctx.deleted += self._delete_retired_fragment_files(
+                        fragment_outcome.retired_files
+                    )
+                    if fragment_outcome.accepted:
+                        ctx.fragment_frontier_active = True
+                        self._arm_fragment_expiry(result.fragment)
+        elif result.snapshot is not None:
+            if (
+                ctx.deferred_failure is None
+                and not ctx.fragment_frontier_active
+                and not ctx.authority_blocked
+            ):
+                whole = self._snapshot_with_source(result.snapshot, source)
+                snapshot_outcome = self._fragment_assembler.accept_snapshot(
+                    whole,
+                    now=self._fragment_clock(),
+                )
+                if snapshot_outcome.accepted:
+                    self._cancel_fragment_expiry()
+                ctx.deleted += self._delete_retired_fragment_files(
+                    snapshot_outcome.retired_files
+                )
+                is_fresh = (
+                    ctx.recent
+                    and ctx.snapshot_apply_cutoff_ns is not None
+                    and source.mtime_ns >= ctx.snapshot_apply_cutoff_ns
+                )
+                if (
+                    snapshot_outcome.accepted
+                    and is_fresh
+                    and not ctx.apply_closed
+                ):
+                    if not self._emit_snapshot(whole):
+                        outcome.terminate = True
+                        return outcome
+                    _log.info("backlog: applied snapshot from %s", path.name)
+                    ctx.apply_closed = True
+        elif (
+            result.has_marker
+            and ctx.recent
+            and not ctx.apply_closed
+            and not ctx.authority_blocked
+            and not ctx.fragment_frontier_active
+        ):
+            if result.fragment_candidate:
+                if ctx.deferred_failure is None:
+                    ctx.deferred_failure = (
+                        path,
+                        result.error_reason or "parse failed",
+                        source,
+                    )
+                _log.warning(
+                    "backlog: newest recent ApScout v10 screenshot %s is "
+                    "invalid; deferring failure while checking fragment retries",
+                    path.name,
+                )
+            else:
+                if not self._emit_decode_failed(
+                    path,
+                    result.error_reason or "parse failed",
+                    source,
+                ):
+                    outcome.terminate = True
+                    return outcome
+                ctx.apply_closed = True
+        if (
+            generation_current
+            and result.has_marker
+            and delete_current_marker
+            and not ctx.authority_blocked
+            and (ctx.apply_closed or not ctx.fragment_frontier_active)
+        ):
+            if self._stopped.is_set():
+                outcome.terminate = True
+                return outcome
+            try:
+                if _unlink_if_source_matches(path, source):
+                    ctx.deleted += 1
+                else:
+                    _log.info(
+                        "backlog preserved replacement screenshot: %s",
+                        path.name,
+                    )
+            except OSError as exc:
+                _log.warning(
+                    "backlog could not delete %s: %s",
+                    path.name,
+                    exc,
+                )
+        if (
+            generation_current
+            and ctx.authority_blocked
+            and not result.scan_incomplete
+            and (result.has_marker or result.transport_suspected)
+        ):
+            # This owned generation was intentionally preserved behind
+            # a newer unresolved authority barrier. It must not enter
+            # the recent-work dedupe cache, or the coalesced rescan that
+            # follows barrier resolution cannot apply it in-process.
+            outcome.retry_owned_generation = decoded_key
+        return outcome
+
     def _scan_backlog_phase(
         self,
         candidates: list[tuple[Path, os.stat_result]],
@@ -2998,18 +3312,30 @@ class ScreenshotWatcher(QObject):
         selected_deferred_keys: set[_ScreenshotWorkKey],
         snapshot_apply_cutoff_ns: int | None,
     ) -> tuple[int, bool, bool, int, bool]:
-        deleted = 0
-        fragment_frontier_active = False
-        incomplete_scans = 0
-        deferred_failure: tuple[Path, str, SnapshotSource] | None = None
+        """Iterate one backlog phase; iteration/limits orchestration only.
+
+        Classification (stable/manual/retry-window gates) lives in
+        ``_classify_backlog_candidate`` and per-generation application in
+        ``_handle_decoded_generation``. This method owns the loop, the scan
+        budget (``ctx.remaining``), claim lifetimes, retry re-arm, and phase
+        returns. Authority/retry-fairness semantics are unchanged.
+        """
+        ctx = BacklogScanCtx(
+            recent=recent,
+            retry_window_active=retry_window_active,
+            selected_deferred_keys=selected_deferred_keys,
+            snapshot_apply_cutoff_ns=snapshot_apply_cutoff_ns,
+            remaining=remaining,
+            apply_closed=apply_closed,
+            authority_blocked=authority_blocked,
+        )
         for path, _candidate_stat in candidates:
-            if self._stopped.is_set() or remaining <= 0:
+            if self._stopped.is_set() or ctx.remaining <= 0:
                 break
-            if recent and not _wait_for_stable_size(path):
-                _log.info(
-                    "backlog: skipping unstable recent screenshot %s",
-                    path.name,
-                )
+            if (
+                self._classify_backlog_candidate(path, None, ctx)
+                is BacklogAction.SKIP
+            ):
                 continue
             claim = self._work_claims.try_claim(path)
             if claim is None:
@@ -3017,258 +3343,50 @@ class ScreenshotWatcher(QObject):
             stop_scan = False
             retry_owned_generation: _ScreenshotWorkKey | None = None
             try:
-                if self._manual_index.contains(claim.key):
+                if (
+                    self._classify_backlog_candidate(path, claim, ctx)
+                    is BacklogAction.SKIP
+                ):
                     continue
-                if retry_window_active and claim.key not in selected_deferred_keys:
-                    # Retry fairness must never change snapshot authority. A
-                    # skipped newer generation remains unresolved, so preserve
-                    # every older owned screenshot until a rotated pass classifies it.
-                    authority_blocked = True
-                    continue
-                remaining -= 1
+                ctx.remaining -= 1
                 decoded_key = claim.key
                 decoded = self._decode_claim_generation(path, claim, decoded_key)
                 if decoded is None:
                     if self._stopped.is_set():
-                        return remaining, apply_closed, authority_blocked, deleted, True
+                        return (
+                            ctx.remaining,
+                            ctx.apply_closed,
+                            ctx.authority_blocked,
+                            ctx.deleted,
+                            True,
+                        )
                     continue
                 result, decode_succeeded = decoded
                 if self._stopped.is_set():
-                    return remaining, apply_closed, authority_blocked, deleted, True
-                generation_current = self._finalize_decode_result(
+                    return (
+                        ctx.remaining,
+                        ctx.apply_closed,
+                        ctx.authority_blocked,
+                        ctx.deleted,
+                        True,
+                    )
+                outcome = self._handle_decoded_generation(
                     claim,
                     decoded_key,
                     result,
-                    decode_succeeded=decode_succeeded,
-                    flush=False,
+                    decode_succeeded,
+                    ctx,
                 )
-                source = self._source_from_stat(path, claim.stat_result)
-                delete_current_marker = result.fragment is None
-                if not generation_current:
-                    pass
-                elif result.decoder_unavailable:
-                    if (
-                        recent
-                        and not apply_closed
-                        and not authority_blocked
-                        and not fragment_frontier_active
-                    ):
-                        if not self._emit_decode_failed(
-                            path,
-                            result.error_reason or "QR decoder unavailable",
-                            source,
-                        ):
-                            return (
-                                remaining,
-                                apply_closed,
-                                authority_blocked,
-                                deleted,
-                                True,
-                            )
-                        apply_closed = True
-                    stop_scan = True
-                elif result.scan_incomplete:
-                    # A native/image exception does not establish ownership.
-                    # Persist a separate deferred fingerprint (not a manual
-                    # classification) so later starts advance through the
-                    # backlog. Bound new failures per pass to avoid minutes of
-                    # retry waits when the decoder itself is unavailable.
-                    self._manual_index.note_deferred(decoded_key, flush=False)
-                    if recent:
-                        # A current listing discovered during startup should not
-                        # require a companion restart after a transient decoder
-                        # failure. Historical cleanup stays restart-bounded.
-                        self._schedule_incomplete_scan_retry(path, source)
-                    incomplete_scans += 1
-                    authority_blocked = True
-                    stop_scan = incomplete_scans >= _BACKLOG_INCOMPLETE_SCAN_LIMIT
-                elif result.error_reason is not None and not result.has_marker:
-                    if (
-                        recent
-                        and not apply_closed
-                        and not authority_blocked
-                        and not fragment_frontier_active
-                    ):
-                        if not self._emit_decode_failed(
-                            path,
-                            result.error_reason,
-                            source,
-                        ):
-                            return (
-                                remaining,
-                                apply_closed,
-                                authority_blocked,
-                                deleted,
-                                True,
-                            )
-                        apply_closed = True
-                elif result.fragment is not None:
-                    if authority_blocked:
-                        delete_current_marker = False
-                    elif not recent or apply_closed:
-                        delete_current_marker = True
-                    else:
-                        outcome = self._fragment_assembler.accept_fragment(
-                            self._fragment_with_source(result.fragment, source),
-                            path,
-                            now=self._fragment_clock(),
-                        )
-                        if outcome.error_reason is not None:
-                            fragment_frontier_active = False
-                            self._cancel_fragment_expiry()
-                            if not self._emit_decode_failed(
-                                path,
-                                outcome.error_reason,
-                                source,
-                            ):
-                                return (
-                                    remaining,
-                                    apply_closed,
-                                    authority_blocked,
-                                    deleted,
-                                    True,
-                                )
-                            deleted += self._delete_retired_fragment_files(
-                                outcome.retired_files
-                            )
-                            apply_closed = True
-                        elif outcome.snapshot is not None:
-                            fragment_frontier_active = False
-                            self._cancel_fragment_expiry()
-                            assembled_source = outcome.snapshot.source
-                            is_fresh = (
-                                snapshot_apply_cutoff_ns is not None
-                                and assembled_source is not None
-                                and assembled_source.mtime_ns
-                                >= snapshot_apply_cutoff_ns
-                            )
-                            if is_fresh:
-                                if not self._emit_snapshot(outcome.snapshot):
-                                    return (
-                                        remaining,
-                                        apply_closed,
-                                        authority_blocked,
-                                        deleted,
-                                        True,
-                                    )
-                                deleted += self._delete_retired_fragment_files(
-                                    outcome.retired_files
-                                )
-                                _log.info(
-                                    "backlog: applied assembled snapshot ending at %s",
-                                    path.name,
-                                )
-                                apply_closed = True
-                            else:
-                                deleted += self._delete_retired_fragment_files(
-                                    outcome.retired_files
-                                )
-                        else:
-                            deleted += self._delete_retired_fragment_files(
-                                outcome.retired_files
-                            )
-                            if outcome.accepted:
-                                fragment_frontier_active = True
-                                self._arm_fragment_expiry(result.fragment)
-                elif result.snapshot is not None:
-                    if (
-                        deferred_failure is None
-                        and not fragment_frontier_active
-                        and not authority_blocked
-                    ):
-                        whole = self._snapshot_with_source(result.snapshot, source)
-                        outcome = self._fragment_assembler.accept_snapshot(
-                            whole,
-                            now=self._fragment_clock(),
-                        )
-                        if outcome.accepted:
-                            self._cancel_fragment_expiry()
-                        deleted += self._delete_retired_fragment_files(
-                            outcome.retired_files
-                        )
-                        is_fresh = (
-                            recent
-                            and snapshot_apply_cutoff_ns is not None
-                            and source.mtime_ns >= snapshot_apply_cutoff_ns
-                        )
-                        if outcome.accepted and is_fresh and not apply_closed:
-                            if not self._emit_snapshot(whole):
-                                return (
-                                    remaining,
-                                    apply_closed,
-                                    authority_blocked,
-                                    deleted,
-                                    True,
-                                )
-                            _log.info("backlog: applied snapshot from %s", path.name)
-                            apply_closed = True
-                elif (
-                    result.has_marker
-                    and recent
-                    and not apply_closed
-                    and not authority_blocked
-                    and not fragment_frontier_active
-                ):
-                    if result.fragment_candidate:
-                        if deferred_failure is None:
-                            deferred_failure = (
-                                path,
-                                result.error_reason or "parse failed",
-                                source,
-                            )
-                        _log.warning(
-                            "backlog: newest recent ApScout v10 screenshot %s is "
-                            "invalid; deferring failure while checking fragment retries",
-                            path.name,
-                        )
-                    else:
-                        if not self._emit_decode_failed(
-                            path,
-                            result.error_reason or "parse failed",
-                            source,
-                        ):
-                            return (
-                                remaining,
-                                apply_closed,
-                                authority_blocked,
-                                deleted,
-                                True,
-                            )
-                        apply_closed = True
-                if (
-                    generation_current
-                    and result.has_marker
-                    and delete_current_marker
-                    and not authority_blocked
-                    and (apply_closed or not fragment_frontier_active)
-                ):
-                    if self._stopped.is_set():
-                        return remaining, apply_closed, authority_blocked, deleted, True
-                    try:
-                        if _unlink_if_source_matches(path, source):
-                            deleted += 1
-                        else:
-                            _log.info(
-                                "backlog preserved replacement screenshot: %s",
-                                path.name,
-                            )
-                    except OSError as exc:
-                        _log.warning(
-                            "backlog could not delete %s: %s",
-                            path.name,
-                            exc,
-                        )
-                if (
-                    generation_current
-                    and authority_blocked
-                    and not result.scan_incomplete
-                    and (result.has_marker or result.transport_suspected)
-                ):
-                    # This owned generation was intentionally preserved behind
-                    # a newer unresolved authority barrier. It must not enter
-                    # the recent-work dedupe cache, or the coalesced rescan that
-                    # follows barrier resolution cannot apply it in-process.
-                    retry_owned_generation = decoded_key
+                if outcome.terminate:
+                    return (
+                        ctx.remaining,
+                        ctx.apply_closed,
+                        ctx.authority_blocked,
+                        ctx.deleted,
+                        True,
+                    )
+                stop_scan = outcome.stop_scan
+                retry_owned_generation = outcome.retry_owned_generation
             finally:
                 claim.release()
             if retry_owned_generation is not None:
@@ -3276,20 +3394,38 @@ class ScreenshotWatcher(QObject):
             if claim.retry_requested and not self._stopped.is_set():
                 self._on_new_file(path)
             if stop_scan:
-                return remaining, apply_closed, authority_blocked, deleted, True
+                return (
+                    ctx.remaining,
+                    ctx.apply_closed,
+                    ctx.authority_blocked,
+                    ctx.deleted,
+                    True,
+                )
         if (
-            deferred_failure is not None
-            and not apply_closed
-            and not authority_blocked
+            ctx.deferred_failure is not None
+            and not ctx.apply_closed
+            and not ctx.authority_blocked
             and not self._stopped.is_set()
         ):
-            failed_path, reason, source = deferred_failure
-            if fragment_frontier_active:
+            failed_path, reason, source = ctx.deferred_failure
+            if ctx.fragment_frontier_active:
                 self._note_fragment_degraded_failure()
             if not self._emit_decode_failed(failed_path, reason, source):
-                return remaining, apply_closed, authority_blocked, deleted, True
-            apply_closed = True
-        return remaining, apply_closed, authority_blocked, deleted, False
+                return (
+                    ctx.remaining,
+                    ctx.apply_closed,
+                    ctx.authority_blocked,
+                    ctx.deleted,
+                    True,
+                )
+            ctx.apply_closed = True
+        return (
+            ctx.remaining,
+            ctx.apply_closed,
+            ctx.authority_blocked,
+            ctx.deleted,
+            False,
+        )
 
     def _decode_claim_generation(
         self,

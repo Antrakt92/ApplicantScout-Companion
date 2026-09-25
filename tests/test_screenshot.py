@@ -5764,3 +5764,208 @@ def test_manual_index_scan_view_prunes_missing_in_one_pass(tmp_path: Path):
     assert manual == frozenset({present})
     assert deferred_keys == frozenset({deferred})
     assert index.snapshot() == {present, deferred}
+
+
+def _backlog_test_ctx(**overrides) -> screenshot_mod.BacklogScanCtx:
+    params = {
+        "recent": True,
+        "retry_window_active": False,
+        "selected_deferred_keys": set(),
+        "snapshot_apply_cutoff_ns": None,
+    }
+    params.update(overrides)
+    return screenshot_mod.BacklogScanCtx(**params)
+
+
+def test_backlog_classify_pre_claim_skips_unstable_without_claim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    path = tmp_path / "WoWScrnShot_0001.jpg"
+    path.write_bytes(b"unstable")
+    watcher = ScreenshotWatcher(tmp_path)
+    ctx = _backlog_test_ctx(remaining=5)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _p: False)
+
+    assert (
+        watcher._classify_backlog_candidate(path, None, ctx)
+        is screenshot_mod.BacklogAction.SKIP
+    )
+    assert ctx.remaining == 5
+    assert not ctx.authority_blocked
+
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _p: True)
+    assert (
+        watcher._classify_backlog_candidate(path, None, ctx)
+        is screenshot_mod.BacklogAction.PROCEED
+    )
+
+
+def test_backlog_classify_post_claim_gates_preserve_budget(tmp_path: Path):
+    manual_path = tmp_path / "WoWScrnShot_manual.jpg"
+    retry_path = tmp_path / "WoWScrnShot_retry.jpg"
+    manual_path.write_bytes(b"manual")
+    retry_path.write_bytes(b"retry")
+    watcher = ScreenshotWatcher(tmp_path)
+    watcher._manual_index.note_manual(
+        screenshot_mod._work_key_from_stat(manual_path, manual_path.stat()),
+        flush=False,
+    )
+    ctx = _backlog_test_ctx(remaining=5)
+
+    manual_claim = watcher._work_claims.try_claim(manual_path)
+    assert manual_claim is not None
+    try:
+        assert (
+            watcher._classify_backlog_candidate(manual_path, manual_claim, ctx)
+            is screenshot_mod.BacklogAction.SKIP
+        )
+    finally:
+        manual_claim.release()
+    assert ctx.remaining == 5
+    assert not ctx.authority_blocked
+
+    windowed = _backlog_test_ctx(
+        remaining=5, retry_window_active=True, selected_deferred_keys=set()
+    )
+    retry_claim = watcher._work_claims.try_claim(retry_path)
+    assert retry_claim is not None
+    try:
+        assert (
+            watcher._classify_backlog_candidate(retry_path, retry_claim, windowed)
+            is screenshot_mod.BacklogAction.SKIP
+        )
+    finally:
+        retry_claim.release()
+    # Retry fairness must never change snapshot authority: the skipped newer
+    # generation stays unresolved, so older owned files must be preserved.
+    assert windowed.authority_blocked
+    assert windowed.remaining == 5
+
+
+def test_backlog_handle_decoder_unavailable_closes_apply_and_stops(tmp_path: Path):
+    path = tmp_path / "WoWScrnShot_0001.jpg"
+    path.write_bytes(b"decoder gone")
+    watcher = ScreenshotWatcher(tmp_path)
+    failures: list[tuple[str, str]] = []
+    watcher.decodeFailed.connect(
+        lambda failed, reason, _source: failures.append((failed, reason))
+    )
+    claim = watcher._work_claims.try_claim(path)
+    assert claim is not None
+    try:
+        decoded_key = claim.key
+        ctx = _backlog_test_ctx()
+        outcome = watcher._handle_decoded_generation(
+            claim,
+            decoded_key,
+            screenshot_mod.DecodeResult(None, False, "decoder gone",
+                                       decoder_unavailable=True),
+            True,
+            ctx,
+        )
+    finally:
+        claim.release()
+
+    assert not outcome.terminate
+    assert outcome.stop_scan
+    assert outcome.retry_owned_generation is None
+    assert ctx.apply_closed
+    assert failures == [(str(path), "decoder gone")]
+
+
+def test_backlog_handle_scan_incomplete_defers_and_blocks_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    scheduled: list[Path] = []
+    monkeypatch.setattr(
+        ScreenshotWatcher,
+        "_schedule_incomplete_scan_retry",
+        lambda _self, path, _source: scheduled.append(path),
+    )
+    first = tmp_path / "WoWScrnShot_0001.jpg"
+    second = tmp_path / "WoWScrnShot_0002.jpg"
+    first.write_bytes(b"transient")
+    second.write_bytes(b"transient")
+    watcher = ScreenshotWatcher(tmp_path)
+    ctx = _backlog_test_ctx()
+
+    for path, expect_stop in ((first, False), (second, False)):
+        claim = watcher._work_claims.try_claim(path)
+        assert claim is not None
+        try:
+            outcome = watcher._handle_decoded_generation(
+                claim,
+                claim.key,
+                screenshot_mod.DecodeResult(
+                    None, False, "temporary screenshot decode failure",
+                    scan_incomplete=True,
+                ),
+                True,
+                ctx,
+            )
+        finally:
+            claim.release()
+        assert not outcome.terminate
+        assert outcome.stop_scan is expect_stop
+        assert outcome.retry_owned_generation is None
+
+    assert ctx.incomplete_scans == 2
+    assert ctx.authority_blocked
+    assert scheduled == [first, second]
+    assert watcher._manual_index.is_deferred(
+        screenshot_mod._work_key_from_stat(first, first.stat())
+    )
+
+    ctx.incomplete_scans = screenshot_mod._BACKLOG_INCOMPLETE_SCAN_LIMIT - 1
+    third = tmp_path / "WoWScrnShot_0003.jpg"
+    third.write_bytes(b"transient")
+    claim = watcher._work_claims.try_claim(third)
+    assert claim is not None
+    try:
+        limited = watcher._handle_decoded_generation(
+            claim,
+            claim.key,
+            screenshot_mod.DecodeResult(
+                None, False, "temporary screenshot decode failure",
+                scan_incomplete=True,
+            ),
+            True,
+            ctx,
+        )
+    finally:
+        claim.release()
+    assert limited.stop_scan
+
+
+def test_backlog_handle_owned_generation_rearms_after_barrier(tmp_path: Path):
+    path = tmp_path / "WoWScrnShot_older.jpg"
+    path.write_bytes(b"owned")
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    claim = watcher._work_claims.try_claim(path)
+    assert claim is not None
+    try:
+        decoded_key = claim.key
+        # Newer unresolved barrier: the owned whole snapshot must be
+        # preserved (never applied, never deleted) and re-armed for the
+        # coalesced rescan after barrier resolution.
+        ctx = _backlog_test_ctx(authority_blocked=True)
+        outcome = watcher._handle_decoded_generation(
+            claim,
+            decoded_key,
+            screenshot_mod.DecodeResult(
+                Snapshot(listing=None, version=None), True
+            ),
+            True,
+            ctx,
+        )
+    finally:
+        claim.release()
+
+    assert not outcome.terminate
+    assert not outcome.stop_scan
+    assert outcome.retry_owned_generation == decoded_key
+    assert snapshots == []
+    assert not ctx.apply_closed
+    assert path.exists()

@@ -118,3 +118,53 @@ def test_direct_worker_signals_keep_source_acceptance_and_enqueue_order(
     expected_cache = [] if retire_generation else [second] if kind == "terminal" else [first, second]
     assert len(cached) == len(expected_cache)
     assert all(actual is original for actual, original in zip(cached, expected_cache, strict=True))
+
+
+@pytest.mark.usefixtures("qapp")
+def test_backlog_failure_newer_than_snapshot_surfaces_at_handoff(tmp_path):
+    """Source order survives the backlog/pipeline split at the GUI handoff.
+
+    A failure older than the applied snapshot is suppressed (snapshot
+    authority wins); a failure newer than it is reported. The backlog retry
+    window preserves this order by never letting an unresolved newer
+    generation reorder or erase older owned state before the handoff.
+    """
+    old = Snapshot(
+        listing=DecodedListing(100, 12, "Dungeon", "Old listing", ""),
+        version=None,
+        source=SnapshotSource(100, "old.jpg", 10),
+    )
+    new = Snapshot(
+        listing=DecodedListing(200, 13, "Other dungeon", "New listing", ""),
+        version=None,
+        source=SnapshotSource(200, "new.jpg", 10),
+    )
+    state = AppState()
+    watcher = ScreenshotWatcher(tmp_path)
+    scheduled: list[Callable[[], None]] = []
+    failures: list[tuple[str, str]] = []
+    main_mod._connect_screenshot_watcher(
+        watcher, main_mod.StateMachine(state), object(),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=scheduled.append,
+    )
+
+    watcher.snapshotReceived.emit(old)
+    watcher.decodeFailed.emit("mid.jpg", "stale", SnapshotSource(150, "mid.jpg", 10))
+    watcher.snapshotReceived.emit(new)
+    for callback in scheduled:
+        callback()
+    scheduled.clear()
+
+    assert state.listing is not None
+    assert state.listing.key_level == 13
+    assert failures == []
+
+    watcher.decodeFailed.emit("newer.jpg", "boom", SnapshotSource(300, "newer.jpg", 10))
+    for callback in scheduled:
+        callback()
+
+    assert failures == [("newer.jpg", "boom")]

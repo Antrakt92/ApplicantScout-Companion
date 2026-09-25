@@ -10,6 +10,7 @@ from applicant_scout.screenshot import (
     DecodedListing,
     DecodedVersion,
     Snapshot,
+    SnapshotSource,
 )
 from applicant_scout.snapshot_pipeline import SnapshotApplyQueue
 from applicant_scout.state import AppState
@@ -141,3 +142,117 @@ def test_snapshot_bursts_keep_bounded_state_and_cache_only_originals(change_prod
     callbacks.pop(0)()
     assert len(cached) == len(originals)
     assert all(actual is original for actual, original in zip(cached, originals))
+
+
+def _stamped_snapshot(mtime_ns: int, file_id: str = "shot.jpg") -> Snapshot:
+    return Snapshot(
+        listing=None,
+        version=None,
+        source=SnapshotSource(mtime_ns, file_id, 10),
+    )
+
+
+def test_flush_snapshot_reports_only_newer_retained_failure():
+    applied: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    callbacks: list[Callable[[], None]] = []
+    queue = SnapshotApplyQueue(
+        SimpleNamespace(apply_snapshot=applied.append),
+        SimpleNamespace(),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=_CurrentGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    new = _stamped_snapshot(200, "new.jpg")
+    queue.enqueue_snapshot(new)
+    callbacks.pop(0)()
+    assert applied == [new]
+
+    # A failure older than the applied snapshot is stale: reported never,
+    # retained never.
+    queue.enqueue_decode_failed("old.jpg", "stale", SnapshotSource(100, "old.jpg", 10))
+    callbacks.pop(0)()
+    assert failures == []
+    assert queue._retained_decode_failure is None
+
+    # A failure newer than the applied snapshot survives it and is reported.
+    queue.enqueue_decode_failed(
+        "newer.jpg", "fresh", SnapshotSource(300, "newer.jpg", 10)
+    )
+    callbacks.pop(0)()
+    assert failures == [("newer.jpg", "fresh")]
+
+    # An unstamped failure carries no order key and is always reported.
+    queue.enqueue_decode_failed("plain.jpg", "no source", None)
+    callbacks.pop(0)()
+    assert failures == [("newer.jpg", "fresh"), ("plain.jpg", "no source")]
+
+
+def test_apply_plan_step_failure_retains_and_retries_once():
+    applied: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    callbacks: list[Callable[[], None]] = []
+
+    def failing(snap: Snapshot) -> None:
+        applied.append(snap)
+        raise RuntimeError("gui down")
+
+    queue = SnapshotApplyQueue(
+        SimpleNamespace(apply_snapshot=failing),
+        SimpleNamespace(),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=_CurrentGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    snap = Snapshot(listing=None, version=None)
+    snapshots = (snap,)
+
+    assert queue._apply_plan_step(snap, (snap,), snapshots, snapshots) is False
+    assert applied == [snap]
+    assert failures == [
+        ("screenshot", "Snapshot apply failed; state was reset. Retrying once.")
+    ]
+    assert queue._pending == ("snapshot", snapshots)
+    assert len(callbacks) == 1
+
+    # The scheduled retry replays the full original sequence, not the tail.
+    # The repeated failure is single-shot: it waits for a fresh capture.
+    callbacks.pop(0)()
+    assert applied == [snap, snap]
+    assert failures == [
+        ("screenshot", "Snapshot apply failed; state was reset. Retrying once."),
+        (
+            "screenshot",
+            "Snapshot apply failed; state was reset. Waiting for a fresh capture.",
+        ),
+    ]
+    assert callbacks == []
+    assert queue._pending is None
+
+
+class _RetiredGate:
+    def is_current(self, _generation: int) -> bool:
+        return False
+
+
+def test_apply_plan_step_aborts_when_generation_retired():
+    applied: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    callbacks: list[Callable[[], None]] = []
+    queue = SnapshotApplyQueue(
+        SimpleNamespace(apply_snapshot=applied.append),
+        SimpleNamespace(),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=_RetiredGate(),
+        generation=0,
+        scheduler=callbacks.append,
+    )
+    snap = Snapshot(listing=None, version=None)
+
+    assert queue._apply_plan_step(snap, (snap,), (snap,), (snap,)) is False
+    assert applied == []
+    assert failures == []
+    assert callbacks == []
+    assert queue._pending is None
