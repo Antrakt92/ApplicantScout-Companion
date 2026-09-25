@@ -339,22 +339,19 @@ def test_first_run_dialog_explains_wcl_client_creation(qtbot, tmp_path: Path):
 
 
 def test_wcl_setup_example_button_opens_local_screenshot_popup(
-    qtbot, tmp_path: Path, monkeypatch
+    qtbot, tmp_path: Path
 ):
-    shown: list[settings_mod.QDialog] = []
-
-    def fake_exec(popup: settings_mod.QDialog) -> int:
-        shown.append(popup)
-        return 0
-
-    monkeypatch.setattr(settings_mod.QDialog, "exec", fake_exec)
+    # M2: the example opens modeless (show, not exec) so the overlay stays
+    # interactive; the pixmap is cached after the first load.
     dialog = SettingsDialog(_cfg(tmp_path, client_id="", secret=""), first_run=True)
     qtbot.addWidget(dialog)
 
     dialog.wcl_example_button.click()
 
-    assert shown
-    popup = shown[0]
+    popup = dialog._wcl_example_dialog
+    assert popup is not None
+    assert popup.isVisible()
+    assert not popup.isModal()
     visible_text = "\n".join(
         label.text() for label in popup.findChildren(type(dialog.status_label))
     )
@@ -369,6 +366,12 @@ def test_wcl_setup_example_button_opens_local_screenshot_popup(
     assert "Public Client" in visible_text
     assert "unchecked" in visible_text
     assert image_labels
+
+    # Repeat opens reuse the dialog and the cached pixmap.
+    dialog.wcl_example_button.click()
+    assert dialog._wcl_example_dialog is popup
+    assert popup.isVisible()
+    popup.close()
 
 
 def test_wcl_setup_example_button_sits_next_to_clients_link(qtbot, tmp_path: Path):
@@ -2681,7 +2684,11 @@ def test_settings_dialog_flush_pending_values_emits_debounced_text(qtbot, tmp_pa
     assert seen[-1].wcl_client_id == "new-client"
 
 
-def test_settings_dialog_emits_values_changed_for_immediate_controls(qtbot, tmp_path: Path):
+def test_settings_dialog_debounces_immediate_controls_through_autosave_timer(
+    qtbot, tmp_path: Path
+):
+    # M1: toggles no longer emit instantly; they coalesce through the same
+    # 700 ms autosave timer as text fields.
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)
     seen = []
@@ -2689,7 +2696,33 @@ def test_settings_dialog_emits_values_changed_for_immediate_controls(qtbot, tmp_
 
     dialog.sync_with_wow_check.setChecked(False)
 
-    qtbot.waitUntil(lambda: bool(seen), timeout=1000)
+    assert seen == []
+    assert dialog._autosave_timer.isActive()
+    qtbot.waitUntil(lambda: bool(seen), timeout=2000)
+    assert seen[-1].sync_with_wow is False
+
+
+def test_settings_dialog_coalesces_control_bursts_into_one_emit(
+    qtbot, tmp_path: Path
+):
+    # M1: a burst of region/metric/sync toggles collapses into one emit so a
+    # burst no longer triggers a full apply per toggle.
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    seen = []
+    dialog.valuesChanged.connect(seen.append)
+
+    dialog.region_combo.setCurrentText("US")
+    dialog.region_combo.setCurrentText("KR")
+    dialog.mplus_check.toggle()
+    dialog.mplus_check.toggle()
+    dialog.sync_with_wow_check.toggle()
+
+    assert seen == []
+    qtbot.waitUntil(lambda: bool(seen), timeout=2000)
+    qtbot.wait(900)
+    assert len(seen) == 1
+    assert seen[-1].region == "KR"
     assert seen[-1].sync_with_wow is False
 
 

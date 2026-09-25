@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 import json
+import logging
 from pathlib import Path
 import subprocess
 import sys
@@ -75,8 +76,11 @@ from .screenshots_path_probe import (
     screenshots_path_probe_result_path as _screenshots_path_probe_result_path,
 )
 from .window_geometry import clamp_geometry_to_screens, clamp_rect_to_bounds
-from .usage import UsageClient, UsagePersistenceError
+from .usage import UsageClient
 from .updater import UpdateProgress
+
+
+log = logging.getLogger(__name__)
 
 
 CredentialTester = Callable[[str, str, str], str]
@@ -89,6 +93,59 @@ WCL_CREATE_CLIENT_REDIRECT_URL = "http://localhost"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SUPPORT_URL = "https://ko-fi.com/antrakt92"
 APP_ICON_PATH = Path(__file__).with_name("assets") / "app_icon.ico"
+
+
+_WCL_EXAMPLE_PIXMAP_CACHE: tuple[str, QPixmap] | None = None
+
+
+def _wcl_example_pixmap() -> QPixmap:
+    """Return the cached WCL setup example image, loading it once (M2).
+
+    The dialog is built on click (lazy); the cache keeps repeat opens off
+    the disk and is keyed by path so asset overrides reload correctly.
+    Callers run on the GUI thread.
+    """
+    global _WCL_EXAMPLE_PIXMAP_CACHE
+    wanted = str(WCL_CREATE_CLIENT_EXAMPLE_PATH)
+    cached = _WCL_EXAMPLE_PIXMAP_CACHE
+    if cached is None or cached[0] != wanted or cached[1].isNull():
+        cached = (wanted, QPixmap(wanted))
+        _WCL_EXAMPLE_PIXMAP_CACHE = cached
+    return cached[1]
+
+
+class _DeferredUrlOpener(QObject):
+    """Marshal a folder open back to the GUI thread (M4-tray)."""
+
+    _openRequested = pyqtSignal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._openRequested.connect(self._open)
+
+    def request(self, path: str) -> None:
+        self._openRequested.emit(path)
+
+    @staticmethod
+    def _open(path: str) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+
+_DEFERRED_URL_OPENER: _DeferredUrlOpener | None = None
+
+
+def _deferred_url_opener() -> _DeferredUrlOpener | None:
+    """Lazily create the GUI-affine opener; None without an event loop."""
+    global _DEFERRED_URL_OPENER
+    app = QApplication.instance()
+    if app is None:
+        return None
+    opener = _DEFERRED_URL_OPENER
+    if opener is None:
+        opener = _DeferredUrlOpener()
+        opener.moveToThread(app.thread())
+        _DEFERRED_URL_OPENER = opener
+    return opener
 SUPPORT_TOOLTIP = "Support ApplicantScout on Ko-fi."
 UPDATE_ACCESSIBLE_NAME = "Install ApplicantScout update"
 UPDATE_DEFAULT_TOOLTIP = "Install available ApplicantScout update."
@@ -663,12 +720,18 @@ class _ScreenshotsValidationResult:
 
 
 class ReleaseNotesDialog(QDialog):
-    def __init__(self, release_notes: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        release_notes: str,
+        parent: QWidget | None = None,
+        *,
+        defer_markdown: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("releaseNotesDialog")
         self.setStyleSheet(_SETTINGS_STYLESHEET)
         self.setWindowTitle("ApplicantScout Changelog")
-        self.setModal(True)
+        self.setModal(False)
         self.setMinimumSize(720, 560)
 
         layout = QVBoxLayout(self)
@@ -689,12 +752,29 @@ class ReleaseNotesDialog(QDialog):
         self.notes_browser.setObjectName("releaseNotesText")
         self.notes_browser.setReadOnly(True)
         self.notes_browser.setOpenExternalLinks(True)
-        self.notes_browser.setMarkdown(release_notes)
+        # M2: deferred markdown lets the modeless dialog paint first; the
+        # default synchronous path preserves long-standing constructor behavior.
+        self._pending_markdown: str | None = release_notes if defer_markdown else None
+        if defer_markdown:
+            self.notes_browser.setMarkdown("Loading…")
+        else:
+            self.set_notes(release_notes)
         layout.addWidget(self.notes_browser, stretch=1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def set_notes(self, release_notes: str) -> None:
+        """Replace the rendered changelog, cancelling any deferred render."""
+        self._pending_markdown = None
+        self.notes_browser.setMarkdown(release_notes)
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if self._pending_markdown is not None:
+            text, self._pending_markdown = self._pending_markdown, None
+            self.notes_browser.setMarkdown(text)
 
 
 def _initial_screenshots_path(cfg: Config) -> str:
@@ -714,6 +794,7 @@ def _cancel_dialog_probe(owner_ref: weakref.ReferenceType[SettingsDialog], *_arg
 
 class SettingsDialog(QDialog):
     usageConsentChanged = pyqtSignal(bool)
+    usageConsentSaveFinished = pyqtSignal(int, bool, object)
     valuesChanged = pyqtSignal(object)
     credentialsValidated = pyqtSignal(object)
     quitRequested = pyqtSignal()
@@ -758,9 +839,18 @@ class SettingsDialog(QDialog):
         self._cancel_update = cancel_update
         self._update_cancel_requested = False
         self._last_values_apply_succeeded = True
+        self._last_emitted_values: SettingsValues | None = None
+        self._initial_values: SettingsValues | None = None
+        # M3: last screenshots path the probe completed for. The saved path is
+        # trusted until edited, so unrelated saves are never gated on a probe
+        # for a path the user already reverted or never changed.
+        self._last_ready_screenshots_path: str | None = None
+        self._usage_consent_generation = 0
+        self._wcl_example_dialog: QDialog | None = None
         self._latest_update_version: str | None = None
         self._signals = _AsyncSignals(self)
         self._signals.finished.connect(self._finish_async_action)
+        self.usageConsentSaveFinished.connect(self._finish_usage_consent_save)
         self._title_drag_offset: QPoint | None = None
         gui_app = QApplication.instance()
         if isinstance(gui_app, QApplication):
@@ -1018,6 +1108,7 @@ class SettingsDialog(QDialog):
         path_layout.setContentsMargins(0, 0, 0, 0)
         path_layout.setSpacing(6)
         self.screenshots_edit = QLineEdit(_initial_screenshots_path(cfg))
+        self._last_ready_screenshots_path = self.screenshots_edit.text().strip()
         self.screenshots_edit.setObjectName("screenshotsPath")
         self.screenshots_edit.setPlaceholderText(
             r"Example: C:\Program Files (x86)\World of Warcraft\_retail_\Screenshots"
@@ -1233,6 +1324,9 @@ class SettingsDialog(QDialog):
         for current, following in zip(focus_order, focus_order[1:]):
             QWidget.setTabOrder(current, following)
         self._connect_value_change_signals()
+        # M3 baseline: unrelated-save detection compares against the latest
+        # emit, falling back to the opening snapshot on a fresh dialog.
+        self._initial_values = self.values()
         self._schedule_screenshots_warning(self.screenshots_edit.text())
         self.client_id_edit.setFocus(Qt.FocusReason.OtherFocusReason)
         self.installEventFilter(self)
@@ -1505,21 +1599,56 @@ class SettingsDialog(QDialog):
             self.wowSyncRepairRequested.emit()
 
     def _change_usage_consent(self, enabled: bool) -> None:
-        if self._usage_client is None:
+        # L1: the checkbox already reflects the choice (optimistic UI); the
+        # disk write runs off the GUI thread and the result is marshalled back
+        # via usageConsentSaveFinished. Rapid toggles are generation-guarded so
+        # only the latest outcome touches the UI.
+        client = self._usage_client
+        if client is None:
+            return
+        self._usage_consent_generation += 1
+        generation = self._usage_consent_generation
+
+        def _worker() -> None:
+            try:
+                client.set_consent(enabled)
+            except Exception as exc:  # noqa: BLE001 - report, never break the GUI
+                self.usageConsentSaveFinished.emit(generation, False, exc)
+            else:
+                self.usageConsentSaveFinished.emit(generation, True, None)
+
+        if QApplication.instance() is None:
+            _worker()
             return
         try:
-            self._usage_client.set_consent(enabled)
-        except UsagePersistenceError:
-            with QSignalBlocker(self.usage_check):
-                self.usage_check.setChecked(self._usage_client.consent_enabled)
-            self.set_status(
-                "Usage reporting is off for this session, but the preference could not be saved. "
-                "The previous choice may return after restart. "
-                "Check that your Windows settings folder is writable.", error=True
+            worker = threading.Thread(
+                target=_worker,
+                name="ApplicantScoutUsageConsent",
+                daemon=True,
             )
-            self.usageConsentChanged.emit(False)
+            worker.start()
+        except Exception:  # noqa: BLE001 - thread launch failed; stay functional
+            _worker()
+
+    @pyqtSlot(int, bool, object)
+    def _finish_usage_consent_save(
+        self, generation: int, success: bool, _error: object
+    ) -> None:
+        if generation != self._usage_consent_generation:
             return
-        self.usageConsentChanged.emit(enabled)
+        if success:
+            self.usageConsentChanged.emit(self.usage_check.isChecked())
+            return
+        client = self._usage_client
+        if client is not None and self.usage_check.isChecked() != client.consent_enabled:
+            with QSignalBlocker(self.usage_check):
+                self.usage_check.setChecked(client.consent_enabled)
+        self.set_status(
+            "Usage reporting is off for this session, but the preference could not be saved. "
+            "The previous choice may return after restart. "
+            "Check that your Windows settings folder is writable.", error=True
+        )
+        self.usageConsentChanged.emit(False)
 
     def values(self) -> SettingsValues:
         return SettingsValues(
@@ -1753,7 +1882,7 @@ class SettingsDialog(QDialog):
             return None
         return self._screenshots_warning_text
 
-    def flush_pending_values(self) -> bool:
+    def flush_pending_values(self, *, require_screenshots_ready: bool = False) -> bool:
         if self._update_in_progress:
             self._autosave_timer.stop()
             return False
@@ -1768,11 +1897,22 @@ class SettingsDialog(QDialog):
         if not self._autosave_timer.isActive():
             return self._last_values_apply_succeeded
         self._autosave_timer.stop()
-        return self._emit_values_changed_if_valid()
+        return self._emit_values_changed_if_valid(
+            require_screenshots_ready=require_screenshots_ready
+        )
 
     def prepare_quit(self) -> bool:
+        # Quitting must not drop a user-edited screenshots path before its
+        # probe lands: keep the hard gate only while an explicit save-gate is
+        # outstanding for the current text. Unrelated pending values were
+        # already emitted (M3) and are applied asynchronously, so no disk/AV
+        # stall freezes the GUI here.
         status_before = self.status_label.text()
-        if self.flush_pending_values():
+        needs_screenshots_gate = (
+            self._screenshots_validation_required_generation
+            == self._screenshots_validation_generation
+        )
+        if self.flush_pending_values(require_screenshots_ready=needs_screenshots_gate):
             return True
         status_after = self.status_label.text()
         if not status_after or status_after == status_before:
@@ -1862,13 +2002,16 @@ class SettingsDialog(QDialog):
         return False, None
 
     def _connect_value_change_signals(self) -> None:
+        # M1: every control coalesces through the same 700 ms autosave timer.
+        # Bursts of region/metric/sync toggles collapse into a single emit so
+        # each toggle no longer triggers an instant full apply.
         for edit in (
             self.client_id_edit,
             self.client_secret_edit,
         ):
             edit.textChanged.connect(self._schedule_values_changed)
-        self.region_combo.currentTextChanged.connect(self._emit_values_changed_if_valid)
-        self.sync_with_wow_check.toggled.connect(self._emit_values_changed_if_valid)
+        self.region_combo.currentTextChanged.connect(self._schedule_values_changed)
+        self.sync_with_wow_check.toggled.connect(self._schedule_values_changed)
         for checkbox in (
             self.raid_normal_check,
             self.raid_heroic_check,
@@ -1880,26 +2023,83 @@ class SettingsDialog(QDialog):
     def _schedule_values_changed(self) -> None:
         self._autosave_timer.start()
 
-    def _emit_values_changed_if_valid(self) -> bool:
+    def _emit_values_changed_if_valid(
+        self, *, require_screenshots_ready: bool = False
+    ) -> bool:
         if self._update_in_progress:
             return False
         values = self.values()
-        error = self._hard_validation_error(values)
-        if error is not None:
-            if error == SCREENSHOTS_VALIDATION_PENDING_MESSAGE:
-                self._screenshots_validation_waiting_autosave = True
-                self._set_status(error, warning=True)
-            else:
-                self._set_status(error, error=True)
+        error = self._hard_validation_error(
+            values, require_screenshots_ready=require_screenshots_ready
+        )
+        if error is None:
+            self._last_values_apply_succeeded = True
+            self._last_emitted_values = values
+            self.valuesChanged.emit(values)
+            return self._last_values_apply_succeeded
+        if error != SCREENSHOTS_VALIDATION_PENDING_MESSAGE:
+            self._set_status(error, error=True)
             self._last_values_apply_succeeded = False
             return False
-        self._last_values_apply_succeeded = True
-        self.valuesChanged.emit(values)
-        return self._last_values_apply_succeeded
+        # M3: a pending screenshots probe must not hold unrelated saves
+        # (credentials/region/metrics) hostage. Emit now with the screenshots
+        # path pinned to the last validated one; the pending status stays
+        # visible and the full values are re-emitted when the probe finishes.
+        # Explicit submits (quit/accept) keep the hard gate.
+        if not require_screenshots_ready and self._screenshots_save_may_proceed(values):
+            ready_path = self._last_ready_screenshots_path
+            if ready_path is not None and values.screenshots_path.strip() != ready_path:
+                values = replace(values, screenshots_path=ready_path)
+            self._screenshots_validation_waiting_autosave = True
+            self._set_status(error, warning=True)
+            self._last_values_apply_succeeded = True
+            self._last_emitted_values = values
+            self.valuesChanged.emit(values)
+            return self._last_values_apply_succeeded
+        self._screenshots_validation_waiting_autosave = True
+        self._set_status(error, warning=True)
+        self._last_values_apply_succeeded = False
+        return False
 
-    def _handle_metric_checkbox_toggled(self, checked: bool) -> None:
-        if checked or self.values().metric_preferences.any_enabled:
-            self._emit_values_changed_if_valid()
+    def _screenshots_save_may_proceed(self, values: SettingsValues) -> bool:
+        """Whether an emit may bypass a pending screenshots probe (M3).
+
+        Only unrelated saves (credentials/region/metrics/sync) bypass; a
+        dirty screenshots path itself keeps the legacy gate so a bad path is
+        never persisted or handed to the watcher before validation.
+        """
+        baseline = self._last_emitted_values or self._initial_values
+        if baseline is None:
+            return False
+        if values.screenshots_path.strip() != baseline.screenshots_path.strip():
+            others_changed = (
+                values.wcl_client_id != baseline.wcl_client_id
+                or values.wcl_client_secret != baseline.wcl_client_secret
+                or values.region != baseline.region
+                or values.metric_preferences != baseline.metric_preferences
+                or values.sync_with_wow != baseline.sync_with_wow
+            )
+            return others_changed
+        if (
+            self._screenshots_validation_required_generation
+            == self._screenshots_validation_generation
+        ):
+            # Same text, but an explicit save-gate was requested for it
+            # (reselect/retry): wait for the probe.
+            return False
+        # The screenshots field matches the baseline: either pristine or
+        # reverted. Reverted-to-validated is covered by the ready-path fast
+        # path below; anything else has nothing new to save yet.
+        ready_path = self._last_ready_screenshots_path
+        return (
+            ready_path is not None
+            and values.screenshots_path.strip() == ready_path
+        )
+
+    def _handle_metric_checkbox_toggled(self, _checked: bool) -> None:
+        if _checked or self.values().metric_preferences.any_enabled:
+            # M1: coalesce metric bursts through the autosave timer.
+            self._schedule_values_changed()
             return
         checkbox = self.sender()
         if isinstance(checkbox, QCheckBox):
@@ -2152,6 +2352,9 @@ class SettingsDialog(QDialog):
         self._screenshots_warning_path = raw.path
         self._screenshots_warning_text = raw.warning
         self._screenshots_validation_ready_generation = raw.generation
+        if raw.warning is None:
+            # M3: only a clean probe result is safe to pin unrelated saves to.
+            self._last_ready_screenshots_path = raw.path
         # Keep the result for the next save without replacing an active action's status.
         if not self._settings_interactions_enabled():
             return
@@ -2316,14 +2519,33 @@ class SettingsDialog(QDialog):
             self.credentialsValidated.emit(current)
 
     def _show_wcl_setup_example(self) -> None:
-        self._build_wcl_setup_example_dialog().exec()
+        # M2: modeless show() so the overlay stays interactive; the pixmap is
+        # cached after the first load. QFileDialog stays modal by design.
+        existing = self._wcl_example_dialog
+        if existing is not None:
+            try:
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return
+            except RuntimeError:
+                self._wcl_example_dialog = None
+        popup = self._build_wcl_setup_example_dialog()
+        self._wcl_example_dialog = popup
+        popup.destroyed.connect(self._forget_wcl_setup_example_dialog)
+        popup.show()
+        popup.raise_()
+        popup.activateWindow()
+
+    def _forget_wcl_setup_example_dialog(self, *_args: object) -> None:
+        self._wcl_example_dialog = None
 
     def _build_wcl_setup_example_dialog(self) -> QDialog:
         popup = QDialog(self)
         popup.setObjectName("wclSetupExampleDialog")
         popup.setStyleSheet(_SETTINGS_STYLESHEET)
         popup.setWindowTitle("Warcraft Logs API client example")
-        popup.setModal(True)
+        popup.setModal(False)
         screen = self.screen()
         available = screen.availableGeometry() if screen is not None else QRect(0, 0, 1024, 768)
         width_limit = max(1, available.width() - 24)
@@ -2404,7 +2626,7 @@ class SettingsDialog(QDialog):
         values_form.addRow("Public Client", public_client)
         layout.addWidget(copy_status)
 
-        pixmap = QPixmap(str(WCL_CREATE_CLIENT_EXAMPLE_PATH))
+        pixmap = _wcl_example_pixmap()
         image = _FittedExampleImage(pixmap)
         image.setObjectName("wclSetupExampleImage")
         if pixmap.isNull():
@@ -2560,5 +2782,40 @@ class SettingsDialog(QDialog):
 
 
 def open_folder(path: Path) -> bool:
-    path.mkdir(parents=True, exist_ok=True)
-    return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    """Open a folder in the file manager without stalling the GUI (M4-tray).
+
+    The log directory is pre-created at startup, so the common case is a
+    cheap existence check plus openUrl on the GUI thread. A missing directory
+    is created in a worker and the open is marshalled back to the GUI thread.
+    """
+    try:
+        if path.exists():
+            return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    except OSError:
+        pass
+    if QApplication.instance() is None or _deferred_url_opener() is None:
+        # No event loop to marshal back to (tests/CLI): legacy sync path.
+        path.mkdir(parents=True, exist_ok=True)
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    opener = _deferred_url_opener()
+    assert opener is not None
+
+    def _create_then_open() -> None:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.warning("Could not create folder %s: %s", path, exc)
+            return
+        opener.request(str(path))
+
+    try:
+        worker = threading.Thread(
+            target=_create_then_open,
+            name="ApplicantScoutOpenFolder",
+            daemon=True,
+        )
+        worker.start()
+    except Exception:  # noqa: BLE001 - thread launch failed; stay functional
+        _create_then_open()
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    return True

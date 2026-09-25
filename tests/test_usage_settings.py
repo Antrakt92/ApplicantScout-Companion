@@ -58,6 +58,7 @@ def test_consent_saves_immediately_even_with_invalid_wcl(qtbot, tmp_path):
     changes = []
     dialog.usageConsentChanged.connect(changes.append)
     dialog.usage_check.click()
+    qtbot.waitUntil(lambda: changes == [True], timeout=2000)
     assert changes == [True]
     assert usage.consent_enabled
     assert usage.changes == [True]
@@ -73,6 +74,7 @@ def test_revocation_is_immediate_independent_of_wcl_validation(qtbot, tmp_path):
     changes = []
     dialog.usageConsentChanged.connect(changes.append)
     dialog.usage_check.click()
+    qtbot.waitUntil(lambda: changes == [False], timeout=2000)
     assert changes == [False]
     assert usage.changes == [False]
     assert not usage.consent_enabled
@@ -85,6 +87,7 @@ def test_persistence_failure_rolls_checkbox_back_off_without_reentry(qtbot, tmp_
     changes = []
     dialog.usageConsentChanged.connect(changes.append)
     dialog.usage_check.click()
+    qtbot.waitUntil(lambda: changes == [False], timeout=2000)
     assert changes == [False]
     assert usage.changes == [True]
     assert not usage.consent_enabled
@@ -99,6 +102,7 @@ def test_revocation_save_failure_still_stops_this_session(qtbot, tmp_path):
     changes = []
     dialog.usageConsentChanged.connect(changes.append)
     dialog.usage_check.click()
+    qtbot.waitUntil(lambda: changes == [False], timeout=2000)
     assert changes == [False]
     assert usage.changes == [False]
     assert not usage.consent_enabled
@@ -131,7 +135,17 @@ def test_unavailable_collection_preserves_real_default_or_saved_checkbox_and_all
         assert not usage.record("addon_received")
         dialog.usage_check.click()
         assert dialog.usage_check.isChecked() is (saved_consent is False)
-        assert json.loads(path.read_text())["consent"] is (saved_consent is False)
+        expected_consent = saved_consent is False
+
+        def _consent_saved() -> bool:
+            try:
+                return json.loads(path.read_text())["consent"] is expected_consent
+            except (OSError, ValueError):
+                # The background write may hold the file briefly on Windows.
+                return False
+
+        qtbot.waitUntil(_consent_saved, timeout=2000)
+        assert json.loads(path.read_text())["consent"] is expected_consent
         assert usage._thread is None
     finally:
         usage.close()

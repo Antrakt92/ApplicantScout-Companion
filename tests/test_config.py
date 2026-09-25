@@ -854,23 +854,30 @@ def test_show_release_notes_dialog_uses_loaded_notes(
     monkeypatch: pytest.MonkeyPatch,
 ):
     created: list[tuple[str, object]] = []
-    exec_calls: list[bool] = []
+    shown: list[bool] = []
 
     class FakeDialog:
-        def __init__(self, text: str, parent=None) -> None:
+        def __init__(self, text: str, parent=None, **_kwargs) -> None:
             created.append((text, parent))
 
-        def exec(self) -> None:
-            exec_calls.append(True)
+        def show(self) -> None:
+            shown.append(True)
+
+        def raise_(self) -> None:
+            pass
+
+        def activateWindow(self) -> None:
+            pass
 
     parent = object()
+    monkeypatch.setattr(main_mod, "_RELEASE_NOTES_TEXT_CACHE", None)
     monkeypatch.setattr(main_mod, "_load_release_notes_text", lambda: "# Notes")
     monkeypatch.setattr(main_mod, "ReleaseNotesDialog", FakeDialog)
 
     main_mod._show_release_notes_dialog(parent)
 
     assert created == [("# Notes", parent)]
-    assert exec_calls == [True]
+    assert shown == [True]
 
 
 def test_show_release_notes_dialog_warns_when_notes_are_not_utf8(
@@ -882,6 +889,7 @@ def test_show_release_notes_dialog_warns_when_notes_are_not_utf8(
         warnings.append((parent, title, text))
 
     parent = object()
+    monkeypatch.setattr(main_mod, "_RELEASE_NOTES_TEXT_CACHE", None)
     monkeypatch.setattr(
         main_mod,
         "_load_release_notes_text",

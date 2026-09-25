@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, Qt, QEventLoop, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
@@ -49,6 +49,7 @@ from .config import (
     save_config_values,
     save_discovered_screenshots_path,
     screenshots_path_candidate,
+    user_cache_dir,
     user_config_path,
     user_log_dir,
     user_log_dir_candidates,
@@ -2208,9 +2209,34 @@ def _load_release_notes_text() -> str:
     raise FileNotFoundError(f"Could not find RELEASE_NOTES.md in {searched}")
 
 
+_RELEASE_NOTES_TEXT_CACHE: str | None = None
+_open_release_notes_dialogs: set = set()
+
+
+def _update_handoff_rollback_message(message: str) -> str:
+    """Append the manual rollback path (M4: message text only).
+
+    The updater keeps the newest inactive installer as a rollback candidate
+    but nothing references it automatically; tell the user where to roll
+    back by hand if the new version does not start.
+    """
+    rollback_dir = user_cache_dir() / UPDATE_DOWNLOADS_DIR_NAME
+    return (
+        f"{message} If the new version does not start, reinstall the "
+        f"previous version manually from the installer kept in {rollback_dir}."
+    )
+
+
 def _show_release_notes_dialog(parent: Any | None = None) -> None:
+    # M2: modeless show() so the overlay stays interactive; the file is small
+    # so the read stays synchronous, but the text is cached and markdown
+    # rendering is deferred until first paint. Callers always run with a
+    # QApplication (changelog actions).
+    global _RELEASE_NOTES_TEXT_CACHE
     try:
-        release_notes = _load_release_notes_text()
+        if _RELEASE_NOTES_TEXT_CACHE is None:
+            _RELEASE_NOTES_TEXT_CACHE = _load_release_notes_text()
+        release_notes = _RELEASE_NOTES_TEXT_CACHE
     except (OSError, RuntimeError, UnicodeError) as exc:
         log.warning("Could not open ApplicantScout changelog: %s", exc)
         QMessageBox.warning(
@@ -2219,8 +2245,18 @@ def _show_release_notes_dialog(parent: Any | None = None) -> None:
             f"Could not open changelog: {exc}",
         )
         return
-    dialog = ReleaseNotesDialog(release_notes, parent=parent)
-    dialog.exec()
+    dialog = ReleaseNotesDialog(release_notes, parent=parent, defer_markdown=True)
+    # Parentless dialogs would be garbage-collected right after show().
+    _open_release_notes_dialogs.add(dialog)
+    try:
+        dialog.destroyed.connect(
+            lambda *_args, _dialog=dialog: _open_release_notes_dialogs.discard(_dialog)
+        )
+    except AttributeError:
+        pass  # test doubles without Qt signals
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
 
 
 def _connect_release_notes_dialog_action(dialog: Any) -> None:
@@ -3809,12 +3845,219 @@ def _settings_values_to_config(
     )
 
 
-def _apply_settings_change(
+@dataclass(frozen=True)
+class _SettingsApplyOutcome:
+    generation: int
+    ok: bool
+    prepared: _PreparedSettingsApply | None
+    values: object
+    apply_credentials: bool
+    error: Exception | None
+
+
+class _SettingsApplySignals(QObject):
+    finished = pyqtSignal(object)
+
+
+class _CoalescedSettingsApplier(QObject):
+    """Snapshot-and-return settings pipeline (H3).
+
+    submit() snapshots values and returns immediately so disk/AV stalls never
+    freeze the GUI before an action worker starts. A worker thread runs the
+    pure + disk prepare phase; the GUI thread runs the commit phase via the
+    finished signal. When a newer submit supersedes an in-flight item, the
+    stale commit is skipped (unless it carries a credential promotion a newer
+    draft-only item would drop), so bursts collapse into a single
+    watcher/overlay rebuild. drain() bounds the quit path with event pumping.
+    """
+
+    finished = pyqtSignal(object)
+
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        current_cfg: Callable[[], Config],
+        runner: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._current_cfg = current_cfg
+        self._runner = runner
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._pending: tuple[int, object, bool] | None = None
+        self._busy = False
+        self._on_busy: Callable[[], None] | None = None
+        self._on_ready: Callable[[_SettingsApplyOutcome], None] | None = None
+        self.finished.connect(self._on_finished)
+
+    def configure(
+        self,
+        *,
+        on_busy: Callable[[], None] | None = None,
+        on_ready: Callable[[_SettingsApplyOutcome], None] | None = None,
+    ) -> None:
+        self._on_busy = on_busy
+        self._on_ready = on_ready
+
+    def submit(self, values: object, *, apply_credentials: bool) -> int:
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+            self._pending = (generation, values, apply_credentials)
+            busy = self._busy
+        if self._on_busy is not None:
+            self._on_busy()
+        if not busy:
+            self._pump()
+        return generation
+
+    def _pump(self) -> None:
+        with self._lock:
+            if self._busy or self._pending is None:
+                return
+            item = self._pending
+            self._pending = None
+            self._busy = True
+        generation, values, apply_credentials = item
+        old_cfg = self._current_cfg()
+
+        def _worker() -> None:
+            try:
+                prepared = _prepare_settings_apply(
+                    cfg=old_cfg,
+                    values=values,
+                    apply_credentials=apply_credentials,
+                )
+            except Exception as exc:  # noqa: BLE001 - delivered to the GUI slot
+                self.finished.emit(
+                    _SettingsApplyOutcome(
+                        generation, False, None, values, apply_credentials, exc
+                    )
+                )
+            else:
+                self.finished.emit(
+                    _SettingsApplyOutcome(
+                        generation, True, prepared, values, apply_credentials, None
+                    )
+                )
+
+        if self._runner is not None:
+            self._runner(_worker)
+            return
+        try:
+            thread = threading.Thread(
+                target=_worker,
+                name="ApplicantScoutSettingsApply",
+                daemon=True,
+            )
+            thread.start()
+        except Exception:  # noqa: BLE001 - thread launch failed; stay functional
+            _worker()
+
+    def _on_finished(self, raw: object) -> None:
+        if not isinstance(raw, _SettingsApplyOutcome):
+            return
+        outcome = raw
+        with self._lock:
+            self._busy = False
+            pending = self._pending
+            latest = self._generation
+        deliver = True
+        if pending is not None and outcome.generation != latest:
+            # Superseded: coalesce watcher/overlay rebuilds. Never drop a
+            # credential promotion a newer draft-only item would not repeat.
+            _pending_generation, _pending_values, pending_credentials = pending
+            if not outcome.apply_credentials or pending_credentials:
+                deliver = False
+        if deliver and self._on_ready is not None:
+            self._on_ready(outcome)
+        self._pump()
+
+    def drain(self, timeout_s: float = 5.0) -> bool:
+        """Pump events until the pipeline is idle. GUI thread only."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            with self._lock:
+                idle = not self._busy and self._pending is None
+            if idle:
+                return True
+            if QApplication.instance() is None:
+                return False
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+            with self._lock:
+                idle = not self._busy and self._pending is None
+            if idle:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+
+
+_FIRST_RUN_APPLY_STEP_TIMEOUT_S = 120.0
+
+
+def _pump_until_first_run_step(done: threading.Event, timeout_s: float) -> bool:
+    """Pump GUI events until a first-run worker step completes (H2).
+
+    Plain threading.Event observation: never depends on cross-thread Qt
+    signal delivery while the wizard waits. Returns False on timeout.
+    """
+    deadline = time.monotonic() + timeout_s
+    while not done.is_set():
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        if done.is_set():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+    return True
+
+
+@dataclass(frozen=True)
+class _PreparedSettingsApply:
+    """Disk + pure phase of a settings apply; safe to run in a worker (H3)."""
+
+    old_cfg: Config
+    new_cfg: Config
+    new_screenshots_dir: Path
+    persisted_snapshot: _PersistedConfigSnapshot
+    apply_credentials: bool
+
+
+def _prepare_settings_apply(
     *,
-    app: QApplication,
     cfg: Config,
     values,
     apply_credentials: bool,
+) -> _PreparedSettingsApply:
+    """Build the new config and persist it. No Qt interaction (H3 worker)."""
+    old_cfg = cfg
+    new_cfg = _settings_values_to_config(
+        old_cfg,
+        values,
+        apply_credentials=apply_credentials,
+    )
+    new_cfg = _apply_process_env_overrides_to_config(new_cfg)
+    new_screenshots_dir = screenshots_path_candidate(new_cfg)
+    persisted_snapshot = _capture_persisted_config_snapshot(old_cfg)
+    _persist_settings_values(
+        old_cfg,
+        values,
+        apply_credentials=apply_credentials,
+    )
+    return _PreparedSettingsApply(
+        old_cfg=old_cfg,
+        new_cfg=new_cfg,
+        new_screenshots_dir=new_screenshots_dir,
+        persisted_snapshot=persisted_snapshot,
+        apply_credentials=apply_credentials,
+    )
+
+
+def _commit_settings_apply(
+    *,
+    app: QApplication,
+    prepared: _PreparedSettingsApply,
+    values,
     auth,
     wcl_client,
     region_runtime: _WCLRegionRuntime,
@@ -3830,20 +4073,12 @@ def _apply_settings_change(
     prepare_quit: Callable[[], bool] | None = None,
     live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
 ) -> _SettingsApplyResult:
-    old_cfg = cfg
-    new_cfg = _settings_values_to_config(
-        old_cfg,
-        values,
-        apply_credentials=apply_credentials,
-    )
-    new_cfg = _apply_process_env_overrides_to_config(new_cfg)
-    new_screenshots_dir = screenshots_path_candidate(new_cfg)
-    persisted_snapshot = _capture_persisted_config_snapshot(old_cfg)
-    _persist_settings_values(
-        old_cfg,
-        values,
-        apply_credentials=apply_credentials,
-    )
+    """GUI-thread commit of a prepared apply: runtime, watcher, overlay (H3)."""
+    old_cfg = prepared.old_cfg
+    new_cfg = prepared.new_cfg
+    new_screenshots_dir = prepared.new_screenshots_dir
+    persisted_snapshot = prepared.persisted_snapshot
+    apply_credentials = prepared.apply_credentials
     new_wow_exit_timer = wow_exit_timer
     wow_sync_changed = old_cfg.sync_with_wow != new_cfg.sync_with_wow
     new_watcher = watcher
@@ -3929,10 +4164,60 @@ def _apply_settings_change(
     )
 
 
+def _apply_settings_change(
+    *,
+    app: QApplication,
+    cfg: Config,
+    values,
+    apply_credentials: bool,
+    auth,
+    wcl_client,
+    region_runtime: _WCLRegionRuntime,
+    window,
+    watcher,
+    current_screenshots_dir: Path,
+    machine,
+    decode_failed_callback: Callable[[str, str], None],
+    signal_gate: _WatcherSignalGate,
+    wow_exit_timer,
+    quit_app: Callable[[], None],
+    can_quit: Callable[[], bool],
+    prepare_quit: Callable[[], bool] | None = None,
+    live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
+) -> _SettingsApplyResult:
+    """Synchronous prepare + commit. Tests and simple callers use this; the
+    live settings pipeline runs the same phases across worker/GUI (H3)."""
+    prepared = _prepare_settings_apply(
+        cfg=cfg,
+        values=values,
+        apply_credentials=apply_credentials,
+    )
+    return _commit_settings_apply(
+        app=app,
+        prepared=prepared,
+        values=values,
+        auth=auth,
+        wcl_client=wcl_client,
+        region_runtime=region_runtime,
+        window=window,
+        watcher=watcher,
+        current_screenshots_dir=current_screenshots_dir,
+        machine=machine,
+        decode_failed_callback=decode_failed_callback,
+        signal_gate=signal_gate,
+        wow_exit_timer=wow_exit_timer,
+        quit_app=quit_app,
+        can_quit=can_quit,
+        prepare_quit=prepare_quit,
+        live_snapshot_cache_writer=live_snapshot_cache_writer,
+    )
+
+
 def _run_first_run_settings(
     cfg: Config,
     *,
     character_cache: CharacterCache | None = None,
+    _work_runner: Callable[[Callable[[], None]], None] | None = None,
 ) -> bool:
     dialog = SettingsDialog(
         cfg,
@@ -3973,6 +4258,21 @@ def _run_first_run_settings(
             return f" The configuration rollback also failed: {exc}"
         return ""
 
+    if QApplication.instance() is None:
+        return _apply_first_run_post_accept_sync(
+            cfg, values, rollback_config=rollback_config
+        )
+    return _apply_first_run_post_accept_responsive(
+        dialog,
+        cfg,
+        values,
+        rollback_config=rollback_config,
+        _work_runner=_work_runner,
+    )
+
+
+def _apply_first_run_post_accept_sync(cfg: Config, values, *, rollback_config) -> bool:
+    """Legacy fully-synchronous post-Accept apply (no event loop available)."""
     # WHY: a fresh checked default is not evidence that a startup shortcut existed.
     # Save before touching it; failed saves preserve its exact bytes or absence.
     try:
@@ -4024,6 +4324,205 @@ def _run_first_run_settings(
             )
     else:
         _stop_current_session_watcher_best_effort()
+    return True
+
+
+def _apply_first_run_post_accept_responsive(
+    dialog,
+    cfg: Config,
+    values,
+    *,
+    rollback_config,
+    _work_runner: Callable[[Callable[[], None]], None] | None = None,
+) -> bool:
+    """Post-Accept apply with progress: persist async, privileged startup work
+    through the existing _WowSyncStartupConfigurator worker (H2).
+
+    The wizard stays modal; the GUI thread pumps events while workers run,
+    so the dialog shows progress instead of freezing. Steps synchronize
+    through threading events observed by event pumping (never through ad-hoc
+    cross-thread signals while waiting); an injected runner (tests) may
+    complete steps inline. A bounded wait keeps a stuck worker from hanging
+    startup forever.
+    """
+
+    def _progress(text: str) -> None:
+        setter = getattr(dialog, "set_status", None)
+        if callable(setter):
+            setter(text, busy=True)
+
+    def _close_dialog() -> None:
+        try:
+            dialog.close()
+        except Exception:  # noqa: BLE001 - best-effort teardown
+            pass
+
+    try:
+        dialog.show()
+    except Exception:  # noqa: BLE001 - exotic test doubles stay functional
+        pass
+    _progress("Saving settings…")
+
+    step_done = threading.Event()
+    save_errors: list[Exception] = []
+
+    def _dispatch(worker: Callable[[], None]) -> None:
+        if _work_runner is not None:
+            _work_runner(worker)
+            return
+        try:
+            thread = threading.Thread(
+                target=worker,
+                name="ApplicantScoutFirstRunApply",
+                daemon=True,
+            )
+            thread.start()
+        except Exception:  # noqa: BLE001 - thread launch failed; stay functional
+            worker()
+
+    def _fail_save(exc: Exception) -> bool:
+        log.warning("Could not persist first-run settings: %s", exc)
+        rollback_error = rollback_config()
+        QMessageBox.warning(
+            None,
+            "ApplicantScout settings",
+            f"Settings could not be saved: {exc}.{rollback_error}",
+        )
+        _close_dialog()
+        return False
+
+    def _configure_failed(exc: Exception) -> bool:
+        log.warning("Could not configure WoW lifecycle startup shortcut: %s", exc)
+        if not values.sync_with_wow:
+            QMessageBox.warning(
+                None,
+                "ApplicantScout settings",
+                "Settings were saved, but the WoW startup shortcut could not be "
+                f"updated: {exc}",
+            )
+            _stop_current_session_watcher_best_effort()
+            _close_dialog()
+            return True
+        rollback_error = rollback_config()
+        resolution = rollback_error or " The previous configuration was restored."
+        QMessageBox.warning(
+            None,
+            "ApplicantScout settings",
+            "Settings could not be applied because the WoW startup shortcut could "
+            f"not be updated: {exc}.{resolution}",
+        )
+        _close_dialog()
+        return False
+
+    def _watcher_failed(exc: Exception) -> bool:
+        log.warning("Could not start WoW lifecycle watcher: %s", exc)
+        QMessageBox.warning(
+            None,
+            "ApplicantScout settings",
+            "Settings were saved, but the current-session WoW watcher "
+            f"could not be started: {exc}",
+        )
+        _close_dialog()
+        return True
+
+    def _run_persist_step() -> None:
+        # WHY: a fresh checked default is not evidence that a startup shortcut
+        # existed. Save before touching it; failed saves preserve exact bytes.
+        try:
+            _persist_settings_values(cfg, values)
+        except Exception as exc:  # noqa: BLE001 - GUI reports it
+            save_errors.append(exc)
+        finally:
+            step_done.set()
+
+    def _await_step() -> bool:
+        if not _pump_until_first_run_step(
+            step_done, _FIRST_RUN_APPLY_STEP_TIMEOUT_S
+        ):
+            log.error("First-run apply timed out waiting for background work.")
+            _close_dialog()
+            return False
+        return True
+
+    _dispatch(_run_persist_step)
+    if not step_done.is_set() and not _await_step():
+        return False
+    if save_errors:
+        return _fail_save(save_errors[0])
+
+    _progress("Configuring WoW startup…")
+    configure_done = threading.Event()
+    configure_errors: list[Exception] = []
+
+    def _first_run_configure(enabled: bool) -> None:
+        # Preserve the legacy single-call semantics: approval restore is
+        # part of configure_wow_sync_startup, not a separate step.
+        try:
+            configure_wow_sync_startup(
+                enabled, restore_windows_approval=enabled
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - worker boundary: report, never hang
+            raise RuntimeError(str(exc)) from exc
+
+    def _on_configure_ok() -> None:
+        configure_done.set()
+
+    def _on_configure_error(exc: Exception) -> None:
+        configure_errors.append(exc)
+        configure_done.set()
+
+    try:
+        configurator = _WowSyncStartupConfigurator(
+            None,
+            configure=_first_run_configure,
+            enable_approval=lambda: None,
+            runner=_work_runner,
+        )
+        configurator.request(
+            values.sync_with_wow,
+            on_success=_on_configure_ok,
+            on_error=_on_configure_error,
+        )
+    except Exception as exc:  # noqa: BLE001 - GUI reports it, never hangs
+        _close_dialog()
+        return _configure_failed(exc)
+    if not _pump_until_first_run_step(
+        configure_done, _FIRST_RUN_APPLY_STEP_TIMEOUT_S
+    ):
+        log.error("First-run startup configuration timed out.")
+        _close_dialog()
+        return False
+    if configure_errors:
+        return _configure_failed(configure_errors[0])
+
+    _progress("Starting WoW watcher…")
+    watcher_done = threading.Event()
+    watcher_errors: list[Exception] = []
+
+    def _run_watcher_step() -> None:
+        if not values.sync_with_wow:
+            _stop_current_session_watcher_best_effort()
+            watcher_done.set()
+            return
+        try:
+            start_wow_sync_watcher(check_existing=False)
+        except Exception as exc:  # noqa: BLE001 - GUI reports it
+            watcher_errors.append(exc)
+        finally:
+            watcher_done.set()
+
+    _dispatch(_run_watcher_step)
+    if not _pump_until_first_run_step(
+        watcher_done, _FIRST_RUN_APPLY_STEP_TIMEOUT_S
+    ):
+        log.error("First-run watcher start timed out.")
+        _close_dialog()
+        return False
+    _close_dialog()
+    if watcher_errors:
+        return _watcher_failed(watcher_errors[0])
     return True
 
 
@@ -4381,6 +4880,10 @@ def main(argv: list[str] | None = None) -> int:
     def _cancel_update_download() -> bool:
         return active_update_control.cancel() if active_update_control is not None else False
 
+    # H3: bounded quit-time wait for the async settings pipeline (assigned in
+    # _show_settings once the dialog exists).
+    settings_apply_drain: Callable[[], bool] | None = None
+
     def _flush_before_quit_impl() -> None:
         _quiesce_screenshot_ingestion(
             watcher,
@@ -4388,6 +4891,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if settings_dialog is not None:
             settings_dialog.flush_pending_values()
+        if settings_apply_drain is not None and not settings_apply_drain():
+            log.warning("Settings apply did not finish before quit; continuing.")
         if active_window := window_ref.get("window"):
             active_window.flush_geometry()
 
@@ -4595,15 +5100,20 @@ def main(argv: list[str] | None = None) -> int:
             return
         if not retry_available:
             pending_update_version = None
+        # M4 (message text only, no behavior change): the updater keeps the
+        # newest inactive installer as a rollback candidate but nothing
+        # references it automatically. Tell the user where to roll back by
+        # hand if the new version does not start.
+        display_message = _update_handoff_rollback_message(message)
         _set_update_in_progress(False)
         if settings_dialog is not None:
             settings_dialog.set_update_available(pending_update_version)
-            settings_dialog.set_status(message, error=True)
+            settings_dialog.set_status(display_message, error=True)
         if tray_controller is not None:
             tray_controller.set_update_available(pending_update_version)
             tray_controller.tray.showMessage(
                 "ApplicantScout update",
-                message,
+                display_message,
                 QSystemTrayIcon.MessageIcon.Warning,
                 7000,
             )
@@ -4627,6 +5137,7 @@ def main(argv: list[str] | None = None) -> int:
         nonlocal auth
         nonlocal cfg
         nonlocal current_screenshots_dir
+        nonlocal settings_apply_drain
         nonlocal settings_dialog
         nonlocal watcher
         nonlocal wow_exit_timer
@@ -4703,18 +5214,34 @@ def main(argv: list[str] | None = None) -> int:
                 _request_startup_shortcut(True)
 
         def _apply_settings_values(values, *, apply_credentials: bool) -> None:
+            # H3: snapshot values and return immediately; persist/apply runs in
+            # the pipeline worker and commits coalesced on the GUI thread.
+            settings_applier.submit(values, apply_credentials=apply_credentials)
+
+        def _mark_apply_busy() -> None:
+            dialog.set_status("Saving...", busy=True)
+
+        def _commit_apply_outcome(outcome: _SettingsApplyOutcome) -> None:
             nonlocal auth
             nonlocal cfg
             nonlocal current_screenshots_dir
             nonlocal watcher
             nonlocal wow_exit_timer
-            dialog.set_status("Saving...", busy=True)
+            values = outcome.values
+            apply_credentials = outcome.apply_credentials
+            if settings_dialog is not dialog:
+                return
+            if not outcome.ok or outcome.prepared is None:
+                exc = outcome.error
+                log.warning("Could not apply settings change: %s", exc)
+                dialog.report_values_apply_result(False)
+                dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
+                return
             try:
-                result = _apply_settings_change(
+                result = _commit_settings_apply(
                     app=app,
-                    cfg=cfg,
+                    prepared=outcome.prepared,
                     values=values,
-                    apply_credentials=apply_credentials,
                     auth=auth,
                     wcl_client=wcl_client,
                     region_runtime=region_runtime,
@@ -4768,6 +5295,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if startup_shortcut_changed:
                 _request_startup_shortcut(cfg.sync_with_wow)
+
+        settings_applier = _CoalescedSettingsApplier(
+            app if isinstance(app, QObject) else None,
+            current_cfg=lambda: cfg,
+        )
+        settings_applier.configure(
+            on_busy=_mark_apply_busy,
+            on_ready=_commit_apply_outcome,
+        )
+        settings_apply_drain = settings_applier.drain
 
         def _handle_values_changed(values) -> None:
             _apply_settings_values(values, apply_credentials=False)
