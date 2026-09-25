@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -23,6 +24,10 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 15
 MAX_WORKERS = 4
+# Transient PyPI transport failures (timeout/DNS/reset) are retried with
+# exponential backoff; persistent failures still fail the gate closed.
+FETCH_MAX_ATTEMPTS = 3
+FETCH_RETRY_DELAYS_SECONDS = (1.0, 2.0)
 _PIN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*)==([A-Za-z0-9][A-Za-z0-9.!+_-]*)")
 _ADVISORY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
 
@@ -78,6 +83,10 @@ class _NoRedirect(HTTPRedirectHandler):
         raise AdvisoryCheckError("unexpected registry redirect")
 
 
+def _sleep_before_advisory_retry(seconds: float) -> None:
+    time.sleep(seconds)
+
+
 def fetch_release(pin: Pin) -> object:
     # Pin parsing excludes URL delimiters, query strings, paths, and credentials.
     request = Request(
@@ -88,23 +97,32 @@ def fetch_release(pin: Pin) -> object:
             "User-Agent": "ApplicantScout-dependency-advisories",
         },
     )
-    try:
-        with build_opener(_NoRedirect()).open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            if response.status != 200:
-                raise AdvisoryCheckError("registry returned a non-success status")
-            if response.headers.get_content_type() != "application/json":
-                raise AdvisoryCheckError("registry returned a non-JSON response")
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-    except HTTPError as exc:
-        raise AdvisoryCheckError(f"registry HTTP {exc.code}") from exc
-    except (URLError, OSError, HTTPException) as exc:
-        raise AdvisoryCheckError("registry request unavailable") from exc
-    if len(body) > MAX_RESPONSE_BYTES:
-        raise AdvisoryCheckError("registry response exceeded the size limit")
-    try:
-        return json.loads(body)
-    except (ValueError, UnicodeError, RecursionError) as exc:
-        raise AdvisoryCheckError("registry returned invalid JSON") from exc
+    for attempt in range(FETCH_MAX_ATTEMPTS):
+        try:
+            with build_opener(_NoRedirect()).open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                if response.status != 200:
+                    raise AdvisoryCheckError("registry returned a non-success status")
+                if response.headers.get_content_type() != "application/json":
+                    raise AdvisoryCheckError("registry returned a non-JSON response")
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+        except HTTPError as exc:
+            raise AdvisoryCheckError(f"registry HTTP {exc.code}") from exc
+        except (URLError, OSError, HTTPException) as exc:
+            if attempt >= FETCH_MAX_ATTEMPTS - 1:
+                raise AdvisoryCheckError("registry request unavailable") from exc
+            _sleep_before_advisory_retry(
+                FETCH_RETRY_DELAYS_SECONDS[
+                    min(attempt, len(FETCH_RETRY_DELAYS_SECONDS) - 1)
+                ]
+            )
+            continue
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise AdvisoryCheckError("registry response exceeded the size limit")
+        try:
+            return json.loads(body)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            raise AdvisoryCheckError("registry returned invalid JSON") from exc
+    raise AdvisoryCheckError("registry request unavailable")
 
 
 def active_advisories(pin: Pin, payload: object) -> tuple[str, ...]:

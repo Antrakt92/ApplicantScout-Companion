@@ -246,7 +246,10 @@ def test_only_valid_missing_consent_uses_default_and_corrupt_state_is_not_rewrit
     assert not instance.consent_enabled
     assert not instance.record("addon_received")
     assert sender.events == []
-    assert path.read_text(encoding="utf-8") == state
+    assert not path.exists()
+    backups = list(tmp_path.glob("usage.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == state
     instance.close()
 
 

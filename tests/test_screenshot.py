@@ -4965,6 +4965,12 @@ def test_manual_index_revision_invalidates_prior_no_marker_fingerprints(
 
     assert screenshot_mod._MANUAL_INDEX_VERSION == 2
     assert index.contains(key) is False
+    assert not state_path.exists()
+    index.flush()
+    assert state_path.exists()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["version"] == (
+        screenshot_mod._MANUAL_INDEX_VERSION
+    )
 
 
 def test_backlog_resumes_beyond_unknown_decode_budget(

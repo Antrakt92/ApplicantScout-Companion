@@ -4009,6 +4009,36 @@ def test_uninstall_removes_wow_sync_startup_entries():
     assert 'STARTUP_SHORTCUT_NAME = "ApplicantScout Companion.lnk"' in lifecycle
 
 
+def test_uninstall_reports_leftover_startup_entry_with_manual_cleanup():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "procedure RemoveWowSyncStartupEntries();" in inno_script
+    assert "RemoveWowSyncStartupEntries();" in inno_script
+    assert (
+        "Disable the leftover entry in Windows Settings > Apps > Startup."
+        in inno_script
+    )
+
+
+def test_runtime_and_packaging_sources_stay_pyqt_free():
+    # The PyQt6 (GPL) to PySide6 (LGPL) migration must not regress: only
+    # historical licensing notes outside src/packaging/scripts may mention PyQt.
+    offenders = []
+    for root_name in ("src", "packaging", "scripts"):
+        root = REPO_ROOT / root_name
+        assert root.is_dir()
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if "PyQt" in text:
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+    assert offenders == [], f"PyQt references leaked into {offenders}"
+
+
 def test_installer_pending_reboot_guard_covers_legacy_payload_paths():
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
 

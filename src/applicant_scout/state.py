@@ -342,6 +342,12 @@ def load_geometry(config_dir: Path) -> WindowGeometry:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
+            _log.warning(
+                "Ignoring non-dict window geometry %s: expected JSON object, got %s",
+                path,
+                type(data).__name__,
+            )
+            _quarantine_corrupt_file(path)
             return WindowGeometry()
         return _geometry_from_dict(data)
     except (json.JSONDecodeError, UnicodeError) as exc:
@@ -373,6 +379,12 @@ def load_launcher_position(config_dir: Path) -> LauncherPosition | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
+            _log.warning(
+                "Ignoring non-dict launcher position %s: expected JSON object, got %s",
+                path,
+                type(data).__name__,
+            )
+            _quarantine_corrupt_file(path)
             return None
         return _launcher_position_from_dict(data)
     except (json.JSONDecodeError, UnicodeError) as exc:

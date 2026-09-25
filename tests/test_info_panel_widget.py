@@ -7086,6 +7086,19 @@ def test_delegate_set_rows_reports_only_changed_interaction_rows():
     assert delegate.set_rows(-1, -1) == {5, 7}
 
 
+def test_delegate_paint_with_missing_painter_returns_without_raising(qtbot):
+    table = QTableWidget(1, 1)
+    qtbot.addWidget(table)
+    table.setItem(0, 0, overlay_mod.QTableWidgetItem(""))
+    delegate = _HoverHighlightDelegate(table)
+    index = table.model().index(0, 0)
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 100, 24)
+    option.widget = table
+
+    delegate.paint(None, option, index)
+
+
 def test_delegate_set_rows_reports_changed_overlapping_hover_and_pin():
     delegate = _HoverHighlightDelegate()
 

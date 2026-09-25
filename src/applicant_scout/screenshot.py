@@ -1763,7 +1763,29 @@ class _ManualScreenshotIndex:
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             _log.warning("could not load screenshot manual index: %s", exc)
             return
-        if not isinstance(raw, dict) or raw.get("version") != _MANUAL_INDEX_VERSION:
+        if not isinstance(raw, dict):
+            return
+        if raw.get("version") != _MANUAL_INDEX_VERSION:
+            # Stale revision: drop it so fingerprints are re-reviewed under the
+            # current rules instead of being silently ignored forever. The
+            # fresh revision materializes on the next flush.
+            _log.info(
+                "dropping stale screenshot manual index version %r from %s",
+                raw.get("version"),
+                self._state_path,
+            )
+            try:
+                self._state_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                _log.warning(
+                    "could not clear stale screenshot manual index %s: %s",
+                    self._state_path,
+                    exc,
+                )
+            else:
+                self._dirty = True
             return
         entries = raw.get("manual")
         if not isinstance(entries, list):

@@ -116,6 +116,8 @@ def test_transport_uses_release_endpoint_and_bounded_request(monkeypatch, body, 
 
 
 def test_network_failure_does_not_echo_untrusted_error_text(monkeypatch):
+    monkeypatch.setattr(checker, "_sleep_before_advisory_retry", lambda _seconds: None)
+
     class Opener:
         def open(self, *_args, **_kwargs):
             raise URLError("private\n::notice::injected")
@@ -126,6 +128,8 @@ def test_network_failure_does_not_echo_untrusted_error_text(monkeypatch):
 
 
 def test_truncated_http_body_is_an_unavailable_result(monkeypatch):
+    monkeypatch.setattr(checker, "_sleep_before_advisory_retry", lambda _seconds: None)
+
     class Opener:
         def open(self, *_args, **_kwargs):
             raise IncompleteRead(b"private\n::notice::injected")
@@ -146,6 +150,65 @@ def test_default_constraints_resolve_from_repository_not_working_directory(tmp_p
 def test_redirects_fail_closed():
     with pytest.raises(checker.AdvisoryCheckError, match="redirect"):
         checker._NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere.test")
+
+
+def _json_response(body: bytes):
+    class Response:
+        status = 200
+
+        class headers:
+            @staticmethod
+            def get_content_type():
+                return "application/json"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def read(self, _size):
+            return body
+
+    return Response()
+
+
+def test_transient_transport_failure_then_success_passes(monkeypatch):
+    attempts = []
+    sleeps = []
+    monkeypatch.setattr(checker, "_sleep_before_advisory_retry", sleeps.append)
+    body = b'{"info":{"name":"demo","version":"1.0"},"vulnerabilities":[]}'
+
+    class Opener:
+        def open(self, *_args, **_kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise URLError("transient DNS timeout")
+            return _json_response(body)
+
+    monkeypatch.setattr(checker, "build_opener", lambda *_args: Opener())
+    assert checker.check_pin(checker.Pin("demo", "1.0")).error == ""
+    assert len(attempts) == 2
+    assert len(sleeps) == len(attempts) - 1
+    assert all(delay > 0 for delay in sleeps)
+    assert list(sleeps) == sorted(sleeps)
+
+
+def test_persistent_transport_failure_still_fails_closed(monkeypatch):
+    attempts = []
+    sleeps = []
+    monkeypatch.setattr(checker, "_sleep_before_advisory_retry", sleeps.append)
+
+    class Opener:
+        def open(self, *_args, **_kwargs):
+            attempts.append(1)
+            raise URLError("persistent DNS failure")
+
+    monkeypatch.setattr(checker, "build_opener", lambda *_args: Opener())
+    result = checker.check_pin(checker.Pin("demo", "1.0"))
+    assert result.error == "registry request unavailable"
+    assert len(attempts) == checker.FETCH_MAX_ATTEMPTS
+    assert len(sleeps) == checker.FETCH_MAX_ATTEMPTS - 1
 
 
 @pytest.mark.parametrize(("affected", "unavailable", "expected"), [(False, False, 0), (True, False, 1), (False, True, 2), (True, True, 2)])

@@ -6,17 +6,37 @@ from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import sys
 import threading
+import time
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import httpx
 
 from .atomic_io import atomic_write_text
+
+
+_log = logging.getLogger("applicant_scout.usage")
+
+
+def _quarantine_corrupt_file(path: Path) -> None:
+    """Rename an undecodable usage state file aside, preserving evidence.
+
+    Best-effort only: callers stay fail-closed either way, and the corrupt
+    file must never be silently re-read on every startup.
+    """
+    backup = path.with_name(
+        f"{path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S', time.localtime())}"
+    )
+    try:
+        path.rename(backup)
+    except OSError as exc:
+        _log.warning("Could not quarantine corrupt usage state file %s: %s", path, exc)
 
 
 USAGE_ENDPOINT = "https://applicantscout-usage.applicantscout-usage-service.workers.dev/v1/events"
@@ -269,7 +289,7 @@ class UsageClient:
                 raw = source.read(_MAX_STATE_BYTES + 1)
         except FileNotFoundError:
             return None
-        else:
+        try:
             if len(raw.encode("utf-8")) > _MAX_STATE_BYTES:
                 raise ValueError("Usage state is too large")
             state = json.loads(raw)
@@ -292,6 +312,11 @@ class UsageClient:
             for key in seen:
                 if not isinstance(key, str) or not self._valid_seen_key(key):
                     raise ValueError("Invalid usage reservation")
+        except (ValueError, UnicodeError) as exc:
+            _log.warning("Ignoring corrupt usage state %s: %s", self._path, exc)
+            _quarantine_corrupt_file(self._path)
+            raise
+        else:
             self._install_id = install_id
             self._seen = seen
             return state.get("consent")

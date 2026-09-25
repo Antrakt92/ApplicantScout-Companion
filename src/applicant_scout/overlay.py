@@ -935,6 +935,8 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
             self._group_marker_by_row = markers
 
     def paint(self, painter: QPainter, option, index):  # type: ignore[override]
+        if painter is None:
+            return
         # Item paints first (preserves QTableWidgetItem.setBackground colours
         # for raid/M+ percentile cells). Stripe overlays after — visible over
         # any background, never desaturates the text behind it.
@@ -993,8 +995,6 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
             self._paint_group_mplus_cell(painter, option, index, group_marker)
         else:
             super().paint(painter, option, index)
-        if painter is None:
-            return
         r = option.rect
         # Interaction stripe lives in the FIRST visible column only — one
         # tint + one edge bar per row instead of per cell. Pinned wins on

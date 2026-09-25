@@ -1353,6 +1353,49 @@ def test_save_config_values_failed_replace_preserves_existing_config(
     assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
 
 
+def test_save_config_values_preserves_unknown_lines_verbatim(tmp_path: Path):
+    target = tmp_path / "config.env"
+    target.write_text(
+        '# operator note\nWCL_CLIENT_ID="old"\n'
+        'APSCOUT_FUTURE_FLAG="1"\n'
+        'export APSCOUT_LEGACY_ALIAS="keep me"\n',
+        encoding="utf-8",
+    )
+
+    save_config_values(
+        wcl_client_id="new",
+        wcl_client_secret="secret",
+        region="EU",
+        config_path=target,
+    )
+
+    contents = target.read_text(encoding="utf-8")
+    assert 'WCL_CLIENT_ID="new"\n' in contents
+    assert 'WCL_CLIENT_ID="old"\n' not in contents
+    assert len(re.findall(r"(?m)^WCL_CLIENT_ID=", contents)) == 1
+    assert "# operator note\n" in contents
+    assert 'APSCOUT_FUTURE_FLAG="1"\n' in contents
+    assert 'export APSCOUT_LEGACY_ALIAS="keep me"\n' in contents
+
+
+def test_save_config_values_clears_managed_key_when_omitted(tmp_path: Path):
+    target = tmp_path / "config.env"
+    target.write_text(
+        'WCL_CLIENT_ID="client"\nAPSCOUT_SCREENSHOTS_PATH="C:\\old"\n',
+        encoding="utf-8",
+    )
+
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        config_path=target,
+    )
+
+    contents = target.read_text(encoding="utf-8")
+    assert "APSCOUT_SCREENSHOTS_PATH=" not in contents
+
+
 def test_load_config_round_trips_metric_preferences(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -10517,6 +10560,119 @@ def test_wow_start_update_prompt_message_points_at_titlebar_icon():
         "Update v0.2.2 is available. Click the blue download icon in the "
         "title bar to install it."
     )
+
+
+class _BackgroundUpdateDialog:
+    def __init__(self) -> None:
+        self.activations: list[str] = []
+        self.statuses: list[tuple[str, bool]] = []
+
+    def show(self) -> None:
+        self.activations.append("show")
+
+    def raise_(self) -> None:
+        self.activations.append("raise")
+
+    def activateWindow(self) -> None:
+        self.activations.append("activate")
+
+    def set_status(self, text: str, *, error: bool = False) -> None:
+        self.statuses.append((text, error))
+
+    def set_update_available(self, _version) -> None:
+        pass
+
+
+class _BackgroundUpdateTray:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str, object, int]] = []
+
+    def showMessage(self, title: str, body: str, icon, timeout_ms: int) -> None:
+        self.messages.append((title, body, icon, timeout_ms))
+
+
+class _BackgroundUpdateTrayController:
+    def __init__(self, tray) -> None:
+        self.tray = tray
+
+
+def test_background_update_available_never_activates_settings():
+    dialog = _BackgroundUpdateDialog()
+    tray = _BackgroundUpdateTray()
+
+    main_mod._notify_background_update_available(
+        tray_controller=_BackgroundUpdateTrayController(tray),
+        settings_dialog=dialog,
+        latest_version="v0.2.2",
+    )
+
+    assert dialog.activations == []
+    assert dialog.statuses == [
+        (main_mod._wow_start_update_prompt_message("v0.2.2"), False)
+    ]
+    assert tray.messages == [
+        (
+            "ApplicantScout update",
+            main_mod._wow_start_update_prompt_message("v0.2.2"),
+            main_mod.QSystemTrayIcon.MessageIcon.Information,
+            7000,
+        )
+    ]
+
+
+def test_background_update_available_without_dialog_still_notifies_tray():
+    tray = _BackgroundUpdateTray()
+
+    main_mod._notify_background_update_available(
+        tray_controller=_BackgroundUpdateTrayController(tray),
+        settings_dialog=None,
+        latest_version="v0.2.2",
+    )
+
+    assert len(tray.messages) == 1
+
+
+def test_update_failure_without_open_settings_shows_no_modal(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        main_mod.QMessageBox, "warning", lambda _p, _t, text: warnings.append(text)
+    )
+    tray = _BackgroundUpdateTray()
+
+    main_mod._notify_update_failure(
+        window=object(),
+        tray_controller=_BackgroundUpdateTrayController(tray),
+        settings_dialog=None,
+        message="Update failed: boom",
+    )
+
+    assert warnings == []
+    assert [body for _, body, _, _ in tray.messages] == ["Update failed: boom"]
+
+
+def test_update_failure_with_open_settings_shows_status_and_modal(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        main_mod.QMessageBox, "warning", lambda _p, _t, text: warnings.append(text)
+    )
+    dialog = _BackgroundUpdateDialog()
+    tray = _BackgroundUpdateTray()
+
+    main_mod._notify_update_failure(
+        window=object(),
+        tray_controller=_BackgroundUpdateTrayController(tray),
+        settings_dialog=dialog,
+        message="Update failed: boom",
+    )
+
+    assert dialog.activations == []
+    assert dialog.statuses == [("Update failed: boom", True)]
+    assert warnings == ["Update failed: boom"]
+    assert len(tray.messages) == 1
 
 
 def _active_update_quit_gate() -> main_mod._UpdateQuitGate:

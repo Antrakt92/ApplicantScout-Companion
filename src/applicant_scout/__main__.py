@@ -2380,6 +2380,62 @@ def _wow_start_update_prompt_message(latest_version: str) -> str:
     )
 
 
+def _notify_background_update_available(
+    *,
+    tray_controller: object | None,
+    settings_dialog: object | None,
+    latest_version: str,
+) -> None:
+    """Surface a background-found update via tray balloon + overlay chip only.
+
+    Never opens or activates the settings dialog: a background check must not
+    steal focus while the user plays. The overlay chip is armed separately via
+    set_update_available before this call.
+    """
+    message = _wow_start_update_prompt_message(latest_version)
+    set_status = getattr(settings_dialog, "set_status", None)
+    if callable(set_status):
+        set_status(message)
+    tray = getattr(tray_controller, "tray", None)
+    show_message = getattr(tray, "showMessage", None)
+    if callable(show_message):
+        show_message(
+            "ApplicantScout update",
+            message,
+            QSystemTrayIcon.MessageIcon.Information,
+            7000,
+        )
+
+
+def _notify_update_failure(
+    *,
+    window: Any,
+    tray_controller: object | None,
+    settings_dialog: object | None,
+    message: str,
+) -> None:
+    """Surface an update failure without stealing focus.
+
+    Status text and tray balloon always; the modal dialog only when the
+    settings dialog is already open (the user is interacting with us).
+    """
+    log.warning("ApplicantScout update failed: %s", message)
+    set_status = getattr(settings_dialog, "set_status", None)
+    if callable(set_status):
+        set_status(message, error=True)
+    tray = getattr(tray_controller, "tray", None)
+    show_message = getattr(tray, "showMessage", None)
+    if callable(show_message):
+        show_message(
+            "ApplicantScout update",
+            message,
+            QSystemTrayIcon.MessageIcon.Warning,
+            7000,
+        )
+    if settings_dialog is not None:
+        QMessageBox.warning(window, "ApplicantScout update", message)
+
+
 def _flush_settings_before_update(settings_dialog: object | None) -> bool:
     if settings_dialog is None:
         return True
@@ -5462,7 +5518,12 @@ def main(argv: list[str] | None = None) -> int:
         if completion.error:
             update_handoff_recovery.disarm()
             _set_update_in_progress(False)
-            QMessageBox.warning(window, "ApplicantScout update", completion.message)
+            _notify_update_failure(
+                window=window,
+                tray_controller=tray_controller,
+                settings_dialog=settings_dialog,
+                message=completion.message,
+            )
             return
         if completion.installer_handoff:
             _handle_update_handoff_started(
@@ -5525,10 +5586,11 @@ def main(argv: list[str] | None = None) -> int:
             pending_update_version=pending_update_version,
         ):
             startup_update_prompt_pending = False
-            _show_settings()
-            if settings_dialog is not None and pending_update_version is not None:
-                settings_dialog.set_status(
-                    _wow_start_update_prompt_message(pending_update_version)
+            if pending_update_version is not None:
+                _notify_background_update_available(
+                    tray_controller=tray_controller,
+                    settings_dialog=settings_dialog,
+                    latest_version=pending_update_version,
                 )
             return
         startup_update_prompt_pending = False

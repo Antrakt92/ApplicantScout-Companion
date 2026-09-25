@@ -315,6 +315,37 @@ def _bool_env_line(key: str, value: bool) -> str:
     return _env_line(key, "1" if value else "0")
 
 
+_MANAGED_CONFIG_KEYS = frozenset(
+    {
+        "WCL_CLIENT_ID",
+        "WCL_CLIENT_SECRET",
+        "APSCOUT_DRAFT_WCL_CLIENT_ID",
+        "APSCOUT_DRAFT_WCL_CLIENT_SECRET",
+        "APSCOUT_REGION",
+        "APSCOUT_FETCH_MPLUS",
+        "APSCOUT_FETCH_RAID_NORMAL",
+        "APSCOUT_FETCH_RAID_HEROIC",
+        "APSCOUT_FETCH_RAID_MYTHIC",
+        "APSCOUT_SYNC_WITH_WOW",
+        "APSCOUT_SCREENSHOTS_PATH",
+        "APSCOUT_CACHE_TTL_SECONDS",
+        "APSCOUT_CHATLOG_PATH",
+    }
+)
+_MANAGED_CONFIG_LINE = re.compile(
+    r"^\s*(?:export\s+)?(" + "|".join(sorted(_MANAGED_CONFIG_KEYS)) + r")\s*="
+)
+
+
+def _unmanaged_config_lines(contents: str) -> list[str]:
+    """Return lines this saver does not own, preserved verbatim."""
+    return [
+        line
+        for line in contents.splitlines(keepends=True)
+        if not _MANAGED_CONFIG_LINE.match(line)
+    ]
+
+
 def save_config_values(
     *,
     wcl_client_id: str,
@@ -349,6 +380,14 @@ def save_config_values(
         lines.append(_env_line("APSCOUT_CACHE_TTL_SECONDS", str(cache_ttl_seconds)))
     if chatlog_path.strip():
         lines.append(_env_line("APSCOUT_CHATLOG_PATH", chatlog_path))
+    if target.is_file():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ConfigError(
+                f"Could not read ApplicantScout config at {target}: {exc}"
+            ) from exc
+        lines.extend(_unmanaged_config_lines(existing))
     atomic_write_text(target, "".join(lines), private=True)
     return target
 

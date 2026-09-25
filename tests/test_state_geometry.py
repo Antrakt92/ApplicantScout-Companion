@@ -215,9 +215,23 @@ def test_load_launcher_position_quarantines_corrupt_file(tmp_path, caplog):
     assert "corrupt" in caplog.text.lower()
 
 
-def test_load_geometry_keeps_valid_json_with_wrong_shape_in_place(tmp_path):
+def test_load_geometry_quarantines_non_dict_json(tmp_path, caplog):
     _write_geometry(tmp_path, ["not", "a", "dict"])
 
-    assert load_geometry(tmp_path) == WindowGeometry()
-    assert (tmp_path / "window.json").exists()
-    assert list(tmp_path.glob("window.json.corrupt-*")) == []
+    with caplog.at_level(logging.WARNING, logger="applicant_scout.state"):
+        assert load_geometry(tmp_path) == WindowGeometry()
+
+    assert not (tmp_path / "window.json").exists()
+    assert len(list(tmp_path.glob("window.json.corrupt-*"))) == 1
+    assert "non-dict" in caplog.text.lower()
+
+
+def test_load_launcher_position_quarantines_non_dict_json(tmp_path, caplog):
+    (tmp_path / "launcher.json").write_text("[1, 2]", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="applicant_scout.state"):
+        assert load_launcher_position(tmp_path) is None
+
+    assert not (tmp_path / "launcher.json").exists()
+    assert len(list(tmp_path.glob("launcher.json.corrupt-*"))) == 1
+    assert "non-dict" in caplog.text.lower()
