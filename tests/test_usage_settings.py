@@ -193,7 +193,10 @@ def test_corrupt_usage_state_is_not_enabled_by_opening_settings(qtbot, tmp_path)
         dialog = dialog_for(qtbot, tmp_path, usage)
         assert not dialog.usage_check.isChecked()
         assert not usage.consent_enabled
-        assert not path.exists()
+        # Self-heal: corrupt bytes quarantined aside, fresh fail-closed default written.
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "schema": 1, "consent": False,
+        }
         assert len(list(path.parent.glob("usage.json.corrupt-*"))) == 1
     finally:
         usage.close()

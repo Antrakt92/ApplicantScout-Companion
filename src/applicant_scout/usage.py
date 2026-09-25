@@ -165,6 +165,14 @@ class UsageClient:
         except (OSError, ValueError, TypeError, UnicodeError):
             saved_consent = False
             self._failed = True
+            try:
+                # _load already quarantined corrupt state aside; write a fresh
+                # fail-closed default so the corrupt bytes are not reparsed on
+                # every startup. Never enable telemetry implicitly here.
+                if not self._path.exists():
+                    self._write_state(False, "", [])
+            except OSError:
+                pass
         if saved_consent is None:
             if consent is None and _installer_opted_out(state_dir):
                 initial_consent = False

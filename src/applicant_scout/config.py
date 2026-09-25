@@ -27,6 +27,8 @@ from .screenshots_path_probe import (
 
 MAX_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 CONFIG_ENV_FILENAME = "config.env"
+CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_KEY = "APSCOUT_CONFIG_SCHEMA"
 VALID_WCL_REGIONS = frozenset(REGION_ID_TO_WCL.values())
 _BOOL_TRUE_TOKENS = frozenset({"1", "true", "yes", "on"})
 _BOOL_FALSE_TOKENS = frozenset({"0", "false", "no", "off"})
@@ -319,6 +321,7 @@ _MANAGED_CONFIG_KEYS = frozenset(
     {
         "WCL_CLIENT_ID",
         "WCL_CLIENT_SECRET",
+        "APSCOUT_CONFIG_SCHEMA",
         "APSCOUT_DRAFT_WCL_CLIENT_ID",
         "APSCOUT_DRAFT_WCL_CLIENT_SECRET",
         "APSCOUT_REGION",
@@ -363,6 +366,7 @@ def save_config_values(
     """Persist user-editable settings to the local companion config area."""
     target = config_path or user_config_path()
     lines = [
+        _env_line(CONFIG_SCHEMA_KEY, str(CONFIG_SCHEMA_VERSION)),
         _env_line("WCL_CLIENT_ID", wcl_client_id),
         _env_line("WCL_CLIENT_SECRET", wcl_client_secret),
         _env_line("APSCOUT_DRAFT_WCL_CLIENT_ID", draft_wcl_client_id),
@@ -462,10 +466,37 @@ def validate_metric_preferences(metric_preferences: MetricPreferences) -> Metric
     return metric_preferences
 
 
+def _parse_config_schema_version(raw: str | None) -> int | None:
+    """Validate the persisted config schema version without breaking old files.
+
+    Files without the key load as today. A newer unknown version fails closed
+    because a downgrade may misread newer settings.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        seen = int(text, 10)
+    except ValueError:
+        raise ConfigError(
+            f"{CONFIG_SCHEMA_KEY} must be a positive integer schema version"
+        ) from None
+    if seen > CONFIG_SCHEMA_VERSION:
+        raise ConfigError(
+            f"ApplicantScout config schema {seen} is newer than supported "
+            f"{CONFIG_SCHEMA_VERSION}; config downgrade is not supported "
+            "(e.g. 0.20->0.19 breaks PTR users because 0.19 rejects "
+            "non-_retail_ paths). Update the companion instead of reusing "
+            "this config."
+        )
+    return seen
+
+
 def load_config() -> Config:
     """Load config values without prompting or depending on process CWD."""
     config_dir, cache_dir, log_dir, config_path = _prepare_user_storage()
     values = read_user_config_values()
+    _parse_config_schema_version(_value(values, CONFIG_SCHEMA_KEY, ""))
     client_id = _value(values, "WCL_CLIENT_ID")
     client_secret = _value(values, "WCL_CLIENT_SECRET")
     draft_client_id = _value(values, "APSCOUT_DRAFT_WCL_CLIENT_ID")

@@ -246,11 +246,46 @@ def test_only_valid_missing_consent_uses_default_and_corrupt_state_is_not_rewrit
     assert not instance.consent_enabled
     assert not instance.record("addon_received")
     assert sender.events == []
-    assert not path.exists()
+    # Self-heal: the corrupt payload is quarantined aside; only a fresh
+    # fail-closed default is written, never the corrupt bytes nor opt-in.
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "schema": 1, "consent": False,
+    }
     backups = list(tmp_path.glob("usage.json.corrupt-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == state
     instance.close()
+
+
+def test_corrupt_usage_state_self_heals_on_restart_without_reparsing(tmp_path):
+    path = tmp_path / "usage.json"
+    state = '{"schema": 1, "consent": null}'
+    path.write_text(state, encoding="utf-8")
+    first = client(tmp_path, Recorder())
+    try:
+        assert not first.consent_enabled
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "schema": 1, "consent": False,
+        }
+    finally:
+        first.close()
+    backups_before = list(tmp_path.glob("usage.json.corrupt-*"))
+    assert len(backups_before) == 1
+
+    sender = Recorder()
+    restarted = client(tmp_path, sender)
+    try:
+        assert not restarted.consent_enabled
+        assert not restarted.record("addon_received")
+        drain(restarted)
+        assert sender.events == []
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "schema": 1, "consent": False,
+        }
+    finally:
+        restarted.close()
+    # No new quarantine on restart: the fresh default parses cleanly.
+    assert list(tmp_path.glob("usage.json.corrupt-*")) == backups_before
 
 
 def test_missing_consent_migration_defaults_off_and_does_not_report(tmp_path):

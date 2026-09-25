@@ -59,6 +59,7 @@ proves the immutable public copy and assets.
    authenticated Warcraft Logs GraphQL request, validates the shipped M+ and
    raid zone/encounter constants, reports the post-query quota snapshot, and
    fails if fewer than 50 points remain.
+5. Do not downgrade a 0.20+ config for PTR use (e.g. 0.20->0.19): newer config schema versions fail closed and 0.19 rejects non-_retail_ paths.
 
 ## Native dependency source evidence
 

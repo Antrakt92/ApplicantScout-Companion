@@ -1378,6 +1378,109 @@ def test_save_config_values_preserves_unknown_lines_verbatim(tmp_path: Path):
     assert 'export APSCOUT_LEGACY_ALIAS="keep me"\n' in contents
 
 
+def test_save_config_values_writes_schema_version(tmp_path: Path):
+    target = tmp_path / "config.env"
+
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        config_path=target,
+    )
+
+    saved = config_mod._read_env_file(target)
+    assert saved["APSCOUT_CONFIG_SCHEMA"] == str(config_mod.CONFIG_SCHEMA_VERSION)
+    assert len(re.findall(r"(?m)^APSCOUT_CONFIG_SCHEMA=", target.read_text(encoding="utf-8"))) == 1
+
+
+def test_save_config_values_rewrites_schema_as_managed_key_preserving_unknown_lines(
+    tmp_path: Path,
+):
+    target = tmp_path / "config.env"
+    target.write_text(
+        '# operator note\nWCL_CLIENT_ID="old"\n'
+        'APSCOUT_CONFIG_SCHEMA="1"\n'
+        'APSCOUT_FUTURE_FLAG="1"\n',
+        encoding="utf-8",
+    )
+
+    save_config_values(
+        wcl_client_id="new",
+        wcl_client_secret="secret",
+        region="EU",
+        config_path=target,
+    )
+
+    contents = target.read_text(encoding="utf-8")
+    assert len(re.findall(r"(?m)^APSCOUT_CONFIG_SCHEMA=", contents)) == 1
+    assert f'APSCOUT_CONFIG_SCHEMA="{config_mod.CONFIG_SCHEMA_VERSION}"\n' in contents
+    assert 'APSCOUT_FUTURE_FLAG="1"\n' in contents
+    assert "# operator note\n" in contents
+
+
+def test_load_config_accepts_missing_schema_version_for_legacy_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("APSCOUT_CONFIG_SCHEMA", raising=False)
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('APSCOUT_REGION="US"\n', encoding="utf-8")
+
+    cfg = load_config()
+
+    assert cfg.region == "US"
+
+
+def test_load_config_round_trips_current_schema_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.delenv("APSCOUT_CONFIG_SCHEMA", raising=False)
+
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+    )
+
+    cfg = load_config()
+
+    assert cfg.wcl_client_id == "client"
+
+
+def test_load_config_rejects_newer_schema_version_with_ptr_downgrade_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("APSCOUT_CONFIG_SCHEMA", raising=False)
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    newer = config_mod.CONFIG_SCHEMA_VERSION + 1
+    path.write_text(f'APSCOUT_CONFIG_SCHEMA="{newer}"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError) as caught:
+        load_config()
+
+    message = str(caught.value)
+    assert "PTR" in message
+    assert "downgrade" in message.lower()
+    assert "_retail_" in message
+
+
+def test_load_config_rejects_malformed_schema_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("APSCOUT_CONFIG_SCHEMA", raising=False)
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('APSCOUT_CONFIG_SCHEMA="next"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="APSCOUT_CONFIG_SCHEMA"):
+        load_config()
+
+
 def test_save_config_values_clears_managed_key_when_omitted(tmp_path: Path):
     target = tmp_path / "config.env"
     target.write_text(
