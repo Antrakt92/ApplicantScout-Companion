@@ -8,7 +8,7 @@ import ctypes
 import logging
 import sys
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -250,6 +250,164 @@ ROLE_ICON_FILES = {
     "DAMAGER": "role_dps.png",
 }
 _ROLE_ICON_CACHE: dict[str, QIcon | None] = {}
+
+
+# P11 pure width math: zero-behavior extraction from
+# OverlayWindow._metric_column_required_width. The overlay measures
+# QFontMetrics/icon sizes at the call site and passes plain ints in, so this
+# section never touches Qt and is unit-testable without a QApplication.
+@dataclass(frozen=True, slots=True)
+class RowWidthInput:
+    """Pre-measured plain cell data for one table row."""
+
+    text: str
+    line_widths: tuple[int, ...] = ()
+    package_width: int | None = None
+    individual_width: int | None = None
+    has_icon: bool = False
+    icon_width: int = 0
+    rio_compact_cap: int | None = None
+
+
+def _row_text_width(col: int, row: RowWidthInput) -> int | None:
+    """Width contribution of one row, or None when the row is skipped."""
+    if col == COL_FIT and row.package_width is not None:
+        individual = row.individual_width if row.individual_width is not None else 0
+        return (
+            min(MPLUS_GROUP_LANE_MAX_WIDTH, max(MPLUS_GROUP_LANE_MIN_WIDTH, row.package_width + 12))
+            + max(MPLUS_INDIVIDUAL_LANE_MIN_WIDTH, individual + 12)
+            + 1
+        )
+    if not row.text or not row.line_widths:
+        return None
+    text_width = max(row.line_widths) + METRIC_COLUMN_TEXT_PADDING
+    if col == COL_NAME:
+        return min(NAME_COLUMN_MAX_WIDTH, text_width)
+    if col == COL_SPEC and row.has_icon:
+        return text_width + row.icon_width + 4
+    if col == COL_RIO and "\n" not in row.text and row.rio_compact_cap is not None:
+        return min(text_width, row.rio_compact_cap)
+    return text_width
+
+
+def measure_column_width(col: int, rows: Sequence[RowWidthInput]) -> int:
+    """Max row-driven width for a column from plain pre-measured inputs."""
+    width = 0
+    for row in rows:
+        row_width = _row_text_width(col, row)
+        if row_width is not None and row_width > width:
+            width = row_width
+    return width
+
+
+# P11 pure auth-chip lookup: zero-behavior extraction from
+# OverlayWindow._refresh_auth_label. Rendering strings stay byte-identical;
+# the widget method is now a thin table lookup plus two chip writes.
+@dataclass(frozen=True, slots=True)
+class ChipState:
+    """Plain auth-chip rendering: visible text, QSS state, tooltip detail."""
+
+    text: str
+    chip_state: str
+    detail: str
+
+
+_AUTH_CHIP_DEFAULT = ChipState(
+    text="Auth —",
+    chip_state="neutral",
+    detail="Warcraft Logs credentials have not been checked in this session.",
+)
+
+AUTH_CHIP_STATES: dict[tuple[str, str], ChipState] = {
+    ("checking", ""): ChipState(
+        text="Auth check",
+        chip_state="active",
+        detail="Checking the active Warcraft Logs credentials.",
+    ),
+    ("oauth_ready", ""): ChipState(
+        text="Auth ready",
+        chip_state="neutral",
+        detail=(
+            "Warcraft Logs accepted the active credentials. Applicant API "
+            "and quota data have not been queried yet."
+        ),
+    ),
+    ("api_ready", ""): ChipState(
+        text="Auth ready",
+        chip_state="neutral",
+        detail="The latest Warcraft Logs applicant API request succeeded.",
+    ),
+    ("error", WCL_ERROR_AUTH): ChipState(
+        text="Auth failed",
+        chip_state="critical",
+        detail=(
+            "Warcraft Logs rejected the active credentials. Test them in Settings."
+        ),
+    ),
+    ("error", WCL_ERROR_NETWORK): ChipState(
+        text="Auth offline",
+        chip_state="warning",
+        detail=(
+            "Could not reach Warcraft Logs. Check internet access; displayed "
+            "applicant data may be cached."
+        ),
+    ),
+    ("error", WCL_ERROR_SERVER): ChipState(
+        text="Auth issue",
+        chip_state="warning",
+        detail=(
+            "Warcraft Logs is temporarily unavailable. Applicant requests "
+            "will retry automatically."
+        ),
+    ),
+    ("error", WCL_ERROR_RATE_LIMITED): ChipState(
+        text="Auth issue",
+        chip_state="warning",
+        detail=(
+            "Warcraft Logs is temporarily limiting requests. Applicant "
+            "requests will retry automatically."
+        ),
+    ),
+    ("error", WCL_ERROR_GRAPHQL): ChipState(
+        text="Auth issue",
+        chip_state="warning",
+        detail=(
+            "Warcraft Logs returned an unexpected response. Check the "
+            "applicant row and retry."
+        ),
+    ),
+    ("error", WCL_ERROR_HTTP): ChipState(
+        text="Auth issue",
+        chip_state="warning",
+        detail=(
+            "Warcraft Logs returned an unexpected response. Check the "
+            "applicant row and retry."
+        ),
+    ),
+    ("error", WCL_ERROR_MALFORMED): ChipState(
+        text="Auth issue",
+        chip_state="warning",
+        detail=(
+            "Warcraft Logs returned an unexpected response. Check the "
+            "applicant row and retry."
+        ),
+    ),
+    ("error", ""): ChipState(
+        text="Auth issue",
+        chip_state="warning",
+        detail=(
+            "Warcraft Logs validation failed. Open Settings to test the "
+            "active credentials."
+        ),
+    ),
+}
+
+
+def auth_chip_for(state: str, error_kind: str | None) -> ChipState:
+    """Pure auth-chip lookup keyed by connection state and error kind."""
+    if state != "error":
+        return AUTH_CHIP_STATES.get((state, ""), _AUTH_CHIP_DEFAULT)
+    return AUTH_CHIP_STATES.get(("error", error_kind or ""), AUTH_CHIP_STATES[("error", "")])
 
 
 def _role_icon(role: str) -> QIcon | None:
@@ -5040,72 +5198,9 @@ class OverlayWindow(QMainWindow):
         status = getattr(self._wcl_client, "connection_status", None)
         state = getattr(status, "state", "unknown")
         error_kind = getattr(status, "error_kind", "")
-        if state == "checking":
-            text = "Auth check"
-            chip_state = "active"
-            detail = "Checking the active Warcraft Logs credentials."
-        elif state == "oauth_ready":
-            text = "Auth ready"
-            chip_state = "neutral"
-            detail = (
-                "Warcraft Logs accepted the active credentials. Applicant API "
-                "and quota data have not been queried yet."
-            )
-        elif state == "api_ready":
-            text = "Auth ready"
-            chip_state = "neutral"
-            detail = "The latest Warcraft Logs applicant API request succeeded."
-        elif state == "error" and error_kind == WCL_ERROR_AUTH:
-            text = "Auth failed"
-            chip_state = "critical"
-            detail = (
-                "Warcraft Logs rejected the active credentials. Test them in Settings."
-            )
-        elif state == "error" and error_kind == WCL_ERROR_NETWORK:
-            text = "Auth offline"
-            chip_state = "warning"
-            detail = (
-                "Could not reach Warcraft Logs. Check internet access; displayed "
-                "applicant data may be cached."
-            )
-        elif state == "error" and error_kind == WCL_ERROR_SERVER:
-            text = "Auth issue"
-            chip_state = "warning"
-            detail = (
-                "Warcraft Logs is temporarily unavailable. Applicant requests "
-                "will retry automatically."
-            )
-        elif state == "error" and error_kind == WCL_ERROR_RATE_LIMITED:
-            text = "Auth issue"
-            chip_state = "warning"
-            detail = (
-                "Warcraft Logs is temporarily limiting requests. Applicant "
-                "requests will retry automatically."
-            )
-        elif state == "error" and error_kind in {
-            WCL_ERROR_GRAPHQL,
-            WCL_ERROR_HTTP,
-            WCL_ERROR_MALFORMED,
-        }:
-            text = "Auth issue"
-            chip_state = "warning"
-            detail = (
-                "Warcraft Logs returned an unexpected response. Check the "
-                "applicant row and retry."
-            )
-        elif state == "error":
-            text = "Auth issue"
-            chip_state = "warning"
-            detail = (
-                "Warcraft Logs validation failed. Open Settings to test the "
-                "active credentials."
-            )
-        else:
-            text = "Auth —"
-            chip_state = "neutral"
-            detail = "Warcraft Logs credentials have not been checked in this session."
-        self._set_status_chip_text(self._auth_label, text, detail, detail)
-        self._set_status_chip_state(self._auth_label, chip_state)
+        chip = auth_chip_for(state, error_kind)
+        self._set_status_chip_text(self._auth_label, chip.text, chip.detail, chip.detail)
+        self._set_status_chip_state(self._auth_label, chip.chip_state)
 
     def _refresh_quota_label(self) -> None:
         """Pull the latest quota snapshot into the compact quota chip.
@@ -6661,6 +6756,9 @@ class OverlayWindow(QMainWindow):
         # changes clear the cache) always fall through to measurement.
         col_cache = self._metric_cell_width_cache.setdefault(col, {})
         dirty = self._metric_dirty_ids
+        icon_width = self._table.iconSize().width()
+        pending_inputs: list[RowWidthInput] = []
+        pending_keys: list[tuple[str | None, str]] = []
         for row in range(self._table.rowCount()):
             applicant_id = (
                 self._id_by_row[row] if row < len(self._id_by_row) else None
@@ -6684,35 +6782,53 @@ class OverlayWindow(QMainWindow):
                     width = max(width, cached[1])
                     continue
             text = item.text()
-            if col == COL_FIT and isinstance(item.data(MPLUS_PACKAGE_TEXT_ROLE), str):
+            package_data = item.data(MPLUS_PACKAGE_TEXT_ROLE)
+            if col == COL_FIT and isinstance(package_data, str):
                 font_metrics = self._column_font_metrics(item.font())
-                package_width = font_metrics.horizontalAdvance(
-                    str(item.data(MPLUS_PACKAGE_TEXT_ROLE))
+                pending_inputs.append(
+                    RowWidthInput(
+                        text=text,
+                        package_width=font_metrics.horizontalAdvance(str(package_data)),
+                        individual_width=font_metrics.horizontalAdvance(
+                            str(item.data(MPLUS_INDIVIDUAL_TEXT_ROLE))
+                        ),
+                    )
                 )
-                individual_width = font_metrics.horizontalAdvance(
-                    str(item.data(MPLUS_INDIVIDUAL_TEXT_ROLE))
-                )
-                text_width = (
-                    min(MPLUS_GROUP_LANE_MAX_WIDTH, max(MPLUS_GROUP_LANE_MIN_WIDTH, package_width + 12))
-                    + max(MPLUS_INDIVIDUAL_LANE_MIN_WIDTH, individual_width + 12) + 1
-                )
-                # The delegate paints two lanes, not the combined item text.
             elif not text:
                 continue
             else:
                 metrics = self._column_font_metrics(item.font())
-                lines = text.split("\n") if col == COL_RIO else [text]
-                text_width = max(metrics.horizontalAdvance(line) for line in lines) + METRIC_COLUMN_TEXT_PADDING
-                if col == COL_NAME:
-                    text_width = min(NAME_COLUMN_MAX_WIDTH, text_width)
-                elif col == COL_SPEC and not item.icon().isNull():
-                    text_width += self._table.iconSize().width() + 4
-                elif col == COL_RIO and "\n" not in text:
-                    # Preserve the compact current-score width when history is absent.
-                    text_width = min(text_width, self._column_font_metrics(item.font()).horizontalAdvance("9999 [9999]") + METRIC_COLUMN_TEXT_PADDING)
-            if applicant_id is not None:
-                col_cache[applicant_id] = (signature, text_width)
-            width = max(width, text_width)
+                if col == COL_RIO:
+                    line_widths = tuple(
+                        metrics.horizontalAdvance(line) for line in text.split("\n")
+                    )
+                    rio_cap = (
+                        metrics.horizontalAdvance("9999 [9999]")
+                        + METRIC_COLUMN_TEXT_PADDING
+                        if "\n" not in text
+                        else None
+                    )
+                else:
+                    line_widths = (metrics.horizontalAdvance(text),)
+                    rio_cap = None
+                pending_inputs.append(
+                    RowWidthInput(
+                        text=text,
+                        line_widths=line_widths,
+                        has_icon=col == COL_SPEC and not item.icon().isNull(),
+                        icon_width=icon_width,
+                        rio_compact_cap=rio_cap,
+                    )
+                )
+            pending_keys.append((applicant_id, signature))
+        if pending_inputs:
+            width = max(width, measure_column_width(col, pending_inputs))
+            for (applicant_id, signature), row_input in zip(pending_keys, pending_inputs):
+                row_width = _row_text_width(col, row_input)
+                if row_width is None:
+                    continue
+                if applicant_id is not None:
+                    col_cache[applicant_id] = (signature, row_width)
         return width
 
     def _apply_metric_column_visibility(self) -> None:

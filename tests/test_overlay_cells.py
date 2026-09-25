@@ -6,10 +6,22 @@ from PySide6.QtGui import QColor, QFont
 
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
+    COL_FIT,
+    COL_ILVL,
+    COL_NAME,
+    COL_RIO,
+    COL_SPEC,
+    METRIC_COLUMN_TEXT_PADDING,
+    MPLUS_GROUP_LANE_MAX_WIDTH,
+    MPLUS_GROUP_LANE_MIN_WIDTH,
+    MPLUS_INDIVIDUAL_LANE_MIN_WIDTH,
+    NAME_COLUMN_MAX_WIDTH,
+    RowWidthInput,
     _bold_cell_font,
     _mplus_dual_cell,
     _fit_cell,
     _text_colour_for_bg,
+    measure_column_width,
 )
 from applicant_scout.overlay_presenters import rio_display_text
 from applicant_scout.state import Applicant, Listing
@@ -131,3 +143,66 @@ def test_rio_display_text_hides_lower_or_equal_main():
     app.main_score = 2200
 
     assert rio_display_text(app) == "2443"
+
+
+def test_measure_column_width_plain_rows_take_max_plus_padding():
+    rows = [
+        RowWidthInput(text="ab", line_widths=(10,)),
+        RowWidthInput(text="abcde", line_widths=(34,)),
+    ]
+
+    assert measure_column_width(COL_ILVL, rows) == 34 + METRIC_COLUMN_TEXT_PADDING
+
+
+def test_measure_column_width_skips_empty_rows():
+    assert measure_column_width(COL_ILVL, []) == 0
+    assert measure_column_width(COL_ILVL, [RowWidthInput(text="")]) == 0
+    assert (
+        measure_column_width(
+            COL_ILVL, [RowWidthInput(text=""), RowWidthInput(text="x", line_widths=(7,))]
+        )
+        == 7 + METRIC_COLUMN_TEXT_PADDING
+    )
+
+
+def test_measure_column_width_fit_lane_formula():
+    rows = [RowWidthInput(text="ignored", package_width=50, individual_width=30)]
+    expected = (
+        min(MPLUS_GROUP_LANE_MAX_WIDTH, max(MPLUS_GROUP_LANE_MIN_WIDTH, 50 + 12))
+        + max(MPLUS_INDIVIDUAL_LANE_MIN_WIDTH, 30 + 12)
+        + 1
+    )
+
+    assert measure_column_width(COL_FIT, rows) == expected
+
+
+def test_measure_column_width_name_caps_at_max():
+    rows = [RowWidthInput(text="x" * 50, line_widths=(10_000,))]
+
+    assert measure_column_width(COL_NAME, rows) == NAME_COLUMN_MAX_WIDTH
+
+
+def test_measure_column_width_spec_icon_adds_icon_lane():
+    rows = [RowWidthInput(text="Brm", line_widths=(20,), has_icon=True, icon_width=16)]
+
+    assert measure_column_width(COL_SPEC, rows) == 20 + METRIC_COLUMN_TEXT_PADDING + 16 + 4
+
+
+def test_measure_column_width_spec_without_icon_has_no_icon_lane():
+    rows = [RowWidthInput(text="Brm", line_widths=(20,))]
+
+    assert measure_column_width(COL_SPEC, rows) == 20 + METRIC_COLUMN_TEXT_PADDING
+
+
+def test_measure_column_width_rio_multiline_ignores_compact_cap():
+    rows = [RowWidthInput(text="2443\n3468", line_widths=(40, 42), rio_compact_cap=10)]
+
+    assert measure_column_width(COL_RIO, rows) == 42 + METRIC_COLUMN_TEXT_PADDING
+
+
+def test_measure_column_width_rio_single_line_applies_compact_cap():
+    single = RowWidthInput(text="2443", line_widths=(40,), rio_compact_cap=100)
+    no_cap = RowWidthInput(text="2443", line_widths=(40,))
+
+    assert measure_column_width(COL_RIO, [single]) == min(40 + METRIC_COLUMN_TEXT_PADDING, 100)
+    assert measure_column_width(COL_RIO, [no_cap]) == 40 + METRIC_COLUMN_TEXT_PADDING

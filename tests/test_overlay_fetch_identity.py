@@ -11,6 +11,7 @@ from applicant_scout.overlay import (
     _FetchTask,
     _fetch_identity_for_applicant,
     OverlayWindow,
+    auth_chip_for,
 )
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.screenshot import (
@@ -29,6 +30,8 @@ from applicant_scout.wcl import (
     WCLClient,
     WCLApiError,
     WCL_ERROR_AUTH,
+    WCL_ERROR_GRAPHQL,
+    WCL_ERROR_HTTP,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_RATE_LIMITED,
@@ -3256,3 +3259,51 @@ def test_listing_clear_invalidates_party_fetch_after_preferences_change(
         assert member.mplus_dps is None
     finally:
         client.close()
+
+
+def test_auth_chip_for_covers_every_state_byte_identical():
+    cases = [
+        ("checking", "", "Auth check", "active",
+         "Checking the active Warcraft Logs credentials."),
+        ("oauth_ready", "", "Auth ready", "neutral",
+         "Warcraft Logs accepted the active credentials. Applicant API "
+         "and quota data have not been queried yet."),
+        ("api_ready", "", "Auth ready", "neutral",
+         "The latest Warcraft Logs applicant API request succeeded."),
+        ("error", WCL_ERROR_AUTH, "Auth failed", "critical",
+         "Warcraft Logs rejected the active credentials. Test them in Settings."),
+        ("error", WCL_ERROR_NETWORK, "Auth offline", "warning",
+         "Could not reach Warcraft Logs. Check internet access; displayed "
+         "applicant data may be cached."),
+        ("error", WCL_ERROR_SERVER, "Auth issue", "warning",
+         "Warcraft Logs is temporarily unavailable. Applicant requests "
+         "will retry automatically."),
+        ("error", WCL_ERROR_RATE_LIMITED, "Auth issue", "warning",
+         "Warcraft Logs is temporarily limiting requests. Applicant "
+         "requests will retry automatically."),
+        ("error", WCL_ERROR_GRAPHQL, "Auth issue", "warning",
+         "Warcraft Logs returned an unexpected response. Check the "
+         "applicant row and retry."),
+        ("error", WCL_ERROR_HTTP, "Auth issue", "warning",
+         "Warcraft Logs returned an unexpected response. Check the "
+         "applicant row and retry."),
+        ("error", WCL_ERROR_MALFORMED, "Auth issue", "warning",
+         "Warcraft Logs returned an unexpected response. Check the "
+         "applicant row and retry."),
+        ("error", "", "Auth issue", "warning",
+         "Warcraft Logs validation failed. Open Settings to test the "
+         "active credentials."),
+        ("error", WCL_ERROR_RESTRICTED, "Auth issue", "warning",
+         "Warcraft Logs validation failed. Open Settings to test the "
+         "active credentials."),
+        ("unknown", "", "Auth —", "neutral",
+         "Warcraft Logs credentials have not been checked in this session."),
+    ]
+
+    for state, error_kind, text, chip_state, detail in cases:
+        chip = auth_chip_for(state, error_kind)
+        assert (chip.text, chip.chip_state, chip.detail) == (text, chip_state, detail)
+
+    fallback = auth_chip_for("unknown", "")
+    assert auth_chip_for("error", None) is not fallback
+    assert auth_chip_for("bogus-state", "") == fallback
