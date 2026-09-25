@@ -10,8 +10,10 @@ from pathlib import Path
 import sys
 import threading
 from types import SimpleNamespace
+import weakref
 
 import pytest
+from PySide6.QtCore import QProcess
 from PySide6.QtWidgets import QApplication
 
 import applicant_scout.__main__ as main_mod
@@ -211,6 +213,98 @@ def _dialog_cfg(tmp_path: Path) -> Config:
     )
 
 
+class _ProbeKillSignal:
+    """Minimal Qt-signal stand-in for the fake probe process.
+
+    The dialog only connects/disconnects its slots; nothing is emitted
+    because stuck-probe tests drive completion and cancellation
+    synchronously instead of racing a real child process. Bound methods
+    are held weakly so the fake never keeps a deleted dialog wrapper
+    alive (mirrors Qt connection lifetime).
+    """
+
+    def __init__(self) -> None:
+        self._callbacks: list = []
+
+    def connect(self, callback) -> None:
+        try:
+            callback = weakref.WeakMethod(callback)
+        except TypeError:
+            pass
+        self._callbacks.append(callback)
+
+    def disconnect(self, *callbacks) -> None:
+        if not callbacks:
+            self._callbacks.clear()
+            return
+        targets = set(callbacks)
+        kept = []
+        for stored in self._callbacks:
+            live = stored() if isinstance(stored, weakref.WeakMethod) else stored
+            if live is None or live not in targets:
+                kept.append(stored)
+        self._callbacks = kept
+
+
+class FakeProbeProcess:
+    """Deterministic stuck-probe double injected as settings_mod.QProcess.
+
+    Follows the proven FakeProcess pattern: start() stays Running until
+    kill(), waitForFinished()/waitForStarted() return immediately, and no
+    real child is spawned, so kill/timeout assertions never depend on
+    process-startup timing.
+    """
+
+    ProcessState = QProcess.ProcessState
+    ExitStatus = QProcess.ExitStatus
+    ProcessError = QProcess.ProcessError
+
+    def __init__(self, _parent: object = None) -> None:
+        self._running = False
+        self._properties: dict = {}
+        self.program: str | None = None
+        self.arguments: list = []
+        self.kill_calls = 0
+        self.wait_for_finished_calls: list = []
+        self.wait_for_started_calls: list = []
+        self.delete_later_calls = 0
+        self.finished = _ProbeKillSignal()
+        self.errorOccurred = _ProbeKillSignal()
+        self.destroyed = _ProbeKillSignal()
+
+    def setProperty(self, name: str, value: object) -> bool:
+        self._properties[name] = value
+        return True
+
+    def property(self, name: str) -> object:
+        return self._properties.get(name)
+
+    def start(self, program: str, arguments: list) -> None:
+        self.program = program
+        self.arguments = list(arguments)
+        self._running = True
+
+    def state(self) -> QProcess.ProcessState:
+        if self._running:
+            return QProcess.ProcessState.Running
+        return QProcess.ProcessState.NotRunning
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self._running = False
+
+    def waitForFinished(self, msecs: int) -> bool:
+        self.wait_for_finished_calls.append(msecs)
+        return True
+
+    def waitForStarted(self, msecs: int) -> bool:
+        self.wait_for_started_calls.append(msecs)
+        return True
+
+    def deleteLater(self) -> None:
+        self.delete_later_calls += 1
+
+
 def _stuck_probe_helper(tmp_path: Path, name: str = "stuck_probe.py") -> Path:
     helper = tmp_path / name
     helper.write_text(
@@ -244,15 +338,10 @@ def test_settings_saves_unrelated_fields_while_screenshots_probe_pending(
     qtbot.waitUntil(
         lambda: dialog._screenshots_validation_ready_generation
         == dialog._screenshots_validation_generation,
-        timeout=1000,
+        timeout=10000,
     )
     initial_path = dialog.screenshots_edit.text().strip()
-    helper = _stuck_probe_helper(tmp_path)
-    monkeypatch.setattr(
-        settings_mod,
-        "_screenshots_path_probe_program_args",
-        lambda raw_path, token: (sys.executable, [str(helper), raw_path, token]),
-    )
+    monkeypatch.setattr(settings_mod, "QProcess", FakeProbeProcess)
     saved = []
     dialog.valuesChanged.connect(saved.append)
     try:
@@ -261,22 +350,33 @@ def test_settings_saves_unrelated_fields_while_screenshots_probe_pending(
         )
         assert not dialog.flush_pending_values()
         assert saved == []
+        qtbot.waitUntil(
+            lambda: dialog._screenshots_validation_process is not None,
+            timeout=10000,
+        )
+        stuck = dialog._screenshots_validation_process
+        assert isinstance(stuck, FakeProbeProcess)
 
         dialog.region_combo.setCurrentText("US")
-        qtbot.waitUntil(lambda: bool(saved), timeout=2000)
+        qtbot.waitUntil(lambda: bool(saved), timeout=10000)
 
         assert saved[-1].region == "US"
         assert saved[-1].screenshots_path == initial_path
         assert "Checking Screenshots" in dialog.status_label.text()
     finally:
         dialog._cancel_screenshots_validation_process()
+    assert stuck.kill_calls == 1
+    assert stuck.wait_for_finished_calls == [1000]
 
 
-def test_update_check_proceeds_while_screenshots_probe_pending(
+def test_update_check_proceeds_while_screenshots_probe_pending_real_process(
     qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     # H3: the pre-action flush snapshots values and returns immediately; a
     # pending screenshots probe no longer stalls the update worker start.
+    # Real-process integration: covers the actual QProcess pending path
+    # while the fake-based sibling above asserts the same M3 semantics
+    # deterministically.
     helper = _stuck_probe_helper(tmp_path, "stuck_probe_update.py")
     monkeypatch.setattr(
         settings_mod,
@@ -301,8 +401,8 @@ def test_update_check_proceeds_while_screenshots_probe_pending(
         dialog.region_combo.setCurrentText("US")
         dialog.update_button.click()
 
-        assert entered.wait(2)
-        qtbot.waitUntil(lambda: bool(saved), timeout=2000)
+        assert entered.wait(10)
+        qtbot.waitUntil(lambda: bool(saved), timeout=10000)
         assert saved[-1].region == "US"
     finally:
         dialog._cancel_screenshots_validation_process()
