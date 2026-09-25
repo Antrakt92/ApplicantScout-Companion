@@ -13,6 +13,11 @@ import tomllib
 import zipfile
 from pathlib import Path
 
+from scripts.verify_frozen_runtime import (
+    FrozenRuntimeVerificationError,
+    verify_no_secret_artifacts,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _ACTION_USES_RE = re.compile(r"(?m)^\s*uses:\s*([^\s#]+)\s*(?:#.*)?$")
@@ -313,9 +318,11 @@ def _write_valid_portable_zip(
 ) -> None:
     entries = {
         f"{root}/ApplicantScoutCompanion.exe": b"exe-bytes",
+        f"{root}/.apscout-payload-version": b"0.0.0\n",
         f"{root}/LICENSE": b"license text",
         f"{root}/THIRD-PARTY-NOTICES.md": b"third-party notices",
         f"{root}/RELEASE_NOTES.md": b"release notes",
+        f"{root}/_internal/base_library.zip": b"runtime",
         f"{root}/licenses/PyQt6/LICENSE.txt": b"dependency license",
     }
     for name in omit or set():
@@ -1062,7 +1069,8 @@ def test_installer_uses_per_user_install_dir_for_no_uac_updates():
         in inno_script
     )
     assert "PrivilegesRequired=lowest" in inno_script
-    assert "UsePreviousAppDir=no" in inno_script
+    assert "UsePreviousAppDir=yes" in inno_script
+    assert "UsePreviousAppDir=no" not in inno_script
     assert "DefaultDirName={autopf}" not in inno_script
 
 
@@ -1809,6 +1817,7 @@ def test_release_artifact_manifest_binds_build_bundle_to_tag_and_commit(tmp_path
     }
     assert {entry["name"] for entry in manifest["portableEntries"]} >= {
         "ApplicantScoutCompanion/ApplicantScoutCompanion.exe",
+        "ApplicantScoutCompanion/.apscout-payload-version",
         "ApplicantScoutCompanion/LICENSE",
         "ApplicantScoutCompanion/THIRD-PARTY-NOTICES.md",
         "ApplicantScoutCompanion/RELEASE_NOTES.md",
@@ -3873,3 +3882,277 @@ def test_readme_points_to_packaged_addon_zip_not_source_archive():
     assert "wrong folder name for WoW" in readme
     assert "ApplicantScout-<version>.zip" in readme
     assert "separate from the companion portable ZIP" in readme
+
+
+def test_installer_closes_renamed_portable_companion_process():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "{app}\\current\\ApplicantScoutCompanion.exe" in inno_script
+    assert "{app}\\ApplicantScoutCompanion.exe" in inno_script
+    assert "{app}\\.apscout-backup\\ApplicantScoutCompanion.exe" in inno_script
+    assert "{app}\\.apscout-next\\ApplicantScoutCompanion.exe" in inno_script
+    assert (
+        "$_.Name -ieq ''ApplicantScout.exe'' "
+        "-or $_.Name -ieq ''ApplicantScoutCompanion.exe''" in inno_script
+    )
+    assert (
+        "CompanionCurrentExe := ExpandConstant("
+        "'{app}\\current\\ApplicantScoutCompanion.exe')" in inno_script
+    )
+    assert (
+        "CompanionLegacyExe := ExpandConstant("
+        "'{app}\\ApplicantScoutCompanion.exe')" in inno_script
+    )
+    match = re.search(
+        r"(?ms)^function CloseRunningCompanion\(\): Boolean;\n"
+        r"(?P<body>.*?)(?=^procedure RemoveLegacyPerMachineShortcuts)",
+        inno_script,
+    )
+    assert match is not None
+    body = match.group("body")
+    assert body.index("CompanionLegacyExe") < body.index("WaitForCompanionExit()")
+    assert inno_script.count("SetupMutex=Antrakt.ApplicantScout.Companion.Setup") == 1
+
+
+def test_installer_refuses_silent_downgrade_without_explicit_opt_in():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "{param:ALLOWDOWNGRADE|0}" in inno_script
+    assert "function CheckDowngradeBlocked(): String;" in inno_script
+    assert "function ParseDottedVersion(" in inno_script
+    assert "Downgrades are blocked" in inno_script
+    assert "/ALLOWDOWNGRADE=1" in inno_script
+    prepare = re.search(
+        r"(?ms)^function PrepareToInstall\(var NeedsRestart: Boolean\): String;\n"
+        r"(?P<body>.*?)(?=^function InitializeUninstall\(\): Boolean;)",
+        inno_script,
+    )
+    assert prepare is not None
+    prepare_body = prepare.group("body")
+    assert "CheckDowngradeBlocked()" in prepare_body
+    assert prepare_body.index("CheckDowngradeBlocked()") < prepare_body.index(
+        "CloseRunningCompanion()"
+    )
+    assert prepare_body.index("CheckDowngradeBlocked()") < prepare_body.index(
+        "RemoveLegacyPerMachineShortcuts();"
+    )
+
+
+def test_installer_preserves_custom_dir_and_update_paths_pass_explicit_dir():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    smoke = _read_repo_text("scripts/smoke-installer-upgrade.ps1")
+    updater = _read_repo_text("src/applicant_scout/updater.py")
+
+    assert "UsePreviousAppDir=yes" in inno_script
+    assert "contains its own unins000.exe" in inno_script
+    assert '"/DIR=`"$ExpectedRoot`""' in smoke
+    assert 'return [f"/DIR={install_root}"]' in updater
+
+
+def test_installer_checks_disk_space_before_touching_payload():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "ExtraDiskSpaceRequired=1073741824" in inno_script
+    assert "function CheckDiskSpaceBlocked(): String;" in inno_script
+    assert "function GetPayloadDirSizeBytes(" in inno_script
+    assert "GetSpaceOnDisk(ProbeDir, FreeSpace, TotalSpace)" in inno_script
+    assert "Not enough free disk space" in inno_script
+    prepare = re.search(
+        r"(?ms)^function PrepareToInstall\(var NeedsRestart: Boolean\): String;\n"
+        r"(?P<body>.*?)(?=^function InitializeUninstall\(\): Boolean;)",
+        inno_script,
+    )
+    assert prepare is not None
+    prepare_body = prepare.group("body")
+    assert "CheckDiskSpaceBlocked()" in prepare_body
+    assert prepare_body.index("CheckDiskSpaceBlocked()") < prepare_body.index(
+        "CloseRunningCompanion()"
+    )
+
+
+def test_uninstall_never_silently_skips_payload_deletion():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "procedure CurUninstallStepChanged(CurStep: TUninstallStep);" in inno_script
+    assert "left payload files behind" in inno_script
+    assert "Remove them manually" in inno_script
+
+
+def test_uninstall_removes_wow_sync_startup_entries():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+    lifecycle = _read_repo_text("src/applicant_scout/wow_lifecycle.py")
+
+    assert (
+        'Type: files; Name: "{userstartup}\\ApplicantScout Companion.lnk"'
+        in inno_script
+    )
+    assert "procedure RemoveWowSyncStartupEntries();" in inno_script
+    assert "RemoveWowSyncStartupEntries();" in inno_script
+    assert "StartupApproved\\StartupFolder" in inno_script
+    assert 'STARTUP_SHORTCUT_NAME = "ApplicantScout Companion.lnk"' in lifecycle
+
+
+def test_installer_pending_reboot_guard_covers_legacy_payload_paths():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert (
+        "PendingPathTouchesPayloadRoot(Item, ExpandConstant("
+        "'{app}\\ApplicantScout.exe'))" in inno_script
+    )
+    assert (
+        "PendingPathTouchesPayloadRoot(Item, ExpandConstant("
+        "'{app}\\_internal'))" in inno_script
+    )
+    assert (
+        "PendingPathTouchesPayloadRoot(Item, ExpandConstant("
+        "'{app}\\licenses'))" in inno_script
+    )
+
+
+def test_installer_reports_unremovable_legacy_shortcuts_with_manual_cleanup():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert (
+        "if FileExists(CommonDesktopLink) and not DeleteFile(CommonDesktopLink)"
+        in inno_script
+    )
+    assert (
+        "if FileExists(CommonProgramsLink) and not DeleteFile(CommonProgramsLink)"
+        in inno_script
+    )
+    assert "if DirExists(CommonProgramsDir) and not RemoveDir(" in inno_script
+    assert "An administrator can remove it manually" in inno_script
+
+
+def test_release_version_check_require_assets_rejects_missing_payload_version_marker(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(
+        repo / "dist" / portable_name,
+        omit={"ApplicantScoutCompanion/.apscout-payload-version"},
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert ".apscout-payload-version" in result.stdout + result.stderr
+
+
+def test_release_version_check_require_assets_rejects_legacy_root_executable(tmp_path):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(
+        repo / "dist" / portable_name,
+        extra_entries={"ApplicantScoutCompanion/ApplicantScout.exe": b"legacy"},
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "legacy installed executable" in (result.stdout + result.stderr).lower()
+
+
+def test_release_version_check_require_assets_rejects_missing_internal_payload(
+    tmp_path,
+):
+    repo = _copy_release_check_fixture(tmp_path)
+    project_version = _project_version()
+    _, _, portable_name = _write_release_assets(repo)
+    _write_valid_portable_zip(
+        repo / "dist" / portable_name,
+        omit={"ApplicantScoutCompanion/_internal/base_library.zip"},
+    )
+
+    result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
+
+    assert result.returncode != 0
+    assert "_internal/" in result.stdout + result.stderr
+
+
+def test_release_artifact_manifest_enforces_portable_shape(tmp_path):
+    root = tmp_path / "release-bundle"
+    names = _write_manifest_bundle(root, purpose="Build")
+    version = _project_version()
+    tag = f"v{version}"
+    commit = "a" * 40
+    created = _run_release_manifest(
+        root,
+        "-Mode",
+        "Create",
+        "-Purpose",
+        "Build",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+    manifest = json.loads((root / "release-build-manifest.json").read_text(
+        encoding="utf-8-sig"
+    ))
+    assert "ApplicantScoutCompanion/.apscout-payload-version" in {
+        entry["name"] for entry in manifest["portableEntries"]
+    }
+
+    tampered = tmp_path / "tampered-bundle"
+    tampered.mkdir()
+    for name in (names["installer"], names["checksum"], names["portable"]):
+        shutil.copy2(root / name, tampered / name)
+    _write_valid_portable_zip(
+        tampered / names["portable"],
+        extra_entries={"ApplicantScoutCompanion/ApplicantScout.exe": b"legacy"},
+    )
+    release_body = tampered / "release-body.md"
+    release_body.write_bytes(b"## Release notes\n\nExact tag copy.\n")
+    legacy_exe = _run_release_manifest(
+        tampered,
+        "-Mode",
+        "Create",
+        "-Purpose",
+        "Build",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert legacy_exe.returncode != 0
+    assert "legacy installed executable" in (
+        legacy_exe.stdout + legacy_exe.stderr
+    ).lower()
+
+    _write_valid_portable_zip(
+        tampered / names["portable"],
+        omit={"ApplicantScoutCompanion/_internal/base_library.zip"},
+    )
+    missing_internal = _run_release_manifest(
+        tampered,
+        "-Mode",
+        "Create",
+        "-Purpose",
+        "Build",
+        *_manifest_identity_args(tag, commit),
+    )
+    assert missing_internal.returncode != 0
+    assert "_internal/" in missing_internal.stdout + missing_internal.stderr
+
+
+def test_frozen_runtime_rejects_secret_adjacent_artifacts(tmp_path):
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    (clean / "app.exe").write_bytes(b"x")
+    verify_no_secret_artifacts(clean)
+
+    offenders = [
+        ".env",
+        "config.env",
+        ".env.local",
+        "token.json",
+        "nested/token.json",
+        "nested/cache/data.bin",
+        "nested/logs/app.log",
+    ]
+    for relative in offenders:
+        payload = tmp_path / f"payload-{relative.replace('/', '-')}"
+        target = payload / relative
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"secret")
+        with pytest.raises(FrozenRuntimeVerificationError):
+            verify_no_secret_artifacts(payload)

@@ -26,6 +26,7 @@ $ErrorActionPreference = "Stop"
 $Repository = "Antrakt92/ApplicantScout-Companion"
 $RequiredPortableEntries = @(
     "ApplicantScoutCompanion/ApplicantScoutCompanion.exe",
+    "ApplicantScoutCompanion/.apscout-payload-version",
     "ApplicantScoutCompanion/LICENSE",
     "ApplicantScoutCompanion/RELEASE_NOTES.md",
     "ApplicantScoutCompanion/THIRD-PARTY-NOTICES.md"
@@ -261,6 +262,34 @@ function Get-PortableEntryRecords {
     }
 }
 
+function Assert-PortableArchiveShape {
+    $PortablePath = Join-Path $Root $PortableName
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Archive = [System.IO.Compression.ZipFile]::OpenRead($PortablePath)
+    try {
+        $Names = @($Archive.Entries | ForEach-Object { ($_.FullName -replace '\\', '/') })
+        $Lowered = @($Names | ForEach-Object { $_.ToLowerInvariant() })
+        if ($Lowered -contains "applicantscoutcompanion/applicantscout.exe") {
+            throw "Portable archive must not contain the legacy installed executable name ApplicantScoutCompanion/ApplicantScout.exe."
+        }
+        $HasLicenses = @($Names | Where-Object {
+            $_.StartsWith("ApplicantScoutCompanion/licenses/", [System.StringComparison]::OrdinalIgnoreCase)
+        }).Count -gt 0
+        if (-not $HasLicenses) {
+            throw "Portable archive is missing dependency license payload under ApplicantScoutCompanion/licenses/."
+        }
+        $HasInternal = @($Names | Where-Object {
+            $_.StartsWith("ApplicantScoutCompanion/_internal/", [System.StringComparison]::OrdinalIgnoreCase)
+        }).Count -gt 0
+        if (-not $HasInternal) {
+            throw "Portable archive is missing runtime payload under ApplicantScoutCompanion/_internal/."
+        }
+    }
+    finally {
+        $Archive.Dispose()
+    }
+}
+
 function Assert-ExactRootFiles {
     $Expected = @($ExpectedFileNames + $ManifestName | Sort-Object)
     $Items = @(Get-ChildItem -LiteralPath $Root -Force)
@@ -316,6 +345,7 @@ if ($Mode -eq "Create") {
     }
     $Files = @($ExpectedFileNames | ForEach-Object { Get-FileRecord -Name $_ })
     $PortableEntries = @(Get-PortableEntryRecords)
+    Assert-PortableArchiveShape
     $Manifest = [ordered]@{
         schemaVersion = 2
         repository = $Repository
@@ -415,6 +445,7 @@ for ($Index = 0; $Index -lt $ExpectedFileNames.Count; $Index++) {
 
 $ManifestPortableEntries = @($Manifest.portableEntries)
 $ActualPortableEntries = @(Get-PortableEntryRecords)
+Assert-PortableArchiveShape
 if ($ManifestPortableEntries.Count -ne $RequiredPortableEntries.Count) {
     throw "Release artifact manifest has the wrong portable entry count."
 }

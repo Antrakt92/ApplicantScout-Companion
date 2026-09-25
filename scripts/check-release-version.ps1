@@ -302,6 +302,24 @@ function Test-PortableZipContract {
                 $ContractErrors += "Portable ZIP required entry is empty: $RequiredEntry"
             }
         }
+        $LegacyRootExeKey = "$ExpectedRoot/ApplicantScout.exe".ToLowerInvariant()
+        if ($SeenEntries.ContainsKey($LegacyRootExeKey)) {
+            $ContractErrors += "Portable ZIP must not contain the legacy installed executable name: $ExpectedRoot/ApplicantScout.exe"
+        }
+        $HasInternalPayload = $false
+        foreach ($Name in @($FileEntries.Keys)) {
+            if ($Name.StartsWith("$ExpectedRoot/_internal/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                if ($FileEntries[$Name].Length -le 0) {
+                    $ContractErrors += "Portable ZIP contains an empty runtime payload file: $Name"
+                }
+                else {
+                    $HasInternalPayload = $true
+                }
+            }
+        }
+        if (-not $HasInternalPayload) {
+            $ContractErrors += "Portable ZIP is missing runtime payload under $ExpectedRoot/_internal/."
+        }
         if (-not $HasLicensePayload) {
             $ContractErrors += "Portable ZIP is missing dependency license payload under $ExpectedRoot/licenses/."
         }
@@ -583,6 +601,7 @@ if ($RequireAssets) {
             -ExpectedRoot "ApplicantScoutCompanion" `
             -RequiredEntries @(
                 "ApplicantScoutCompanion/ApplicantScoutCompanion.exe",
+                "ApplicantScoutCompanion/.apscout-payload-version",
                 "ApplicantScoutCompanion/LICENSE",
                 "ApplicantScoutCompanion/THIRD-PARTY-NOTICES.md",
                 "ApplicantScoutCompanion/RELEASE_NOTES.md"

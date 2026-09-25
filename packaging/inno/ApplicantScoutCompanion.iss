@@ -33,13 +33,20 @@ DefaultDirName={localappdata}\Programs\ApplicantScout Companion
 DefaultGroupName=ApplicantScout Companion
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-UsePreviousAppDir=no
+; WHY: custom install locations must survive updates. Without this, a silent
+; update reinstalls into the default directory and the custom install is
+; orphaned while the updater keeps launching /DIR at the old path.
+UsePreviousAppDir=yes
 UninstallDisplayIcon={app}\current\ApplicantScout.exe
 SetupIconFile={#EnvIcon}
 OutputDir=..\..\dist
 OutputBaseFilename=ApplicantScoutCompanionSetup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
+; WHY: the staged current/next/backup transaction briefly needs ~2-3x the
+; payload on disk. Reserve 1 GiB up front; PrepareToInstall re-checks the real
+; measured sizes fail-closed before any process is stopped.
+ExtraDiskSpaceRequired=1073741824
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -67,6 +74,9 @@ Type: filesandordirs; Name: "{app}\current"; Check: UninstallPayloadDeletionAllo
 Type: filesandordirs; Name: "{app}\.apscout-next"; Check: UninstallPayloadDeletionAllowed
 Type: filesandordirs; Name: "{app}\.apscout-backup"; Check: UninstallPayloadDeletionAllowed
 Type: files; Name: "{app}\.apscout-promotion-pending"; Check: UninstallPayloadDeletionAllowed
+; Remove the per-user logon shortcut even though companion user data itself is
+; preserved. The StartupApproved registry value is removed in code below.
+Type: files; Name: "{userstartup}\ApplicantScout Companion.lnk"
 ; Remove payloads from builds that predate the staged current/next layout.
 Type: filesandordirs; Name: "{app}\_internal"; Check: UninstallPayloadDeletionAllowed
 Type: filesandordirs; Name: "{app}\licenses"; Check: UninstallPayloadDeletionAllowed
@@ -124,6 +134,10 @@ end;
 function CompanionProcessScript(Terminate: Boolean): String;
 var
   BackupTarget: String;
+  CompanionBackupTarget: String;
+  CompanionCurrentTarget: String;
+  CompanionLegacyTarget: String;
+  CompanionNextTarget: String;
   CurrentTarget: String;
   LegacyTarget: String;
   NextTarget: String;
@@ -132,15 +146,25 @@ begin
   CurrentTarget := PowerShellSingleQuoted(ExpandConstant('{app}\current\ApplicantScout.exe'));
   LegacyTarget := PowerShellSingleQuoted(ExpandConstant('{app}\ApplicantScout.exe'));
   NextTarget := PowerShellSingleQuoted(ExpandConstant('{app}\.apscout-next\ApplicantScout.exe'));
+  { WHY: the portable ZIP ships ApplicantScoutCompanion.exe while installed
+    payloads keep ApplicantScout.exe. Both names must be closed, otherwise a
+    portable copy keeps files locked and the installed update promotes a
+    mixed-version payload. Portable copies may live outside {app}, so the
+    renamed process name also matches by itself for same-user processes. }
+  CompanionBackupTarget := PowerShellSingleQuoted(ExpandConstant('{app}\.apscout-backup\ApplicantScoutCompanion.exe'));
+  CompanionCurrentTarget := PowerShellSingleQuoted(ExpandConstant('{app}\current\ApplicantScoutCompanion.exe'));
+  CompanionLegacyTarget := PowerShellSingleQuoted(ExpandConstant('{app}\ApplicantScoutCompanion.exe'));
+  CompanionNextTarget := PowerShellSingleQuoted(ExpandConstant('{app}\.apscout-next\ApplicantScoutCompanion.exe'));
   Result :=
     '-NoProfile -ExecutionPolicy Bypass -Command "' +
     '$ErrorActionPreference = ''Stop''; try { ' +
-    '$targets = @(' + CurrentTarget + ', ' + LegacyTarget + ', ' + BackupTarget + ', ' + NextTarget + ') | ForEach-Object { ' +
+    '$targets = @(' + CurrentTarget + ', ' + LegacyTarget + ', ' + BackupTarget + ', ' + NextTarget + ', ' +
+    CompanionCurrentTarget + ', ' + CompanionLegacyTarget + ', ' + CompanionBackupTarget + ', ' + CompanionNextTarget + ') | ForEach-Object { ' +
     '[System.IO.Path]::GetFullPath($_) }; ' +
     '$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; ' +
     '$currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId; ' +
     '$candidates = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 | Where-Object { ' +
-    '$_.Name -ieq ''ApplicantScout.exe'' }); ' +
+    '$_.Name -ieq ''ApplicantScout.exe'' -or $_.Name -ieq ''ApplicantScoutCompanion.exe'' }); ' +
     '$owned = @(); foreach ($candidate in $candidates) { ' +
     'try { $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid -OperationTimeoutSec 5 } ' +
     'catch { $owner = $null }; ' +
@@ -150,7 +174,7 @@ begin
     'if ($owner.Sid -eq $currentSid) { $owned += $candidate } }; ' +
     'if ($owned | Where-Object { -not $_.ExecutablePath }) { exit 2 }; ' +
     '$procs = @($owned | Where-Object { $targets -icontains ' +
-    '[System.IO.Path]::GetFullPath($_.ExecutablePath) }); ';
+    '[System.IO.Path]::GetFullPath($_.ExecutablePath) -or $_.Name -ieq ''ApplicantScoutCompanion.exe'' }); ';
   if Terminate then begin
     Result := Result +
       'foreach ($p in $procs) { ' +
@@ -896,6 +920,8 @@ end;
 
 function CloseRunningCompanion(): Boolean;
 var
+  CompanionCurrentExe: String;
+  CompanionLegacyExe: String;
   CurrentExe: String;
   LegacyExe: String;
   ResultCode: Integer;
@@ -915,7 +941,9 @@ begin
   { WHY: The tray app may keep ApplicantScout.exe running with no visible window;
      Inno Restart Manager then shows a confusing manual-close prompt. }
   CurrentExe := ExpandConstant('{app}\current\ApplicantScout.exe');
+  CompanionCurrentExe := ExpandConstant('{app}\current\ApplicantScoutCompanion.exe');
   LegacyExe := ExpandConstant('{app}\ApplicantScout.exe');
+  CompanionLegacyExe := ExpandConstant('{app}\ApplicantScoutCompanion.exe');
   if FileExists(CurrentExe) then begin
     { WARNING: Do not wait here. Older builds treat the shutdown flag as a
       normal app launch and would block the installer until fallback runs. }
@@ -928,9 +956,29 @@ begin
       ResultCode
     );
   end;
+  if FileExists(CompanionCurrentExe) then begin
+    Exec(
+      CompanionCurrentExe,
+      '--shutdown-running-instance',
+      '',
+      SW_HIDE,
+      ewNoWait,
+      ResultCode
+    );
+  end;
   if FileExists(LegacyExe) then begin
     Exec(
       LegacyExe,
+      '--shutdown-running-instance',
+      '',
+      SW_HIDE,
+      ewNoWait,
+      ResultCode
+    );
+  end;
+  if FileExists(CompanionLegacyExe) then begin
+    Exec(
+      CompanionLegacyExe,
       '--shutdown-running-instance',
       '',
       SW_HIDE,
@@ -954,14 +1002,32 @@ begin
 end;
 
 procedure RemoveLegacyPerMachineShortcuts();
+var
+  CommonDesktopLink: String;
+  CommonProgramsDir: String;
+  CommonProgramsLink: String;
 begin
   { WHY: Builds before the per-user installer could create common shortcuts
     pointing at Program Files. A non-admin updater cannot guarantee deletion of
     protected files, but deleting writable legacy shortcuts prevents most stale
-    launcher confusion after migrating to the per-user app directory. }
-  DeleteFile(ExpandConstant('{commondesktop}\ApplicantScout Companion.lnk'));
-  DeleteFile(ExpandConstant('{commonprograms}\ApplicantScout Companion\ApplicantScout Companion.lnk'));
-  RemoveDir(ExpandConstant('{commonprograms}\ApplicantScout Companion'));
+    launcher confusion after migrating to the per-user app directory. Deletion
+    failures are logged with the exact manual cleanup path instead of failing
+    silently, since only an administrator can remove protected shortcuts. }
+  CommonDesktopLink := ExpandConstant('{commondesktop}\ApplicantScout Companion.lnk');
+  CommonProgramsLink := ExpandConstant('{commonprograms}\ApplicantScout Companion\ApplicantScout Companion.lnk');
+  CommonProgramsDir := ExpandConstant('{commonprograms}\ApplicantScout Companion');
+  if FileExists(CommonDesktopLink) and not DeleteFile(CommonDesktopLink) then begin
+    Log('WARNING: could not remove the legacy per-machine desktop shortcut: ' +
+      CommonDesktopLink + '. An administrator can remove it manually.');
+  end;
+  if FileExists(CommonProgramsLink) and not DeleteFile(CommonProgramsLink) then begin
+    Log('WARNING: could not remove the legacy per-machine Start Menu shortcut: ' +
+      CommonProgramsLink + '. An administrator can remove it manually.');
+  end;
+  if DirExists(CommonProgramsDir) and not RemoveDir(CommonProgramsDir) then begin
+    Log('WARNING: could not remove the legacy per-machine Start Menu folder: ' +
+      CommonProgramsDir + '. An administrator can remove it manually.');
+  end;
 end;
 
 function ShouldRelaunchAfterInstall(): Boolean;
@@ -1015,7 +1081,10 @@ begin
     Item := Copy(Raw, Offset, ItemEnd - Offset);
     if PendingPathTouchesPayloadRoot(Item, CurrentPayloadDir()) or
        PendingPathTouchesPayloadRoot(Item, NextPayloadDir()) or
-       PendingPathTouchesPayloadRoot(Item, BackupPayloadDir()) then begin
+       PendingPathTouchesPayloadRoot(Item, BackupPayloadDir()) or
+       PendingPathTouchesPayloadRoot(Item, ExpandConstant('{app}\ApplicantScout.exe')) or
+       PendingPathTouchesPayloadRoot(Item, ExpandConstant('{app}\_internal')) or
+       PendingPathTouchesPayloadRoot(Item, ExpandConstant('{app}\licenses')) then begin
       Log('Blocking install because a pending reboot operation touches payload path: ' + Item);
       Result := True;
       Exit;
@@ -1056,6 +1125,172 @@ begin
     PendingRenameValueTouchesPayload('PendingFileRenameOperations2');
 end;
 
+function DowngradeExplicitlyAllowed(): Boolean;
+begin
+  Result := CompareText(ExpandConstant('{param:ALLOWDOWNGRADE|0}'), '1') = 0;
+end;
+
+function ParseDottedVersion(const Value: String; var Major, Minor, Patch: Integer): Boolean;
+var
+  Dot: Integer;
+  Remainder: String;
+begin
+  Result := False;
+  Major := -1;
+  Minor := -1;
+  Patch := -1;
+  Remainder := Trim(Value);
+  Dot := Pos('.', Remainder);
+  if Dot <= 1 then begin
+    Exit;
+  end;
+  Major := StrToIntDef(Copy(Remainder, 1, Dot - 1), -1);
+  Delete(Remainder, 1, Dot);
+  Dot := Pos('.', Remainder);
+  if Dot <= 1 then begin
+    Exit;
+  end;
+  Minor := StrToIntDef(Copy(Remainder, 1, Dot - 1), -1);
+  Delete(Remainder, 1, Dot);
+  if (Remainder = '') or (Pos('.', Remainder) <> 0) then begin
+    Exit;
+  end;
+  Patch := StrToIntDef(Remainder, -1);
+  Result := (Major >= 0) and (Minor >= 0) and (Patch >= 0);
+end;
+
+function CheckDowngradeBlocked(): String;
+var
+  InstalledMajor, InstalledMinor, InstalledPatch: Integer;
+  InstalledVersion: String;
+  Marker: AnsiString;
+  NewMajor, NewMinor, NewPatch: Integer;
+begin
+  { WHY: a silent downgrade over a newer payload can strand the updater and
+    user data on an older schema. Fail closed unless the operator explicitly
+    opts in with /ALLOWDOWNGRADE=1. }
+  Result := '';
+  if not DirExists(CurrentPayloadDir()) then begin
+    Exit;
+  end;
+  if not LoadStringFromFile(
+    AddBackslash(CurrentPayloadDir()) + '.apscout-payload-version',
+    Marker
+  ) then begin
+    if not DowngradeExplicitlyAllowed() then begin
+      Result := 'Could not determine the installed companion version from ' +
+        AddBackslash(CurrentPayloadDir()) + '.apscout-payload-version. ' +
+        'Rerun with /ALLOWDOWNGRADE=1 only to accept the unverified reinstall.';
+    end;
+    Exit;
+  end;
+  InstalledVersion := Trim(Marker);
+  if not ParseDottedVersion(InstalledVersion, InstalledMajor, InstalledMinor, InstalledPatch) or
+     not ParseDottedVersion('{#MyAppVersion}', NewMajor, NewMinor, NewPatch) then begin
+    if not DowngradeExplicitlyAllowed() then begin
+      Result := 'Could not compare the installed companion version (' +
+        InstalledVersion + ') with {#MyAppVersion}. ' +
+        'Rerun with /ALLOWDOWNGRADE=1 only to accept the unverified reinstall.';
+    end;
+    Exit;
+  end;
+  if (InstalledMajor > NewMajor) or
+     ((InstalledMajor = NewMajor) and (InstalledMinor > NewMinor)) or
+     ((InstalledMajor = NewMajor) and (InstalledMinor = NewMinor) and (InstalledPatch > NewPatch)) then begin
+    if not DowngradeExplicitlyAllowed() then begin
+      Result := 'The installed companion version ' + InstalledVersion +
+        ' is newer than {#MyAppVersion}. Downgrades are blocked; ' +
+        'rerun with /ALLOWDOWNGRADE=1 only to accept the downgrade.';
+    end;
+  end;
+end;
+
+function GetPayloadDirSizeBytes(Path: String; var Size: Int64): Boolean;
+var
+  Child: String;
+  FindRec: TFindRec;
+  SubSize: Int64;
+begin
+  Result := False;
+  Size := 0;
+  if not DirExists(Path) then begin
+    Result := True;
+    Exit;
+  end;
+  if not FindFirst(AddBackslash(Path) + '*', FindRec) then begin
+    Exit;
+  end;
+  try
+    repeat
+      if (FindRec.Name <> '.') and (FindRec.Name <> '..') then begin
+        Child := AddBackslash(Path) + FindRec.Name;
+        if (FindRec.Attributes and FileAttributeDirectory) <> 0 then begin
+          if not GetPayloadDirSizeBytes(Child, SubSize) then begin
+            Exit;
+          end;
+          Size := Size + SubSize;
+        end else begin
+          Size := Size + FindRec.Size;
+        end;
+      end;
+    until not FindNext(FindRec);
+    Result := True;
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+function CheckDiskSpaceBlocked(): String;
+var
+  AppDir: String;
+  BackupSize: Int64;
+  CurrentSize: Int64;
+  FreeSpace: Int64;
+  NextProbe: String;
+  ProbeDir: String;
+  Required: Int64;
+  TotalSpace: Int64;
+begin
+  { WHY: the staged current/next/backup transaction briefly needs ~2-3x the
+    payload on disk. Fail closed here, before any running companion is
+    stopped, instead of dying mid-promotion with a half-moved payload. }
+  Result := '';
+  if not GetPayloadDirSizeBytes(CurrentPayloadDir(), CurrentSize) then begin
+    Result := 'Could not measure the current companion payload for a disk-space check. ' +
+      'Free additional disk space and try again.';
+    Exit;
+  end;
+  if not GetPayloadDirSizeBytes(BackupPayloadDir(), BackupSize) then begin
+    Result := 'Could not measure the companion payload backup for a disk-space check. ' +
+      'Free additional disk space and try again.';
+    Exit;
+  end;
+  Required := (CurrentSize + BackupSize) * 3;
+  if Required < 536870912 then begin
+    Required := 536870912;
+  end;
+  AppDir := ExpandConstant('{app}');
+  ProbeDir := ExpandFileName(AppDir);
+  while not DirExists(ProbeDir) do begin
+    NextProbe := RemoveBackslashUnlessRoot(ExtractFileDir(ProbeDir));
+    if (NextProbe = '') or PathSame(NextProbe, ProbeDir) then begin
+      Break;
+    end;
+    ProbeDir := NextProbe;
+  end;
+  if not GetSpaceOnDisk(ProbeDir, FreeSpace, TotalSpace) then begin
+    Result := 'Could not verify free disk space for the companion install path. ' +
+      'Free additional disk space and try again.';
+    Exit;
+  end;
+  if FreeSpace < Required then begin
+    Result := 'Not enough free disk space for the companion update: ' +
+      IntToStr(FreeSpace div 1048576) + ' MB free, but about ' +
+      IntToStr(Required div 1048576) + ' MB is required. ' +
+      'Free additional disk space and try again.';
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
@@ -1072,7 +1307,16 @@ begin
     Exit;
   end;
   if not IsOwnedAppDir() then begin
-    Result := 'The selected directory is not a recognized ApplicantScout Companion installation.';
+    Result := 'The selected directory is not a recognized ApplicantScout Companion installation. ' +
+      'Select the previous install location, an empty folder, or a folder that contains its own unins000.exe.';
+    Exit;
+  end;
+  Result := CheckDowngradeBlocked();
+  if Result <> '' then begin
+    Exit;
+  end;
+  Result := CheckDiskSpaceBlocked();
+  if Result <> '' then begin
     Exit;
   end;
   if PendingRenameTouchesPayload() then begin
@@ -1105,12 +1349,12 @@ begin
     RollbackPendingPayloadSwap();
   end;
 end;
-
 function InitializeUninstall(): Boolean;
 begin
   CompanionWasRunning := False;
   Result := PayloadMutationGuard();
-  if not Result then begin
+  if not Result then
+  begin
     SuppressibleMsgBox(
       'ApplicantScout Companion uninstall stopped because the install path contains an unsafe redirection.',
       mbCriticalError,
@@ -1120,4 +1364,70 @@ begin
     Exit;
   end;
   Result := CloseRunningCompanion();
+end;
+
+procedure RemoveWowSyncStartupEntries();
+var
+  ApprovalKey: String;
+  ApprovalValue: String;
+  StartupShortcut: String;
+begin
+  { WHY: first-run and WoW sync create a per-user logon shortcut plus a Windows
+    StartupApproved approval value. Leaving either behind silently relaunches a
+    removed install location at logon, so uninstall removes both. }
+  ApprovalKey := 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder';
+  ApprovalValue := 'ApplicantScout Companion.lnk';
+  StartupShortcut := ExpandConstant('{userstartup}\ApplicantScout Companion.lnk');
+  if FileExists(StartupShortcut) and not DeleteFile(StartupShortcut) then begin
+    Log('WARNING: could not remove the Startup shortcut: ' + StartupShortcut +
+      '. Remove ApplicantScout Companion.lnk from the Startup folder manually.');
+  end;
+  if RegValueExists(HKCU, ApprovalKey, ApprovalValue) and
+     not RegDeleteValue(HKCU, ApprovalKey, ApprovalValue) then begin
+    Log('WARNING: could not remove the Startup approval value: ' + ApprovalKey +
+      '\' + ApprovalValue + '. Disable the leftover entry in Windows Settings > Apps > Startup.');
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurStep: TUninstallStep);
+var
+  Leftovers: String;
+begin
+  if CurStep = usUninstall then begin
+    RemoveWowSyncStartupEntries();
+    Exit;
+  end;
+  if CurStep <> usPostUninstall then begin
+    Exit;
+  end;
+  { WHY: UninstallPayloadDeletionAllowed=False makes [UninstallDelete] skip
+    payload entries silently. Never leave that silent: report every leftover
+    payload path so the user can remove it manually. }
+  Leftovers := '';
+  if DirExists(CurrentPayloadDir()) then begin
+    Leftovers := Leftovers + #13#10 + '  ' + CurrentPayloadDir();
+  end;
+  if DirExists(NextPayloadDir()) then begin
+    Leftovers := Leftovers + #13#10 + '  ' + NextPayloadDir();
+  end;
+  if DirExists(BackupPayloadDir()) then begin
+    Leftovers := Leftovers + #13#10 + '  ' + BackupPayloadDir();
+  end;
+  if FileExists(PendingPromotionMarker()) then begin
+    Leftovers := Leftovers + #13#10 + '  ' + PendingPromotionMarker();
+  end;
+  if FileExists(ExpandConstant('{app}\ApplicantScout.exe')) then begin
+    Leftovers := Leftovers + #13#10 + '  ' + ExpandConstant('{app}\ApplicantScout.exe');
+  end;
+  if Leftovers <> '' then begin
+    SuppressibleMsgBox(
+      'ApplicantScout Companion uninstall left payload files behind:' + Leftovers +
+        #13#10#13#10 +
+        'The install path failed a safety check, so these were kept instead of deleted. ' +
+        'Remove them manually once the path is trusted again.',
+      mbInformation,
+      MB_OK,
+      IDOK
+    );
+  end;
 end;

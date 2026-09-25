@@ -43,7 +43,7 @@ function Invoke-InstallerSmoke {
         [switch]$TransientRenameFailure
     )
 
-    $Arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS")
+    $Arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS", "/DIR=`"$ExpectedRoot`"")
     $TransientRenameLog = $null
     if ($PostPromotionFailure) {
         $ExpectFailure = $true

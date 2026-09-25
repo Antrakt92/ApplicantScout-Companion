@@ -56,6 +56,9 @@ PACKAGED_SOURCE_DOCUMENTS = frozenset({
     "licenses/NATIVE-QT-SOURCES.md",
     "licenses/native/README.md",
 })
+# Basenames that must never ship inside the frozen payload, even nested.
+SECRET_PAYLOAD_BASENAMES = frozenset({".env", "token.json"})
+SECRET_PAYLOAD_DIRECTORIES = frozenset({"logs"})
 
 
 class FrozenRuntimeVerificationError(RuntimeError):
@@ -369,6 +372,39 @@ def verify_no_bundled_icu(app_dir: Path) -> None:
         )
 
 
+def _is_secret_basename(name: str) -> bool:
+    lowered = name.casefold()
+    return (
+        lowered in SECRET_PAYLOAD_BASENAMES
+        or lowered.endswith(".env")
+        or lowered.startswith(".env.")
+    )
+
+
+def verify_no_secret_artifacts(app_dir: Path) -> None:
+    """Reject secret-looking files that must never ship inside the payload."""
+    offenders: list[str] = []
+    for path in _walk_payload_paths(app_dir):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(app_dir).as_posix()
+        if _is_secret_basename(path.name):
+            offenders.append(relative)
+            continue
+        segments = [part.casefold() for part in path.relative_to(app_dir).parts[:-1]]
+        if any("cache" in segment for segment in segments):
+            offenders.append(relative)
+        elif any(
+            segment in SECRET_PAYLOAD_DIRECTORIES for segment in segments
+        ):
+            offenders.append(relative)
+    if offenders:
+        raise FrozenRuntimeVerificationError(
+            "Frozen payload contains forbidden secret-adjacent artifacts: "
+            + ", ".join(sorted(offenders)[:10])
+        )
+
+
 def _module_names(value: Any) -> Iterable[str]:
     if (
         isinstance(value, tuple)
@@ -489,6 +525,7 @@ def verify_frozen_runtime(
     verify_no_forbidden_modules(analysis_toc, pyz_toc)
     verify_application_import_warnings(warn_path)
     verify_no_bundled_icu(app_dir)
+    verify_no_secret_artifacts(app_dir)
     verify_amd64_payload(app_dir, producer_python=producer_python)
 
 
