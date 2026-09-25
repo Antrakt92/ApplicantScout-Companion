@@ -1747,7 +1747,7 @@ def test_live_snapshot_writer_close_waits_for_dequeued_failed_clear_and_retries(
     assert load_live_snapshot(tmp_path, now=102.0) is None
 
 
-def test_live_snapshot_writer_close_makes_single_final_attempt(
+def test_live_snapshot_writer_close_retries_once_on_quit_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
@@ -1770,12 +1770,40 @@ def test_live_snapshot_writer_close_makes_single_final_attempt(
     )
     writer.submit(Snapshot(listing=None, version=None), now=101.0)
 
-    # M7: the quit path makes a single attempt and requeues the failed final
-    # operation instead of retrying in-close; a later close() retries once.
-    assert not writer.close()
-    assert calls == 1
+    # M7 (unified with CharacterCache.close): the quit path retries once, so
+    # a transient failure is still persisted instead of requeued.
     assert writer.close()
     assert calls == 2
+    assert load_live_snapshot(tmp_path, now=102.0) is None
+
+
+def test_live_snapshot_writer_close_requeues_twice_failed_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    save_live_snapshot(tmp_path, _live_snapshot(), now=100.0)
+    original_clear = cache_mod.clear_live_snapshot
+    calls = 0
+
+    def always_failing_clear(_cache_dir):
+        nonlocal calls
+        calls += 1
+        return False
+
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", always_failing_clear)
+    writer = LiveSnapshotCacheWriter(
+        tmp_path,
+        defer_saves=True,
+        save_debounce_seconds=60.0,
+    )
+    writer.submit(Snapshot(listing=None, version=None), now=101.0)
+
+    # Exactly one bounded retry; the twice-failed operation is requeued, so
+    # a later close() still gets its chance instead of losing the write.
+    assert not writer.close()
+    assert calls == 2
+    monkeypatch.setattr(cache_mod, "clear_live_snapshot", original_clear)
+    assert writer.close()
     assert load_live_snapshot(tmp_path, now=102.0) is None
 
 

@@ -729,6 +729,11 @@ class ReleaseNotesDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("releaseNotesDialog")
+        # WHY: the dialog is modeless and tracked in a module-level set —
+        # without DeleteOnClose every open leaks its widget subtree forever.
+        # The destroyed-signal discard in _show_release_notes_dialog drops the
+        # strong ref once Qt frees the C++ object.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setStyleSheet(_SETTINGS_STYLESHEET)
         self.setWindowTitle("ApplicantScout Changelog")
         self.setModal(False)

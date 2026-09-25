@@ -643,10 +643,14 @@ class LiveSnapshotCacheWriter:
             if operation is None:
                 return True
 
-            # M7: single attempt on the quit path — no in-close retry. A failed
-            # final operation is requeued, so a later close() (or flush())
-            # still gets its chance; the quit path itself never pays for
-            # repeated doomed writes.
+            # M7 (unified with CharacterCache.close): one bounded retry on the
+            # quit path — a transient filesystem failure gets a second chance
+            # without leaving another daemon timer alive during shutdown. A
+            # twice-failed operation is requeued, so a later close() (or
+            # flush()) still gets its chance.
+            if self._perform_operation(operation):
+                self._record_successful_operation(operation, generation)
+                return True
             if self._perform_operation(operation):
                 self._record_successful_operation(operation, generation)
                 return True

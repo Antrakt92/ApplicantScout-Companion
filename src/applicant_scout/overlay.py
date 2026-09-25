@@ -151,6 +151,13 @@ from .wcl import (
 _log = logging.getLogger("applicant_scout.overlay")
 
 
+# Bound for the terminal WCL fetch drain: waitForDone(-1) hangs quit forever
+# when a task never returns (clear() only discards queued work, in-flight
+# network tasks keep running). The quit path persists caches unconditionally
+# on the not-drained branch instead.
+_FETCH_SHUTDOWN_TIMEOUT_MS = 8000
+
+
 # Keep existing evidence column indices stable; Fit is moved visually after RIO.
 # Cap Name growth so one long character name cannot force the overlay wide.
 COLUMN_HEADERS = ["Spec", "Name", "iLvl", "RIO", "Normal", "Heroic", "Mythic", "M+ DPS", "Fit"]
@@ -7021,6 +7028,11 @@ class OverlayWindow(QMainWindow):
         task.signals.networkDone.connect(self._record_raid_boss_connection_status)
         task.signals.done.connect(self._on_raid_boss_fetch_done)
         if self._pool is not None:
+            # WHY: terminal shutdown may have begun between the entry guard
+            # and this point (queued retry/signal) — never start new work
+            # after shutdown_fetches() discarded the pool.
+            if self._closed:
+                return False
             self._pool.start(task)
             self._refresh_quota_label()
             self._update_quota_polling()
@@ -7103,6 +7115,11 @@ class OverlayWindow(QMainWindow):
         task.signals.networkDone.connect(self._record_fetch_connection_status)
         task.signals.done.connect(self._on_fetch_done)
         if self._pool is not None:
+            # WHY: terminal shutdown may have begun between the entry guard
+            # and this point (queued retry/signal) — never start new work
+            # after shutdown_fetches() discarded the pool.
+            if self._closed:
+                return
             _log.info(
                 "WCL fetch queued: %s-%s region=%s spec=%s role=%s prefs=%s "
                 "in_flight=%d",
@@ -7706,8 +7723,25 @@ class OverlayWindow(QMainWindow):
         if pool is None:
             self._fetch_shutdown_result = True
         else:
+            # WHY: pool.clear() only discards queued runnables — in-flight
+            # network tasks keep running. Closing the WCL client tears the
+            # shared httpx client so stuck network waits fail fast instead
+            # of hanging the bounded drain below.
+            close_client = getattr(self._wcl_client, "close", None)
+            if callable(close_client):
+                try:
+                    close_client()
+                except Exception:  # noqa: BLE001 - terminal cleanup boundary
+                    _log.warning("Could not close WCL client during fetch shutdown.")
             pool.clear()
-            self._fetch_shutdown_result = pool.waitForDone(-1)
+            drained = pool.waitForDone(_FETCH_SHUTDOWN_TIMEOUT_MS)
+            if not drained:
+                _log.warning(
+                    "WCL fetch pool did not drain within %dms during shutdown; "
+                    "continuing quit without waiting for stragglers.",
+                    _FETCH_SHUTDOWN_TIMEOUT_MS,
+                )
+            self._fetch_shutdown_result = drained
         return self._fetch_shutdown_result
 
 

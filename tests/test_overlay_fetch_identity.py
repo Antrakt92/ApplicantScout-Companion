@@ -313,10 +313,55 @@ def test_shutdown_fetches_rejects_new_work_then_clears_and_fully_drains_pool(
         assert not window._quota_timer.isActive()
         assert not window._launcher.isVisible()
         assert pool.cleared is True
-        assert pool.wait_args == [-1]
+        assert pool.wait_args == [8000]
         assert pool.tasks == []
         assert window.shutdown_fetches() is True
-        assert pool.wait_args == [-1]
+        assert pool.wait_args == [8000]
+    finally:
+        client.close()
+
+
+def test_shutdown_fetches_completes_when_pool_never_drains(qtbot, tmp_path, caplog):
+    """P0-1: a stuck fetch pool must not hang quit — bounded wait, then warn."""
+    from applicant_scout.overlay import _FETCH_SHUTDOWN_TIMEOUT_MS
+
+    state = AppState()
+    state.player = WoWPlayer(full_name="Host-RealmA")
+    window, client = _window(qtbot, tmp_path, state)
+
+    class _StuckPool(_ShutdownPool):
+        def waitForDone(self, timeout_ms: int = -1) -> bool:
+            self.wait_args.append(timeout_ms)
+            return False
+
+    pool = _StuckPool()
+    window._pool = pool
+    pool.tasks.append(object())
+    client_closes: list[str] = []
+    original_close = client.close
+
+    def _record_close() -> None:
+        client_closes.append("closed")
+        original_close()
+
+    window._wcl_client.close = _record_close  # type: ignore[method-assign]
+
+    try:
+        with caplog.at_level("WARNING"):
+            started = time.monotonic()
+            assert window.shutdown_fetches() is False
+            elapsed = time.monotonic() - started
+        assert elapsed < _FETCH_SHUTDOWN_TIMEOUT_MS / 1000.0
+        assert pool.cleared is True
+        assert pool.wait_args == [_FETCH_SHUTDOWN_TIMEOUT_MS]
+        # The shared httpx client is torn down before waiting so stuck
+        # network tasks fail fast instead of hanging the drain.
+        assert client_closes == ["closed"]
+        assert "did not drain" in caplog.text
+        # Idempotent: the cached result returns without re-waiting.
+        assert window.shutdown_fetches() is False
+        assert pool.wait_args == [_FETCH_SHUTDOWN_TIMEOUT_MS]
+        assert client_closes == ["closed"]
     finally:
         client.close()
 

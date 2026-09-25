@@ -362,6 +362,59 @@ def _visible_release_notes_dialogs():
     ]
 
 
+def _live_release_notes_dialogs():
+    return [
+        widget
+        for widget in QApplication.topLevelWidgets()
+        if widget.objectName() == "releaseNotesDialog" and widget.isVisible()
+    ]
+
+
+def _release_notes_widgets():
+    return [
+        widget
+        for widget in QApplication.allWidgets()
+        if widget.objectName().startswith("releaseNotes")
+    ]
+
+
+def test_show_release_notes_dialog_does_not_accumulate_widgets(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+):
+    """P1-dialog-leak: 10 opens/closes must leave flat widget count + set."""
+    monkeypatch.setattr(main_mod, "_RELEASE_NOTES_TEXT_CACHE", None)
+    monkeypatch.setattr(
+        main_mod, "_load_release_notes_text", lambda: "# Leak probe"
+    )
+    # NOTE: the module-level set may already hold a non-Qt test double from
+    # another test module (no destroyed signal to discard it), so assert the
+    # delta, not an absolute empty set.
+    tracked_before = len(main_mod._open_release_notes_dialogs)
+    try:
+        for _ in range(10):
+            main_mod._show_release_notes_dialog(None)
+            for widget in _live_release_notes_dialogs():
+                widget.close()
+            qtbot.waitUntil(lambda: len(_live_release_notes_dialogs()) == 0, timeout=2000)
+        QApplication.processEvents()
+        assert len(main_mod._open_release_notes_dialogs) == tracked_before
+        assert _live_release_notes_dialogs() == []
+
+        before = len(_release_notes_widgets())
+        main_mod._show_release_notes_dialog(None)
+        for widget in _live_release_notes_dialogs():
+            widget.close()
+        qtbot.waitUntil(lambda: len(_live_release_notes_dialogs()) == 0, timeout=2000)
+        QApplication.processEvents()
+        assert len(_release_notes_widgets()) == before
+        assert len(main_mod._open_release_notes_dialogs) == tracked_before
+    finally:
+        for widget in list(QApplication.topLevelWidgets()):
+            if widget.objectName() == "releaseNotesDialog":
+                widget.close()
+        QApplication.processEvents()
+
+
 def test_show_release_notes_dialog_is_modeless_cached_and_deferred(
     qtbot, monkeypatch: pytest.MonkeyPatch
 ):

@@ -169,6 +169,13 @@ UPDATE_HANDOFF_TIMEOUT_MESSAGE = (
 _RETIRED_WATCHER_TRACKER_ATTR = "_applicant_scout_retired_watcher_tracker"
 _UPDATE_INSTALL_LOCK = threading.Lock()
 _QT_APPLICATION_CLASS = QApplication
+# Bound for joining the non-daemon WoW startup shortcut worker during quit:
+# an unbounded join() hangs the quit path when the worker never returns.
+_WOW_SYNC_CLOSE_JOIN_TIMEOUT_S = 5.0
+# Shared budget for stopping retired screenshot watchers during quit:
+# watchdog Observer.stop()+join can block for seconds per watcher on Windows
+# storage paths, so stragglers are logged and shutdown continues.
+_RETIRED_WATCHERS_STOP_BUDGET_S = 10.0
 
 
 _ControlCommandResult = _runtime_control.ControlCommandResult
@@ -2927,7 +2934,16 @@ class _WowSyncStartupConfigurator(QObject):
                 if not threads:
                     break
                 for thread in threads:
-                    thread.join()
+                    # WHY: an unbounded join() hangs quit forever when the
+                    # shortcut worker never returns — bound it and continue.
+                    thread.join(timeout=_WOW_SYNC_CLOSE_JOIN_TIMEOUT_S)
+                    if thread.is_alive():
+                        log.warning(
+                            "WoW startup configurator thread %s did not finish "
+                            "within %.1fs during shutdown; continuing quit.",
+                            thread.name,
+                            _WOW_SYNC_CLOSE_JOIN_TIMEOUT_S,
+                        )
             return self._close_error
 
 
@@ -2999,7 +3015,10 @@ class _RetiredScreenshotWatchers:
     def stop_all(self) -> None:
         with self._lock:
             watchers = tuple(self._watchers.items())
-        for identity, watcher in watchers:
+        # WHY: request_stop() is async — issue it to every watcher first so
+        # their observers begin stopping in parallel instead of serializing
+        # per-watcher blocking stops (up to ~4s each on Windows paths).
+        for _identity, watcher in watchers:
             request_stop = getattr(watcher, "request_stop", None)
             if callable(request_stop):
                 try:
@@ -3009,6 +3028,21 @@ class _RetiredScreenshotWatchers:
                         "Could not request retired screenshot watcher stop during shutdown: %s",
                         exc,
                     )
+        # WHY: Observer.stop()+join is not thread-safe across watchers, so
+        # joins stay serialized but share one budget — slow stragglers are
+        # logged and shutdown continues instead of hanging quit.
+        deadline = time.monotonic() + _RETIRED_WATCHERS_STOP_BUDGET_S
+        budget_warned = False
+        for index, (identity, watcher) in enumerate(watchers):
+            if not budget_warned and time.monotonic() >= deadline:
+                budget_warned = True
+                log.warning(
+                    "Retired screenshot watcher stops exceeded the %.1fs "
+                    "shutdown budget with %d of %d remaining; continuing.",
+                    _RETIRED_WATCHERS_STOP_BUDGET_S,
+                    len(watchers) - index,
+                    len(watchers),
+                )
             self._stop_one(
                 identity,
                 watcher,
@@ -3054,6 +3088,25 @@ def _make_one_shot_callback(action: Callable[[], None]) -> Callable[[], None]:
     return run_once
 
 
+def _drain_snapshot_apply_queue(watcher: ScreenshotWatcher | None) -> None:
+    """Synchronously apply any queued snapshot before the writer closes.
+
+    Mirrors _quiesce_screenshot_ingestion: best-effort flush of the
+    watcher-bound apply queue so the last decoded state reaches the overlay
+    instead of being dropped on the quit path. Never raises.
+    """
+    if watcher is None:
+        return
+    apply_queue = getattr(watcher, "_applicant_scout_apply_queue", None)
+    flush = getattr(apply_queue, "flush", None)
+    if not callable(flush):
+        return
+    try:
+        flush()
+    except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+        log.warning("Could not drain pending snapshot queue during shutdown: %s", exc)
+
+
 def _shutdown_runtime(
     watcher: ScreenshotWatcher | None,
     window: OverlayWindow,
@@ -3070,6 +3123,9 @@ def _shutdown_runtime(
         retired_watchers = getattr(watcher, _RETIRED_WATCHER_TRACKER_ATTR, None)
         if isinstance(retired_watchers, _RetiredScreenshotWatchers):
             retired_watchers.stop_all()
+    # WHY: the apply queue otherwise holds the last decoded snapshot past
+    # writer close — drain it synchronously before persisting below.
+    _drain_snapshot_apply_queue(watcher)
     fetches_drained = False
     try:
         fetches_drained = window.shutdown_fetches()
@@ -3077,22 +3133,25 @@ def _shutdown_runtime(
             log.error("WCL fetch pool did not fully drain during shutdown.")
     except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
         log.error("Could not drain WCL fetch pool during shutdown: %s", exc)
-    if fetches_drained:
-        try:
-            if not cache.close():
-                log.warning("Could not persist the final WCL character cache snapshot.")
-        except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
-            log.warning("Could not close WCL character cache: %s", exc)
+    # WHY: CharacterCache.close is fast (~0.1s) and thread-safe under hammer
+    # (put() is guarded by the _closing flag), so persist unconditionally —
+    # a stuck fetch pool must not silently drop the whole cache write.
+    try:
+        if not cache.close():
+            log.warning("Could not persist the final WCL character cache snapshot.")
+    except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+        log.warning("Could not close WCL character cache: %s", exc)
     if live_snapshot_writer is not None:
         try:
             live_snapshot_writer.close()
         except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
             log.warning("Could not close live snapshot cache writer: %s", exc)
-    if fetches_drained:
-        try:
-            wcl_client.close()
-        except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
-            log.warning("Could not close WCL client: %s", exc)
+    # WHY: the WCL client owns the shared httpx connection pool — always
+    # release it, even when the fetch drain above failed or raised.
+    try:
+        wcl_client.close()
+    except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
+        log.warning("Could not close WCL client: %s", exc)
 
 
 def _run_application_event_loop(

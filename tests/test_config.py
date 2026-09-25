@@ -8560,7 +8560,8 @@ def test_shutdown_runtime_orders_fetch_drain_before_cache_and_client_close():
     ]
 
 
-def test_shutdown_runtime_leaves_shared_resources_open_when_drain_fails(caplog):
+def test_shutdown_runtime_persists_cache_and_closes_client_when_drain_fails(caplog):
+    """P0-2: a stuck fetch pool must not silently drop the cache write."""
     events: list[str] = []
 
     class FakeWindow:
@@ -8591,9 +8592,167 @@ def test_shutdown_runtime_leaves_shared_resources_open_when_drain_fails(caplog):
 
     assert events == [
         "fetches_shutdown",
+        "cache_close",
         "snapshot_writer_close",
+        "client_close",
     ]
     assert "did not fully drain" in caplog.text
+
+
+def test_shutdown_runtime_drains_snapshot_apply_queue_before_writer_close():
+    """P1-b: the last queued snapshot must reach the overlay before close."""
+    events: list[str] = []
+
+    class FakeApplyQueue:
+        def flush(self) -> None:
+            events.append("apply_queue_flush")
+
+    class FakeWatcher:
+        _applicant_scout_apply_queue = FakeApplyQueue()
+
+        def stop(self) -> None:
+            events.append("watcher_stop")
+
+    class FakeWindow:
+        def shutdown_fetches(self) -> bool:
+            events.append("fetches_shutdown")
+            return True
+
+    class FakeCache:
+        def close(self) -> bool:
+            events.append("cache_close")
+            return True
+
+    class FakeWriter:
+        def close(self) -> None:
+            events.append("snapshot_writer_close")
+
+    class FakeClient:
+        def close(self) -> None:
+            events.append("client_close")
+
+    main_mod._shutdown_runtime(  # type: ignore[arg-type]
+        FakeWatcher(),
+        FakeWindow(),
+        FakeCache(),
+        FakeWriter(),
+        FakeClient(),
+    )
+
+    assert events == [
+        "watcher_stop",
+        "apply_queue_flush",
+        "fetches_shutdown",
+        "cache_close",
+        "snapshot_writer_close",
+        "client_close",
+    ]
+
+
+def test_shutdown_runtime_survives_failing_apply_queue_flush(caplog):
+    """P1-b: a broken apply queue must not block the quit path."""
+    events: list[str] = []
+
+    class BrokenApplyQueue:
+        def flush(self) -> None:
+            raise RuntimeError("flush unavailable")
+
+    class FakeWatcher:
+        _applicant_scout_apply_queue = BrokenApplyQueue()
+
+        def stop(self) -> None:
+            events.append("watcher_stop")
+
+    class FakeWindow:
+        def shutdown_fetches(self) -> bool:
+            return True
+
+    class FakeCache:
+        def close(self) -> bool:
+            events.append("cache_close")
+            return True
+
+    class FakeWriter:
+        def close(self) -> None:
+            events.append("snapshot_writer_close")
+
+    class FakeClient:
+        def close(self) -> None:
+            events.append("client_close")
+
+    main_mod._shutdown_runtime(  # type: ignore[arg-type]
+        FakeWatcher(),
+        FakeWindow(),
+        FakeCache(),
+        FakeWriter(),
+        FakeClient(),
+    )
+
+    assert events == [
+        "watcher_stop",
+        "cache_close",
+        "snapshot_writer_close",
+        "client_close",
+    ]
+    assert "Could not drain pending snapshot queue" in caplog.text
+
+
+def test_wow_sync_configurator_close_bounds_slow_worker(caplog):
+    """P1-a: an unbounded join() must not hang quit on a stuck worker."""
+    configurator = main_mod._WowSyncStartupConfigurator(
+        configure=lambda _enabled: None
+    )
+    join_timeouts: list[float | None] = []
+
+    class _StuckThread:
+        name = "stuck-startup-worker"
+
+        def join(self, timeout: float | None = None) -> None:
+            join_timeouts.append(timeout)
+            configurator._threads.discard(self)
+
+        def is_alive(self) -> bool:
+            return True
+
+    configurator._threads.add(_StuckThread())  # type: ignore[arg-type]
+    with caplog.at_level("WARNING"):
+        assert configurator.close() is None
+
+    assert join_timeouts == [main_mod._WOW_SYNC_CLOSE_JOIN_TIMEOUT_S]
+    assert "did not finish" in caplog.text
+
+
+def test_retired_watchers_stop_all_requests_first_and_warns_over_budget(
+    monkeypatch: pytest.MonkeyPatch, caplog
+):
+    """P1-a: stops share one budget; slow stragglers log and quit continues."""
+    events: list[tuple[str, str]] = []
+
+    class FakeWatcher:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def request_stop(self) -> None:
+            events.append((self._name, "request"))
+
+        def stop(self) -> None:
+            events.append((self._name, "stop"))
+
+    tracker = main_mod._RetiredScreenshotWatchers()
+    tracker._watchers[1] = FakeWatcher("a")  # type: ignore[assignment]
+    tracker._watchers[2] = FakeWatcher("b")  # type: ignore[assignment]
+    monkeypatch.setattr(main_mod, "_RETIRED_WATCHERS_STOP_BUDGET_S", 0.0)
+
+    with caplog.at_level("WARNING"):
+        tracker.stop_all()
+
+    assert events == [
+        ("a", "request"),
+        ("b", "request"),
+        ("a", "stop"),
+        ("b", "stop"),
+    ]
+    assert "budget" in caplog.text
 
 
 def test_shutdown_runtime_closes_remaining_resources_after_cache_failure(caplog):
