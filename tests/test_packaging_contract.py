@@ -3893,6 +3893,14 @@ def test_readme_points_to_packaged_addon_zip_not_source_archive():
     assert "separate from the companion portable ZIP" in readme
 
 
+def test_readme_game_versions_stay_evergreen():
+    readme = _read_repo_text("README.md")
+
+    assert re.search(r"Retail 12\.\d+\.\d+", readme) is None
+    assert "120100" not in readme
+    assert "curseforge.com/wow/addons/applicantscout-lfg-overlay" in readme
+
+
 def test_installer_closes_renamed_portable_companion_process():
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
 

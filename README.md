@@ -17,7 +17,10 @@ experience in one table, with missing data clearly marked.
 [ApplicantScout WoW addon](https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay).
 You need both installed and running to receive group data.**
 
-Supports Retail 12.1.0 and PTR 12.1.5. For PTR, install the addon in that
+Supports current Retail Midnight and PTR builds — exact supported Interfaces
+are listed on the
+[addon page](https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay).
+For PTR, install the addon in that
 client's AddOns folder and select its `Screenshots` folder in Companion Settings.
 The companion watches one selected client at a time.
 
