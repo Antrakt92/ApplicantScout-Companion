@@ -2,7 +2,7 @@
 
 <p>
   <a href="https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest"><img alt="Latest companion release" src="https://img.shields.io/github/v/release/Antrakt92/ApplicantScout-Companion?style=for-the-badge"></a>
-  <a href="https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest"><img alt="WoW addon required" src="https://img.shields.io/badge/WoW%20addon-required-ff5e7a?style=for-the-badge"></a>
+  <a href="https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay"><img alt="WoW addon required" src="https://img.shields.io/badge/WoW%20addon-required-ff5e7a?style=for-the-badge"></a>
   <img alt="Windows overlay" src="https://img.shields.io/badge/Windows-overlay-00b8ff?style=for-the-badge">
   <img alt="Warcraft Logs plus RaiderIO" src="https://img.shields.io/badge/WCL%20%2B%20RaiderIO-context-7c5cff?style=for-the-badge">
 </p>
@@ -14,7 +14,7 @@ review your current party or raid. ApplicantScout puts their logs, scores, and
 experience in one table, with missing data clearly marked.
 
 **This free Windows app works with the
-[ApplicantScout WoW addon](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest).
+[ApplicantScout WoW addon](https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay).
 You need both installed and running to receive group data.**
 
 Supports Retail 12.1.0 and PTR 12.1.5. For PTR, install the addon in that
@@ -50,7 +50,9 @@ Blizzard password.
 
 ## Quick Start
 
-1. Install the WoW addon through CurseForge, or download `ApplicantScout-*.zip`
+1. Install the WoW addon through
+   [CurseForge](https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay)
+   or [Wago](https://addons.wago.io/addons/ANzke264), or download `ApplicantScout-*.zip`
    from [the latest addon release](https://github.com/Antrakt92/ApplicantScout-Addon/releases/latest).
    Do not use GitHub's automatic source-code ZIP for normal WoW installs; it
    extracts to the wrong folder name for WoW.
