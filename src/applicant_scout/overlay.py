@@ -85,6 +85,7 @@ from .compatibility import addon_version_warning
 from .usage_events import UsageActivity
 from . import overlay_presenters as _presenters
 from . import overlay_rows as _overlay_rows
+from . import ui_text
 from .metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
@@ -193,13 +194,8 @@ MIN_VISIBLE_WINDOW_WIDTH = 420
 USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
 STATUS_ROW_SINGLE_LINE_MIN_WIDTH = 460
-# Consecutive wire-version rejects before the health chip reports a newer
-# addon format instead of the generic "Shot failed". One reject can be a
-# single corrupt frame (the version byte is checked before CRC), two are
-# still plausibly transient across redundant addon resends; three with no
-# successfully decoded frame in between is consistent evidence the addon
-# speaks a wire version this companion does not understand. Reset on any
-# successful decode so transient glitches never latch.
+# Three consecutive rejects rule out corrupt frames/transient resends.
+# Reset on any successful decode so transient glitches never latch.
 WIRE_VERSION_REJECT_THRESHOLD = 3
 WIRE_VERSION_REJECT_MESSAGE = (
     "ApplicantScout addon uses a newer format — update the companion app."
@@ -805,10 +801,6 @@ def _application_count(applicant_ids: Iterable[str]) -> int:
     return _overlay_rows.application_count(applicant_ids)
 
 
-def _rio_display_text(applicant: Applicant) -> str:
-    return _presenters.rio_display_text(applicant)
-
-
 def _sort_applicants_grouped_with_package_fits(
     applicants: Iterable[Applicant],
     listing: Listing | None = None,
@@ -958,7 +950,7 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         if index.column() == COL_SPEC:
             role = index.data(Qt.ItemDataRole.UserRole)
             icon = _role_icon(role) if isinstance(role, str) else None
-            if (icon is not None or group_marker is not None) and painter is not None:
+            if icon is not None or group_marker is not None:
                 opt = QStyleOptionViewItem(option)
                 self.initStyleOption(opt, index)
                 text = opt.text
@@ -1002,7 +994,6 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         elif (
             index.column() == COL_FIT
             and isinstance(index.data(MPLUS_PACKAGE_TEXT_ROLE), str)
-            and painter is not None
         ):
             self._paint_group_mplus_cell(painter, option, index, group_marker)
         else:
@@ -4921,7 +4912,7 @@ class OverlayWindow(QMainWindow):
 
     def _refresh_health_label(self) -> None:
         """Updates _health_label text from _last_decode_time. None → "shot —"
-        (no decode yet). Otherwise formats `time.time() - last` via _format_age.
+        (no decode yet). Otherwise formats `time.time() - last` via ui_text.format_age.
 
         max(0, delta) clamp guards against a system-clock backwards-jump (DST
         transition, manual change). Explicit failure/partial/update states get
@@ -4934,10 +4925,10 @@ class OverlayWindow(QMainWindow):
             saved_at = self._restored_snapshot_saved_at
             deadline = self._restored_snapshot_deadline
             age = (
-                _format_duration(max(0.0, time.time() - saved_at)) if saved_at else "?"
+                ui_text.format_duration(max(0.0, time.time() - saved_at)) if saved_at else "?"
             )
             wait = (
-                _format_duration(max(0.0, deadline - time.time())) if deadline else "?"
+                ui_text.format_duration(max(0.0, deadline - time.time())) if deadline else "?"
             )
             self._set_status_chip_state(self._health_label, "active")
             detail = (
@@ -4962,7 +4953,7 @@ class OverlayWindow(QMainWindow):
                 f"{WIRE_VERSION_REJECT_MESSAGE}\n"
                 f"{self._last_decode_failed_path}\n"
                 f"{self._last_decode_failed_reason}\n"
-                f"{_format_age(delta)}"
+                f"{ui_text.format_age(delta)}"
             )
             self._set_status_chip_text(
                 self._health_label, "Companion update", detail, detail
@@ -4976,7 +4967,7 @@ class OverlayWindow(QMainWindow):
             detail = (
                 f"{self._last_decode_failed_path}\n"
                 f"{self._last_decode_failed_reason}\n"
-                f"{_format_age(delta)}"
+                f"{ui_text.format_age(delta)}"
             )
             self._set_status_chip_text(
                 self._health_label, "Shot failed", detail, detail
@@ -5019,7 +5010,7 @@ class OverlayWindow(QMainWindow):
                 "The latest valid QR could not provide complete "
                 + " and ".join(stale_surfaces)
                 + " data; last known state is retained.\n"
-                + _format_age(delta)
+                + ui_text.format_age(delta)
             )
             self._set_status_chip_text(
                 self._health_label, "Shot partial", detail, detail
@@ -5036,7 +5027,7 @@ class OverlayWindow(QMainWindow):
             self._set_status_chip_state(self._health_label, "neutral")
             return
         delta = max(0.0, time.time() - last)
-        age = _format_age(delta)
+        age = ui_text.format_age(delta)
         self._set_status_chip_text(
             self._health_label,
             f"Shot {age}",
@@ -7579,8 +7570,7 @@ class OverlayWindow(QMainWindow):
             return super().eventFilter(obj, event)
 
         if (
-            event is not None
-            and event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange)
+            event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange)
             and hasattr(self, "_column_remeasure_pending")
             and obj in (self._table, self._table.horizontalHeader())
         ):
@@ -8105,14 +8095,6 @@ def _app_update_message(latest_version: str) -> str:
         f"ApplicantScout Companion {latest_version} is available.\n"
         "Open Settings to install the update."
     )
-
-
-def _format_age(delta_sec: float) -> str:
-    return _presenters.format_age(delta_sec)
-
-
-def _format_duration(delta_sec: float) -> str:
-    return _presenters.format_duration(delta_sec)
 
 
 def _format_listing_tooltip(listing: Listing | None) -> str:

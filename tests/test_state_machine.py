@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
-from pathlib import Path
 
 import pytest
 
@@ -35,11 +34,11 @@ from applicant_scout.screenshot import (
 )
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.state import AppState, WoWPlayer
-
-
-FIXTURES = Path(__file__).parent / "fixtures"
-LUA_GOLDEN_STEM = "aps1_v9_lua_golden"
-LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v9_lua_leader_key_golden"
+from support.snapshot_builders import (
+    FIXTURES,
+    LUA_GOLDEN_STEM,
+    LUA_LEADER_KEY_GOLDEN_STEM,
+)
 
 
 def _load_lua_golden_snapshot(stem: str = LUA_GOLDEN_STEM) -> tuple[Snapshot, dict]:

@@ -57,12 +57,12 @@ def format_percent(value: object) -> str:
 
 
 def update_phase_message(phase: str) -> str:
-    """Return the status text for a non-downloading update phase."""
+    """Status text for a non-downloading update phase."""
     return _UPDATE_PHASE_MESSAGES[phase]
 
 
 def format_update_download(downloaded_bytes: int, total_bytes: int | None) -> str:
-    """Return the downloading-progress text for known or unknown totals."""
+    """Downloading-progress text for known or unknown totals."""
     if total_bytes:
         percent = min(100, downloaded_bytes * 100 // total_bytes)
         return f"Downloading update{ELLIPSIS} {format_percent(percent)}"

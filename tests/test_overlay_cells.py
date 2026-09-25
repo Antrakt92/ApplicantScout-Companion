@@ -9,9 +9,9 @@ from applicant_scout.overlay import (
     _bold_cell_font,
     _mplus_dual_cell,
     _fit_cell,
-    _rio_display_text,
     _text_colour_for_bg,
 )
+from applicant_scout.overlay_presenters import rio_display_text
 from applicant_scout.state import Applicant, Listing
 
 
@@ -123,11 +123,11 @@ def test_rio_display_text_shows_current_and_better_main():
     app = _app()
     app.main_score = 3468
 
-    assert _rio_display_text(app) == "2443 [3468]"
+    assert rio_display_text(app) == "2443 [3468]"
 
 
 def test_rio_display_text_hides_lower_or_equal_main():
     app = _app()
     app.main_score = 2200
 
-    assert _rio_display_text(app) == "2443"
+    assert rio_display_text(app) == "2443"

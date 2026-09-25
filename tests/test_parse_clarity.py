@@ -219,12 +219,8 @@ def test_supplied_fit_and_raw_cells_do_not_recompute_scoring(monkeypatch, kind):
 def test_ui_text_centralizes_missing_token_and_moved_helpers():
     assert ui_text.MISSING_DATA_TEXT == "—"
     assert overlay_presenters.rio_display_text(_app(score=0)) == ui_text.MISSING_DATA_TEXT
-    assert overlay_presenters.format_age(7200.0) == ui_text.format_age(7200.0) == "2h ago"
-    assert (
-        overlay_presenters.format_duration(7200.0)
-        == ui_text.format_duration(7200.0)
-        == "2h"
-    )
+    assert ui_text.format_age(7200.0) == "2h ago"
+    assert ui_text.format_duration(7200.0) == "2h"
     assert ui_text.format_percent(87.9) == "87%"
     assert ui_text.format_percent(None) == ui_text.MISSING_DATA_TEXT
     assert updater.UpdateProgress("checking").message == "Checking update…"

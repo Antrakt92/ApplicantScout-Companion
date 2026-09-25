@@ -652,7 +652,7 @@ def test_record_and_shutdown_do_not_wait_for_network_and_queue_is_bounded(tmp_pa
 def test_invalid_endpoint_fails_closed(tmp_path, endpoint):
     sender = Recorder()
     instance = usage.UsageClient(tmp_path, "0.16.0", endpoint=endpoint, _sender=sender, consent=True)
-    assert not instance.reporting_available
+    assert not instance.collection_available
     assert not instance.record("consent_started")
     assert sender.events == []
     instance.close()

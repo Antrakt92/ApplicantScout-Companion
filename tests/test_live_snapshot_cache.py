@@ -27,63 +27,7 @@ from applicant_scout.screenshot import (
     SnapshotSource,
 )
 from applicant_scout.state import AppState
-
-
-def _live_snapshot() -> Snapshot:
-    return Snapshot(
-        listing=DecodedListing(
-            activity_id=401,
-            key_level=14,
-            dungeon_name="Theater of Pain",
-            listing_name="+14 weekly",
-            comment="chill",
-            category_id=2,
-            difficulty_id=8,
-        ),
-        version=DecodedVersion(
-            addon_version="0.4.3",
-            game_version="12.0.5",
-            region_id=3,
-            player_name="Host-Realm",
-        ),
-        applicants=[
-            DecodedApplicant(
-                applicant_id=42,
-                member_idx=1,
-                class_id=10,
-                spec_id=270,
-                ilvl=685,
-                score=3100,
-                role=1,
-                name="Healer-Realm",
-                main_score=3200,
-                rio_profile=True,
-                rio_best_key=14,
-                rio_best_dungeon_key=13,
-                rio_timed_at_or_above=2,
-                rio_timed_at_or_above_minus1=4,
-                rio_timed_at_or_above_minus2=6,
-                rio_completed_at_or_above_minus1=5,
-                rio_dungeon_count=8,
-                rio_dungeons=[{"name": "Theater of Pain", "key_level": 14}],
-            )
-        ],
-        roster=[
-            DecodedRosterMember(
-                unit_index=1,
-                flags=1,
-                subgroup=1,
-                class_id=1,
-                spec_id=73,
-                ilvl=690,
-                score=3000,
-                main_score=3000,
-                role=0,
-                name="Tank-Realm",
-            )
-        ],
-        source=SnapshotSource(mtime_ns=123, file_id="WoWScrnShot.jpg", size=456),
-    )
+from support.snapshot_builders import _live_snapshot
 
 
 def _cache_path(tmp_path):

@@ -14,7 +14,6 @@ from applicant_scout.usage import UsageClient, UsagePersistenceError
 
 
 class UsageStub:
-    reporting_available = True
     collection_available = True
 
     def __init__(self, enabled=True, fail=False):

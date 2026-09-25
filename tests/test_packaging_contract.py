@@ -4221,15 +4221,15 @@ def test_readme_has_code_signing_policy_section():
     assert "unsigned" in readme.lower()
 
 
-def test_installer_shows_privacy_and_defaults_telemetry_off_with_optout_wiring():
+def test_installer_shows_privacy_and_defaults_usage_off_with_optout_wiring():
     inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
 
     assert "InfoBeforeFile=" in inno_script
     assert "PRIVACY.md" in inno_script
-    telemetry_task = re.search(r'Name:\s*"telemetry";[^\n]+', inno_script)
-    assert telemetry_task is not None
-    assert "Flags: unchecked" in telemetry_task.group(0)
-    assert "WizardIsTaskSelected('telemetry')" in inno_script
+    usage_task = re.search(r'Name:\s*"usage";[^\n]+', inno_script)
+    assert usage_task is not None
+    assert "Flags: unchecked" in usage_task.group(0)
+    assert "WizardIsTaskSelected('usage')" in inno_script
     assert "usage-installer-optout" in inno_script
     assert "usage.json" in inno_script
     assert "AfterInstall: ApplyInstallerUsageChoice" in inno_script

@@ -63,7 +63,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 ; this unchecked by default (including silent installs); leaving it unchecked
 ; records an install-time opt-out that the app honors until the user
 ; explicitly opts in via Settings.
-Name: "telemetry"; Description: "Help improve with anonymous usage reports (optional)"; GroupDescription: "Privacy:"; Flags: unchecked
+Name: "usage"; Description: "Help improve with anonymous usage reports (optional)"; GroupDescription: "Privacy:"; Flags: unchecked
 
 [Files]
 ; Copy the complete candidate before touching the working payload. The code
@@ -1055,7 +1055,7 @@ var
   StatePath: String;
   OptOutPath: String;
 begin
-  { WHY: the telemetry task defaults OFF so installs never silently opt in.
+  { WHY: the usage task defaults OFF so installs never silently opt in.
     Attached AfterInstall to the deliberately-final payload marker, so the
     choice is recorded during the Files phase. A saved Settings choice
     (usage.json) always wins; the installer only records its choice when no
@@ -1067,7 +1067,7 @@ begin
   if FileExists(StatePath) then begin
     Exit;
   end;
-  if WizardIsTaskSelected('telemetry') then begin
+  if WizardIsTaskSelected('usage') then begin
     if FileExists(OptOutPath) then begin
       if not DeleteFile(OptOutPath) then begin
         Log('WARNING: could not remove the installer usage opt-out: ' + OptOutPath + '.');

@@ -134,13 +134,7 @@ _QR_RECOVERY_BLACK_THRESHOLD = 128
 _QR_RECOVERY_MIN_MODULE_PX = 2.0
 _QR_RECOVERY_MAX_MODULE_PX = 10.0
 
-# Stable machine-readable prefix for wire-version rejects produced by
-# _try_parse_appscout_candidate. The overlay counts consecutive rejects via
-# is_wire_version_reject_reason() to surface an "addon newer than companion"
-# banner: addon_version_warning stays silent on unparsable versions, so
-# without the counter a future wire version would leave a stale overlay with
-# no guidance. Keep this prefix stable — failure reasons travel as plain
-# strings through ScreenshotWatcher.decodeFailed and the snapshot pipeline.
+# WHY: stable prefix lets the overlay count consecutive rejects into an update banner.
 WIRE_VERSION_REJECT_REASON = "unsupported wire version"
 
 

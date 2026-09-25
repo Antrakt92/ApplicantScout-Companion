@@ -28,10 +28,7 @@ from applicant_scout.live_snapshot_cache import (
     save_live_snapshot,
 )
 from applicant_scout.screenshot import (
-    DecodedApplicant,
     DecodedLeaderKey,
-    DecodedListing,
-    DecodedRosterMember,
     DecodedVersion,
     Snapshot,
 )
@@ -48,6 +45,7 @@ from applicant_scout.config import (
     user_config_path,
 )
 from applicant_scout.metric_preferences import MetricPreferences
+from support.snapshot_builders import _live_roster_member, _live_snapshot
 
 
 class FakeSignal:
@@ -215,53 +213,6 @@ def test_validate_oauth_async_cancels_validation_when_worker_start_fails(
 
     assert main_mod._validate_oauth_async(client) is None
     assert calls == ["begin", ("cancel", validation)]
-
-
-def _live_snapshot() -> Snapshot:
-    return Snapshot(
-        listing=DecodedListing(
-            activity_id=401,
-            key_level=14,
-            dungeon_name="Theater of Pain",
-            listing_name="+14 weekly",
-            comment="chill",
-            category_id=2,
-            difficulty_id=8,
-        ),
-        version=DecodedVersion(
-            addon_version="0.4.3",
-            game_version="12.0.5",
-            region_id=3,
-            player_name="Host-Realm",
-        ),
-        applicants=[
-            DecodedApplicant(
-                applicant_id=42,
-                member_idx=1,
-                class_id=10,
-                spec_id=270,
-                ilvl=685,
-                score=3100,
-                role=1,
-                name="Healer-Realm",
-            )
-        ],
-    )
-
-
-def _live_roster_member(name: str, *, unit_index: int = 1) -> DecodedRosterMember:
-    return DecodedRosterMember(
-        unit_index=unit_index,
-        flags=1 if unit_index == 1 else 0,
-        subgroup=1,
-        class_id=10,
-        spec_id=270,
-        ilvl=685,
-        score=3100,
-        main_score=0,
-        role=1,
-        name=name,
-    )
 
 
 def _retail_root(tmp_path: Path) -> Path:

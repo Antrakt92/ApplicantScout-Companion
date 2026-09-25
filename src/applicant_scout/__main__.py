@@ -2386,12 +2386,7 @@ def _notify_background_update_available(
     settings_dialog: object | None,
     latest_version: str,
 ) -> None:
-    """Surface a background-found update via tray balloon + overlay chip only.
-
-    Never opens or activates the settings dialog: a background check must not
-    steal focus while the user plays. The overlay chip is armed separately via
-    set_update_available before this call.
-    """
+    """Surface a background-found update via tray balloon + overlay chip only."""
     message = _wow_start_update_prompt_message(latest_version)
     set_status = getattr(settings_dialog, "set_status", None)
     if callable(set_status):
@@ -2414,11 +2409,7 @@ def _notify_update_failure(
     settings_dialog: object | None,
     message: str,
 ) -> None:
-    """Surface an update failure without stealing focus.
-
-    Status text and tray balloon always; the modal dialog only when the
-    settings dialog is already open (the user is interacting with us).
-    """
+    """Surface an update failure without stealing focus."""
     log.warning("ApplicantScout update failed: %s", message)
     set_status = getattr(settings_dialog, "set_status", None)
     if callable(set_status):
@@ -3145,12 +3136,7 @@ def _make_one_shot_callback(action: Callable[[], None]) -> Callable[[], None]:
 
 
 def _drain_snapshot_apply_queue(watcher: ScreenshotWatcher | None) -> None:
-    """Synchronously apply any queued snapshot before the writer closes.
-
-    Mirrors _quiesce_screenshot_ingestion: best-effort flush of the
-    watcher-bound apply queue so the last decoded state reaches the overlay
-    instead of being dropped on the quit path. Never raises.
-    """
+    """Synchronously apply any queued snapshot before the writer closes. Never raises."""
     if watcher is None:
         return
     apply_queue = getattr(watcher, "_applicant_scout_apply_queue", None)

@@ -12,7 +12,6 @@ from .constants import (
 )
 from .metric_preferences import MetricPreferences
 from .overlay_rows import mplus_key_level
-from . import ui_text
 from .ui_text import MISSING_DATA_TEXT
 from .scoring import (
     CONTEXT_RAID,
@@ -425,16 +424,6 @@ def mplus_metric_display_text(
         run_count,
     )
     return text.replace(" N=1", "" if headline else " 1 run")
-
-
-def format_age(delta_sec: float) -> str:
-    """Canonical implementation lives in ui_text; kept for existing call sites."""
-    return ui_text.format_age(delta_sec)
-
-
-def format_duration(delta_sec: float) -> str:
-    """Canonical implementation lives in ui_text; kept for existing call sites."""
-    return ui_text.format_duration(delta_sec)
 
 
 def format_listing_tooltip(listing: Listing | None) -> str:

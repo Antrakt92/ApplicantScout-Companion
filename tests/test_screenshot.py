@@ -37,11 +37,11 @@ from applicant_scout.screenshot import (
     _parse_payload,
     _try_parse_appscout_payload,
 )
-
-
-FIXTURES = Path(__file__).parent / "fixtures"
-LUA_GOLDEN_STEM = "aps1_v9_lua_golden"
-LUA_LEADER_KEY_GOLDEN_STEM = "aps1_v9_lua_leader_key_golden"
+from support.snapshot_builders import (
+    FIXTURES,
+    LUA_GOLDEN_STEM,
+    LUA_LEADER_KEY_GOLDEN_STEM,
+)
 
 
 def decode_screenshot(image_path: Path) -> tuple[Snapshot | None, bool]:

@@ -206,10 +206,6 @@ class UsageClient:
             return self._consent
 
     @property
-    def reporting_available(self) -> bool:
-        return self._available
-
-    @property
     def collection_available(self) -> bool:
         return self._available
 

@@ -53,12 +53,6 @@ def _values(cfg: Config, **overrides):
     return SimpleNamespace(**payload)
 
 
-@pytest.fixture
-def isolated_overrides(monkeypatch: pytest.MonkeyPatch):
-    for key in main_mod._settings_env_override_keys():
-        monkeypatch.delenv(key, raising=False)
-
-
 def _applier(monkeypatch, cfg, runner):
     for key in main_mod._settings_env_override_keys():
         monkeypatch.delenv(key, raising=False)
