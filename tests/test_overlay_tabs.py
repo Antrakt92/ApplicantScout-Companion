@@ -29,6 +29,8 @@ from applicant_scout.overlay import (
     _fit_cell_visuals,
     OverlayWindow,
     USER_MIN_WINDOW_WIDTH,
+    WIRE_VERSION_REJECT_MESSAGE,
+    WIRE_VERSION_REJECT_THRESHOLD,
 )
 from applicant_scout.scoring import CONTEXT_RAID, detect_listing_context
 from applicant_scout.screenshot import (
@@ -2149,3 +2151,45 @@ def test_rio_table_hides_history_below_current_character_score(
     if not current_score:
         member.main_score = 4000
     assert rio_table_text(member) == expected
+
+
+def test_consecutive_wire_version_rejects_surface_companion_update_banner(
+    qtbot, tmp_path
+):
+    """Unknown wire versions page the health chip after a short streak.
+
+    addon_version_warning stays silent when the version block never decodes,
+    so the overlay counts wire-version rejects: below the threshold the
+    generic "Shot failed" chip is preserved; at the threshold the chip
+    carries the update-companion guidance; any successfully decoded frame
+    resets the streak.
+    """
+    assert WIRE_VERSION_REJECT_THRESHOLD == 3
+    win = _window(tmp_path, qtbot, AppState())
+    reason = "hex: unsupported wire version 0x0c"
+
+    for _ in range(WIRE_VERSION_REJECT_THRESHOLD - 1):
+        win.note_decode_failed("WoWScrnShot_0001.jpg", reason)
+        assert win._health_label.text() == "Shot failed"
+        assert win._health_label.property("statusState") == "critical"
+
+    # An unrelated transient failure keeps the generic chip but does not
+    # erase the accumulated wire-version evidence.
+    win.note_decode_failed("WoWScrnShot_0002.jpg", "CRC mismatch")
+    assert win._health_label.text() == "Shot failed"
+
+    win.note_decode_failed("WoWScrnShot_0003.jpg", reason)
+
+    assert win._health_label.text() == "Companion update"
+    assert win._health_label.property("statusState") == "warning"
+    assert WIRE_VERSION_REJECT_MESSAGE in win._health_label.toolTip()
+    assert reason in win._health_label.toolTip()
+    assert win._health_label.accessibleDescription() == win._health_label.toolTip()
+
+    # Any successfully decoded frame resets the streak: the next reject is
+    # an isolated failure again, not a newer-format banner.
+    win.note_decode(Snapshot(listing=None, version=None))
+    win.note_decode_failed("WoWScrnShot_0004.jpg", reason)
+
+    assert win._health_label.text() == "Shot failed"
+    assert win._health_label.property("statusState") == "critical"

@@ -112,6 +112,7 @@ from .scoring import (
     role_mplus_view,
     safe_percent,
 )
+from .screenshot import is_wire_version_reject_reason
 from .state import (
     Applicant,
     AppState,
@@ -192,6 +193,17 @@ MIN_VISIBLE_WINDOW_WIDTH = 420
 USER_MIN_WINDOW_WIDTH = 300
 USER_MIN_WINDOW_HEIGHT = 220
 STATUS_ROW_SINGLE_LINE_MIN_WIDTH = 460
+# Consecutive wire-version rejects before the health chip reports a newer
+# addon format instead of the generic "Shot failed". One reject can be a
+# single corrupt frame (the version byte is checked before CRC), two are
+# still plausibly transient across redundant addon resends; three with no
+# successfully decoded frame in between is consistent evidence the addon
+# speaks a wire version this companion does not understand. Reset on any
+# successful decode so transient glitches never latch.
+WIRE_VERSION_REJECT_THRESHOLD = 3
+WIRE_VERSION_REJECT_MESSAGE = (
+    "ApplicantScout addon uses a newer format — update the companion app."
+)
 APPLICANT_ROW_HEIGHT = 27
 INFO_PANEL_MIN_HEIGHT = 80
 INFO_PANEL_PREFERRED_HEIGHT = 238
@@ -3803,6 +3815,11 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time: float | None = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        # Consecutive wire-version rejects since the last successful decode.
+        # At WIRE_VERSION_REJECT_THRESHOLD the health chip reports a newer
+        # addon format (addon_version_warning stays silent on unparsable
+        # versions, so the raw "Shot failed" reason alone gives no guidance).
+        self._wire_version_rejects = 0
         self._last_decode_lfg_unavailable = False
         self._last_decode_applicants_unavailable = False
         self._last_decode_roster_unavailable = False
@@ -4675,6 +4692,7 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time = None
         self._last_decode_failed_path = ""
         self._last_decode_failed_reason = ""
+        self._wire_version_rejects = 0
         self._last_decode_lfg_unavailable = bool(
             getattr(snap, "lfg_unavailable", False)
         )
@@ -4811,6 +4829,8 @@ class OverlayWindow(QMainWindow):
         self._last_decode_failed_time = time.time()
         self._last_decode_failed_path = path
         self._last_decode_failed_reason = reason
+        if is_wire_version_reject_reason(reason):
+            self._wire_version_rejects += 1
         self._refresh_health_label()
 
     def set_update_available(self, latest_version: str | None) -> None:
@@ -4927,6 +4947,27 @@ class OverlayWindow(QMainWindow):
             self._set_status_chip_text(
                 self._health_label, "Shot restored", detail, detail
             )
+            return
+        if (
+            self._wire_version_rejects >= WIRE_VERSION_REJECT_THRESHOLD
+            and failed_at is not None
+            and (self._last_decode_time is None or failed_at >= self._last_decode_time)
+            and is_wire_version_reject_reason(self._last_decode_failed_reason)
+        ):
+            # Newer addon format: the version block never decodes, so
+            # addon_version_warning stays silent. Replace the raw reject with
+            # actionable guidance once the streak rules out a corrupt frame.
+            delta = max(0.0, time.time() - failed_at)
+            detail = (
+                f"{WIRE_VERSION_REJECT_MESSAGE}\n"
+                f"{self._last_decode_failed_path}\n"
+                f"{self._last_decode_failed_reason}\n"
+                f"{_format_age(delta)}"
+            )
+            self._set_status_chip_text(
+                self._health_label, "Companion update", detail, detail
+            )
+            self._set_status_chip_state(self._health_label, "warning")
             return
         if failed_at is not None and (
             self._last_decode_time is None or failed_at >= self._last_decode_time

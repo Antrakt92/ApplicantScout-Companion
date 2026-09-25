@@ -134,6 +134,16 @@ _QR_RECOVERY_BLACK_THRESHOLD = 128
 _QR_RECOVERY_MIN_MODULE_PX = 2.0
 _QR_RECOVERY_MAX_MODULE_PX = 10.0
 
+# Stable machine-readable prefix for wire-version rejects produced by
+# _try_parse_appscout_candidate. The overlay counts consecutive rejects via
+# is_wire_version_reject_reason() to surface an "addon newer than companion"
+# banner: addon_version_warning stays silent on unparsable versions, so
+# without the counter a future wire version would leave a stale overlay with
+# no guidance. Keep this prefix stable — failure reasons travel as plain
+# strings through ScreenshotWatcher.decodeFailed and the snapshot pipeline.
+WIRE_VERSION_REJECT_REASON = "unsupported wire version"
+
+
 # Cap each startup-cleanup pass at the most-recent N unknown screenshots.
 # Manual fingerprints persist, so later starts advance through older files without
 # letting one pathological folder consume minutes of CPU beside WoW.
@@ -751,7 +761,7 @@ def _try_parse_appscout_candidate(
 
     wire_ver = raw[4]
     if wire_ver not in WIRE_VERSIONS_SUPPORTED:
-        return None, f"unsupported wire version 0x{wire_ver:02x}"
+        return None, f"{WIRE_VERSION_REJECT_REASON} 0x{wire_ver:02x}"
     flags = raw[7]
     reserved2 = raw[8]
     if wire_ver == APS1_FRAGMENT_VERSION:
@@ -889,6 +899,16 @@ def _try_parse_appscout_payload(raw: bytes) -> tuple[Optional[Snapshot], Optiona
     if isinstance(parsed, SnapshotFragment):
         return None, "v10 fragment requires watcher assembly"
     return parsed, error
+
+
+def is_wire_version_reject_reason(reason: object) -> bool:
+    """True when a decode-failure reason reports an unknown wire version.
+
+    Callers match on the WIRE_VERSION_REJECT_REASON prefix rather than the
+    full string because the pipeline prefixes the transport kind
+    ("hex: ..."/"raw: ..."). Non-string and empty reasons never match.
+    """
+    return isinstance(reason, str) and WIRE_VERSION_REJECT_REASON in reason
 
 
 def validate_snapshot_for_application(snap: Snapshot) -> Snapshot:

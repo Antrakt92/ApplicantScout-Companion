@@ -667,6 +667,30 @@ def test_wire_versions_supported_pin():
     assert 0x00 not in WIRE_VERSIONS_SUPPORTED  # canary
 
 
+def test_unknown_wire_version_error_is_detectable_as_reject():
+    """Pin the wire-reject classification the overlay debounce counts on.
+
+    A future addon emitting an unknown wire version must be recognizable
+    from the plain-string failure reason (the pipeline carries no structured
+    flags), while other parse failures must not match."""
+    raw = _wrap_payload(_build_body([]), wire_ver=0x0C)
+
+    parsed, error = screenshot_mod._try_parse_appscout_candidate(raw)
+
+    assert parsed is None
+    assert error is not None
+    assert screenshot_mod.WIRE_VERSION_REJECT_REASON in error
+    assert screenshot_mod.is_wire_version_reject_reason(error)
+    assert screenshot_mod.is_wire_version_reject_reason(f"hex: {error}")
+    assert screenshot_mod.is_wire_version_reject_reason(f"raw: {error}")
+    assert not screenshot_mod.is_wire_version_reject_reason(
+        "CRC mismatch expected 00000000 actual 00000001"
+    )
+    assert not screenshot_mod.is_wire_version_reject_reason("")
+    assert not screenshot_mod.is_wire_version_reject_reason(None)
+    assert not screenshot_mod.is_wire_version_reject_reason(0)
+
+
 def test_v10_non_fragment_body_is_rejected():
     raw = _wrap_payload(_build_body([]), wire_ver=0x0A)
 
