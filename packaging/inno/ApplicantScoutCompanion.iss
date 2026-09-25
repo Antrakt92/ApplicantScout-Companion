@@ -149,8 +149,8 @@ begin
   { WHY: the portable ZIP ships ApplicantScoutCompanion.exe while installed
     payloads keep ApplicantScout.exe. Both names must be closed, otherwise a
     portable copy keeps files locked and the installed update promotes a
-    mixed-version payload. Portable copies may live outside {app}, so the
-    renamed process name also matches by itself for same-user processes. }
+    mixed-version payload. Portable copies may live outside the install dir,
+    so the renamed process name also matches by itself for same-user processes. }
   CompanionBackupTarget := PowerShellSingleQuoted(ExpandConstant('{app}\.apscout-backup\ApplicantScoutCompanion.exe'));
   CompanionCurrentTarget := PowerShellSingleQuoted(ExpandConstant('{app}\current\ApplicantScoutCompanion.exe'));
   CompanionLegacyTarget := PowerShellSingleQuoted(ExpandConstant('{app}\ApplicantScoutCompanion.exe'));
@@ -1230,7 +1230,7 @@ begin
           end;
           Size := Size + SubSize;
         end else begin
-          Size := Size + FindRec.Size;
+          Size := Size + Int64(Cardinal(FindRec.SizeLow)) + Int64(FindRec.SizeHigh) shl 32;
         end;
       end;
     until not FindNext(FindRec);
@@ -1245,10 +1245,12 @@ var
   AppDir: String;
   BackupSize: Int64;
   CurrentSize: Int64;
+  FreeMB: Cardinal;
   FreeSpace: Int64;
   NextProbe: String;
   ProbeDir: String;
   Required: Int64;
+  TotalMB: Cardinal;
   TotalSpace: Int64;
 begin
   { WHY: the staged current/next/backup transaction briefly needs ~2-3x the
@@ -1278,11 +1280,13 @@ begin
     end;
     ProbeDir := NextProbe;
   end;
-  if not GetSpaceOnDisk(ProbeDir, FreeSpace, TotalSpace) then begin
+  if not GetSpaceOnDisk(ProbeDir, True, FreeMB, TotalMB) then begin
     Result := 'Could not verify free disk space for the companion install path. ' +
       'Free additional disk space and try again.';
     Exit;
   end;
+  FreeSpace := Int64(FreeMB) * 1048576;
+  TotalSpace := Int64(TotalMB) * 1048576;
   if FreeSpace < Required then begin
     Result := 'Not enough free disk space for the companion update: ' +
       IntToStr(FreeSpace div 1048576) + ' MB free, but about ' +
