@@ -2179,3 +2179,117 @@ def test_lookup_profile_returns_none_when_record_decode_fails(
 
     assert reader.lookup_profile("Chinie", "Ragnaros", "EU") is None
     assert "could not decode RaiderIO local profile" in caplog.text
+
+
+# ── P10 extracted seams: _load_mplus_region / _load_raid_region /
+# _validate_mplus_pair / _apply_mplus_field ───────────────────────────
+
+
+def _stable_mplus_meta() -> raiderio_local_mod._ProviderMeta:
+    return raiderio_local_mod._ProviderMeta(
+        record_size=4,
+        encoding_order=(1, 10),
+    )
+
+
+def test_validate_mplus_pair_accepts_stable_header_and_lookup_meta():
+    meta = raiderio_local_mod._validate_mplus_pair(
+        _stable_mplus_meta(),
+        _stable_mplus_meta(),
+        ["Skyreach", "Pit of Saron"],
+    )
+
+    assert meta == _stable_mplus_meta()
+
+
+def test_validate_mplus_pair_rejects_metadata_drift_during_load():
+    drifted = raiderio_local_mod._ProviderMeta(
+        record_size=5,
+        encoding_order=(1, 10),
+    )
+
+    with pytest.raises(ValueError, match="changed during load"):
+        raiderio_local_mod._validate_mplus_pair(
+            _stable_mplus_meta(),
+            drifted,
+            ["Skyreach", "Pit of Saron"],
+        )
+
+
+def _write_corrupt_region_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not a raiderio provider file", encoding="utf-8")
+
+
+def test_load_mplus_region_reports_unavailable_for_corrupt_lookup(
+    tmp_path: Path,
+):
+    db_root = tmp_path / "Interface" / "AddOns" / "RaiderIO" / "db"
+    _write_corrupt_region_file(db_root / "db_mythicplus_eu_characters.lua")
+    _write_corrupt_region_file(db_root / "db_mythicplus_eu_lookup.lua")
+    _write_corrupt_region_file(db_root / "db_dungeons.lua")
+
+    data = raiderio_local_mod._load_mplus_region(
+        db_root,
+        "eu",
+        payload_cache_dir=None,
+        payload_cache_generation=None,
+    )
+
+    assert data.available is False
+    assert data.dungeons == []
+    assert data.meta is None
+    assert data.lookup_payload is None
+    assert data.realm_cache == {}
+
+
+def test_load_raid_region_reports_unavailable_for_corrupt_lookup(tmp_path: Path):
+    db_root = tmp_path / "Interface" / "AddOns" / "RaiderIO" / "db"
+    _write_corrupt_region_file(db_root / "db_raiding_eu_characters.lua")
+    _write_corrupt_region_file(db_root / "db_raiding_eu_lookup.lua")
+
+    data = raiderio_local_mod._load_raid_region(
+        db_root,
+        "eu",
+        payload_cache_dir=None,
+        payload_cache_generation=None,
+    )
+
+    assert data.available is False
+    assert data.current_raids == []
+    assert data.previous_raids == []
+    assert data.meta is None
+    assert data.lookup_payload is None
+    assert data.realm_cache == {}
+
+
+def test_decode_profile_ignores_unknown_encoding_field_id():
+    meta = raiderio_local_mod._ProviderMeta(
+        record_size=4,
+        encoding_order=(1, 99),
+    )
+
+    profile = raiderio_local_mod._decode_profile(
+        bytes([0xFF, 0xFF]),
+        meta,
+        ["Skyreach"],
+    )
+
+    assert profile.current_score == 8191
+    assert profile.dungeons == []
+
+
+def test_apply_mplus_field_returns_advanced_offset_per_field():
+    meta = raiderio_local_mod._ProviderMeta(
+        record_size=4,
+        encoding_order=(1, 10),
+    )
+    record = bytes([0xFF, 0xFF, 0xFF, 0xFF])
+    state = raiderio_local_mod._MplusProfileState()
+
+    offset = raiderio_local_mod._apply_mplus_field(
+        state, record, 0, 1, meta, ["Skyreach"]
+    )
+
+    assert offset == 13
+    assert state.current_score == 8191

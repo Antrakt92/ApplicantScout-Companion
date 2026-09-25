@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import hmac
 import logging
@@ -346,6 +346,193 @@ class RaiderIOLocalReader:
         return None, fingerprint
 
 
+@dataclass(frozen=True)
+class _MplusRegionData:
+    dungeons: list[str]
+    meta: _ProviderMeta | None
+    lookup_payload: bytes | None
+    realm_cache: dict[str, _RealmData]
+    available: bool
+
+
+@dataclass(frozen=True)
+class _RaidRegionData:
+    current_raids: list[_RaidInfo]
+    previous_raids: list[_RaidInfo]
+    meta: _ProviderMeta | None
+    lookup_payload: bytes | None
+    realm_cache: dict[str, _RealmData]
+    available: bool
+
+
+def _validate_mplus_pair(
+    header_meta: _ProviderMeta,
+    lookup_meta: _ProviderMeta,
+    dungeons: list[str],
+) -> _ProviderMeta:
+    """Validate the M+ header/full-text provider metadata pair.
+
+    Pure move out of _load_mplus_region: the lookup body must repeat the
+    header metadata exactly (the files can change mid-load), and the plan
+    must fit the dungeon count."""
+    if lookup_meta != header_meta:
+        raise ValueError("RaiderIO M+ provider metadata changed during load")
+    _validate_encoding_plan(lookup_meta, len(dungeons))
+    return lookup_meta
+
+
+def _load_mplus_region(
+    db_root: Path,
+    token: str,
+    *,
+    payload_cache_dir: Path | None,
+    payload_cache_generation: int | None,
+) -> _MplusRegionData:
+    """Load and validate the M+ characters/lookup pair for one region.
+
+    Pure move out of _RegionDB.load: parse failures degrade to unavailable
+    (warning + empty data), never raise — the caller keeps any raid half."""
+    mplus_characters_path = db_root / f"db_mythicplus_{token}_characters.lua"
+    mplus_lookup_path = db_root / f"db_mythicplus_{token}_lookup.lua"
+    dungeons_path = db_root / "db_dungeons.lua"
+    try:
+        mplus_lookup_header = _read_provider_header(mplus_lookup_path)
+        mplus_header_meta = _parse_provider_meta(mplus_lookup_header)
+        dungeons = _parse_dungeon_names(dungeons_path.read_text(encoding="utf-8"))
+        _validate_dungeon_order(dungeons)
+        _validate_encoding_plan(mplus_header_meta, len(dungeons))
+        mplus_characters_header = _read_provider_header(mplus_characters_path)
+        _validate_provider_identity_pair(
+            mplus_characters_header,
+            mplus_lookup_header,
+            "M+",
+            expected_region=token,
+        )
+        mplus_characters_text = mplus_characters_path.read_text(encoding="utf-8")
+        _validate_provider_identity_pair(
+            mplus_characters_text,
+            mplus_lookup_header,
+            "M+",
+            expected_region=token,
+        )
+        mplus_layout = _parse_character_layout(
+            mplus_characters_text,
+            mplus_header_meta.record_size,
+        )
+        lookup_text, lookup_digest = _read_utf8_source_with_digest(mplus_lookup_path)
+        _validate_provider_identity_pair(
+            mplus_characters_text,
+            lookup_text,
+            "M+",
+            expected_region=token,
+        )
+        mplus_meta = _validate_mplus_pair(
+            mplus_header_meta,
+            _parse_provider_meta(lookup_text),
+            dungeons,
+        )
+        mplus_lookup_payload = _parse_lookup_payload_for_character_layout(
+            lookup_text,
+            source_path=mplus_lookup_path,
+            source_digest=lookup_digest,
+            payload_cache_dir=payload_cache_dir,
+            payload_cache_generation=payload_cache_generation,
+            character_layout=mplus_layout,
+        )
+        mplus_realm_cache = mplus_layout.realms
+    except (OSError, ValueError) as exc:
+        _log.warning("could not load RaiderIO local M+ DB for %s: %s", token, exc)
+        return _MplusRegionData([], None, None, {}, False)
+    return _MplusRegionData(
+        dungeons, mplus_meta, mplus_lookup_payload, mplus_realm_cache, True
+    )
+
+
+def _load_raid_region(
+    db_root: Path,
+    token: str,
+    *,
+    payload_cache_dir: Path | None,
+    payload_cache_generation: int | None,
+) -> _RaidRegionData:
+    """Load and validate the raid characters/lookup pair for one region.
+
+    Pure move out of _RegionDB.load: parse failures degrade to unavailable
+    (warning + empty data), never raise — the caller keeps any M+ half."""
+    raid_characters_path = db_root / f"db_raiding_{token}_characters.lua"
+    raid_lookup_path = db_root / f"db_raiding_{token}_lookup.lua"
+    try:
+        raid_lookup_header = _read_provider_header(raid_lookup_path)
+        raid_header_meta = _parse_provider_meta(raid_lookup_header)
+        header_current_raids = _parse_provider_raids(raid_lookup_header, "currentRaids")
+        header_previous_raids = _parse_provider_raids(
+            raid_lookup_header, "previousRaids"
+        )
+        _validate_raid_encoding_plan(
+            raid_header_meta,
+            header_current_raids,
+            header_previous_raids,
+        )
+        raid_characters_header = _read_provider_header(raid_characters_path)
+        _validate_provider_identity_pair(
+            raid_characters_header,
+            raid_lookup_header,
+            "raid",
+            expected_region=token,
+        )
+        raid_characters_text = raid_characters_path.read_text(encoding="utf-8")
+        _validate_provider_identity_pair(
+            raid_characters_text,
+            raid_lookup_header,
+            "raid",
+            expected_region=token,
+        )
+        raid_layout = _parse_character_layout(
+            raid_characters_text,
+            raid_header_meta.record_size,
+        )
+        raid_lookup_text, raid_lookup_digest = _read_utf8_source_with_digest(
+            raid_lookup_path
+        )
+        _validate_provider_identity_pair(
+            raid_characters_text,
+            raid_lookup_text,
+            "raid",
+            expected_region=token,
+        )
+        raid_meta = _parse_provider_meta(raid_lookup_text)
+        if raid_meta != raid_header_meta:
+            raise ValueError("RaiderIO raid provider metadata changed during load")
+        current_raids = _parse_provider_raids(raid_lookup_text, "currentRaids")
+        previous_raids = _parse_provider_raids(raid_lookup_text, "previousRaids")
+        if (
+            current_raids != header_current_raids
+            or previous_raids != header_previous_raids
+        ):
+            raise ValueError("RaiderIO raid provider schema changed during load")
+        _validate_raid_encoding_plan(raid_meta, current_raids, previous_raids)
+        raid_lookup_payload = _parse_lookup_payload_for_character_layout(
+            raid_lookup_text,
+            source_path=raid_lookup_path,
+            source_digest=raid_lookup_digest,
+            payload_cache_dir=payload_cache_dir,
+            payload_cache_generation=payload_cache_generation,
+            character_layout=raid_layout,
+        )
+        raid_realm_cache = raid_layout.realms
+    except (OSError, ValueError) as exc:
+        _log.warning("could not load RaiderIO local raid DB for %s: %s", token, exc)
+        return _RaidRegionData([], [], None, None, {}, False)
+    return _RaidRegionData(
+        current_raids,
+        previous_raids,
+        raid_meta,
+        raid_lookup_payload,
+        raid_realm_cache,
+        True,
+    )
+
+
 class _RegionDB:
     def __init__(
         self,
@@ -402,150 +589,35 @@ class _RegionDB:
         mplus_lookup_payload: bytes | None = None
         mplus_realm_cache: dict[str, _RealmData] = {}
         if has_mplus:
-            try:
-                mplus_lookup_header = _read_provider_header(mplus_lookup_path)
-                mplus_header_meta = _parse_provider_meta(mplus_lookup_header)
-                dungeons = _parse_dungeon_names(
-                    dungeons_path.read_text(encoding="utf-8")
-                )
-                _validate_dungeon_order(dungeons)
-                _validate_encoding_plan(mplus_header_meta, len(dungeons))
-                mplus_characters_header = _read_provider_header(
-                    mplus_characters_path
-                )
-                _validate_provider_identity_pair(
-                    mplus_characters_header,
-                    mplus_lookup_header,
-                    "M+",
-                    expected_region=token,
-                )
-                mplus_characters_text = mplus_characters_path.read_text(
-                    encoding="utf-8"
-                )
-                _validate_provider_identity_pair(
-                    mplus_characters_text,
-                    mplus_lookup_header,
-                    "M+",
-                    expected_region=token,
-                )
-                mplus_layout = _parse_character_layout(
-                    mplus_characters_text,
-                    mplus_header_meta.record_size,
-                )
-                lookup_text, lookup_digest = _read_utf8_source_with_digest(
-                    mplus_lookup_path
-                )
-                _validate_provider_identity_pair(
-                    mplus_characters_text,
-                    lookup_text,
-                    "M+",
-                    expected_region=token,
-                )
-                mplus_meta = _parse_provider_meta(lookup_text)
-                if mplus_meta != mplus_header_meta:
-                    raise ValueError("RaiderIO M+ provider metadata changed during load")
-                _validate_encoding_plan(mplus_meta, len(dungeons))
-                mplus_lookup_payload = _parse_lookup_payload_for_character_layout(
-                    lookup_text,
-                    source_path=mplus_lookup_path,
-                    source_digest=lookup_digest,
-                    payload_cache_dir=payload_cache_dir,
-                    payload_cache_generation=payload_cache_generation,
-                    character_layout=mplus_layout,
-                )
-                mplus_realm_cache = mplus_layout.realms
-            except (OSError, ValueError) as exc:
-                _log.warning(
-                    "could not load RaiderIO local M+ DB for %s: %s", token, exc
-                )
-                dungeons = []
-                mplus_meta = None
-                mplus_lookup_payload = None
-                mplus_realm_cache = {}
-                has_mplus = False
+            mplus_data = _load_mplus_region(
+                db_root,
+                token,
+                payload_cache_dir=payload_cache_dir,
+                payload_cache_generation=payload_cache_generation,
+            )
+            dungeons = mplus_data.dungeons
+            mplus_meta = mplus_data.meta
+            mplus_lookup_payload = mplus_data.lookup_payload
+            mplus_realm_cache = mplus_data.realm_cache
+            has_mplus = mplus_data.available
         raid_meta: _ProviderMeta | None = None
         raid_lookup_payload: bytes | None = None
         current_raids: list[_RaidInfo] = []
         previous_raids: list[_RaidInfo] = []
         raid_realm_cache: dict[str, _RealmData] = {}
         if has_raid:
-            try:
-                raid_lookup_header = _read_provider_header(raid_lookup_path)
-                raid_header_meta = _parse_provider_meta(raid_lookup_header)
-                header_current_raids = _parse_provider_raids(
-                    raid_lookup_header, "currentRaids"
-                )
-                header_previous_raids = _parse_provider_raids(
-                    raid_lookup_header, "previousRaids"
-                )
-                _validate_raid_encoding_plan(
-                    raid_header_meta,
-                    header_current_raids,
-                    header_previous_raids,
-                )
-                raid_characters_header = _read_provider_header(
-                    raid_characters_path
-                )
-                _validate_provider_identity_pair(
-                    raid_characters_header,
-                    raid_lookup_header,
-                    "raid",
-                    expected_region=token,
-                )
-                raid_characters_text = raid_characters_path.read_text(
-                    encoding="utf-8"
-                )
-                _validate_provider_identity_pair(
-                    raid_characters_text,
-                    raid_lookup_header,
-                    "raid",
-                    expected_region=token,
-                )
-                raid_layout = _parse_character_layout(
-                    raid_characters_text,
-                    raid_header_meta.record_size,
-                )
-                raid_lookup_text, raid_lookup_digest = _read_utf8_source_with_digest(
-                    raid_lookup_path
-                )
-                _validate_provider_identity_pair(
-                    raid_characters_text,
-                    raid_lookup_text,
-                    "raid",
-                    expected_region=token,
-                )
-                raid_meta = _parse_provider_meta(raid_lookup_text)
-                if raid_meta != raid_header_meta:
-                    raise ValueError("RaiderIO raid provider metadata changed during load")
-                current_raids = _parse_provider_raids(raid_lookup_text, "currentRaids")
-                previous_raids = _parse_provider_raids(
-                    raid_lookup_text, "previousRaids"
-                )
-                if (
-                    current_raids != header_current_raids
-                    or previous_raids != header_previous_raids
-                ):
-                    raise ValueError("RaiderIO raid provider schema changed during load")
-                _validate_raid_encoding_plan(raid_meta, current_raids, previous_raids)
-                raid_lookup_payload = _parse_lookup_payload_for_character_layout(
-                    raid_lookup_text,
-                    source_path=raid_lookup_path,
-                    source_digest=raid_lookup_digest,
-                    payload_cache_dir=payload_cache_dir,
-                    payload_cache_generation=payload_cache_generation,
-                    character_layout=raid_layout,
-                )
-                raid_realm_cache = raid_layout.realms
-            except (OSError, ValueError) as exc:
-                _log.warning(
-                    "could not load RaiderIO local raid DB for %s: %s", token, exc
-                )
-                raid_meta = None
-                raid_lookup_payload = None
-                current_raids = []
-                previous_raids = []
-                raid_realm_cache = {}
-                has_raid = False
+            raid_data = _load_raid_region(
+                db_root,
+                token,
+                payload_cache_dir=payload_cache_dir,
+                payload_cache_generation=payload_cache_generation,
+            )
+            current_raids = raid_data.current_raids
+            previous_raids = raid_data.previous_raids
+            raid_meta = raid_data.meta
+            raid_lookup_payload = raid_data.lookup_payload
+            raid_realm_cache = raid_data.realm_cache
+            has_raid = raid_data.available
         if not has_mplus and not has_raid:
             return None
         return cls(
@@ -1287,66 +1359,101 @@ def _validate_dungeon_order(dungeon_names: list[str]) -> None:
         )
 
 
+@dataclass
+class _MplusProfileState:
+    """Mutable accumulator for one _decode_profile pass over encoding_order."""
+
+    current_score: int = 0
+    previous_score: int = 0
+    previous_score_season: int | None = None
+    main_previous_score: int = 0
+    main_previous_score_season: int | None = None
+    warband_previous_score: int = 0
+    warband_previous_score_season: int | None = None
+    dungeon_rows: list[dict] = field(default_factory=list)
+
+
+def _apply_mplus_field(
+    state: _MplusProfileState,
+    record: bytes,
+    bit_offset: int,
+    field: int,
+    meta: _ProviderMeta,
+    dungeon_names: list[str],
+) -> int:
+    """Decode one encoding_order field into state, return the new bit offset.
+
+    One early return per field keeps _decode_profile flat; unknown fields are
+    ignored exactly as before (no else branch in the original loop)."""
+    if field == 1:
+        state.current_score, bit_offset = _read_bits(record, bit_offset, 13)
+        return bit_offset
+    if field in {2, 4, 6, 8, 15, 16}:
+        _, bit_offset = _read_bits(record, bit_offset, 7)
+        return bit_offset
+    if field == 3:
+        state.previous_score, bit_offset = _read_bits(record, bit_offset, 13)
+        season, bit_offset = _read_bits(record, bit_offset, 2)
+        if state.previous_score > 0:
+            state.previous_score_season = season
+        return bit_offset
+    if field in {5, 12}:
+        _, bit_offset = _read_bits(record, bit_offset, 13)
+        return bit_offset
+    if field == 7:
+        value, bit_offset = _read_bits(record, bit_offset, 10)
+        # RaiderIO stores the main's historical score in tens.
+        state.main_previous_score = value * 10
+        season, bit_offset = _read_bits(record, bit_offset, 2)
+        if state.main_previous_score > 0:
+            state.main_previous_score_season = season
+        return bit_offset
+    if field == 13:
+        state.warband_previous_score, bit_offset = _read_bits(record, bit_offset, 13)
+        season, bit_offset = _read_bits(record, bit_offset, 2)
+        if state.warband_previous_score > 0:
+            state.warband_previous_score_season = season
+        return bit_offset
+    if field == 9:
+        if meta.keystone_milestone_levels is None:
+            raise ValueError("RaiderIO M+ milestone metadata missing")
+        for _ in meta.keystone_milestone_levels:
+            _, bit_offset = _read_bits(record, bit_offset, 8)
+        return bit_offset
+    if field == _DUNGEON_LEVELS_FIELD:
+        rows, bit_offset = _read_dungeon_rows(record, bit_offset, dungeon_names)
+        state.dungeon_rows = rows
+        return bit_offset
+    if field == 11:
+        _, bit_offset = _read_bits(record, bit_offset, 4)
+        return bit_offset
+    if field == 14:
+        _, bit_offset = _read_dungeon_rows(record, bit_offset, dungeon_names)
+        return bit_offset
+    return bit_offset
+
+
 def _decode_profile(
     record: bytes,
     meta: _ProviderMeta,
     dungeon_names: list[str],
 ) -> RaiderIOLocalProfile:
     bit_offset = 0
-    current_score = 0
-    previous_score = 0
-    previous_score_season: int | None = None
-    main_previous_score: int = 0
-    main_previous_score_season: int | None = None
-    warband_previous_score: int = 0
-    warband_previous_score_season: int | None = None
-    dungeon_rows: list[dict] = []
-    for field in meta.encoding_order:
-        if field == 1:
-            current_score, bit_offset = _read_bits(record, bit_offset, 13)
-        elif field in {2, 4, 6, 8, 15, 16}:
-            _, bit_offset = _read_bits(record, bit_offset, 7)
-        elif field == 3:
-            previous_score, bit_offset = _read_bits(record, bit_offset, 13)
-            season, bit_offset = _read_bits(record, bit_offset, 2)
-            if previous_score > 0:
-                previous_score_season = season
-        elif field in {5, 12}:
-            _, bit_offset = _read_bits(record, bit_offset, 13)
-        elif field == 7:
-            value, bit_offset = _read_bits(record, bit_offset, 10)
-            # RaiderIO stores the main's historical score in tens.
-            main_previous_score = value * 10
-            season, bit_offset = _read_bits(record, bit_offset, 2)
-            if main_previous_score > 0:
-                main_previous_score_season = season
-        elif field == 13:
-            warband_previous_score, bit_offset = _read_bits(record, bit_offset, 13)
-            season, bit_offset = _read_bits(record, bit_offset, 2)
-            if warband_previous_score > 0:
-                warband_previous_score_season = season
-        elif field == 9:
-            if meta.keystone_milestone_levels is None:
-                raise ValueError("RaiderIO M+ milestone metadata missing")
-            for _ in meta.keystone_milestone_levels:
-                _, bit_offset = _read_bits(record, bit_offset, 8)
-        elif field == _DUNGEON_LEVELS_FIELD:
-            rows, bit_offset = _read_dungeon_rows(record, bit_offset, dungeon_names)
-            dungeon_rows = rows
-        elif field == 11:
-            _, bit_offset = _read_bits(record, bit_offset, 4)
-        elif field == 14:
-            _, bit_offset = _read_dungeon_rows(record, bit_offset, dungeon_names)
+    state = _MplusProfileState()
+    for field_id in meta.encoding_order:
+        bit_offset = _apply_mplus_field(
+            state, record, bit_offset, field_id, meta, dungeon_names
+        )
     return RaiderIOLocalProfile(
-        current_score=current_score,
-        dungeons=dungeon_rows,
+        current_score=state.current_score,
+        dungeons=state.dungeon_rows,
         raid_progress={},
-        previous_score=previous_score,
-        previous_score_season=previous_score_season,
-        main_previous_score=main_previous_score,
-        main_previous_score_season=main_previous_score_season,
-        warband_previous_score=warband_previous_score,
-        warband_previous_score_season=warband_previous_score_season,
+        previous_score=state.previous_score,
+        previous_score_season=state.previous_score_season,
+        main_previous_score=state.main_previous_score,
+        main_previous_score_season=state.main_previous_score_season,
+        warband_previous_score=state.warband_previous_score,
+        warband_previous_score_season=state.warband_previous_score_season,
     )
 
 
@@ -1400,8 +1507,8 @@ def _decode_raid_progress(
 ) -> dict[str, dict]:
     bit_offset = 0
     rows_by_difficulty: dict[str, dict[int, dict]] = {}
-    for field in encoding_order:
-        if field == 1:
+    for field_id in encoding_order:
+        if field_id == 1:
             for raid_index, raid in enumerate(current_raids):
                 for _idx in range(2):
                     row, bit_offset = _read_full_raid_progress(
@@ -1414,19 +1521,19 @@ def _decode_raid_progress(
                     existing = rows_for_difficulty.get(raid_index)
                     if existing is None or row["killed"] > existing.get("killed", 0):
                         rows_for_difficulty[raid_index] = row
-        elif field == 2:
+        elif field_id == 2:
             for raid in previous_raids:
                 _, bit_offset = _read_full_raid_progress(record, bit_offset, raid)
-        elif field == 3:
+        elif field_id == 3:
             bit_offset = _skip_summary_raid_progress(
                 record, bit_offset, len(previous_raids) * 2
             )
-        elif field == 4:
+        elif field_id == 4:
             bit_offset = _skip_summary_raid_progress(
                 record, bit_offset, len(current_raids) * 2
             )
         else:
-            raise ValueError(f"unsupported RaiderIO raid encoding field {field}")
+            raise ValueError(f"unsupported RaiderIO raid encoding field {field_id}")
 
     progress: dict[str, dict] = {}
     for difficulty, rows_by_raid in rows_by_difficulty.items():

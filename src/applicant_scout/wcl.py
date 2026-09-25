@@ -31,6 +31,14 @@ from .metric_preferences import (
     MetricPreferences,
     effective_wcl_preferences_for_spec,
 )
+from .wcl_cache_store import (
+    _CacheEntry,
+    _cap_entries_data,
+    _entry_is_fresh_raw,
+    cache_evict,
+    cache_get,
+    cache_put,
+)
 
 
 _log = logging.getLogger("applicant_scout.wcl")
@@ -762,6 +770,144 @@ class _WCLAuthValidation:
     status_revision: int
 
 
+def _resolve_raid_variables(
+    *,
+    name: str,
+    server_slug: str,
+    region_used: str,
+    raid_metric: str,
+    spec_name: str,
+    metric_preferences: MetricPreferences,
+) -> dict[str, object]:
+    """Build GraphQL variables for a CharacterRanks query.
+
+    Pure move out of fetch_character_ranks: the identity triple is always
+    present, raid keys only when a raid scope is enabled. The region snapshot
+    itself stays with the caller (see fetch_character_ranks docstring)."""
+    variables: dict[str, object] = {
+        "name": name,
+        "serverSlug": server_slug,
+        "serverRegion": region_used,
+    }
+    if metric_preferences.raid_enabled:
+        variables["raidZoneID"] = CURRENT_RAID_ZONE_ID
+        variables["raidMetric"] = raid_metric
+        variables["specName"] = spec_name
+    return variables
+
+
+def _ranks_from_graphql(
+    data: dict,
+    *,
+    metric_preferences: MetricPreferences,
+    spec_name: str,
+) -> CharacterRanks:
+    """Build CharacterRanks from a parsed CharacterRanks GraphQL response.
+
+    Pure parse/aggregate step extracted from fetch_character_ranks: raises
+    WCLApiError on malformed payloads, returns empty/not_found CharacterRanks
+    for GraphQL-level miss/private responses. Quota snapshot recording stays
+    with the caller (it needs the client's auth-generation guard)."""
+    graphql_errors = _graphql_errors(data.get("errors"))
+    data_root_obj = data.get("data")
+    if not isinstance(data_root_obj, dict):
+        graphql_result = _ranks_for_graphql_errors(graphql_errors)
+        if graphql_result is not None:
+            return graphql_result
+        raise WCLApiError(
+            "Malformed WCL response: data is not an object",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    data_root = data_root_obj
+    graphql_result = _ranks_for_graphql_errors(graphql_errors)
+    if graphql_result is not None:
+        return graphql_result
+    if "characterData" not in data_root or not isinstance(
+        data_root.get("characterData"), dict
+    ):
+        raise WCLApiError(
+            "Malformed WCL response: characterData is not an object",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    character_data = data_root["characterData"]
+    if "character" not in character_data:
+        raise WCLApiError(
+            "Malformed WCL response: character key is missing",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+    char = character_data.get("character")
+    if char is None:
+        return CharacterRanks.empty(not_found=True)
+    if not isinstance(char, dict):
+        raise WCLApiError(
+            "Malformed WCL response: character is not an object",
+            error_kind=WCL_ERROR_MALFORMED,
+        )
+
+    enabled_aliases: list[str] = []
+    if metric_preferences.mplus:
+        enabled_aliases.extend(alias for alias, _eid, _name in MPLUS_ENCOUNTERS)
+    if metric_preferences.raid_normal:
+        enabled_aliases.append("raidNormal")
+    if metric_preferences.raid_heroic:
+        enabled_aliases.append("raidHeroic")
+    if metric_preferences.raid_mythic:
+        enabled_aliases.append("raidMythic")
+    if enabled_aliases and all(
+        _is_private_rankings_payload(char.get(alias)) for alias in enabled_aliases
+    ):
+        return CharacterRanks.empty(
+            error=_PRIVATE_RANKINGS_USER_MESSAGE,
+            error_kind=WCL_ERROR_RESTRICTED,
+        )
+
+    # Build per-dungeon breakdown from the 8 aliased encounterRankings.
+    # _process_encounter_ranks filters to applicant's spec + highest
+    # timed key, then computes best/median/run_count for that subset.
+    breakdown: list[DungeonPerf] = []
+    if metric_preferences.mplus:
+        for alias, _eid, dungeon_name in MPLUS_ENCOUNTERS:
+            perf = _process_encounter_ranks(
+                _ranking_alias_payload(char, alias), spec_name, dungeon_name
+            )
+            if perf is not None:
+                breakdown.append(perf)
+    breakdown.sort(key=lambda d: d.name)
+
+    best_avg, median_avg = _compute_mplus_headline(breakdown)
+
+    raid_normal_data = (
+        _raid_zone_alias_payload(char, "raidNormal")
+        if metric_preferences.raid_normal
+        else None
+    )
+    raid_heroic_data = (
+        _raid_zone_alias_payload(char, "raidHeroic")
+        if metric_preferences.raid_heroic
+        else None
+    )
+    raid_mythic_data = (
+        _raid_zone_alias_payload(char, "raidMythic")
+        if metric_preferences.raid_mythic
+        else None
+    )
+
+    return CharacterRanks(
+        raid_normal=_zone_avg(raid_normal_data),
+        raid_heroic=_zone_avg(raid_heroic_data),
+        raid_mythic=_zone_avg(raid_mythic_data),
+        raid_normal_median=_zone_avg(raid_normal_data, "medianPerformanceAverage"),
+        raid_heroic_median=_zone_avg(raid_heroic_data, "medianPerformanceAverage"),
+        raid_mythic_median=_zone_avg(raid_mythic_data, "medianPerformanceAverage"),
+        mplus_dps=best_avg,
+        mplus_hps=None,
+        mplus_dps_median=median_avg,
+        mplus_hps_median=None,
+        mplus_dps_breakdown=breakdown,
+        mplus_hps_breakdown=[],
+    )
+
+
 class WCLClient:
     """Synchronous WCL GraphQL client with token-aware retry and result aggregation."""
 
@@ -1051,6 +1197,20 @@ class WCLClient:
             return resp
         raise WCLApiError("Authentication failed (HTTP 401)", error_kind=WCL_ERROR_AUTH)
 
+    def _post_ranks_query(
+        self,
+        auth: WCLAuth,
+        auth_generation: int,
+        body: dict[str, object],
+    ) -> dict:
+        """POST a CharacterRanks GraphQL body, return the parsed response dict.
+
+        Thin wrapper over _post_graphql_with_auth_retry: token-aware retry,
+        401/429/5xx classification, and malformed-body rejection all stay on
+        the shared path untouched."""
+        resp = self._post_graphql_with_auth_retry(auth, auth_generation, body)
+        return _json_object_response(resp, WCLApiError, "WCL response")
+
     def fetch_character_ranks(
         self,
         name: str,
@@ -1109,124 +1269,33 @@ class WCLClient:
         region_used = region if region is not None else self.region
         raid_metric = ROLE_TO_RAID_METRIC.get(role, "dps")
         query = _build_character_ranks_query(role, metric_preferences)
-        variables: dict[str, object] = {
-            "name": name,
-            "serverSlug": server_slug,
-            "serverRegion": region_used,
+        body = {
+            "query": query,
+            "variables": _resolve_raid_variables(
+                name=name,
+                server_slug=server_slug,
+                region_used=region_used,
+                raid_metric=raid_metric,
+                spec_name=spec_name,
+                metric_preferences=metric_preferences,
+            ),
         }
-        if metric_preferences.raid_enabled:
-            variables["raidZoneID"] = CURRENT_RAID_ZONE_ID
-            variables["raidMetric"] = raid_metric
-            variables["specName"] = spec_name
-        body = {"query": query, "variables": variables}
 
-        resp = self._post_graphql_with_auth_retry(auth, auth_generation, body)
-        data = _json_object_response(resp, WCLApiError, "WCL response")
-        graphql_errors = _graphql_errors(data.get("errors"))
+        data = self._post_ranks_query(auth, auth_generation, body)
         # Update quota snapshot regardless of errors — rateLimitData is at
         # the root, present even on GraphQL-level errors (HTTP 200).
         data_root_obj = data.get("data")
-        if not isinstance(data_root_obj, dict):
-            graphql_result = _ranks_for_graphql_errors(graphql_errors)
-            if graphql_result is not None:
-                return graphql_result
-            raise WCLApiError(
-                "Malformed WCL response: data is not an object",
-                error_kind=WCL_ERROR_MALFORMED,
-            )
-        data_root = data_root_obj
-        quota = _rate_limit_info_from_dict(data_root.get("rateLimitData"))
-        if quota is not None:
-            self._record_quota_snapshot(
-                quota,
-                auth_generation=auth_generation,
-            )
-        graphql_result = _ranks_for_graphql_errors(graphql_errors)
-        if graphql_result is not None:
-            return graphql_result
-        if "characterData" not in data_root or not isinstance(
-            data_root.get("characterData"), dict
-        ):
-            raise WCLApiError(
-                "Malformed WCL response: characterData is not an object",
-                error_kind=WCL_ERROR_MALFORMED,
-            )
-        character_data = data_root["characterData"]
-        if "character" not in character_data:
-            raise WCLApiError(
-                "Malformed WCL response: character key is missing",
-                error_kind=WCL_ERROR_MALFORMED,
-            )
-        char = character_data.get("character")
-        if char is None:
-            return CharacterRanks.empty(not_found=True)
-        if not isinstance(char, dict):
-            raise WCLApiError(
-                "Malformed WCL response: character is not an object",
-                error_kind=WCL_ERROR_MALFORMED,
-            )
-
-        enabled_aliases: list[str] = []
-        if metric_preferences.mplus:
-            enabled_aliases.extend(alias for alias, _eid, _name in MPLUS_ENCOUNTERS)
-        if metric_preferences.raid_normal:
-            enabled_aliases.append("raidNormal")
-        if metric_preferences.raid_heroic:
-            enabled_aliases.append("raidHeroic")
-        if metric_preferences.raid_mythic:
-            enabled_aliases.append("raidMythic")
-        if enabled_aliases and all(
-            _is_private_rankings_payload(char.get(alias)) for alias in enabled_aliases
-        ):
-            return CharacterRanks.empty(
-                error=_PRIVATE_RANKINGS_USER_MESSAGE,
-                error_kind=WCL_ERROR_RESTRICTED,
-            )
-
-        # Build per-dungeon breakdown from the 8 aliased encounterRankings.
-        # _process_encounter_ranks filters to applicant's spec + highest
-        # timed key, then computes best/median/run_count for that subset.
-        breakdown: list[DungeonPerf] = []
-        if metric_preferences.mplus:
-            for alias, _eid, dungeon_name in MPLUS_ENCOUNTERS:
-                perf = _process_encounter_ranks(
-                    _ranking_alias_payload(char, alias), spec_name, dungeon_name
+        if isinstance(data_root_obj, dict):
+            quota = _rate_limit_info_from_dict(data_root_obj.get("rateLimitData"))
+            if quota is not None:
+                self._record_quota_snapshot(
+                    quota,
+                    auth_generation=auth_generation,
                 )
-                if perf is not None:
-                    breakdown.append(perf)
-        breakdown.sort(key=lambda d: d.name)
-
-        best_avg, median_avg = _compute_mplus_headline(breakdown)
-
-        raid_normal_data = (
-            _raid_zone_alias_payload(char, "raidNormal")
-            if metric_preferences.raid_normal
-            else None
-        )
-        raid_heroic_data = (
-            _raid_zone_alias_payload(char, "raidHeroic")
-            if metric_preferences.raid_heroic
-            else None
-        )
-        raid_mythic_data = (
-            _raid_zone_alias_payload(char, "raidMythic")
-            if metric_preferences.raid_mythic
-            else None
-        )
-
-        return CharacterRanks(
-            raid_normal=_zone_avg(raid_normal_data),
-            raid_heroic=_zone_avg(raid_heroic_data),
-            raid_mythic=_zone_avg(raid_mythic_data),
-            raid_normal_median=_zone_avg(raid_normal_data, "medianPerformanceAverage"),
-            raid_heroic_median=_zone_avg(raid_heroic_data, "medianPerformanceAverage"),
-            raid_mythic_median=_zone_avg(raid_mythic_data, "medianPerformanceAverage"),
-            mplus_dps=best_avg,
-            mplus_hps=None,
-            mplus_dps_median=median_avg,
-            mplus_hps_median=None,
-            mplus_dps_breakdown=breakdown,
-            mplus_hps_breakdown=[],
+        return _ranks_from_graphql(
+            data,
+            metric_preferences=metric_preferences,
+            spec_name=spec_name,
         )
 
     def fetch_character_raid_boss_details(
@@ -1426,43 +1495,6 @@ def _project_ranks_to_metric_preferences(
             mplus_hps_breakdown=[],
         )
     return projected
-
-
-def _metric_preference_breadth(metric_preferences: MetricPreferences) -> int:
-    return sum(
-        (
-            metric_preferences.mplus,
-            metric_preferences.raid_normal,
-            metric_preferences.raid_heroic,
-            metric_preferences.raid_mythic,
-        )
-    )
-
-
-_ALL_METRIC_PREFERENCE_SCOPES = tuple(
-    MetricPreferences(
-        mplus=mplus,
-        raid_normal=raid_normal,
-        raid_heroic=raid_heroic,
-        raid_mythic=raid_mythic,
-    )
-    for mplus in (False, True)
-    for raid_normal in (False, True)
-    for raid_heroic in (False, True)
-    for raid_mythic in (False, True)
-)
-
-# A requested scope has at most 15 broader Boolean supersets. Cache reads use
-# these exact keys instead of scanning every cached character, which keeps GUI-
-# thread lookup cost bounded as the persistent cache grows during a session.
-_COVERING_METRIC_SCOPE_KEYS = {
-    requested.cache_key(): tuple(
-        (stored.cache_key(), _metric_preference_breadth(stored))
-        for stored in _ALL_METRIC_PREFERENCE_SCOPES
-        if stored != requested and stored.covers(requested)
-    )
-    for requested in _ALL_METRIC_PREFERENCE_SCOPES
-}
 
 
 def _spec_norm(s: str) -> str:
@@ -1859,13 +1891,6 @@ def _character_cache_query_fingerprint() -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-@dataclass
-class _CacheEntry:
-    fetched_at: float
-    ranks: dict | None = None  # asdict(CharacterRanks)
-    raid_boss_details: dict | None = None
-
-
 @dataclass(frozen=True)
 class _CacheLookupSnapshot:
     generation: int
@@ -2077,7 +2102,13 @@ class CharacterCache:
             ):
                 _log.debug("Discarding corrupt cache entry for key=%s", k)
                 continue
-            if not self._entry_is_fresh_raw(k, float(fetched_at), now=now):
+            if not _entry_is_fresh_raw(
+                k,
+                float(fetched_at),
+                now=now,
+                ttl_seconds=self._ttl_seconds,
+                not_found_ttl_seconds=self._not_found_ttl_seconds(),
+            ):
                 continue
             try:
                 entry = _CacheEntry(**v)
@@ -2085,60 +2116,17 @@ class CharacterCache:
                 _log.debug("Discarding corrupt cache entry for key=%s", k)
                 continue
             result[k] = entry
-        self._cap_entries(result)
+        _cap_entries_data(result, self.MAX_ENTRIES)
         return result
-
-    @staticmethod
-    def _cap_entries(data: dict[str, _CacheEntry]) -> None:
-        """Evict oldest-fetched_at entries beyond MAX_ENTRIES (H4)."""
-        overflow = len(data) - CharacterCache.MAX_ENTRIES
-        if overflow <= 0:
-            return
-        oldest = sorted(data.items(), key=lambda item: (item[1].fetched_at, item[0]))
-        for key, _entry in oldest[:overflow]:
-            data.pop(key, None)
-
-    def _ttl_for_key(self, key: str) -> int:
-        return (
-            self._not_found_ttl_seconds()
-            if key.startswith("nf:")
-            else self._ttl_seconds
-        )
-
-    def _entry_is_fresh_raw(self, key: str, fetched_at: float, *, now: float) -> bool:
-        age = now - fetched_at
-        if age < 0:
-            return False
-        return age <= self._ttl_for_key(key)
-
-    def _entry_is_fresh(
-        self,
-        key: str,
-        entry: _CacheEntry,
-        *,
-        now: float,
-    ) -> bool:
-        fetched_at = entry.fetched_at
-        if (
-            isinstance(fetched_at, bool)
-            or not isinstance(fetched_at, (int, float))
-            or _safe_nonnegative_finite_float(fetched_at) is None
-        ):
-            return False
-        return self._entry_is_fresh_raw(key, float(fetched_at), now=now)
-
-    def _evict_oldest_locked(self) -> None:
-        # Caller must hold self._lock.
-        self._cap_entries(self._data)
 
     def _prune_expired_locked(self, now: float) -> bool:
         # Caller must hold self._lock.
-        changed = False
-        for key, entry in list(self._data.items()):
-            if not self._entry_is_fresh(key, entry, now=now):
-                self._data.pop(key, None)
-                changed = True
-        return changed
+        return cache_evict(
+            self._data,
+            now=now,
+            ttl_seconds=self._ttl_seconds,
+            not_found_ttl_seconds=self._not_found_ttl_seconds(),
+        )
 
     def _snapshot_for_save_locked(self) -> _CacheSaveSnapshot:
         # Caller must hold self._lock.
@@ -2314,50 +2302,21 @@ class CharacterCache:
         metric_preferences: MetricPreferences,
     ) -> _CacheLookupSnapshot:
         now = time.time()
-        requested_scope_key = metric_preferences.cache_key()
-        exact_key = f"{prefix}:{requested_scope_key}"
         with self._lock:
             generation = self._generation
-            negative_candidate = self._data.get(not_found_key)
-            if negative_candidate is not None and not self._entry_is_fresh(
-                not_found_key,
-                negative_candidate,
+            negative_candidate, candidates = cache_get(
+                self._data,
+                prefix=prefix,
+                not_found_key=not_found_key,
+                metric_preferences=metric_preferences,
+                ttl_seconds=self._ttl_seconds,
+                not_found_ttl_seconds=self._not_found_ttl_seconds(),
                 now=now,
-            ):
-                negative_candidate = None
-
-            candidates: list[tuple[float, int, str, _CacheEntry]] = []
-            exact_candidate = self._data.get(exact_key)
-            if exact_candidate is not None and self._entry_is_fresh(
-                exact_key,
-                exact_candidate,
-                now=now,
-            ):
-                candidates.append(
-                    (
-                        -exact_candidate.fetched_at,
-                        0,
-                        requested_scope_key,
-                        exact_candidate,
-                    )
-                )
-
-            for scope_key, breadth in _COVERING_METRIC_SCOPE_KEYS[requested_scope_key]:
-                stored_key = f"{prefix}:{scope_key}"
-                entry = self._data.get(stored_key)
-                if entry is None or not self._entry_is_fresh(
-                    stored_key,
-                    entry,
-                    now=now,
-                ):
-                    continue
-                candidates.append((-entry.fetched_at, breadth, scope_key, entry))
-
-        candidates.sort()
+            )
         return _CacheLookupSnapshot(
             generation=generation,
             negative_candidate=negative_candidate,
-            candidates=tuple(candidate[-1] for candidate in candidates),
+            candidates=candidates,
         )
 
     def get(
@@ -2518,20 +2477,23 @@ class CharacterCache:
             if ranks.not_found:
                 identity_prefix = f"{region}:{server_slug}:{name.lower()}:"
                 raid_boss_identity_prefix = f"rb:{identity_prefix}"
-                for stored_key in list(self._data):
-                    if stored_key.startswith(identity_prefix) or stored_key.startswith(
-                        raid_boss_identity_prefix
-                    ):
-                        self._data.pop(stored_key, None)
-                self._data[not_found_key] = _CacheEntry(
-                    fetched_at=time.time(), ranks=asdict(ranks)
+                cache_put(
+                    self._data,
+                    key=key,
+                    not_found_key=not_found_key,
+                    entry=_CacheEntry(fetched_at=time.time(), ranks=asdict(ranks)),
+                    not_found=True,
+                    sweep_prefixes=(identity_prefix, raid_boss_identity_prefix),
+                    max_entries=self.MAX_ENTRIES,
                 )
             else:
-                self._data.pop(not_found_key, None)
-                self._data[key] = _CacheEntry(
-                    fetched_at=time.time(), ranks=asdict(ranks)
+                cache_put(
+                    self._data,
+                    key=key,
+                    not_found_key=not_found_key,
+                    entry=_CacheEntry(fetched_at=time.time(), ranks=asdict(ranks)),
+                    max_entries=self.MAX_ENTRIES,
                 )
-            self._evict_oldest_locked()
             self._save_epoch += 1
             flush_now = self._schedule_save_locked()
         if flush_now:
@@ -2571,7 +2533,7 @@ class CharacterCache:
                 fetched_at=time.time(),
                 raid_boss_details=sanitized,
             )
-            self._evict_oldest_locked()
+            _cap_entries_data(self._data, self.MAX_ENTRIES)
             self._save_epoch += 1
             flush_now = self._schedule_save_locked()
         if flush_now:

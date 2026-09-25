@@ -15,6 +15,7 @@ import pytest
 
 from applicant_scout import atomic_io
 import applicant_scout.wcl as wcl_mod
+from applicant_scout import wcl_cache_store as wcl_store_mod
 from applicant_scout.constants import (
     CURRENT_RAID_ENCOUNTERS,
     MPLUS_ENCOUNTERS,
@@ -27,6 +28,7 @@ from applicant_scout.wcl import (
     DungeonPerf,
     KeyBracketPerf,
     RateLimitInfo,
+    _PRIVATE_RANKINGS_PROVIDER_MESSAGE,
     _RU_REALM_MAP_LOWER,
     WCL_ERROR_AUTH,
     WCL_ERROR_GRAPHQL,
@@ -47,6 +49,8 @@ from applicant_scout.wcl import (
     _dict_to_dungeon_perf,
     _process_encounter_ranks,
     _raid_boss_rows_from_character,
+    _ranks_from_graphql,
+    _resolve_raid_variables,
     _spec_norm,
     _zone_avg,
     derive_server_slug,
@@ -5270,3 +5274,293 @@ def test_character_cache_put_evicts_oldest_beyond_cap(
 
     assert len(cache._data) == 2
     assert first_key not in cache._data
+
+
+# ── P9 extracted seams: _resolve_raid_variables / _post_ranks_query /
+# _ranks_from_graphql / wcl_cache_store ──────────────────────────────
+
+
+def _raid_only_prefs() -> MetricPreferences:
+    return MetricPreferences(
+        mplus=False,
+        raid_normal=True,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+
+
+def test_resolve_raid_variables_includes_raid_keys_when_enabled():
+    variables = _resolve_raid_variables(
+        name="Name",
+        server_slug="ravencrest",
+        region_used="EU",
+        raid_metric="dps",
+        spec_name="Frost",
+        metric_preferences=_raid_only_prefs(),
+    )
+
+    assert variables["name"] == "Name"
+    assert variables["serverSlug"] == "ravencrest"
+    assert variables["serverRegion"] == "EU"
+    assert variables["raidMetric"] == "dps"
+    assert variables["specName"] == "Frost"
+    assert variables["raidZoneID"] == wcl_mod.CURRENT_RAID_ZONE_ID
+
+
+def test_resolve_raid_variables_omits_raid_keys_when_disabled():
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=False,
+    )
+    variables = _resolve_raid_variables(
+        name="Name",
+        server_slug="ravencrest",
+        region_used="US",
+        raid_metric="dps",
+        spec_name="Frost",
+        metric_preferences=prefs,
+    )
+
+    assert variables == {
+        "name": "Name",
+        "serverSlug": "ravencrest",
+        "serverRegion": "US",
+    }
+
+
+def test_post_ranks_query_returns_parsed_response_dict():
+    payload = {"data": {"characterData": {"character": None}}}
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    client._http = _FakeHTTP(payload)  # type: ignore[assignment]
+
+    data = client._post_ranks_query(
+        client._auth,  # type: ignore[arg-type]
+        0,
+        {"query": "q", "variables": {}},
+    )
+
+    assert data == payload
+
+
+def test_post_ranks_query_propagates_rate_limit_kind():
+    client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
+    client._http.close()
+    client._http = _FakeHTTP({"message": "slow down"}, 429)  # type: ignore[assignment]
+
+    with pytest.raises(WCLApiError) as exc_info:
+        client._post_ranks_query(
+            client._auth,  # type: ignore[arg-type]
+            0,
+            {"query": "q", "variables": {}},
+        )
+
+    assert exc_info.value.error_kind == WCL_ERROR_RATE_LIMITED
+
+
+def test_ranks_from_graphql_builds_raid_only_ranks():
+    data = {
+        "data": {
+            "rateLimitData": {
+                "limitPerHour": 3600,
+                "pointsSpentThisHour": 10,
+                "pointsResetIn": 300,
+            },
+            "characterData": {
+                "character": {
+                    "raidNormal": {
+                        "bestPerformanceAverage": 80.0,
+                        "medianPerformanceAverage": 70.0,
+                    }
+                }
+            },
+        },
+        "errors": [],
+    }
+
+    ranks = _ranks_from_graphql(
+        data,
+        metric_preferences=_raid_only_prefs(),
+        spec_name="Frost",
+    )
+
+    assert ranks.raid_normal == 80.0
+    assert ranks.raid_normal_median == 70.0
+    assert ranks.mplus_dps is None
+    assert not ranks.not_found
+
+
+def test_ranks_from_graphql_maps_explicit_null_character_to_not_found():
+    ranks = _ranks_from_graphql(
+        _wcl_payload(None),
+        metric_preferences=_raid_only_prefs(),
+        spec_name="Frost",
+    )
+
+    assert ranks.not_found
+
+
+def test_ranks_from_graphql_rejects_missing_character_key():
+    data = {"data": {"characterData": {}}, "errors": []}
+
+    with pytest.raises(WCLApiError) as exc_info:
+        _ranks_from_graphql(
+            data,
+            metric_preferences=_raid_only_prefs(),
+            spec_name="Frost",
+        )
+
+    assert exc_info.value.error_kind == WCL_ERROR_MALFORMED
+
+
+def test_ranks_from_graphql_classifies_private_raid_scope_as_restricted():
+    data = {
+        "data": {
+            "characterData": {
+                "character": {
+                    "raidNormal": {"error": _PRIVATE_RANKINGS_PROVIDER_MESSAGE}
+                }
+            }
+        },
+        "errors": [],
+    }
+
+    ranks = _ranks_from_graphql(
+        data,
+        metric_preferences=_raid_only_prefs(),
+        spec_name="Frost",
+    )
+
+    assert ranks.error_kind == WCL_ERROR_RESTRICTED
+    assert not ranks.not_found
+
+
+def _store_entry(
+    fetched_at: float, ranks: dict | None = None
+) -> wcl_store_mod._CacheEntry:
+    return wcl_store_mod._CacheEntry(fetched_at=fetched_at, ranks=ranks)
+
+
+def test_cache_store_put_and_get_round_trip_exact_scope():
+    prefs = _raid_only_prefs()
+    prefix = "EU:ravencrest:name:71:DPS"
+    key = f"{prefix}:{prefs.cache_key()}"
+    entries: dict[str, wcl_store_mod._CacheEntry] = {}
+    entry = _store_entry(time.time(), {"mplus_dps": 77.0})
+    wcl_store_mod.cache_put(
+        entries,
+        key=key,
+        not_found_key="nf:EU:ravencrest:name",
+        entry=entry,
+        max_entries=10,
+    )
+
+    negative, candidates = wcl_store_mod.cache_get(
+        entries,
+        prefix=prefix,
+        not_found_key="nf:EU:ravencrest:name",
+        metric_preferences=prefs,
+        ttl_seconds=12 * 60 * 60,
+        not_found_ttl_seconds=30 * 60,
+    )
+
+    assert negative is None
+    assert candidates == (entry,)
+
+
+def test_cache_store_get_ignores_expired_entry():
+    prefs = _raid_only_prefs()
+    prefix = "EU:ravencrest:name:71:DPS"
+    entries = {
+        f"{prefix}:{prefs.cache_key()}": _store_entry(time.time() - 99_999.0),
+    }
+
+    negative, candidates = wcl_store_mod.cache_get(
+        entries,
+        prefix=prefix,
+        not_found_key="nf:EU:ravencrest:name",
+        metric_preferences=prefs,
+        ttl_seconds=12 * 60 * 60,
+        not_found_ttl_seconds=30 * 60,
+    )
+
+    assert negative is None
+    assert candidates == ()
+
+
+def test_cache_store_get_serves_broader_scope_for_narrow_request():
+    narrow = MetricPreferences(
+        mplus=True, raid_normal=False, raid_heroic=False, raid_mythic=False
+    )
+    broad = MetricPreferences(
+        mplus=True, raid_normal=True, raid_heroic=True, raid_mythic=True
+    )
+    prefix = "EU:ravencrest:name:71:DPS"
+    entry = _store_entry(time.time())
+    entries = {f"{prefix}:{broad.cache_key()}": entry}
+
+    negative, candidates = wcl_store_mod.cache_get(
+        entries,
+        prefix=prefix,
+        not_found_key="nf:EU:ravencrest:name",
+        metric_preferences=narrow,
+        ttl_seconds=12 * 60 * 60,
+        not_found_ttl_seconds=30 * 60,
+    )
+
+    assert negative is None
+    assert candidates == (entry,)
+
+
+def test_cache_store_get_returns_fresh_negative_candidate():
+    prefs = _raid_only_prefs()
+    negative_entry = _store_entry(time.time())
+    entries = {"nf:EU:ravencrest:name": negative_entry}
+
+    negative, candidates = wcl_store_mod.cache_get(
+        entries,
+        prefix="EU:ravencrest:name:71:DPS",
+        not_found_key="nf:EU:ravencrest:name",
+        metric_preferences=prefs,
+        ttl_seconds=12 * 60 * 60,
+        not_found_ttl_seconds=30 * 60,
+    )
+
+    assert negative is negative_entry
+    assert candidates == ()
+
+
+def test_cache_store_put_caps_oldest_beyond_max():
+    entries: dict[str, wcl_store_mod._CacheEntry] = {}
+    now = time.time()
+    for idx in range(3):
+        wcl_store_mod.cache_put(
+            entries,
+            key=f"k{idx}",
+            not_found_key="nf:x",
+            entry=_store_entry(now - (30 - idx * 10)),
+            max_entries=2,
+        )
+
+    assert set(entries) == {"k1", "k2"}
+
+
+def test_cache_store_evict_prunes_expired_and_reports_change():
+    now = time.time()
+    fresh = _store_entry(now)
+    entries = {
+        "fresh": fresh,
+        "stale": _store_entry(now - 99_999.0),
+    }
+
+    changed = wcl_store_mod.cache_evict(
+        entries,
+        now=now,
+        ttl_seconds=12 * 60 * 60,
+        not_found_ttl_seconds=30 * 60,
+    )
+
+    assert changed is True
+    assert entries == {"fresh": fresh}
