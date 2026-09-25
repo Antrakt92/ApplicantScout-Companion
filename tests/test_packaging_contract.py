@@ -4245,3 +4245,108 @@ def test_release_body_appends_signpath_policy_statement():
         "Free code signing provided by SignPath.io, certificate by SignPath Foundation"
         in step
     )
+
+
+def test_strict_visual_weekly_runs_strict_baselines_without_publishing():
+    workflow = _read_repo_text(".github/workflows/strict-visual-weekly.yml")
+    triggers = workflow.partition("permissions:")[0]
+    job = _job_block(workflow, "strict-visual")
+
+    assert "schedule:" in triggers
+    assert "cron: '31 3 * * 0'" in triggers
+    assert "workflow_dispatch:" in triggers
+    assert "paired_addon_ref:" in triggers
+    assert "default: main" in triggers
+    assert "type: string" in triggers
+    assert "push:" not in triggers
+    assert "pull_request:" not in triggers
+    assert "tags:" not in triggers
+    assert "\npermissions:\n  contents: read\n\nconcurrency:" in workflow
+    assert "contents: write" not in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert re.search(r"(?m)^    runs-on: windows-2022\s*$", job)
+    assert re.search(r"(?m)^    timeout-minutes: 30\s*$", job)
+    assert "windows-2025-vs2026" not in workflow
+
+    companion_checkout = _step_block(job, "Checkout companion")
+    addon_checkout = _step_block(job, "Checkout addon")
+    assert "persist-credentials: false" in companion_checkout
+    assert "persist-credentials: false" in addon_checkout
+    assert "repository: Antrakt92/ApplicantScout-Addon" in addon_checkout
+    assert "ref: ${{ github.event.inputs.paired_addon_ref || 'main' }}" in (
+        addon_checkout
+    )
+    assert "path: ApplicantScout-Companion" in companion_checkout
+    assert "path: ApplicantScout-Addon" in addon_checkout
+    assert "python-version: '3.14'" in job
+    assert (
+        ".\\.venv\\Scripts\\python -m pip install -r constraints-release.txt" in job
+    )
+    assert (
+        ".\\.venv\\Scripts\\python -m pip install -e '.[dev]' -c constraints-release.txt"
+        in job
+    )
+    assert "--upgrade pip" not in workflow
+
+    overlay_step = _step_block(job, "Check overlay visual baselines (Strict)")
+    settings_step = _step_block(job, "Check settings dialog visual baselines (Strict)")
+    assets_step = _step_block(job, "Check public visual assets")
+    assert (
+        "scripts\\render_overlay_fixture.py --check --all --visual-mode strict"
+        in overlay_step
+    )
+    assert (
+        "scripts\\render_settings_dialog_fixture.py --check --all --visual-mode strict"
+        in settings_step
+    )
+    assert (
+        "scripts\\export_public_visual_assets.py "
+        "--addon-root ..\\ApplicantScout-Addon --check"
+    ) in assets_step
+    assert "working-directory: ApplicantScout-Companion" in overlay_step
+    assert "working-directory: ApplicantScout-Companion" in settings_step
+    assert "working-directory: ApplicantScout-Companion" in assets_step
+    _assert_order(
+        job,
+        "Check overlay visual baselines (Strict)",
+        "Check settings dialog visual baselines (Strict)",
+        "Check public visual assets",
+        "Collect strict visual mismatch renders",
+        "Upload strict visual mismatch artifacts",
+    )
+
+    assert "check.ps1" not in workflow
+    assert "-VisualMode Smoke" not in workflow
+    assert "--visual-mode smoke" not in workflow
+    assert "build-windows.ps1" not in workflow
+    assert "choco install" not in workflow
+
+    collect_step = _step_block(job, "Collect strict visual mismatch renders")
+    upload_step = _step_block(job, "Upload strict visual mismatch artifacts")
+    assert "if: failure()" in collect_step
+    assert "if: failure()" in upload_step
+    assert "--scenario $Scenario --output" in collect_step
+    assert "strict-visual-mismatch" in collect_step
+    assert "strict-visual-mismatch" in upload_step
+    assert "retention-days: 14" in upload_step
+    assert "if-no-files-found: warn" in upload_step
+
+    action_refs = _workflow_action_refs(workflow)
+    assert Counter(action for action, _ in action_refs) == Counter(
+        {
+            "actions/checkout": 2,
+            "actions/setup-python": 1,
+            "actions/upload-artifact": 1,
+        }
+    )
+    for action, ref in action_refs:
+        assert _SHA_REF_RE.fullmatch(ref), (
+            f"{action} must be pinned to a full commit SHA"
+        )
+    assert "${{ secrets." not in workflow
+    assert "GH_TOKEN" not in workflow
+    assert "gh release" not in workflow
+    assert "gh api" not in workflow
+    assert "download-artifact" not in workflow
+    assert "APSCOUT_SIGNING_" not in workflow
+    assert "release-artifact-manifest.ps1" not in workflow

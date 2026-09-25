@@ -1,0 +1,115 @@
+name: Strict visual baselines (weekly)
+
+# Weekly Strict pixel-drift guard. CI/check runs visuals in tolerant Smoke
+# mode; this job runs the Strict baseline path only (overlay + settings
+# dialog + public visual assets), never the full wrapper suite.
+# Read-only: no publishing, no releases, no secrets.
+
+on:
+  schedule:
+    # Quiet UTC slot: Sunday 03:31 (canary runs Monday 05:17).
+    - cron: '31 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      paired_addon_ref:
+        description: Addon branch, tag, or commit to validate with this companion ref
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strict-visual-weekly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict-visual:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Checkout companion
+        # actions/checkout v7.0.1 pinned to the upstream release commit.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: ApplicantScout-Companion
+
+      - name: Checkout addon
+        # actions/checkout v7.0.1 pinned to the upstream release commit.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Antrakt92/ApplicantScout-Addon
+          ref: ${{ github.event.inputs.paired_addon_ref || 'main' }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: ApplicantScout-Addon
+
+      - name: Set up Python
+        # actions/setup-python v7.0.0 pinned to the upstream release commit.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install -r constraints-release.txt
+          .\.venv\Scripts\python -m pip install -e '.[dev]' -c constraints-release.txt
+
+      - name: Check overlay visual baselines (Strict)
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\.venv\Scripts\python scripts\render_overlay_fixture.py --check --all --visual-mode strict
+
+      - name: Check settings dialog visual baselines (Strict)
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\.venv\Scripts\python scripts\render_settings_dialog_fixture.py --check --all --visual-mode strict
+
+      - name: Check public visual assets
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: .\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check
+
+      - name: Collect strict visual mismatch renders
+        # --check compares in memory and writes nothing, so re-render fresh
+        # actuals per scenario for the mismatch bundle. Scenario lists mirror
+        # OVERLAY_VISUAL_SCENARIOS and SETTINGS_DIALOG_VISUAL_SCENARIOS.
+        if: failure()
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          $MismatchDir = Join-Path $env:RUNNER_TEMP "strict-visual-mismatch"
+          New-Item -ItemType Directory -Path $MismatchDir -Force | Out-Null
+          $OverlayScenarios = @(
+            "applicants-default", "party-manual-key", "party-no-listing-manual-key",
+            "metrics-raid-only", "raid-listing", "wcl-retry"
+          )
+          foreach ($Scenario in $OverlayScenarios) {
+            & .\.venv\Scripts\python scripts\render_overlay_fixture.py `
+              --scenario $Scenario --output (Join-Path $MismatchDir "overlay-$Scenario.png")
+          }
+          $SettingsScenarios = @(
+            "normal-default", "first-run", "saved", "validation-error",
+            "save-warning", "update-available", "update-installing-disabled"
+          )
+          foreach ($Scenario in $SettingsScenarios) {
+            & .\.venv\Scripts\python scripts\render_settings_dialog_fixture.py `
+              --scenario $Scenario --output (Join-Path $MismatchDir "settings-$Scenario.png")
+          }
+          Copy-Item -Path "docs\visual\*.png" -Destination $MismatchDir -ErrorAction SilentlyContinue
+
+      - name: Upload strict visual mismatch artifacts
+        if: failure()
+        # actions/upload-artifact v7.0.1 pinned to the upstream release commit.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: strict-visual-mismatch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/strict-visual-mismatch/
+          if-no-files-found: warn
+          retention-days: 14
