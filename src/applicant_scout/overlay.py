@@ -85,7 +85,10 @@ from .compatibility import addon_version_warning
 from .usage_events import UsageActivity
 from . import overlay_presenters as _presenters
 from . import overlay_rows as _overlay_rows
-from . import ui_text
+from . import overlay_fetch as _overlay_fetch
+from . import overlay_health as _overlay_health
+from . import overlay_row_renderer as _overlay_row_renderer
+from . import overlay_table as _overlay_table
 from .metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
@@ -135,7 +138,6 @@ from .wcl import (
     WCLAuthError,
     WCL_ERROR_AUTH,
     WCL_ERROR_GRAPHQL,
-    WCL_ERROR_HTTP,
     WCL_ERROR_MALFORMED,
     WCL_ERROR_NETWORK,
     WCL_ERROR_RATE_LIMITED,
@@ -300,114 +302,17 @@ def measure_column_width(col: int, rows: Sequence[RowWidthInput]) -> int:
     return width
 
 
-# P11 pure auth-chip lookup: zero-behavior extraction from
-# OverlayWindow._refresh_auth_label. Rendering strings stay byte-identical;
-# the widget method is now a thin table lookup plus two chip writes.
-@dataclass(frozen=True, slots=True)
-class ChipState:
-    """Plain auth-chip rendering: visible text, QSS state, tooltip detail."""
-
-    text: str
-    chip_state: str
-    detail: str
-
-
-_AUTH_CHIP_DEFAULT = ChipState(
-    text="Auth —",
-    chip_state="neutral",
-    detail="Warcraft Logs credentials have not been checked in this session.",
-)
-
-AUTH_CHIP_STATES: dict[tuple[str, str], ChipState] = {
-    ("checking", ""): ChipState(
-        text="Auth check",
-        chip_state="active",
-        detail="Checking the active Warcraft Logs credentials.",
-    ),
-    ("oauth_ready", ""): ChipState(
-        text="Auth ready",
-        chip_state="neutral",
-        detail=(
-            "Warcraft Logs accepted the active credentials. Applicant API "
-            "and quota data have not been queried yet."
-        ),
-    ),
-    ("api_ready", ""): ChipState(
-        text="Auth ready",
-        chip_state="neutral",
-        detail="The latest Warcraft Logs applicant API request succeeded.",
-    ),
-    ("error", WCL_ERROR_AUTH): ChipState(
-        text="Auth failed",
-        chip_state="critical",
-        detail=(
-            "Warcraft Logs rejected the active credentials. Test them in Settings."
-        ),
-    ),
-    ("error", WCL_ERROR_NETWORK): ChipState(
-        text="Auth offline",
-        chip_state="warning",
-        detail=(
-            "Could not reach Warcraft Logs. Check internet access; displayed "
-            "applicant data may be cached."
-        ),
-    ),
-    ("error", WCL_ERROR_SERVER): ChipState(
-        text="Auth issue",
-        chip_state="warning",
-        detail=(
-            "Warcraft Logs is temporarily unavailable. Applicant requests "
-            "will retry automatically."
-        ),
-    ),
-    ("error", WCL_ERROR_RATE_LIMITED): ChipState(
-        text="Auth issue",
-        chip_state="warning",
-        detail=(
-            "Warcraft Logs is temporarily limiting requests. Applicant "
-            "requests will retry automatically."
-        ),
-    ),
-    ("error", WCL_ERROR_GRAPHQL): ChipState(
-        text="Auth issue",
-        chip_state="warning",
-        detail=(
-            "Warcraft Logs returned an unexpected response. Check the "
-            "applicant row and retry."
-        ),
-    ),
-    ("error", WCL_ERROR_HTTP): ChipState(
-        text="Auth issue",
-        chip_state="warning",
-        detail=(
-            "Warcraft Logs returned an unexpected response. Check the "
-            "applicant row and retry."
-        ),
-    ),
-    ("error", WCL_ERROR_MALFORMED): ChipState(
-        text="Auth issue",
-        chip_state="warning",
-        detail=(
-            "Warcraft Logs returned an unexpected response. Check the "
-            "applicant row and retry."
-        ),
-    ),
-    ("error", ""): ChipState(
-        text="Auth issue",
-        chip_state="warning",
-        detail=(
-            "Warcraft Logs validation failed. Open Settings to test the "
-            "active credentials."
-        ),
-    ),
-}
+# P2: auth-chip state lives in overlay_health (single source of truth).
+# Re-exported here so existing imports (tests, __main__) keep working;
+# the table is not duplicated.
+ChipState = _overlay_health.ChipState
+_AUTH_CHIP_DEFAULT = _overlay_health._AUTH_CHIP_DEFAULT
+AUTH_CHIP_STATES = _overlay_health.AUTH_CHIP_STATES
 
 
 def auth_chip_for(state: str, error_kind: str | None) -> ChipState:
     """Pure auth-chip lookup keyed by connection state and error kind."""
-    if state != "error":
-        return AUTH_CHIP_STATES.get((state, ""), _AUTH_CHIP_DEFAULT)
-    return AUTH_CHIP_STATES.get(("error", error_kind or ""), AUTH_CHIP_STATES[("error", "")])
+    return _overlay_health.auth_chip_for(state, error_kind)
 
 
 def _role_icon(role: str) -> QIcon | None:
@@ -5069,136 +4974,37 @@ class OverlayWindow(QMainWindow):
         label.update()
 
     def _refresh_health_label(self) -> None:
-        """Updates _health_label text from _last_decode_time. None → "shot —"
-        (no decode yet). Otherwise formats `time.time() - last` via ui_text.format_age.
-
-        max(0, delta) clamp guards against a system-clock backwards-jump (DST
-        transition, manual change). Explicit failure/partial/update states get
-        soft semantic colors, but elapsed age stays neutral: idle listings can
-        legitimately have no decodes for minutes, so a future time-based alarm
-        needs separate live-evidence validation. Absolute age text remains the
-        pipeline evidence."""
-        failed_at = self._last_decode_failed_time
-        if self.restored_snapshot_pending():
-            saved_at = self._restored_snapshot_saved_at
-            deadline = self._restored_snapshot_deadline
-            age = (
-                ui_text.format_duration(max(0.0, time.time() - saved_at)) if saved_at else "?"
-            )
-            wait = (
-                ui_text.format_duration(max(0.0, deadline - time.time())) if deadline else "?"
-            )
-            self._set_status_chip_state(self._health_label, "active")
-            detail = (
-                "Restored a recent live snapshot while waiting for a fresh QR.\n"
-                f"Snapshot age: {age}; clears in {wait} if no fresh QR arrives."
-            )
-            self._set_status_chip_text(
-                self._health_label, "Shot restored", detail, detail
-            )
-            return
-        if (
-            self._wire_version_rejects >= WIRE_VERSION_REJECT_THRESHOLD
-            and failed_at is not None
-            and (self._last_decode_time is None or failed_at >= self._last_decode_time)
-            and is_wire_version_reject_reason(self._last_decode_failed_reason)
-        ):
-            # Newer addon format: the version block never decodes, so
-            # addon_version_warning stays silent. Replace the raw reject with
-            # actionable guidance once the streak rules out a corrupt frame.
-            delta = max(0.0, time.time() - failed_at)
-            detail = (
-                f"{WIRE_VERSION_REJECT_MESSAGE}\n"
-                f"{self._last_decode_failed_path}\n"
-                f"{self._last_decode_failed_reason}\n"
-                f"{ui_text.format_age(delta)}"
-            )
-            self._set_status_chip_text(
-                self._health_label, "Companion update", detail, detail
-            )
-            self._set_status_chip_state(self._health_label, "warning")
-            return
-        if failed_at is not None and (
-            self._last_decode_time is None or failed_at >= self._last_decode_time
-        ):
-            delta = max(0.0, time.time() - failed_at)
-            detail = (
-                f"{self._last_decode_failed_path}\n"
-                f"{self._last_decode_failed_reason}\n"
-                f"{ui_text.format_age(delta)}"
-            )
-            self._set_status_chip_text(
-                self._health_label, "Shot failed", detail, detail
-            )
-            self._set_status_chip_state(self._health_label, "critical")
-            return
-        if self._addon_version_warning:
-            detail = self._addon_version_warning
-            if self._pending_app_update_version:
-                detail += (
-                    "\n"
-                    + _app_update_message(self._pending_app_update_version)
-                )
-            self._set_status_chip_text(
-                self._health_label, "Addon update", detail, detail
-            )
-            self._set_status_chip_state(self._health_label, "warning")
-            return
-        if self._pending_app_update_version:
-            detail = _app_update_message(self._pending_app_update_version)
-            self._set_status_chip_text(
-                self._health_label, "App update", detail, detail
-            )
-            self._set_status_chip_state(self._health_label, "warning")
-            return
-        last = self._last_decode_time
-        if (
-            self._last_decode_applicants_unavailable
-            or self._last_decode_roster_unavailable
-        ) and last is not None:
-            delta = max(0.0, time.time() - last)
-            stale_surfaces: list[str] = []
-            if self._last_decode_lfg_unavailable:
-                stale_surfaces.append("Group Finder listing and Applicants")
-            elif self._last_decode_applicants_unavailable:
-                stale_surfaces.append("Applicants")
-            if self._last_decode_roster_unavailable:
-                stale_surfaces.append("Party")
-            detail = (
-                "The latest valid QR could not provide complete "
-                + " and ".join(stale_surfaces)
-                + " data; last known state is retained.\n"
-                + ui_text.format_age(delta)
-            )
-            self._set_status_chip_text(
-                self._health_label, "Shot partial", detail, detail
-            )
-            self._set_status_chip_state(self._health_label, "warning")
-            return
-        if last is None:
-            self._set_status_chip_text(
-                self._health_label,
-                "Shot —",
-                "",
-                "No screenshot has been decoded yet.",
-            )
-            self._set_status_chip_state(self._health_label, "neutral")
-            return
-        delta = max(0.0, time.time() - last)
-        age = ui_text.format_age(delta)
-        self._set_status_chip_text(
-            self._health_label,
-            f"Shot {age}",
-            "",
-            f"Last screenshot decoded {age}.",
+        """Thin controller: gather pipeline state, delegate the chip decision
+        to overlay_health.health_chip_state, write the resulting chip."""
+        chip = _overlay_health.health_chip_state(
+            restored_pending=self.restored_snapshot_pending(),
+            restored_saved_at=self._restored_snapshot_saved_at,
+            restored_deadline=self._restored_snapshot_deadline,
+            wire_rejects=self._wire_version_rejects,
+            wire_reject_threshold=WIRE_VERSION_REJECT_THRESHOLD,
+            wire_reject_message=WIRE_VERSION_REJECT_MESSAGE,
+            wire_reject_active=is_wire_version_reject_reason(
+                self._last_decode_failed_reason
+            ),
+            failed_at=self._last_decode_failed_time,
+            last_decode_time=self._last_decode_time,
+            failed_path=self._last_decode_failed_path,
+            failed_reason=self._last_decode_failed_reason,
+            addon_warning=self._addon_version_warning,
+            app_update_version=self._pending_app_update_version,
+            applicants_unavailable=self._last_decode_applicants_unavailable,
+            roster_unavailable=self._last_decode_roster_unavailable,
+            lfg_unavailable=self._last_decode_lfg_unavailable,
+            now=time.time(),
         )
-        self._set_status_chip_state(self._health_label, "neutral")
+        self._set_status_chip_text(
+            self._health_label, chip.text, chip.tooltip, chip.accessible
+        )
+        self._set_status_chip_state(self._health_label, chip.chip_state)
 
     def _refresh_auth_label(self) -> None:
         status = getattr(self._wcl_client, "connection_status", None)
-        state = getattr(status, "state", "unknown")
-        error_kind = getattr(status, "error_kind", "")
-        chip = auth_chip_for(state, error_kind)
+        chip = _overlay_health.auth_chip_state(status)
         self._set_status_chip_text(self._auth_label, chip.text, chip.detail, chip.detail)
         self._set_status_chip_state(self._auth_label, chip.chip_state)
 
@@ -6092,206 +5898,48 @@ class OverlayWindow(QMainWindow):
         *,
         fit: CandidateFit | None = None,
     ) -> None:
-        """Write applicant data into an existing table row. Caller manages
-        row creation / position — used by _refresh_table after sort.
-
-        Per-cell tooltips removed: applicant data now lives in the top
-        ApplicantInfoPanel which is row-hover/pin driven. Cell items are
-        plain text + colour only.
-
-        Items are updated in place when the row already exists: re-rendering
-        a changed row rewrites text/roles without reallocating 9 items and
-        without re-querying the system font per cell (see the cached cell
-        fonts). Accessible roles are rewritten only when their value
-        changed — they fire accessibility events on every write."""
-        set_data = self._set_item_data_if_changed
-        spec_text = SPEC_SHORT_NAMES.get(applicant.spec_id, f"#{applicant.spec_id}")
-        spec_item = self._reuse_cell_item(row, COL_SPEC, spec_text)
-        spec_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        set_data(spec_item, Qt.ItemDataRole.UserRole, applicant.role)
-        icon = _role_icon(applicant.role)
-        if icon is not None:
-            if spec_item.icon().cacheKey() != icon.cacheKey():
-                spec_item.setIcon(icon)
-        # Class-coloured cell background mirrors the panel's `_class_pill` so
-        # the table and info-panel use the same visual language for class
-        # identity. Foreground follows the same contrast helper as the panel so
-        # dark DK/DH colours remain readable while pale class colours stay dark.
-        # Hover/pin stripes are painted by `_HoverHighlightDelegate` on top.
-        cls_hex = CLASS_COLOURS.get(applicant.cls, "#888888")
-        _set_cell_background(spec_item, cls_hex)
-        _set_cell_foreground(spec_item, _text_colour_for_bg(cls_hex))
-        spec_item.setFont(_bold_cell_font(self._table.font()))
-        _stamp_cell_font_sig(spec_item)
-
-        # Display Charname only (without -Realm) for compactness; full in panel
-        display_name = applicant.name.split("-", 1)[0]
-        name_item = self._reuse_cell_item(row, COL_NAME, display_name)
-        _set_cell_foreground(
-            name_item, CLASS_COLOURS.get(applicant.cls, "#FFFFFF")
+        """Thin controller: resolve listing, delegate cells to overlay_row_renderer."""
+        env = _overlay_row_renderer.RowRenderEnv(
+            listing=self._effective_listing(),
+            package_fit_by_raw=self._package_fit_by_raw,
+            group_size_by_raw=self._group_size_by_raw,
+            group_position_by_id=self._group_position_by_id,
+            group_ready_by_raw=self._group_ready_by_raw,
+            pinned_id=self._pinned_id,
+            keyboard_id=self._keyboard_id,
+            keyboard_preview_active=self._keyboard_preview_active,
+            col_spec=COL_SPEC,
+            col_name=COL_NAME,
+            col_ilvl=COL_ILVL,
+            col_rio=COL_RIO,
+            col_n=COL_N,
+            col_h=COL_H,
+            col_m=COL_M,
+            col_mplus=COL_MPLUS,
+            col_fit=COL_FIT,
+            package_text_role=MPLUS_PACKAGE_TEXT_ROLE,
+            individual_text_role=MPLUS_INDIVIDUAL_TEXT_ROLE,
+            row_base_role=ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE,
+            reuse_item=self._reuse_cell_item,
+            set_data=self._set_item_data_if_changed,
+            set_row_height=self._table.setRowHeight,
+            rio_cell_height=self._rio_cell_height,
+            table_font=self._table.font,
+            role_icon=_role_icon,
+            bold_font=_bold_cell_font,
+            metric_font=lambda font, bold: _metric_cell_font(font, bold=bold),
+            text_colour_for_bg=_text_colour_for_bg,
+            set_cell_foreground=_set_cell_foreground,
+            set_cell_background=_set_cell_background,
+            stamp_cell_font_sig=_stamp_cell_font_sig,
+            raid_dual_cell=_raid_dual_cell,
+            mplus_dual_cell=_mplus_dual_cell,
+            mplus_group_cell=_mplus_group_cell,
+            fit_cell=_fit_cell,
         )
-        name_item.setFont(_bold_cell_font(self._table.font()))
-        _stamp_cell_font_sig(name_item)
-
-        # iLvl + RIO numeric cells. RIO shows the applying character's score,
-        # plus a higher RaiderIO main score in brackets when available.
-        ilvl_item = self._reuse_cell_item(
-            row, COL_ILVL, str(applicant.ilvl) if applicant.ilvl else "—"
+        _overlay_row_renderer.render_row_cells(
+            row, applicant, fit, table=self._table, env=env
         )
-        ilvl_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        ilvl_item.setFont(_metric_cell_font(self._table.font(), bold=False))
-        _stamp_cell_font_sig(ilvl_item)
-
-        rio_score = effective_rio_score(applicant)
-        rio_item = self._reuse_cell_item(
-            row, COL_RIO, _presenters.rio_table_text(applicant)
-        )
-        rio_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        # bold — primary scouting signal alongside name
-        rio_item.setFont(_metric_cell_font(self._table.font(), bold=True))
-        _stamp_cell_font_sig(rio_item)
-        # Tier-band foreground colour (gold/purple/blue/green/white) matches
-        # RaiderIO addon's score-tier visual language, mirrors raid percentile
-        # cell palette so eye-tracking across columns reads consistently.
-        _set_cell_foreground(rio_item, rio_score_colour(rio_score))
-        history_text = _presenters.rio_history_text(applicant)
-        history_tip = f"Raider.IO · {history_text}" if history_text else ""
-        if rio_item.toolTip() != history_tip:
-            rio_item.setToolTip(history_tip)
-        self._table.setRowHeight(row, self._rio_cell_height(rio_item))
-
-        raw_aid, _ = _split_composite(applicant.applicant_id)
-        listing = self._effective_listing()
-        listing_context = detect_listing_context(listing)
-        package = self._package_fit_by_raw.get(raw_aid)
-
-        # Raw WCL evidence keeps the same meaning and palette in every listing.
-        # Contextual recommendations have a separate cell.
-        raid_cells = [
-            ("N", COL_N, applicant.raid_normal, applicant.raid_normal_median),
-            ("H", COL_H, applicant.raid_heroic, applicant.raid_heroic_median),
-            ("M", COL_M, applicant.raid_mythic, applicant.raid_mythic_median),
-        ]
-        for _raid_key, col, best, median in raid_cells:
-            existing = self._table.item(row, col)
-            filled = _raid_dual_cell(
-                best,
-                median,
-                applicant.fetch_status,
-                item=existing,
-            )
-            if existing is None:
-                self._table.setItem(row, col, filled)
-        existing = self._table.item(row, COL_MPLUS)
-        filled = _mplus_dual_cell(
-            applicant,
-            listing,
-            fit=fit,
-            item=existing,
-        )
-        if existing is None:
-            self._table.setItem(row, COL_MPLUS, filled)
-        if (
-            listing_context in {CONTEXT_MPLUS, CONTEXT_RAID}
-            and package is not None
-            and package.display
-            and self._group_size_by_raw.get(raw_aid, 1) >= 2
-            and (
-                listing_context == CONTEXT_MPLUS
-                or self._group_ready_by_raw.get(raw_aid, False)
-            )
-        ):
-            existing = self._table.item(row, COL_FIT)
-            filled = _mplus_group_cell(
-                package,
-                applicant,
-                listing,
-                fit=fit,
-                item=existing,
-            )
-            if existing is None:
-                self._table.setItem(row, COL_FIT, filled)
-        else:
-            existing = self._table.item(row, COL_FIT)
-            filled = _fit_cell(
-                applicant,
-                listing,
-                fit=fit,
-                item=existing,
-            )
-            if existing is None:
-                self._table.setItem(row, COL_FIT, filled)
-
-        accessible_headers = (
-            "Specialization",
-            "Name",
-            "Item level",
-            "RaiderIO score",
-            "Normal raid",
-            "Heroic raid",
-            "Mythic raid",
-            "Mythic Plus DPS percentiles",
-            "Contextual fit estimate",
-        )
-        role_name = {
-            "TANK": "Tank",
-            "HEALER": "Healer",
-            "DAMAGER": "Damage dealer",
-        }.get(applicant.role, "Unknown")
-        raw_aid, _member_index = _split_composite(applicant.applicant_id)
-        group_size = self._group_size_by_raw.get(raw_aid, 1)
-        description = (
-            f"Role: {role_name}. Specialization: {spec_text}. "
-            f"Class: {applicant.cls.title()}."
-        )
-        if group_size > 1:
-            group_position = self._group_position_by_id.get(applicant.applicant_id, 1)
-            description += (
-                f" Group application member {group_position} of {group_size}."
-            )
-        # Interaction suffix mirrors _sync_row_accessible_descriptions so a
-        # re-rendered pinned/keyboard row keeps its full description without
-        # waiting for the next sync pass.
-        interaction_state = ""
-        if applicant.applicant_id == self._pinned_id:
-            interaction_state = "Pinned."
-        if (
-            self._keyboard_preview_active
-            and applicant.applicant_id == self._keyboard_id
-        ):
-            interaction_state = f"{interaction_state} Keyboard preview.".strip()
-        expected_description = (
-            f"{description} {interaction_state}"
-            if interaction_state
-            else description
-        )
-        for column, header in enumerate(accessible_headers):
-            item = self._table.item(row, column)
-            if item is None:
-                continue
-            if column == COL_NAME:
-                value = applicant.name
-            elif column == COL_FIT and isinstance(
-                item.data(MPLUS_PACKAGE_TEXT_ROLE), str
-            ):
-                package_text = str(item.data(MPLUS_PACKAGE_TEXT_ROLE) or "No data")
-                individual_text = str(
-                    item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) or "No data"
-                )
-                value = f"Group package {package_text}; individual {individual_text}"
-            else:
-                value = item.text() or "No data"
-            # Accessible writes fire OS accessibility events: only rewrite on
-            # actual value change, not on every row refresh.
-            set_data(
-                item,
-                Qt.ItemDataRole.AccessibleTextRole,
-                f"{header}: {value}",
-            )
-            set_data(item, ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE, description)
-            set_data(
-                item, Qt.ItemDataRole.AccessibleDescriptionRole, expected_description
-            )
 
     def _sync_row_accessible_descriptions(self) -> None:
         current_state: dict[str, str] = {}
@@ -6361,69 +6009,36 @@ class OverlayWindow(QMainWindow):
         # Frozen once per refresh: _row_render_key needs it per row and
         # freezing the same listing 30× dominated the same-order path.
         listing_key = _listing_render_key(listing)
-        sorted_package_fit_by_raw: dict[str, PackageFit] = {}
-        sorted_candidate_fit_by_id: dict[str, CandidateFit] = {}
-        if self._active_tab == "party":
-            sorted_applicants = sort_roster_members(self._state.party_members.values())
-            # M8: compute each member fit ONCE per refresh and share it
-            # between manual FIT sorting and cell rendering, instead of one
-            # candidate_fit per sort probe plus one per cell.
-            manual_sort = self._active_manual_sort()
-            if not self._table.isColumnHidden(COL_FIT) or (
-                manual_sort is not None and manual_sort[0] == COL_FIT
-            ):
-                for member in sorted_applicants:
-                    if (
-                        member.applicant_id not in sorted_candidate_fit_by_id
-                        and member.fetch_status not in {"loading", "pending"}
-                    ):
-                        sorted_candidate_fit_by_id[member.applicant_id] = (
-                            candidate_fit(member, listing)
-                        )
-        else:
-            (
-                sorted_applicants,
-                sorted_package_fit_by_raw,
-                sorted_candidate_fit_by_id,
-            ) = _sort_applicants_grouped_with_package_fits(
-                self._state.applicants.values(),
-                listing,
-                package_fit_cache=self._package_fit_cache_by_raw,
-                fit_cache_context=self._metric_preferences.cache_key(),
-            )
-        sorted_applicants = self._sort_rows_by_selected_column(
-            sorted_applicants, listing, sorted_package_fit_by_raw, sorted_candidate_fit_by_id
+        # P2: sorting/grouping/fit-prefetch live in overlay_table; the window
+        # keeps row-identity diffing, item lifetime, and hover/pin/filter sync.
+        manual_sort = self._active_manual_sort()
+        model = _overlay_table.refresh_table_model(
+            self._state,
+            listing,
+            self._metric_preferences,
+            active_tab=self._active_tab,
+            package_fit_cache=self._package_fit_cache_by_raw,
+            compute_party_fits=not self._table.isColumnHidden(COL_FIT)
+            or (manual_sort is not None and manual_sort[0] == COL_FIT),
+            package_fit_fn=package_fit,
+            candidate_fit_fn=candidate_fit,
         )
-        self._group_size_by_raw = {}
-        self._group_position_by_id = {}
-        self._group_ready_by_raw = {}
-        self._package_fit_by_raw = {}
-        if self._active_tab == "applicants":
-            group_members: dict[str, list[Applicant]] = {}
-            for applicant in sorted_applicants:
-                raw_aid, _ = _split_composite(applicant.applicant_id)
-                self._group_size_by_raw[raw_aid] = (
-                    self._group_size_by_raw.get(raw_aid, 0) + 1
-                )
-                group_members.setdefault(raw_aid, []).append(applicant)
-            for members in group_members.values():
-                for position, member in enumerate(members, start=1):
-                    self._group_position_by_id[member.applicant_id] = position
-            if detect_listing_context(listing) in (
-                CONTEXT_MPLUS,
-                CONTEXT_RAID,
-            ):
-                for raw_aid, members in group_members.items():
-                    self._group_ready_by_raw[raw_aid] = all(
-                        member.fetch_status == "ready" for member in members
-                    )
-                    if len(members) < 2:
-                        continue
-                    fit = sorted_package_fit_by_raw.get(raw_aid)
-                    if fit is None:
-                        fit = package_fit(members, listing)
-                    if fit.display:
-                        self._package_fit_by_raw[raw_aid] = fit
+        sorted_applicants = model.sorted_applicants
+        sorted_candidate_fit_by_id = model.candidate_fit_by_id
+        sorted_applicants = self._sort_rows_by_selected_column(
+            sorted_applicants,
+            listing,
+            model.sort_package_fits_by_raw,
+            sorted_candidate_fit_by_id,
+        )
+        # Group positions/package lanes follow the displayed (post-manual-sort)
+        # order, exactly as the inlined block did before the P2 extraction.
+        model.sorted_applicants = sorted_applicants
+        _overlay_table.index_group_maps(model, listing, package_fit)
+        self._group_size_by_raw = model.group_size_by_raw
+        self._group_position_by_id = model.group_position_by_id
+        self._group_ready_by_raw = model.group_ready_by_raw
+        self._package_fit_by_raw = model.package_fit_by_raw
 
         new_id_by_row = [a.applicant_id for a in sorted_applicants]
         same_rows = (
@@ -7308,49 +6923,49 @@ class OverlayWindow(QMainWindow):
         applicant = self._row_for_fetch_identity(fetched_identity)
         if applicant is None:
             return
-        if not self._metric_preferences.any_enabled:
+        # P2: the completion decision lives in overlay_fetch; the window keeps
+        # waiter fan-out (above), quota/row bookkeeping, and Applicant mutation.
+        current = None
+        if self._metric_preferences.any_enabled:
+            current = _fetch_identity_for_applicant(
+                applicant,
+                self._state.player.full_name,
+                self._wcl_client.region,
+                self._metric_preferences,
+                self._wcl_runtime_generation,
+                self._listing_session_generation,
+                row_source=fetched_identity.row_source,
+            )
+        action = _overlay_fetch.reconcile_fetch_done(
+            applicant=applicant,
+            fetched_identity=fetched_identity,
+            current=current,
+            was_current=was_current,
+            ranks=ranks,
+            metrics_enabled=self._metric_preferences.any_enabled,
+        ).action
+        if action == "no_row":
+            return
+        if action == "metrics_disabled":
             applicant.clear_wcl_data(fetch_status="ready")
             self._sync_delegate_and_panel()
             return
-        current = _fetch_identity_for_applicant(
-            applicant,
-            self._state.player.full_name,
-            self._wcl_client.region,
-            self._metric_preferences,
-            self._wcl_runtime_generation,
-            self._listing_session_generation,
-            row_source=fetched_identity.row_source,
-        )
-        if current is None:
+        if action == "missing_realm":
             applicant.clear_wcl_data(fetch_status="error")
             applicant.error_message = "missing realm"
             applicant.wcl_error_kind = ""
             self._sync_delegate_and_panel()
             return
+        assert current is not None
         current_identity, _ = current
-        if not current_identity.metric_preferences.any_enabled:
+        if action == "current_prefs_disabled":
             applicant.clear_wcl_data(fetch_status="ready")
             self._sync_delegate_and_panel()
             return
-        if (
-            not was_current
-            and applicant.fetch_status == "ready"
-            and applicant.wcl_data_covers(current_identity.metric_preferences)
-            and _same_fetch_target_except_preferences(
-                current_identity,
-                fetched_identity,
-            )
-            and fetched_identity.metric_preferences.covers(
-                current_identity.metric_preferences
-            )
-        ):
+        if action == "already_current":
             return
-        if not _same_fetch_target_except_preferences(
-            current_identity, fetched_identity
-        ) or not fetched_identity.metric_preferences.covers(
-            current_identity.metric_preferences
-        ):
-            if applicant.fetch_status in {"error", "not_found", "restricted"}:
+        if action in {"stale_terminal", "stale_relaunch"}:
+            if action == "stale_terminal":
                 self._sync_delegate_and_panel()
                 return
             if not self._is_fetch_in_flight_for(
@@ -8207,10 +7822,7 @@ def _package_fit_colour(package: PackageFit) -> str:
 
 
 def _app_update_message(latest_version: str) -> str:
-    return (
-        f"ApplicantScout Companion {latest_version} is available.\n"
-        "Open Settings to install the update."
-    )
+    return _overlay_health.app_update_message(latest_version)
 
 
 def _format_listing_tooltip(listing: Listing | None) -> str:
