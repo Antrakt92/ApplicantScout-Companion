@@ -75,8 +75,8 @@ You can also enable
 **ApplicantScout Companion** in Windows Settings → Apps → Startup. Opening the
 companion manually does not override a startup restriction set in Windows.
 
-**Share usage statistics** also starts checked when no choice is saved.
-It is optional and can be disabled here. Participating installations send daily
+**Share usage statistics** starts unchecked; sharing stays off until you opt in here.
+Participating installations send daily
 setup/use milestones to the ApplicantScout service hosted on Cloudflare.
 See [what is shared and how to turn it off](PRIVACY.md).
 

@@ -111,8 +111,8 @@ ApplicantScout data. See [transport and cleanup details](docs/REFERENCE.md).
 
 ## Trust And Local Data
 
-**Optional usage statistics start enabled when no preference has been saved.**
-Saved choices are preserved. Turn sharing off in Settings at any time. Reports
+**Optional usage statistics stay off until you opt in.**
+Saved choices are preserved. Turn sharing on or off in Settings at any time. Reports
 contain a random installation ID, version and daily setup/use milestones;
 names, screenshots and credentials are excluded. Read [what is sent and retained](docs/PRIVACY.md).
 
