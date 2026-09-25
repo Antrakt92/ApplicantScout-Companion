@@ -309,6 +309,11 @@ function Test-PortableZipContract {
         $HasInternalPayload = $false
         foreach ($Name in @($FileEntries.Keys)) {
             if ($Name.StartsWith("$ExpectedRoot/_internal/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                if ($Name.EndsWith('/py.typed', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    # PEP 561 markers are intentionally empty.
+                    $HasInternalPayload = $true
+                    continue
+                }
                 if ($FileEntries[$Name].Length -le 0) {
                     $ContractErrors += "Portable ZIP contains an empty runtime payload file: $Name"
                 }
