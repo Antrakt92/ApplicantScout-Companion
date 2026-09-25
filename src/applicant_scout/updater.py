@@ -21,6 +21,7 @@ from typing import Any, Callable, Literal
 import httpx
 
 from .config import user_cache_dir
+from .ui_text import format_update_download, update_phase_message
 
 
 DEFAULT_RELEASE_REPO = "Antrakt92/ApplicantScout-Companion"
@@ -74,15 +75,8 @@ class UpdateProgress:
     @property
     def message(self) -> str:
         if self.phase == "downloading":
-            if self.total_bytes:
-                percent = min(100, self.downloaded_bytes * 100 // self.total_bytes)
-                return f"Downloading update… {percent}%"
-            return f"Downloading update… {self.downloaded_bytes / (1024 * 1024):.1f} MB"
-        return {
-            "checking": "Checking update…",
-            "verifying": "Verifying update…",
-            "installing": "Installing update…",
-        }[self.phase]
+            return format_update_download(self.downloaded_bytes, self.total_bytes)
+        return update_phase_message(self.phase)
 
 
 class UpdateCancelled(RuntimeError):

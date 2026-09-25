@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtGui import QColor
 
-from applicant_scout import overlay, overlay_presenters, scoring
+from applicant_scout import overlay, overlay_presenters, scoring, ui_text, updater
 from applicant_scout.constants import CURRENT_RAID_ENCOUNTERS, percentile_colour
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.state import AppState, Applicant, Listing, RosterMember
@@ -214,3 +214,24 @@ def test_supplied_fit_and_raw_cells_do_not_recompute_scoring(monkeypatch, kind):
 
     assert overlay._mplus_cell_visuals(app, listing)[0] == "58/66 +12"
     assert overlay._fit_cell_visuals(app, listing, fit=fit)[0]
+
+
+def test_ui_text_centralizes_missing_token_and_moved_helpers():
+    assert ui_text.MISSING_DATA_TEXT == "—"
+    assert overlay_presenters.rio_display_text(_app(score=0)) == ui_text.MISSING_DATA_TEXT
+    assert overlay_presenters.format_age(7200.0) == ui_text.format_age(7200.0) == "2h ago"
+    assert (
+        overlay_presenters.format_duration(7200.0)
+        == ui_text.format_duration(7200.0)
+        == "2h"
+    )
+    assert ui_text.format_percent(87.9) == "87%"
+    assert ui_text.format_percent(None) == ui_text.MISSING_DATA_TEXT
+    assert updater.UpdateProgress("checking").message == "Checking update…"
+    assert updater.UpdateProgress("verifying").message == "Verifying update…"
+    assert updater.UpdateProgress("installing").message == "Installing update…"
+    assert (
+        updater.UpdateProgress("downloading", 50, 100).message
+        == "Downloading update… 50%"
+    )
+    assert "MB" in updater.UpdateProgress("downloading", 1024 * 1024, None).message

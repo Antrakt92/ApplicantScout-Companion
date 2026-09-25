@@ -12,6 +12,8 @@ from .constants import (
 )
 from .metric_preferences import MetricPreferences
 from .overlay_rows import mplus_key_level
+from . import ui_text
+from .ui_text import MISSING_DATA_TEXT
 from .scoring import (
     CONTEXT_RAID,
     RAID_TARGET_BY_DIFFICULTY_ID,
@@ -34,7 +36,7 @@ def rio_display_text(applicant: Applicant) -> str:
         return f"{applicant.score} [{applicant.main_score}]"
     if applicant.main_score > applicant.score:
         return f"[{applicant.main_score}]"
-    return str(applicant.score) if applicant.score else "—"
+    return str(applicant.score) if applicant.score else MISSING_DATA_TEXT
 
 
 def _rio_history_values(applicant: Applicant) -> list[tuple[str, int, int]]:
@@ -130,12 +132,12 @@ def raid_cell_visuals(
     if fetch_status == "error":
         return "?", "#ff5555", None
     if fetch_status in {"not_found", "restricted"}:
-        return "—", "#5d5d5d", None
+        return MISSING_DATA_TEXT, "#5d5d5d", None
     best_pct = safe_percent(best)
     median_pct = safe_percent(median)
     if best_pct is None and median_pct is None:
-        return "—", "#5d5d5d", None
-    best_str = f"{int(best_pct)}" if best_pct is not None else "—"
+        return MISSING_DATA_TEXT, "#5d5d5d", None
+    best_str = f"{int(best_pct)}" if best_pct is not None else MISSING_DATA_TEXT
     text = (
         best_str
         if median_pct is None
@@ -161,7 +163,7 @@ def raid_values_for_key(
 def raid_metric_text_for_key(applicant: Applicant, key: str) -> str:
     best, median = raid_values_for_key(applicant, key)
     text, _fg, _bg = raid_cell_visuals(best, median, "ready")
-    return "" if text == "—" else text
+    return "" if text == MISSING_DATA_TEXT else text
 
 
 def raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> str:
@@ -362,6 +364,8 @@ def raid_boss_parse_rows_by_encounter(
 def raid_parse_pair_text(overall: float | None, ilvl: float | None) -> str:
     if overall is None and ilvl is None:
         return ""
+    # Paired-value placeholder keeps the ASCII hyphen: it renders inside
+    # committed overlay fixtures, so unifying it needs a baseline refresh.
     left = str(int(overall)) if overall is not None else "-"
     right = str(int(ilvl)) if ilvl is not None else "-"
     return f"{left} / {right}"
@@ -401,7 +405,7 @@ def mplus_breakdown_all_single_run(breakdown: Iterable[object]) -> bool:
 
 def mplus_dungeon_metric_text(entry: object) -> str:
     if not isinstance(entry, dict):
-        return "—"
+        return MISSING_DATA_TEXT
     return mplus_metric_display_text(
         entry.get("parse_percent"),
         entry.get("median_percent"),
@@ -424,23 +428,13 @@ def mplus_metric_display_text(
 
 
 def format_age(delta_sec: float) -> str:
-    if delta_sec >= 86400.0:
-        return "—"
-    if delta_sec >= 3600.0:
-        return f"{int(delta_sec // 3600)}h ago"
-    if delta_sec >= 60.0:
-        return f"{int(delta_sec // 60)}m ago"
-    return f"{int(delta_sec)}s ago"
+    """Canonical implementation lives in ui_text; kept for existing call sites."""
+    return ui_text.format_age(delta_sec)
 
 
 def format_duration(delta_sec: float) -> str:
-    if delta_sec >= 86400.0:
-        return "24h+"
-    if delta_sec >= 3600.0:
-        return f"{int(delta_sec // 3600)}h"
-    if delta_sec >= 60.0:
-        return f"{int(delta_sec // 60)}m"
-    return f"{int(delta_sec)}s"
+    """Canonical implementation lives in ui_text; kept for existing call sites."""
+    return ui_text.format_duration(delta_sec)
 
 
 def format_listing_tooltip(listing: Listing | None) -> str:
