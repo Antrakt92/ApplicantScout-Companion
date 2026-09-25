@@ -171,6 +171,6 @@ Windows build requirements. [Release history](RELEASE_NOTES.md) lists changes;
 ## License
 
 ApplicantScout Companion source is [MIT licensed](LICENSE). Windows builds also
-include software under other licenses, including GPL PyQt. See
+include software under other licenses, including LGPL Qt and PySide6. See
 [third-party notices and source access](THIRD-PARTY-NOTICES.md) and the bundled
 `licenses/` directory for the applicable terms.

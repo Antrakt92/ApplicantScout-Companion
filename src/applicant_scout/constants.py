@@ -166,9 +166,9 @@ def group_id_colour(raw_aid: str) -> str:
     which rows apply together. Solo applicants don't get a band — chrome is
     reserved for actual grouping signal.
 
-    PyQt6 import is lazy so constants.py stays Qt-import-free at module load
+    PySide6 import is lazy so constants.py stays Qt-import-free at module load
     (cheap to import for non-overlay consumers like CLI dump or pure-data tests)."""
-    from PyQt6.QtGui import QColor
+    from PySide6.QtGui import QColor
 
     try:
         n = int(raw_aid)

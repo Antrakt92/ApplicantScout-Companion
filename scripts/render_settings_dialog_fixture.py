@@ -14,9 +14,9 @@ if "QT_QPA_PLATFORM" not in os.environ:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from PyQt6.QtCore import QCoreApplication  # noqa: E402
-from PyQt6.QtGui import QImage  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QCoreApplication  # noqa: E402
+from PySide6.QtGui import QImage  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from scripts.settings_dialog_visual_fixture import (  # noqa: E402
     DEFAULT_SETTINGS_VISUAL_SCENARIO,

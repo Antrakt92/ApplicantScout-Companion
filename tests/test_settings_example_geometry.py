@@ -4,8 +4,8 @@ import subprocess
 import sys
 
 import pytest
-from PyQt6.QtCore import QPoint, QRect, Qt
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialogButtonBox,

@@ -2,8 +2,8 @@
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QPoint, QRect
-from PyQt6.QtWidgets import QLabel, QLineEdit, QPushButton, QScrollArea
+from PySide6.QtCore import QPoint, QRect
+from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QScrollArea
 
 from applicant_scout.config import Config
 import applicant_scout.settings_dialog as settings_mod

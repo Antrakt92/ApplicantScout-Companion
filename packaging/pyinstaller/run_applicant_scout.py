@@ -12,7 +12,7 @@ def _run_frozen_startup_probe() -> int:
     # It must exercise the native components that normal imports leave lazy:
     # the Windows QPA plugin and zbar's actual scan entry point.
     from PIL import Image
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
 
     from applicant_scout import __main__ as runtime_main
     from applicant_scout.screenshot import _decode_qr_symbols

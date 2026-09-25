@@ -1,6 +1,6 @@
 # Native library sources
 
-This document records the Qt, PyQt, SIP and QR-decoder native dependencies in
+This document records the Qt, PySide6, Shiboken and QR-decoder native dependencies in
 `constraints-release.txt`. The machine-readable record is
 [`packaging/native-source-provenance.json`](https://github.com/Antrakt92/ApplicantScout-Companion/blob/main/packaging/native-source-provenance.json).
 For a released build, read these files at its release tag.
@@ -30,8 +30,8 @@ to `licenses/` in the application payload.
 
 After PyInstaller, the build checks the recorded hashes in the packaged
 `_internal` directory and rejects unrecorded DLLs or Python native modules in
-`PyQt6` and `pyzbar`. Only the reviewed Microsoft runtime files in Qt's `bin`
-directory are excluded from this source inventory; their provenance remains
+`PySide6`, `shiboken6` and `pyzbar`. Only reviewed Microsoft runtime files at
+exact paths are excluded from this source inventory; their provenance remains
 covered by the frozen-runtime verifier. This is a check of those native
 components, not a complete inventory of every dependency in the application.
 
@@ -121,13 +121,11 @@ The script also needs the paired addon's QR encoder and Lua 5.1; pass
 `--qrencode` and `--lua` if they are not in their usual locations. It stages the
 DLL pair in a temporary directory and never replaces installed files.
 
-## Qt, PyQt and SIP
+## Qt for Python and Shiboken
 
 See [Qt source and build evidence](https://github.com/Antrakt92/ApplicantScout-Companion/blob/main/docs/NATIVE-QT-SOURCES.md)
-for the verified Qt installer archives, source revisions, compiler settings and
-binding generators. The software OpenGL library is a separate Mesa/LLVM build;
-matching a Qt installer binary alone does not establish its corresponding
-source and build recipe.
+for the Qt and Qt for Python source archives, installed wheel byte mapping and
+known build limits. The software OpenGL library is a separate Mesa/LLVM build.
 
 ## Pillow 12.3.0: accepted native-provenance gap
 
@@ -136,7 +134,7 @@ image loading, but its Windows wheel native modules (`PIL/*.pyd`, bundling
 upstream codec builds) have no entry in
 `packaging/native-source-provenance.json`: the original wheel file is not
 retained, so wheel bytes and upstream source-archive hashes cannot be verified
-offline, and frozen-payload coverage is limited to the `PyQt6` and `pyzbar`
+offline, and frozen-payload coverage is limited to the `PySide6`, `shiboken6` and `pyzbar`
 scopes. License attribution is recorded in `THIRD-PARTY-NOTICES.md`. This gap
 is accepted for development builds; full Pillow native provenance remains open
 release-hardening work.

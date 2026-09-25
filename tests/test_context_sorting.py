@@ -3,7 +3,7 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
-from PyQt6.QtCore import Qt
+from PySide6.QtCore import Qt
 
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.overlay import COL_H, COL_M, COL_MPLUS, COL_N, OverlayWindow

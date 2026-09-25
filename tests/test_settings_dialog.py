@@ -8,9 +8,10 @@ import threading
 import weakref
 
 import pytest
-from PyQt6.QtCore import QEvent, QRect, Qt
-from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import (
+import shiboken6
+from PySide6.QtCore import QEvent, QRect, Qt
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialogButtonBox,
@@ -994,6 +995,39 @@ def test_settings_active_probe_dialog_garbage_collection_has_no_callbacks(
     assert dialog_ref() is None
     assert process_ref() is None
     assert not result_path.exists()
+
+
+def test_async_action_result_ignores_deleted_dialog(qtbot, tmp_path: Path):
+    started = threading.Event()
+    release = threading.Event()
+
+    def action() -> str:
+        started.set()
+        assert release.wait(5)
+        return "Done"
+
+    dialog = SettingsDialog(_cfg(tmp_path))
+    completed: list[bool] = []
+    dialog.updateCompleted.connect(lambda: completed.append(True))
+    dialog._start_async_action(
+        button=dialog.update_button,
+        busy_text="Checking",
+        error_prefix="Update failed",
+        action=action,
+    )
+    try:
+        assert started.wait(2)
+        dialog.deleteLater()
+        qtbot.waitUntil(lambda: not shiboken6.isValid(dialog), timeout=2000)
+        app = QApplication.instance()
+        assert isinstance(app, QApplication)
+        dispatcher = settings_mod._dialog_worker_dispatcher(app)
+        with qtbot.waitSignal(dispatcher.actionFinished, timeout=2000):
+            release.set()
+        QApplication.processEvents()
+        assert not completed
+    finally:
+        release.set()
 
 
 def test_bounded_screenshots_path_probe_times_out_and_removes_result(

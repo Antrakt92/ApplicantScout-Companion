@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from PyQt6.QtGui import QPainter, QPixmap
-from PyQt6.QtWidgets import QApplication, QStyleOptionViewItem
+from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QStyleOptionViewItem
 
 from applicant_scout import overlay, scoring
 from applicant_scout.metric_preferences import MetricPreferences

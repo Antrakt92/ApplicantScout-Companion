@@ -4,9 +4,9 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtCore import QPoint, QRect
-from PyQt6.QtGui import QTextDocument
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint, QRect
+from PySide6.QtGui import QTextDocument
+from PySide6.QtWidgets import QApplication
 
 from applicant_scout import overlay, overlay_presenters as presenters
 from applicant_scout.constants import CURRENT_RAID_ENCOUNTERS, percentile_colour

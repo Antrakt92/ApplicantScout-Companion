@@ -11,7 +11,7 @@ the original wheel bytes against installed_sha256. No automatic substitutions.
 Optional source local_path records also require a matching retained archive.
 
 --payload-root points at the frozen application's _internal directory. It checks
-every recorded binary and native-file coverage within PyQt6 and pyzbar only;
+every recorded binary and native-file coverage within PySide6, shiboken6 and pyzbar only;
 this is not an inventory of every dependency in the application.
 """
 
@@ -34,13 +34,16 @@ _HASH = re.compile(r"[a-fA-F0-9]{64}")
 # Reviewed Microsoft redistributables present in the Qt Windows payload. Keep
 # exact paths: a broad runtime-name wildcard could hide a newly bundled library.
 _PAYLOAD_RUNTIME_EXCLUSIONS = frozenset(
-    "pyqt6/qt6/bin/" + name
+    "pyside6/" + name
     for name in (
         "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
         "vcruntime140.dll", "vcruntime140_1.dll",
     )
+) | frozenset(
+    "shiboken6/" + name
+    for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 )
-_PAYLOAD_SCOPES = frozenset({"pyqt6", "pyzbar"})
+_PAYLOAD_SCOPES = frozenset({"pyside6", "shiboken6", "pyzbar"})
 
 
 class NativeSourceError(ValueError):

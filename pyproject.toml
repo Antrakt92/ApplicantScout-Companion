@@ -9,7 +9,7 @@ description = "Windows companion overlay showing WCL, RaiderIO, raid-fit, and M+
 authors = [{ name = "Antrakt" }]
 requires-python = ">=3.13"
 dependencies = [
-    "PyQt6>=6.7",
+    "PySide6>=6.11",
     "httpx>=0.27",
     "watchdog>=4.0",
     "python-dotenv>=1.0",

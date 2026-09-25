@@ -257,7 +257,7 @@ def test_cli_exit_codes_and_reasons(evidence, tmp_path):
 @pytest.fixture
 def payload(evidence, tmp_path):
     root = tmp_path / "dist/App/_internal"
-    relative = "PyQt6/Qt6/bin/Qt6Core.dll"
+    relative = "PySide6/Qt6Core.dll"
     evidence["components"][0]["binaries"][0]["path"] = relative
     binary = root / relative
     binary.parent.mkdir(parents=True)
@@ -290,8 +290,8 @@ def test_payload_binary_must_exist_and_match(evidence, tmp_path, payload, failur
 
 
 @pytest.mark.parametrize("relative", [
-    "PyQt6/Qt6/plugins/new/new.dll", "PyQt6/other.PYD", "pyzbar/libextra.dll",
-    "pyzbar/vcruntime140.dll", "PyQt6/Qt6/bin/vcruntime140_new.dll",
+    "PySide6/plugins/new/new.dll", "PySide6/other.PYD", "shiboken6/new.pyd",
+    "pyzbar/libextra.dll", "pyzbar/vcruntime140.dll", "PySide6/vcruntime140_new.dll",
 ])
 def test_payload_rejects_unrecorded_native_files_in_scopes(evidence, tmp_path, payload, relative):
     extra = payload / relative
@@ -323,14 +323,15 @@ def test_two_packages_cannot_claim_the_same_payload_path(evidence, tmp_path, pay
 
 def test_payload_excludes_only_reviewed_microsoft_paths(evidence, tmp_path, payload):
     for relative in checker._PAYLOAD_RUNTIME_EXCLUSIONS:
-        # Use the existing PyQt6 spelling on case-sensitive hosts too.
-        target = payload / relative.replace("pyqt6/qt6/", "PyQt6/Qt6/")
+        scope, filename = relative.split("/", 1)
+        target = payload / ({"pyside6": "PySide6", "shiboken6": "shiboken6"}[scope]) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"Microsoft redistributable")
     assert validate(evidence, tmp_path, payload_root=payload) == ()
 
 
 def test_recorded_excluded_runtime_still_requires_hash_match(evidence, tmp_path, payload):
-    relative = "PyQt6/Qt6/bin/MSVCP140.dll"
+    relative = "PySide6/MSVCP140.dll"
     (payload / relative).write_bytes(b"modified runtime")
     evidence["components"][0]["binaries"].append({"path": relative, "sha256": DIGEST})
     with pytest.raises(checker.NativeSourceError, match="SHA-256"):
@@ -338,7 +339,7 @@ def test_recorded_excluded_runtime_still_requires_hash_match(evidence, tmp_path,
 
 
 def test_payload_does_not_claim_coverage_of_other_packages(evidence, tmp_path, payload):
-    for relative in ("PIL/new.dll", "python313.dll", "PyQt6/data.txt"):
+    for relative in ("PIL/new.dll", "python313.dll", "PySide6/data.txt"):
         path = payload / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"outside the native-source scope")
@@ -350,12 +351,12 @@ def test_payload_symlinks_cannot_hide_native_files(evidence, tmp_path, payload, 
     outside = tmp_path / "external"
     outside.mkdir()
     (outside / "hidden.dll").write_bytes(BINARY_BYTES)
-    link = payload / "PyQt6/extra"
+    link = payload / "PySide6/extra"
     if kind == "file":
         link = link.with_suffix(".dll")
         target = outside / "hidden.dll"
     elif kind == "internal_directory":
-        target = payload / "PyQt6/Qt6"
+        target = payload / "PySide6/plugins"
     else:
         target = outside
     try:
@@ -388,7 +389,7 @@ def test_payload_cli_failure_is_nonzero(evidence, tmp_path, payload):
     args = [sys.executable, str(SCRIPT), "--manifest", str(manifest), "--constraints", str(constraints),
             "--repo-root", str(tmp_path), "--payload-root", str(payload)]
     assert subprocess.run(args, capture_output=True, check=False).returncode == 0
-    (payload / "PyQt6/extra.pyd").write_bytes(b"unrecorded")
+    (payload / "PySide6/extra.pyd").write_bytes(b"unrecorded")
     result = subprocess.run(args, capture_output=True, text=True, check=False)
     assert result.returncode == 2
     assert "unrecorded native payload" in result.stderr

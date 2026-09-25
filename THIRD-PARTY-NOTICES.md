@@ -19,9 +19,8 @@ Missing-license placeholders are never accepted as release license coverage.
 | Component | Purpose | License surface |
 |---|---|---|
 | CPython | Embedded Python interpreter and standard library | Python Software Foundation License; shipped at `licenses/CPython/LICENSE.txt` |
-| PyQt6 | Qt bindings for the desktop UI | GPL v3 or Riverbank commercial license |
-| PyQt6-Qt6 | Qt runtime bundled by PyQt wheels | LGPL v3 |
-| PyQt6-sip | PyQt support module | BSD-2-Clause |
+| PySide6, PySide6-Essentials and PySide6-Addons | Qt for Python bindings and Qt runtime for the desktop UI | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only, with component-specific Qt terms |
+| shiboken6 | Qt for Python binding support | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only |
 | pyzbar / zbar | QR decoding and native zbar library | MIT / LGPL-2.1 |
 | libiconv | Character-set conversion used by ZBar | GNU Library GPL v2 or later |
 | Mesa / LLVM | Software OpenGL fallback supplied by Qt | MIT / University of Illinois NCSA and component notices |
@@ -32,14 +31,17 @@ Missing-license placeholders are never accepted as release license coverage.
 | python-dotenv | Developer/backcompat env-file parsing | BSD-3-Clause |
 | PyInstaller | Windows packaging tool | GPLv2-or-later with PyInstaller exception |
 
-PyQt licensing is release-critical: PyQt is not LGPL. Public binary releases
-using the GPL PyQt wheels must be compatible with the GPL terms, or the build
-must use an appropriate commercial PyQt license.
+The PySide6 and Shiboken wheel metadata lists LGPL-3.0-only, GPL-2.0-only and
+GPL-3.0-only alternatives. The verified Qt for Python source archive supplies
+the license texts copied to `licenses/native/QtForPython-LICENSE-*.txt`. Qt libraries
+and their embedded components also have their own notices and conditions.
+The build excludes Qt Virtual Keyboard, which this application does not use.
 
 ## Source access
 
-The published Windows build uses the GPL PyQt packages from PyPI. No commercial
-PyQt license is asserted. The MIT license covers ApplicantScout's own source;
+The next Windows build uses the open-source PySide6 wheels from PyPI. Earlier
+published builds may use PyQt; consult each release's tagged notices. No
+commercial Qt license is asserted. The MIT license covers ApplicantScout's own source;
 it does not replace the terms applying to the combined binary and its libraries.
 
 For a released application, use its matching tag in the
@@ -55,9 +57,8 @@ older release, use its tagged constraints and source notice.
 
 | Component | Source route |
 | --- | --- |
-| PyQt6 6.11.0 | [PyPI source distribution and SHA-256](https://pypi.org/project/PyQt6/6.11.0/#files); the source archive includes its build configuration. |
-| Qt 6.11.2 (PyQt6-Qt6) | [Qt 6.11.2 source archives](https://download.qt.io/archive/qt/6.11/6.11.2/single/). The [Qt evidence](docs/NATIVE-QT-SOURCES.md) maps DLL bytes to official binaries, source revisions and build configuration. |
-| PyQt6-sip 13.12.0 | [PyPI source distribution](https://pypi.org/project/PyQt6-sip/13.12.0/#files). |
+| PySide6 6.11.2, Essentials, Addons and shiboken6 | [Qt for Python 6.11.2 source archive](https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/pyside-setup-everywhere-src-6.11.2.tar.xz) and [Qt source evidence](docs/NATIVE-QT-SOURCES.md). |
+| Qt 6.11.2 | [Complete Qt 6.11.2 source archive](https://download.qt.io/archive/qt/6.11/6.11.2/single/qt-everywhere-src-6.11.2.tar.xz). |
 | pyzbar 0.1.9 | [Tagged wrapper source](https://github.com/NaturalHistoryMuseum/pyzbar/tree/v0.1.9). Its [build script](https://github.com/NaturalHistoryMuseum/pyzbar/blob/v0.1.9/build.sh) identifies the Windows DLL download. |
 | ZBar Windows DLL | [ZBarWin64 source commit](https://github.com/NaturalHistoryMuseum/ZBarWin64/tree/720e4577eedf6d6173c146f8494db75583503d94), whose v0.10 release wheel contains the same DLL bytes; includes the VS2013/x64 build project. |
 | libiconv Windows DLL | [Retained GNU sources, generated configuration and build receipt](packaging/native/libiconv/README.md) for the controlled Windows build. |
@@ -71,8 +72,8 @@ not all included in the application.
 
 The [native source record](docs/NATIVE-SOURCES.md) provides binary hashes, pinned
 source archives and build instructions. [Qt evidence](docs/NATIVE-QT-SOURCES.md)
-maps the bundled Qt libraries and plugins to official installer archives and
-source revisions, including their compiler and configuration records. Copies of
+maps bundled Qt and PySide files to the installed wheels and publisher source
+archives, including known build limits. Copies of
 these documents are included under `licenses/` in new Windows builds.
 
 The original pyzbar libiconv DLL has been replaced in new Windows packages by
@@ -83,6 +84,6 @@ alone do not satisfy the check.
 
 Qt component, QtPdf, Mesa, LLVM and libiconv source notices are included under
 `licenses/native/`. Mesa/LLVM's original
-compiler flags and PyQt's original compiler invocation remain reproduction
+compiler flags and PySide's original compiler invocation remain reproduction
 limits, as described in the Qt evidence. No byte-for-byte source rebuild is
 claimed.

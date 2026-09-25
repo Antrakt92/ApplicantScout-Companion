@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont
 
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (

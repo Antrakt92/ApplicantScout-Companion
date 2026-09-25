@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from PyQt6.QtGui import QColor
+from PySide6.QtGui import QColor
 
 from applicant_scout import overlay, overlay_presenters, scoring
 from applicant_scout.constants import CURRENT_RAID_ENCOUNTERS, percentile_colour

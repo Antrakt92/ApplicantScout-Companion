@@ -19,10 +19,10 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from PyQt6.QtCore import QObject, QThread, QTimer, Qt, QEventLoop, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, QEventLoop, Signal
+from PySide6.QtGui import QAction, QIcon
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import __version__
 from . import runtime_control as _runtime_control
@@ -233,12 +233,12 @@ class _WCLRegionRuntime:
 
 
 class _WowLifecycleSignals(QObject):
-    checked = pyqtSignal(bool)
-    checkFailed = pyqtSignal()
+    checked = Signal(bool)
+    checkFailed = Signal()
 
 
 class _StartupVerificationSignals(QObject):
-    verified = pyqtSignal(object)
+    verified = Signal(object)
 
 
 class _WowLifecycleCheckExecutor:
@@ -659,16 +659,16 @@ class StateMachine(QObject):
     OverlayWindow's existing slots fire identically to the old chatlog flow.
     Preserves WCL percentile cache when an applicant's spec_id is unchanged."""
 
-    applicantAdded = pyqtSignal(Applicant)
-    applicantUpdated = pyqtSignal(Applicant)
-    applicantRemoved = pyqtSignal(str)
-    listingChanged = pyqtSignal()
-    cleared = pyqtSignal()
-    rosterChanged = pyqtSignal()
+    applicantAdded = Signal(Applicant)
+    applicantUpdated = Signal(Applicant)
+    applicantRemoved = Signal(str)
+    listingChanged = Signal()
+    cleared = Signal()
+    rosterChanged = Signal()
     # Region change → main wires to wcl_client.region so non-EU users don't
     # silently get "Server not found" with default config.
-    versionUpdated = pyqtSignal(int)
-    _rioPreloadCompleted = pyqtSignal(str, int, int)
+    versionUpdated = Signal(int)
+    _rioPreloadCompleted = Signal(str, int, int)
 
     def __init__(
         self,
@@ -1833,9 +1833,9 @@ class StateMachine(QObject):
 
 
 class UpdateSignals(QObject):
-    checked = pyqtSignal(int, object)
-    completed = pyqtSignal(object)
-    progressed = pyqtSignal(object, object)
+    checked = Signal(int, object)
+    completed = Signal(object)
+    progressed = Signal(object, object)
 
 
 @dataclass(frozen=True)
@@ -2705,7 +2705,7 @@ class _SnapshotApplier(Protocol):
 
 
 class _SnapshotApplyDispatcher(QObject):
-    _callbackReady = pyqtSignal(object)
+    _callbackReady = Signal(object)
 
     def __init__(self, parent: QObject) -> None:
         super().__init__(parent)
@@ -2748,7 +2748,7 @@ def _schedule_snapshot_apply(callback: Callable[[], None]) -> None:
 
 
 class _WowSyncStartupConfigurator(QObject):
-    _notificationReady = pyqtSignal(object)
+    _notificationReady = Signal(object)
 
     def __init__(
         self,
@@ -3915,7 +3915,7 @@ class _SettingsApplyOutcome:
 
 
 class _SettingsApplySignals(QObject):
-    finished = pyqtSignal(object)
+    finished = Signal(object)
 
 
 class _CoalescedSettingsApplier(QObject):
@@ -3930,7 +3930,7 @@ class _CoalescedSettingsApplier(QObject):
     watcher/overlay rebuild. drain() bounds the quit path with event pumping.
     """
 
-    finished = pyqtSignal(object)
+    finished = Signal(object)
 
     def __init__(
         self,
@@ -5109,7 +5109,7 @@ def main(argv: list[str] | None = None) -> int:
         metric_preferences=cfg.metric_preferences,
     )
 
-    # Ctrl+C → graceful quit (PyQt's C event loop swallows SIGINT by default;
+    # Ctrl+C → graceful quit (Qt's C event loop swallows SIGINT by default;
     # the no-op timer wakes Python every 500 ms so signal handlers actually run)
     import signal as _signal
 

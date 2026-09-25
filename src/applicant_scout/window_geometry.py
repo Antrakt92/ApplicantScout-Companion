@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from PyQt6.QtCore import QRect
+from PySide6.QtCore import QRect
 
 
 def clamp_rect_to_bounds(
