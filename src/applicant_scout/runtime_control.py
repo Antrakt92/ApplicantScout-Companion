@@ -239,11 +239,30 @@ def has_running_instance(
     return False
 
 
+@dataclass(frozen=True)
+class ControlServerOpts:
+    """Wiring for the single-runtime local control server."""
+
+    app: Any
+    quit_app: Callable[[], None]
+    show_settings: Callable[[], None]
+    can_quit: Callable[[], bool] | None = None
+    prepare_quit: Callable[[], bool] | None = None
+    quit_blocked: Callable[[], None] | None = None
+    acquire_owner: Callable[[], RuntimeOwner | None] = acquire_runtime_owner
+    send_command: Callable[..., ControlCommandResult] = send_control_command
+    local_server_type: Any = QLocalServer
+    server_name: str = CONTROL_SERVER_NAME
+    show_settings_command: bytes = CONTROL_SHOW_SETTINGS_COMMAND
+    drain_connections: Callable[..., None] | None = None
+
+
 def create_control_server(
-    app: Any,
+    app: Any = None,
     *,
-    quit_app: Callable[[], None],
-    show_settings: Callable[[], None],
+    opts: ControlServerOpts | None = None,
+    quit_app: Callable[[], None] | None = None,
+    show_settings: Callable[[], None] | None = None,
     can_quit: Callable[[], bool] | None = None,
     prepare_quit: Callable[[], bool] | None = None,
     quit_blocked: Callable[[], None] | None = None,
@@ -254,9 +273,37 @@ def create_control_server(
     show_settings_command: bytes = CONTROL_SHOW_SETTINGS_COMMAND,
     drain_connections: Callable[..., None] | None = None,
 ) -> Any:
-    runtime_owner = acquire_owner()
+    """Claim single-runtime ownership and listen for local control commands.
+
+    Pass a `ControlServerOpts` struct; the legacy args remain as a compat
+    wrapper and are folded into `ControlServerOpts` when `opts` is None.
+    When both are given, `opts` wins.
+    """
+    if opts is None:
+        if app is None or quit_app is None or show_settings is None:
+            raise TypeError(
+                "create_control_server requires opts or "
+                "app/quit_app/show_settings"
+            )
+        opts = ControlServerOpts(
+            app=app,
+            quit_app=quit_app,
+            show_settings=show_settings,
+            can_quit=can_quit,
+            prepare_quit=prepare_quit,
+            quit_blocked=quit_blocked,
+            acquire_owner=acquire_owner,
+            send_command=send_command,
+            local_server_type=local_server_type,
+            server_name=server_name,
+            show_settings_command=show_settings_command,
+            drain_connections=drain_connections,
+        )
+    runtime_owner = opts.acquire_owner()
     if runtime_owner is None:
-        active_owner = send_command(show_settings_command, timeout_ms=200)
+        active_owner = opts.send_command(
+            opts.show_settings_command, timeout_ms=200
+        )
         if active_owner.connected and active_owner.written:
             if not control_command_acknowledged(active_owner):
                 log.info(
@@ -267,18 +314,20 @@ def create_control_server(
         log.info("Concurrent ApplicantScout runtime owns startup.")
         raise DuplicateInstanceFound
 
-    server = local_server_type(app)
+    server = opts.local_server_type(opts.app)
     try:
         socket_option = getattr(
-            getattr(local_server_type, "SocketOption", None),
+            getattr(opts.local_server_type, "SocketOption", None),
             "UserAccessOption",
             None,
         )
         set_socket_options = getattr(server, "setSocketOptions", None)
         if socket_option is not None and callable(set_socket_options):
             set_socket_options(socket_option)
-        if not server.listen(server_name):
-            active_owner = send_command(show_settings_command, timeout_ms=200)
+        if not server.listen(opts.server_name):
+            active_owner = opts.send_command(
+                opts.show_settings_command, timeout_ms=200
+            )
             if control_command_acknowledged(active_owner):
                 raise DuplicateInstanceFound
             if active_owner.connected and active_owner.written:
@@ -287,23 +336,23 @@ def create_control_server(
                     active_owner.response,
                 )
                 raise DuplicateInstanceFound
-            local_server_type.removeServer(server_name)
-            if not server.listen(server_name):
+            opts.local_server_type.removeServer(opts.server_name)
+            if not server.listen(opts.server_name):
                 raise ControlServerUnavailable(server.errorString())
     except BaseException:
         runtime_owner.close()
         raise
 
     setattr(server, "_applicant_scout_runtime_owner", runtime_owner)
-    drain = drain_connections or drain_control_connections
+    drain = opts.drain_connections or drain_control_connections
     server.newConnection.connect(
         lambda: drain(
             server,
-            quit_app,
-            show_settings,
-            can_quit=can_quit,
-            prepare_quit=prepare_quit,
-            quit_blocked=quit_blocked,
+            opts.quit_app,
+            opts.show_settings,
+            can_quit=opts.can_quit,
+            prepare_quit=opts.prepare_quit,
+            quit_blocked=opts.quit_blocked,
         )
     )
     return server

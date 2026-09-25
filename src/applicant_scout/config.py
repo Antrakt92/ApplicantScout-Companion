@@ -349,11 +349,29 @@ def _unmanaged_config_lines(contents: str) -> list[str]:
     ]
 
 
+@dataclass(frozen=True)
+class ConfigValues:
+    """User-editable settings persisted to the local companion config area."""
+
+    wcl_client_id: str
+    wcl_client_secret: str
+    region: str
+    draft_wcl_client_id: str = ""
+    draft_wcl_client_secret: str = ""
+    screenshots_path: str = ""
+    cache_ttl_seconds: int | None = None
+    metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES
+    sync_with_wow: bool = True
+    chatlog_path: str = ""
+    config_path: Path | None = None
+
+
 def save_config_values(
+    values: ConfigValues | None = None,
     *,
-    wcl_client_id: str,
-    wcl_client_secret: str,
-    region: str,
+    wcl_client_id: str | None = None,
+    wcl_client_secret: str | None = None,
+    region: str | None = None,
     draft_wcl_client_id: str = "",
     draft_wcl_client_secret: str = "",
     screenshots_path: str = "",
@@ -363,27 +381,61 @@ def save_config_values(
     chatlog_path: str = "",
     config_path: Path | None = None,
 ) -> Path:
-    """Persist user-editable settings to the local companion config area."""
-    target = config_path or user_config_path()
+    """Persist user-editable settings to the local companion config area.
+
+    Pass a `ConfigValues` struct; the legacy keyword args remain as a compat
+    wrapper and are folded into `ConfigValues` when `values` is None. When
+    both are given, `values` wins.
+    """
+    if values is None:
+        if wcl_client_id is None or wcl_client_secret is None or region is None:
+            raise TypeError(
+                "save_config_values requires values or "
+                "wcl_client_id/wcl_client_secret/region"
+            )
+        values = ConfigValues(
+            wcl_client_id=wcl_client_id,
+            wcl_client_secret=wcl_client_secret,
+            region=region,
+            draft_wcl_client_id=draft_wcl_client_id,
+            draft_wcl_client_secret=draft_wcl_client_secret,
+            screenshots_path=screenshots_path,
+            cache_ttl_seconds=cache_ttl_seconds,
+            metric_preferences=metric_preferences,
+            sync_with_wow=sync_with_wow,
+            chatlog_path=chatlog_path,
+            config_path=config_path,
+        )
+    target = values.config_path or user_config_path()
     lines = [
         _env_line(CONFIG_SCHEMA_KEY, str(CONFIG_SCHEMA_VERSION)),
-        _env_line("WCL_CLIENT_ID", wcl_client_id),
-        _env_line("WCL_CLIENT_SECRET", wcl_client_secret),
-        _env_line("APSCOUT_DRAFT_WCL_CLIENT_ID", draft_wcl_client_id),
-        _env_line("APSCOUT_DRAFT_WCL_CLIENT_SECRET", draft_wcl_client_secret),
-        _env_line("APSCOUT_REGION", normalize_wcl_region(region)),
-        _bool_env_line("APSCOUT_FETCH_MPLUS", metric_preferences.mplus),
-        _bool_env_line("APSCOUT_FETCH_RAID_NORMAL", metric_preferences.raid_normal),
-        _bool_env_line("APSCOUT_FETCH_RAID_HEROIC", metric_preferences.raid_heroic),
-        _bool_env_line("APSCOUT_FETCH_RAID_MYTHIC", metric_preferences.raid_mythic),
-        _bool_env_line("APSCOUT_SYNC_WITH_WOW", sync_with_wow),
+        _env_line("WCL_CLIENT_ID", values.wcl_client_id),
+        _env_line("WCL_CLIENT_SECRET", values.wcl_client_secret),
+        _env_line("APSCOUT_DRAFT_WCL_CLIENT_ID", values.draft_wcl_client_id),
+        _env_line("APSCOUT_DRAFT_WCL_CLIENT_SECRET", values.draft_wcl_client_secret),
+        _env_line("APSCOUT_REGION", normalize_wcl_region(values.region)),
+        _bool_env_line("APSCOUT_FETCH_MPLUS", values.metric_preferences.mplus),
+        _bool_env_line(
+            "APSCOUT_FETCH_RAID_NORMAL", values.metric_preferences.raid_normal
+        ),
+        _bool_env_line(
+            "APSCOUT_FETCH_RAID_HEROIC", values.metric_preferences.raid_heroic
+        ),
+        _bool_env_line(
+            "APSCOUT_FETCH_RAID_MYTHIC", values.metric_preferences.raid_mythic
+        ),
+        _bool_env_line("APSCOUT_SYNC_WITH_WOW", values.sync_with_wow),
     ]
-    if screenshots_path.strip():
-        lines.append(_env_line("APSCOUT_SCREENSHOTS_PATH", screenshots_path))
-    if cache_ttl_seconds is not None:
-        lines.append(_env_line("APSCOUT_CACHE_TTL_SECONDS", str(cache_ttl_seconds)))
-    if chatlog_path.strip():
-        lines.append(_env_line("APSCOUT_CHATLOG_PATH", chatlog_path))
+    if values.screenshots_path.strip():
+        lines.append(
+            _env_line("APSCOUT_SCREENSHOTS_PATH", values.screenshots_path)
+        )
+    if values.cache_ttl_seconds is not None:
+        lines.append(
+            _env_line("APSCOUT_CACHE_TTL_SECONDS", str(values.cache_ttl_seconds))
+        )
+    if values.chatlog_path.strip():
+        lines.append(_env_line("APSCOUT_CHATLOG_PATH", values.chatlog_path))
     if target.is_file():
         try:
             existing = target.read_text(encoding="utf-8")

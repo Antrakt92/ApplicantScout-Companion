@@ -1031,113 +1031,61 @@ def _minimum_applicant_record_size(wire_ver: int) -> int:
     return size
 
 
-def _parse_payload(
-    buf: bytes,
-    wire_ver: int = 0x01,
-    *,
-    terminal_clear: bool = False,
-    lfg_unavailable: bool = False,
-    roster_unavailable: bool = False,
-    applicants_unavailable: bool = False,
-) -> Snapshot:
-    """Cursor-based parse of body (already past 9-byte header). Returns Snapshot.
-    Raises IndexError if buf truncated (caught by caller as decode failure).
+@dataclass(frozen=True)
+class SnapshotFlags:
+    """Header-level partial-snapshot flags carried outside the body bytes."""
 
-    wire_ver gates block layout:
-      * v0x01: legacy single-member applicants.
-      * v0x02: adds applicant member_idx.
-      * v0x03: adds listing category_id + difficulty_id.
-      * v0x04: adds applicant main_score after current score.
-      * v0x05: adds compact RaiderIO completion summary after main_score.
-      * v0x06: adds current party/raid roster after applicants.
-      * v0x07: adds optional leader keystone context after version block.
-      * v0x08: adds header flags for terminal clear and partial LFG snapshots.
-      * v0x09: adds a header flag for snapshots that omitted the roster block.
-      * v0x0B: adds an applicant-surface flag while retaining the v9 body.
-    """
-    cursor = 0
-    listing: Optional[DecodedListing] = None
-    version: Optional[DecodedVersion] = None
-    leader_key: Optional[DecodedLeaderKey] = None
-    applicants: list[DecodedApplicant] = []
+    terminal_clear: bool = False
+    lfg_unavailable: bool = False
+    roster_unavailable: bool = False
+    applicants_unavailable: bool = False
 
-    # Listing block
+
+def _parse_listing_block(
+    buf: bytes, cursor: int, wire_ver: int
+) -> tuple[Optional[DecodedListing], int]:
     has_listing, cursor = _read_wire_bool(buf, cursor, field="has_listing")
-    if has_listing:
-        activity_id = struct.unpack(">I", buf[cursor : cursor + 4])[0]
-        cursor += 4
-        category_id = 0
-        difficulty_id = 0
-        if wire_ver >= 0x03:
-            category_id = struct.unpack(">H", buf[cursor : cursor + 2])[0]
-            cursor += 2
-            difficulty_id = struct.unpack(">H", buf[cursor : cursor + 2])[0]
-            cursor += 2
-        key_level = buf[cursor]
-        cursor += 1
-        dungeon_name, cursor = _read_len_str(
-            buf, cursor, encoding="utf-8", field="listing.dungeon_name"
-        )
-        listing_name, cursor = _read_len_str(
-            buf, cursor, encoding="utf-8", field="listing.listing_name"
-        )
-        comment, cursor = _read_len_str(
-            buf, cursor, encoding="utf-8", field="listing.comment"
-        )
-        listing = DecodedListing(
-            activity_id=activity_id,
-            key_level=key_level,
-            dungeon_name=dungeon_name,
-            listing_name=listing_name,
-            comment=comment,
-            category_id=category_id,
-            difficulty_id=difficulty_id,
-        )
+    if not has_listing:
+        return None, cursor
+    activity_id = struct.unpack(">I", buf[cursor : cursor + 4])[0]
+    cursor += 4
+    category_id = 0
+    difficulty_id = 0
+    if wire_ver >= 0x03:
+        category_id = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+        cursor += 2
+        difficulty_id = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+        cursor += 2
+    key_level = buf[cursor]
+    cursor += 1
+    dungeon_name, cursor = _read_len_str(
+        buf, cursor, encoding="utf-8", field="listing.dungeon_name"
+    )
+    listing_name, cursor = _read_len_str(
+        buf, cursor, encoding="utf-8", field="listing.listing_name"
+    )
+    comment, cursor = _read_len_str(
+        buf, cursor, encoding="utf-8", field="listing.comment"
+    )
+    listing = DecodedListing(
+        activity_id=activity_id,
+        key_level=key_level,
+        dungeon_name=dungeon_name,
+        listing_name=listing_name,
+        comment=comment,
+        category_id=category_id,
+        difficulty_id=difficulty_id,
+    )
+    return listing, cursor
 
-    # Version block
-    has_version, cursor = _read_wire_bool(buf, cursor, field="has_version")
-    if has_version:
-        addon_version, cursor = _read_len_str(
-            buf, cursor, encoding="ascii", field="version.addon_version"
-        )
-        game_version, cursor = _read_len_str(
-            buf, cursor, encoding="ascii", field="version.game_version"
-        )
-        region_id = buf[cursor]
-        cursor += 1
-        player_name, cursor = _read_len_str(
-            buf, cursor, encoding="utf-8", field="version.player_name"
-        )
-        version = DecodedVersion(
-            addon_version=addon_version,
-            game_version=game_version,
-            region_id=region_id,
-            player_name=player_name,
-        )
 
-    if wire_ver >= 0x07:
-        has_leader_key, cursor = _read_wire_bool(
-            buf,
-            cursor,
-            field="has_leader_key",
-        )
-        if has_leader_key:
-            key_level = buf[cursor]
-            cursor += 1
-            challenge_map_id = struct.unpack(">H", buf[cursor : cursor + 2])[0]
-            cursor += 2
-            player_name, cursor = _read_len_str(
-                buf, cursor, encoding="utf-8", field="leader_key.player_name"
-            )
-            leader_key = DecodedLeaderKey(
-                key_level=key_level,
-                challenge_map_id=challenge_map_id,
-                player_name=player_name,
-            )
-
-    # Applicants array. Bound the count by what can structurally fit in this
-    # uint16-sized payload rather than a stale product assumption. Grouped
-    # applications can legitimately exceed 200 member rows.
+def _parse_applicants_block(
+    buf: bytes, cursor: int, wire_ver: int
+) -> tuple[list[DecodedApplicant], int]:
+    # Bound the count by what can structurally fit in this uint16-sized
+    # payload rather than a stale product assumption. Grouped applications
+    # can legitimately exceed 200 member rows.
+    applicants: list[DecodedApplicant] = []
     count = struct.unpack(">H", buf[cursor : cursor + 2])[0]
     cursor += 2
     minimum_tail = 2 if wire_ver >= 0x06 else 0
@@ -1228,7 +1176,12 @@ def _parse_payload(
                 member_idx=member_idx,
             )
         )
+    return applicants, cursor
 
+
+def _parse_roster_block(
+    buf: bytes, cursor: int, wire_ver: int
+) -> tuple[list[DecodedRosterMember], int]:
     roster: list[DecodedRosterMember] = []
     if wire_ver >= 0x06:
         roster_count = struct.unpack(">H", buf[cursor : cursor + 2])[0]
@@ -1298,6 +1251,94 @@ def _parse_payload(
                     rio_dungeons=[],
                 )
             )
+    return roster, cursor
+
+
+def _parse_payload(
+    buf: bytes,
+    wire_ver: int = 0x01,
+    *,
+    flags: SnapshotFlags | None = None,
+    terminal_clear: bool = False,
+    lfg_unavailable: bool = False,
+    roster_unavailable: bool = False,
+    applicants_unavailable: bool = False,
+) -> Snapshot:
+    """Cursor-based parse of body (already past 9-byte header). Returns Snapshot.
+    Raises IndexError if buf truncated (caught by caller as decode failure).
+
+    Pass header-level partial flags as `flags`; the legacy boolean kwargs
+    remain as a compat wrapper and are folded into `SnapshotFlags` when
+    `flags` is None. When both are given, `flags` wins.
+
+    wire_ver gates block layout:
+      * v0x01: legacy single-member applicants.
+      * v0x02: adds applicant member_idx.
+      * v0x03: adds listing category_id + difficulty_id.
+      * v0x04: adds applicant main_score after current score.
+      * v0x05: adds compact RaiderIO completion summary after main_score.
+      * v0x06: adds current party/raid roster after applicants.
+      * v0x07: adds optional leader keystone context after version block.
+      * v0x08: adds header flags for terminal clear and partial LFG snapshots.
+      * v0x09: adds a header flag for snapshots that omitted the roster block.
+      * v0x0B: adds an applicant-surface flag while retaining the v9 body.
+    """
+    if flags is None:
+        flags = SnapshotFlags(
+            terminal_clear=terminal_clear,
+            lfg_unavailable=lfg_unavailable,
+            roster_unavailable=roster_unavailable,
+            applicants_unavailable=applicants_unavailable,
+        )
+    cursor = 0
+    listing, cursor = _parse_listing_block(buf, cursor, wire_ver)
+    version: Optional[DecodedVersion] = None
+    leader_key: Optional[DecodedLeaderKey] = None
+
+    # Version block
+    has_version, cursor = _read_wire_bool(buf, cursor, field="has_version")
+    if has_version:
+        addon_version, cursor = _read_len_str(
+            buf, cursor, encoding="ascii", field="version.addon_version"
+        )
+        game_version, cursor = _read_len_str(
+            buf, cursor, encoding="ascii", field="version.game_version"
+        )
+        region_id = buf[cursor]
+        cursor += 1
+        player_name, cursor = _read_len_str(
+            buf, cursor, encoding="utf-8", field="version.player_name"
+        )
+        version = DecodedVersion(
+            addon_version=addon_version,
+            game_version=game_version,
+            region_id=region_id,
+            player_name=player_name,
+        )
+
+    if wire_ver >= 0x07:
+        has_leader_key, cursor = _read_wire_bool(
+            buf,
+            cursor,
+            field="has_leader_key",
+        )
+        if has_leader_key:
+            key_level = buf[cursor]
+            cursor += 1
+            challenge_map_id = struct.unpack(">H", buf[cursor : cursor + 2])[0]
+            cursor += 2
+            player_name, cursor = _read_len_str(
+                buf, cursor, encoding="utf-8", field="leader_key.player_name"
+            )
+            leader_key = DecodedLeaderKey(
+                key_level=key_level,
+                challenge_map_id=challenge_map_id,
+                player_name=player_name,
+            )
+
+    applicants, cursor = _parse_applicants_block(buf, cursor, wire_ver)
+
+    roster, cursor = _parse_roster_block(buf, cursor, wire_ver)
 
     if cursor != len(buf):
         raise ValueError(
@@ -1310,10 +1351,10 @@ def _parse_payload(
         leader_key=leader_key,
         applicants=applicants,
         roster=roster,
-        terminal_clear=terminal_clear,
-        lfg_unavailable=lfg_unavailable,
-        roster_unavailable=roster_unavailable,
-        applicants_unavailable=applicants_unavailable,
+        terminal_clear=flags.terminal_clear,
+        lfg_unavailable=flags.lfg_unavailable,
+        roster_unavailable=flags.roster_unavailable,
+        applicants_unavailable=flags.applicants_unavailable,
     )
 
 

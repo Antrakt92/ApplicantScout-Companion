@@ -4154,67 +4154,71 @@ def _prepare_settings_apply(
     )
 
 
-def _commit_settings_apply(
-    *,
-    app: QApplication,
-    prepared: _PreparedSettingsApply,
-    values,
-    auth,
-    wcl_client,
-    region_runtime: _WCLRegionRuntime,
-    window,
-    watcher,
-    current_screenshots_dir: Path,
-    machine,
-    decode_failed_callback: Callable[[str, str], None],
-    signal_gate: _WatcherSignalGate,
-    wow_exit_timer,
-    quit_app: Callable[[], None],
-    can_quit: Callable[[], bool],
-    prepare_quit: Callable[[], bool] | None = None,
-    live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None,
-) -> _SettingsApplyResult:
+@dataclass(frozen=True)
+class SettingsApplyCtx:
+    """Runtime + GUI handles for the settings-apply commit phase (H3)."""
+
+    app: QApplication
+    prepared: _PreparedSettingsApply
+    values: Any
+    auth: Any
+    wcl_client: Any
+    region_runtime: _WCLRegionRuntime
+    window: Any
+    watcher: Any
+    current_screenshots_dir: Path
+    machine: Any
+    decode_failed_callback: Callable[[str, str], None]
+    signal_gate: _WatcherSignalGate
+    wow_exit_timer: Any
+    quit_app: Callable[[], None]
+    can_quit: Callable[[], bool]
+    prepare_quit: Callable[[], bool] | None = None
+    live_snapshot_cache_writer: LiveSnapshotCacheWriter | None = None
+
+
+def _commit_settings_apply(ctx: SettingsApplyCtx) -> _SettingsApplyResult:
     """GUI-thread commit of a prepared apply: runtime, watcher, overlay (H3)."""
-    old_cfg = prepared.old_cfg
-    new_cfg = prepared.new_cfg
-    new_screenshots_dir = prepared.new_screenshots_dir
-    persisted_snapshot = prepared.persisted_snapshot
-    apply_credentials = prepared.apply_credentials
-    new_wow_exit_timer = wow_exit_timer
+    old_cfg = ctx.prepared.old_cfg
+    new_cfg = ctx.prepared.new_cfg
+    new_screenshots_dir = ctx.prepared.new_screenshots_dir
+    persisted_snapshot = ctx.prepared.persisted_snapshot
+    apply_credentials = ctx.prepared.apply_credentials
+    new_wow_exit_timer = ctx.wow_exit_timer
     wow_sync_changed = old_cfg.sync_with_wow != new_cfg.sync_with_wow
-    new_watcher = watcher
+    new_watcher = ctx.watcher
     try:
         if wow_sync_changed:
             new_wow_exit_timer = _apply_wow_sync_runtime(
-                app,
+                ctx.app,
                 new_cfg.sync_with_wow,
-                wow_exit_timer,
-                quit_app=quit_app,
-                can_quit=can_quit,
-                prepare_quit=prepare_quit,
+                ctx.wow_exit_timer,
+                quit_app=ctx.quit_app,
+                can_quit=ctx.can_quit,
+                prepare_quit=ctx.prepare_quit,
                 configure_startup=False,
             )
-        if watcher is None or new_screenshots_dir != current_screenshots_dir:
+        if ctx.watcher is None or new_screenshots_dir != ctx.current_screenshots_dir:
             new_watcher = _replace_screenshots_runtime(
-                watcher,
+                ctx.watcher,
                 new_screenshots_dir,
-                machine,
-                window,
-                decode_failed_callback,
+                ctx.machine,
+                ctx.window,
+                ctx.decode_failed_callback,
                 cache_dir=new_cfg.cache_dir,
-                signal_gate=signal_gate,
-                live_snapshot_cache_writer=live_snapshot_cache_writer,
+                signal_gate=ctx.signal_gate,
+                live_snapshot_cache_writer=ctx.live_snapshot_cache_writer,
             )
     except Exception:
         if wow_sync_changed:
             try:
                 _apply_wow_sync_runtime(
-                    app,
+                    ctx.app,
                     old_cfg.sync_with_wow,
                     new_wow_exit_timer,
-                    quit_app=quit_app,
-                    can_quit=can_quit,
-                    prepare_quit=prepare_quit,
+                    quit_app=ctx.quit_app,
+                    can_quit=ctx.can_quit,
+                    prepare_quit=ctx.prepare_quit,
                     configure_startup=False,
                 )
             except Exception as rollback_exc:  # noqa: BLE001
@@ -4230,30 +4234,30 @@ def _commit_settings_apply(
         or old_cfg.wcl_client_secret != new_cfg.wcl_client_secret
     )
     credentials_validated_for_active = apply_credentials and (
-        values.wcl_client_id.strip() == new_cfg.wcl_client_id
-        and values.wcl_client_secret.strip() == new_cfg.wcl_client_secret
+        ctx.values.wcl_client_id.strip() == new_cfg.wcl_client_id
+        and ctx.values.wcl_client_secret.strip() == new_cfg.wcl_client_secret
     )
-    region_effective_changed = region_runtime.set_fallback(new_cfg.region)
+    region_effective_changed = ctx.region_runtime.set_fallback(new_cfg.region)
     wcl_runtime_changed = credentials_promoted or region_effective_changed
-    new_auth = auth
+    new_auth = ctx.auth
     if new_cfg.wcl_client_id and new_cfg.wcl_client_secret and credentials_promoted:
         new_auth = WCLAuth(
             new_cfg.wcl_client_id,
             new_cfg.wcl_client_secret,
             new_cfg.cache_dir,
         )
-        wcl_client.reconfigure_auth(new_auth, validated=True)
+        ctx.wcl_client.reconfigure_auth(new_auth, validated=True)
     elif credentials_validated_for_active:
-        wcl_client.mark_active_auth_validated()
+        ctx.wcl_client.mark_active_auth_validated()
     if wcl_runtime_changed:
-        wcl_client.region = region_runtime.effective_region
-        window.apply_metric_preferences(
+        ctx.wcl_client.region = ctx.region_runtime.effective_region
+        ctx.window.apply_metric_preferences(
             new_cfg.metric_preferences,
             refetch_missing=False,
         )
-        window.bump_wcl_runtime_generation()
+        ctx.window.bump_wcl_runtime_generation()
     else:
-        window.apply_metric_preferences(new_cfg.metric_preferences)
+        ctx.window.apply_metric_preferences(new_cfg.metric_preferences)
 
     return _SettingsApplyResult(
         cfg=new_cfg,
@@ -4294,23 +4298,25 @@ def _apply_settings_change(
         apply_credentials=apply_credentials,
     )
     return _commit_settings_apply(
-        app=app,
-        prepared=prepared,
-        values=values,
-        auth=auth,
-        wcl_client=wcl_client,
-        region_runtime=region_runtime,
-        window=window,
-        watcher=watcher,
-        current_screenshots_dir=current_screenshots_dir,
-        machine=machine,
-        decode_failed_callback=decode_failed_callback,
-        signal_gate=signal_gate,
-        wow_exit_timer=wow_exit_timer,
-        quit_app=quit_app,
-        can_quit=can_quit,
-        prepare_quit=prepare_quit,
-        live_snapshot_cache_writer=live_snapshot_cache_writer,
+        SettingsApplyCtx(
+            app=app,
+            prepared=prepared,
+            values=values,
+            auth=auth,
+            wcl_client=wcl_client,
+            region_runtime=region_runtime,
+            window=window,
+            watcher=watcher,
+            current_screenshots_dir=current_screenshots_dir,
+            machine=machine,
+            decode_failed_callback=decode_failed_callback,
+            signal_gate=signal_gate,
+            wow_exit_timer=wow_exit_timer,
+            quit_app=quit_app,
+            can_quit=can_quit,
+            prepare_quit=prepare_quit,
+            live_snapshot_cache_writer=live_snapshot_cache_writer,
+        )
     )
 
 
@@ -5340,23 +5346,25 @@ def main(argv: list[str] | None = None) -> int:
                 return
             try:
                 result = _commit_settings_apply(
-                    app=app,
-                    prepared=outcome.prepared,
-                    values=values,
-                    auth=auth,
-                    wcl_client=wcl_client,
-                    region_runtime=region_runtime,
-                    window=window,
-                    watcher=watcher,
-                    current_screenshots_dir=current_screenshots_dir,
-                    machine=machine,
-                    decode_failed_callback=_log_decode_failed,
-                    signal_gate=watcher_signal_gate,
-                    wow_exit_timer=wow_exit_timer,
-                    quit_app=_request_quit_application,
-                    can_quit=_can_quit_application,
-                    prepare_quit=_prepare_quit_application,
-                    live_snapshot_cache_writer=live_snapshot_writer,
+                    SettingsApplyCtx(
+                        app=app,
+                        prepared=outcome.prepared,
+                        values=values,
+                        auth=auth,
+                        wcl_client=wcl_client,
+                        region_runtime=region_runtime,
+                        window=window,
+                        watcher=watcher,
+                        current_screenshots_dir=current_screenshots_dir,
+                        machine=machine,
+                        decode_failed_callback=_log_decode_failed,
+                        signal_gate=watcher_signal_gate,
+                        wow_exit_timer=wow_exit_timer,
+                        quit_app=_request_quit_application,
+                        can_quit=_can_quit_application,
+                        prepare_quit=_prepare_quit_application,
+                        live_snapshot_cache_writer=live_snapshot_writer,
+                    )
                 )
             except (
                 ConfigError,
