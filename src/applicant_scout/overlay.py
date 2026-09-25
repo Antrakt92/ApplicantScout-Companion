@@ -573,7 +573,7 @@ class _FetchTask(QRunnable):
     def run(self) -> None:
         identity = self._identity
         started_at = time.perf_counter()
-        _log.info(
+        _log.debug(
             "WCL fetch started: %s-%s region=%s spec=%s role=%s prefs=%s",
             self._name,
             identity.server_slug,

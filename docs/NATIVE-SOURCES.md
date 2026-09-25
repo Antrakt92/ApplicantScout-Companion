@@ -128,3 +128,15 @@ for the verified Qt installer archives, source revisions, compiler settings and
 binding generators. The software OpenGL library is a separate Mesa/LLVM build;
 matching a Qt installer binary alone does not establish its corresponding
 source and build recipe.
+
+## Pillow 12.3.0: accepted native-provenance gap
+
+Pillow is a pinned release dependency (`Pillow==12.3.0`) used for screenshot
+image loading, but its Windows wheel native modules (`PIL/*.pyd`, bundling
+upstream codec builds) have no entry in
+`packaging/native-source-provenance.json`: the original wheel file is not
+retained, so wheel bytes and upstream source-archive hashes cannot be verified
+offline, and frozen-payload coverage is limited to the `PyQt6` and `pyzbar`
+scopes. License attribution is recorded in `THIRD-PARTY-NOTICES.md`. This gap
+is accepted for development builds; full Pillow native provenance remains open
+release-hardening work.

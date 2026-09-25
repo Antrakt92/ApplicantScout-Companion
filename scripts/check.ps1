@@ -33,10 +33,10 @@ if (-not (Test-Path $Python)) {
     throw "Missing venv Python: $Python"
 }
 if (-not (Test-Path $Ruff)) {
-    throw "Missing ruff: $Ruff. Install with: .venv\Scripts\python -m pip install -e `".[dev]`""
+    throw "Missing ruff: $Ruff. Install with: .venv\Scripts\python -m pip install -e `".[dev]`" -c constraints-release.txt"
 }
 if (-not (Test-Path $Pyright)) {
-    throw "Missing pyright: $Pyright. Install with: .venv\Scripts\python -m pip install -e `".[dev]`""
+    throw "Missing pyright: $Pyright. Install with: .venv\Scripts\python -m pip install -e `".[dev]`" -c constraints-release.txt"
 }
 
 $LuacCandidates = @(

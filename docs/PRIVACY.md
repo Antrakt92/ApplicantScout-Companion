@@ -82,7 +82,9 @@ send reports. Builds without a configured collection service also do not send.
 
 This option controls usage reporting only. Warcraft Logs lookups still send the
 character and realm needed for the requested lookup to Warcraft Logs. Update
-checks and downloads use GitHub. The companion reads the configured screenshot
+checks and downloads use GitHub. Usage reports ignore environment proxy
+settings, while Warcraft Logs lookups and update checks follow the system proxy
+configuration. The companion reads the configured screenshot
 folder locally; screenshots are not attached to usage or WCL requests.
 
 See [trust and local data](../README.md#trust-and-local-data) before sharing
