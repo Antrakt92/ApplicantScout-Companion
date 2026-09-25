@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 import stat
@@ -2951,6 +2952,34 @@ def test_character_cache_discards_entries_without_query_fingerprint(tmp_path):
     assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
 
 
+def test_character_cache_quarantines_corrupt_file(tmp_path, caplog):
+    cache_path = tmp_path / "character-cache.json"
+    cache_path.write_text("{bad", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="applicant_scout.wcl"):
+        cache = CharacterCache(tmp_path)
+
+    assert cache._data == {}
+    backups = list(tmp_path.glob("character-cache.json.corrupt-*"))
+    assert len(backups) == 1
+    assert not cache_path.exists()
+    assert "corrupt" in caplog.text.lower()
+
+
+def test_character_cache_keeps_file_on_query_fingerprint_mismatch(tmp_path):
+    cache = CharacterCache(tmp_path)
+    cache.put("Scout", "ravencrest", "EU", 71, _ranks(), role="DAMAGER")
+    raw = json.loads(cache._path.read_text(encoding="utf-8"))
+    raw.pop("__query_fingerprint__")
+    cache._path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = CharacterCache(tmp_path)
+
+    assert loaded.get("Scout", "ravencrest", "EU", 71, "DAMAGER") is None
+    assert cache._path.exists()
+    assert list(tmp_path.glob("character-cache.json.corrupt-*")) == []
+
+
 @pytest.mark.parametrize(
     ("constant_name", "replacement"),
     [
@@ -4597,6 +4626,23 @@ def test_oauth_token_save_failure_preserves_previous_token_file(
     assert auth.get_token() == "fresh-token"
     assert token_path.read_text(encoding="utf-8") == "old-token"
     assert list(tmp_path.glob(".token.json.*.tmp")) == []
+
+
+def test_oauth_token_delete_failure_logs_debug(tmp_path, monkeypatch, caplog):
+    auth = WCLAuth("client", "secret", tmp_path)
+    token_path = tmp_path / "token.json"
+    token_path.write_text("stale-token", encoding="utf-8")
+
+    def fail_unlink(*args, **kwargs):
+        raise OSError("locked")
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    with caplog.at_level(logging.DEBUG, logger="applicant_scout.wcl"):
+        auth._delete_cached_token()
+
+    assert "Could not delete cached OAuth token" in caplog.text
+    assert token_path.exists()
 
 
 def test_oauth_invalidate_after_parallel_refresh_forces_next_refresh(

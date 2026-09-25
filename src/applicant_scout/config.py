@@ -260,6 +260,9 @@ def _read_env_file(path: Path) -> dict[str, str]:
     with path.open(encoding="utf-8") as stream:
         for binding in parse_stream(stream):
             if binding.error:
+                # Original.string holds the raw line and may contain secrets;
+                # ConfigError surfaces via QMessageBox, so only the 1-based
+                # line number may be reported — never the offending content.
                 raise ConfigError(
                     f"Could not parse ApplicantScout config at {path}: "
                     f"invalid line {binding.original.line}"

@@ -554,8 +554,8 @@ class WCLAuth:
             if self._token_path.exists():
                 try:
                     self._token_path.unlink()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    _log.debug("Could not delete cached OAuth token: %s", exc)
 
 
 class _WCLError(Exception):
@@ -1898,6 +1898,24 @@ class _CacheSaveSnapshot:
 _CACHE_VERSION = 8
 
 
+def _quarantine_corrupt_file(path: Path) -> Path | None:
+    """Rename an undecodable cache file aside, preserving evidence.
+
+    Returns the backup path, or None when the rename itself fails. Callers
+    fall back to an empty cache either way — the corrupt file must never be
+    silently re-read on every startup.
+    """
+    backup = path.with_name(
+        f"{path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S', time.localtime())}"
+    )
+    try:
+        path.rename(backup)
+    except OSError as exc:
+        _log.warning("Could not quarantine corrupt cache file %s: %s", path, exc)
+        return None
+    return backup
+
+
 class CharacterCache:
     """Per-character TTL cache, persisted to disk. Thread-safe (QThreadPool fetches)."""
 
@@ -2016,7 +2034,11 @@ class CharacterCache:
             return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, UnicodeError):
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            _log.warning("Ignoring corrupt character cache %s: %s", self._path, exc)
+            _quarantine_corrupt_file(self._path)
+            return {}
+        except OSError:
             return {}
         if not isinstance(raw, dict):
             return {}

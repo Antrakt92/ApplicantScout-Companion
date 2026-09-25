@@ -53,10 +53,11 @@ class _DownloadResponse:
         chunks: bytes | list[bytes] = b"installer",
         *,
         headers: dict[str, str] | None = None,
+        status_code: int = 200,
     ) -> None:
         self._chunks = [chunks] if isinstance(chunks, bytes) else chunks
         self.headers = headers or {}
-        self.status_code = 200
+        self.status_code = status_code
         self.closed = False
 
     @property
@@ -119,9 +120,9 @@ def _release(
 
 def _installer_result(
     *,
-    asset_url: str = "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe",
+    asset_url: str = "https://objects.githubusercontent.com/ApplicantScoutCompanionSetup-0.2.0.exe",
     asset_name: str = "ApplicantScoutCompanionSetup-0.2.0.exe",
-    checksum_url: str = "https://example.test/setup.exe.sha256",
+    checksum_url: str = "https://objects.githubusercontent.com/setup.exe.sha256",
     checksum_name: str = "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
 ) -> UpdateResult:
     return UpdateResult(
@@ -145,15 +146,15 @@ def test_update_check_prefers_installer_asset():
                     assets=[
                         {
                             "name": "ApplicantScoutCompanion-0.2.0-portable.zip",
-                            "browser_download_url": "https://example.test/portable.zip",
+                            "browser_download_url": "https://objects.githubusercontent.com/portable.zip",
                         },
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe",
-                            "browser_download_url": "https://example.test/setup.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup.exe",
                         },
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
-                            "browser_download_url": "https://example.test/setup.exe.sha256",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup.exe.sha256",
                         },
                     ],
                 )
@@ -167,7 +168,7 @@ def test_update_check_prefers_installer_asset():
     assert result.latest_version == "v0.2.0"
     assert result.asset_name == "ApplicantScoutCompanionSetup-0.2.0.exe"
     assert result.checksum_name == "ApplicantScoutCompanionSetup-0.2.0.exe.sha256"
-    assert result.checksum_url == "https://example.test/setup.exe.sha256"
+    assert result.checksum_url == "https://objects.githubusercontent.com/setup.exe.sha256"
 
 
 def test_update_check_requests_release_immutability_api_contract():
@@ -220,11 +221,11 @@ def test_update_check_does_not_fall_back_from_newer_mutable_release():
                     assets=[
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe",
-                            "browser_download_url": "https://example.test/trusted.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/trusted.exe",
                         },
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
-                            "browser_download_url": "https://example.test/trusted.exe.sha256",
+                            "browser_download_url": "https://objects.githubusercontent.com/trusted.exe.sha256",
                         },
                     ],
                 ),
@@ -251,7 +252,7 @@ def test_update_check_does_not_select_portable_asset_for_in_app_update():
                     assets=[
                         {
                             "name": "ApplicantScoutCompanion-0.2.0-portable.zip",
-                            "browser_download_url": "https://example.test/portable.zip",
+                            "browser_download_url": "https://objects.githubusercontent.com/portable.zip",
                         }
                     ],
                 )
@@ -281,7 +282,7 @@ def test_update_check_rejects_blank_asset_download_url():
                         },
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
-                            "browser_download_url": "https://example.test/setup.exe.sha256",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup.exe.sha256",
                         },
                     ],
                 )
@@ -307,11 +308,11 @@ def test_update_check_ignores_assets_for_other_versions():
                     assets=[
                         {
                             "name": "ApplicantScoutCompanionSetup-0.1.0.exe",
-                            "browser_download_url": "https://example.test/stale.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/stale.exe",
                         },
                         {
                             "name": "ApplicantScoutCompanion-0.1.0-portable.zip",
-                            "browser_download_url": "https://example.test/stale.zip",
+                            "browser_download_url": "https://objects.githubusercontent.com/stale.zip",
                         },
                     ],
                 )
@@ -337,11 +338,11 @@ def test_update_check_accepts_v_tag_with_unprefixed_asset_version():
                     assets=[
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe",
-                            "browser_download_url": "https://example.test/setup.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup.exe",
                         },
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
-                            "browser_download_url": "https://example.test/setup.exe.sha256",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup.exe.sha256",
                         },
                     ],
                 )
@@ -366,7 +367,7 @@ def test_update_check_reports_available_but_uninstallable_without_checksum_asset
                     assets=[
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe",
-                            "browser_download_url": "https://example.test/setup.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup.exe",
                         }
                     ],
                 )
@@ -394,11 +395,11 @@ def test_update_check_selects_highest_stable_semver_when_releases_are_out_of_ord
                     assets=[
                         {
                             "name": "ApplicantScoutCompanionSetup-0.3.0.exe",
-                            "browser_download_url": "https://example.test/setup-030.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup-030.exe",
                         },
                         {
                             "name": "ApplicantScoutCompanionSetup-0.3.0.exe.sha256",
-                            "browser_download_url": "https://example.test/setup-030.exe.sha256",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup-030.exe.sha256",
                         },
                     ],
                 ),
@@ -407,11 +408,11 @@ def test_update_check_selects_highest_stable_semver_when_releases_are_out_of_ord
                     assets=[
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe",
-                            "browser_download_url": "https://example.test/setup-020.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup-020.exe",
                         },
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
-                            "browser_download_url": "https://example.test/setup-020.exe.sha256",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup-020.exe.sha256",
                         },
                     ],
                 ),
@@ -437,11 +438,11 @@ def test_update_check_selects_asset_from_highest_release_not_first_release():
                     assets=[
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe",
-                            "browser_download_url": "https://example.test/setup-020.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup-020.exe",
                         },
                         {
                             "name": "ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
-                            "browser_download_url": "https://example.test/setup-020.exe.sha256",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup-020.exe.sha256",
                         },
                     ],
                 ),
@@ -616,7 +617,7 @@ def test_download_update_installer_saves_setup_asset_atomically(tmp_path):
     digest = hashlib.sha256(b"setup-bytes").hexdigest()
     client = _DownloadClient(
         {
-            "https://example.test/setup.exe.sha256": f"{digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()
+            "https://objects.githubusercontent.com/setup.exe.sha256": f"{digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()
         }
     )
     result = _installer_result()
@@ -626,8 +627,8 @@ def test_download_update_installer_saves_setup_asset_atomically(tmp_path):
     assert path == tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     assert path.read_bytes() == b"setup-bytes"
     assert client.urls == [
-        "https://example.test/setup.exe.sha256",
-        "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe",
+        "https://objects.githubusercontent.com/setup.exe.sha256",
+        "https://objects.githubusercontent.com/ApplicantScoutCompanionSetup-0.2.0.exe",
     ]
     assert not list(tmp_path.glob("*.tmp"))
 
@@ -765,9 +766,9 @@ def test_download_update_installer_accepts_case_insensitive_setup_asset(tmp_path
         status="available",
         message="available",
         latest_version="0.2.0",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         asset_name="applicantscoutcompanionsetup-0.2.0.EXE",
-        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_url="https://objects.githubusercontent.com/setup.exe.sha256",
         checksum_name="applicantscoutcompanionsetup-0.2.0.EXE.sha256",
     )
 
@@ -775,7 +776,7 @@ def test_download_update_installer_accepts_case_insensitive_setup_asset(tmp_path
         result,
         download_dir=tmp_path,
         client=_DownloadClient(
-            {"https://example.test/setup.exe.sha256": digest.encode()}
+            {"https://objects.githubusercontent.com/setup.exe.sha256": digest.encode()}
         ),
     )  # type: ignore[arg-type]
 
@@ -787,7 +788,7 @@ def test_download_update_installer_requires_setup_asset(tmp_path):
         status="available",
         message="available",
         latest_version="0.2.0",
-        asset_url="https://example.test/portable.zip",
+        asset_url="https://objects.githubusercontent.com/portable.zip",
         asset_name="ApplicantScoutCompanion-0.2.0-portable.zip",
     )
 
@@ -806,9 +807,9 @@ def test_download_update_installer_rejects_setup_asset_with_path_separator(tmp_p
         status="available",
         message="available",
         latest_version="v0.2.0",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         asset_name=r"ApplicantScoutCompanionSetup-0.2.0.exe\evil.exe",
-        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_url="https://objects.githubusercontent.com/setup.exe.sha256",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
     )
 
@@ -827,7 +828,7 @@ def test_download_update_installer_requires_checksum_asset(tmp_path):
         status="available",
         message="available",
         latest_version="0.2.0",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
     )
 
@@ -848,7 +849,7 @@ def test_download_update_installer_rejects_blank_download_urls(tmp_path):
         latest_version="v0.2.0",
         asset_url="   ",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
-        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_url="https://objects.githubusercontent.com/setup.exe.sha256",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
     )
 
@@ -865,7 +866,7 @@ def test_download_update_installer_rejects_blank_download_urls(tmp_path):
         status="available",
         message="available",
         latest_version="v0.2.0",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
         checksum_url="   ",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
@@ -886,9 +887,9 @@ def test_download_update_installer_rejects_malformed_checksum(tmp_path):
         status="available",
         message="available",
         latest_version="0.2.0",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
-        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_url="https://objects.githubusercontent.com/setup.exe.sha256",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
     )
 
@@ -897,7 +898,7 @@ def test_download_update_installer_rejects_malformed_checksum(tmp_path):
             result,
             download_dir=tmp_path,
             client=_DownloadClient(
-                {"https://example.test/setup.exe.sha256": b"not-a-sha"}
+                {"https://objects.githubusercontent.com/setup.exe.sha256": b"not-a-sha"}
             ),
         )  # type: ignore[arg-type]
     except RuntimeError as exc:
@@ -911,9 +912,9 @@ def test_download_update_installer_rejects_non_utf8_checksum_as_malformed(tmp_pa
         status="available",
         message="available",
         latest_version="0.2.0",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
-        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_url="https://objects.githubusercontent.com/setup.exe.sha256",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
     )
 
@@ -922,7 +923,7 @@ def test_download_update_installer_rejects_non_utf8_checksum_as_malformed(tmp_pa
             result,
             download_dir=tmp_path,
             client=_DownloadClient(
-                {"https://example.test/setup.exe.sha256": b"\xff\xfe\x00"}
+                {"https://objects.githubusercontent.com/setup.exe.sha256": b"\xff\xfe\x00"}
             ),
         )  # type: ignore[arg-type]
     except RuntimeError as exc:
@@ -937,9 +938,9 @@ def test_download_update_installer_rejects_checksum_for_wrong_filename(tmp_path)
         status="available",
         message="available",
         latest_version="0.2.0",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
-        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_url="https://objects.githubusercontent.com/setup.exe.sha256",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
     )
 
@@ -949,7 +950,7 @@ def test_download_update_installer_rejects_checksum_for_wrong_filename(tmp_path)
             download_dir=tmp_path,
             client=_DownloadClient(
                 {
-                    "https://example.test/setup.exe.sha256": f"{digest}  Other.exe\n".encode()
+                    "https://objects.githubusercontent.com/setup.exe.sha256": f"{digest}  Other.exe\n".encode()
                 }
             ),
         )  # type: ignore[arg-type]
@@ -965,9 +966,9 @@ def test_download_update_installer_rejects_hash_mismatch(tmp_path):
         status="available",
         message="available",
         latest_version="0.2.0",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
-        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_url="https://objects.githubusercontent.com/setup.exe.sha256",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
     )
 
@@ -977,7 +978,7 @@ def test_download_update_installer_rejects_hash_mismatch(tmp_path):
             download_dir=tmp_path,
             client=_DownloadClient(
                 {
-                    "https://example.test/setup.exe.sha256": f"{wrong_digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()
+                    "https://objects.githubusercontent.com/setup.exe.sha256": f"{wrong_digest}  ApplicantScoutCompanionSetup-0.2.0.exe\n".encode()
                 }
             ),
         )  # type: ignore[arg-type]
@@ -994,8 +995,8 @@ def test_download_update_installer_streams_installer_without_response_content(tm
     result = _installer_result()
     client = _DownloadClient(
         {
-            "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
-            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
+            "https://objects.githubusercontent.com/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
+            "https://objects.githubusercontent.com/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
                 chunks
             ),
         }
@@ -1005,8 +1006,8 @@ def test_download_update_installer_streams_installer_without_response_content(tm
 
     assert path.read_bytes() == b"setup-bytes"
     assert client.urls == [
-        "https://example.test/setup.exe.sha256",
-        "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe",
+        "https://objects.githubusercontent.com/setup.exe.sha256",
+        "https://objects.githubusercontent.com/ApplicantScoutCompanionSetup-0.2.0.exe",
     ]
 
 
@@ -1017,7 +1018,7 @@ def test_download_update_installer_rejects_oversized_checksum_before_installer_d
     result = _installer_result()
     client = _DownloadClient(
         {
-            "https://example.test/setup.exe.sha256": _DownloadResponse(
+            "https://objects.githubusercontent.com/setup.exe.sha256": _DownloadResponse(
                 b"9" * 9,
                 headers={"content-length": "9"},
             )
@@ -1027,7 +1028,7 @@ def test_download_update_installer_rejects_oversized_checksum_before_installer_d
     with pytest.raises(RuntimeError, match="checksum.*too large"):
         download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
 
-    assert client.urls == ["https://example.test/setup.exe.sha256"]
+    assert client.urls == ["https://objects.githubusercontent.com/setup.exe.sha256"]
     assert not (tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe").exists()
 
 
@@ -1038,7 +1039,7 @@ def test_download_update_installer_rejects_checksum_that_exceeds_limit_while_str
     result = _installer_result()
     client = _DownloadClient(
         {
-            "https://example.test/setup.exe.sha256": _DownloadResponse(
+            "https://objects.githubusercontent.com/setup.exe.sha256": _DownloadResponse(
                 [b"1234", b"56789"],
                 headers={"content-length": "8"},
             )
@@ -1048,7 +1049,7 @@ def test_download_update_installer_rejects_checksum_that_exceeds_limit_while_str
     with pytest.raises(RuntimeError, match="checksum.*too large"):
         download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
 
-    assert client.urls == ["https://example.test/setup.exe.sha256"]
+    assert client.urls == ["https://objects.githubusercontent.com/setup.exe.sha256"]
     assert not (tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe").exists()
 
 
@@ -1060,8 +1061,8 @@ def test_download_update_installer_rejects_oversized_installer_content_length(
     result = _installer_result()
     client = _DownloadClient(
         {
-            "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
-            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
+            "https://objects.githubusercontent.com/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
+            "https://objects.githubusercontent.com/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
                 b"setup-bytes",
                 headers={"content-length": "9"},
             ),
@@ -1084,8 +1085,8 @@ def test_download_update_installer_rejects_installer_that_exceeds_limit_while_st
     result = _installer_result()
     client = _DownloadClient(
         {
-            "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
-            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
+            "https://objects.githubusercontent.com/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
+            "https://objects.githubusercontent.com/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
                 [b"setup", b"-byte"],
                 headers={"content-length": "8"},
             ),
@@ -1108,8 +1109,8 @@ def test_download_update_installer_accepts_installer_at_size_limit(
     result = _installer_result()
     client = _DownloadClient(
         {
-            "https://example.test/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
-            "https://example.test/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
+            "https://objects.githubusercontent.com/setup.exe.sha256": f"{digest}  {result.asset_name}\n".encode(),
+            "https://objects.githubusercontent.com/ApplicantScoutCompanionSetup-0.2.0.exe": _DownloadResponse(
                 [b"1234", b"5678"],
                 headers={"content-length": "8"},
             ),
@@ -1412,3 +1413,238 @@ def test_verify_update_installer_authenticity_fails_closed_on_malformed_json(
 
     with pytest.raises(RuntimeError, match="malformed JSON"):
         updater_mod.verify_update_installer_authenticity(installer)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://github.com/x/ApplicantScoutCompanionSetup-0.2.0.exe",
+        "ftp://github.com/x/setup.exe",
+        "https://evil.test/setup.exe",
+        "https://github.com.evil.test/setup.exe",
+        "https://evilgithubusercontent.com/setup.exe",
+        "https://githubusercontent.com/setup.exe",
+        "https://.githubusercontent.com/setup.exe",
+        "not a url",
+        "",
+        "   ",
+    ],
+)
+def test_update_url_allowlist_rejects_untrusted(url):
+    assert updater_mod._is_allowed_update_url(url) is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/a/b/ApplicantScoutCompanionSetup-0.2.0.exe",
+        "https://api.github.com/repos/a/b",
+        "https://objects.githubusercontent.com/a/b",
+        "https://release-assets.githubusercontent.com/a",
+        "https://a.b.githubusercontent.com/c",
+        "HTTPS://GITHUB.COM/UPPER",
+        "https://github.com:443/with-port",
+    ],
+)
+def test_update_url_allowlist_accepts_trusted(url):
+    assert updater_mod._is_allowed_update_url(url) is True
+
+
+def test_download_update_installer_rejects_untrusted_asset_host(tmp_path):
+    result = _installer_result(asset_url="https://evil.test/setup.exe")
+
+    with pytest.raises(RuntimeError, match="not from a trusted host"):
+        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+
+    assert not (tmp_path / result.asset_name).exists()
+
+
+def test_download_update_installer_rejects_untrusted_checksum_host(tmp_path):
+    result = _installer_result(checksum_url="http://github.com/setup.exe.sha256")
+
+    with pytest.raises(RuntimeError, match="not from a trusted host"):
+        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+
+    assert not (tmp_path / result.asset_name).exists()
+
+
+def test_download_update_installer_rejects_redirect_to_untrusted_host(tmp_path):
+    result = _installer_result()
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    client = _DownloadClient(
+        {
+            result.checksum_url: _DownloadResponse(
+                f"{digest}  {result.asset_name}\n".encode(),
+                headers={"location": "https://evil.test/checksum"},
+                status_code=302,
+            ),
+            result.asset_url: b"setup-bytes",
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="not from a trusted host"):
+        download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert client.urls == [result.checksum_url]
+    assert not (tmp_path / result.asset_name).exists()
+
+
+def test_download_update_installer_follows_allowlisted_redirect(tmp_path):
+    result = _installer_result()
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    final_checksum_url = (
+        "https://objects.githubusercontent.com/files/real-checksum.sha256"
+    )
+    client = _DownloadClient(
+        {
+            result.checksum_url: _DownloadResponse(
+                b"",
+                headers={"location": "/files/real-checksum.sha256"},
+                status_code=302,
+            ),
+            final_checksum_url: f"{digest}  {result.asset_name}\n".encode(),
+        }
+    )
+
+    path = download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert path.read_bytes() == b"setup-bytes"
+    assert client.urls == [
+        result.checksum_url,
+        final_checksum_url,
+        result.asset_url,
+    ]
+
+
+def test_download_update_installer_rejects_redirect_loop(tmp_path):
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            result.checksum_url: _DownloadResponse(
+                b"",
+                headers={"location": result.checksum_url},
+                status_code=302,
+            ),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="redirected too many times"):
+        download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+
+def test_download_update_installer_rejects_asset_name_for_other_version(tmp_path):
+    result = _installer_result(
+        asset_name="ApplicantScoutCompanionSetup-9.9.9.exe",
+    )
+
+    with pytest.raises(RuntimeError, match="installer asset"):
+        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+
+
+def test_download_update_installer_rejects_non_versioned_setup_name(tmp_path):
+    # Passes the legacy weak prefix check but not the strict version pattern.
+    result = _installer_result(
+        asset_name="ApplicantScoutCompanionSetup-custom.exe",
+    )
+
+    with pytest.raises(RuntimeError, match="installer asset"):
+        download_update_installer(result, download_dir=tmp_path, client=_DownloadClient())  # type: ignore[arg-type]
+
+
+def test_download_update_installer_rejects_checksum_with_trailing_wrong_filename(
+    tmp_path,
+):
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            result.checksum_url: (
+                f"{digest}  {result.asset_name}\n{digest}  Other.exe\n"
+            ).encode(),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="filename"):
+        download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+
+def test_download_update_installer_accepts_repeated_matching_checksum_lines(tmp_path):
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            result.checksum_url: (
+                f"{digest} *{result.asset_name}\n\n{digest}  {result.asset_name}\n"
+            ).encode(),
+        }
+    )
+
+    path = download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+    assert path.read_bytes() == b"setup-bytes"
+
+
+def test_download_update_installer_rejects_conflicting_checksum_digests(tmp_path):
+    digest = hashlib.sha256(b"setup-bytes").hexdigest()
+    other = hashlib.sha256(b"other-bytes").hexdigest()
+    result = _installer_result()
+    client = _DownloadClient(
+        {
+            result.checksum_url: (
+                f"{digest}  {result.asset_name}\n{other}  {result.asset_name}\n"
+            ).encode(),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="Malformed"):
+        download_update_installer(result, download_dir=tmp_path, client=client)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "current", ["dev-build", "", "0.1", "1.2.3.4", "v1.2.x", "latest"]
+)
+def test_update_check_rejects_unparsable_current_version(current):
+    client = _Client(
+        _Response(
+            200,
+            [
+                _release(
+                    "v9.9.9",
+                    assets=[
+                        {
+                            "name": "ApplicantScoutCompanionSetup-9.9.9.exe",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup-999.exe",
+                        },
+                        {
+                            "name": "ApplicantScoutCompanionSetup-9.9.9.exe.sha256",
+                            "browser_download_url": "https://objects.githubusercontent.com/setup-999.exe.sha256",
+                        },
+                    ],
+                )
+            ],
+        )
+    )
+
+    result = check_for_update(current, client=client)  # type: ignore[arg-type]
+
+    assert result.status == "unavailable"
+    assert result.reason == "invalid_current_version"
+    assert result.asset_url is None
+
+
+def test_update_check_treats_build_metadata_like_asset_selection():
+    client = _Client(_Response(200, [_release("v0.2.0")]))
+
+    result = check_for_update("0.2.0+build.5", client=client)  # type: ignore[arg-type]
+
+    assert result.status == "up_to_date"
+
+
+def test_update_check_propagates_unexpected_client_construction_error(monkeypatch):
+    def fail_client(**_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("applicant_scout.updater.httpx.Client", fail_client)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        check_for_update("0.1.0")

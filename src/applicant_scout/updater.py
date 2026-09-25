@@ -12,6 +12,8 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -43,6 +45,11 @@ _STRICT_UPDATE_INSTALLER_RE = re.compile(
     r"((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\.exe$",
     re.I,
 )
+_UPDATE_ALLOWED_HOSTS = frozenset(
+    {"github.com", "api.github.com", "objects.githubusercontent.com"}
+)
+_UPDATE_ALLOWED_HOST_SUFFIX = ".githubusercontent.com"
+_MAX_UPDATE_REDIRECTS = 5
 _log = logging.getLogger("applicant_scout.updater")
 
 
@@ -233,10 +240,19 @@ def check_for_update(
     client: httpx.Client | None = None,
 ) -> UpdateResult:
     """Return latest immutable, non-prerelease GitHub Release status."""
+    if _semver_key(current_version) is None:
+        return UpdateResult(
+            status="unavailable",
+            message=(
+                "Cannot check for updates: current version "
+                f"{current_version!r} is not valid semantic versioning."
+            ),
+            reason="invalid_current_version",
+        )
     owns_client = client is None
     try:
         http = client or httpx.Client(timeout=10.0)
-    except Exception as exc:  # noqa: BLE001
+    except (httpx.HTTPError, OSError) as exc:
         return UpdateResult(
             status="unavailable",
             message=f"GitHub update check failed: {exc}",
@@ -288,7 +304,8 @@ def check_for_update(
         tag_name = latest.get("tag_name")
         latest_version = tag_name if isinstance(tag_name, str) else ""
         # The checksum is published beside the installer, so it proves only
-        # that those two downloaded assets agree. Require GitHub's immutable
+        # that those two downloaded assets agree. Releases are unsigned: checksum
+        # agreement is the only update trust signal. Require GitHub's immutable
         # release state before trusting either asset; truthy/malformed values
         # and an older immutable release are not safe substitutes.
         if latest.get("immutable") is not True:
@@ -368,6 +385,96 @@ def _is_setup_asset_name(name: str) -> bool:
     return normalized.startswith(_INSTALLER_PREFIX.lower()) and normalized.endswith(
         ".exe"
     )
+
+
+def _is_strict_update_installer_asset(name: str, version: str | None) -> bool:
+    """Re-verify the installer name against the selected release version.
+
+    check_for_update already matches names per release, but the download path
+    re-verifies with the canonical pattern so a hand-built UpdateResult (or a
+    renamed asset) can never smuggle a non-versioned executable into the handoff.
+    """
+    match = _STRICT_UPDATE_INSTALLER_RE.fullmatch(name)
+    if match is None:
+        return False
+    expected = _semver_text(version or "")
+    if expected is None:
+        return False
+    return _semver_text(match.group(1)) == expected
+
+
+def _is_allowed_update_host(host: str | None) -> bool:
+    if not isinstance(host, str) or not host:
+        return False
+    normalized = host.strip().lower().rstrip(".")
+    if normalized in _UPDATE_ALLOWED_HOSTS:
+        return True
+    return normalized.endswith(_UPDATE_ALLOWED_HOST_SUFFIX) and len(
+        normalized
+    ) > len(_UPDATE_ALLOWED_HOST_SUFFIX)
+
+
+def _is_allowed_update_url(url: object) -> bool:
+    if not isinstance(url, str) or not url.strip():
+        return False
+    try:
+        parsed = httpx.URL(url.strip())
+    except Exception:  # noqa: BLE001 — unparseable URLs are never trusted
+        return False
+    if (parsed.scheme or "").lower() != "https":
+        return False
+    return _is_allowed_update_host(parsed.host)
+
+
+def _require_allowed_update_url(url: str, label: str) -> None:
+    if not _is_allowed_update_url(url):
+        raise RuntimeError(f"Update {label} URL is not from a trusted host.")
+
+
+def _update_redirect_target(response: Any) -> str | None:
+    if getattr(response, "status_code", 200) not in (301, 302, 303, 307, 308):
+        return None
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    location = headers.get("location")
+    if not isinstance(location, str) or not location.strip():
+        return None
+    return location.strip()
+
+
+def _resolve_update_redirect(current_url: str, location: str, label: str) -> str:
+    try:
+        return str(httpx.URL(current_url).join(location))
+    except Exception as exc:  # noqa: BLE001 — unparseable targets are untrusted
+        raise RuntimeError(f"Update {label} redirect target is invalid.") from exc
+
+
+@contextmanager
+def _update_response_stream(
+    http: Any, url: str, *, label: str
+) -> Iterator[Any]:
+    """Stream one update URL, following only allowlisted redirect hops.
+
+    Redirects are followed manually (the client never auto-follows) so every
+    hop is re-checked against the trusted-host allowlist before it is fetched.
+    The caller owns the yielded response and must finish reading inside the block.
+    """
+    current_url = url
+    for _hop in range(_MAX_UPDATE_REDIRECTS + 1):
+        _require_allowed_update_url(current_url, label)
+        streamer = http.stream("GET", current_url, follow_redirects=False)
+        response = streamer.__enter__()
+        redirect = _update_redirect_target(response)
+        if redirect is None:
+            try:
+                yield response
+            finally:
+                streamer.__exit__(None, None, None)
+            return
+        streamer.__exit__(None, None, None)
+        current_url = _resolve_update_redirect(current_url, redirect, label)
+    raise RuntimeError(f"Update {label} redirected too many times.")
 
 
 def update_result_has_installable_asset(result: object) -> bool:
@@ -498,6 +605,13 @@ def _read_capped_response_bytes(
 
 
 def _parse_sha256_checksum(text: str, *, expected_name: str) -> str:
+    """Extract the installer digest, requiring every named line to match.
+
+    Bare digest lines stay accepted (some publishers omit the filename), but
+    any line carrying a filename must name this installer — a multi-line file
+    mixing digests or pointing at another asset is rejected.
+    """
+    digest: str | None = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -505,15 +619,20 @@ def _parse_sha256_checksum(text: str, *, expected_name: str) -> str:
         parts = line.split()
         if len(parts) > 2:
             raise RuntimeError("Malformed update checksum.")
-        digest = parts[0].lower()
-        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        candidate = parts[0].lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", candidate):
             raise RuntimeError("Malformed update checksum.")
         if len(parts) == 2:
             checksum_name = parts[1].lstrip("*")
             if checksum_name.lower() != expected_name.lower():
                 raise RuntimeError("Update checksum filename does not match installer.")
-        return digest
-    raise RuntimeError("Malformed update checksum.")
+        if digest is None:
+            digest = candidate
+        elif digest != candidate:
+            raise RuntimeError("Malformed update checksum.")
+    if digest is None:
+        raise RuntimeError("Malformed update checksum.")
+    return digest
 
 
 def _write_capped_response_to_file(
@@ -565,10 +684,12 @@ def download_update_installer(
     checksum_name = result.checksum_name.strip() if result.checksum_name else ""
     if result.status != "available" or not asset_url or not asset_name:
         raise RuntimeError("No update installer asset is available.")
-    if not _is_setup_asset_name(asset_name):
+    if not _is_strict_update_installer_asset(asset_name, result.latest_version):
         raise RuntimeError("Latest release does not include an installer asset.")
     if not checksum_url or not checksum_name:
         raise RuntimeError("Latest release does not include an installer checksum.")
+    _require_allowed_update_url(checksum_url, "checksum")
+    _require_allowed_update_url(asset_url, "installer")
 
     if control is not None:
         control.checkpoint()
@@ -578,12 +699,14 @@ def download_update_installer(
 
     owns_client = client is None
     # Bound cancellation latency while an HTTP operation is waiting for data.
-    http = client or httpx.Client(timeout=_UPDATE_NETWORK_TIMEOUT_SECONDS, follow_redirects=True)
+    # Redirects are never auto-followed: every hop is re-checked against the
+    # trusted-host allowlist inside _update_response_stream.
+    http = client or httpx.Client(timeout=_UPDATE_NETWORK_TIMEOUT_SECONDS, follow_redirects=False)
     fd = -1
     tmp_path: Path | None = None
     try:
-        with http.stream(
-            "GET", checksum_url, follow_redirects=True
+        with _update_response_stream(
+            http, checksum_url, label="checksum"
         ) as checksum_response:
             checksum_bytes = _read_capped_response_bytes(
                 checksum_response,
@@ -607,7 +730,9 @@ def download_update_installer(
             dir=target_dir,
         )
         tmp_path = Path(tmp_name)
-        with http.stream("GET", asset_url, follow_redirects=True) as response:
+        with _update_response_stream(
+            http, asset_url, label="installer"
+        ) as response:
             with open(fd, "wb", closefd=True) as handle:
                 fd = -1
                 actual_digest = _write_capped_response_to_file(

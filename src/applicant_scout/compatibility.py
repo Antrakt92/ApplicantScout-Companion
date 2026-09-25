@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 
 MINIMUM_ADDON_VERSION = "0.12.0"
 PAIRED_ADDON_VERSION = "0.12.0"
 _SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+_log = logging.getLogger("applicant_scout.compatibility")
 
 
 def _parse_semver(value: object) -> tuple[int, int, int] | None:
@@ -23,9 +25,15 @@ def _parse_semver(value: object) -> tuple[int, int, int] | None:
 def addon_version_warning(addon_version: object) -> str | None:
     """Return a user-facing warning for a mismatched paired addon version."""
     installed = _parse_semver(addon_version)
+    if installed is None:
+        if isinstance(addon_version, str) and addon_version.strip():
+            _log.warning("Unknown ApplicantScout addon version: %r", addon_version)
+        else:
+            _log.debug("ApplicantScout addon version is missing: %r", addon_version)
+        return None
     required = _parse_semver(MINIMUM_ADDON_VERSION)
     paired = _parse_semver(PAIRED_ADDON_VERSION)
-    if installed is None or required is None or paired is None:
+    if required is None or paired is None:
         return None
     if installed < required:
         return (

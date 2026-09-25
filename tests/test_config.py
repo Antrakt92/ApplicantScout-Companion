@@ -1538,6 +1538,24 @@ def test_load_config_rejects_malformed_user_config_env(
         load_config()
 
 
+def test_malformed_config_error_reports_line_number_without_secret_values(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "config.env"
+    config_path.write_text(
+        'WCL_CLIENT_ID="abc"\nBROKEN LINE WITH SECRET=hunter2 oops\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError) as excinfo:
+        config_mod._read_env_file(config_path)
+
+    message = str(excinfo.value)
+    assert "line 2" in message
+    assert "hunter2" not in message
+    assert "BROKEN" not in message
+
+
 def test_save_config_defaults_write_all_scouting_options_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

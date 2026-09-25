@@ -189,3 +189,35 @@ def test_load_launcher_position_rejects_non_utf8_file(tmp_path):
     (tmp_path / "launcher.json").write_bytes(b"\xff\xfe\xfa")
 
     assert load_launcher_position(tmp_path) is None
+
+
+def test_load_geometry_quarantines_corrupt_file(tmp_path, caplog):
+    (tmp_path / "window.json").write_text("{bad", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="applicant_scout.state"):
+        assert load_geometry(tmp_path) == WindowGeometry()
+
+    backups = list(tmp_path.glob("window.json.corrupt-*"))
+    assert len(backups) == 1
+    assert not (tmp_path / "window.json").exists()
+    assert "corrupt" in caplog.text.lower()
+
+
+def test_load_launcher_position_quarantines_corrupt_file(tmp_path, caplog):
+    (tmp_path / "launcher.json").write_text("{bad", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="applicant_scout.state"):
+        assert load_launcher_position(tmp_path) is None
+
+    backups = list(tmp_path.glob("launcher.json.corrupt-*"))
+    assert len(backups) == 1
+    assert not (tmp_path / "launcher.json").exists()
+    assert "corrupt" in caplog.text.lower()
+
+
+def test_load_geometry_keeps_valid_json_with_wrong_shape_in_place(tmp_path):
+    _write_geometry(tmp_path, ["not", "a", "dict"])
+
+    assert load_geometry(tmp_path) == WindowGeometry()
+    assert (tmp_path / "window.json").exists()
+    assert list(tmp_path.glob("window.json.corrupt-*")) == []

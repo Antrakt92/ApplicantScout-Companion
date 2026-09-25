@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
@@ -316,6 +317,24 @@ def _geometry_from_dict(data: dict) -> WindowGeometry:
     )
 
 
+def _quarantine_corrupt_file(path: Path) -> Path | None:
+    """Rename an undecodable state file aside, preserving evidence.
+
+    Returns the backup path, or None when the rename itself fails. Callers
+    fall back to defaults either way — the corrupt file must never be silently
+    re-read on every startup.
+    """
+    backup = path.with_name(
+        f"{path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S', time.localtime())}"
+    )
+    try:
+        path.rename(backup)
+    except OSError as exc:
+        _log.warning("Could not quarantine corrupt state file %s: %s", path, exc)
+        return None
+    return backup
+
+
 def load_geometry(config_dir: Path) -> WindowGeometry:
     path = config_dir / "window.json"
     if not path.exists():
@@ -325,7 +344,11 @@ def load_geometry(config_dir: Path) -> WindowGeometry:
         if not isinstance(data, dict):
             return WindowGeometry()
         return _geometry_from_dict(data)
-    except (json.JSONDecodeError, OSError, UnicodeError):
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        _log.warning("Ignoring corrupt window geometry %s: %s", path, exc)
+        _quarantine_corrupt_file(path)
+        return WindowGeometry()
+    except OSError:
         return WindowGeometry()
 
 
@@ -352,7 +375,11 @@ def load_launcher_position(config_dir: Path) -> LauncherPosition | None:
         if not isinstance(data, dict):
             return None
         return _launcher_position_from_dict(data)
-    except (json.JSONDecodeError, OSError, UnicodeError):
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        _log.warning("Ignoring corrupt launcher position %s: %s", path, exc)
+        _quarantine_corrupt_file(path)
+        return None
+    except OSError:
         return None
 
 

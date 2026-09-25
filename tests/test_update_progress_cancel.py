@@ -45,9 +45,9 @@ def _result():
     return updater.UpdateResult(
         status="available", message="Update available", latest_version="0.2.0",
         asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
-        asset_url="https://example.test/setup.exe",
+        asset_url="https://objects.githubusercontent.com/setup.exe",
         checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
-        checksum_url="https://example.test/setup.exe.sha256",
+        checksum_url="https://objects.githubusercontent.com/setup.exe.sha256",
     )
 
 
