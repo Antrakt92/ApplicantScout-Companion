@@ -416,3 +416,27 @@ def test_settings_visual_fixture_keeps_password_field_masked(qtbot):
     secret_field = dialog.findChild(QLineEdit, "wclClientSecret")
     assert secret_field is not None
     assert secret_field.echoMode() == QLineEdit.EchoMode.Password
+
+
+@pytest.mark.parametrize("scenario_name", sorted(SETTINGS_DIALOG_VISUAL_SCENARIOS))
+def test_settings_visual_fixture_dialogs_keep_section_groups(qtbot, scenario_name: str):
+    dialog = create_settings_visual_dialog(scenario_name)
+    qtbot.addWidget(dialog)
+
+    wcl_section = dialog.findChild(QWidget, "warcraftLogsSection")
+    usage_section = dialog.findChild(QWidget, "usageStatisticsSection")
+    assert wcl_section is not None
+    assert usage_section is not None
+    for object_name, widget_type in (
+        ("wclClientId", QLineEdit),
+        ("wclClientSecret", QLineEdit),
+        ("showWclSetupExample", QPushButton),
+        ("wclClientsLink", QPushButton),
+    ):
+        control = wcl_section.findChild(widget_type, object_name)
+        assert control is not None
+        assert wcl_section.isAncestorOf(control)
+    assert usage_section.isAncestorOf(dialog.usage_check)
+    assert dialog.findChild(QLineEdit, "screenshotsPath") is dialog.screenshots_edit
+    assert dialog.findChild(QPushButton, "cancelUpdate") is dialog.cancel_update_button
+    assert dialog.findChild(QLabel, "settingsStatus") is dialog.status_label

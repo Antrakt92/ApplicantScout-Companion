@@ -9,7 +9,7 @@ import weakref
 
 import pytest
 import shiboken6
-from PySide6.QtCore import QEvent, QProcess, QRect, Qt
+from PySide6.QtCore import QEvent, QProcess, QRect, Qt, SIGNAL
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -32,6 +32,12 @@ from applicant_scout.settings_dialog import (
     ReleaseNotesDialog,
     SettingsDialog,
     SettingsUpdateResult,
+)
+from applicant_scout.settings_sections import (
+    build_paths_section,
+    build_updates_section,
+    build_usage_section,
+    build_wcl_section,
 )
 
 
@@ -3184,3 +3190,147 @@ def test_first_run_dialog_uses_start_companion_button(qtbot, tmp_path: Path):
     assert start_button is not None
     assert start_button.text() == "Start companion"
     assert dialog.findChild(QDialogButtonBox) is None
+
+
+class _P7UsageStub:
+    collection_available = True
+
+    def __init__(self, *, consent: bool, available: bool) -> None:
+        self.consent_enabled = consent
+        self.collection_available = available
+
+
+def test_settings_section_builders_match_dialog_defaults(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    parent = QWidget()
+    qtbot.addWidget(parent)
+
+    wcl = build_wcl_section(
+        parent,
+        client_id="client",
+        client_secret="secret",
+        region="EU",
+        create_client_redirect_url="http://localhost",
+    )
+    assert wcl.section.objectName() == "warcraftLogsSection"
+    assert wcl.client_id_edit.text() == dialog.client_id_edit.text() == "client"
+    assert wcl.client_secret_edit.text() == dialog.client_secret_edit.text() == "secret"
+    assert wcl.client_secret_edit.echoMode() == dialog.client_secret_edit.echoMode()
+    assert wcl.client_secret_edit.echoMode() == QLineEdit.EchoMode.Password
+    assert wcl.reveal_secret_button.text() == "Show"
+    assert wcl.reveal_secret_button.isCheckable()
+    assert not wcl.reveal_secret_button.isChecked()
+    assert wcl.region_combo.currentText() == dialog.region_combo.currentText() == "EU"
+    assert wcl.region_combo.count() == dialog.region_combo.count() == 5
+    assert wcl.clients_link.text() == dialog.wcl_clients_link.text()
+    assert wcl.example_button.text() == dialog.wcl_example_button.text()
+    assert wcl.example_arrow.text() == dialog.wcl_example_arrow.text()
+
+    usage = build_usage_section(
+        parent,
+        consent_checked=False,
+        consent_enabled=False,
+        show_unavailable=False,
+    )
+    assert usage.section.objectName() == "usageStatisticsSection"
+    assert usage.consent_check.isChecked() == dialog.usage_check.isChecked() is False
+    assert usage.consent_check.isEnabled() == dialog.usage_check.isEnabled() is False
+    assert usage.privacy_link.objectName() == "usagePrivacyLink"
+    assert usage.privacy_link.text() == dialog.findChild(QLabel, "usagePrivacyLink").text()
+    assert usage.unavailable_label is None
+    assert dialog.findChild(QLabel, "usageUnavailableStatus") is None
+
+    paths = build_paths_section(parent, initial_path=dialog.screenshots_edit.text())
+    assert paths.screenshots_edit.text() == dialog.screenshots_edit.text()
+    assert paths.screenshots_edit.placeholderText() == dialog.screenshots_edit.placeholderText()
+    assert paths.screenshots_edit.toolTip() == dialog.screenshots_edit.toolTip()
+    assert paths.screenshots_edit.accessibleName() == dialog.screenshots_edit.accessibleName()
+    assert paths.browse_button.text() == dialog.browse_button.text() == "Browse"
+
+    updates = build_updates_section(parent)
+    assert updates.status_label.objectName() == "settingsStatus"
+    assert updates.status_label.text() == dialog.status_label.text() == ""
+    assert updates.status_label.property("statusState") == "idle"
+    assert updates.status_label.isHidden() and dialog.status_label.isHidden()
+    assert updates.cancel_button.text() == dialog.cancel_update_button.text() == "Cancel"
+    assert updates.cancel_button.isHidden() and dialog.cancel_update_button.isHidden()
+
+
+def test_settings_section_builders_create_no_signal_connections(qtbot, tmp_path: Path):
+    parent = QWidget()
+    qtbot.addWidget(parent)
+
+    usage = build_usage_section(
+        parent, consent_checked=True, consent_enabled=True, show_unavailable=True
+    )
+    wcl = build_wcl_section(
+        parent,
+        client_id="client",
+        client_secret="secret",
+        region="US",
+        create_client_redirect_url="http://localhost",
+    )
+    paths = build_paths_section(parent, initial_path="")
+    updates = build_updates_section(parent)
+
+    assert usage.consent_check.receivers(SIGNAL("toggled(bool)")) == 0
+    assert wcl.clients_link.receivers(SIGNAL("clicked(bool)")) == 0
+    assert wcl.example_button.receivers(SIGNAL("clicked(bool)")) == 0
+    assert wcl.reveal_secret_button.receivers(SIGNAL("toggled(bool)")) == 0
+    assert paths.screenshots_edit.receivers(SIGNAL("textChanged(QString)")) == 0
+    assert paths.browse_button.receivers(SIGNAL("clicked(bool)")) == 0
+    assert updates.cancel_button.receivers(SIGNAL("clicked(bool)")) == 0
+    # Wiring lives in the dialog: the composed dialog does connect them.
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    assert dialog.usage_check.receivers(SIGNAL("toggled(bool)")) > 0
+    assert dialog.wcl_clients_link.receivers(SIGNAL("clicked(bool)")) > 0
+    assert dialog.cancel_update_button.receivers(SIGNAL("clicked(bool)")) > 0
+
+
+def test_settings_section_usage_unavailable_parity(qtbot, tmp_path: Path):
+    stub = _P7UsageStub(consent=True, available=False)
+    dialog = SettingsDialog(_cfg(tmp_path), usage_client=stub)
+    qtbot.addWidget(dialog)
+    parent = QWidget()
+    qtbot.addWidget(parent)
+
+    usage = build_usage_section(
+        parent, consent_checked=True, consent_enabled=True, show_unavailable=True
+    )
+    dialog_label = dialog.findChild(QLabel, "usageUnavailableStatus")
+
+    assert usage.unavailable_label is not None
+    assert dialog_label is not None
+    assert usage.unavailable_label.text() == dialog_label.text()
+    assert usage.unavailable_label.toolTip() == dialog_label.toolTip()
+    assert usage.consent_check.isChecked() == dialog.usage_check.isChecked() is True
+    assert usage.consent_check.isEnabled() == dialog.usage_check.isEnabled() is True
+
+
+def test_settings_dialog_section_groups_keep_composition(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+
+    wcl_section = dialog.findChild(QWidget, "warcraftLogsSection")
+    usage_section = dialog.findChild(QWidget, "usageStatisticsSection")
+    scouting_section = dialog.findChild(QWidget, "scoutingSection")
+
+    assert wcl_section is not None
+    assert usage_section is not None
+    assert scouting_section is not None
+    for control in (
+        dialog.client_id_edit,
+        dialog.client_secret_edit,
+        dialog.reveal_secret_button,
+        dialog.region_combo,
+        dialog.wcl_clients_link,
+        dialog.wcl_example_button,
+    ):
+        assert wcl_section.isAncestorOf(control)
+    assert usage_section.isAncestorOf(dialog.usage_check)
+    assert scouting_section.isAncestorOf(dialog.screenshots_edit)
+    assert scouting_section.isAncestorOf(dialog.browse_button)
+    assert dialog.findChild(QPushButton, "cancelUpdate") is dialog.cancel_update_button
+    assert dialog.findChild(QLabel, "settingsStatus") is dialog.status_label

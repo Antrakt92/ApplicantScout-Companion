@@ -43,7 +43,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QAbstractButton,
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -74,6 +73,14 @@ from .screenshots_path_probe import (
     SCREENSHOTS_PATH_PROBE_ARG,
     run_screenshots_path_probe_command as run_screenshots_path_probe_command,
     screenshots_path_probe_result_path as _screenshots_path_probe_result_path,
+)
+from .settings_sections import (
+    _settings_section,
+    _set_tooltip_and_accessibility,
+    build_paths_section,
+    build_updates_section,
+    build_usage_section,
+    build_wcl_section,
 )
 from .window_geometry import clamp_geometry_to_screens, clamp_rect_to_bounds
 from .usage import UsageClient
@@ -568,18 +575,6 @@ def _download_icon(color: str = "#4da3ff") -> QIcon:
     return QIcon(pixmap)
 
 
-def _set_tooltip_and_accessibility(
-    button: QAbstractButton,
-    *,
-    tooltip: str,
-    accessible_name: str,
-    accessible_description: str | None = None,
-) -> None:
-    button.setToolTip(tooltip)
-    button.setAccessibleName(accessible_name)
-    button.setAccessibleDescription(accessible_description or tooltip)
-
-
 def _set_action_help(
     action: QAction,
     *,
@@ -598,31 +593,6 @@ def _close_button_copy(*, first_run: bool, hide_to_tray: bool) -> tuple[str, str
     if hide_to_tray:
         return CLOSE_TRAY_TOOLTIP, "Hide settings to tray"
     return CLOSE_QUIT_TOOLTIP, "Quit ApplicantScout"
-
-
-def _settings_section(
-    parent: QWidget,
-    *,
-    object_name: str,
-    title: str,
-    hint: str,
-) -> tuple[QWidget, QVBoxLayout]:
-    section = QWidget(parent)
-    section.setObjectName(object_name)
-    layout = QVBoxLayout(section)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(7)
-
-    section_title = QLabel(title, section)
-    section_title.setObjectName("settingsSectionTitle")
-    layout.addWidget(section_title)
-
-    if hint:
-        section_hint = QLabel(hint, section)
-        section_hint.setObjectName("settingsSectionHint")
-        section_hint.setWordWrap(True)
-        layout.addWidget(section_hint)
-    return section, layout
 
 
 @dataclass(frozen=True)
@@ -1005,165 +975,48 @@ class SettingsDialog(QDialog):
             hero_layout.addWidget(intro)
             root.addWidget(hero)
 
-        usage_section = QWidget(body)
-        usage_section.setObjectName("usageStatisticsSection")
-        usage_root = QHBoxLayout(usage_section)
-        usage_root.setContentsMargins(12, 9, 12, 9)
-        usage_root.setSpacing(10)
-        self.usage_check = QCheckBox("Share usage statistics", usage_section)
-        self.usage_check.setObjectName("shareUsageStatistics")
-        self.usage_check.setChecked(bool(usage_client and usage_client.consent_enabled))
-        self.usage_check.setEnabled(usage_client is not None)
-        usage_details = (
-            "Optional; off until you opt in. Existing choices are preserved. "
-            "Shares a random installation ID, app version and daily setup/use milestones. "
-            "No names, screenshots, credentials or folder paths. "
-            "Events leave active storage after 90 UTC days; recovery history can last 7 more days. "
-            "Changes save immediately, even if setup is incomplete. "
-            "Turning this off stops future reporting and clears queued events and the local ID."
-        )
-        self.usage_check.setToolTip(usage_details)
-        self.usage_check.setAccessibleDescription(usage_details)
-        self.usage_check.toggled.connect(self._change_usage_consent)
-        usage_root.addWidget(self.usage_check)
-        usage_root.addStretch(1)
-        usage_privacy = QLabel(
-            '<a href="https://github.com/Antrakt92/ApplicantScout-Companion/blob/main/docs/PRIVACY.md">'
-            'Privacy</a>', usage_section
-        )
-        usage_privacy.setObjectName("usagePrivacyLink")
-        usage_privacy.setToolTip(usage_details)
-        usage_privacy.setAccessibleName("Usage statistics privacy details")
-        usage_privacy.setOpenExternalLinks(True)
-        usage_privacy.setTextInteractionFlags(
-            Qt.TextInteractionFlag.LinksAccessibleByMouse
-            | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
-        )
-        usage_privacy.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        usage_privacy.setWordWrap(True)
-        usage_root.addWidget(usage_privacy)
-        if usage_client is not None and not usage_client.collection_available:
-            usage_unavailable = QLabel(
-                "Reporting unavailable", usage_section
-            )
-            usage_unavailable.setObjectName("usageUnavailableStatus")
-            usage_unavailable.setToolTip(
-                "Sending is disabled for this build or installation."
-            )
-            usage_root.insertWidget(1, usage_unavailable)
-
-        wcl_section, wcl_root = _settings_section(
+        usage_built = build_usage_section(
             body,
-            object_name="warcraftLogsSection",
-            title="WARCRAFT LOGS",
-            hint="",
+            consent_checked=bool(usage_client and usage_client.consent_enabled),
+            consent_enabled=usage_client is not None,
+            show_unavailable=usage_client is not None
+            and not usage_client.collection_available,
         )
-        root.addWidget(wcl_section)
-
-        wcl_link_row = QWidget(wcl_section)
-        wcl_link_layout = QHBoxLayout(wcl_link_row)
-        wcl_link_layout.setContentsMargins(0, 0, 0, 0)
-        wcl_link_layout.setSpacing(8)
-        self.wcl_clients_link = QPushButton("Warcraft Logs API clients")
-        self.wcl_clients_link.setObjectName("wclClientsLink")
-        self.wcl_clients_link.setFlat(True)
-        self.wcl_clients_link.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.wcl_clients_link.setAccessibleName("Open Warcraft Logs API clients")
-        self.wcl_clients_link.setAccessibleDescription(
-            "Open the Warcraft Logs Create Client page in the default browser."
-        )
-        self.wcl_clients_link.clicked.connect(self._open_wcl_clients)
-        wcl_link_layout.addWidget(self.wcl_clients_link)
-        self.wcl_example_arrow = QLabel("→")
-        self.wcl_example_arrow.setObjectName("wclClientsToExampleArrow")
-        self.wcl_example_arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.wcl_example_arrow.setToolTip(
-            "Open the example to see exactly what to enter on Warcraft Logs."
-        )
-        wcl_link_layout.addWidget(self.wcl_example_arrow)
-        self.wcl_example_button = QPushButton("Show example")
-        self.wcl_example_button.setObjectName("showWclSetupExample")
-        _set_tooltip_and_accessibility(
-            self.wcl_example_button,
-            tooltip="Show the Warcraft Logs Create Client form values to copy.",
-            accessible_name="Show WCL setup example",
-            accessible_description=(
-                "Show the Warcraft Logs Create Client form values to copy."
-            ),
-        )
-        self.wcl_example_button.clicked.connect(self._show_wcl_setup_example)
-        wcl_link_layout.addWidget(self.wcl_example_button)
-        wcl_link_layout.addStretch(1)
-        credentials_help = (
-            "Create a Warcraft Logs API client with Redirect URL "
-            f"{WCL_CREATE_CLIENT_REDIRECT_URL} and leave Public Client unchecked. Copy the "
-            "generated Client ID and Client Secret into the credential fields."
-        )
-        wcl_link_row.setToolTip(credentials_help)
-
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(8)
-        wcl_root.addLayout(form)
+        usage_section = usage_built.section
+        self.usage_check = usage_built.consent_check
+        self.usage_check.toggled.connect(self._change_usage_consent)
+        usage_privacy = usage_built.privacy_link
 
         display_client_id = getattr(cfg, "draft_wcl_client_id", "") or cfg.wcl_client_id
         display_client_secret = (
             getattr(cfg, "draft_wcl_client_secret", "") or cfg.wcl_client_secret
         )
 
-        self.client_id_edit = QLineEdit(display_client_id)
-        self.client_id_edit.setObjectName("wclClientId")
-        self.client_id_edit.setPlaceholderText("Paste your Client ID")
-        self.client_id_edit.setToolTip("Client ID generated by your Warcraft Logs API client.")
-        self.client_id_edit.setAccessibleName("Warcraft Logs Client ID")
-        self.client_id_edit.setAccessibleDescription(
-            "Client ID generated by the private Warcraft Logs API client."
+        wcl_built = build_wcl_section(
+            body,
+            client_id=display_client_id,
+            client_secret=display_client_secret,
+            region=cfg.region,
+            create_client_redirect_url=WCL_CREATE_CLIENT_REDIRECT_URL,
         )
-        form.addRow("Client ID", self.client_id_edit)
+        wcl_section = wcl_built.section
+        root.addWidget(wcl_section)
 
-        self.client_secret_edit = QLineEdit(display_client_secret)
-        self.client_secret_edit.setObjectName("wclClientSecret")
-        self.client_secret_edit.setPlaceholderText("Paste your Client Secret")
-        self.client_secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.client_secret_edit.setToolTip(
-            "Client Secret generated by your Warcraft Logs API client."
-        )
-        self.client_secret_edit.setAccessibleName("Warcraft Logs Client Secret")
-        self.client_secret_edit.setAccessibleDescription(
-            "Secret generated by the private Warcraft Logs API client; the value is masked."
-        )
-        secret_row = QWidget(wcl_section)
-        secret_layout = QHBoxLayout(secret_row)
-        secret_layout.setContentsMargins(0, 0, 0, 0)
-        secret_layout.setSpacing(6)
-        secret_layout.addWidget(self.client_secret_edit, stretch=1)
-        self.reveal_secret_button = QPushButton("Show", secret_row)
-        self.reveal_secret_button.setObjectName("revealWclClientSecret")
-        self.reveal_secret_button.setCheckable(True)
-        self.reveal_secret_button.setAutoDefault(False)
-        self.reveal_secret_button.setMinimumWidth(56)
+        self.wcl_clients_link = wcl_built.clients_link
+        self.wcl_clients_link.clicked.connect(self._open_wcl_clients)
+        self.wcl_example_arrow = wcl_built.example_arrow
+        self.wcl_example_button = wcl_built.example_button
+        self.wcl_example_button.clicked.connect(self._show_wcl_setup_example)
+
+        self.client_id_edit = wcl_built.client_id_edit
+
+        self.client_secret_edit = wcl_built.client_secret_edit
+        self.reveal_secret_button = wcl_built.reveal_secret_button
         self.reveal_secret_button.toggled.connect(self._set_client_secret_visible)
         self._set_client_secret_visible(False)
-        secret_layout.addWidget(self.reveal_secret_button)
-        form.addRow("Client Secret", secret_row)
         QWidget.setTabOrder(self.client_secret_edit, self.reveal_secret_button)
 
-        self.region_combo = QComboBox()
-        self.region_combo.setObjectName("region")
-        self.region_combo.addItems(["EU", "US", "KR", "TW", "CN"])
-        self.region_combo.setToolTip(
-            "Fallback region used when an applicant name does not include a known realm."
-        )
-        self.region_combo.setAccessibleName("Warcraft Logs fallback region")
-        self.region_combo.setAccessibleDescription(
-            "Fallback region used when the applicant's character realm cannot determine it."
-        )
-        region_idx = self.region_combo.findText((cfg.region or "EU").upper())
-        self.region_combo.setCurrentIndex(max(0, region_idx))
-        form.addRow("Region fallback", self.region_combo)
-        wcl_root.addWidget(wcl_link_row)
+        self.region_combo = wcl_built.region_combo
 
         scouting_section, scouting_root = _settings_section(
             body,
@@ -1181,35 +1034,15 @@ class SettingsDialog(QDialog):
         scouting_form.setVerticalSpacing(8)
         scouting_root.addLayout(scouting_form)
 
-        path_row = QWidget(scouting_section)
-        path_layout = QHBoxLayout(path_row)
-        path_layout.setContentsMargins(0, 0, 0, 0)
-        path_layout.setSpacing(6)
-        self.screenshots_edit = QLineEdit(_initial_screenshots_path(cfg))
+        paths_built = build_paths_section(
+            scouting_section, initial_path=_initial_screenshots_path(cfg)
+        )
+        self.screenshots_edit = paths_built.screenshots_edit
         self._last_ready_screenshots_path = self.screenshots_edit.text().strip()
-        self.screenshots_edit.setObjectName("screenshotsPath")
-        self.screenshots_edit.setPlaceholderText(
-            r"Example: C:\Program Files (x86)\World of Warcraft\_retail_\Screenshots"
-        )
-        self.screenshots_edit.setToolTip(
-            "Select the active WoW client's Screenshots folder under _retail_, _ptr_, or _xptr_."
-        )
-        self.screenshots_edit.setAccessibleName("WoW Screenshots folder")
-        self.screenshots_edit.setAccessibleDescription(
-            r"Path to the active _retail_, _ptr_, or _xptr_ Screenshots folder."
-        )
         self.screenshots_edit.textChanged.connect(self._handle_screenshots_text_changed)
-        path_layout.addWidget(self.screenshots_edit, stretch=1)
-        self.browse_button = QPushButton("Browse")
-        self.browse_button.setObjectName("browseScreenshots")
-        _set_tooltip_and_accessibility(
-            self.browse_button,
-            tooltip="Browse to WoW's in-game Screenshots folder.",
-            accessible_name="Browse WoW Screenshots folder",
-        )
+        self.browse_button = paths_built.browse_button
         self.browse_button.clicked.connect(self._browse_screenshots)
-        path_layout.addWidget(self.browse_button)
-        scouting_form.addRow("Screenshots", path_row)
+        scouting_form.addRow("Screenshots", paths_built.row)
 
         metrics_row = QWidget(scouting_section)
         metrics_layout = QHBoxLayout(metrics_row)
@@ -1297,18 +1130,14 @@ class SettingsDialog(QDialog):
 
         root.addWidget(usage_section)
 
-        self.status_label = QLabel("")
-        self.status_label.setObjectName("settingsStatus")
-        self.status_label.setWordWrap(True)
-        self.status_label.setAccessibleName("Settings status")
-        self.status_label.setAccessibleDescription("")
-        self.status_label.setProperty("statusState", "idle")
-        self.status_label.hide()
         footer = QWidget(self)
         footer.setObjectName("settingsFooter")
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(0, 9, 0, 0)
         footer_layout.setSpacing(8)
+        updates_built = build_updates_section(footer)
+        self.status_label = updates_built.status_label
+        self.cancel_update_button = updates_built.cancel_button
         self.support_button = QToolButton(footer)
         self.support_button.setObjectName("supportApplicantScout")
         self.support_button.setText("♡")
@@ -1332,12 +1161,7 @@ class SettingsDialog(QDialog):
         )
         footer_layout.addWidget(self.autosave_hint, stretch=1)
         footer_layout.addWidget(self.status_label, stretch=1)
-        self.cancel_update_button = QPushButton("Cancel", footer)
-        self.cancel_update_button.setObjectName("cancelUpdate")
-        self.cancel_update_button.setAccessibleName("Cancel update download")
-        self.cancel_update_button.setToolTip("Cancel before the installer starts.")
         self.cancel_update_button.clicked.connect(self._cancel_update_download)
-        self.cancel_update_button.hide()
         footer_layout.addWidget(self.cancel_update_button)
         self.test_button = QPushButton("Test WCL", footer)
         self.test_button.setObjectName("testWcl")
@@ -1524,6 +1348,9 @@ class SettingsDialog(QDialog):
     def _request_changelog(self) -> None:
         self.changelogRequested.emit()
 
+    # P7: kept inline — the secret-masking branch and the title-bar drag
+    # state both read and write live dialog widgets and geometry, so a
+    # helper would need the whole dialog as mutable env for no real gain.
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
         if watched is self and event.type() in (
             QEvent.Type.Hide,
@@ -2577,6 +2404,9 @@ class SettingsDialog(QDialog):
                 )
             )
 
+    # P7: kept inline — every branch interleaves in-progress flags, live
+    # values(), and button identity, so extraction would only relocate
+    # dialog-state dispatch without reducing nesting.
     def _finish_async_action(self, raw: object) -> None:
         if not isinstance(raw, _AsyncActionResult):
             return
