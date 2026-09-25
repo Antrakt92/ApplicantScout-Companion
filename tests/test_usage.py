@@ -614,3 +614,57 @@ def test_transport_does_not_follow_redirects_or_read_response_body(monkeypatch):
     assert len(seen) == 1
     assert "authorization" not in seen[0].headers
     assert "cookie" not in seen[0].headers
+
+
+def test_installer_optout_beats_default_on_and_is_saved_before_any_event(tmp_path):
+    (tmp_path / usage.USAGE_INSTALLER_OPT_OUT_FILENAME).write_text(
+        "opt-out\n", encoding="utf-8"
+    )
+    sender = Recorder()
+    instance = client(tmp_path, sender)
+    try:
+        assert not instance.consent_enabled
+        assert not instance.record("addon_received")
+        assert sender.events == []
+        assert json.loads((tmp_path / "usage.json").read_text()) == {
+            "schema": 1, "consent": False,
+        }
+    finally:
+        instance.close()
+
+
+def test_saved_choice_beats_installer_optout(tmp_path):
+    (tmp_path / usage.USAGE_INSTALLER_OPT_OUT_FILENAME).write_text(
+        "opt-out\n", encoding="utf-8"
+    )
+    (tmp_path / "usage.json").write_text(
+        json.dumps({"schema": 1, "consent": True, "install_id": "", "seen": []}),
+        encoding="utf-8",
+    )
+    sender = Recorder()
+    instance = usage.UsageClient(
+        tmp_path, "0.16.0", endpoint="", _sender=sender,
+    )
+    try:
+        assert instance.consent_enabled
+    finally:
+        instance.close()
+
+
+def test_explicit_optin_beats_installer_optout_and_wins_afterwards(tmp_path):
+    (tmp_path / usage.USAGE_INSTALLER_OPT_OUT_FILENAME).write_text(
+        "opt-out\n", encoding="utf-8"
+    )
+    sender = Recorder()
+    instance = client(tmp_path, sender, consent=True)
+    try:
+        assert instance.consent_enabled
+        assert json.loads((tmp_path / "usage.json").read_text())["consent"] is True
+    finally:
+        instance.close()
+
+    later = usage.UsageClient(tmp_path, "0.16.0", endpoint="", _sender=Recorder())
+    try:
+        assert later.consent_enabled
+    finally:
+        later.close()

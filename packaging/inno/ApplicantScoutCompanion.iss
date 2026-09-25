@@ -48,6 +48,9 @@ SolidCompression=yes
 ; measured sizes fail-closed before any process is stopped.
 ExtraDiskSpaceRequired=1073741824
 WizardStyle=modern
+; WHY: SignPath/install policy — show docs/PRIVACY.md during install so the
+; usage-reporting choice below is informed. Relative to this script's dir.
+InfoBeforeFile=..\..\docs\PRIVACY.md
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=no
@@ -56,6 +59,11 @@ SetupMutex=Antrakt.ApplicantScout.Companion.Setup
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
+; WHY: usage reports must never silently opt the user in. The installer offers
+; this unchecked by default (including silent installs); leaving it unchecked
+; records an install-time opt-out that the app honors until the user
+; explicitly opts in via Settings.
+Name: "telemetry"; Description: "Help improve with anonymous usage reports (optional)"; GroupDescription: "Privacy:"; Flags: unchecked
 
 [Files]
 ; Copy the complete candidate before touching the working payload. The code
@@ -66,7 +74,7 @@ Source: "{#MyAppSourceDir}\*"; DestDir: "{app}\.apscout-next"; Excludes: ".apsco
 ; metadata. The scripted destination treats early enumeration as read-only;
 ; its actual Files-phase transaction catches ordinary skippable errors,
 ; performs its own rollback, and raises EAbort to force Inno rollback.
-Source: "{#MyAppSourceDir}\.apscout-payload-version"; DestDir: "{app}\.apscout-next"; Flags: ignoreversion
+Source: "{#MyAppSourceDir}\.apscout-payload-version"; DestDir: "{app}\.apscout-next"; Flags: ignoreversion; AfterInstall: ApplyInstallerUsageChoice
 Source: "{#MyAppSourceDir}\.apscout-payload-version"; DestDir: "{code:CommitPayloadSwapForInstall}"; Flags: ignoreversion onlyifdoesntexist
 
 [UninstallDelete]
@@ -1034,6 +1042,47 @@ function ShouldRelaunchAfterInstall(): Boolean;
 begin
   Result := PayloadSwapCommitted and
     (CompanionWasRunning or SelfUpdateWasRequested);
+end;
+
+function UsageConfigDir(): String;
+begin
+  Result := ExpandConstant('{localappdata}\applicant-scout\config');
+end;
+
+procedure ApplyInstallerUsageChoice();
+var
+  ConfigDir: String;
+  StatePath: String;
+  OptOutPath: String;
+begin
+  { WHY: the telemetry task defaults OFF so installs never silently opt in.
+    Attached AfterInstall to the deliberately-final payload marker, so the
+    choice is recorded during the Files phase. A saved Settings choice
+    (usage.json) always wins; the installer only records its choice when no
+    preference exists yet. The app reads the opt-out sentinel before its
+    default-on applies, and first-run Settings reflects the resulting choice. }
+  ConfigDir := UsageConfigDir();
+  StatePath := AddBackslash(ConfigDir) + 'usage.json';
+  OptOutPath := AddBackslash(ConfigDir) + 'usage-installer-optout';
+  if FileExists(StatePath) then begin
+    Exit;
+  end;
+  if WizardIsTaskSelected('telemetry') then begin
+    if FileExists(OptOutPath) then begin
+      if not DeleteFile(OptOutPath) then begin
+        Log('WARNING: could not remove the installer usage opt-out: ' + OptOutPath + '.');
+      end;
+    end;
+  end else begin
+    if not FileExists(OptOutPath) then begin
+      if not DirExists(ConfigDir) then begin
+        ForceDirectories(ConfigDir);
+      end;
+      if not SaveStringToFile(OptOutPath, 'opt-out' + #13#10, False) then begin
+        Log('WARNING: could not record the installer usage opt-out: ' + OptOutPath + '. First-run Settings still offers opt-out.');
+      end;
+    end;
+  end;
 end;
 
 function PendingPathTouchesPayloadRoot(Path: String; Root: String): Boolean;

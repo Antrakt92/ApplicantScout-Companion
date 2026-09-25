@@ -233,6 +233,8 @@ jobs:
             "> Other files below (manifest, .sha256, source code) are integrity artifacts — you don't need to download them."
             ""
             $CurrentNotes
+            ""
+            "Free code signing provided by SignPath.io, certificate by SignPath Foundation"
           ) -join "`n"
           $CanonicalBody += "`n"
           $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)

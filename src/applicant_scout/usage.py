@@ -26,6 +26,11 @@ USAGE_EVENTS = frozenset(
 )
 USAGE_STATE_FILENAME = "usage.json"
 USAGE_TEST_MARKER_FILENAME = "usage-test-installation"
+# Written by the Windows installer when its usage-reports checkbox (default
+# OFF) is left unchecked and no saved preference exists yet. It only applies
+# before the first saved choice; an explicit Settings opt-in/out afterwards
+# (usage.json) always wins.
+USAGE_INSTALLER_OPT_OUT_FILENAME = "usage-installer-optout"
 _VERSION = re.compile(r"(?:0|[1-9][0-9]{0,4})(?:\.(?:0|[1-9][0-9]{0,4})){2}\Z", re.ASCII)
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z", re.ASCII)
 _MAX_QUEUE = 32
@@ -74,6 +79,14 @@ def _send_event(endpoint: str, payload: dict[str, str | int]) -> int:
     ) as client:
         with client.stream("POST", endpoint, json=payload) as response:
             return response.status_code
+
+
+def _installer_opted_out(state_dir: Path) -> bool:
+    """Whether the installer recorded an install-time opt-out with no saved choice yet."""
+    try:
+        return (state_dir / USAGE_INSTALLER_OPT_OUT_FILENAME).exists()
+    except OSError:
+        return False
 
 
 class UsagePersistenceError(RuntimeError):
@@ -133,7 +146,10 @@ class UsageClient:
             saved_consent = False
             self._failed = True
         if saved_consent is None:
-            initial_consent = DEFAULT_USAGE_CONSENT if consent is None else consent is True
+            if consent is None and _installer_opted_out(state_dir):
+                initial_consent = False
+            else:
+                initial_consent = DEFAULT_USAGE_CONSENT if consent is None else consent is True
             try:
                 # Persist missing preferences before reporting; a saved opt-out
                 # must survive restart even when collection is unavailable.

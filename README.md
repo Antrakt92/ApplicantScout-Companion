@@ -121,6 +121,20 @@ Current Windows builds are unsigned. SmartScreen may warn or show an unknown
 publisher. Download from the linked GitHub release and proceed only if you trust
 the source. The `.sha256` sidecar verifies file integrity, not publisher identity.
 
+## Code Signing Policy
+
+Free code signing provided by SignPath.io, certificate by SignPath Foundation
+
+This is a single-maintainer project: Author, Reviewer, and Approver are all
+Antrakt ([github.com/Antrakt92](https://github.com/Antrakt92)). Windows release
+binaries are built by CI from this repository. They are currently unsigned —
+there is no publisher identity yet. If free signing through SignPath is
+approved, future release builds will be signed through that pipeline.
+
+Usage reporting is optional. The installer offers it defaulting to off and never
+opts you in silently; see [what is sent and retained](docs/PRIVACY.md). You can
+change the choice in Settings at any time.
+
 ## Settings And Updates
 
 Settings lets you choose the Screenshots folder, WCL data types and usage sharing.

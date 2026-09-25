@@ -2059,7 +2059,13 @@ def test_release_body_has_current_notes_and_direct_downloads(tmp_path: Path):
     assert f"[Windows installer]({release_url}/ApplicantScoutCompanionSetup-1.2.3.exe)" in body
     assert f"[Portable ZIP]({release_url}/ApplicantScoutCompanion-1.2.3-portable.zip)" in body
     assert "integrity artifacts" in body
-    assert body.endswith(current + "\n")
+    assert current in body
+    assert body.endswith(
+        "Free code signing provided by SignPath.io, certificate by SignPath Foundation\n"
+    )
+    assert body.index(current) < body.index(
+        "Free code signing provided by SignPath.io, certificate by SignPath Foundation"
+    )
     assert "## 1.0.0" not in body
     assert "Future work" not in body
     assert history in (tmp_path / "RELEASE_NOTES.md").read_text(encoding="utf-8")
@@ -4156,3 +4162,45 @@ def test_frozen_runtime_rejects_secret_adjacent_artifacts(tmp_path):
         target.write_bytes(b"secret")
         with pytest.raises(FrozenRuntimeVerificationError):
             verify_no_secret_artifacts(payload)
+
+
+def test_readme_has_code_signing_policy_section():
+    readme = _read_repo_text("README.md")
+
+    assert "## Code Signing Policy" in readme
+    assert (
+        "Free code signing provided by SignPath.io, certificate by SignPath Foundation"
+        in readme
+    )
+    assert "Antrakt" in readme
+    assert "github.com/Antrakt92" in readme
+    for role in ("Author", "Reviewer", "Approver"):
+        assert role in readme
+    assert "docs/PRIVACY.md" in readme
+    assert "unsigned" in readme.lower()
+
+
+def test_installer_shows_privacy_and_defaults_telemetry_off_with_optout_wiring():
+    inno_script = _read_repo_text("packaging/inno/ApplicantScoutCompanion.iss")
+
+    assert "InfoBeforeFile=" in inno_script
+    assert "PRIVACY.md" in inno_script
+    telemetry_task = re.search(r'Name:\s*"telemetry";[^\n]+', inno_script)
+    assert telemetry_task is not None
+    assert "Flags: unchecked" in telemetry_task.group(0)
+    assert "WizardIsTaskSelected('telemetry')" in inno_script
+    assert "usage-installer-optout" in inno_script
+    assert "usage.json" in inno_script
+    assert "AfterInstall: ApplyInstallerUsageChoice" in inno_script
+    assert "procedure ApplyInstallerUsageChoice();" in inno_script
+    assert "procedure CurStepChanged(CurStep: TSetupStep);" not in inno_script
+
+
+def test_release_body_appends_signpath_policy_statement():
+    workflow = _read_repo_text(".github/workflows/release.yml")
+    step = _step_block(_job_block(workflow, "build"), "Extract release notes")
+
+    assert (
+        "Free code signing provided by SignPath.io, certificate by SignPath Foundation"
+        in step
+    )
