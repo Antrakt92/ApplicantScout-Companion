@@ -1421,9 +1421,8 @@ begin
   end;
   if Leftovers <> '' then begin
     SuppressibleMsgBox(
-      'ApplicantScout Companion uninstall left payload files behind:' + Leftovers +
-        #13#10#13#10 +
-        'The install path failed a safety check, so these were kept instead of deleted. ' +
+      'ApplicantScout Companion uninstall left payload files behind:' + Leftovers + #13#10#13#10 +
+      'The install path failed a safety check, so these were kept instead of deleted. ' +
         'Remove them manually once the path is trusted again.',
       mbInformation,
       MB_OK,
