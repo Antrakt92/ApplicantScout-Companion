@@ -20,7 +20,7 @@ from .atomic_io import atomic_write_text
 
 
 USAGE_ENDPOINT = "https://applicantscout-usage.applicantscout-usage-service.workers.dev/v1/events"
-DEFAULT_USAGE_CONSENT = True
+DEFAULT_USAGE_CONSENT = False
 USAGE_EVENTS = frozenset(
     {"consent_started", "version_seen", "setup_completed", "addon_received", "wcl_result"}
 )

@@ -942,7 +942,7 @@ class SettingsDialog(QDialog):
         self.usage_check.setChecked(bool(usage_client and usage_client.consent_enabled))
         self.usage_check.setEnabled(usage_client is not None)
         usage_details = (
-            "Optional; enabled when no choice is saved. Existing choices are preserved. "
+            "Optional; off until you opt in. Existing choices are preserved. "
             "Shares a random installation ID, app version and daily setup/use milestones. "
             "No names, screenshots, credentials or folder paths. "
             "Events leave active storage after 90 UTC days; recovery history can last 7 more days. "

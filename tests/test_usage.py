@@ -84,7 +84,7 @@ def test_explicit_optout_has_no_identity_or_replay_before_enabling(tmp_path):
 
 
 @pytest.mark.parametrize("initial_state", [None, {"schema": 1}])
-def test_missing_usage_preference_defaults_on_and_is_saved_before_any_event(
+def test_missing_usage_preference_defaults_off_and_is_saved_before_any_event(
     tmp_path, initial_state,
 ):
     path = tmp_path / usage.USAGE_STATE_FILENAME
@@ -93,13 +93,33 @@ def test_missing_usage_preference_defaults_on_and_is_saved_before_any_event(
     observed = []
 
     def sender(_endpoint, payload):
-        saved = json.loads(path.read_text(encoding="utf-8"))
+        observed.append(payload)
+        return 204
+
+    instance = client(tmp_path, sender)
+    try:
+        assert not instance.consent_enabled
+        assert not instance.record("addon_received")
+        drain(instance)
+        assert observed == []
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "schema": 1, "consent": False,
+        }
+    finally:
+        instance.close()
+
+
+def test_explicit_optin_sends_startup_milestones(tmp_path):
+    observed = []
+
+    def sender(_endpoint, payload):
+        saved = json.loads((tmp_path / usage.USAGE_STATE_FILENAME).read_text(encoding="utf-8"))
         assert saved["consent"] is True
         assert saved["install_id"] == payload["install_id"]
         observed.append(payload)
         return 204
 
-    instance = client(tmp_path, sender)
+    instance = client(tmp_path, sender, consent=True)
     try:
         assert instance.consent_enabled
         drain(instance)
@@ -108,22 +128,49 @@ def test_missing_usage_preference_defaults_on_and_is_saved_before_any_event(
         instance.close()
 
 
-def test_default_usage_selection_remains_on_without_collection_service(tmp_path):
+def test_saved_optin_sends_while_saved_optout_and_missing_stay_silent(tmp_path):
+    for saved_consent in (True, False, None):
+        case_dir = tmp_path / ("optin" if saved_consent is True else "optout" if saved_consent is False else "missing")
+        case_dir.mkdir(exist_ok=True)
+        if saved_consent is not None:
+            (case_dir / usage.USAGE_STATE_FILENAME).write_text(
+                json.dumps({"schema": 1, "consent": saved_consent}),
+                encoding="utf-8",
+            )
+        sender = Recorder()
+        instance = usage.UsageClient(
+            case_dir, "0.16.0", endpoint=ENDPOINT, _sender=sender,
+        )
+        try:
+            assert instance.consent_enabled is (saved_consent is True)
+            assert instance.record("addon_received") is (saved_consent is True)
+            drain(instance)
+            if saved_consent is True:
+                assert [event["event"] for event in sender.events] == [
+                    "consent_started", "version_seen", "addon_received",
+                ]
+            else:
+                assert sender.events == []
+        finally:
+            instance.close()
+
+
+def test_default_usage_selection_remains_off_without_collection_service(tmp_path):
     sender = Recorder()
     instance = usage.UsageClient(tmp_path, "0.17.1", endpoint="", _sender=sender)
-    assert instance.consent_enabled
+    assert not instance.consent_enabled
     assert not instance.collection_available
     assert instance._thread is None
     assert not instance.record("addon_received")
     assert sender.events == []
     assert json.loads((tmp_path / "usage.json").read_text()) == {
-        "schema": 1, "consent": True, "install_id": "", "seen": [],
+        "schema": 1, "consent": False,
     }
     instance.close()
 
 
-def test_saved_optout_survives_default_on_restart_and_deletes_identity(tmp_path):
-    instance = client(tmp_path, Recorder())
+def test_saved_optout_survives_default_off_restart_and_deletes_identity(tmp_path):
+    instance = client(tmp_path, Recorder(), consent=True)
     drain(instance)
     instance.set_consent(False)
     instance.close()
@@ -203,20 +250,25 @@ def test_only_valid_missing_consent_uses_default_and_corrupt_state_is_not_rewrit
     instance.close()
 
 
-def test_missing_consent_migration_preserves_valid_identity_and_acknowledged_events(tmp_path):
+def test_missing_consent_migration_defaults_off_and_does_not_report(tmp_path):
     sender = Recorder()
-    instance = client(tmp_path, sender, _day=lambda: "2026-09-09")
+    instance = client(tmp_path, sender, consent=True, _day=lambda: "2026-09-09")
     drain(instance)
     instance.close()
     path = tmp_path / "usage.json"
     state = json.loads(path.read_text(encoding="utf-8"))
     del state["consent"]
     path.write_text(json.dumps(state), encoding="utf-8")
+    sender.events.clear()
     restarted = client(tmp_path, sender, _day=lambda: "2026-09-09")
     drain(restarted)
-    assert len(sender.events) == 2
-    assert json.loads(path.read_text())["install_id"] == state["install_id"]
-    restarted.close()
+    try:
+        assert not restarted.consent_enabled
+        assert not restarted.record("addon_received")
+        assert sender.events == []
+        assert json.loads(path.read_text()) == {"schema": 1, "consent": False}
+    finally:
+        restarted.close()
 
 
 @pytest.mark.parametrize("saved_consent", [False, True])
@@ -616,7 +668,7 @@ def test_transport_does_not_follow_redirects_or_read_response_body(monkeypatch):
     assert "cookie" not in seen[0].headers
 
 
-def test_installer_optout_beats_default_on_and_is_saved_before_any_event(tmp_path):
+def test_installer_optout_beats_default_off_and_is_saved_before_any_event(tmp_path):
     (tmp_path / usage.USAGE_INSTALLER_OPT_OUT_FILENAME).write_text(
         "opt-out\n", encoding="utf-8"
     )

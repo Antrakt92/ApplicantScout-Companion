@@ -116,7 +116,7 @@ def test_missing_usage_client_has_disabled_unchecked_control(qtbot, tmp_path):
 
 
 @pytest.mark.parametrize("saved_consent", [None, False, True])
-def test_unavailable_collection_preserves_real_default_or_saved_checkbox_and_allows_optout(
+def test_unavailable_collection_preserves_real_default_or_saved_checkbox_and_allows_change(
     qtbot, tmp_path, saved_consent,
 ):
     path = tmp_path / "config" / "usage.json"
@@ -130,12 +130,12 @@ def test_unavailable_collection_preserves_real_default_or_saved_checkbox_and_all
         assert not usage.collection_available
         assert usage._thread is None
         assert dialog.usage_check.isEnabled()
-        assert dialog.usage_check.isChecked() is (saved_consent is not False)
+        assert dialog.usage_check.isChecked() is (saved_consent is True)
         assert path.read_bytes() == initial_bytes
         assert not usage.record("addon_received")
         dialog.usage_check.click()
-        assert dialog.usage_check.isChecked() is (saved_consent is False)
-        expected_consent = saved_consent is False
+        assert dialog.usage_check.isChecked() is (saved_consent is not True)
+        expected_consent = saved_consent is not True
 
         def _consent_saved() -> bool:
             try:

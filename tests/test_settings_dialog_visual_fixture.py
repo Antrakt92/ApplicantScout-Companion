@@ -240,7 +240,7 @@ def test_settings_compact_body_keeps_footer_next_to_content(qtbot, monkeypatch, 
     assert "active storage after 90 UTC days" in dialog.usage_check.toolTip()
     assert "recovery history can last 7 more days" in dialog.usage_check.toolTip()
     assert "Existing choices are preserved" in dialog.usage_check.accessibleDescription()
-    assert dialog.usage_check.isChecked() and dialog.usage_check.isEnabled()
+    assert not dialog.usage_check.isChecked() and dialog.usage_check.isEnabled()
     for control in (dialog.usage_check, privacy, unavailable):
         rect = QRect(control.mapTo(usage, QPoint()), control.size())
         assert usage.rect().contains(rect)

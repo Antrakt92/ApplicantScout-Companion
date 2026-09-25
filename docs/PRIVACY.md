@@ -1,8 +1,8 @@
 # Optional usage statistics
 
 ApplicantScout Companion can share a few usage milestones to help us understand
-whether people get through setup and use the overlay. **Sharing starts enabled
-when no preference has been saved.** Existing saved choices are preserved, and
+whether people get through setup and use the overlay. **Sharing stays off
+until you opt in.** Existing saved choices are preserved, and
 the addon and companion work with sharing turned off.
 
 Packaged builds with sharing enabled report to the ApplicantScout service hosted
