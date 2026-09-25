@@ -189,3 +189,40 @@ def test_env_only_sync_override_preserves_new_default_when_saving(first_run, mon
     first_run.cfg.sync_with_wow = first_run.values.sync_with_wow = False
     main_mod._persist_settings_values(first_run.cfg, first_run.values)
     assert _read_env_file(first_run.cfg.config_path)["APSCOUT_SYNC_WITH_WOW"] == "1"
+
+
+def test_p6_delta_dataclasses_have_sane_frozen_defaults():
+    import dataclasses
+
+    assert dataclasses.is_dataclass(main_mod.VersionDelta)
+    assert dataclasses.is_dataclass(main_mod.IdentityDelta)
+    assert dataclasses.is_dataclass(main_mod.RosterDiff)
+    assert dataclasses.is_dataclass(main_mod.ListingOutcome)
+    version = main_mod.VersionDelta()
+    assert version.version_applied is False
+    assert version.region_identity_changed is False
+    assert version.default_realm_changed is False
+    assert version.version_signal_region_id is None
+    identity = main_mod.IdentityDelta()
+    assert identity.player_identity_changed is False
+    assert identity.incoming_player_name == ""
+    diff = main_mod.RosterDiff()
+    assert diff.structurally_changed is False
+    assert diff.new_by_id == {}
+    outcome = main_mod.ListingOutcome()
+    assert outcome.consumed is False
+    assert outcome.rio_summary_target_key == 0
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        version.version_applied = True  # type: ignore[misc]
+
+
+def test_p1_bootstrap_types_are_dataclasses_without_qt_side_effects():
+    import dataclasses
+
+    from applicant_scout import app_bootstrap as bootstrap
+
+    assert dataclasses.is_dataclass(bootstrap.AppRuntime)
+    assert dataclasses.is_dataclass(bootstrap.QuitPipeline)
+    assert bootstrap.run_duplicate_probe(None) is None
+    # Importing the bootstrap module must not create a QApplication as a side effect.
+    assert not hasattr(bootstrap, "app")

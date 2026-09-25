@@ -711,3 +711,65 @@ def test_first_run_responsive_wait_is_bounded(
         is False
     )
     qtbot.waitUntil(lambda: "close" in state.calls, timeout=2000)
+
+
+def test_p6_identity_delta_starts_empty():
+    # P6: fresh state has no tracked producer, so nothing can "change".
+    machine = main_mod.StateMachine(main_mod.AppState())
+    delta = machine._compute_identity_delta(None)
+    assert isinstance(delta, main_mod.IdentityDelta)
+    assert delta.player_identity_changed is False
+    assert delta.incoming_player_name == ""
+
+
+def test_p6_version_block_without_version_is_noop():
+    # P6: a snapshot without VERSION leaves player/region flags untouched.
+    machine = main_mod.StateMachine(main_mod.AppState())
+    delta = machine._compute_identity_delta(None)
+    snap = SimpleNamespace(version=None)
+    version = machine._apply_version_block(snap, None, delta)
+    assert isinstance(version, main_mod.VersionDelta)
+    assert version.version_applied is False
+    assert version.region_identity_changed is False
+    assert version.default_realm_changed is False
+    assert version.version_signal_region_id is None
+
+
+def test_p6_empty_roster_diff_is_stable():
+    # P6: diffing an empty roster against empty state reports no change.
+    machine = main_mod.StateMachine(main_mod.AppState())
+    diff = machine._diff_roster([])
+    assert isinstance(diff, main_mod.RosterDiff)
+    assert diff.structurally_changed is False
+    assert diff.removed_ids == frozenset()
+    assert diff.added_ids == frozenset()
+
+
+def test_p1_quit_pipeline_flush_is_one_shot(qtbot, monkeypatch: pytest.MonkeyPatch):
+    # P1: the quit pipeline flushes exactly once even when requested twice.
+    from applicant_scout import app_bootstrap as bootstrap
+
+    calls: list[str] = []
+    real_quiesce = main_mod._quiesce_screenshot_ingestion
+    monkeypatch.setattr(
+        main_mod,
+        "_quiesce_screenshot_ingestion",
+        lambda watcher, gate: (calls.append("quiesce"), real_quiesce(watcher, gate)),
+    )
+    app = QApplication.instance()
+    assert app is not None
+    gate = main_mod._UpdateQuitGate()
+    signal_gate = main_mod._WatcherSignalGate()
+    pipeline = bootstrap.make_quit_pipeline(
+        app=app,
+        update_quit_gate=gate,
+        watcher_signal_gate=signal_gate,
+        get_settings_dialog=lambda: None,
+        get_window=lambda: None,
+        get_watcher=lambda: None,
+        get_active_update_control=lambda: None,
+        get_tray_controller=lambda: None,
+    )
+    pipeline.flush()
+    pipeline.flush()
+    qtbot.waitUntil(lambda: calls == ["quiesce"], timeout=1000)

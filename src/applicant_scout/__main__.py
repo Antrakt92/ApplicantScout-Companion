@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 import ctypes
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field as dataclass_field, replace
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -25,6 +25,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import __version__
+from . import app_bootstrap as _app_bootstrap
 from . import runtime_control as _runtime_control
 from . import snapshot_pipeline as _snapshot_pipeline
 from .usage import UsageClient
@@ -149,6 +150,8 @@ CONTROL_SHOW_SETTINGS_COMMAND = _runtime_control.CONTROL_SHOW_SETTINGS_COMMAND
 UPDATE_QUIT_BLOCKED_MESSAGE = (
     "Update is installing. Wait for it to finish before quitting."
 )
+# Re-exported for app_bootstrap.make_quit_pipeline (attribute access).
+_SETTINGS_QUIT_BLOCKED_MESSAGE = SETTINGS_QUIT_BLOCKED_MESSAGE
 WOW_EXIT_POLL_MS = 5000
 WOW_EXIT_MISSES_BEFORE_QUIT = 3
 # H2: pre-QApplication duplicate probe budget. One scoped connect only; the
@@ -649,6 +652,50 @@ def _validate_oauth_async(client: WCLClient) -> threading.Thread | None:
         name="WCLAuthValidator",
         on_start_error=lambda _exc: client.cancel_auth_validation(validation),
     )
+
+
+@dataclass(frozen=True)
+class VersionDelta:
+    """Outcome of the version/player-identity block of ``apply_snapshot``."""
+
+    region_identity_changed: bool = False
+    default_realm_changed: bool = False
+    version_applied: bool = False
+    version_signal_region_id: int | None = None
+
+
+@dataclass(frozen=True)
+class IdentityDelta:
+    """Incoming producer identity vs the currently tracked producer."""
+
+    incoming_player_name: str = ""
+    incoming_player_realm: str = ""
+    incoming_region: str | None = None
+    player_identity_changed: bool = False
+
+
+@dataclass(frozen=True)
+class RosterDiff:
+    """Pure roster diff: decoded snapshot rows vs current party members."""
+
+    new_by_id: dict[str, DecodedRosterMember] = dataclass_field(default_factory=dict)
+    old_ids: frozenset[str] = frozenset()
+    new_ids: frozenset[str] = frozenset()
+    removed_ids: frozenset[str] = frozenset()
+    added_ids: frozenset[str] = frozenset()
+    structurally_changed: bool = False
+
+
+@dataclass(frozen=True)
+class ListingOutcome:
+    """Carry from the listing block to the applicant-diff tail of ``apply_snapshot``."""
+
+    consumed: bool = False
+    new_listing: Listing | None = None
+    old_listing: Listing | None = None
+    new_leader_key: LeaderKey | None = None
+    leader_key_changed: bool = False
+    rio_summary_target_key: int = 0
 
 
 class StateMachine(QObject):
@@ -1192,6 +1239,27 @@ class StateMachine(QObject):
         )
         return member
 
+    def _diff_roster(
+        self,
+        roster: list[DecodedRosterMember],
+    ) -> RosterDiff:
+        """Pure diff of decoded roster rows vs current party members (no mutation)."""
+        new_by_id = {
+            self._roster_key(decoded.name): decoded
+            for decoded in roster
+            if decoded.name.strip()
+        }
+        old_ids = frozenset(self._state.party_members)
+        new_ids = frozenset(new_by_id)
+        return RosterDiff(
+            new_by_id=new_by_id,
+            old_ids=old_ids,
+            new_ids=new_ids,
+            removed_ids=old_ids - new_ids,
+            added_ids=new_ids - old_ids,
+            structurally_changed=bool(old_ids ^ new_ids),
+        )
+
     def _apply_roster_snapshot(
         self,
         roster: list[DecodedRosterMember],
@@ -1201,14 +1269,11 @@ class StateMachine(QObject):
         rio_summary_target_key: int = 0,
         emit_signal: bool = True,
     ) -> bool:
-        new_by_id = {
-            self._roster_key(decoded.name): decoded
-            for decoded in roster
-            if decoded.name.strip()
-        }
-        old_ids = set(self._state.party_members)
-        new_ids = set(new_by_id)
-        changed = bool(old_ids ^ new_ids)
+        diff = self._diff_roster(roster)
+        new_by_id = diff.new_by_id
+        old_ids = set(diff.old_ids)
+        new_ids = set(diff.new_ids)
+        changed = diff.structurally_changed
 
         for member_id in old_ids - new_ids:
             self._state.remove_party_member(member_id)
@@ -1369,8 +1434,10 @@ class StateMachine(QObject):
             full_name=resolved_full_name,
         )
 
-    def apply_snapshot(self, snap: Snapshot) -> None:
-        resolved_player = self._resolve_snapshot_player(snap)
+    def _compute_identity_delta(
+        self, resolved_player: WoWPlayer | None
+    ) -> IdentityDelta:
+        """Pure identity comparison: incoming producer vs tracked producer."""
         incoming_player_identity = (
             resolved_player.full_name.strip().casefold()
             if resolved_player is not None
@@ -1400,74 +1467,104 @@ class StateMachine(QObject):
                 or (incoming_region is not None and incoming_region != current_region)
             )
         )
-        region_identity_changed = False
-        default_realm_changed = False
-        # ─── Version ───
-        if snap.version is not None and resolved_player is not None:
-            old_player = self._state.player
-            new_player = resolved_player
-            old_region_token = REGION_ID_TO_WCL.get(old_player.region_id)
-            new_region_token = REGION_ID_TO_WCL.get(new_player.region_id)
-            region_identity_changed = (
-                new_region_token is not None and new_region_token != old_region_token
-            )
-            old_realm_slug = derive_server_slug(
-                default_realm_from_player(old_player.full_name)
-            )
-            new_realm_slug = derive_server_slug(
-                default_realm_from_player(new_player.full_name)
-            )
-            default_realm_changed = bool(new_realm_slug) and (
-                new_realm_slug != old_realm_slug
-            )
+        return IdentityDelta(
+            incoming_player_name=incoming_player_name,
+            incoming_player_realm=incoming_player_realm,
+            incoming_region=incoming_region,
+            player_identity_changed=player_identity_changed,
+        )
+
+    def _apply_player_identity(
+        self, new_player: WoWPlayer, identity: IdentityDelta
+    ) -> None:
+        """Retire stale transport domains + track the authoritative producer."""
+        if identity.player_identity_changed:
+            # A shared WoW Screenshots folder can outlive an account or
+            # character switch. Retire stale transport domains after the
+            # region consumer moves, then restore the authoritative player.
+            self.retire_screenshot_source()
             self._state.player = new_player
-            if new_player.region_id != old_player.region_id:
-                # Direct Qt slots update the WCL client synchronously. Do this
-                # before local-RIO preload because supported readers may invoke
-                # their completion callback before preload_region_async returns.
-                self.versionUpdated.emit(new_player.region_id)
-            if player_identity_changed:
-                # A shared WoW Screenshots folder can outlive an account or
-                # character switch. Retire stale transport domains after the
-                # region consumer moves, then restore the authoritative player.
-                self.retire_screenshot_source()
-                self._state.player = new_player
-            if incoming_player_name:
-                if (
-                    player_identity_changed
-                    or incoming_player_name != current_player_name
-                ):
-                    self._producer_player_name = incoming_player_name
+        incoming_player_name = identity.incoming_player_name
+        incoming_player_realm = identity.incoming_player_realm
+        incoming_region = identity.incoming_region
+        current_player_name = self._producer_player_name
+        if incoming_player_name:
+            if (
+                identity.player_identity_changed
+                or incoming_player_name != current_player_name
+            ):
+                self._producer_player_name = incoming_player_name
+                self._producer_player_realm = incoming_player_realm
+                self._producer_region = incoming_region
+            else:
+                self._producer_player_name = incoming_player_name
+                if incoming_player_realm:
                     self._producer_player_realm = incoming_player_realm
+                if incoming_region is not None:
                     self._producer_region = incoming_region
-                else:
-                    self._producer_player_name = incoming_player_name
-                    if incoming_player_realm:
-                        self._producer_player_realm = incoming_player_realm
-                    if incoming_region is not None:
-                        self._producer_region = incoming_region
-            try:
-                self._preload_local_rio_region(new_region_token)
-            except Exception as exc:  # noqa: BLE001 - snapshot remains authoritative
-                log.warning(
-                    "Could not preload local RaiderIO data for snapshot region %s: %s",
-                    new_region_token,
-                    exc,
-                )
-            log.info(
-                "Player: %s (region=%d)",
-                new_player.full_name,
-                new_player.region_id,
-            )
 
-        if not snap.terminal_clear and not snap.lfg_unavailable:
-            self._refresh_preserved_identity_rows(
-                applicants=False,
-                roster=snap.roster_unavailable,
-                region_identity_changed=region_identity_changed,
-                default_realm_changed=default_realm_changed,
+    def _apply_version_block(
+        self,
+        snap: Snapshot,
+        resolved_player: WoWPlayer | None,
+        identity: IdentityDelta,
+    ) -> VersionDelta:
+        """Apply the VERSION block: player, region signals, preload, logging."""
+        if snap.version is None or resolved_player is None:
+            return VersionDelta()
+        old_player = self._state.player
+        new_player = resolved_player
+        old_region_token = REGION_ID_TO_WCL.get(old_player.region_id)
+        new_region_token = REGION_ID_TO_WCL.get(new_player.region_id)
+        region_identity_changed = (
+            new_region_token is not None and new_region_token != old_region_token
+        )
+        old_realm_slug = derive_server_slug(
+            default_realm_from_player(old_player.full_name)
+        )
+        new_realm_slug = derive_server_slug(
+            default_realm_from_player(new_player.full_name)
+        )
+        default_realm_changed = bool(new_realm_slug) and (
+            new_realm_slug != old_realm_slug
+        )
+        self._state.player = new_player
+        version_signal_region_id: int | None = None
+        if new_player.region_id != old_player.region_id:
+            # Direct Qt slots update the WCL client synchronously. Do this
+            # before local-RIO preload because supported readers may invoke
+            # their completion callback before preload_region_async returns.
+            version_signal_region_id = new_player.region_id
+            self.versionUpdated.emit(new_player.region_id)
+        self._apply_player_identity(new_player, identity)
+        try:
+            self._preload_local_rio_region(new_region_token)
+        except Exception as exc:  # noqa: BLE001 - snapshot remains authoritative
+            log.warning(
+                "Could not preload local RaiderIO data for snapshot region %s: %s",
+                new_region_token,
+                exc,
             )
+        log.info(
+            "Player: %s (region=%d)",
+            new_player.full_name,
+            new_player.region_id,
+        )
+        return VersionDelta(
+            region_identity_changed=region_identity_changed,
+            default_realm_changed=default_realm_changed,
+            version_applied=True,
+            version_signal_region_id=version_signal_region_id,
+        )
 
+    def _apply_listing_block(
+        self,
+        snap: Snapshot,
+        *,
+        region_identity_changed: bool,
+        default_realm_changed: bool,
+    ) -> ListingOutcome:
+        """Apply leader-key + listing branches; consumed=True ends the snapshot."""
         # ─── Leader keystone ───
         old_leader_key = self._state.leader_key
         new_leader_key: LeaderKey | None = None
@@ -1518,7 +1615,13 @@ class StateMachine(QObject):
                 self.cleared.emit()
             if roster_changed:
                 self.rosterChanged.emit()
-            return
+            return ListingOutcome(
+                consumed=True,
+                new_listing=None,
+                old_listing=old_listing,
+                new_leader_key=new_leader_key,
+                leader_key_changed=leader_key_changed,
+            )
 
         # Partial LFG snapshot: chat/LFG lockdown kept roster transport alive, but
         # listing and applicant reads were not authoritative. Preserve LFG state
@@ -1552,7 +1655,14 @@ class StateMachine(QObject):
             )
             if listing_changed or leader_key_changed:
                 self.listingChanged.emit()
-            return
+            return ListingOutcome(
+                consumed=True,
+                new_listing=new_listing,
+                old_listing=old_listing,
+                new_leader_key=new_leader_key,
+                leader_key_changed=leader_key_changed,
+                rio_summary_target_key=rio_summary_target_key,
+            )
 
         # NOLISTING-equivalent: snap arrived with has_listing=0 AND we had one.
         # Clear all applicants + emit cleared signal so overlay hides.
@@ -1574,7 +1684,13 @@ class StateMachine(QObject):
             self.cleared.emit()
             if roster_changed:
                 self.rosterChanged.emit()
-            return
+            return ListingOutcome(
+                consumed=True,
+                new_listing=new_listing,
+                old_listing=old_listing,
+                new_leader_key=new_leader_key,
+                leader_key_changed=leader_key_changed,
+            )
 
         # No listing in snap AND no prior listing → roster/version can still update.
         if new_listing is None:
@@ -1589,7 +1705,13 @@ class StateMachine(QObject):
                 )
             if leader_key_changed:
                 self.listingChanged.emit()
-            return
+            return ListingOutcome(
+                consumed=True,
+                new_listing=new_listing,
+                old_listing=old_listing,
+                new_leader_key=new_leader_key,
+                leader_key_changed=leader_key_changed,
+            )
 
         rio_summary_target_key = 0
         if new_leader_key is not None:
@@ -1616,7 +1738,14 @@ class StateMachine(QObject):
             )
             if leader_key_changed:
                 self.listingChanged.emit()
-            return
+            return ListingOutcome(
+                consumed=True,
+                new_listing=new_listing,
+                old_listing=old_listing,
+                new_leader_key=new_leader_key,
+                leader_key_changed=leader_key_changed,
+                rio_summary_target_key=rio_summary_target_key,
+            )
 
         # Listing changed (dungeon/key/comment) — fire signal so overlay re-titles
         if new_listing != old_listing:
@@ -1632,6 +1761,38 @@ class StateMachine(QObject):
             self.listingChanged.emit()
         elif leader_key_changed:
             self.listingChanged.emit()
+        return ListingOutcome(
+            consumed=False,
+            new_listing=new_listing,
+            old_listing=old_listing,
+            new_leader_key=new_leader_key,
+            leader_key_changed=leader_key_changed,
+            rio_summary_target_key=rio_summary_target_key,
+        )
+
+    def apply_snapshot(self, snap: Snapshot) -> None:
+        resolved_player = self._resolve_snapshot_player(snap)
+        identity = self._compute_identity_delta(resolved_player)
+        version = self._apply_version_block(snap, resolved_player, identity)
+        region_identity_changed = version.region_identity_changed
+        default_realm_changed = version.default_realm_changed
+
+        if not snap.terminal_clear and not snap.lfg_unavailable:
+            self._refresh_preserved_identity_rows(
+                applicants=False,
+                roster=snap.roster_unavailable,
+                region_identity_changed=region_identity_changed,
+                default_realm_changed=default_realm_changed,
+            )
+
+        outcome = self._apply_listing_block(
+            snap,
+            region_identity_changed=region_identity_changed,
+            default_realm_changed=default_realm_changed,
+        )
+        if outcome.consumed:
+            return
+        rio_summary_target_key = outcome.rio_summary_target_key
 
         # ─── Applicants diff ───
         # Composite key f"{applicant_id}:{member_idx}" — required for multi-
@@ -4918,145 +5079,72 @@ def main(argv: list[str] | None = None) -> int:
     if early_exit is not None:
         return early_exit
     duplicate_command = _duplicate_launch_command(args, wow_watch_mode=wow_watch_mode)
-    if duplicate_command is not None:
-        # H2 fast path: a single scoped connect with a short timeout, before
-        # QApplication exists. The legacy endpoint is still probed after
-        # startup by _create_control_server, so older instances keep working.
-        result = _send_control_command(
-            duplicate_command,
-            timeout_ms=_DUPLICATE_PROBE_TIMEOUT_MS,
-            server_names=(CONTROL_SERVER_NAME,),
-        )
-        if _control_command_acknowledged(result):
-            return 0
-        if result.connected and result.written and result.response is None:
-            log.warning(
-                "Running ApplicantScout instance did not acknowledge %r; "
-                "refusing to start a duplicate instance.",
-                duplicate_command,
-            )
-            return 1
-        elif result.connected and result.written:
-            log.warning(
-                "Running ApplicantScout instance returned unexpected response "
-                "for %r: %r",
-                duplicate_command,
-                result.response,
-            )
-            return 1
-        if result.connected and not result.written:
-            log.warning(
-                "Could not send duplicate-launch control command: %s",
-                result.error or "unknown error",
-            )
-            return 1
-    _set_windows_app_user_model_id()
-    app = QApplication([sys.argv[0], *args])
-    app.setApplicationName("ApplicantScout")
-    if isinstance(app, QObject):
-        _initialize_snapshot_apply_dispatcher(app)
-    if isinstance(app, _QT_APPLICATION_CLASS):
-        app.setWindowIcon(_app_icon())
+    duplicate_exit = _app_bootstrap.run_duplicate_probe(duplicate_command)
+    if duplicate_exit is not None:
+        return duplicate_exit
+    app = _app_bootstrap.build_qapplication(args)
     if logging_setup_warning is not None:
         QMessageBox.warning(
             None,
             "ApplicantScout logging",
             logging_setup_warning,
         )
-    wow_sync_startup_configurator = _WowSyncStartupConfigurator(
-        app if isinstance(app, QObject) else None
-    )
-
     settings_dialog: SettingsDialog | None = None
     window_ref: dict[str, OverlayWindow] = {}
-    show_settings_action = _DeferredGuiAction()
     pending_update_version: str | None = None
     startup_update_prompt_pending = wow_watch_mode
     tray_controller: TrayController | None = None
-    update_quit_gate = _UpdateQuitGate()
     update_handoff_recovery: _UpdateHandoffRecoveryController | None = None
     watcher: ScreenshotWatcher | None = None
-    watcher_signal_gate = _WatcherSignalGate()
     live_snapshot_writer: LiveSnapshotCacheWriter | None = None
-    update_signals = UpdateSignals(app if isinstance(app, QObject) else None)
     active_update_control: UpdateDownloadControl | None = None
+    # H3: bounded quit-time wait for the async settings pipeline (assigned in
+    # _show_settings once the dialog exists; also registered into the pipeline).
+    settings_apply_drain: Callable[[], bool] | None = None
 
-    def _check_updates_with_handoff() -> SettingsUpdateResult | str:
-        return _check_updates(update_quit_gate=update_quit_gate, control=active_update_control)
+    # P1 bootstrap (pure moves, same order): runtime controllers first, then
+    # the quit pipeline bound to main's mutable locals via getters.
+    _runtime = _app_bootstrap.build_runtime_controllers(app)
+    wow_sync_startup_configurator = _runtime.wow_sync_startup_configurator
+    show_settings_action = _runtime.show_settings_action
+    update_quit_gate = _runtime.update_quit_gate
+    watcher_signal_gate = _runtime.watcher_signal_gate
+    update_signals = _runtime.update_signals
+
+    _quit_pipeline = _app_bootstrap.make_quit_pipeline(
+        app=app,
+        update_quit_gate=update_quit_gate,
+        watcher_signal_gate=watcher_signal_gate,
+        get_settings_dialog=lambda: settings_dialog,
+        get_window=lambda: window_ref.get("window"),
+        get_watcher=lambda: watcher,
+        get_active_update_control=lambda: active_update_control,
+        get_tray_controller=lambda: tray_controller,
+        get_update_handoff_recovery=lambda: update_handoff_recovery,
+    )
+    _check_updates_with_handoff = _quit_pipeline.__dict__[  # type: ignore[attr-defined]
+        "check_updates_with_handoff"
+    ]
+    _flush_before_quit = _quit_pipeline.flush
+    _quit_application = _quit_pipeline.quit_app
+    _can_quit_application = _quit_pipeline.can_quit
+    _can_control_quit_application = _quit_pipeline.can_control_quit
+    _prepare_quit_application = _quit_pipeline.prepare_quit
+    _prepare_control_quit_application = _quit_pipeline.prepare_control_quit
+    _request_quit_application = _quit_pipeline.request_quit
+    _show_update_quit_blocked = _quit_pipeline.__dict__[  # type: ignore[attr-defined]
+        "show_update_quit_blocked"
+    ]
+
+    def _sync_settings_drain_into_pipeline() -> None:
+        holder = _quit_pipeline.__dict__.get("settings_drain_holder")
+        if isinstance(holder, dict):
+            holder["drain"] = settings_apply_drain
 
     def _cancel_update_download() -> bool:
         return active_update_control.cancel() if active_update_control is not None else False
 
-    # H3: bounded quit-time wait for the async settings pipeline (assigned in
-    # _show_settings once the dialog exists).
-    settings_apply_drain: Callable[[], bool] | None = None
-
-    def _flush_before_quit_impl() -> None:
-        _quiesce_screenshot_ingestion(
-            watcher,
-            watcher_signal_gate,
-        )
-        if settings_dialog is not None:
-            settings_dialog.flush_pending_values()
-        if settings_apply_drain is not None and not settings_apply_drain():
-            log.warning("Settings apply did not finish before quit; continuing.")
-        if active_window := window_ref.get("window"):
-            active_window.flush_geometry()
-
-    _flush_before_quit = _make_one_shot_callback(_flush_before_quit_impl)
-
-    def _quit_application() -> None:
-        if update_handoff_recovery is not None:
-            update_handoff_recovery.disarm()
-        _flush_before_quit()
-        app.quit()
-
-    def _can_quit_application() -> bool:
-        return update_quit_gate.can_user_quit()
-
-    def _can_control_quit_application() -> bool:
-        return update_quit_gate.can_control_quit()
-
-    def _show_update_quit_blocked() -> None:
-        if tray_controller is not None:
-            tray_controller.show_update_quit_blocked()
-            return
-        if settings_dialog is not None:
-            settings_dialog.set_status(UPDATE_QUIT_BLOCKED_MESSAGE, error=True)
-            return
-        log.info(UPDATE_QUIT_BLOCKED_MESSAGE)
-
-    def _show_settings_quit_blocked() -> None:
-        if settings_dialog is not None:
-            settings_dialog.show()
-            settings_dialog.raise_()
-            settings_dialog.activateWindow()
-            return
-        log.info(SETTINGS_QUIT_BLOCKED_MESSAGE)
-
-    def _prepare_quit_application() -> bool:
-        if not _can_quit_application():
-            _show_update_quit_blocked()
-            return False
-        if not _prepare_settings_before_quit(settings_dialog):
-            _show_settings_quit_blocked()
-            return False
-        return True
-
-    def _prepare_control_quit_application() -> bool:
-        if not _can_control_quit_application():
-            _show_update_quit_blocked()
-            return False
-        return update_quit_gate.prepare_control_quit(_prepare_quit_application)
-
-    def _request_quit_application() -> None:
-        if not _prepare_quit_application():
-            return
-        _quit_application()
-
     about_to_quit = getattr(app, "aboutToQuit", None)
-    if about_to_quit is not None:
-        about_to_quit.connect(_flush_before_quit)
 
     try:
         control_server = _create_control_server(
@@ -5414,6 +5502,7 @@ def main(argv: list[str] | None = None) -> int:
             on_ready=_commit_apply_outcome,
         )
         settings_apply_drain = settings_applier.drain
+        _sync_settings_drain_into_pipeline()
 
         def _handle_values_changed(values) -> None:
             _apply_settings_values(values, apply_credentials=False)
