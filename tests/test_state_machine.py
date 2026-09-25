@@ -8,7 +8,7 @@ Covers:
   same composite slot has a DIFFERENT character — must wipe WCL data
   even if specs happen to match.
 
-PyQtSignal emit-to-nothing is no-op (no slots connected) so these tests
+Qt signal emit-to-nothing is no-op (no slots connected) so these tests
 run without QApplication. State inspection via state.applicants dict.
 """
 

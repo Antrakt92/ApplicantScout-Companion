@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import Qt
+from PySide6.QtCore import Qt
 
 from applicant_scout.config import Config
 from applicant_scout.settings_dialog import SettingsDialog

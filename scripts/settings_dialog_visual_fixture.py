@@ -19,7 +19,7 @@ from applicant_scout.usage import UsageClient
 from scripts.visual_fixture_checks import VisualFixtureDiff, compare_visual_images
 
 if TYPE_CHECKING:
-    from PyQt6.QtGui import QImage, QPixmap
+    from PySide6.QtGui import QImage, QPixmap
 
 
 SETTINGS_DIALOG_VISUAL_BASELINE_PATH = (

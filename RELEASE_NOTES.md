@@ -1,5 +1,31 @@
 # ApplicantScout Companion Release Notes
 
+## Unreleased
+
+### Improved
+
+- Show when a Companion update is available directly in the overlay.
+- Keep the overlay responsive during hover, refresh and settings actions, and
+  shorten startup checks without delaying QR screenshots or cache writes.
+- Use PySide6 for the Windows interface while keeping the existing overlay and
+  settings layout.
+
+### Privacy and security
+
+- Keep usage statistics off until you choose to share them; preserve existing
+  choices, and allow turning reporting off in Settings.
+- Validate update destinations and versions before download, protect saved
+  state from damaged update metadata, and avoid exposing credentials in logs.
+
+### Fixed
+
+- Finish background actions safely when Settings closes, and bound shutdown
+  waits so exiting the app does not hang on a worker.
+- Make installer upgrades safer around downgrades, free space, interrupted
+  upgrades and leftover files; preserve user settings during uninstall.
+- Keep the portable application's entry point and packaged license/source
+  notices consistent with the Windows build.
+
 ## 0.20.1 - 24-Sep-2026
 
 Companion-only patch.

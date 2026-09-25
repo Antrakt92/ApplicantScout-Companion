@@ -6,7 +6,7 @@ string formatting like the overlay HTML helpers.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PySide6.QtCore import Qt
 
 from applicant_scout.overlay import (
     ROLE_FILTER_RESET_SIZE,

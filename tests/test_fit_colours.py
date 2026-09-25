@@ -4,8 +4,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QImage
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QImage
 
 from applicant_scout import overlay, scoring
 from applicant_scout.constants import percentile_colour

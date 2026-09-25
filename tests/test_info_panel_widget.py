@@ -7,9 +7,9 @@ import time
 from dataclasses import replace
 
 import pytest
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PyQt6.QtGui import QColor, QFont, QHelpEvent, QImage, QPainter
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
+from PySide6.QtGui import QColor, QFont, QHelpEvent, QImage, QPainter
+from PySide6.QtWidgets import (
     QApplication,
     QLabel,
     QStyleOptionViewItem,

@@ -12,7 +12,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 import applicant_scout.__main__ as main_mod
 import applicant_scout.settings_dialog as settings_mod

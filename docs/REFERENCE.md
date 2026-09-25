@@ -56,7 +56,8 @@ If the RaiderIO addon is installed, the companion can read local RaiderIO addon
 database files under `_retail_\Interface\AddOns\RaiderIO\db` to enrich
 score/progress context.
 
-Before sharing support material publicly, redact `/apscout status` output,
+Before sharing support material publicly, redact `/apscout status` and
+`/apscout status diag` output,
 `/apscout taintcheck` output, companion logs, QR screenshots, manual decode
 output, `config.env`, `token.json`, `character-cache.json`,
 `last-live-snapshot.json`, and `screenshot-manual-index-v2-*.json`. Treat the
@@ -168,7 +169,8 @@ through the slash commands below.
 /apscout toggle         flip enabled state
 /apscout config         open/close settings panel
 /apscout setup          show companion download and setup
-/apscout status         show current state + QR diagnostics
+/apscout status         show a short capture summary
+/apscout status diag    show detailed QR diagnostics
 /apscout playstyle [off|learning|relaxed|competitive|carry] set M+ default playstyle
 /apscout reset          clear transport cache, queue fresh snapshot
 /apscout shotnow        request snapshot while enabled; defers in combat/M+/boss fights
@@ -195,7 +197,8 @@ through the slash commands below.
   `_retail_\Screenshots` folder. If `APSCOUT_SCREENSHOTS_PATH` is set as a
   process environment variable, correct or remove that override first.
 - WoW side looks idle: run `/apscout status` and check that ApplicantScout is
-  enabled while you are hosting a listing or reviewing Party view.
+  enabled while you are hosting a listing or reviewing Party view. Use
+  `/apscout status diag` for detailed QR troubleshooting.
 - Need a manual sync: keep ApplicantScout enabled and run `/apscout shotnow`;
   the request waits until combat, an active M+ run, or a boss encounter ends. If
   applicant state looks stale, run `/apscout reset` while transport is active.

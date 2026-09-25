@@ -372,6 +372,21 @@ def verify_no_bundled_icu(app_dir: Path) -> None:
         )
 
 
+def verify_no_virtual_keyboard(app_dir: Path) -> None:
+    """Reject the unused GPL-only Qt module if a hook starts collecting it."""
+    forbidden = {"qt6virtualkeyboard.dll", "qtvirtualkeyboardplugin.dll"}
+    bundled = sorted(
+        path.relative_to(app_dir).as_posix()
+        for path in _walk_payload_paths(app_dir)
+        if path.is_file() and path.name.casefold() in forbidden
+    )
+    if bundled:
+        raise FrozenRuntimeVerificationError(
+            "Frozen runtime contains unused Qt Virtual Keyboard: "
+            + ", ".join(bundled)
+        )
+
+
 def _is_secret_basename(name: str) -> bool:
     lowered = name.casefold()
     return (
@@ -525,6 +540,7 @@ def verify_frozen_runtime(
     verify_no_forbidden_modules(analysis_toc, pyz_toc)
     verify_application_import_warnings(warn_path)
     verify_no_bundled_icu(app_dir)
+    verify_no_virtual_keyboard(app_dir)
     verify_no_secret_artifacts(app_dir)
     verify_amd64_payload(app_dir, producer_python=producer_python)
 

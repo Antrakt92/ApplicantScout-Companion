@@ -13,8 +13,8 @@ import sys
 import time
 from typing import Any
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtCore import QTimer
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 
 log = logging.getLogger("applicant_scout")

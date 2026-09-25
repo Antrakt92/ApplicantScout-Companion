@@ -1,4 +1,4 @@
-"""PyQt6 frameless always-on-top overlay window with applicant table."""
+"""PySide6 frameless always-on-top overlay window with applicant table."""
 
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QEvent,
     Qt,
     QSize,
-    pyqtSignal,
+    Signal,
     QTimer,
     QRunnable,
     QThreadPool,
@@ -26,7 +26,7 @@ from PyQt6.QtCore import (
     QRect,
     QRectF,
 )
-from PyQt6.QtGui import (
+from PySide6.QtGui import (
     QColor,
     QCursor,
     QFont,
@@ -42,7 +42,7 @@ from PyQt6.QtGui import (
     QPixmap,
     QRegion,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
     QApplication,
@@ -412,13 +412,13 @@ MPLUS_FIT_EXPLANATION = (
 
 
 class _FetchSignals(QObject):
-    done = pyqtSignal(object, object)  # _FetchIdentity, CharacterRanks
-    networkDone = pyqtSignal(object, object)  # excludes cache-only completions
+    done = Signal(object, object)  # _FetchIdentity, CharacterRanks
+    networkDone = Signal(object, object)  # excludes cache-only completions
 
 
 class _RaidBossFetchSignals(QObject):
-    done = pyqtSignal(object, object, object, object)  # identity, rows, error, kind
-    networkDone = pyqtSignal(object, object, object, object)
+    done = Signal(object, object, object, object)  # identity, rows, error, kind
+    networkDone = Signal(object, object, object, object)
 
 
 @dataclass(frozen=True)
@@ -763,7 +763,7 @@ def _render_tooltip(parent_widget, tip: str, global_pos) -> bool:
     Qt's global tooltip widget (screen-parented) which paints reliably.
 
     Returns True so callers can `return _render_tooltip(...)` to consume."""
-    from PyQt6.QtWidgets import QToolTip
+    from PySide6.QtWidgets import QToolTip
 
     if tip:
         QToolTip.showText(global_pos, tip, parent_widget)
@@ -934,7 +934,7 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
         if markers != self._group_marker_by_row:
             self._group_marker_by_row = markers
 
-    def paint(self, painter, option, index):  # type: ignore[override]
+    def paint(self, painter: QPainter, option, index):  # type: ignore[override]
         # Item paints first (preserves QTableWidgetItem.setBackground colours
         # for raid/M+ percentile cells). Stripe overlays after — visible over
         # any background, never desaturates the text behind it.
@@ -1127,8 +1127,8 @@ class _HoverHighlightDelegate(QStyledItemDelegate):
 class _KeyboardButton(QPushButton):
     """QPushButton with consistent Enter/Return activation outside dialogs."""
 
-    def keyPressEvent(self, event: QKeyEvent | None) -> None:  # type: ignore[override]
-        if event is not None and event.key() in (
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
+        if event.key() in (
             Qt.Key.Key_Enter,
             Qt.Key.Key_Return,
         ):
@@ -1141,10 +1141,10 @@ class _KeyboardButton(QPushButton):
 class _ApplicantTableWidget(QTableWidget):
     """Applicant table with explicit keyboard and focus traversal behavior."""
 
-    keyboardNavigated = pyqtSignal(int)
-    rowActivated = pyqtSignal(int)
-    unpinRequested = pyqtSignal()
-    focusTraversalRequested = pyqtSignal(bool)
+    keyboardNavigated = Signal(int)
+    rowActivated = Signal(int)
+    unpinRequested = Signal()
+    focusTraversalRequested = Signal(bool)
 
     _NAVIGATION_KEYS = frozenset(
         {
@@ -1157,7 +1157,7 @@ class _ApplicantTableWidget(QTableWidget):
         }
     )
 
-    def event(self, event: QEvent | None) -> bool:  # type: ignore[override]
+    def event(self, event: QEvent) -> bool:  # type: ignore[override]
         # QWidget consumes Tab for focus traversal before keyPressEvent. Route
         # it explicitly so QAbstractItemView cannot reinterpret it as a cell
         # move and trap focus inside the table.
@@ -1175,9 +1175,7 @@ class _ApplicantTableWidget(QTableWidget):
             return True
         return super().event(event)
 
-    def keyPressEvent(self, event: QKeyEvent | None) -> None:  # type: ignore[override]
-        if event is None:
-            return super().keyPressEvent(event)
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
         key = event.key()
         if key in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Space):
             row = self.currentRow()
@@ -1270,9 +1268,9 @@ def _settings_sliders_icon() -> QIcon:
 
 
 class TitleBar(QWidget):
-    hideClicked = pyqtSignal()
-    settingsClicked = pyqtSignal()
-    dragFinished = pyqtSignal()
+    hideClicked = Signal()
+    settingsClicked = Signal()
+    dragFinished = Signal()
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
@@ -1355,9 +1353,9 @@ class TitleBar(QWidget):
 
 
 class OverlayLauncher(_KeyboardButton):
-    dragStarted = pyqtSignal()
-    dragFinished = pyqtSignal()
-    positionChanged = pyqtSignal()
+    dragStarted = Signal()
+    dragFinished = Signal()
+    positionChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__("AS", None)
@@ -1551,8 +1549,8 @@ class OverlayLauncher(_KeyboardButton):
 
 
 class SourceTabBar(QWidget):
-    tabChanged = pyqtSignal(str)
-    keyChanged = pyqtSignal(int)
+    tabChanged = Signal(str)
+    keyChanged = Signal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1788,7 +1786,7 @@ class RoleFilterBar(QWidget):
     the focus chain only after the top-level overlay has been explicitly
     activated; passive in-game show paths still do not take focus."""
 
-    filterChanged = pyqtSignal(set)
+    filterChanged = Signal(set)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1896,7 +1894,7 @@ class _IdentityLabel(QLabel):
     """Keep full identity metadata while yielding header space to its actions."""
 
     def setText(self, text: str | None) -> None:  # noqa: N802
-        super().setText(text)
+        super().setText(text or "")
         self.setToolTip(text or "")
         self.setAccessibleName(text or "")
 
@@ -1993,10 +1991,10 @@ class ApplicantInfoPanel(QFrame):
     below it. Child widgets are created once and updated in-place on each
     hover; this keeps fast mouse movement cheap and avoids layout churn."""
 
-    pinCleared = pyqtSignal()
-    detailChanged = pyqtSignal()
-    wclRetryRequested = pyqtSignal()
-    focusFallbackRequested = pyqtSignal()
+    pinCleared = Signal()
+    detailChanged = Signal()
+    wclRetryRequested = Signal()
+    focusFallbackRequested = Signal()
 
     def __init__(
         self,
@@ -7517,7 +7515,7 @@ class OverlayWindow(QMainWindow):
 
     # ─── overrides ─────
 
-    def eventFilter(self, obj, event):  # type: ignore[override]
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # type: ignore[override]
         """Routes tooltip events through QToolTip.showText(), AND handles
         hover-bookkeeping events on the table viewport + WindowDeactivate on self.
 
@@ -7533,8 +7531,8 @@ class OverlayWindow(QMainWindow):
 
         Hover/window branches return False so Qt continues normal processing
         after our bookkeeping runs."""
-        from PyQt6.QtCore import QEvent
-        from PyQt6.QtGui import QHelpEvent
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QHelpEvent
 
         if not hasattr(self, "_table"):
             return super().eventFilter(obj, event)
@@ -7579,7 +7577,9 @@ class OverlayWindow(QMainWindow):
             # errors rely on this bypass because their visible text is bounded.
             # Identity match only: objectName/text can change without affecting
             # which child widgets need the translucent-overlay tooltip bypass.
-            if obj is not None and any(obj is widget for widget in self._action_tooltip_widgets):
+            if isinstance(obj, QWidget) and any(
+                obj is widget for widget in self._action_tooltip_widgets
+            ):
                 return _render_tooltip(obj, obj.toolTip(), event.globalPos())
         # Branch C — table viewport Leave / MouseMove (hover bookkeeping).
         table_vp = self._table.viewport()

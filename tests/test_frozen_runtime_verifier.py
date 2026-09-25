@@ -15,6 +15,7 @@ from scripts.verify_frozen_runtime import (
     verify_application_import_warnings,
     verify_collect_membership,
     verify_no_bundled_icu,
+    verify_no_virtual_keyboard,
     verify_no_payload_redirection,
     verify_no_forbidden_modules,
     verify_packaged_extras,
@@ -120,6 +121,18 @@ def test_bundled_icu_is_rejected_recursively(tmp_path: Path):
 
     icu.unlink()
     verify_no_bundled_icu(app_dir)
+
+
+@pytest.mark.parametrize("name", ("Qt6VirtualKeyboard.dll", "qtvirtualkeyboardplugin.dll"))
+def test_unused_virtual_keyboard_is_rejected(tmp_path: Path, name: str):
+    app_dir = tmp_path / "ApplicantScout"
+    module = app_dir / "_internal" / "PySide6" / name
+    _write_pe(module, AMD64_MACHINE)
+    with pytest.raises(FrozenRuntimeVerificationError, match="Qt Virtual Keyboard"):
+        verify_no_virtual_keyboard(app_dir)
+
+    module.unlink()
+    verify_no_virtual_keyboard(app_dir)
 
 
 def test_build_and_test_only_modules_are_rejected_from_frozen_pyz(tmp_path: Path):

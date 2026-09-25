@@ -14,6 +14,7 @@ files. Build tooling copies this directory into the packaged `licenses/` tree.
 | `libiconv-1.14-NOTICES.txt` | GNU library copyright and version-2-or-later notices from the conversion, relocation and locale-support sources. |
 | `Qt-6.11.2-NOTICES.txt` | 49 third-party attribution records from the official QtBase, QtSvg and QtImageFormats binary SPDX dependency graph, with their 42 referenced license files. |
 | `QtPdf-6.11.2-NOTICES.txt` | The nine third-party components listed by Qt PDF, plus the IJG and FreeType component notices referenced by their license files. |
+| `QtForPython-LICENSE-LGPL-3.0-only.txt`, `QtForPython-LICENSE-GPL-2.0-only.txt`, `QtForPython-LICENSE-GPL-3.0-only.txt` | Verbatim open-source license alternatives from the verified Qt for Python 6.11.2 source archive's `LICENSES/` directory; apply to the PySide6 and Shiboken wheels as their metadata states. |
 
 The upstream archives used for these notices are:
 
@@ -23,6 +24,7 @@ The upstream archives used for these notices are:
 | [LLVM 3.6.2](https://releases.llvm.org/3.6.2/llvm-3.6.2.src.tar.xz) | `f60dc158bfda6822de167e87275848969f0558b3134892ff54fced87e4667b94` |
 | [GNU libiconv 1.14](https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.14.tar.gz) | `72b24ded17d687193c3366d0ebe7cde1e6b18f0df8c55438ac95be39e8a30613` |
 | [Qt 6.11.2](https://download.qt.io/archive/qt/6.11/6.11.2/single/qt-everywhere-src-6.11.2.tar.xz) | `6dcfbca271d76a6502741a2c0dc6fc98ef7dd0b7b4cfd0abcebb285a86a26f33` |
+| [Qt for Python 6.11.2](https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/pyside-setup-everywhere-src-6.11.2.tar.xz) | `cba47efbaad1bedd529725cbc14e21f156c7a19366f07b3edfbb076ffd7afdf8` |
 
 The Mesa collection follows the source groups referenced by
 `src/gallium/targets/libgl-gdi/SConscript` and `src/mesa/SConscript`: Mesa core,

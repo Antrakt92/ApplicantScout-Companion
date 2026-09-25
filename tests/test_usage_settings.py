@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
+import shiboken6
+from PySide6.QtWidgets import QApplication
 
 from applicant_scout.config import Config
 from applicant_scout.settings_dialog import SettingsDialog
+import applicant_scout.settings_dialog as settings_mod
 from applicant_scout.usage import UsageClient, UsagePersistenceError
 
 
@@ -64,6 +68,35 @@ def test_consent_saves_immediately_even_with_invalid_wcl(qtbot, tmp_path):
     assert usage.changes == [True]
     assert dialog.usage_check.isChecked()
     assert "setup_completed" not in usage.events
+
+
+def test_consent_result_ignores_deleted_dialog(qtbot, tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowUsage(UsageStub):
+        def set_consent(self, enabled):
+            started.set()
+            assert release.wait(5)
+            super().set_consent(enabled)
+
+    dialog = dialog_for(qtbot, tmp_path, SlowUsage(enabled=False))
+    changed = []
+    dialog.usageConsentChanged.connect(changed.append)
+    dialog.usage_check.click()
+    try:
+        assert started.wait(2)
+        dialog.deleteLater()
+        qtbot.waitUntil(lambda: not shiboken6.isValid(dialog), timeout=2000)
+        app = QApplication.instance()
+        assert isinstance(app, QApplication)
+        dispatcher = settings_mod._dialog_worker_dispatcher(app)
+        with qtbot.waitSignal(dispatcher.usageFinished, timeout=2000):
+            release.set()
+        QApplication.processEvents()
+        assert not changed
+    finally:
+        release.set()
 
 
 def test_revocation_is_immediate_independent_of_wcl_validation(qtbot, tmp_path):
@@ -166,8 +199,8 @@ def test_corrupt_usage_state_is_not_enabled_by_opening_settings(qtbot, tmp_path)
 
 
 def test_first_run_actions_stay_visible_while_small_window_scrolls(qtbot, tmp_path):
-    from PyQt6.QtCore import QPoint, QRect
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtWidgets import QApplication
 
     dialog = dialog_for(qtbot, tmp_path, UsageStub())
     dialog.show()

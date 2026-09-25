@@ -273,7 +273,7 @@ function Get-IsolatedPyInstallerPath {
         (Split-Path -Parent $Python),
         $BasePrefix,
         (Join-Path $BasePrefix "DLLs"),
-        (Join-Path $RepoRoot ".venv\Lib\site-packages\PyQt6\Qt6\bin"),
+        (Join-Path $RepoRoot ".venv\Lib\site-packages\PySide6"),
         (Join-Path $env:SystemRoot "System32"),
         $env:SystemRoot,
         (Join-Path $env:SystemRoot "System32\Wbem")
@@ -410,6 +410,7 @@ function Invoke-PyInstaller {
             --workpath (Join-Path $RepoRoot "build") `
             --distpath (Join-Path $RepoRoot "dist") `
             --paths (Join-Path $RepoRoot "src") `
+            --additional-hooks-dir (Join-Path $RepoRoot "packaging\pyinstaller\hooks") `
             --collect-data applicant_scout `
             --exclude-module _pytest `
             --exclude-module _pyinstaller_hooks_contrib `

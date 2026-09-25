@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, Optional, cast
 
 from PIL import Image
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -2385,8 +2385,8 @@ class ScreenshotWatcher(QObject):
     minutes. This handles starting the companion after capture began without
     allowing an older logical snapshot to become fresh again."""
 
-    snapshotReceived = pyqtSignal(object)  # Snapshot
-    decodeFailed = pyqtSignal(str, str, object)  # path, reason, SnapshotSource | None
+    snapshotReceived = Signal(object)  # Snapshot
+    decodeFailed = Signal(str, str, object)  # path, reason, SnapshotSource | None
 
     def __init__(
         self,
@@ -2491,7 +2491,7 @@ class ScreenshotWatcher(QObject):
             # historical WoWScrnShot JPG/TGA files, the synchronous scan was the
             # dominant startup-latency contributor (~30-80 ms per file × 500 file
             # cap = up to ~30s). Overlay now appears immediately. snapshotReceived
-            # is a Qt pyqtSignal — emits cross thread are queued safely to the GUI
+            # is a Qt Signal — emits cross thread are queued safely to the GUI
             # thread by Qt's signal/slot machinery.
             self._request_backlog_scan_locked()
         except Exception:

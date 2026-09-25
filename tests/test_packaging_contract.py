@@ -323,7 +323,7 @@ def _write_valid_portable_zip(
         f"{root}/THIRD-PARTY-NOTICES.md": b"third-party notices",
         f"{root}/RELEASE_NOTES.md": b"release notes",
         f"{root}/_internal/base_library.zip": b"runtime",
-        f"{root}/licenses/PyQt6/LICENSE.txt": b"dependency license",
+        f"{root}/licenses/PySide6/LICENSE.txt": b"dependency license",
     }
     for name in omit or set():
         entries.pop(name, None)
@@ -805,7 +805,7 @@ def test_frozen_build_isolates_dll_discovery_and_probes_real_startup_imports():
     )
     assert probe_dispatch < application_dispatch
     assert "def _run_frozen_startup_probe() -> int:" in entrypoint
-    assert "from PyQt6.QtWidgets import QApplication" in entrypoint
+    assert "from PySide6.QtWidgets import QApplication" in entrypoint
     assert "from applicant_scout.screenshot import _decode_qr_symbols" in entrypoint
     assert "from applicant_scout import __main__ as runtime_main" in entrypoint
     assert "callable(runtime_main.main)" in entrypoint
@@ -1361,7 +1361,10 @@ def test_release_build_uses_pinned_constraints():
 
     text = constraints.read_text(encoding="utf-8")
     for package in (
-        "PyQt6",
+        "PySide6",
+        "PySide6-Essentials",
+        "PySide6-Addons",
+        "shiboken6",
         "PyInstaller",
         "pyinstaller-hooks-contrib",
         "pyzbar",
@@ -3751,7 +3754,7 @@ def test_release_version_check_require_assets_rejects_portable_zip_without_licen
     _, _, portable_name = _write_release_assets(repo)
     _write_valid_portable_zip(
         repo / "dist" / portable_name,
-        omit={"ApplicantScoutCompanion/licenses/PyQt6/LICENSE.txt"},
+        omit={"ApplicantScoutCompanion/licenses/PySide6/LICENSE.txt"},
     )
 
     result = _run_release_check(repo, "-Tag", f"v{project_version}", "-RequireAssets")
@@ -3785,7 +3788,7 @@ def test_release_version_check_rejects_empty_dependency_license(tmp_path):
     _, _, portable_name = _write_release_assets(repo)
     _write_valid_portable_zip(
         repo / "dist" / portable_name,
-        omit={"ApplicantScoutCompanion/licenses/PyQt6/LICENSE.txt"},
+        omit={"ApplicantScoutCompanion/licenses/PySide6/LICENSE.txt"},
         extra_entries={"ApplicantScoutCompanion/licenses/Empty/LICENSE.txt": b""},
     )
 

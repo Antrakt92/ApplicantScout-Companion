@@ -5520,8 +5520,8 @@ import threading
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
 from applicant_scout.__main__ import _WowSyncStartupConfigurator
 
 app = QApplication([])
@@ -8844,8 +8844,8 @@ import threading
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
 from applicant_scout.__main__ import (
     _initialize_snapshot_apply_dispatcher,
     _schedule_snapshot_apply,

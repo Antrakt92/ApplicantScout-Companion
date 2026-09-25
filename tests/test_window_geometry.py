@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, Signal
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication
 
 import applicant_scout.overlay as overlay_mod
 import applicant_scout.settings_dialog as settings_mod
@@ -327,7 +327,7 @@ def test_overlay_resize_caps_width_without_adding_height_cap(qtbot, tmp_path: Pa
 
 
 class _ChangingScreen(QObject):
-    availableGeometryChanged = pyqtSignal(QRect)
+    availableGeometryChanged = Signal(QRect)
 
     def __init__(self, width: int):
         super().__init__()
@@ -417,7 +417,7 @@ def test_unchanged_content_remeasure_preserves_width_when_screen_grows(
 
 
 class _ChangingWindow(QObject):
-    screenChanged = pyqtSignal(object)
+    screenChanged = Signal(object)
 
 
 def test_overlay_window_screen_change_uses_new_monitor_width(

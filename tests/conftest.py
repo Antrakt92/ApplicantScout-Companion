@@ -18,6 +18,7 @@ offscreen; run them explicitly with::
 
 import os
 
+os.environ.setdefault("QT_API", "pyside6")
 if os.environ.get("APSCOUT_REAL_DISPLAY") != "1":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

@@ -10,9 +10,9 @@ if "QT_QPA_PLATFORM" not in os.environ:
     os.environ["QT_QPA_PLATFORM"] = "windows" if sys.platform == "win32" else "offscreen"
 
 import pytest
-from PyQt6.QtCore import QPoint, QRect, Qt
-from PyQt6.QtGui import QColor, QImage
-from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton, QToolButton, QWidget
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QColor, QImage
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton, QToolButton, QWidget
 
 from applicant_scout import __version__
 from scripts import render_settings_dialog_fixture

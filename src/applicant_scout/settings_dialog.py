@@ -14,7 +14,7 @@ import threading
 import uuid
 import weakref
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QEvent,
     QObject,
     QPoint,
@@ -25,10 +25,10 @@ from PyQt6.QtCore import (
     Qt,
     QTimer,
     QUrl,
-    pyqtSignal,
-    pyqtSlot,
+    Signal,
+    Slot,
 )
-from PyQt6.QtGui import (
+from PySide6.QtGui import (
     QAction,
     QColor,
     QDesktopServices,
@@ -39,7 +39,7 @@ from PyQt6.QtGui import (
     QPixmap,
     QResizeEvent,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication,
     QAbstractButton,
     QCheckBox,
@@ -117,7 +117,7 @@ def _wcl_example_pixmap() -> QPixmap:
 class _DeferredUrlOpener(QObject):
     """Marshal a folder open back to the GUI thread (M4-tray)."""
 
-    _openRequested = pyqtSignal(str)
+    _openRequested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -658,8 +658,72 @@ class _AsyncActionResult:
     cancelled: bool = False
 
 
-class _AsyncSignals(QObject):
-    finished = pyqtSignal(object)
+@dataclass(frozen=True)
+class _AsyncActionOutcome:
+    message: str
+    error: bool = False
+    success_payload: object | None = None
+    keep_disabled: bool = False
+    installer_launch: object | None = None
+    cancelled: bool = False
+
+
+class _DialogWorkerDispatcher(QObject):
+    usageFinished = Signal(object, int, bool, object)
+    actionFinished = Signal(object, str, object)
+
+    @Slot(object, int, bool, object)
+    def deliver_usage(
+        self, owner_ref: weakref.ReferenceType[SettingsDialog],
+        generation: int, success: bool, error: object,
+    ) -> None:
+        owner = owner_ref()
+        if owner is not None:
+            try:
+                owner.usageConsentSaveFinished.emit(generation, success, error)
+            except RuntimeError:
+                # An explicit Qt delete can invalidate a still-referenced wrapper.
+                pass
+
+    @Slot(object, str, object)
+    def deliver_action(
+        self, owner_ref: weakref.ReferenceType[SettingsDialog],
+        button_name: str, outcome: object,
+    ) -> None:
+        owner = owner_ref()
+        if owner is None or not isinstance(outcome, _AsyncActionOutcome):
+            return
+        try:
+            owner.objectName()  # Reject a wrapper whose C++ dialog was deleted.
+            button = getattr(owner, button_name)
+            owner._finish_async_action(_AsyncActionResult(
+                button, outcome.message, error=outcome.error,
+                success_payload=outcome.success_payload,
+                keep_disabled=outcome.keep_disabled,
+                installer_launch=outcome.installer_launch,
+                cancelled=outcome.cancelled,
+            ))
+        except RuntimeError:
+            pass
+
+
+_DIALOG_WORKER_DISPATCHER: _DialogWorkerDispatcher | None = None
+
+
+def _dialog_worker_dispatcher(app: QApplication) -> _DialogWorkerDispatcher:
+    global _DIALOG_WORKER_DISPATCHER
+    dispatcher = _DIALOG_WORKER_DISPATCHER
+    if dispatcher is not None:
+        try:
+            if dispatcher.parent() is app:
+                return dispatcher
+        except RuntimeError:
+            pass  # The previous QApplication has already been destroyed.
+    dispatcher = _DialogWorkerDispatcher(app)
+    dispatcher.usageFinished.connect(dispatcher.deliver_usage)
+    dispatcher.actionFinished.connect(dispatcher.deliver_action)
+    _DIALOG_WORKER_DISPATCHER = dispatcher
+    return dispatcher
 
 
 class _SettingsScrollArea(QScrollArea):
@@ -707,7 +771,7 @@ class _FittedExampleImage(QLabel):
                 Qt.TransformationMode.SmoothTransformation,
             ))
 
-    def resizeEvent(self, event: QResizeEvent | None) -> None:
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._fit_pixmap()
 
@@ -797,18 +861,31 @@ def _cancel_dialog_probe(owner_ref: weakref.ReferenceType[SettingsDialog], *_arg
         owner._cancel_screenshots_validation_process()
 
 
+def _finish_orphaned_probe(process: QProcess, result_path: Path) -> None:
+    """Stop a running child before its parent dialog is garbage-collected."""
+    try:
+        process.finished.disconnect()
+        process.errorOccurred.disconnect()
+        if process.state() != QProcess.ProcessState.NotRunning:
+            process.kill()
+            process.waitForFinished(1000)
+    except RuntimeError:
+        pass  # Qt may already have destroyed the child during explicit teardown.
+    SettingsDialog._remove_screenshots_validation_result(result_path)
+
+
 class SettingsDialog(QDialog):
-    usageConsentChanged = pyqtSignal(bool)
-    usageConsentSaveFinished = pyqtSignal(int, bool, object)
-    valuesChanged = pyqtSignal(object)
-    credentialsValidated = pyqtSignal(object)
-    quitRequested = pyqtSignal()
-    updateStarted = pyqtSignal()
-    updateFinished = pyqtSignal(bool)
-    updateCompleted = pyqtSignal()
-    updateHandoffStarted = pyqtSignal(str, object)
-    changelogRequested = pyqtSignal()
-    wowSyncRepairRequested = pyqtSignal()
+    usageConsentChanged = Signal(bool)
+    usageConsentSaveFinished = Signal(int, bool, object)
+    valuesChanged = Signal(object)
+    credentialsValidated = Signal(object)
+    quitRequested = Signal()
+    updateStarted = Signal()
+    updateFinished = Signal(bool)
+    updateCompleted = Signal()
+    updateHandoffStarted = Signal(str, object)
+    changelogRequested = Signal()
+    wowSyncRepairRequested = Signal()
     def __init__(
         self,
         cfg: Config,
@@ -853,8 +930,6 @@ class SettingsDialog(QDialog):
         self._usage_consent_generation = 0
         self._wcl_example_dialog: QDialog | None = None
         self._latest_update_version: str | None = None
-        self._signals = _AsyncSignals(self)
-        self._signals.finished.connect(self._finish_async_action)
         self.usageConsentSaveFinished.connect(self._finish_usage_consent_save)
         self._title_drag_offset: QPoint | None = None
         gui_app = QApplication.instance()
@@ -877,6 +952,7 @@ class SettingsDialog(QDialog):
         self._screenshots_validation_process_generation: int | None = None
         self._screenshots_validation_process_path = ""
         self._screenshots_validation_process_result_path: Path | None = None
+        self._screenshots_validation_gc_finalizer: weakref.finalize | None = None
         self._screenshots_validation_process_timeout = QTimer(self)
         self._screenshots_validation_process_timeout.setSingleShot(True)
         self._screenshots_validation_process_timeout.setInterval(
@@ -887,9 +963,6 @@ class SettingsDialog(QDialog):
         )
         cancel_probe = partial(_cancel_dialog_probe, weakref.ref(self))
         self.destroyed.connect(cancel_probe)
-        # Keep teardown callbacks rooted while cyclic GC clears Qt wrappers.
-        # They retain only weak owners and never resurrect the dialog.
-        weakref.finalize(self, cancel_probe).atexit = False
         self._screenshots_warning_timer = QTimer(self)
         self._screenshots_warning_timer.setSingleShot(True)
         self._screenshots_warning_timer.setInterval(SCREENSHOTS_WARNING_DEBOUNCE_MS)
@@ -1422,9 +1495,7 @@ class SettingsDialog(QDialog):
             status_tip="Open the ApplicantScout changelog.",
             whats_this="Open recent companion release notes and changelog entries.",
         )
-        self.changelog_action.triggered.connect(
-            lambda *_args: self.changelogRequested.emit()
-        )
+        self.changelog_action.triggered.connect(self._request_changelog)
         actions_menu.addAction(self.changelog_action)
         self.cache_action = QAction("Reset cached data", self.more_actions_button)
         self.cache_action.setObjectName("clearCache")
@@ -1449,6 +1520,9 @@ class SettingsDialog(QDialog):
         actions_menu.addAction(self.quit_action)
         self.more_actions_button.setMenu(actions_menu)
         return self.more_actions_button
+
+    def _request_changelog(self) -> None:
+        self.changelogRequested.emit()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
         if watched is self and event.type() in (
@@ -1613,16 +1687,28 @@ class SettingsDialog(QDialog):
             return
         self._usage_consent_generation += 1
         generation = self._usage_consent_generation
+        owner_ref = weakref.ref(self)
+        app = QApplication.instance()
+        dispatcher = _dialog_worker_dispatcher(app) if isinstance(app, QApplication) else None
 
         def _worker() -> None:
             try:
                 client.set_consent(enabled)
             except Exception as exc:  # noqa: BLE001 - report, never break the GUI
-                self.usageConsentSaveFinished.emit(generation, False, exc)
+                success, error = False, exc
             else:
-                self.usageConsentSaveFinished.emit(generation, True, None)
+                success, error = True, None
+            if dispatcher is None:
+                owner = owner_ref()
+                if owner is not None:
+                    owner.usageConsentSaveFinished.emit(generation, success, error)
+            else:
+                try:
+                    dispatcher.usageFinished.emit(owner_ref, generation, success, error)
+                except RuntimeError:
+                    pass  # QApplication may have closed while the worker ran.
 
-        if QApplication.instance() is None:
+        if dispatcher is None:
             _worker()
             return
         try:
@@ -1635,7 +1721,7 @@ class SettingsDialog(QDialog):
         except Exception:  # noqa: BLE001 - thread launch failed; stay functional
             _worker()
 
-    @pyqtSlot(int, bool, object)
+    @Slot(int, bool, object)
     def _finish_usage_consent_save(
         self, generation: int, success: bool, _error: object
     ) -> None:
@@ -2173,6 +2259,10 @@ class SettingsDialog(QDialog):
         token = uuid.uuid4().hex
         result_path = _screenshots_path_probe_result_path(token)
         self._screenshots_validation_process_result_path = result_path
+        self._screenshots_validation_gc_finalizer = weakref.finalize(
+            self, _finish_orphaned_probe, process, result_path,
+        )
+        self._screenshots_validation_gc_finalizer.atexit = False
         self._screenshots_validation_started_generation = generation
         process.setProperty("screenshotsProbeResultPath", str(result_path))
         # QObject slots disconnect when the dialog dies. Closures retaining the
@@ -2188,7 +2278,7 @@ class SettingsDialog(QDialog):
         process.start(program, arguments)
         self._screenshots_validation_process_timeout.start()
 
-    @pyqtSlot(int, QProcess.ExitStatus)
+    @Slot(int, QProcess.ExitStatus)
     def _screenshots_validation_process_finished(
         self, exit_code: int, exit_status: QProcess.ExitStatus,
     ) -> None:
@@ -2200,7 +2290,7 @@ class SettingsDialog(QDialog):
                     process, Path(result_path), exit_code, exit_status,
                 )
 
-    @pyqtSlot(QProcess.ProcessError)
+    @Slot(QProcess.ProcessError)
     def _screenshots_validation_process_error(self, error: QProcess.ProcessError) -> None:
         process = self.sender()
         if isinstance(process, QProcess):
@@ -2214,6 +2304,10 @@ class SettingsDialog(QDialog):
         process = self._screenshots_validation_process
         if process is None:
             return
+        finalizer = self._screenshots_validation_gc_finalizer
+        self._screenshots_validation_gc_finalizer = None
+        if finalizer is not None:
+            finalizer.detach()
         self._screenshots_validation_process = None
         # A dismissed dialog can be reopened with the same pending path.
         self._screenshots_validation_started_generation = None
@@ -2258,6 +2352,10 @@ class SettingsDialog(QDialog):
         path = self._screenshots_validation_process_path
         if generation is None:
             return None
+        finalizer = self._screenshots_validation_gc_finalizer
+        self._screenshots_validation_gc_finalizer = None
+        if finalizer is not None:
+            finalizer.detach()
         self._screenshots_validation_process = None
         self._screenshots_validation_process_generation = None
         self._screenshots_validation_process_path = ""
@@ -2418,6 +2516,18 @@ class SettingsDialog(QDialog):
     ) -> None:
         button.setEnabled(False)
         self._set_status(busy_text, busy=True)
+        button_name = (
+            "test_button" if button is self.test_button else
+            "cache_action" if button is self.cache_action else
+            "update_button" if button is self.update_button else ""
+        )
+        if not button_name:
+            raise ValueError("unknown settings action button")
+        owner_ref = weakref.ref(self)
+        app = QApplication.instance()
+        if not isinstance(app, QApplication):
+            raise RuntimeError("settings actions require QApplication")
+        dispatcher = _dialog_worker_dispatcher(app)
 
         def _worker() -> None:
             try:
@@ -2432,8 +2542,7 @@ class SettingsDialog(QDialog):
                     message = result
                     installer_launch = None
                     cancelled = False
-                outcome = _AsyncActionResult(
-                    button,
+                outcome = _AsyncActionOutcome(
                     message,
                     success_payload=success_payload,
                     keep_disabled=keep_disabled,
@@ -2441,13 +2550,15 @@ class SettingsDialog(QDialog):
                     cancelled=cancelled,
                 )
             except Exception as exc:  # noqa: BLE001
-                outcome = _AsyncActionResult(
-                    button,
+                outcome = _AsyncActionOutcome(
                     f"{error_prefix}: {exc}",
                     error=True,
                     success_payload=success_payload,
                 )
-            self._signals.finished.emit(outcome)
+            try:
+                dispatcher.actionFinished.emit(owner_ref, button_name, outcome)
+            except RuntimeError:
+                pass  # QApplication may have closed while the worker ran.
 
         try:
             worker = threading.Thread(

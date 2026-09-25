@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QColor, QImage
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QColor, QImage
+from PySide6.QtWidgets import QApplication
 
 import applicant_scout.overlay as overlay_mod
 from applicant_scout.overlay import COL_H, COL_M, COL_MPLUS, COL_N

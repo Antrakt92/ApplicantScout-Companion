@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QFontMetrics
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import QApplication
 
 from applicant_scout.__main__ import StateMachine
 from applicant_scout.constants import percentile_colour

@@ -11,7 +11,7 @@ from dataclasses import replace
 
 import pytest
 
-from PyQt6.QtCore import QRect
+from PySide6.QtCore import QRect
 
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (

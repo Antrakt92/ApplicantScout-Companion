@@ -11,7 +11,7 @@ import sys
 import tempfile
 from typing import Any
 
-from PyQt6.QtCore import Qt
+from PySide6.QtCore import Qt
 
 
 @dataclass(frozen=True)
