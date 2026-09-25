@@ -3955,7 +3955,7 @@ def test_installer_checks_disk_space_before_touching_payload():
     assert "ExtraDiskSpaceRequired=1073741824" in inno_script
     assert "function CheckDiskSpaceBlocked(): String;" in inno_script
     assert "function GetPayloadDirSizeBytes(" in inno_script
-    assert "GetSpaceOnDisk(ProbeDir, FreeSpace, TotalSpace)" in inno_script
+    assert "GetSpaceOnDisk(ProbeDir, True, FreeMB, TotalMB)" in inno_script
     assert "Not enough free disk space" in inno_script
     prepare = re.search(
         r"(?ms)^function PrepareToInstall\(var NeedsRestart: Boolean\): String;\n"
