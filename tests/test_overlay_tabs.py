@@ -91,6 +91,7 @@ def test_selected_source_tab_survives_data_updates(qtbot, tmp_path, selected_tab
 def test_initial_party_selection_survives_listing_and_applicant_updates(qtbot, tmp_path, empty_cycle):
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    state.party_members["tank-realm"] = _member("tank-realm", "Tank-Realm", "TANK")
     win = _window(tmp_path, qtbot, state)
     win._launch_fetch = lambda _applicant: None
     win.on_roster_changed()
@@ -104,6 +105,7 @@ def test_initial_party_selection_survives_listing_and_applicant_updates(qtbot, t
         win._flush_overlay_refresh()
         assert win._active_tab == "party"
         state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+        state.party_members["tank-realm"] = _member("tank-realm", "Tank-Realm", "TANK")
         win.on_roster_changed()
 
     state.listing = _listing()
@@ -115,7 +117,7 @@ def test_initial_party_selection_survives_listing_and_applicant_updates(qtbot, t
     win._flush_overlay_refresh()
 
     assert win._active_tab == "party"
-    assert win._id_by_row == ["host-realm"]
+    assert win._id_by_row == ["tank-realm", "host-realm"]
 
 
 def _app(applicant_id: str, name: str, role: str = "DAMAGER") -> Applicant:
@@ -799,6 +801,10 @@ def test_roster_only_update_prepares_party_tab_without_forcing_overlay_open(
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
     state.party_members["host-realm"].fetch_status = "ready"
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    state.party_members["friend-realm"].fetch_status = "ready"
     win = _window(tmp_path, qtbot, state)
 
     win.on_roster_changed()
@@ -808,7 +814,7 @@ def test_roster_only_update_prepares_party_tab_without_forcing_overlay_open(
     assert win._launcher.isVisible()
     assert win._collapsed_to_launcher
     assert win._active_tab == "party"
-    assert win._table.rowCount() == 1
+    assert win._table.rowCount() == 2
 
 
 def test_listing_created_preserves_initial_party_tab_and_filter(
@@ -817,6 +823,8 @@ def test_listing_created_preserves_initial_party_tab_and_filter(
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
     state.party_members["host-realm"].fetch_status = "ready"
+    state.party_members["tank-realm"] = _member("tank-realm", "Tank-Realm", "TANK")
+    state.party_members["tank-realm"].fetch_status = "ready"
     win = _window(tmp_path, qtbot, state)
 
     win.on_roster_changed()
@@ -831,7 +839,7 @@ def test_listing_created_preserves_initial_party_tab_and_filter(
     win._flush_overlay_refresh()
 
     assert win._active_tab == "party"
-    assert win._id_by_row == ["host-realm"]
+    assert win._id_by_row == ["tank-realm", "host-realm"]
     assert win._role_filter == {"TANK"}
 
 
@@ -1139,6 +1147,9 @@ def test_roster_unavailable_refresh_cannot_commit_raid_to_party_transition(
 ):
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
     win = _window(tmp_path, qtbot, state)
     preserved = _listing(
         key_level=0,
@@ -1163,7 +1174,7 @@ def test_roster_unavailable_refresh_cannot_commit_raid_to_party_transition(
     assert win._last_authoritative_roster_is_raid is True
     assert win._last_raid_listing is preserved
     assert win._effective_listing() is preserved
-    assert win._title_bar.title_label.text() == "Party — Manaforge Omega (1)"
+    assert win._title_bar.title_label.text() == "Party — Manaforge Omega (2)"
     assert win._tab_bar._key_label.isHidden()
     assert win._tab_bar._key_control.isHidden()
 
@@ -1174,6 +1185,10 @@ def test_cleared_snapshot_does_not_carry_applicant_filter_into_party_auto_switch
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
     state.party_members["host-realm"].fetch_status = "ready"
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    state.party_members["friend-realm"].fetch_status = "ready"
     win = _window(tmp_path, qtbot, state)
     win._role_filter = {"DAMAGER"}
     win._role_filter_bar._active = {"DAMAGER"}
@@ -1188,8 +1203,8 @@ def test_cleared_snapshot_does_not_carry_applicant_filter_into_party_auto_switch
     assert win.isVisible()
     assert win._active_tab == "party"
     assert win._role_filter == set()
-    assert win._id_by_row == ["host-realm"]
-    assert visible_rows == [0]
+    assert win._id_by_row == ["host-realm", "friend-realm"]
+    assert visible_rows == [0, 1]
 
 
 def test_cleared_listing_resets_role_filter_before_next_applicant_session(
@@ -1292,6 +1307,10 @@ def test_new_applicant_preserves_initial_party_tab_and_filter(
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
     state.party_members["host-realm"].fetch_status = "ready"
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    state.party_members["friend-realm"].fetch_status = "ready"
     win = _window(tmp_path, qtbot, state)
     win._launch_fetch = lambda _applicant: None
 
@@ -1307,7 +1326,7 @@ def test_new_applicant_preserves_initial_party_tab_and_filter(
     win._flush_overlay_refresh()
 
     assert win._active_tab == "party"
-    assert win._id_by_row == ["host-realm"]
+    assert win._id_by_row == ["host-realm", "friend-realm"]
     assert win._role_filter == {"TANK"}
 
 
@@ -1315,6 +1334,10 @@ def test_clicking_initial_party_tab_keeps_it_selected(qtbot, tmp_path):
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
     state.party_members["host-realm"].fetch_status = "ready"
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    state.party_members["friend-realm"].fetch_status = "ready"
     win = _window(tmp_path, qtbot, state)
     win._launch_fetch = lambda _applicant: None
 
@@ -1333,7 +1356,7 @@ def test_clicking_initial_party_tab_keeps_it_selected(qtbot, tmp_path):
     win._flush_overlay_refresh()
 
     assert win._active_tab == "party"
-    assert win._id_by_row == ["host-realm"]
+    assert win._id_by_row == ["host-realm", "friend-realm"]
 
 
 def test_applicant_update_preserves_initial_party_tab(
@@ -1342,6 +1365,8 @@ def test_applicant_update_preserves_initial_party_tab(
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
     state.party_members["host-realm"].fetch_status = "ready"
+    state.party_members["tank-realm"] = _member("tank-realm", "Tank-Realm", "TANK")
+    state.party_members["tank-realm"].fetch_status = "ready"
     win = _window(tmp_path, qtbot, state)
     win._launch_fetch = lambda _applicant: None
 
@@ -1354,7 +1379,7 @@ def test_applicant_update_preserves_initial_party_tab(
     win._flush_overlay_refresh()
 
     assert win._active_tab == "party"
-    assert win._id_by_row == ["host-realm"]
+    assert win._id_by_row == ["tank-realm", "host-realm"]
 
 
 def test_new_applicant_does_not_override_manual_party_tab(qtbot, tmp_path):
@@ -1433,6 +1458,10 @@ def test_delayed_roster_update_does_not_carry_applicant_filter_into_party_auto_s
     state = AppState()
     state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
     state.party_members["host-realm"].fetch_status = "ready"
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    state.party_members["friend-realm"].fetch_status = "ready"
     win = _window(tmp_path, qtbot, state)
     win._role_filter = {"DAMAGER"}
     win._role_filter_bar._active = {"DAMAGER"}
@@ -1445,8 +1474,8 @@ def test_delayed_roster_update_does_not_carry_applicant_filter_into_party_auto_s
     ]
     assert win._active_tab == "party"
     assert win._role_filter == set()
-    assert win._id_by_row == ["host-realm"]
-    assert visible_rows == [0]
+    assert win._id_by_row == ["host-realm", "friend-realm"]
+    assert visible_rows == [0, 1]
 
 
 def test_empty_roster_preserves_party_tab_when_applicants_remain(
@@ -2203,3 +2232,119 @@ def test_consecutive_wire_version_rejects_surface_companion_update_banner(
 
     assert win._health_label.text() == "Shot failed"
     assert win._health_label.property("statusState") == "critical"
+
+
+def test_initial_tab_stays_applicants_when_applicants_present_and_grouped(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._source_tab_initialized
+    assert win._id_by_row == ["7:1"]
+
+
+def test_initial_tab_selects_party_when_grouped_without_applicants(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    # Just-joined members are still pending/inspecting: Party renders both
+    # rows (loading cells) instead of crashing or showing stale data.
+    assert win._active_tab == "party"
+    assert win._source_tab_initialized
+    assert win._id_by_row == ["host-realm", "friend-realm"]
+    assert win._table.rowCount() == 2
+
+
+def test_initial_tab_stays_applicants_for_solo_single_roster_row(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == []
+
+
+def test_initial_tab_stays_applicants_when_empty(qtbot, tmp_path):
+    state = AppState()
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == []
+
+
+def test_manual_applicants_choice_survives_applicant_arrival_after_grouped_start(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._active_tab == "party"
+
+    qtbot.mouseClick(win._tab_bar._buttons["applicants"], Qt.MouseButton.LeftButton)
+    assert win._active_tab == "applicants"
+
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    win.on_applicant_added(state.applicants["7:1"])
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == ["7:1"]
+
+
+def test_roster_growth_does_not_yank_applicants_initial_tab(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+    win._refresh_table()
+    assert win._active_tab == "applicants"
+
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == ["7:1"]

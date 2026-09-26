@@ -4769,7 +4769,12 @@ class OverlayWindow(QMainWindow):
             return
         if self._state.listing is not None or self._state.count():
             self._source_tab_initialized = True
-        elif self._state.party_members:
+        elif len(self._state.party_members) > 1:
+            # Grouped with no applicants yet: start on Party. The roster is
+            # the canonical group size — the addon includes the player row
+            # when grouped and withholds the roster when solo, so solo (and
+            # the solo-with-pet follower edge, where NPC rows are filtered)
+            # leaves at most one row and stays on Applicants.
             self._source_tab_initialized = True
             self._select_tab_state("party")
             self._clear_role_filter()
