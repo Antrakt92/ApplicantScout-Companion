@@ -4386,6 +4386,25 @@ def test_fetch_character_ranks_classifies_private_rankings_as_restricted():
     assert result.mplus_dps_breakdown == []
 
 
+def test_fetch_character_ranks_classifies_prefixed_private_rankings_as_restricted():
+    character = _character_with_empty_mplus()
+    prefixed_payload = {
+        "error": "Provider wrapper: You do not have permission to see this character's rankings."
+    }
+    for alias, _encounter_id, _dungeon_name in MPLUS_ENCOUNTERS:
+        character[alias] = dict(prefixed_payload)
+    for alias in ("raidNormal", "raidHeroic", "raidMythic"):
+        character[alias] = dict(prefixed_payload)
+    client, _http = _client_for_payload(_wcl_payload(character))
+
+    result = client.fetch_character_ranks("Private", "antonidas", spec_id=62)
+
+    assert result.not_found is False
+    assert result.error == "Rankings are private on Warcraft Logs"
+    assert result.error_kind == WCL_ERROR_RESTRICTED
+    assert result.mplus_dps_breakdown == []
+
+
 def test_fetch_character_ranks_does_not_hide_unknown_embedded_alias_error():
     character = _character_with_empty_mplus()
     character["af"] = {"error": "Unexpected provider failure"}

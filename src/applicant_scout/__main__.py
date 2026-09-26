@@ -2524,6 +2524,71 @@ def _show_config_error(message: str) -> None:
     QMessageBox.critical(None, "ApplicantScout setup", message)
 
 
+# --- Startup error paths region: corrupt config.env recovery. ---
+def _quarantine_corrupt_config_file(path: Path) -> Path | None:
+    """Rename an unreadable config.env aside, preserving evidence.
+
+    Uses the workspace `*.corrupt-<stamp>-pid<pid>` convention (never deletes
+    user data). Returns the backup path, or None when nothing could be moved.
+    """
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    pid = os.getpid()
+    for counter in range(100):
+        suffix = f"{stamp}-pid{pid}" if counter == 0 else f"{stamp}-pid{pid}-{counter}"
+        backup = path.with_name(f"{path.name}.corrupt-{suffix}")
+        if backup.exists():
+            continue
+        try:
+            path.rename(backup)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            log.warning("Could not quarantine corrupt config file %s: %s", path, exc)
+            return None
+        return backup
+    log.warning("Could not quarantine corrupt config file %s: no free backup name", path)
+    return None
+
+
+def _show_corrupt_config_recovery(config_path: Path, detail: str) -> bool:
+    """Show a corrupt-config error with the file path and recovery actions.
+
+    Returns True when the broken file was quarantined aside and the caller
+    should retry loading (fresh defaults); False to abort startup.
+    """
+    text = (
+        "ApplicantScout could not load its settings file:\n"
+        f"{config_path}\n\n"
+        f"{detail}\n\n"
+        "Open the folder to fix the file by hand, or reset to defaults "
+        "(the broken file is kept aside as a backup)."
+    )
+    choice = QMessageBox.warning(
+        None,
+        "ApplicantScout setup",
+        text,
+        QMessageBox.StandardButton.Open
+        | QMessageBox.StandardButton.Reset
+        | QMessageBox.StandardButton.Close,
+        QMessageBox.StandardButton.Close,
+    )
+    if choice == QMessageBox.StandardButton.Open:
+        if not open_folder(config_path.parent):
+            _show_config_error(
+                f"Could not open the settings folder {config_path.parent}."
+            )
+        return False
+    if choice != QMessageBox.StandardButton.Reset:
+        return False
+    if _quarantine_corrupt_config_file(config_path) is None:
+        _show_config_error(
+            f"Could not reset settings: unable to back up {config_path}."
+        )
+        return False
+    return True
+# --- End startup error paths region. ---
+
+
 def _clear_cache_dir(
     cache_dir: Path,
     character_cache: CharacterCache | None = None,
@@ -5252,6 +5317,52 @@ def _flush_startup_file_privatization() -> None:
         )
 
 
+# --- Early-exit cleanup region: single pre-exec shutdown helper. ---
+def _early_shutdown(
+    *,
+    control_server: Any | None = None,
+    configurator: _WowSyncStartupConfigurator | None = None,
+    runtime_owner: _RuntimeOwner | None = None,
+    usage_client: UsageClient | None = None,
+    flush_privatization: bool = True,
+) -> None:
+    """Release startup resources on pre-event-loop exits (duplicate/config).
+
+    Closes control_server/configurator symmetrically on every early path.
+    Best-effort and non-blocking: never joins daemon threads, never raises.
+    """
+    if usage_client is not None:
+        try:
+            usage_client.close()
+        except Exception:  # noqa: BLE001 - early-exit hardening boundary
+            log.exception("Could not close usage client during early shutdown.")
+    # H3: same end state on early exit — harden anything recorded so far.
+    set_startup_privatization_deferred(False)
+    if flush_privatization:
+        try:
+            flush_deferred_privatization()
+        except Exception:  # noqa: BLE001 - early-exit hardening boundary
+            log.exception("Could not flush deferred file privatization.")
+    if control_server is not None:
+        try:
+            close = getattr(control_server, "close", None)
+            if callable(close):
+                close()
+        except Exception:  # noqa: BLE001 - early-exit hardening boundary
+            log.exception("Could not release control server during early shutdown.")
+    if runtime_owner is not None:
+        try:
+            runtime_owner.close()
+        except Exception:  # noqa: BLE001 - early-exit hardening boundary
+            log.exception("Could not release runtime ownership during early shutdown.")
+    if configurator is not None:
+        try:
+            configurator.close()
+        except Exception:  # noqa: BLE001 - early-exit hardening boundary
+            log.exception("Could not close WoW startup configurator during early shutdown.")
+# --- End early-exit cleanup region. ---
+
+
 def _load_startup_config(
     *, verify_screenshots_path: bool = True
 ) -> tuple[Config, Path, bool] | None:
@@ -5259,8 +5370,15 @@ def _load_startup_config(
     try:
         cfg = load_config()
     except ConfigError as exc:
-        _show_config_error(str(exc))
-        return None
+        # Startup error path: a corrupt config.env names its file and offers
+        # recovery (Open folder / Reset to defaults) instead of a bare error.
+        if not _show_corrupt_config_recovery(user_config_path(), str(exc)):
+            return None
+        try:
+            cfg = load_config()
+        except ConfigError as retry_exc:
+            _show_config_error(str(retry_exc))
+            return None
     while True:
         if not is_config_ready(cfg):
             if not _run_first_run_settings(cfg):
@@ -5408,798 +5526,834 @@ def main(argv: list[str] | None = None) -> int:
 
     # P1 bootstrap (pure moves, same order): runtime controllers first, then
     # the quit pipeline bound to main's mutable locals via getters.
-    _runtime = _app_bootstrap.build_runtime_controllers(app)
-    wow_sync_startup_configurator = _runtime.wow_sync_startup_configurator
-    show_settings_action = _runtime.show_settings_action
-    update_quit_gate = _runtime.update_quit_gate
-    watcher_signal_gate = _runtime.watcher_signal_gate
-    update_signals = _runtime.update_signals
-
-    _quit_pipeline = _app_bootstrap.make_quit_pipeline(
-        app=app,
-        update_quit_gate=update_quit_gate,
-        watcher_signal_gate=watcher_signal_gate,
-        get_settings_dialog=lambda: settings_dialog,
-        get_window=lambda: window_ref.get("window"),
-        get_watcher=lambda: watcher,
-        get_active_update_control=lambda: active_update_control,
-        get_tray_controller=lambda: tray_controller,
-        get_update_handoff_recovery=lambda: update_handoff_recovery,
-    )
-    _check_updates_with_handoff = _quit_pipeline.__dict__[  # type: ignore[attr-defined]
-        "check_updates_with_handoff"
-    ]
-    _flush_before_quit = _quit_pipeline.flush
-    _quit_application = _quit_pipeline.quit_app
-    _can_quit_application = _quit_pipeline.can_quit
-    _can_control_quit_application = _quit_pipeline.can_control_quit
-    _prepare_quit_application = _quit_pipeline.prepare_quit
-    _prepare_control_quit_application = _quit_pipeline.prepare_control_quit
-    _request_quit_application = _quit_pipeline.request_quit
-    _show_update_quit_blocked = _quit_pipeline.__dict__[  # type: ignore[attr-defined]
-        "show_update_quit_blocked"
-    ]
-
-    def _sync_settings_drain_into_pipeline() -> None:
-        holder = _quit_pipeline.__dict__.get("settings_drain_holder")
-        if isinstance(holder, dict):
-            holder["drain"] = settings_apply_drain
-
-    def _set_settings_apply_drain(drain: Callable[[], bool] | None) -> None:
-        # Single setter for the quit-time settings drain: assign and sync
-        # into the pipeline together so future rebinds cannot go stale.
-        nonlocal settings_apply_drain
-        settings_apply_drain = drain
-        _sync_settings_drain_into_pipeline()
-
-    def _cancel_update_download() -> bool:
-        return active_update_control.cancel() if active_update_control is not None else False
-
+    control_server: Any = None
+    runtime_owner: _RuntimeOwner | None = None
+    usage_client: UsageClient | None = None
+    wow_sync_startup_configurator: _WowSyncStartupConfigurator | None = None
+    # --- Startup try/finally region: control_server creation through dialog
+    # setup. The finally releases usage_client, runtime_owner/control_server
+    # and resets the privatization flag. It never blocks: no daemon joins,
+    # no synchronous ACL flush (owned by the background thread); pre-exec
+    # exits flush synchronously through _early_shutdown instead. ---
     try:
-        control_server = _create_control_server(
-            app,
-            quit_app=_quit_application,
-            show_settings=show_settings_action.request,
-            can_quit=_can_control_quit_application,
-            prepare_quit=_prepare_control_quit_application,
-            quit_blocked=_show_update_quit_blocked,
-        )
-    except _DuplicateInstanceFound:
-        log.info(
-            "ApplicantScout Companion is already running; exiting duplicate launch."
-        )
-        return 0
-    except _ControlServerUnavailable as exc:
-        log.error(
-            "Could not establish single-instance ownership; refusing startup: %s",
-            exc,
-        )
-        return 1
-    setattr(app, "_applicant_scout_control_server", control_server)
-    log.info(
-        "ApplicantScout Companion %s starting (pid=%d, packaged=%s, watch_wow=%s)",
-        __version__,
-        os.getpid(),
-        bool(getattr(sys, "frozen", False)),
-        wow_watch_mode,
-    )
-    runtime_owner = getattr(
-        control_server,
-        "_applicant_scout_runtime_owner",
-        None,
-    )
+        _runtime = _app_bootstrap.build_runtime_controllers(app)
+        wow_sync_startup_configurator = _runtime.wow_sync_startup_configurator
+        show_settings_action = _runtime.show_settings_action
+        update_quit_gate = _runtime.update_quit_gate
+        watcher_signal_gate = _runtime.watcher_signal_gate
+        update_signals = _runtime.update_signals
 
-    # H3: from here on, Windows ACL mutations are recorded (chmod still
-    # applies) and flushed from a background thread after the tray exists.
-    # Same end state, ordered later. Earlier exits keep synchronous behavior.
-    set_startup_privatization_deferred(True)
-    usage_client = UsageClient(
-        user_config_path().parent,
-        __version__,
-        test_installation=os.environ.get("APSCOUT_USAGE_TEST_INSTALLATION") == "1",
-    )
-    setattr(app, "_usage_client", usage_client)
-    usage_about_to_quit = getattr(app, "aboutToQuit", None)
-    if usage_about_to_quit is not None:
-        usage_about_to_quit.connect(usage_client.close)
-    # H1: trust the saved path so probe/discovery subprocesses never block the
-    # GUI thread; verification runs in the background after first paint.
-    loaded = _load_startup_config(verify_screenshots_path=False)
-    if loaded is None:
-        usage_client.close()
-        # H3: same end state on early exit — harden anything recorded so far.
-        set_startup_privatization_deferred(False)
+        _quit_pipeline = _app_bootstrap.make_quit_pipeline(
+            app=app,
+            update_quit_gate=update_quit_gate,
+            watcher_signal_gate=watcher_signal_gate,
+            get_settings_dialog=lambda: settings_dialog,
+            get_window=lambda: window_ref.get("window"),
+            get_watcher=lambda: watcher,
+            get_active_update_control=lambda: active_update_control,
+            get_tray_controller=lambda: tray_controller,
+            get_update_handoff_recovery=lambda: update_handoff_recovery,
+        )
+        _check_updates_with_handoff = _quit_pipeline.__dict__[  # type: ignore[attr-defined]
+            "check_updates_with_handoff"
+        ]
+        _flush_before_quit = _quit_pipeline.flush
+        _quit_application = _quit_pipeline.quit_app
+        _can_quit_application = _quit_pipeline.can_quit
+        _can_control_quit_application = _quit_pipeline.can_control_quit
+        _prepare_quit_application = _quit_pipeline.prepare_quit
+        _prepare_control_quit_application = _quit_pipeline.prepare_control_quit
+        _request_quit_application = _quit_pipeline.request_quit
+        _show_update_quit_blocked = _quit_pipeline.__dict__[  # type: ignore[attr-defined]
+            "show_update_quit_blocked"
+        ]
+
+        def _sync_settings_drain_into_pipeline() -> None:
+            holder = _quit_pipeline.__dict__.get("settings_drain_holder")
+            if isinstance(holder, dict):
+                holder["drain"] = settings_apply_drain
+
+        def _set_settings_apply_drain(drain: Callable[[], bool] | None) -> None:
+            # Single setter for the quit-time settings drain: assign and sync
+            # into the pipeline together so future rebinds cannot go stale.
+            nonlocal settings_apply_drain
+            settings_apply_drain = drain
+            _sync_settings_drain_into_pipeline()
+
+        def _cancel_update_download() -> bool:
+            return active_update_control.cancel() if active_update_control is not None else False
+
         try:
-            flush_deferred_privatization()
-        except Exception:  # noqa: BLE001 - early-exit hardening boundary
-            log.exception("Could not flush deferred file privatization.")
-        if isinstance(runtime_owner, _RuntimeOwner):
-            runtime_owner.close()
-        return 1
-
-    cfg, screenshots_dir, startup_settings_shown = loaded
-    startup_verification_signals = _StartupVerificationSignals()
-    startup_verification = _start_startup_screenshots_verification(
-        cfg,
-        screenshots_dir,
-        startup_verification_signals,
-    )
-    setattr(
-        app,
-        "_applicant_scout_startup_verification",
-        (startup_verification, startup_verification_signals),
-    )
-    usage_client.record("setup_completed")
-    region = cfg.region or REGION_ID_TO_WCL.get(3, "EU")  # default EU
-    region_runtime = _WCLRegionRuntime(region)
-    log.info("Screenshots: %s", screenshots_dir)
-    log.info("Region: %s (overridden by addon's VERSION snapshot if different)", region)
-    log.info("Logs: %s", cfg.log_dir or user_log_dir())
-    log.info("WCL metric preferences: %s", cfg.metric_preferences.cache_key())
-
-    auth = WCLAuth(cfg.wcl_client_id, cfg.wcl_client_secret, cfg.cache_dir)
-    cache = CharacterCache(
-        cfg.cache_dir,
-        ttl_seconds=cfg.cache_ttl_seconds,
-        defer_saves=True,
-    )
-    live_snapshot_source_id = live_snapshot_source_identity(screenshots_dir)
-    live_snapshot_writer = LiveSnapshotCacheWriter(
-        cfg.cache_dir,
-        source_id=live_snapshot_source_id,
-        defer_saves=True,
-    )
-    wcl_client = WCLClient(
-        auth,
-        region=region_runtime.effective_region,
-        metric_preferences=cfg.metric_preferences,
-    )
-
-    # Ctrl+C → graceful quit (Qt's C event loop swallows SIGINT by default;
-    # the no-op timer wakes Python every 500 ms so signal handlers actually run)
-    import signal as _signal
-
-    _signal.signal(_signal.SIGINT, lambda *_: _request_quit_application())
-    _ctrlc_timer = QTimer()
-    _ctrlc_timer.start(500)
-    _ctrlc_timer.timeout.connect(lambda: None)
-
-    state = AppState()
-    machine = StateMachine(
-        state,
-        rio_reader=_raiderio_reader_for_screenshots_path(
-            screenshots_dir,
-            cache_dir=cfg.cache_dir,
-        ),
-    )
-    current_screenshots_dir = screenshots_dir
-    wow_exit_timer: QTimer | None = None
-
-    def _set_update_in_progress(
-        in_progress: bool, *, generation: int | None = None
-    ) -> int:
-        """Gate + control/UI sync for one update attempt (fix 6: generations).
-
-        Starters (in_progress=True) register a new attempt id and return it;
-        finishers clear only when `generation` matches the latest starter, so
-        a stale completion cannot drop a live attempt's lock and controls.
-        `generation=None` on the finish path forces the clear (handoff
-        recovery owns the attempt it armed; legacy/test completions use 0).
-        Button/lock behavior is otherwise identical.
-        """
-        nonlocal active_update_control, last_update_progress
-        if in_progress:
-            already = update_quit_gate.update_in_progress
-            attempt = update_quit_gate.begin_update_attempt()
-            last_update_progress = None
-            if not already:
-                control = UpdateDownloadControl(
-                    lambda progress: update_signals.progressed.emit(control, progress)
-                )
-                active_update_control = control
-        else:
-            if generation:
-                if not update_quit_gate.finish_update_attempt(generation):
-                    return generation
-            else:
-                update_quit_gate.set_update_in_progress(False)
-            active_update_control = None
-            last_update_progress = None
-            attempt = generation or 0
-            if window is not None:
-                window.set_update_progress(None)
-        if tray_controller is not None:
-            tray_controller.set_update_available(pending_update_version)
-            tray_controller.set_update_in_progress(in_progress)
-        if settings_dialog is not None:
-            settings_dialog.set_update_in_progress(in_progress)
-        return attempt
-
-    def _handle_update_progress(control: object, progress: object) -> None:
-        nonlocal last_update_progress
-        if control is not active_update_control or not update_quit_gate.update_in_progress:
-            return
-        if not isinstance(progress, UpdateProgress):
-            return
-        last_update_progress = progress
-        if settings_dialog is not None:
-            settings_dialog.set_update_progress(progress)
-        if tray_controller is not None:
-            tray_controller.set_update_progress(progress)
-        if window is not None:
-            window.set_update_progress(progress)
-
-    update_signals.progressed.connect(_handle_update_progress)
-
-    def _recover_update_handoff(message: str, retry_available: bool) -> None:
-        nonlocal pending_update_version
-        if not update_quit_gate.update_in_progress:
-            return
-        if not retry_available:
-            pending_update_version = None
-        # M4 (message text only, no behavior change): the updater keeps the
-        # newest inactive installer as a rollback candidate but nothing
-        # references it automatically. Tell the user where to roll back by
-        # hand if the new version does not start.
-        display_message = _update_handoff_rollback_message(message)
-        _set_update_in_progress(False)
-        if settings_dialog is not None:
-            settings_dialog.set_update_available(pending_update_version)
-            settings_dialog.set_status(display_message, error=True)
-        if tray_controller is not None:
-            tray_controller.set_update_available(pending_update_version)
-            tray_controller.tray.showMessage(
-                "ApplicantScout update",
-                display_message,
-                QSystemTrayIcon.MessageIcon.Warning,
-                7000,
+            control_server = _create_control_server(
+                app,
+                quit_app=_quit_application,
+                show_settings=show_settings_action.request,
+                can_quit=_can_control_quit_application,
+                prepare_quit=_prepare_control_quit_application,
+                quit_blocked=_show_update_quit_blocked,
             )
-        if window is not None:
-            window.set_update_available(pending_update_version)
-        if _should_schedule_prompt_recheck(message, retry_available):
-            # One prompt re-check instead of waiting for the hourly timer.
-            QTimer.singleShot(
-                UPDATE_CHECK_PROMPT_RECHECK_MS, _run_silent_update_check
+        except _DuplicateInstanceFound:
+            log.info(
+                "ApplicantScout Companion is already running; exiting duplicate launch."
             )
-
-    def _handle_update_handoff_started(
-        message: str, installer_launch: object | None
-    ) -> None:
-        if update_handoff_recovery is not None:
-            total_bytes, staging_dir = install_progress_basis(installer_launch)
-            control = active_update_control
-            expected_version = pending_update_version
-
-            def _verify_promotion(
-                expected: str | None = expected_version,
-            ) -> bool | None:
-                return verify_install_promotion(expected_version=expected)
-
-            if (
-                control is not None
-                and total_bytes is not None
-                and staging_dir is not None
-            ):
-                update_handoff_recovery.arm(
-                    installer_launch,
-                    on_install_progress=control.report,
-                    install_estimator=InstallProgressEstimator(total_bytes),
-                    install_staging_dir=staging_dir,
-                    promotion_verifier=_verify_promotion,
-                )
-            else:
-                update_handoff_recovery.arm(
-                    installer_launch, promotion_verifier=_verify_promotion
-                )
-        if tray_controller is not None:
-            tray_controller.tray.showMessage(
-                "ApplicantScout update",
-                message,
-                QSystemTrayIcon.MessageIcon.Information,
-                7000,
+            # Early-exit cleanup region: symmetric pre-exec release.
+            _early_shutdown(configurator=wow_sync_startup_configurator)
+            return 0
+        except _ControlServerUnavailable as exc:
+            log.error(
+                "Could not establish single-instance ownership; refusing startup: %s",
+                exc,
             )
-
-    def _show_settings() -> None:
-        nonlocal auth
-        nonlocal cfg
-        nonlocal current_screenshots_dir
-        nonlocal settings_dialog
-        nonlocal watcher
-        nonlocal wow_exit_timer
-        if settings_dialog is not None:
-            settings_dialog.show()
-            settings_dialog.raise_()
-            settings_dialog.activateWindow()
-            return
-
-        dialog = SettingsDialog(
-            cfg,
-            first_run=False,
-            usage_client=usage_client,
-            credential_tester=lambda client_id, client_secret, region: (
-                _test_wcl_credentials(
-                    cfg.cache_dir,
-                    client_id,
-                    client_secret,
-                    region,
-                )
-            ),
-            open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
-            clear_cache=lambda: _clear_cache_dir(
-                cfg.cache_dir,
-                cache,
-                auth,
-                live_snapshot_writer=live_snapshot_writer,
-            ),
-            check_updates=_check_updates_with_handoff,
-            cancel_update=_cancel_update_download,
-            wow_startup_state=wow_sync_startup_state,
-            hide_to_tray_on_close=tray_controller is not None,
-            parent=window,
+            _early_shutdown(configurator=wow_sync_startup_configurator)
+            return 1
+        setattr(app, "_applicant_scout_control_server", control_server)
+        log.info(
+            "ApplicantScout Companion %s starting (pid=%d, packaged=%s, watch_wow=%s)",
+            __version__,
+            os.getpid(),
+            bool(getattr(sys, "frozen", False)),
+            wow_watch_mode,
         )
-        dialog.setWindowIcon(_app_icon())
-        dialog.set_update_available(pending_update_version)
-        _connect_release_notes_dialog_action(dialog)
-        settings_dialog = dialog
+        runtime_owner = getattr(
+            control_server,
+            "_applicant_scout_runtime_owner",
+            None,
+        )
 
-        def _forget_dialog() -> None:
-            nonlocal settings_dialog
-            settings_dialog = None
+        # H3: from here on, Windows ACL mutations are recorded (chmod still
+        # applies) and flushed from a background thread after the tray exists.
+        # Same end state, ordered later. Earlier exits keep synchronous behavior.
+        set_startup_privatization_deferred(True)
+        usage_client = UsageClient(
+            user_config_path().parent,
+            __version__,
+            test_installation=os.environ.get("APSCOUT_USAGE_TEST_INSTALLATION") == "1",
+        )
+        setattr(app, "_usage_client", usage_client)
+        usage_about_to_quit = getattr(app, "aboutToQuit", None)
+        if usage_about_to_quit is not None:
+            usage_about_to_quit.connect(usage_client.close)
+        # H1: trust the saved path so probe/discovery subprocesses never block the
+        # GUI thread; verification runs in the background after first paint.
+        loaded = _load_startup_config(verify_screenshots_path=False)
+        if loaded is None:
+            # Early-exit cleanup region: single helper, same end state.
+            # Detach the usage client so the widened finally keeps single-close.
+            _early_shutdown(
+                control_server=control_server,
+                configurator=wow_sync_startup_configurator,
+                runtime_owner=(
+                    runtime_owner if isinstance(runtime_owner, _RuntimeOwner) else None
+                ),
+                usage_client=usage_client,
+            )
+            usage_client = None
+            return 1
 
-        def _request_startup_shortcut(enabled: bool) -> None:
-            dialog.set_wow_sync_repair_pending(True)
+        cfg, screenshots_dir, startup_settings_shown = loaded
+        startup_verification_signals = _StartupVerificationSignals()
+        startup_verification = _start_startup_screenshots_verification(
+            cfg,
+            screenshots_dir,
+            startup_verification_signals,
+        )
+        setattr(
+            app,
+            "_applicant_scout_startup_verification",
+            (startup_verification, startup_verification_signals),
+        )
+        usage_client.record("setup_completed")
+        region = cfg.region or REGION_ID_TO_WCL.get(3, "EU")  # default EU
+        region_runtime = _WCLRegionRuntime(region)
+        log.info("Screenshots: %s", screenshots_dir)
+        log.info("Region: %s (overridden by addon's VERSION snapshot if different)", region)
+        log.info("Logs: %s", cfg.log_dir or user_log_dir())
+        log.info("WCL metric preferences: %s", cfg.metric_preferences.cache_key())
 
-            def _refresh_startup_status() -> None:
-                if settings_dialog is dialog:
-                    dialog.set_wow_sync_repair_pending(False)
-                    dialog.refresh_wow_sync_status()
+        auth = WCLAuth(cfg.wcl_client_id, cfg.wcl_client_secret, cfg.cache_dir)
+        cache = CharacterCache(
+            cfg.cache_dir,
+            ttl_seconds=cfg.cache_ttl_seconds,
+            defer_saves=True,
+        )
+        live_snapshot_source_id = live_snapshot_source_identity(screenshots_dir)
+        live_snapshot_writer = LiveSnapshotCacheWriter(
+            cfg.cache_dir,
+            source_id=live_snapshot_source_id,
+            defer_saves=True,
+        )
+        wcl_client = WCLClient(
+            auth,
+            region=region_runtime.effective_region,
+            metric_preferences=cfg.metric_preferences,
+        )
 
-            def _report_startup_shortcut_error(exc: Exception) -> None:
-                if settings_dialog is not dialog:
-                    return
-                _refresh_startup_status()
-                dialog.set_status(
-                    "Settings saved, but the WoW startup shortcut could "
-                    f"not be updated: {exc}",
-                    error=True,
+        # Ctrl+C → graceful quit (Qt's C event loop swallows SIGINT by default;
+        # the no-op timer wakes Python every 500 ms so signal handlers actually run)
+        import signal as _signal
+
+        _signal.signal(_signal.SIGINT, lambda *_: _request_quit_application())
+        _ctrlc_timer = QTimer()
+        _ctrlc_timer.start(500)
+        _ctrlc_timer.timeout.connect(lambda: None)
+
+        state = AppState()
+        machine = StateMachine(
+            state,
+            rio_reader=_raiderio_reader_for_screenshots_path(
+                screenshots_dir,
+                cache_dir=cfg.cache_dir,
+            ),
+        )
+        current_screenshots_dir = screenshots_dir
+        wow_exit_timer: QTimer | None = None
+
+        def _set_update_in_progress(
+            in_progress: bool, *, generation: int | None = None
+        ) -> int:
+            """Gate + control/UI sync for one update attempt (fix 6: generations).
+
+            Starters (in_progress=True) register a new attempt id and return it;
+            finishers clear only when `generation` matches the latest starter, so
+            a stale completion cannot drop a live attempt's lock and controls.
+            `generation=None` on the finish path forces the clear (handoff
+            recovery owns the attempt it armed; legacy/test completions use 0).
+            Button/lock behavior is otherwise identical.
+            """
+            nonlocal active_update_control, last_update_progress
+            if in_progress:
+                already = update_quit_gate.update_in_progress
+                attempt = update_quit_gate.begin_update_attempt()
+                last_update_progress = None
+                if not already:
+                    control = UpdateDownloadControl(
+                        lambda progress: update_signals.progressed.emit(control, progress)
+                    )
+                    active_update_control = control
+            else:
+                if generation:
+                    if not update_quit_gate.finish_update_attempt(generation):
+                        return generation
+                else:
+                    update_quit_gate.set_update_in_progress(False)
+                active_update_control = None
+                last_update_progress = None
+                attempt = generation or 0
+                if window is not None:
+                    window.set_update_progress(None)
+            if tray_controller is not None:
+                tray_controller.set_update_available(pending_update_version)
+                tray_controller.set_update_in_progress(in_progress)
+            if settings_dialog is not None:
+                settings_dialog.set_update_in_progress(in_progress)
+            return attempt
+
+        def _handle_update_progress(control: object, progress: object) -> None:
+            nonlocal last_update_progress
+            if control is not active_update_control or not update_quit_gate.update_in_progress:
+                return
+            if not isinstance(progress, UpdateProgress):
+                return
+            last_update_progress = progress
+            if settings_dialog is not None:
+                settings_dialog.set_update_progress(progress)
+            if tray_controller is not None:
+                tray_controller.set_update_progress(progress)
+            if window is not None:
+                window.set_update_progress(progress)
+
+        update_signals.progressed.connect(_handle_update_progress)
+
+        def _recover_update_handoff(message: str, retry_available: bool) -> None:
+            nonlocal pending_update_version
+            if not update_quit_gate.update_in_progress:
+                return
+            if not retry_available:
+                pending_update_version = None
+            # M4 (message text only, no behavior change): the updater keeps the
+            # newest inactive installer as a rollback candidate but nothing
+            # references it automatically. Tell the user where to roll back by
+            # hand if the new version does not start.
+            display_message = _update_handoff_rollback_message(message)
+            _set_update_in_progress(False)
+            if settings_dialog is not None:
+                settings_dialog.set_update_available(pending_update_version)
+                settings_dialog.set_status(display_message, error=True)
+            if tray_controller is not None:
+                tray_controller.set_update_available(pending_update_version)
+                tray_controller.tray.showMessage(
+                    "ApplicantScout update",
+                    display_message,
+                    QSystemTrayIcon.MessageIcon.Warning,
+                    7000,
+                )
+            if window is not None:
+                window.set_update_available(pending_update_version)
+            if _should_schedule_prompt_recheck(message, retry_available):
+                # One prompt re-check instead of waiting for the hourly timer.
+                QTimer.singleShot(
+                    UPDATE_CHECK_PROMPT_RECHECK_MS, _run_silent_update_check
                 )
 
-            try:
-                wow_sync_startup_configurator.request(
-                    enabled,
-                    restore_windows_approval=enabled,
-                    on_success=_refresh_startup_status,
-                    on_error=_report_startup_shortcut_error,
+        def _handle_update_handoff_started(
+            message: str, installer_launch: object | None
+        ) -> None:
+            if update_handoff_recovery is not None:
+                total_bytes, staging_dir = install_progress_basis(installer_launch)
+                control = active_update_control
+                expected_version = pending_update_version
+
+                def _verify_promotion(
+                    expected: str | None = expected_version,
+                ) -> bool | None:
+                    return verify_install_promotion(expected_version=expected)
+
+                if (
+                    control is not None
+                    and total_bytes is not None
+                    and staging_dir is not None
+                ):
+                    update_handoff_recovery.arm(
+                        installer_launch,
+                        on_install_progress=control.report,
+                        install_estimator=InstallProgressEstimator(total_bytes),
+                        install_staging_dir=staging_dir,
+                        promotion_verifier=_verify_promotion,
+                    )
+                else:
+                    update_handoff_recovery.arm(
+                        installer_launch, promotion_verifier=_verify_promotion
+                    )
+            if tray_controller is not None:
+                tray_controller.tray.showMessage(
+                    "ApplicantScout update",
+                    message,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    7000,
                 )
-            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                _report_startup_shortcut_error(exc)
 
-        def _repair_wow_startup() -> None:
-            if cfg.sync_with_wow:
-                _request_startup_shortcut(True)
-
-        def _apply_settings_values(values, *, apply_credentials: bool) -> None:
-            # H3: snapshot values and return immediately; persist/apply runs in
-            # the pipeline worker and commits coalesced on the GUI thread.
-            settings_applier.submit(values, apply_credentials=apply_credentials)
-
-        def _mark_apply_busy() -> None:
-            dialog.set_status("Saving...", busy=True)
-
-        def _commit_apply_outcome(outcome: _SettingsApplyOutcome) -> None:
+        def _show_settings() -> None:
             nonlocal auth
             nonlocal cfg
             nonlocal current_screenshots_dir
+            nonlocal settings_dialog
             nonlocal watcher
             nonlocal wow_exit_timer
-            values = outcome.values
-            apply_credentials = outcome.apply_credentials
-            if settings_dialog is not dialog:
+            if settings_dialog is not None:
+                settings_dialog.show()
+                settings_dialog.raise_()
+                settings_dialog.activateWindow()
                 return
-            if not outcome.ok or outcome.prepared is None:
-                exc = outcome.error
-                log.warning("Could not apply settings change: %s", exc)
-                dialog.report_values_apply_result(False)
-                dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
-                return
-            try:
-                result = _commit_settings_apply(
-                    SettingsApplyCtx(
-                        app=app,
-                        prepared=outcome.prepared,
-                        values=values,
-                        auth=auth,
-                        wcl_client=wcl_client,
-                        region_runtime=region_runtime,
-                        window=window,
-                        watcher=watcher,
-                        current_screenshots_dir=current_screenshots_dir,
-                        machine=machine,
-                        decode_failed_callback=_log_decode_failed,
-                        signal_gate=watcher_signal_gate,
-                        wow_exit_timer=wow_exit_timer,
-                        quit_app=_request_quit_application,
-                        can_quit=_can_quit_application,
-                        prepare_quit=_prepare_quit_application,
-                        live_snapshot_cache_writer=live_snapshot_writer,
+
+            dialog = SettingsDialog(
+                cfg,
+                first_run=False,
+                usage_client=usage_client,
+                credential_tester=lambda client_id, client_secret, region: (
+                    _test_wcl_credentials(
+                        cfg.cache_dir,
+                        client_id,
+                        client_secret,
+                        region,
                     )
-                )
-            except (
-                ConfigError,
-                OSError,
-                RuntimeError,
-                subprocess.SubprocessError,
-            ) as exc:
-                log.warning("Could not apply settings change: %s", exc)
-                dialog.report_values_apply_result(False)
-                dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
+                ),
+                open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
+                clear_cache=lambda: _clear_cache_dir(
+                    cfg.cache_dir,
+                    cache,
+                    auth,
+                    live_snapshot_writer=live_snapshot_writer,
+                ),
+                check_updates=_check_updates_with_handoff,
+                cancel_update=_cancel_update_download,
+                wow_startup_state=wow_sync_startup_state,
+                hide_to_tray_on_close=tray_controller is not None,
+                parent=window,
+            )
+            dialog.setWindowIcon(_app_icon())
+            dialog.set_update_available(pending_update_version)
+            _connect_release_notes_dialog_action(dialog)
+            settings_dialog = dialog
+
+            def _forget_dialog() -> None:
+                nonlocal settings_dialog
+                settings_dialog = None
+
+            def _request_startup_shortcut(enabled: bool) -> None:
+                dialog.set_wow_sync_repair_pending(True)
+                # Narrowed for the type checker: closured main locals keep
+                # their declared Optional type (set once before the dialog).
+                assert wow_sync_startup_configurator is not None
+
+                def _refresh_startup_status() -> None:
+                    if settings_dialog is dialog:
+                        dialog.set_wow_sync_repair_pending(False)
+                        dialog.refresh_wow_sync_status()
+
+                def _report_startup_shortcut_error(exc: Exception) -> None:
+                    if settings_dialog is not dialog:
+                        return
+                    _refresh_startup_status()
+                    dialog.set_status(
+                        "Settings saved, but the WoW startup shortcut could "
+                        f"not be updated: {exc}",
+                        error=True,
+                    )
+
+                try:
+                    wow_sync_startup_configurator.request(
+                        enabled,
+                        restore_windows_approval=enabled,
+                        on_success=_refresh_startup_status,
+                        on_error=_report_startup_shortcut_error,
+                    )
+                except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                    _report_startup_shortcut_error(exc)
+
+            def _repair_wow_startup() -> None:
+                if cfg.sync_with_wow:
+                    _request_startup_shortcut(True)
+
+            def _apply_settings_values(values, *, apply_credentials: bool) -> None:
+                # H3: snapshot values and return immediately; persist/apply runs in
+                # the pipeline worker and commits coalesced on the GUI thread.
+                settings_applier.submit(values, apply_credentials=apply_credentials)
+
+            def _mark_apply_busy() -> None:
+                dialog.set_status("Saving...", busy=True)
+
+            def _commit_apply_outcome(outcome: _SettingsApplyOutcome) -> None:
+                nonlocal auth
+                nonlocal cfg
+                nonlocal current_screenshots_dir
+                nonlocal watcher
+                nonlocal wow_exit_timer
+                values = outcome.values
+                apply_credentials = outcome.apply_credentials
+                if settings_dialog is not dialog:
+                    return
+                if not outcome.ok or outcome.prepared is None:
+                    exc = outcome.error
+                    log.warning("Could not apply settings change: %s", exc)
+                    dialog.report_values_apply_result(False)
+                    dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
+                    return
+                try:
+                    result = _commit_settings_apply(
+                        SettingsApplyCtx(
+                            app=app,
+                            prepared=outcome.prepared,
+                            values=values,
+                            auth=auth,
+                            wcl_client=wcl_client,
+                            region_runtime=region_runtime,
+                            window=window,
+                            watcher=watcher,
+                            current_screenshots_dir=current_screenshots_dir,
+                            machine=machine,
+                            decode_failed_callback=_log_decode_failed,
+                            signal_gate=watcher_signal_gate,
+                            wow_exit_timer=wow_exit_timer,
+                            quit_app=_request_quit_application,
+                            can_quit=_can_quit_application,
+                            prepare_quit=_prepare_quit_application,
+                            live_snapshot_cache_writer=live_snapshot_writer,
+                        )
+                    )
+                except (
+                    ConfigError,
+                    OSError,
+                    RuntimeError,
+                    subprocess.SubprocessError,
+                ) as exc:
+                    log.warning("Could not apply settings change: %s", exc)
+                    dialog.report_values_apply_result(False)
+                    dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
+                    return
+                startup_shortcut_changed = cfg.sync_with_wow != result.cfg.sync_with_wow
+                dialog.report_values_apply_result(True)
+                cfg = result.cfg
+                auth = result.auth
+                watcher = result.watcher
+                current_screenshots_dir = result.current_screenshots_dir
+                wow_exit_timer = result.wow_exit_timer
+                overrides = result.overrides
+                path_warning = dialog.current_screenshots_warning()
+                if apply_credentials:
+                    status_text, status_error = _settings_wcl_test_success_status(
+                        overrides,
+                        path_warning=path_warning,
+                    )
+                    dialog.set_status(status_text, error=status_error)
+                else:
+                    status_text, status_error, status_warning = _settings_autosave_status(
+                        overrides,
+                        cfg,
+                        path_warning=path_warning,
+                    )
+                    dialog.set_status(
+                        status_text,
+                        error=status_error,
+                        warning=status_warning,
+                    )
+                if startup_shortcut_changed:
+                    _request_startup_shortcut(cfg.sync_with_wow)
+
+            settings_applier = _CoalescedSettingsApplier(
+                app if isinstance(app, QObject) else None,
+                current_cfg=lambda: cfg,
+            )
+            settings_applier.configure(
+                on_busy=_mark_apply_busy,
+                on_ready=_commit_apply_outcome,
+            )
+            _set_settings_apply_drain(settings_applier.drain)
+
+            def _handle_values_changed(values) -> None:
+                _apply_settings_values(values, apply_credentials=False)
+
+            def _handle_credentials_validated(values) -> None:
+                _apply_settings_values(values, apply_credentials=True)
+
+            def _handle_dialog_update_completed() -> None:
+                nonlocal pending_update_version
+                pending_update_version = None
+                if tray_controller is not None:
+                    tray_controller.set_update_available(None)
+                window.set_update_available(None)
+
+            dialog.valuesChanged.connect(_handle_values_changed)
+            dialog.wowSyncRepairRequested.connect(_repair_wow_startup)
+
+            def _usage_consent_changed(enabled: bool) -> None:
+                # Narrowed for the type checker: see _request_startup_shortcut.
+                assert usage_client is not None
+                if window.usage_activity is not None:
+                    window.usage_activity.reset()
+                if enabled:
+                    usage_client.record("setup_completed")
+
+            dialog.usageConsentChanged.connect(_usage_consent_changed)
+            dialog.credentialsValidated.connect(_handle_credentials_validated)
+            dialog.updateStarted.connect(window.flush_geometry)
+            # Fix 6: the starter captures its attempt id; the finisher clears
+            # only that same attempt, so a concurrent tray+dialog double-entry
+            # cannot drop a live attempt's lock.
+            dialog_attempt: dict[str, int] = {"generation": 0}
+
+            def _dialog_update_started() -> None:
+                dialog_attempt["generation"] = _set_update_in_progress(True)
+
+            def _dialog_update_finished(_error: bool) -> None:
+                _set_update_in_progress(False, generation=dialog_attempt["generation"])
+
+            dialog.updateStarted.connect(_dialog_update_started)
+            dialog.updateFinished.connect(_dialog_update_finished)
+            dialog.updateCompleted.connect(_handle_dialog_update_completed)
+            dialog.updateHandoffStarted.connect(_handle_update_handoff_started)
+            dialog.quitRequested.connect(_request_quit_application)
+            dialog.destroyed.connect(lambda *_args: _forget_dialog())
+            # Fix 5: apply the live handoff phase synchronously at setup so a
+            # dialog created during installing hides cancel (and shows status)
+            # immediately instead of waiting for the next progress tick.
+            dialog.set_update_in_progress(update_quit_gate.update_in_progress)
+            if last_update_progress is not None:
+                dialog.set_update_progress(last_update_progress)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+
+        window = OverlayWindow(
+            state,
+            wcl_client,
+            cache,
+            cfg.config_dir,
+            metric_preferences=cfg.metric_preferences,
+            show_settings=_show_settings,
+            game_foreground_probe=is_wow_foreground,
+        )
+        _validate_oauth_async(wcl_client)
+        window.usage_activity = UsageActivity(usage_client)
+        window_ref["window"] = window
+        window.setWindowIcon(_app_icon())
+        show_settings_action.set_callback(_show_settings)
+        update_check_coordinator = _UpdateCheckCoordinator()
+        update_handoff_recovery = _UpdateHandoffRecoveryController(
+            app,
+            on_recover=_recover_update_handoff,
+        )
+        # Fix 7: control-quit during installer handoff waits bounded for the
+        # installer exit (see _UpdateQuitGate.prepare_control_quit).
+        update_quit_gate.set_handoff_exit_waiter(
+            update_handoff_recovery.wait_for_installer_exit
+        )
+
+        def _run_update() -> None:
+            if update_quit_gate.update_in_progress:
                 return
-            startup_shortcut_changed = cfg.sync_with_wow != result.cfg.sync_with_wow
-            dialog.report_values_apply_result(True)
-            cfg = result.cfg
-            auth = result.auth
-            watcher = result.watcher
-            current_screenshots_dir = result.current_screenshots_dir
-            wow_exit_timer = result.wow_exit_timer
-            overrides = result.overrides
-            path_warning = dialog.current_screenshots_warning()
-            if apply_credentials:
-                status_text, status_error = _settings_wcl_test_success_status(
-                    overrides,
-                    path_warning=path_warning,
-                )
-                dialog.set_status(status_text, error=status_error)
-            else:
-                status_text, status_error, status_warning = _settings_autosave_status(
-                    overrides,
-                    cfg,
-                    path_warning=path_warning,
-                )
-                dialog.set_status(
-                    status_text,
-                    error=status_error,
-                    warning=status_warning,
-                )
-            if startup_shortcut_changed:
-                _request_startup_shortcut(cfg.sync_with_wow)
+            _show_settings()
+            if not _flush_settings_before_update(settings_dialog):
+                return
+            window.flush_geometry()
+            attempt = _set_update_in_progress(True)
 
-        settings_applier = _CoalescedSettingsApplier(
-            app if isinstance(app, QObject) else None,
-            current_cfg=lambda: cfg,
-        )
-        settings_applier.configure(
-            on_busy=_mark_apply_busy,
-            on_ready=_commit_apply_outcome,
-        )
-        _set_settings_apply_drain(settings_applier.drain)
+            def _worker() -> None:
+                try:
+                    result = _check_updates_with_handoff()
+                    completion = _update_completion_from_result(result)
+                    update_signals.completed.emit(
+                        replace(completion, generation=attempt)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    update_signals.completed.emit(
+                        _UpdateCompletion(
+                            f"Update failed: {exc}", error=True, generation=attempt
+                        )
+                    )
 
-        def _handle_values_changed(values) -> None:
-            _apply_settings_values(values, apply_credentials=False)
-
-        def _handle_credentials_validated(values) -> None:
-            _apply_settings_values(values, apply_credentials=True)
-
-        def _handle_dialog_update_completed() -> None:
-            nonlocal pending_update_version
-            pending_update_version = None
-            if tray_controller is not None:
-                tray_controller.set_update_available(None)
-            window.set_update_available(None)
-
-        dialog.valuesChanged.connect(_handle_values_changed)
-        dialog.wowSyncRepairRequested.connect(_repair_wow_startup)
-
-        def _usage_consent_changed(enabled: bool) -> None:
-            if window.usage_activity is not None:
-                window.usage_activity.reset()
-            if enabled:
-                usage_client.record("setup_completed")
-
-        dialog.usageConsentChanged.connect(_usage_consent_changed)
-        dialog.credentialsValidated.connect(_handle_credentials_validated)
-        dialog.updateStarted.connect(window.flush_geometry)
-        # Fix 6: the starter captures its attempt id; the finisher clears
-        # only that same attempt, so a concurrent tray+dialog double-entry
-        # cannot drop a live attempt's lock.
-        dialog_attempt: dict[str, int] = {"generation": 0}
-
-        def _dialog_update_started() -> None:
-            dialog_attempt["generation"] = _set_update_in_progress(True)
-
-        def _dialog_update_finished(_error: bool) -> None:
-            _set_update_in_progress(False, generation=dialog_attempt["generation"])
-
-        dialog.updateStarted.connect(_dialog_update_started)
-        dialog.updateFinished.connect(_dialog_update_finished)
-        dialog.updateCompleted.connect(_handle_dialog_update_completed)
-        dialog.updateHandoffStarted.connect(_handle_update_handoff_started)
-        dialog.quitRequested.connect(_request_quit_application)
-        dialog.destroyed.connect(lambda *_args: _forget_dialog())
-        # Fix 5: apply the live handoff phase synchronously at setup so a
-        # dialog created during installing hides cancel (and shows status)
-        # immediately instead of waiting for the next progress tick.
-        dialog.set_update_in_progress(update_quit_gate.update_in_progress)
-        if last_update_progress is not None:
-            dialog.set_update_progress(last_update_progress)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
-    window = OverlayWindow(
-        state,
-        wcl_client,
-        cache,
-        cfg.config_dir,
-        metric_preferences=cfg.metric_preferences,
-        show_settings=_show_settings,
-        game_foreground_probe=is_wow_foreground,
-    )
-    _validate_oauth_async(wcl_client)
-    window.usage_activity = UsageActivity(usage_client)
-    window_ref["window"] = window
-    window.setWindowIcon(_app_icon())
-    show_settings_action.set_callback(_show_settings)
-    update_check_coordinator = _UpdateCheckCoordinator()
-    update_handoff_recovery = _UpdateHandoffRecoveryController(
-        app,
-        on_recover=_recover_update_handoff,
-    )
-    # Fix 7: control-quit during installer handoff waits bounded for the
-    # installer exit (see _UpdateQuitGate.prepare_control_quit).
-    update_quit_gate.set_handoff_exit_waiter(
-        update_handoff_recovery.wait_for_installer_exit
-    )
-
-    def _run_update() -> None:
-        if update_quit_gate.update_in_progress:
-            return
-        _show_settings()
-        if not _flush_settings_before_update(settings_dialog):
-            return
-        window.flush_geometry()
-        attempt = _set_update_in_progress(True)
-
-        def _worker() -> None:
-            try:
-                result = _check_updates_with_handoff()
-                completion = _update_completion_from_result(result)
-                update_signals.completed.emit(
-                    replace(completion, generation=attempt)
-                )
-            except Exception as exc:  # noqa: BLE001
-                update_signals.completed.emit(
+            _start_daemon_thread(
+                _worker,
+                name="ApplicantScoutUpdater",
+                on_start_error=lambda exc: update_signals.completed.emit(
                     _UpdateCompletion(
                         f"Update failed: {exc}", error=True, generation=attempt
                     )
-                )
-
-        _start_daemon_thread(
-            _worker,
-            name="ApplicantScoutUpdater",
-            on_start_error=lambda exc: update_signals.completed.emit(
-                _UpdateCompletion(
-                    f"Update failed: {exc}", error=True, generation=attempt
-                )
-            ),
-        )
-
-    def _handle_update_completed(completion: object) -> None:
-        nonlocal pending_update_version
-        if not isinstance(completion, _UpdateCompletion):
-            log.warning("Ignored unexpected update completion payload: %r", completion)
-            return
-        if completion.cancelled:
-            update_handoff_recovery.disarm()
-            _set_update_in_progress(False, generation=completion.generation)
-            if settings_dialog is not None:
-                settings_dialog.set_status(completion.message)
-            return
-        if completion.error:
-            update_handoff_recovery.disarm()
-            _set_update_in_progress(False, generation=completion.generation)
-            _notify_update_failure(
-                window=window,
-                tray_controller=tray_controller,
-                settings_dialog=settings_dialog,
-                message=completion.message,
-            )
-            return
-        if completion.installer_handoff:
-            _handle_update_handoff_started(
-                completion.message,
-                completion.installer_launch,
-            )
-            return
-        update_handoff_recovery.disarm()
-        pending_update_version = None
-        _set_update_in_progress(False, generation=completion.generation)
-        if settings_dialog is not None:
-            settings_dialog.set_update_available(None)
-        if tray_controller is not None:
-            tray_controller.set_update_available(None)
-        if window is not None:
-            window.set_update_available(None)
-        if tray_controller is not None:
-            tray_controller.tray.showMessage(
-                "ApplicantScout update",
-                completion.message,
-                QSystemTrayIcon.MessageIcon.Information,
-                7000,
+                ),
             )
 
-    def _run_silent_update_check() -> None:
-        generation = update_check_coordinator.next_generation()
-
-        def _worker() -> None:
-            result = _safe_check_for_update(__version__)
-            update_signals.checked.emit(generation, result)
-
-        _start_daemon_thread(_worker, name="ApplicantScoutUpdateCheck")
-
-    def _handle_update_checked(generation: int, result: object) -> None:
-        nonlocal pending_update_version
-        nonlocal startup_update_prompt_pending
-        decision = _resolve_update_check_result(
-            update_check_coordinator,
-            generation,
-            result,
-            previous_pending_update_version=pending_update_version,
-        )
-        if not decision.is_current:
-            return
-        pending_update_version = decision.pending_update_version
-        blocked_layout_reason = in_app_exe_update_blocked_reason()
-        if blocked_layout_reason is not None and pending_update_version is not None:
-            # Portable/dev: never advertise the installer handoff. Hide the
-            # install affordance and explain the manual path instead of
-            # letting the installer target DefaultDirName.
-            pending_update_version = None
-            if settings_dialog is not None:
-                set_status = getattr(settings_dialog, "set_status", None)
-                if callable(set_status):
-                    set_status(blocked_layout_reason, error=True)
-        if tray_controller is not None:
-            tray_controller.set_update_available(pending_update_version)
-        if window is not None:
-            window.set_update_available(pending_update_version)
-        if settings_dialog is not None:
-            settings_dialog.set_update_available(pending_update_version)
-            if update_quit_gate.update_in_progress:
-                settings_dialog.set_update_in_progress(True)
-        if update_quit_gate.update_in_progress:
-            startup_update_prompt_pending = False
-            return
-        if _should_show_wow_start_update_prompt(
-            wow_watch_mode=wow_watch_mode,
-            startup_update_prompt_pending=startup_update_prompt_pending,
-            pending_update_version=pending_update_version,
-        ):
-            startup_update_prompt_pending = False
-            if pending_update_version is not None:
-                _notify_background_update_available(
+        def _handle_update_completed(completion: object) -> None:
+            nonlocal pending_update_version
+            if not isinstance(completion, _UpdateCompletion):
+                log.warning("Ignored unexpected update completion payload: %r", completion)
+                return
+            if completion.cancelled:
+                update_handoff_recovery.disarm()
+                _set_update_in_progress(False, generation=completion.generation)
+                if settings_dialog is not None:
+                    settings_dialog.set_status(completion.message)
+                return
+            if completion.error:
+                update_handoff_recovery.disarm()
+                _set_update_in_progress(False, generation=completion.generation)
+                _notify_update_failure(
+                    window=window,
                     tray_controller=tray_controller,
                     settings_dialog=settings_dialog,
-                    latest_version=pending_update_version,
+                    message=completion.message,
                 )
-            return
-        startup_update_prompt_pending = False
-
-    update_signals.checked.connect(_handle_update_checked)
-    update_signals.completed.connect(_handle_update_completed)
-    tray_controller = _create_tray_controller(
-        app,
-        icon=_app_icon(),
-        window=window,
-        show_settings=_show_settings,
-        open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
-        run_update=_run_update,
-        quit_app=_request_quit_application,
-    )
-    if tray_controller is None:
-        log.info("System tray indicator disabled.")
-    # H3: window/tray exist — harden recorded paths off the GUI thread.
-    _start_startup_background_thread(
-        _flush_startup_file_privatization,
-        name="ApplicantScoutACLPrivatize",
-    )
-    if cfg.sync_with_wow:
-        wow_exit_timer = _start_wow_lifecycle_timer(
-            app,
-            has_seen_wow=wow_watch_mode,
-            quit_app=_request_quit_application,
-            can_quit=_can_quit_application,
-            prepare_quit=_prepare_quit_application,
-        )
-        setattr(app, "_applicant_scout_wow_exit_timer", wow_exit_timer)
-    update_timer = QTimer(app)
-    update_timer.setInterval(UPDATE_CHECK_INTERVAL_MS)
-    update_timer.timeout.connect(_run_silent_update_check)
-    update_timer.start()
-    setattr(app, "_applicant_scout_update_timer", update_timer)
-    QTimer.singleShot(UPDATE_CHECK_INITIAL_MS, _run_silent_update_check)
-    if _should_show_settings_on_start(
-        args,
-        startup_settings_shown=startup_settings_shown,
-        wow_watch_mode=wow_watch_mode,
-    ):
-        QTimer.singleShot(0, _show_settings)
-
-    # Wire state-machine signals → overlay slots (unchanged from chatlog pipeline —
-    # OverlayWindow API is transport-agnostic)
-    machine.applicantAdded.connect(window.on_applicant_added)
-    machine.applicantUpdated.connect(window.on_applicant_updated)
-    machine.applicantRemoved.connect(window.on_applicant_removed)
-    machine.listingChanged.connect(window.on_listing_changed)
-    machine.cleared.connect(window.on_cleared)
-    machine.rosterChanged.connect(window.on_roster_changed)
-
-    def _sync_region_to_wcl(region_id: int) -> None:
-        old_region = wcl_client.region
-        if region_runtime.set_live_region_id(region_id):
-            log.info(
-                "Region updated from VERSION: %s -> %s",
-                old_region,
-                region_runtime.effective_region,
-            )
-            wcl_client.region = region_runtime.effective_region
-
-    machine.versionUpdated.connect(_sync_region_to_wcl)
-
-    def _log_decode_failed(path: str, reason: str) -> None:
-        log.warning("decode failed for %s: %s", path, reason)
-
-    if _restore_live_snapshot_cache(
-        cfg.cache_dir,
-        machine,
-        window,
-        expected_source_id=live_snapshot_source_id,
-    ):
-        log.info("Restored last live ApplicantScout snapshot; waiting for fresh QR.")
-
-    # Start screenshot watcher: it scans recent backlog (last 60s of WoWScrnShot
-    # files) on start and applies the most recent valid snapshot — handles the
-    # "companion started mid-session" case. Then watches Screenshots/ folder
-    # via watchdog Observer for new files.
-    def _queue_screenshots_recovery(recovery_message: str) -> None:
-        def _show_screenshots_recovery() -> None:
-            _show_settings()
+                return
+            if completion.installer_handoff:
+                _handle_update_handoff_started(
+                    completion.message,
+                    completion.installer_launch,
+                )
+                return
+            update_handoff_recovery.disarm()
+            pending_update_version = None
+            _set_update_in_progress(False, generation=completion.generation)
             if settings_dialog is not None:
-                settings_dialog.set_status(recovery_message, error=True)
+                settings_dialog.set_update_available(None)
+            if tray_controller is not None:
+                tray_controller.set_update_available(None)
+            if window is not None:
+                window.set_update_available(None)
+            if tray_controller is not None:
+                tray_controller.tray.showMessage(
+                    "ApplicantScout update",
+                    completion.message,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    7000,
+                )
 
-        QTimer.singleShot(0, _show_screenshots_recovery)
+        def _run_silent_update_check() -> None:
+            generation = update_check_coordinator.next_generation()
 
-    # H1: surface an already-finished background probe before the watcher
-    # starts (non-blocking); later arrivals notify via the verified signal.
-    startup_verification.surface()
-    watcher = _start_initial_screenshot_watcher(
-        screenshots_dir,
-        machine,
-        window,
-        _log_decode_failed,
-        cache_dir=cfg.cache_dir,
-        signal_gate=watcher_signal_gate,
-        live_snapshot_cache_writer=live_snapshot_writer,
-        show_recovery=_queue_screenshots_recovery,
-    )
-    if watcher is not None:
-        log.info("Ready. Overlay will appear when applicants are present.")
+            def _worker() -> None:
+                result = _safe_check_for_update(__version__)
+                update_signals.checked.emit(generation, result)
 
-    try:
-        return _run_application_event_loop(
+            _start_daemon_thread(_worker, name="ApplicantScoutUpdateCheck")
+
+        def _handle_update_checked(generation: int, result: object) -> None:
+            nonlocal pending_update_version
+            nonlocal startup_update_prompt_pending
+            decision = _resolve_update_check_result(
+                update_check_coordinator,
+                generation,
+                result,
+                previous_pending_update_version=pending_update_version,
+            )
+            if not decision.is_current:
+                return
+            pending_update_version = decision.pending_update_version
+            blocked_layout_reason = in_app_exe_update_blocked_reason()
+            if blocked_layout_reason is not None and pending_update_version is not None:
+                # Portable/dev: never advertise the installer handoff. Hide the
+                # install affordance and explain the manual path instead of
+                # letting the installer target DefaultDirName.
+                pending_update_version = None
+                if settings_dialog is not None:
+                    set_status = getattr(settings_dialog, "set_status", None)
+                    if callable(set_status):
+                        set_status(blocked_layout_reason, error=True)
+            if tray_controller is not None:
+                tray_controller.set_update_available(pending_update_version)
+            if window is not None:
+                window.set_update_available(pending_update_version)
+            if settings_dialog is not None:
+                settings_dialog.set_update_available(pending_update_version)
+                if update_quit_gate.update_in_progress:
+                    settings_dialog.set_update_in_progress(True)
+            if update_quit_gate.update_in_progress:
+                startup_update_prompt_pending = False
+                return
+            if _should_show_wow_start_update_prompt(
+                wow_watch_mode=wow_watch_mode,
+                startup_update_prompt_pending=startup_update_prompt_pending,
+                pending_update_version=pending_update_version,
+            ):
+                startup_update_prompt_pending = False
+                if pending_update_version is not None:
+                    _notify_background_update_available(
+                        tray_controller=tray_controller,
+                        settings_dialog=settings_dialog,
+                        latest_version=pending_update_version,
+                    )
+                return
+            startup_update_prompt_pending = False
+
+        update_signals.checked.connect(_handle_update_checked)
+        update_signals.completed.connect(_handle_update_completed)
+        tray_controller = _create_tray_controller(
             app,
-            wow_sync_startup_configurator=wow_sync_startup_configurator,
-            sync_with_wow=cfg.sync_with_wow,
-            watcher_getter=lambda: watcher,
+            icon=_app_icon(),
             window=window,
-            cache=cache,
-            live_snapshot_writer=live_snapshot_writer,
-            wcl_client=wcl_client,
-            runtime_owner=(
-                runtime_owner if isinstance(runtime_owner, _RuntimeOwner) else None
-            ),
+            show_settings=_show_settings,
+            open_logs=lambda: _open_log_dir(cfg.log_dir or user_log_dir()),
+            run_update=_run_update,
+            quit_app=_request_quit_application,
         )
+        if tray_controller is None:
+            log.info("System tray indicator disabled.")
+        # H3: window/tray exist — harden recorded paths off the GUI thread.
+        _start_startup_background_thread(
+            _flush_startup_file_privatization,
+            name="ApplicantScoutACLPrivatize",
+        )
+        if cfg.sync_with_wow:
+            wow_exit_timer = _start_wow_lifecycle_timer(
+                app,
+                has_seen_wow=wow_watch_mode,
+                quit_app=_request_quit_application,
+                can_quit=_can_quit_application,
+                prepare_quit=_prepare_quit_application,
+            )
+            setattr(app, "_applicant_scout_wow_exit_timer", wow_exit_timer)
+        update_timer = QTimer(app)
+        update_timer.setInterval(UPDATE_CHECK_INTERVAL_MS)
+        update_timer.timeout.connect(_run_silent_update_check)
+        update_timer.start()
+        setattr(app, "_applicant_scout_update_timer", update_timer)
+        QTimer.singleShot(UPDATE_CHECK_INITIAL_MS, _run_silent_update_check)
+        if _should_show_settings_on_start(
+            args,
+            startup_settings_shown=startup_settings_shown,
+            wow_watch_mode=wow_watch_mode,
+        ):
+            QTimer.singleShot(0, _show_settings)
+
+        # Wire state-machine signals → overlay slots (unchanged from chatlog pipeline —
+        # OverlayWindow API is transport-agnostic)
+        machine.applicantAdded.connect(window.on_applicant_added)
+        machine.applicantUpdated.connect(window.on_applicant_updated)
+        machine.applicantRemoved.connect(window.on_applicant_removed)
+        machine.listingChanged.connect(window.on_listing_changed)
+        machine.cleared.connect(window.on_cleared)
+        machine.rosterChanged.connect(window.on_roster_changed)
+
+        def _sync_region_to_wcl(region_id: int) -> None:
+            old_region = wcl_client.region
+            if region_runtime.set_live_region_id(region_id):
+                log.info(
+                    "Region updated from VERSION: %s -> %s",
+                    old_region,
+                    region_runtime.effective_region,
+                )
+                wcl_client.region = region_runtime.effective_region
+
+        machine.versionUpdated.connect(_sync_region_to_wcl)
+
+        def _log_decode_failed(path: str, reason: str) -> None:
+            log.warning("decode failed for %s: %s", path, reason)
+
+        if _restore_live_snapshot_cache(
+            cfg.cache_dir,
+            machine,
+            window,
+            expected_source_id=live_snapshot_source_id,
+        ):
+            log.info("Restored last live ApplicantScout snapshot; waiting for fresh QR.")
+
+        # Start screenshot watcher: it scans recent backlog (last 60s of WoWScrnShot
+        # files) on start and applies the most recent valid snapshot — handles the
+        # "companion started mid-session" case. Then watches Screenshots/ folder
+        # via watchdog Observer for new files.
+        def _queue_screenshots_recovery(recovery_message: str) -> None:
+            def _show_screenshots_recovery() -> None:
+                _show_settings()
+                if settings_dialog is not None:
+                    settings_dialog.set_status(recovery_message, error=True)
+
+            QTimer.singleShot(0, _show_screenshots_recovery)
+
+        # H1: surface an already-finished background probe before the watcher
+        # starts (non-blocking); later arrivals notify via the verified signal.
+        startup_verification.surface()
+        watcher = _start_initial_screenshot_watcher(
+            screenshots_dir,
+            machine,
+            window,
+            _log_decode_failed,
+            cache_dir=cfg.cache_dir,
+            signal_gate=watcher_signal_gate,
+            live_snapshot_cache_writer=live_snapshot_writer,
+            show_recovery=_queue_screenshots_recovery,
+        )
+        if watcher is not None:
+            log.info("Ready. Overlay will appear when applicants are present.")
+
+        # Narrowed for the type checker: assigned once from the runtime bundle.
+        assert wow_sync_startup_configurator is not None
+        try:
+            return _run_application_event_loop(
+                app,
+                wow_sync_startup_configurator=wow_sync_startup_configurator,
+                sync_with_wow=cfg.sync_with_wow,
+                watcher_getter=lambda: watcher,
+                window=window,
+                cache=cache,
+                live_snapshot_writer=live_snapshot_writer,
+                wcl_client=wcl_client,
+                runtime_owner=(
+                    runtime_owner if isinstance(runtime_owner, _RuntimeOwner) else None
+                ),
+            )
+        finally:
+            # Detach after close: the widened finally must not close twice.
+            if usage_client is not None:
+                usage_client.close()
+                usage_client = None
     finally:
-        usage_client.close()
+        # Widened startup cleanup: usage_client close,
+        # runtime_owner/control_server release, privatization flag reset.
+        # Non-blocking by construction (_early_shutdown never raises).
+        _early_shutdown(
+            control_server=control_server,
+            configurator=wow_sync_startup_configurator,
+            runtime_owner=runtime_owner,
+            usage_client=usage_client,
+            flush_privatization=False,
+        )
 
 
 if __name__ == "__main__":

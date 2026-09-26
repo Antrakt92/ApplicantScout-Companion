@@ -690,7 +690,7 @@ def _is_private_rankings_payload(value: object) -> bool:
     error = value.get("error")
     return (
         isinstance(error, str)
-        and error.strip().casefold() == _PRIVATE_RANKINGS_PROVIDER_MESSAGE
+        and _PRIVATE_RANKINGS_PROVIDER_MESSAGE in error.strip().casefold()
     )
 
 

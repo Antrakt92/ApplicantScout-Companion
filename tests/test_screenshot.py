@@ -33,6 +33,7 @@ from applicant_scout.screenshot import (
     _Handler,
     _decode_screenshot_result,
     _is_supported_screenshot_path,
+    _is_watched_screenshot_path,
     _iter_screenshot_candidates,
     _parse_payload,
     _try_parse_appscout_payload,
@@ -2550,9 +2551,33 @@ def test_decode_screenshot_ignores_foreign_qr_without_marker(
 def test_supported_screenshot_suffixes_accept_jpg_and_tga_case_insensitive():
     assert _is_supported_screenshot_path(Path("WoWScrnShot_1.jpg"))
     assert _is_supported_screenshot_path(Path("WoWScrnShot_1.JPG"))
+    assert _is_supported_screenshot_path(Path("WoWScrnShot_1.jpeg"))
+    assert _is_supported_screenshot_path(Path("WoWScrnShot_1.JPEG"))
     assert _is_supported_screenshot_path(Path("WoWScrnShot_1.tga"))
     assert _is_supported_screenshot_path(Path("WoWScrnShot_1.TGA"))
     assert not _is_supported_screenshot_path(Path("WoWScrnShot_1.png"))
+
+
+def test_watched_screenshot_predicate_unifies_live_and_backlog(tmp_path: Path):
+    assert _is_watched_screenshot_path(Path("WoWScrnShot_0001.jpeg"))
+    assert not _is_watched_screenshot_path(Path("Manual_0001.jpeg"))
+    assert not _is_watched_screenshot_path(Path("WoWScrnShot_0001.png"))
+
+    seen: list[Path] = []
+    handler = _Handler(seen.append)
+    foreign = tmp_path / "Manual_0001.jpg"
+    foreign.write_bytes(b"x")
+    assert not handler._should_process(foreign)
+    assert screenshot_mod.ScreenshotWatcher(
+        tmp_path
+    )._work_claims.try_claim(foreign) is None
+
+    for name in ("WoWScrnShot_0001.jpeg", "WoWScrnShot_0002.JPG"):
+        (tmp_path / name).write_bytes(b"x")
+
+    got = {p.name for p in _iter_screenshot_candidates(tmp_path)}
+
+    assert got == {"WoWScrnShot_0001.jpeg", "WoWScrnShot_0002.JPG"}
 
 
 def test_iter_screenshot_candidates_filters_prefix_and_suffix(tmp_path: Path):
@@ -2649,6 +2674,26 @@ def test_decode_result_marks_transient_zbar_failure_as_incomplete_scan(
     assert not result.has_marker
     assert result.error_reason == "QR scan failed: temporary zbar failure"
     assert result.scan_incomplete is True
+
+
+def test_iter_qr_batches_converts_oversized_header_to_scan_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from PIL.Image import DecompressionBombError
+
+    image_path = tmp_path / "WoWScrnShot_oversized.jpg"
+    image_path.write_bytes(b"x")
+
+    def bomb(_path: Path):
+        raise DecompressionBombError("Image size exceeds limit")
+
+    monkeypatch.setattr(screenshot_mod.Image, "open", bomb)
+
+    with pytest.raises(
+        screenshot_mod.QRScanFailed, match="could not read screenshot image"
+    ):
+        list(screenshot_mod._iter_qr_symbol_data_batches(image_path))
 
 
 def test_cleanup_dry_run_reports_marker_files_without_deleting(
@@ -4247,7 +4292,8 @@ def test_watcher_surfaces_decoder_unavailable_without_deleting_screenshot(
     assert len(failures) == 1
     path, reason, source = failures[0]
     assert path == str(image_path)
-    assert reason == "QR decoder unavailable: zbar missing"
+    assert reason.startswith("QR decoder unavailable: zbar missing")
+    assert "zbar DLL" in reason
     assert source is not None
     assert image_path.exists()
 
@@ -5870,7 +5916,11 @@ def test_backlog_handle_decoder_unavailable_closes_apply_and_stops(tmp_path: Pat
     assert outcome.stop_scan
     assert outcome.retry_owned_generation is None
     assert ctx.apply_closed
-    assert failures == [(str(path), "decoder gone")]
+    assert len(failures) == 1
+    failed, reason = failures[0]
+    assert failed == str(path)
+    assert reason.startswith("decoder gone")
+    assert "zbar DLL" in reason
 
 
 def test_backlog_handle_scan_incomplete_defers_and_blocks_authority(
@@ -5935,6 +5985,98 @@ def test_backlog_handle_scan_incomplete_defers_and_blocks_authority(
     finally:
         claim.release()
     assert limited.stop_scan
+
+
+def test_decoder_unavailable_reason_carries_reinstall_hint():
+    reason = screenshot_mod._actionable_decoder_reason(
+        "QR decoder unavailable: zbar missing"
+    )
+    assert reason.startswith("QR decoder unavailable: zbar missing")
+    assert "zbar DLL" in reason
+    assert screenshot_mod._actionable_decoder_reason(None).startswith(
+        "QR decoder unavailable"
+    )
+
+
+def test_live_consecutive_incomplete_scans_emit_single_decoder_failing(
+    tmp_path: Path,
+):
+    path = tmp_path / "WoWScrnShot_0001.jpg"
+    path.write_bytes(b"transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    failures: list[tuple[object, ...]] = []
+    watcher.decodeFailed.connect(lambda *args: failures.append(args))
+    source = SnapshotSource(mtime_ns=1, file_id=str(path), size=1)
+    incomplete = screenshot_mod.DecodeResult(
+        None,
+        False,
+        "temporary screenshot decode failure",
+        scan_incomplete=True,
+    )
+    limit = screenshot_mod._BACKLOG_INCOMPLETE_SCAN_LIMIT
+    for _ in range(limit - 1):
+        watcher._dispatch_live_decode_result(
+            path,
+            incomplete,
+            source,
+            marker_failure_reason="parse failed",
+            allow_incomplete_retry=False,
+        )
+    assert failures == []
+
+    watcher._dispatch_live_decode_result(
+        path,
+        incomplete,
+        source,
+        marker_failure_reason="parse failed",
+        allow_incomplete_retry=False,
+    )
+    assert len(failures) == 1
+    assert failures[0][0] == str(path)
+    assert "decoder keeps failing" in failures[0][1]
+
+    # The streak resets after surfacing: the next incomplete starts a new count.
+    watcher._dispatch_live_decode_result(
+        path,
+        incomplete,
+        source,
+        marker_failure_reason="parse failed",
+        allow_incomplete_retry=False,
+    )
+    assert len(failures) == 1
+
+    # Any completed scan resets the streak.
+    watcher._dispatch_live_decode_result(
+        path,
+        screenshot_mod.DecodeResult(None, False),
+        source,
+        marker_failure_reason="parse failed",
+        allow_incomplete_retry=False,
+    )
+    assert watcher._consecutive_incomplete_scans == 0
+
+
+def test_backlog_logs_remaining_historical_count_when_capped(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    import time
+
+    old_ns = time.time_ns() - 400_000_000_000
+    total = screenshot_mod._BACKLOG_HISTORICAL_CLEANUP_LIMIT + 2
+    for index in range(total):
+        shot = tmp_path / f"WoWScrnShot_hist_{index:04d}.jpg"
+        _write_blank_image(shot)
+        os.utime(shot, ns=(old_ns, old_ns))
+    watcher = ScreenshotWatcher(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="applicant_scout.screenshot"):
+        watcher._scan_recent_backlog()
+
+    assert any(
+        "historical screenshots remaining" in record.message
+        for record in caplog.records
+    )
 
 
 def test_backlog_handle_owned_generation_rearms_after_barrier(tmp_path: Path):

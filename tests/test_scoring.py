@@ -2361,3 +2361,15 @@ def test_raid_heroic_uses_mythic_as_higher_difficulty_fallback():
     assert fit.context == CONTEXT_RAID
     assert fit.source == "raid_higher_fallback"
     assert fit.score > 70
+
+
+def test_mplus_display_score_guards_non_finite_input():
+    assert scoring_mod._mplus_display_score(float("nan")) == 0.0
+    assert scoring_mod._mplus_display_score(float("inf")) == 0.0
+    assert scoring_mod._mplus_display_score(float("-inf")) == 0.0
+
+
+def test_effective_rio_score_clamps_negative_scores():
+    assert effective_rio_score(_app(score=-5, main_score=-10)) == 0
+    assert effective_rio_score(_app(score=-5, main_score=1200)) == 1200
+    assert effective_rio_score(_app(score=1200, main_score=-5)) == 1200

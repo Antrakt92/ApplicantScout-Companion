@@ -3406,3 +3406,105 @@ def test_settings_dialog_hides_cancel_at_setup_when_already_installing(
     dialog.set_update_in_progress(True)
 
     assert not dialog.cancel_update_button.isHidden()
+
+
+# --- Onboarding gap regressions: first-run untouched-default soft gate, WCL
+# save hint in both flows, and explicit-empty display. Temp dirs only. ---
+
+
+def _untouched_default_cfg(tmp_path: Path) -> Config:
+    """First-run config whose derived default Screenshots path is not set.
+
+    The legacy chatlog parent is not a WoW client folder, so the dialog falls
+    back to the packaged default; nothing on disk is created for it.
+    """
+    return Config(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        chatlog_path=tmp_path / "ghost" / "Logs" / "WoWChatLog.txt",
+        region="EU",
+        cache_dir=tmp_path / "cache",
+        config_dir=tmp_path / "config",
+        screenshots_path=None,
+        log_dir=tmp_path / "logs",
+    )
+
+
+def test_first_run_accept_proceeds_with_untouched_missing_default(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_untouched_default_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+
+    assert not dialog._screenshots_path_touched
+
+    dialog.accept()
+
+    assert dialog.result()
+    assert "Screenshots" not in dialog.status_label.text()
+    assert dialog._screenshots_validation_started_generation is None
+
+
+def test_second_run_accept_still_rejects_untouched_missing_default(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_untouched_default_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    dialog.accept()
+
+    assert not dialog.result()
+    assert dialog.status_label.text() in (
+        settings_mod.SCREENSHOTS_VALIDATION_PENDING_MESSAGE,
+    ) or "Screenshots folder warning" in dialog.status_label.text()
+
+
+def test_first_run_accept_rejects_explicitly_typed_missing_path(
+    qtbot, tmp_path: Path
+):
+    dialog = SettingsDialog(_untouched_default_cfg(tmp_path), first_run=True)
+    qtbot.addWidget(dialog)
+
+    dialog.screenshots_edit.setText(str(tmp_path / "ghost-shots"))
+
+    assert dialog._screenshots_path_touched
+    dialog.accept()
+
+    assert not dialog.result()
+    assert dialog.status_label.text() in (
+        settings_mod.SCREENSHOTS_VALIDATION_PENDING_MESSAGE,
+    ) or "Screenshots folder warning" in dialog.status_label.text()
+
+
+@pytest.mark.parametrize("first_run", [True, False])
+def test_wcl_save_hint_present_in_both_flows(qtbot, tmp_path: Path, first_run: bool):
+    dialog = SettingsDialog(_cfg(tmp_path), first_run=first_run)
+    qtbot.addWidget(dialog)
+
+    hint = dialog.findChild(QLabel, "wclSaveHint")
+    wcl_section = dialog.findChild(QWidget, "warcraftLogsSection")
+
+    assert hint is not None
+    assert hint.text() == settings_mod.WCL_SAVE_HINT_TEXT
+    assert "start" in hint.text().lower() and "Test WCL" in hint.text()
+    assert hint.wordWrap()
+    assert wcl_section is not None
+    assert hint.parentWidget() is wcl_section
+
+
+def test_explicit_empty_screenshots_reloads_empty_and_passes_validation(
+    qtbot, tmp_path: Path
+):
+    cfg = _cfg(tmp_path)
+    cfg.screenshots_path = None
+    cfg.screenshots_path_explicit_empty = True
+
+    dialog = SettingsDialog(cfg)
+    qtbot.addWidget(dialog)
+
+    assert dialog.screenshots_edit.text() == ""
+    assert not dialog._screenshots_path_touched
+
+    dialog.accept()
+
+    assert dialog.result()

@@ -2153,6 +2153,16 @@ def test_rio_table_hides_history_below_current_character_score(
     assert rio_table_text(member) == expected
 
 
+def test_rio_history_keeps_seasons_beyond_s4():
+    from applicant_scout.overlay_presenters import rio_history_text, rio_table_text
+
+    member = _member("alt-realm", "Alt-Realm", score=3000)
+    member.rio_previous_score = 2876
+    member.rio_previous_season = 4
+    assert rio_history_text(member) == "past S5 ~2876"
+    assert rio_table_text(member) == "3000"
+
+
 def test_consecutive_wire_version_rejects_surface_companion_update_banner(
     qtbot, tmp_path
 ):

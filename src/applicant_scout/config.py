@@ -55,6 +55,10 @@ class Config:
     sync_with_wow: bool = True
     draft_wcl_client_id: str = ""
     draft_wcl_client_secret: str = ""
+    # Explicit empty Screenshots choice: the user cleared the field on purpose.
+    # screenshots_path stays None (same validation as unset), but reload shows
+    # an empty field instead of re-deriving the default path.
+    screenshots_path_explicit_empty: bool = False
 
 
 class ConfigError(RuntimeError):
@@ -358,14 +362,18 @@ def _unmanaged_config_lines(contents: str) -> list[str]:
 
 @dataclass(frozen=True)
 class ConfigValues:
-    """User-editable settings persisted to the local companion config area."""
+    """User-editable settings persisted to the local companion config area.
+
+    screenshots_path=None means "not provided" (the key is cleared);
+    "" is an explicit empty choice (persisted as an empty value).
+    """
 
     wcl_client_id: str
     wcl_client_secret: str
     region: str
     draft_wcl_client_id: str = ""
     draft_wcl_client_secret: str = ""
-    screenshots_path: str = ""
+    screenshots_path: str | None = None
     cache_ttl_seconds: int | None = None
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES
     sync_with_wow: bool = True
@@ -381,7 +389,7 @@ def save_config_values(
     region: str | None = None,
     draft_wcl_client_id: str = "",
     draft_wcl_client_secret: str = "",
-    screenshots_path: str = "",
+    screenshots_path: str | None = None,
     cache_ttl_seconds: int | None = None,
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
     sync_with_wow: bool = True,
@@ -440,7 +448,9 @@ def save_config_values(
         ),
         _bool_env_line("APSCOUT_SYNC_WITH_WOW", values.sync_with_wow),
     ]
-    if values.screenshots_path.strip():
+    if values.screenshots_path is not None:
+        # None clears the key; "" persists the explicit empty choice so a
+        # reload shows an empty field instead of the derived default.
         lines.append(
             _env_line("APSCOUT_SCREENSHOTS_PATH", values.screenshots_path)
         )
@@ -582,7 +592,16 @@ def load_config() -> Config:
         Path(chatlog_override) if chatlog_override else _default_chatlog_path()
     )
 
-    screenshots_override = _value(values, "APSCOUT_SCREENSHOTS_PATH")
+    screenshots_env_raw = os.environ.get("APSCOUT_SCREENSHOTS_PATH")
+    if screenshots_env_raw is not None:
+        screenshots_override = screenshots_env_raw.strip()
+        screenshots_explicit_empty = screenshots_override == ""
+    else:
+        screenshots_file_raw = values.get("APSCOUT_SCREENSHOTS_PATH")
+        screenshots_override = (screenshots_file_raw or "").strip()
+        screenshots_explicit_empty = (
+            screenshots_file_raw is not None and screenshots_override == ""
+        )
     screenshots_path = Path(screenshots_override) if screenshots_override else None
 
     region = normalize_wcl_region(_value(values, "APSCOUT_REGION", "EU"))
@@ -632,4 +651,5 @@ def load_config() -> Config:
         sync_with_wow=sync_with_wow,
         draft_wcl_client_id=draft_client_id,
         draft_wcl_client_secret=draft_client_secret,
+        screenshots_path_explicit_empty=screenshots_explicit_empty,
     )

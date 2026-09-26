@@ -115,7 +115,8 @@ APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS = 300.0
 
 STABLE_SIZE_TIMEOUT = 2.0  # seconds to wait for file size to stabilize
 STABLE_SIZE_POLL = 0.05  # poll interval
-SUPPORTED_SCREENSHOT_SUFFIXES = frozenset({".jpg", ".tga"})
+SUPPORTED_SCREENSHOT_SUFFIXES = frozenset({".jpg", ".jpeg", ".tga"})
+_SCREENSHOT_NAME_PREFIX = "WoWScrnShot_"
 QR_SCAN_CROP_PX = 720
 SLOW_SCREENSHOT_STAGE_LOG_S = 0.75
 _QR_RECOVERY_WHITE_THRESHOLD = 220
@@ -170,6 +171,19 @@ _MANUAL_INDEX_FILE_PREFIX = f"screenshot-manual-index-v{_MANUAL_INDEX_VERSION}"
 # bound. FIFO cap keeps the file small; evicted fingerprints are simply
 # re-examined once by a later scan.
 _MANUAL_INDEX_MAX_KEYS = 10000
+
+
+_DECODER_UNAVAILABLE_ACTION = (
+    "reinstall pyzbar/zbar and check the zbar DLL is on PATH"
+)
+
+
+def _actionable_decoder_reason(reason: str | None) -> str:
+    """Keep the decoder chip prefix, append the reinstall/DLL fix-it hint."""
+    base = (reason or "").strip() or "QR decoder unavailable"
+    if _DECODER_UNAVAILABLE_ACTION in base:
+        return base
+    return f"{base} ({_DECODER_UNAVAILABLE_ACTION})"
 
 
 # ─── Decoded data model ─────────────────────────────────────────────────────
@@ -712,7 +726,9 @@ def _iter_qr_symbol_data_batches(
                 )
                 if recovered_payloads:
                     yield recovered_payloads
-    except (OSError, IOError) as e:
+    except (QRDecoderUnavailable, QRScanFailed):
+        raise
+    except Exception as e:  # noqa: BLE001 - oversized/corrupt images must surface as scan failure
         _log.debug("Image.open failed %s: %s", image_path.name, e)
         raise QRScanFailed(f"could not read screenshot image: {e}") from e
 
@@ -1443,7 +1459,7 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
                         err,
                     )
     except QRDecoderUnavailable as exc:
-        reason = str(exc) or "QR decoder unavailable"
+        reason = _actionable_decoder_reason(str(exc) or None)
         _log.warning("%s", reason)
         return DecodeResult(
             None,
@@ -1503,9 +1519,16 @@ def _is_supported_screenshot_path(path: Path) -> bool:
     return path.suffix.lower() in SUPPORTED_SCREENSHOT_SUFFIXES
 
 
+def _is_watched_screenshot_path(path: Path) -> bool:
+    """Single live/backlog candidate predicate: WoW name + supported suffix."""
+    return path.name.startswith(
+        _SCREENSHOT_NAME_PREFIX
+    ) and _is_supported_screenshot_path(path)
+
+
 def _iter_screenshot_candidates(directory: Path) -> Iterator[Path]:
-    for path in directory.glob("WoWScrnShot_*"):
-        if path.is_file() and _is_supported_screenshot_path(path):
+    for path in directory.glob(f"{_SCREENSHOT_NAME_PREFIX}*"):
+        if path.is_file() and _is_watched_screenshot_path(path):
             yield path
 
 
@@ -1750,7 +1773,7 @@ class _ScreenshotWorkClaims:
         self._recent_keys: dict[_ScreenshotWorkKey, float] = {}
 
     def try_claim(self, path: Path) -> _ScreenshotWorkClaim | None:
-        if not _is_supported_screenshot_path(path):
+        if not _is_watched_screenshot_path(path):
             return None
         try:
             stat_result = path.stat()
@@ -2141,7 +2164,7 @@ class _Handler(FileSystemEventHandler):
         self._callback = callback
 
     def _should_process(self, path: Path) -> bool:
-        if not _is_supported_screenshot_path(path):
+        if not _is_watched_screenshot_path(path):
             return False
         try:
             return path.is_file()
@@ -2560,6 +2583,7 @@ class ScreenshotWatcher(QObject):
             str,
             tuple[_ScreenshotWorkKey, Any],
         ] = {}
+        self._consecutive_incomplete_scans = 0
 
     @staticmethod
     def _observer_is_healthy(observer: Any | None) -> bool:
@@ -3042,6 +3066,13 @@ class ScreenshotWatcher(QObject):
                     snapshot_apply_cutoff_ns=None,
                 )
                 deleted += phase_deleted
+                if len(historical) > historical_remaining:
+                    _log.info(
+                        "backlog cleanup: %d historical screenshots remaining "
+                        "(capped at %d this pass)",
+                        len(historical) - historical_remaining,
+                        historical_remaining,
+                    )
             if deleted:
                 _log.info(
                     "backlog cleanup: deleted %d ApScout screenshots",
@@ -3124,7 +3155,7 @@ class ScreenshotWatcher(QObject):
             ):
                 if not self._emit_decode_failed(
                     path,
-                    result.error_reason or "QR decoder unavailable",
+                    _actionable_decoder_reason(result.error_reason),
                     source,
                 ):
                     outcome.terminate = True
@@ -3697,6 +3728,16 @@ class ScreenshotWatcher(QObject):
         allow_incomplete_retry: bool,
     ) -> None:
         if result.scan_incomplete:
+            self._consecutive_incomplete_scans += 1
+            if self._consecutive_incomplete_scans >= _BACKLOG_INCOMPLETE_SCAN_LIMIT:
+                self._consecutive_incomplete_scans = 0
+                self._emit_decode_failed(
+                    path,
+                    "decoder keeps failing: consecutive incomplete scans "
+                    "(check the screenshots folder and decoders)",
+                    source,
+                )
+                return
             if allow_incomplete_retry:
                 _log.debug(
                     "deferring one final incomplete screenshot scan for %s",
@@ -3709,10 +3750,11 @@ class ScreenshotWatcher(QObject):
                     path.name,
                 )
             return
+        self._consecutive_incomplete_scans = 0
         if result.decoder_unavailable:
             self._emit_decode_failed(
                 path,
-                result.error_reason or "QR decoder unavailable",
+                _actionable_decoder_reason(result.error_reason),
                 source,
             )
             return
@@ -3917,7 +3959,7 @@ def _decode_file_cli(path: Path) -> int:
     result = _decode_screenshot_result(path)
     if result.snapshot is None:
         if result.decoder_unavailable:
-            reason = result.error_reason or "QR decoder unavailable"
+            reason = _actionable_decoder_reason(result.error_reason)
             print(f"DECODE FAILED — {reason}")
         elif result.has_marker:
             reason = result.error_reason or "parse error / CRC mismatch"

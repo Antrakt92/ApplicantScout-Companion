@@ -182,6 +182,12 @@ SCREENSHOTS_PATH_PROBE_TIMEOUT_WARNING = (
 SCREENSHOTS_PATH_PROBE_FAILURE_WARNING = (
     "Screenshots folder warning: could not run the isolated path check."
 )
+# WCL credential save semantics, shared by the first-run and second-run flows:
+# Start persists credentials; later edits apply only after Test WCL validates.
+WCL_SAVE_HINT_TEXT = (
+    "Credentials save when you start the companion; "
+    "edited credentials apply after Test WCL succeeds."
+)
 
 
 _SETTINGS_STYLESHEET = """
@@ -817,6 +823,10 @@ class ReleaseNotesDialog(QDialog):
 
 
 def _initial_screenshots_path(cfg: Config) -> str:
+    if cfg.screenshots_path_explicit_empty:
+        # A saved explicit empty choice reloads as an empty field, not the
+        # derived default. Validation for empty is unchanged (it passes).
+        return ""
     if cfg.screenshots_path is not None:
         return str(cfg.screenshots_path)
     try:
@@ -897,6 +907,10 @@ class SettingsDialog(QDialog):
         # trusted until edited, so unrelated saves are never gated on a probe
         # for a path the user already reverted or never changed.
         self._last_ready_screenshots_path: str | None = None
+        # First-run region: whether the user explicitly browsed/typed the
+        # Screenshots field. An untouched default counts as "not set" (soft)
+        # on Start; explicit edits keep hard validation.
+        self._screenshots_path_touched = False
         self._usage_consent_generation = 0
         self._wcl_example_dialog: QDialog | None = None
         self._latest_update_version: str | None = None
@@ -1028,6 +1042,17 @@ class SettingsDialog(QDialog):
             _secret_layout.addWidget(self.reveal_secret_button)
 
         self.region_combo = wcl_built.region_combo
+        # WCL hint region: one save-semantics line in both first-run and
+        # second-run flows (Start persists; edits apply after Test WCL).
+        self.wcl_save_hint = QLabel(WCL_SAVE_HINT_TEXT, wcl_section)
+        self.wcl_save_hint.setObjectName("wclSaveHint")
+        self.wcl_save_hint.setWordWrap(True)
+        self.wcl_save_hint.setToolTip(WCL_SAVE_HINT_TEXT)
+        self.wcl_save_hint.setAccessibleName("Warcraft Logs credential save policy")
+        self.wcl_save_hint.setAccessibleDescription(WCL_SAVE_HINT_TEXT)
+        wcl_layout = wcl_section.layout()
+        assert wcl_layout is not None
+        wcl_layout.addWidget(self.wcl_save_hint)
 
         scouting_section, scouting_root = _settings_section(
             body,
@@ -1761,6 +1786,8 @@ class SettingsDialog(QDialog):
         error = self._hard_validation_error(
             values,
             require_screenshots_ready=True,
+            # First-run region: an untouched default counts as "not set".
+            skip_screenshots=not self._screenshots_path_touched and self._first_run,
         )
         if error is not None:
             self._set_status(error, error=True)
@@ -1903,13 +1930,20 @@ class SettingsDialog(QDialog):
         values: SettingsValues,
         *,
         require_screenshots_ready: bool = False,
+        skip_screenshots: bool = False,
     ) -> str | None:
+        """Blocking validation errors, or None when the values may be saved.
+
+        Validation region: skip_screenshots treats the path as not set (first-
+        run untouched default). Second-run validation never skips: an explicit
+        non-empty path is always probe-gated, empty always passes.
+        """
         if not values.wcl_client_id or not values.wcl_client_secret:
             return "WCL Client ID and Secret are required."
         screenshots_path = values.screenshots_path
         if not values.metric_preferences.any_enabled:
             return "Select at least one WCL data type."
-        if screenshots_path:
+        if screenshots_path and not skip_screenshots:
             ready, warning = self._current_screenshots_validation(
                 screenshots_path,
                 require_ready=require_screenshots_ready,
@@ -2078,6 +2112,9 @@ class SettingsDialog(QDialog):
         self._set_status("Select at least one WCL data type.", error=True)
 
     def _handle_screenshots_text_changed(self, raw_path: str) -> None:
+        # Any post-construction edit (typed, pasted, or Browse-applied) marks
+        # the path explicit: first-run soft treatment no longer applies.
+        self._screenshots_path_touched = True
         self._schedule_screenshots_warning(raw_path, require_before_save=True)
         self._schedule_values_changed()
 
@@ -2686,6 +2723,9 @@ class SettingsDialog(QDialog):
             self.screenshots_edit.text().strip(),
         )
         if selected:
+            # Browse is always an explicit choice, even when re-selecting the
+            # currently shown path (no textChanged signal fires then).
+            self._screenshots_path_touched = True
             if selected == self.screenshots_edit.text().strip():
                 self._schedule_screenshots_warning(
                     selected,

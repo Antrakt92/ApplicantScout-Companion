@@ -3125,6 +3125,13 @@ def test_main_returns_before_startup_when_cache_ttl_is_invalid(
     monkeypatch.setattr(
         main_mod.QMessageBox, "critical", lambda *_args, **_kwargs: None
     )
+    # Corrupt-config recovery offers Open/Reset/Close; aborting keeps the
+    # pre-existing contract: return 1 with no further startup side effects.
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: main_mod.QMessageBox.StandardButton.Close,
+    )
     monkeypatch.setattr(main_mod, "WCLAuth", fail_if_called)
     monkeypatch.setattr(main_mod, "WCLClient", fail_if_called)
     monkeypatch.setattr(main_mod, "ScreenshotWatcher", fail_if_called)
@@ -12136,3 +12143,344 @@ def test_parse_config_schema_version_rejects_non_positive(version: str):
     # F11: schema versions <= 0 are never valid; reject with the same ConfigError.
     with pytest.raises(ConfigError, match="positive integer"):
         config_mod._parse_config_schema_version(version)
+
+
+# --- Onboarding/startup gap regressions: explicit-empty persistence, corrupt
+# config.env recovery, and early-shutdown symmetry. Temp profiles only
+# (LOCALAPPDATA); the real user profile is never touched. ---
+
+
+def test_save_config_values_persists_explicit_empty_screenshots_path(tmp_path: Path):
+    target = tmp_path / "config.env"
+
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        screenshots_path="",
+        config_path=target,
+    )
+
+    contents = target.read_text(encoding="utf-8")
+    assert 'APSCOUT_SCREENSHOTS_PATH=""' in contents
+    assert config_mod._read_env_file(target)["APSCOUT_SCREENSHOTS_PATH"] == ""
+
+
+def test_save_config_values_struct_explicit_empty_round_trips(tmp_path: Path):
+    target = tmp_path / "config.env"
+
+    save_config_values(
+        config_mod.ConfigValues(
+            wcl_client_id="client",
+            wcl_client_secret="secret",
+            region="EU",
+            screenshots_path="",
+            config_path=target,
+        )
+    )
+
+    assert config_mod._read_env_file(target)["APSCOUT_SCREENSHOTS_PATH"] == ""
+
+
+def test_load_config_marks_explicit_empty_screenshots_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'WCL_CLIENT_ID="client"\n'
+        'WCL_CLIENT_SECRET="secret"\n'
+        'APSCOUT_SCREENSHOTS_PATH=""\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config()
+
+    assert cfg.screenshots_path is None
+    assert cfg.screenshots_path_explicit_empty is True
+
+
+def test_load_config_leaves_explicit_empty_clear_without_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'WCL_CLIENT_ID="client"\nWCL_CLIENT_SECRET="secret"\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config()
+
+    assert cfg.screenshots_path is None
+    assert cfg.screenshots_path_explicit_empty is False
+
+
+def test_save_then_load_roundtrip_keeps_explicit_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _clean_load_config_env(monkeypatch, tmp_path)
+
+    save_config_values(
+        wcl_client_id="client",
+        wcl_client_secret="secret",
+        region="EU",
+        screenshots_path="",
+    )
+    cfg = load_config()
+
+    assert cfg.screenshots_path is None
+    assert cfg.screenshots_path_explicit_empty is True
+
+
+def _write_corrupt_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    _clean_load_config_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("WCL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("WCL_CLIENT_SECRET", raising=False)
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'WCL_CLIENT_ID="client"\nBARE_KEY_WITHOUT_EQUALS\n', encoding="utf-8"
+    )
+    return path
+
+
+def test_corrupt_config_recovery_reset_quarantines_and_retries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    corrupt = _write_corrupt_user_config(monkeypatch, tmp_path)
+    shown: list[tuple] = []
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda *args: shown.append(args)
+        or main_mod.QMessageBox.StandardButton.Reset,
+    )
+    monkeypatch.setattr(
+        main_mod, "_run_first_run_settings", lambda *_args, **_kwargs: False
+    )
+
+    assert main_mod._load_startup_config() is None
+
+    assert not corrupt.exists()
+    backups = list(corrupt.parent.glob("config.env.corrupt-*"))
+    assert len(backups) == 1
+    assert "BARE_KEY_WITHOUT_EQUALS" in backups[0].read_text(encoding="utf-8")
+    assert shown
+    assert str(corrupt) in shown[0][2]
+    assert "invalid line 2" in shown[0][2]
+
+
+def test_corrupt_config_recovery_open_folder_aborts_without_touching_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    corrupt = _write_corrupt_user_config(monkeypatch, tmp_path)
+    before = corrupt.read_bytes()
+    opened: list[Path] = []
+    monkeypatch.setattr(
+        main_mod, "open_folder", lambda path: opened.append(path) or True
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda *_args: main_mod.QMessageBox.StandardButton.Open,
+    )
+
+    assert main_mod._load_startup_config() is None
+
+    assert corrupt.read_bytes() == before
+    assert list(corrupt.parent.glob("config.env.corrupt-*")) == []
+    assert opened == [corrupt.parent]
+
+
+def test_corrupt_config_recovery_close_aborts_without_touching_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    corrupt = _write_corrupt_user_config(monkeypatch, tmp_path)
+    before = corrupt.read_bytes()
+    monkeypatch.setattr(
+        main_mod,
+        "open_folder",
+        lambda _path: pytest.fail("Close must not open anything"),
+    )
+    monkeypatch.setattr(
+        main_mod.QMessageBox,
+        "warning",
+        lambda *_args: main_mod.QMessageBox.StandardButton.Close,
+    )
+
+    assert main_mod._load_startup_config() is None
+
+    assert corrupt.read_bytes() == before
+    assert list(corrupt.parent.glob("config.env.corrupt-*")) == []
+
+
+class _CloseRecorder:
+    def __init__(self, calls: list[str], name: str, *, fail: bool = False) -> None:
+        self._calls = calls
+        self._name = name
+        self._fail = fail
+
+    def close(self) -> None:
+        self._calls.append(self._name)
+        if self._fail:
+            raise RuntimeError(f"{self._name} close failed")
+
+
+def _patch_early_shutdown_probes(monkeypatch: pytest.MonkeyPatch) -> list:
+    calls: list = []
+    monkeypatch.setattr(
+        main_mod,
+        "flush_deferred_privatization",
+        lambda: calls.append("flush") or 0,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "set_startup_privatization_deferred",
+        calls.append,
+    )
+    return calls
+
+
+def test_early_shutdown_releases_all_resources_symmetrically(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    probe_calls = _patch_early_shutdown_probes(monkeypatch)
+    closed: list[str] = []
+    server = SimpleNamespace(close=lambda: closed.append("server"))
+    owner = _CloseRecorder(closed, "owner")
+    configurator = _CloseRecorder(closed, "configurator")
+    usage = _CloseRecorder(closed, "usage")
+
+    main_mod._early_shutdown(
+        control_server=server,
+        configurator=configurator,  # type: ignore[arg-type]
+        runtime_owner=owner,  # type: ignore[arg-type]
+        usage_client=usage,  # type: ignore[arg-type]
+    )
+
+    assert closed == ["usage", "server", "owner", "configurator"]
+    assert probe_calls == [False, "flush"]
+
+
+def test_early_shutdown_tolerates_missing_and_failing_resources(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    probe_calls = _patch_early_shutdown_probes(monkeypatch)
+    closed: list[str] = []
+
+    main_mod._early_shutdown()
+
+    usage = _CloseRecorder(closed, "usage", fail=True)
+    owner = _CloseRecorder(closed, "owner", fail=True)
+    configurator = _CloseRecorder(closed, "configurator", fail=True)
+    main_mod._early_shutdown(
+        control_server=object(),
+        configurator=configurator,  # type: ignore[arg-type]
+        runtime_owner=owner,  # type: ignore[arg-type]
+        usage_client=usage,  # type: ignore[arg-type]
+    )
+
+    assert closed == ["usage", "owner", "configurator"]
+    assert probe_calls == [False, "flush", False, "flush"]
+
+
+def test_main_loaded_none_releases_startup_resources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    shutdowns: list[dict] = []
+    monkeypatch.setattr(
+        main_mod, "_early_shutdown", lambda **kwargs: shutdowns.append(kwargs)
+    )
+
+    class FakeApp:
+        aboutToQuit = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setApplicationName(self, _name: str) -> None:
+            pass
+
+        def quit(self) -> None:
+            pass
+
+    _stub_setup_logging(monkeypatch)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            connected=False, written=False, response=None
+        ),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", FakeApp)
+    monkeypatch.setattr(
+        main_mod, "_create_control_server", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(main_mod, "_load_startup_config", lambda **_kwargs: None)
+
+    assert main_mod.main([]) == 1
+    assert len(shutdowns) == 2
+    # Pre-exec exit releases explicitly (default synchronous flush), then the
+    # widened finally releases again without flushing (idempotent, no ACL stall).
+    assert shutdowns[0].get("flush_privatization", True) is True
+    assert shutdowns[0]["usage_client"] is not None
+    assert shutdowns[0]["control_server"] is not None
+    assert shutdowns[1]["flush_privatization"] is False
+    # The released usage client is detached, so the widened finally keeps
+    # single-close while still releasing server/configurator symmetrically.
+    assert shutdowns[1]["usage_client"] is None
+    assert shutdowns[1]["control_server"] is not None
+    assert shutdowns[1]["configurator"] is not None
+
+
+def test_main_duplicate_found_releases_configurator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    shutdowns: list[dict] = []
+    monkeypatch.setattr(
+        main_mod, "_early_shutdown", lambda **kwargs: shutdowns.append(kwargs)
+    )
+
+    class FakeApp:
+        aboutToQuit = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def setApplicationName(self, _name: str) -> None:
+            pass
+
+    _stub_setup_logging(monkeypatch)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setattr(main_mod, "_set_windows_app_user_model_id", lambda: None)
+    monkeypatch.setattr(
+        main_mod, "_prepare_wow_watch_mode", lambda _args: ([], True, None)
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_send_control_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("watch helpers must arbitrate through QLocalServer")
+        ),
+    )
+    monkeypatch.setattr(main_mod, "QApplication", FakeApp)
+    monkeypatch.setattr(
+        main_mod,
+        "_create_control_server",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            main_mod._DuplicateInstanceFound
+        ),
+    )
+
+    assert main_mod.main([main_mod.WATCH_WOW_ARG]) == 0
+    assert len(shutdowns) == 2
+    assert shutdowns[0]["configurator"] is not None
+    assert shutdowns[0].get("control_server") is None
+    assert shutdowns[0].get("usage_client") is None
+    assert shutdowns[1]["flush_privatization"] is False
+    assert shutdowns[1]["configurator"] is not None

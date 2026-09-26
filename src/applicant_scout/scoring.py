@@ -146,7 +146,7 @@ def detect_listing_context(listing: Listing | None) -> str:
 
 def effective_rio_score(applicant: Applicant) -> int:
     """Score used for ranking/support: current character or better RaiderIO main."""
-    return max(applicant.score, applicant.main_score)
+    return max(0, applicant.score, applicant.main_score)
 
 
 def candidate_fit(applicant: Applicant, listing: Listing | None) -> CandidateFit:
@@ -1643,4 +1643,6 @@ def normalise_dungeon_name(value: object) -> str:
 
 
 def _clamp(value: float, low: float, high: float) -> float:
+    if not math.isfinite(value):
+        return low
     return max(low, min(high, value))

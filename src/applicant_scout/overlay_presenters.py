@@ -48,7 +48,7 @@ def _rio_history_values(applicant: Applicant) -> list[tuple[str, int, int]]:
         (owner, score, season)
         for owner, score, season in histories
         if isinstance(score, int) and not isinstance(score, bool) and score > 0
-        and isinstance(season, int) and not isinstance(season, bool) and 0 <= season <= 3
+        and isinstance(season, int) and not isinstance(season, bool) and season >= 0
     ]
 
 
