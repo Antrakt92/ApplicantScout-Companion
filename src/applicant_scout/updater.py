@@ -28,7 +28,7 @@ DEFAULT_RELEASE_REPO = "Antrakt92/ApplicantScout-Companion"
 GITHUB_API_BASE = "https://api.github.com"
 UPDATE_DOWNLOADS_DIR_NAME = "updates"
 _GITHUB_API_VERSION = "2026-03-10"
-_SEMVER_RE = re.compile(r"^\s*[vV]?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?\s*$")
+_SEMVER_RE = re.compile(r"^\s*[vV]?([0-9]+)\.([0-9]+)\.([0-9]+)(?:\+[0-9A-Za-z.-]+)?\s*$")
 
 UpdateStatus = Literal["available", "up_to_date", "unavailable"]
 _INSTALLER_PREFIX = "ApplicantScoutCompanionSetup-"
@@ -143,7 +143,11 @@ def _semver_key(version: str) -> tuple[int, int, int] | None:
     match = _SEMVER_RE.match(version)
     if match is None:
         return None
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    try:
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        # Over-long digit runs exceed the int() string-digit limit.
+        return None
 
 
 def _semver_text(version: str) -> str | None:
@@ -366,6 +370,24 @@ def check_for_update(
             status="unavailable",
             message=f"GitHub update check failed: {exc}",
             reason="network_error",
+        )
+    except OSError as exc:
+        return UpdateResult(
+            status="unavailable",
+            message=f"GitHub update check failed: {exc}",
+            reason="os_error",
+        )
+    except RecursionError as exc:
+        return UpdateResult(
+            status="unavailable",
+            message=f"GitHub update check failed: {exc}",
+            reason="response_too_deep",
+        )
+    except ValueError as exc:
+        return UpdateResult(
+            status="unavailable",
+            message=f"GitHub update check failed: {exc}",
+            reason="invalid_response",
         )
     finally:
         if owns_client:

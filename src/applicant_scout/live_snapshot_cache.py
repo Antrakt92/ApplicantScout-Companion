@@ -897,7 +897,7 @@ def load_live_snapshot(
             saved_at=saved_at,
             source_id=source_id,
         )
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         _log.warning("Discarding invalid live snapshot cache %s: %s", path, exc)
         clear_live_snapshot(cache_dir)
         return None
@@ -930,7 +930,7 @@ def clear_live_snapshot_if_saved_at(
             raise ValueError("unsupported cache schema")
         source_id = _coerce_source_id(_required_field(data, "source_id"))
         saved_at = _strict_timestamp_field(data, "saved_at")
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         _log.warning("Discarding invalid live snapshot cache %s: %s", path, exc)
         return clear_live_snapshot(cache_dir)
     if saved_at != expected:

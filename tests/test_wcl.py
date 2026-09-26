@@ -5564,3 +5564,23 @@ def test_cache_store_evict_prunes_expired_and_reports_change():
 
     assert changed is True
     assert entries == {"fresh": fresh}
+
+
+def test_character_cache_quarantines_deeply_nested_file(tmp_path, caplog):
+    # F3: json.loads raises RecursionError on deeply-nested input; _load must
+    # quarantine it exactly like other corrupt cache files.
+    cache_path = tmp_path / "character-cache.json"
+    # 20000-deep nesting exceeds the JSON loader's recursion budget on every
+    # supported interpreter (3.14 still parses 5000-deep iteratively).
+    nested = "[" * 20000 + "]" * 20000
+    cache_path.write_text(nested, encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="applicant_scout.wcl"):
+        cache = CharacterCache(tmp_path)
+
+    assert cache._data == {}
+    backups = list(tmp_path.glob("character-cache.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == nested
+    assert not cache_path.exists()
+    assert "corrupt" in caplog.text.lower()

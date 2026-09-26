@@ -5,6 +5,7 @@ import logging
 from applicant_scout.compatibility import (
     MINIMUM_ADDON_VERSION,
     PAIRED_ADDON_VERSION,
+    _parse_semver,
     addon_version_warning,
 )
 
@@ -61,3 +62,17 @@ def test_known_addon_versions_stay_log_quiet(caplog):
         assert addon_version_warning("0.5.1") is not None
 
     assert caplog.records == []
+
+
+def test_parse_semver_rejects_overlong_digit_runs_without_raising():
+    # F6: int() raises ValueError past the string-digit limit; the parser
+    # must map that to None instead of crashing.
+    assert _parse_semver("1." + "9" * 5000 + ".0") is None
+    assert _parse_semver("0.12.0") == (0, 12, 0)
+
+
+def test_parse_semver_rejects_non_ascii_digits():
+    # F12: the ASCII-only pattern must not accept Unicode decimal digits.
+    assert _parse_semver("١.٢.٣") is None
+    assert _parse_semver("0.١٢.0") is None
+    assert addon_version_warning("١.٢.٣") is None

@@ -292,3 +292,12 @@ def test_commit_settings_apply_accepts_ctx(tmp_path: Path):
     assert result.wow_exit_timer is None
     assert isinstance(result.overrides, list)
     assert len(window_calls) == 1
+
+
+def test_save_config_values_rejects_string_values_positional_trap():
+    # A legacy 3-positional-scalar call must fail loudly with TypeError
+    # instead of misbinding the first scalar to `values`.
+    with pytest.raises(TypeError, match="ConfigValues"):
+        save_config_values("client-id")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="ConfigValues"):
+        save_config_values(values="client-id")  # type: ignore[arg-type]

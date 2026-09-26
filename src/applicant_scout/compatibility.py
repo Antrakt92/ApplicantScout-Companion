@@ -8,7 +8,7 @@ import re
 
 MINIMUM_ADDON_VERSION = "0.12.0"
 PAIRED_ADDON_VERSION = "0.12.0"
-_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+_SEMVER_RE = re.compile(r"^v?([0-9]+)\.([0-9]+)\.([0-9]+)$")
 _log = logging.getLogger("applicant_scout.compatibility")
 
 
@@ -19,7 +19,11 @@ def _parse_semver(value: object) -> tuple[int, int, int] | None:
     if match is None:
         return None
     major, minor, patch = match.groups()
-    return int(major), int(minor), int(patch)
+    try:
+        return int(major), int(minor), int(patch)
+    except ValueError:
+        # Over-long digit runs exceed the int() string-digit limit.
+        return None
 
 
 def addon_version_warning(addon_version: object) -> str | None:

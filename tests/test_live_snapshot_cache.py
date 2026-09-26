@@ -1871,3 +1871,14 @@ def test_submit_reserializes_unchanged_snapshot_after_suppression_window(tmp_pat
         assert writer.close()
     finally:
         cache_mod._snapshot_to_dict = original_to_dict
+
+
+def test_load_live_snapshot_discards_deeply_nested_cache_without_crashing(tmp_path):
+    # F2: json.loads raises RecursionError on deeply-nested input; the loader
+    # must discard it like any other invalid cache instead of crashing.
+    # 20000-deep nesting exceeds the JSON loader's recursion budget on every
+    # supported interpreter (3.14 still parses 5000-deep iteratively).
+    _cache_path(tmp_path).write_text("[" * 20000 + "]" * 20000, encoding="utf-8")
+
+    assert load_live_snapshot(tmp_path) is None
+    assert not _cache_path(tmp_path).exists()

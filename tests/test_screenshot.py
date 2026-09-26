@@ -5969,3 +5969,71 @@ def test_backlog_handle_owned_generation_rearms_after_barrier(tmp_path: Path):
     assert snapshots == []
     assert not ctx.apply_closed
     assert path.exists()
+
+
+def _poison_fragment(*, chunk, chunk_count=1, inner_total_len=2, inner_crc32=0):
+    return screenshot_mod.SnapshotFragment(
+        stream_id=99,
+        generation=7,
+        chunk_index=0,
+        chunk_count=chunk_count,
+        inner_total_len=inner_total_len,
+        inner_crc32=inner_crc32,
+        chunk=chunk,
+        source=screenshot_mod.SnapshotSource(
+            mtime_ns=100, file_id="poison.jpg", size=2
+        ),
+    )
+
+
+def test_fragment_assembler_short_inner_struct_error_poisons_generation():
+    # F8/F9: struct.unpack on a short assembled payload raises struct.error;
+    # the completion block must poison the generation with an error reason
+    # instead of crashing.
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    outcome = assembler.accept_fragment(
+        _poison_fragment(chunk=b"\x00\x00"), Path("poison-0.jpg")
+    )
+
+    assert outcome.snapshot is None
+    assert outcome.error_reason is not None
+    assert outcome.error_reason.startswith("assembled v10 payload is invalid")
+
+    follow_up = assembler.accept_fragment(
+        _poison_fragment(chunk=b"\x00\x00"), Path("poison-1.jpg")
+    )
+    assert follow_up.snapshot is None
+
+
+def test_fragment_assembler_non_bytes_chunk_type_error_poisons_generation():
+    # F8/F9: b"".join on a non-bytes chunk raises TypeError; same poison path.
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    outcome = assembler.accept_fragment(
+        _poison_fragment(chunk="ab"),  # type: ignore[arg-type]
+        Path("poison-str.jpg"),
+    )
+
+    assert outcome.snapshot is None
+    assert outcome.error_reason is not None
+    assert outcome.error_reason.startswith("assembled v10 payload is invalid")
+
+
+def test_fragment_assembler_parse_value_error_poisons_generation(monkeypatch):
+    # F8/F9: a ValueError from inner parsing must poison the generation too.
+    inner = _wrap_payload(_build_body([]))
+    fragment = _poison_fragment(
+        chunk=inner,
+        inner_total_len=len(inner),
+        inner_crc32=struct.unpack(">I", inner[-4:])[0],
+    )
+
+    def boom(_data):
+        raise ValueError("fuzzed inner")
+
+    monkeypatch.setattr(screenshot_mod, "_try_parse_appscout_candidate", boom)
+    assembler = screenshot_mod._SnapshotFragmentAssembler()
+    outcome = assembler.accept_fragment(fragment, Path("poison-v.jpg"))
+
+    assert outcome.snapshot is None
+    assert outcome.error_reason is not None
+    assert "invalid" in outcome.error_reason

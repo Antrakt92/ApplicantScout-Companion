@@ -1648,3 +1648,34 @@ def test_update_check_propagates_unexpected_client_construction_error(monkeypatc
 
     with pytest.raises(RuntimeError, match="boom"):
         check_for_update("0.1.0")
+
+
+def test_semver_key_rejects_overlong_digit_runs_without_raising():
+    # F4: int() raises ValueError past the string-digit limit; _semver_key
+    # must map that to None instead of crashing.
+    assert updater_mod._semver_key("1." + "9" * 5000 + ".0") is None
+    assert updater_mod._semver_key("0.2.0") == (0, 2, 0)
+
+
+def test_semver_key_rejects_non_ascii_digits():
+    # F12: \d matches Unicode decimal digits; the ASCII-only pattern must not.
+    assert updater_mod._semver_key("١.٢.٣") is None
+    assert updater_mod._semver_key("1.٢.3") is None
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (OSError("disk gone"), "os_error"),
+        (ValueError("bad shape"), "invalid_response"),
+        (RecursionError("too deep"), "response_too_deep"),
+    ],
+)
+def test_update_check_maps_fuzz_failures_to_unavailable(error, reason):
+    # F5: transport/parse/depth failures must surface as unavailable with
+    # distinct reasons, never propagate.
+    result = check_for_update("0.1.0", client=_Client(error))  # type: ignore[arg-type]
+
+    assert result.status == "unavailable"
+    assert result.reason == reason
+    assert result.asset_url is None

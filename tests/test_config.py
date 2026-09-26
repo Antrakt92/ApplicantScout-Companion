@@ -11935,3 +11935,34 @@ def test_wow_lifecycle_timer_reuses_single_long_lived_check_thread(
     assert len(workers) == 1
 
     monkeypatch.setattr(main_mod, "_WOW_LIFECYCLE_CHECK_EXECUTOR", None)
+
+
+def test_parse_cache_ttl_seconds_rejects_overlong_and_non_ascii_digits():
+    # F7/F12: over-long runs exceed int()'s digit limit and Unicode decimals
+    # pass isdecimal() but are not ASCII; both must raise ConfigError, never
+    # crash or misparse.
+    with pytest.raises(ConfigError, match="APSCOUT_CACHE_TTL_SECONDS"):
+        config_mod._parse_cache_ttl_seconds("9" * 5000)
+    with pytest.raises(ConfigError, match="APSCOUT_CACHE_TTL_SECONDS"):
+        config_mod._parse_cache_ttl_seconds("٣٦٠٠")
+    assert config_mod._parse_cache_ttl_seconds("3600") == 3600
+
+
+def test_read_env_file_rejects_bare_key_without_value(tmp_path: Path):
+    # F10: a line without `=` parses as a key with value None; it must fail
+    # closed with the line number and never echo the raw content.
+    path = tmp_path / "config.env"
+    path.write_text(
+        "WCL_CLIENT_ID=abc\nBARE_KEY_WITHOUT_EQUALS\n", encoding="utf-8"
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        config_mod._read_env_file(path)
+    assert "invalid line 2" in str(excinfo.value)
+    assert "BARE_KEY" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("version", ["0", "-3", "00"])
+def test_parse_config_schema_version_rejects_non_positive(version: str):
+    # F11: schema versions <= 0 are never valid; reject with the same ConfigError.
+    with pytest.raises(ConfigError, match="positive integer"):
+        config_mod._parse_config_schema_version(version)

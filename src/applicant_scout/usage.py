@@ -162,7 +162,7 @@ class UsageClient:
         self._thread: threading.Thread | None = None
         try:
             saved_consent = self._load()
-        except (OSError, ValueError, TypeError, UnicodeError):
+        except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
             saved_consent = False
             self._failed = True
             try:
@@ -316,7 +316,7 @@ class UsageClient:
             for key in seen:
                 if not isinstance(key, str) or not self._valid_seen_key(key):
                     raise ValueError("Invalid usage reservation")
-        except (ValueError, UnicodeError) as exc:
+        except (ValueError, UnicodeError, RecursionError) as exc:
             _log.warning("Ignoring corrupt usage state %s: %s", self._path, exc)
             _quarantine_corrupt_file(self._path)
             raise

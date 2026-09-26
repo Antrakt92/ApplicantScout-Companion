@@ -2415,26 +2415,29 @@ class _SnapshotFragmentAssembler:
                     accepted=True,
                 )
 
-            inner = b"".join(
-                pending.chunks[index] for index in range(fragment.chunk_count)
-            )
             parsed: Snapshot | SnapshotFragment | None = None
-            if len(inner) != fragment.inner_total_len:
-                error = (
-                    f"assembled v10 payload has {len(inner)} bytes; "
-                    f"expected {fragment.inner_total_len}"
+            try:
+                inner = b"".join(
+                    pending.chunks[index] for index in range(fragment.chunk_count)
                 )
-            elif struct.unpack(">I", inner[-4:])[0] != fragment.inner_crc32:
-                error = "assembled v10 inner CRC trailer mismatch"
-            elif zlib.crc32(inner[:-4]) & 0xFFFFFFFF != fragment.inner_crc32:
-                error = "assembled v10 inner CRC mismatch"
-            else:
-                parsed, error = _try_parse_appscout_candidate(inner)
-                if isinstance(parsed, SnapshotFragment):
-                    parsed = None
-                    error = "nested v10 fragment payload is not allowed"
-                elif parsed is not None:
-                    parsed = replace(parsed, source=pending.newest_source)
+                if len(inner) != fragment.inner_total_len:
+                    error = (
+                        f"assembled v10 payload has {len(inner)} bytes; "
+                        f"expected {fragment.inner_total_len}"
+                    )
+                elif struct.unpack(">I", inner[-4:])[0] != fragment.inner_crc32:
+                    error = "assembled v10 inner CRC trailer mismatch"
+                elif zlib.crc32(inner[:-4]) & 0xFFFFFFFF != fragment.inner_crc32:
+                    error = "assembled v10 inner CRC mismatch"
+                else:
+                    parsed, error = _try_parse_appscout_candidate(inner)
+                    if isinstance(parsed, SnapshotFragment):
+                        parsed = None
+                        error = "nested v10 fragment payload is not allowed"
+                    elif parsed is not None:
+                        parsed = replace(parsed, source=pending.newest_source)
+            except (struct.error, TypeError, ValueError) as exc:
+                parsed, error = None, f"assembled v10 payload is invalid: {exc}"
 
             retired.extend(self._retire_pending_locked())
             if error is not None or not isinstance(parsed, Snapshot):

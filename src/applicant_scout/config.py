@@ -269,7 +269,14 @@ def _read_env_file(path: Path) -> dict[str, str]:
                     f"Could not parse ApplicantScout config at {path}: "
                     f"invalid line {binding.original.line}"
                 )
-            if binding.key is not None and binding.value is not None:
+            if binding.key is not None:
+                if binding.value is None:
+                    # A line without `=` parses as a bare key; fail closed with
+                    # the 1-based line number only — never the raw content.
+                    raise ConfigError(
+                        f"Could not parse ApplicantScout config at {path}: "
+                        f"invalid line {binding.original.line}"
+                    )
                 values[binding.key] = binding.value
     return values
 
@@ -387,6 +394,13 @@ def save_config_values(
     wrapper and are folded into `ConfigValues` when `values` is None. When
     both are given, `values` wins.
     """
+    if isinstance(values, str):
+        raise TypeError(
+            "save_config_values() requires a ConfigValues struct (or keywords), "
+            "not a plain string: legacy 3-positional-scalar calls such as "
+            "save_config_values(client_id, client_secret, region) are rejected "
+            "instead of misbinding the first scalar to `values`."
+        )
     if values is None:
         if wcl_client_id is None or wcl_client_secret is None or region is None:
             raise TypeError(
@@ -478,11 +492,16 @@ def _parse_cache_ttl_seconds(raw: str | None) -> int | None:
     raw = raw.strip()
     if not raw:
         return None
-    if not raw.isdecimal():
+    if not raw.isascii() or not raw.isdecimal():
         raise ConfigError(
             "APSCOUT_CACHE_TTL_SECONDS must be a positive integer number of seconds"
         )
-    value = int(raw)
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(
+            "APSCOUT_CACHE_TTL_SECONDS must be a positive integer number of seconds"
+        ) from None
     if value <= 0 or value > MAX_CACHE_TTL_SECONDS:
         raise ConfigError(
             "APSCOUT_CACHE_TTL_SECONDS must be between 1 and "
@@ -533,6 +552,10 @@ def _parse_config_schema_version(raw: str | None) -> int | None:
         raise ConfigError(
             f"{CONFIG_SCHEMA_KEY} must be a positive integer schema version"
         ) from None
+    if seen <= 0:
+        raise ConfigError(
+            f"{CONFIG_SCHEMA_KEY} must be a positive integer schema version"
+        )
     if seen > CONFIG_SCHEMA_VERSION:
         raise ConfigError(
             f"ApplicantScout config schema {seen} is newer than supported "

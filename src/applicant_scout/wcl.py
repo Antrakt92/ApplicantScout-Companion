@@ -2059,7 +2059,7 @@ class CharacterCache:
             return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeError) as exc:
+        except (json.JSONDecodeError, UnicodeError, RecursionError) as exc:
             _log.warning("Ignoring corrupt character cache %s: %s", self._path, exc)
             _quarantine_corrupt_file(self._path)
             return {}
