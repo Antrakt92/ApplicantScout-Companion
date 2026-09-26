@@ -378,11 +378,14 @@ def test_update_check_reports_available_but_uninstallable_without_checksum_asset
 
     result = check_for_update("0.1.0", client=client)  # type: ignore[arg-type]
 
-    assert result.status == "available"
+    assert result.status == "blocked"
+    assert result.reason == "missing_checksum"
     assert result.asset_name is None
     assert result.asset_url is None
     assert result.checksum_name is None
     assert "checksum" in result.message.lower()
+    assert "blocked" in result.message.lower()
+    assert updater_mod.update_result_has_installable_asset(result) is False
 
 
 def test_update_check_selects_highest_stable_semver_when_releases_are_out_of_order():
@@ -1123,9 +1126,21 @@ def test_download_update_installer_accepts_installer_at_size_limit(
     assert path.read_bytes() == content
 
 
+def _fake_registered_install(monkeypatch, tmp_path):
+    """Fake a registered frozen install (exe name + unins000.exe)."""
+    installed_dir = tmp_path / "Custom Apps" / "ApplicantScout Companion"
+    installed_dir.mkdir(parents=True, exist_ok=True)
+    (installed_dir / "unins000.exe").write_text("", encoding="utf-8")
+    current_exe = str(installed_dir / "ApplicantScout.exe")
+    monkeypatch.setattr("applicant_scout.updater.sys.frozen", True, raising=False)
+    monkeypatch.setattr("applicant_scout.updater.sys.executable", current_exe)
+    return installed_dir
+
+
 def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     installer.write_text("", encoding="utf-8")
+    installed_dir = _fake_registered_install(monkeypatch, tmp_path)
     calls: list[list[str]] = []
 
     class FakePopen:
@@ -1150,6 +1165,7 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
             "/APSCOUT_SELFUPDATE=1",
             f"/APSCOUT_SOURCE_PID={os.getpid()}",
             f"/APSCOUT_SOURCE_PATH={sys.executable}",
+            f"/DIR={installed_dir}",
         ]
     ]
 
@@ -1157,6 +1173,7 @@ def test_launch_update_installer_runs_silent_setup(monkeypatch, tmp_path):
 def test_launch_update_installer_returns_pollable_launch(monkeypatch, tmp_path):
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     installer.write_text("", encoding="utf-8")
+    _fake_registered_install(monkeypatch, tmp_path)
 
     class FakePopen:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -1259,9 +1276,56 @@ def test_launch_update_installer_does_not_install_into_portable_directory(
     )
     monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
 
-    launch_update_installer(installer)
+    with pytest.raises(RuntimeError, match="portable ZIP manually"):
+        launch_update_installer(installer)
 
-    assert all(not arg.startswith("/DIR=") for arg in calls[0])
+    assert calls == []
+
+
+def test_launch_update_installer_blocks_without_installer_registration(
+    monkeypatch, tmp_path
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+    installed_dir = tmp_path / "ApplicantScout Companion"
+    installed_dir.mkdir()
+    current_exe = str(installed_dir / "ApplicantScout.exe")
+
+    class FakePopen:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise AssertionError("blocked launch must not reach Popen")
+
+    monkeypatch.setattr("applicant_scout.updater.sys.frozen", True, raising=False)
+    monkeypatch.setattr("applicant_scout.updater.sys.executable", current_exe)
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        lambda _path: None,
+        raising=False,
+    )
+    monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
+
+    with pytest.raises(RuntimeError, match="portable ZIP manually"):
+        launch_update_installer(installer)
+
+
+def test_launch_update_installer_blocks_unfrozen_dev_run(monkeypatch, tmp_path):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_text("", encoding="utf-8")
+
+    class FakePopen:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise AssertionError("blocked launch must not reach Popen")
+
+    monkeypatch.delattr("applicant_scout.updater.sys.frozen", raising=False)
+    monkeypatch.setattr(
+        "applicant_scout.updater.verify_update_installer_authenticity",
+        lambda _path: None,
+        raising=False,
+    )
+    monkeypatch.setattr("applicant_scout.updater.subprocess.Popen", FakePopen)
+
+    with pytest.raises(RuntimeError, match="running from source"):
+        launch_update_installer(installer)
 
 
 def test_launch_update_installer_rejects_untrusted_installer_before_popen(
@@ -1269,6 +1333,7 @@ def test_launch_update_installer_rejects_untrusted_installer_before_popen(
 ):
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     installer.write_text("", encoding="utf-8")
+    _fake_registered_install(monkeypatch, tmp_path)
     calls: list[list[str]] = []
 
     class FakePopen:
@@ -1296,6 +1361,7 @@ def test_launch_update_installer_can_skip_signature_gate_for_checksum_verified_r
 ):
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     installer.write_text("", encoding="utf-8")
+    _fake_registered_install(monkeypatch, tmp_path)
     verified_paths: list[Path] = []
     calls: list[list[str]] = []
 
@@ -1784,11 +1850,13 @@ def test_install_estimator_degenerate_total_reports_spinner_not_stuck_zero():
     assert progress.total_bytes is None
     assert progress.downloaded_bytes == 5
     assert "%" not in progress.message
-    # Completion stays the sole percent signal for degenerate totals too.
-    assert estimator.complete() == updater_mod.UpdateProgress(
-        "installing", 1, 1
+    # Completion mirrors the spinner path: a percent-free terminal state.
+    completed = estimator.complete()
+    assert completed == updater_mod.UpdateProgress(
+        "installing", 5, None, install_complete=True
     )
-    assert estimator.complete().message == "Installing update\u2026 100%"
+    assert completed.message == updater_mod.format_update_install_terminal()
+    assert "%" not in completed.message
 
 
 def test_install_estimator_unknown_total_completion_is_terminal_not_spinner():
@@ -1877,4 +1945,128 @@ def test_installer_path_from_launch_rejects_unshaped_handles():
             SimpleNamespace(_process=SimpleNamespace(args="/path/with spaces/setup.exe"))
         )
         is None
+    )
+
+
+def test_in_app_update_blocked_for_unfrozen_dev_run():
+    reason = updater_mod.in_app_exe_update_blocked_reason(
+        is_frozen=False, executable="/any/python"
+    )
+
+    assert reason is not None
+    assert "running from source" in reason
+
+
+def test_in_app_update_blocked_for_portable_exe_name(tmp_path):
+    portable_exe = tmp_path / "ApplicantScoutCompanion.exe"
+    portable_exe.write_text("", encoding="utf-8")
+
+    reason = updater_mod.in_app_exe_update_blocked_reason(
+        is_frozen=True, executable=portable_exe
+    )
+
+    assert reason is not None
+    assert "portable ZIP manually" in reason
+
+
+def test_in_app_update_blocked_without_installer_registration(tmp_path):
+    installed_exe = tmp_path / "ApplicantScout.exe"
+    installed_exe.write_text("", encoding="utf-8")
+
+    reason = updater_mod.in_app_exe_update_blocked_reason(
+        is_frozen=True, executable=installed_exe, unins000_exists=False
+    )
+
+    assert reason is not None
+    assert "portable ZIP manually" in reason
+
+
+def test_in_app_update_allowed_for_registered_install(tmp_path):
+    installed_dir = tmp_path / "ApplicantScout Companion"
+    installed_dir.mkdir()
+    installed_exe = installed_dir / "ApplicantScout.exe"
+    installed_exe.write_text("", encoding="utf-8")
+
+    assert (
+        updater_mod.in_app_exe_update_blocked_reason(
+            is_frozen=True, executable=installed_exe, unins000_exists=True
+        )
+        is None
+    )
+
+
+def test_verify_install_promotion_confirms_matching_payload(tmp_path):
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / ".apscout-payload-version").write_text("0.2.0\n", encoding="utf-8")
+
+    assert (
+        updater_mod.verify_install_promotion(
+            expected_version="0.2.0", install_root=tmp_path
+        )
+        is True
+    )
+
+
+def test_verify_install_promotion_rejects_version_mismatch(tmp_path):
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / ".apscout-payload-version").write_text("0.1.0\n", encoding="utf-8")
+
+    assert (
+        updater_mod.verify_install_promotion(
+            expected_version="0.2.0", install_root=tmp_path
+        )
+        is False
+    )
+
+
+def test_verify_install_promotion_rejects_pending_marker(tmp_path):
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / ".apscout-payload-version").write_text("0.2.0", encoding="utf-8")
+    (tmp_path / ".apscout-promotion-pending").write_text("upgrade", encoding="utf-8")
+
+    assert (
+        updater_mod.verify_install_promotion(
+            expected_version="0.2.0", install_root=tmp_path
+        )
+        is False
+    )
+
+
+def test_verify_install_promotion_rejects_missing_marker(tmp_path):
+    assert (
+        updater_mod.verify_install_promotion(
+            expected_version="0.2.0", install_root=tmp_path
+        )
+        is False
+    )
+    assert updater_mod.read_installed_payload_version(tmp_path) is None
+
+
+def test_verify_install_promotion_is_unknown_without_expected_version(tmp_path):
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / ".apscout-payload-version").write_text("0.2.0", encoding="utf-8")
+
+    assert (
+        updater_mod.verify_install_promotion(
+            expected_version=None, install_root=tmp_path
+        )
+        is None
+    )
+    assert (
+        updater_mod.verify_install_promotion(
+            expected_version="not-a-version", install_root=tmp_path
+        )
+        is None
+    )
+
+
+def test_verify_install_promotion_is_unknown_without_install_root(monkeypatch):
+    monkeypatch.setattr(updater_mod, "_install_root_for_staging", lambda: None)
+
+    assert (
+        updater_mod.verify_install_promotion(expected_version="0.2.0") is None
     )

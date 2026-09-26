@@ -30,13 +30,24 @@ def _quarantine_corrupt_file(path: Path) -> None:
     Best-effort only: callers stay fail-closed either way, and the corrupt
     file must never be silently re-read on every startup.
     """
-    backup = path.with_name(
-        f"{path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S', time.localtime())}"
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    pid = os.getpid()
+    for counter in range(100):
+        suffix = f"{stamp}-pid{pid}" if counter == 0 else f"{stamp}-pid{pid}-{counter}"
+        backup = path.with_name(f"{path.name}.corrupt-{suffix}")
+        if backup.exists():
+            continue
+        try:
+            path.rename(backup)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            _log.warning("Could not quarantine corrupt usage state file %s: %s", path, exc)
+            return
+        return
+    _log.warning(
+        "Could not quarantine corrupt usage state file %s: no free backup name", path
     )
-    try:
-        path.rename(backup)
-    except OSError as exc:
-        _log.warning("Could not quarantine corrupt usage state file %s: %s", path, exc)
 
 
 USAGE_ENDPOINT = "https://applicantscout-usage.applicantscout-usage-service.workers.dev/v1/events"

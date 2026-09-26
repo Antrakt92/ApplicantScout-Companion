@@ -247,7 +247,8 @@ def health_chip_state(
         detail = (
             f"{failed_path}\n"
             f"{failed_reason}\n"
-            f"{ui_text.format_age(delta)}"
+            f"{ui_text.format_age(delta)}\n"
+            "Take a fresh screenshot; restart the companion if it persists."
         )
         return HealthChipState(
             text="Shot failed",

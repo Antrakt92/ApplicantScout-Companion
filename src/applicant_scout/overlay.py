@@ -671,7 +671,7 @@ class _FetchTask(QRunnable):
             identity.metric_preferences,
         )
         if cached is not None and self._cache.generation == self._cache_generation:
-            _log.info(
+            _log.debug(
                 "WCL fetch cache hit: %s-%s in %.2fs",
                 self._name,
                 identity.server_slug,
@@ -702,21 +702,21 @@ class _FetchTask(QRunnable):
             ranks = CharacterRanks.empty(error=str(e))
         elapsed = time.perf_counter() - started_at
         if ranks.not_found:
-            _log.info(
+            _log.debug(
                 "WCL fetch finished not_found: %s-%s in %.2fs",
                 self._name,
                 identity.server_slug,
                 elapsed,
             )
         elif ranks.error_kind == WCL_ERROR_RESTRICTED:
-            _log.info(
+            _log.debug(
                 "WCL fetch finished with private rankings: %s-%s in %.2fs",
                 self._name,
                 identity.server_slug,
                 elapsed,
             )
         elif ranks.error:
-            _log.info(
+            _log.debug(
                 "WCL fetch finished with error: %s-%s kind=%s in %.2fs",
                 self._name,
                 identity.server_slug,
@@ -724,7 +724,7 @@ class _FetchTask(QRunnable):
                 elapsed,
             )
         else:
-            _log.info(
+            _log.debug(
                 "WCL fetch finished: %s-%s in %.2fs",
                 self._name,
                 identity.server_slug,
@@ -6906,7 +6906,7 @@ class OverlayWindow(QMainWindow):
             # after shutdown_fetches() discarded the pool.
             if self._closed:
                 return
-            _log.info(
+            _log.debug(
                 "WCL fetch queued: %s-%s region=%s spec=%s role=%s prefs=%s "
                 "in_flight=%d",
                 charname,
@@ -7116,7 +7116,7 @@ class OverlayWindow(QMainWindow):
             return
         if error:
             self._record_raid_boss_fetch_failure(fetched_identity, error_kind, error)
-            _log.info(
+            _log.debug(
                 "WCL raid boss detail fetch failed: %s kind=%s",
                 error,
                 error_kind or "unknown",

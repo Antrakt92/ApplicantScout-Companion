@@ -133,6 +133,7 @@ def test_cancelled_download_never_launches_and_removes_partial_file(
     client = _Client(result, checksum_response, installer_response)
     launches = []
     monkeypatch.setattr(main_mod, "_safe_check_for_update", lambda _version: result)
+    monkeypatch.setattr(main_mod, "in_app_exe_update_blocked_reason", lambda: None)
     monkeypatch.setattr(
         main_mod, "download_update_installer",
         lambda value, *, control: updater.download_update_installer(
@@ -202,6 +203,7 @@ def test_installer_handoff_rejects_late_cancel(monkeypatch, tmp_path):
     launch = object()
     calls = []
     monkeypatch.setattr(main_mod, "_safe_check_for_update", lambda _version: result)
+    monkeypatch.setattr(main_mod, "in_app_exe_update_blocked_reason", lambda: None)
     monkeypatch.setattr(main_mod, "download_update_installer", lambda _result, **_kwargs: installer)
 
     def launch_installer(_path, **_kwargs):
@@ -288,6 +290,7 @@ def test_network_failure_after_cancel_reports_cancelled_not_failed(
     result = _result()
     control = updater.UpdateDownloadControl()
     monkeypatch.setattr(main_mod, "_safe_check_for_update", lambda _version: result)
+    monkeypatch.setattr(main_mod, "in_app_exe_update_blocked_reason", lambda: None)
 
     def stalled_chunks():
         yield b"partial"
@@ -338,6 +341,7 @@ def test_main_controls_share_attempt_and_drop_old_progress_after_retry(
 ):
     signals = MagicMock(checked=_Signal(), completed=_Signal(), progressed=_Signal())
     monkeypatch.setattr(main_mod, "UpdateSignals", lambda _app: signals)
+    monkeypatch.setattr(main_mod, "in_app_exe_update_blocked_reason", lambda: None)
     tray = MagicMock()
     callbacks = {}
     workers = []
@@ -828,3 +832,78 @@ def test_install_progress_skips_identical_reports_but_keeps_first_change_and_fin
     assert control.cancel() is True
     with pytest.raises(updater.UpdateCancelled):
         control.checkpoint()
+
+
+def test_handoff_exit_zero_with_verified_promotion_keeps_retry():
+    _ProgressFakeTimer.instances.clear()
+    recovered = []
+    controller = _progress_controller(lambda: 0.0, recovered)
+
+    controller.arm(
+        SimpleNamespace(poll=lambda: 0), promotion_verifier=lambda: True
+    )
+    _ProgressFakeTimer.instances[0].timeout.emit()
+
+    assert recovered == [(main_mod.UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)]
+
+
+def test_handoff_exit_zero_with_promotion_mismatch_is_error_without_retry():
+    _ProgressFakeTimer.instances.clear()
+    recovered = []
+    controller = _progress_controller(lambda: 0.0, recovered)
+
+    controller.arm(
+        SimpleNamespace(poll=lambda: 0), promotion_verifier=lambda: False
+    )
+    _ProgressFakeTimer.instances[0].timeout.emit()
+
+    assert recovered == [
+        (main_mod.UPDATE_HANDOFF_PROMOTION_MISMATCH_MESSAGE, False)
+    ]
+
+
+def test_handoff_exit_zero_with_unverifiable_promotion_keeps_legacy_path():
+    _ProgressFakeTimer.instances.clear()
+    recovered = []
+    controller = _progress_controller(lambda: 0.0, recovered)
+
+    controller.arm(
+        SimpleNamespace(poll=lambda: 0), promotion_verifier=lambda: None
+    )
+    _ProgressFakeTimer.instances[0].timeout.emit()
+
+    assert recovered == [(main_mod.UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)]
+
+
+def test_handoff_exit_zero_with_failing_verifier_keeps_legacy_path():
+    _ProgressFakeTimer.instances.clear()
+    recovered = []
+    controller = _progress_controller(lambda: 0.0, recovered)
+
+    def _boom():
+        raise RuntimeError("synthetic verifier failure")
+
+    controller.arm(SimpleNamespace(poll=lambda: 0), promotion_verifier=_boom)
+    _ProgressFakeTimer.instances[0].timeout.emit()
+
+    assert recovered == [(main_mod.UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)]
+
+
+def test_prompt_recheck_scheduling_policy():
+    assert main_mod._should_schedule_prompt_recheck("anything", True) is True
+    assert (
+        main_mod._should_schedule_prompt_recheck(
+            main_mod.UPDATE_HANDOFF_PROMOTION_MISMATCH_MESSAGE, False
+        )
+        is True
+    )
+    assert (
+        main_mod._should_schedule_prompt_recheck(
+            main_mod.UPDATE_HANDOFF_TIMEOUT_MESSAGE, False
+        )
+        is False
+    )
+    assert (
+        main_mod.UPDATE_CHECK_PROMPT_RECHECK_MS
+        < main_mod.UPDATE_CHECK_INTERVAL_MS
+    )

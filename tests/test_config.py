@@ -20,6 +20,7 @@ import applicant_scout.config as config_mod
 import applicant_scout.live_snapshot_cache as live_snapshot_cache_mod
 import applicant_scout.runtime_control as runtime_control_mod
 import applicant_scout.screenshot as screenshot_mod
+import applicant_scout.updater as updater_mod
 from applicant_scout.live_snapshot_cache import (
     LIVE_SNAPSHOT_CACHE_FILENAME,
     LiveSnapshotCacheWriter,
@@ -8283,7 +8284,7 @@ def test_replace_screenshot_watcher_keeps_committed_replacement_owned_when_hook_
         lambda *_args: None,
         signal_gate=gate,
     )
-    caplog.set_level(logging.ERROR, logger="applicant_scout")
+    caplog.set_level(logging.WARNING, logger="applicant_scout")
 
     new = main_mod._replace_screenshot_watcher(
         old,
@@ -10642,6 +10643,27 @@ def test_update_check_result_resolver_sets_new_installable_update_over_previous_
     assert decision.pending_update_version == "0.3.0"
 
 
+def test_update_check_result_resolver_clears_pending_on_blocked():
+    coordinator = main_mod._UpdateCheckCoordinator()
+    generation = coordinator.next_generation()
+    blocked = SimpleNamespace(
+        status="blocked",
+        reason="missing_checksum",
+        message="Version 0.2.0 is available, but the installer checksum asset was not published.",
+        latest_version="0.2.0",
+    )
+
+    decision = main_mod._resolve_update_check_result(
+        coordinator,
+        generation,
+        blocked,
+        previous_pending_update_version="0.2.0",
+    )
+
+    assert decision.is_current
+    assert decision.pending_update_version is None
+
+
 def test_wow_start_update_prompt_only_shows_for_initial_wow_launch_update():
     assert main_mod._should_show_wow_start_update_prompt(
         wow_watch_mode=True,
@@ -10791,6 +10813,13 @@ def _active_update_quit_gate() -> main_mod._UpdateQuitGate:
     return gate
 
 
+def _allow_in_app_exe_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run _check_updates as a registered install (not portable/dev)."""
+    monkeypatch.setattr(
+        main_mod, "in_app_exe_update_blocked_reason", lambda: None
+    )
+
+
 def test_check_updates_treats_unavailable_update_check_as_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -10833,6 +10862,7 @@ def test_check_updates_treats_uninstallable_available_release_as_error(
         latest_version="v0.2.0",
         asset_name=None,
     )
+    _allow_in_app_exe_update(monkeypatch)
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
     monkeypatch.setattr(
         "applicant_scout.updater.check_for_update",
@@ -10840,6 +10870,85 @@ def test_check_updates_treats_uninstallable_available_release_as_error(
     )
 
     with pytest.raises(RuntimeError, match="no installer asset"):
+        main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
+
+
+def test_check_updates_treats_blocked_update_check_as_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result = SimpleNamespace(
+        status="blocked",
+        reason="missing_checksum",
+        message=(
+            "Version v0.2.0 is available, but the installer checksum asset was "
+            "not published, so automatic update is blocked."
+        ),
+        latest_version="v0.2.0",
+    )
+    _allow_in_app_exe_update(monkeypatch)
+    monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
+    monkeypatch.setattr(
+        "applicant_scout.updater.check_for_update",
+        lambda _version: result,
+    )
+
+    with pytest.raises(RuntimeError, match="blocked"):
+        main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
+
+
+def test_check_updates_blocks_portable_layout_before_download(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result = SimpleNamespace(
+        status="available",
+        message="Version v0.2.0 is available.",
+        latest_version="v0.2.0",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        asset_url="https://example.test/setup.exe",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+        checksum_url="https://example.test/setup.exe.sha256",
+    )
+    monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
+    monkeypatch.setattr(
+        main_mod,
+        "in_app_exe_update_blocked_reason",
+        lambda: updater_mod._PORTABLE_UPDATE_BLOCKED_MESSAGE,
+    )
+
+    def _fail_download(_result, **_kwargs):
+        raise AssertionError("blocked layout must not download")
+
+    monkeypatch.setattr(main_mod, "download_update_installer", _fail_download)
+
+    with pytest.raises(RuntimeError, match="portable ZIP manually"):
+        main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
+
+
+def test_check_updates_blocks_dev_run_before_download(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result = SimpleNamespace(
+        status="available",
+        message="Version v0.2.0 is available.",
+        latest_version="v0.2.0",
+        asset_name="ApplicantScoutCompanionSetup-0.2.0.exe",
+        asset_url="https://example.test/setup.exe",
+        checksum_name="ApplicantScoutCompanionSetup-0.2.0.exe.sha256",
+        checksum_url="https://example.test/setup.exe.sha256",
+    )
+    monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
+    monkeypatch.setattr(
+        main_mod,
+        "in_app_exe_update_blocked_reason",
+        lambda: updater_mod._DEV_UPDATE_BLOCKED_MESSAGE,
+    )
+
+    def _fail_download(_result, **_kwargs):
+        raise AssertionError("blocked layout must not download")
+
+    monkeypatch.setattr(main_mod, "download_update_installer", _fail_download)
+
+    with pytest.raises(RuntimeError, match="running from source"):
         main_mod._check_updates(update_quit_gate=_active_update_quit_gate())
 
 
@@ -10868,6 +10977,7 @@ def test_check_updates_downloads_and_launches_installable_release(
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     launch = object()
     calls: list[object] = []
+    _allow_in_app_exe_update(monkeypatch)
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
     monkeypatch.setattr(
         main_mod,
@@ -10911,6 +11021,7 @@ def test_check_updates_arms_control_quit_before_launching_installer(
     launch_gate_states: list[bool] = []
     control_quit_results: list[bool] = []
     normal_prepare_calls: list[None] = []
+    _allow_in_app_exe_update(monkeypatch)
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
     monkeypatch.setattr(
         main_mod,
@@ -10960,6 +11071,7 @@ def test_check_updates_rolls_back_handoff_when_installer_launch_fails(
     gate = main_mod._UpdateQuitGate()
     gate.set_update_in_progress(True)
     launch_gate_states: list[bool] = []
+    _allow_in_app_exe_update(monkeypatch)
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
     monkeypatch.setattr(
         main_mod,
@@ -10998,6 +11110,7 @@ def test_check_updates_launches_checksum_verified_installer_without_pinned_signe
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     launch = object()
     calls: list[object] = []
+    _allow_in_app_exe_update(monkeypatch)
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
     monkeypatch.setattr(
         main_mod,
@@ -11036,6 +11149,7 @@ def test_check_updates_reports_untrusted_installer_without_handoff(
     )
     installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
     calls: list[object] = []
+    _allow_in_app_exe_update(monkeypatch)
     monkeypatch.setattr(main_mod, "check_for_update", lambda _version: result)
     monkeypatch.setattr(
         main_mod,

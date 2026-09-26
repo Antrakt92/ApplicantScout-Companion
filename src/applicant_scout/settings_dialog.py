@@ -2697,7 +2697,9 @@ class SettingsDialog(QDialog):
 
     def _test_credentials(self) -> None:
         if self._credential_tester is None:
-            self._set_status("Credential test is unavailable.", error=True)
+            self._set_status(
+                "Credential test is unavailable (no tester configured).", error=True
+            )
             return
         credential_tester = self._credential_tester
         values = self.values()
@@ -2720,16 +2722,24 @@ class SettingsDialog(QDialog):
 
     def _open_log_folder(self) -> None:
         if self._open_logs is None:
-            self._set_status("Log folder is unavailable.", error=True)
+            self._set_status(
+                "Log folder is unavailable (no opener configured).", error=True
+            )
             return
         try:
             self._set_status(self._open_logs())
         except Exception as exc:  # noqa: BLE001
-            self._set_status(f"Could not open logs: {exc}", error=True)
+            self._set_status(
+                f"Could not open logs: {exc}. Open the log folder manually "
+                "in File Explorer.",
+                error=True,
+            )
 
     def _clear_cache_dir(self) -> None:
         if self._clear_cache is None:
-            self._set_status("Cache action is unavailable.", error=True)
+            self._set_status(
+                "Cache action is unavailable (no cache reset configured).", error=True
+            )
             return
         if self._cache_action_in_progress:
             return

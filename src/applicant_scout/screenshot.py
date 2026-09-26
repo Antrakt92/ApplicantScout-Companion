@@ -49,6 +49,7 @@ from PySide6.QtCore import QObject, Signal
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from . import log_throttle as _log_throttle
 from .atomic_io import atomic_write_text
 from .producer_identity import is_placeholder_transport_identity
 
@@ -1398,12 +1399,15 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
                     )
                     if first_error is None:
                         first_error = f"{kind}: {err}"
-                    _log.exception(
-                        "candidate parser error in %s (%s)", image_path.name, kind
+                    _log.warning(
+                        "candidate parser error in %s (%s)",
+                        image_path.name,
+                        kind,
+                        exc_info=_log.isEnabledFor(logging.DEBUG),
                     )
                     continue
                 if isinstance(parsed, SnapshotFragment):
-                    _log.info(
+                    _log.debug(
                         "decoded %s: mode=%s wire=0x%02x fragment=%d/%d generation=%d",
                         image_path.name,
                         kind,
@@ -1420,7 +1424,7 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
                     # v0x03 = listing context. If you reload the addon and still
                     # see an older wire version, you're likely processing a stale
                     # screenshot taken before the addon update.
-                    _log.info(
+                    _log.debug(
                         "decoded %s: mode=%s wire=0x%02x applicant_rows=%d roster=%d",
                         image_path.name,
                         kind,
@@ -1449,7 +1453,7 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
         )
     except QRScanFailed as exc:
         reason = str(exc) or "QR scan failed"
-        _log.warning("could not scan %s: %s", image_path.name, reason)
+        _log.debug("could not scan %s: %s", image_path.name, reason)
         # QRScanFailed means zbar was present but could not finish this image.
         # It is not evidence that the generation has no APS1 marker, so keep it
         # eligible for the watcher's delayed retry just like an exception that
@@ -1464,7 +1468,7 @@ def _decode_screenshot_result(image_path: Path) -> DecodeResult:
         )
 
     if first_error is not None:
-        _log.warning("decode failed in %s: %s", image_path.name, first_error)
+        _log.debug("decode failed in %s: %s", image_path.name, first_error)
     return DecodeResult(
         None,
         True,
@@ -1563,7 +1567,7 @@ def cleanup_appscout_screenshots(
                 "cleanup decode error before APS1 ownership for %s: %s",
                 path.name,
                 exc,
-                exc_info=True,
+                exc_info=_log.isEnabledFor(logging.DEBUG),
             )
             continue
 
@@ -1596,7 +1600,7 @@ def cleanup_appscout_screenshots(
                 deleted += 1
             else:
                 preserved += 1
-                _log.info(
+                _log.debug(
                     "cleanup preserved replacement screenshot: %s",
                     path.name,
                 )
@@ -2672,7 +2676,12 @@ class ScreenshotWatcher(QObject):
                 self._scan_recent_backlog()
             except Exception:  # noqa: BLE001 - retry off the GUI thread
                 scan_failed = True
-                _log.exception("screenshot backlog scan failed")
+                _log_throttle.warn_once_per_interval(
+                    "screenshot.backlog_scan",
+                    "screenshot backlog scan failed",
+                    logger=_log,
+                    exc_info=_log.isEnabledFor(logging.DEBUG),
+                )
                 with self._observer_lock:
                     if not self._stopped.is_set():
                         self._backlog_rescan_requested = True
@@ -2699,7 +2708,12 @@ class ScreenshotWatcher(QObject):
             try:
                 self.ensure_running()
             except Exception:  # noqa: BLE001 - retry on the next supervisor tick
-                _log.exception("could not restart failed screenshot observer")
+                _log_throttle.warn_once_per_interval(
+                    "screenshot.observer_restart",
+                    "could not restart failed screenshot observer",
+                    logger=_log,
+                    exc_info=_log.isEnabledFor(logging.DEBUG),
+                )
 
     def start(self) -> None:
         with self._observer_lock:
@@ -3054,7 +3068,7 @@ class ScreenshotWatcher(QObject):
         """
         if claim is None:
             if ctx.recent and not _wait_for_stable_size(path):
-                _log.info(
+                _log.debug(
                     "backlog: skipping unstable recent screenshot %s",
                     path.name,
                 )
@@ -3191,7 +3205,7 @@ class ScreenshotWatcher(QObject):
                         ctx.deleted += self._delete_retired_fragment_files(
                             fragment_outcome.retired_files
                         )
-                        _log.info(
+                        _log.debug(
                             "backlog: applied assembled snapshot ending at %s",
                             path.name,
                         )
@@ -3236,7 +3250,7 @@ class ScreenshotWatcher(QObject):
                     if not self._emit_snapshot(whole):
                         outcome.terminate = True
                         return outcome
-                    _log.info("backlog: applied snapshot from %s", path.name)
+                    _log.debug("backlog: applied snapshot from %s", path.name)
                     ctx.apply_closed = True
         elif (
             result.has_marker
@@ -3280,7 +3294,7 @@ class ScreenshotWatcher(QObject):
                 if _unlink_if_source_matches(path, source):
                     ctx.deleted += 1
                 else:
-                    _log.info(
+                    _log.debug(
                         "backlog preserved replacement screenshot: %s",
                         path.name,
                     )
@@ -3506,7 +3520,7 @@ class ScreenshotWatcher(QObject):
     ) -> bool:
         current_stat = claim.refresh()
         if current_stat is not None and claim.key != decoded_key:
-            _log.info(
+            _log.debug(
                 "screenshot changed during decode; retrying current generation: %s",
                 claim.path.name,
             )
@@ -3540,9 +3554,12 @@ class ScreenshotWatcher(QObject):
         try:
             self._on_new_file_guarded(path)
         except Exception:  # noqa: BLE001 - never kill watchdog's dispatcher thread
-            _log.exception(
-                "screenshot observer callback failed for %s; watcher remains active",
-                path.name,
+            _log_throttle.warn_once_per_interval(
+                "screenshot.observer_callback",
+                f"screenshot observer callback failed for {path.name}; "
+                "watcher remains active",
+                logger=_log,
+                exc_info=_log.isEnabledFor(logging.DEBUG),
             )
 
     def _on_new_file_guarded(
@@ -3681,13 +3698,13 @@ class ScreenshotWatcher(QObject):
     ) -> None:
         if result.scan_incomplete:
             if allow_incomplete_retry:
-                _log.info(
+                _log.debug(
                     "deferring one final incomplete screenshot scan for %s",
                     path.name,
                 )
                 self._schedule_incomplete_scan_retry(path, source)
             else:
-                _log.info(
+                _log.debug(
                     "preserving %s after final incomplete screenshot scan",
                     path.name,
                 )
@@ -3749,7 +3766,7 @@ class ScreenshotWatcher(QObject):
                     path.name,
                 )
             else:
-                _log.info(
+                _log.debug(
                     "skip %s — no decodable APS1 marker (manual screenshot, preserved)",
                     path.name,
                 )
@@ -3769,7 +3786,7 @@ class ScreenshotWatcher(QObject):
             return
         try:
             if not _unlink_if_source_matches(path, source):
-                _log.info(
+                _log.debug(
                     "preserved replacement screenshot after decode: %s",
                     path.name,
                 )
@@ -3830,14 +3847,14 @@ class ScreenshotWatcher(QObject):
             return
         if self._manual_index.contains(claim.key):
             return
-        _log.info("new file: %s", path.name)
+        _log.debug("new file: %s", path.name)
         wait_started = time.perf_counter()
         if not _wait_for_stable_size(path):
             if self._stopped.is_set():
                 return
             wait_elapsed = time.perf_counter() - wait_started
             if wait_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S:
-                _log.info(
+                _log.debug(
                     "screenshot stable wait timed out for %s in %.2fs",
                     path.name,
                     wait_elapsed,
@@ -3866,7 +3883,7 @@ class ScreenshotWatcher(QObject):
             wait_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S
             or decode_elapsed >= SLOW_SCREENSHOT_STAGE_LOG_S
         ):
-            _log.info(
+            _log.debug(
                 "screenshot processed %s: stable_wait=%.2fs decode=%.2fs marker=%s",
                 path.name,
                 wait_elapsed,

@@ -2657,7 +2657,7 @@ def test_fetch_task_persists_restricted_rankings_without_repeated_network_fetch(
         )
 
     client.fetch_character_ranks = fake_fetch  # type: ignore[method-assign]
-    caplog.set_level("INFO", logger="applicant_scout.overlay")
+    caplog.set_level("DEBUG", logger="applicant_scout.overlay")
 
     try:
         window._launch_fetch(app)

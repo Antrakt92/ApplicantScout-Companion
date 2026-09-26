@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -324,15 +325,23 @@ def _quarantine_corrupt_file(path: Path) -> Path | None:
     fall back to defaults either way — the corrupt file must never be silently
     re-read on every startup.
     """
-    backup = path.with_name(
-        f"{path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S', time.localtime())}"
-    )
-    try:
-        path.rename(backup)
-    except OSError as exc:
-        _log.warning("Could not quarantine corrupt state file %s: %s", path, exc)
-        return None
-    return backup
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    pid = os.getpid()
+    for counter in range(100):
+        suffix = f"{stamp}-pid{pid}" if counter == 0 else f"{stamp}-pid{pid}-{counter}"
+        backup = path.with_name(f"{path.name}.corrupt-{suffix}")
+        if backup.exists():
+            continue
+        try:
+            path.rename(backup)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            _log.warning("Could not quarantine corrupt state file %s: %s", path, exc)
+            return None
+        return backup
+    _log.warning("Could not quarantine corrupt state file %s: no free backup name", path)
+    return None
 
 
 def load_geometry(config_dir: Path) -> WindowGeometry:

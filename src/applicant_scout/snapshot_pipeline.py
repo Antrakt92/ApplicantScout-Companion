@@ -8,6 +8,7 @@ import logging
 import threading
 from typing import Any, Protocol
 
+from . import log_throttle as _log_throttle
 from .producer_identity import (
     normalize_producer_identity,
     producer_identities_conflict as normalized_producer_identities_conflict,
@@ -380,7 +381,12 @@ class SnapshotApplyQueue:
             self._scheduler(self.flush)
         except Exception:  # noqa: BLE001 - retain pending state for the next event
             self._flush_pending = False
-            _log.exception("could not schedule snapshot flush; pending state retained")
+            _log_throttle.warn_once_per_interval(
+                "snapshot_pipeline.schedule_flush",
+                "could not schedule snapshot flush; pending state retained",
+                logger=_log,
+                exc_info=_log.isEnabledFor(logging.DEBUG),
+            )
 
     def _retain_failed_snapshot_apply(
         self,
@@ -429,11 +435,17 @@ class SnapshotApplyQueue:
         try:
             getattr(self._window, "note_decode", lambda *_args: None)(latest_snap)
         except Exception:  # noqa: BLE001 - UI health must not drop state
-            _log.exception("snapshot decode notification failed")
+            _log.warning(
+                "snapshot decode notification failed",
+                exc_info=_log.isEnabledFor(logging.DEBUG),
+            )
         try:
             application_plan = snapshot_application_plan(args, cache_snapshots)
         except Exception:  # noqa: BLE001 - retain undecided authoritative state
-            _log.exception("snapshot application planning failed; retaining state")
+            _log.warning(
+                "snapshot application planning failed; retaining state",
+                exc_info=_log.isEnabledFor(logging.DEBUG),
+            )
             self._retain_failed_snapshot_apply(
                 args,
                 cache_snapshots,
@@ -489,7 +501,10 @@ class SnapshotApplyQueue:
         try:
             getattr(self._machine, "apply_snapshot", lambda *_args: None)(snap)
         except Exception:  # noqa: BLE001 - preserve state at the GUI boundary
-            _log.exception("snapshot apply failed; resetting transport state")
+            _log.warning(
+                "snapshot apply failed; resetting transport state",
+                exc_info=_log.isEnabledFor(logging.DEBUG),
+            )
             try:
                 getattr(
                     self._machine,
@@ -497,7 +512,10 @@ class SnapshotApplyQueue:
                     lambda: None,
                 )()
             except Exception:  # noqa: BLE001 - still surface the root failure
-                _log.exception("snapshot apply failure recovery also failed")
+                _log.warning(
+                    "snapshot apply failure recovery also failed",
+                    exc_info=_log.isEnabledFor(logging.DEBUG),
+                )
             if self._live_snapshot_cache_writer is not None:
                 try:
                     cleared = getattr(
@@ -511,8 +529,9 @@ class SnapshotApplyQueue:
                             "after apply failure"
                         )
                 except Exception:  # noqa: BLE001 - keep memory fail-closed
-                    _log.exception(
-                        "live snapshot cache clear failed after apply failure"
+                    _log.warning(
+                        "live snapshot cache clear failed after apply failure",
+                        exc_info=_log.isEnabledFor(logging.DEBUG),
                     )
             source = getattr(snap, "source", None)
             path = getattr(source, "file_id", "screenshot")
@@ -555,7 +574,10 @@ class SnapshotApplyQueue:
                     try:
                         self._live_snapshot_cache_writer.submit(cache_snap)
                     except Exception:  # noqa: BLE001 - live state is authoritative
-                        _log.exception("live snapshot cache submission failed")
+                        _log.warning(
+                            "live snapshot cache submission failed",
+                            exc_info=_log.isEnabledFor(logging.DEBUG),
+                        )
         try:
             getattr(
                 self._window,
@@ -563,7 +585,10 @@ class SnapshotApplyQueue:
                 lambda *_args: None,
             )(snap)
         except Exception:  # noqa: BLE001 - observer UI must not replay state
-            _log.exception("snapshot applied notification failed")
+            _log.warning(
+                "snapshot applied notification failed",
+                exc_info=_log.isEnabledFor(logging.DEBUG),
+            )
         return True
 
     def _flush_failure_event_locked(self, args: tuple[object, ...]) -> None:
@@ -598,11 +623,17 @@ class SnapshotApplyQueue:
         try:
             self._decode_failed_callback(str(path), str(reason))
         except Exception:  # noqa: BLE001 - one observer must not suppress another
-            _log.exception("snapshot decode failure callback failed")
+            _log.warning(
+                "snapshot decode failure callback failed",
+                exc_info=_log.isEnabledFor(logging.DEBUG),
+            )
         try:
             getattr(self._window, "note_decode_failed", lambda *_args: None)(
                 str(path),
                 str(reason),
             )
         except Exception:  # noqa: BLE001 - failure reporting is an isolation boundary
-            _log.exception("snapshot decode failure notification failed")
+            _log.warning(
+                "snapshot decode failure notification failed",
+                exc_info=_log.isEnabledFor(logging.DEBUG),
+            )

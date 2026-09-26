@@ -103,9 +103,11 @@ from .updater import (
     check_for_update,
     download_update_installer,
     expected_install_total_bytes,
+    in_app_exe_update_blocked_reason,
     install_progress_basis,
     launch_update_installer,
     measure_directory_bytes,
+    verify_install_promotion,
     UpdateResult,
     UpdateDownloadControl,
     UpdateCancelled,
@@ -161,11 +163,18 @@ WOW_EXIT_MISSES_BEFORE_QUIT = 3
 _DUPLICATE_PROBE_TIMEOUT_MS = 75
 UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
+# One prompt re-check after a handoff recovery (or a promotion mismatch)
+# instead of waiting for the next hourly check.
+UPDATE_CHECK_PROMPT_RECHECK_MS = 5_000
 UPDATE_HANDOFF_POLL_INTERVAL_MS = 1_000
 UPDATE_HANDOFF_INSTALL_PROGRESS_MS = 300
 UPDATE_HANDOFF_RECOVERY_MS = 180_000
 UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE = (
     "Update installer exited before closing ApplicantScout. "
+    "You can retry the update or quit and install manually."
+)
+UPDATE_HANDOFF_PROMOTION_MISMATCH_MESSAGE = (
+    "Update installer exited, but the installed version did not change. "
     "You can retry the update or quit and install manually."
 )
 UPDATE_HANDOFF_TIMEOUT_MESSAGE = (
@@ -890,7 +899,7 @@ class StateMachine(QObject):
                 allow_load=False,
             )
         except Exception as exc:  # noqa: BLE001 - local DB is an enrichment boundary
-            log.warning("Local RaiderIO lookup failed for %s-%s: %s", name, realm, exc)
+            log.debug("Local RaiderIO lookup failed: %s", exc)
             return _RIO_LOOKUP_FAILED
         return profile
 
@@ -2133,6 +2142,16 @@ class _UpdateQuitGate:
         return normal_prepare()
 
 
+def _should_schedule_prompt_recheck(message: str, retry_available: bool) -> bool:
+    """One prompt re-check after retry-available recoveries and mismatches.
+
+    A promotion mismatch clears retry (install-impossible until re-verified)
+    but still deserves a single prompt re-check instead of an hourly wait;
+    a timeout without retry stays quiet until the next hourly check.
+    """
+    return bool(retry_available) or message == UPDATE_HANDOFF_PROMOTION_MISMATCH_MESSAGE
+
+
 class _UpdateHandoffRecoveryController:
     def __init__(
         self,
@@ -2159,6 +2178,7 @@ class _UpdateHandoffRecoveryController:
         self._on_install_progress: Callable[[UpdateProgress], None] | None = None
         self._install_estimator: InstallProgressEstimator | None = None
         self._install_staging_dir: Path | None = None
+        self._promotion_verifier: Callable[[], bool | None] | None = None
 
     def arm(
         self,
@@ -2167,9 +2187,11 @@ class _UpdateHandoffRecoveryController:
         on_install_progress: Callable[[UpdateProgress], None] | None = None,
         install_estimator: InstallProgressEstimator | None = None,
         install_staging_dir: Path | None = None,
+        promotion_verifier: Callable[[], bool | None] | None = None,
     ) -> None:
         self.disarm()
         self._installer_launch = installer_launch
+        self._promotion_verifier = promotion_verifier
         self._started_at = self._monotonic()
         timer = self._timer_factory(self._parent)
         timer.setInterval(self._poll_interval_ms)
@@ -2197,6 +2219,7 @@ class _UpdateHandoffRecoveryController:
         self._timer = None
         self._installer_launch = None
         self._started_at = None
+        self._promotion_verifier = None
         if self._progress_timer is not None:
             self._progress_timer.stop()
             self._delete_timer(self._progress_timer)
@@ -2229,7 +2252,12 @@ class _UpdateHandoffRecoveryController:
                 return
             if exit_code is not None:
                 if exit_code == 0:
-                    self._recover(UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)
+                    if self._promotion_mismatch():
+                        self._recover(
+                            UPDATE_HANDOFF_PROMOTION_MISMATCH_MESSAGE, False
+                        )
+                    else:
+                        self._recover(UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)
                 else:
                     self._recover(
                         f"Update installer failed (code {exit_code}). "
@@ -2239,6 +2267,23 @@ class _UpdateHandoffRecoveryController:
                 return
         if self._monotonic() - self._started_at >= self._timeout_s:
             self._recover(UPDATE_HANDOFF_TIMEOUT_MESSAGE, False)
+
+    def _promotion_mismatch(self) -> bool:
+        """True only when promotion was verifiably not promoted.
+
+        An unverifiable layout (None) keeps the legacy exit-code path so the
+        success message stays byte-identical whenever promotion is confirmed
+        or cannot be checked; only a proven mismatch becomes an error.
+        """
+        verifier = self._promotion_verifier
+        if verifier is None:
+            return False
+        try:
+            verdict = verifier()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not verify update promotion: %s", exc)
+            return False
+        return verdict is False
 
     def _tick_install_progress(self) -> None:
         """Report staging-dir progress; 100% only on clean (code 0) exit."""
@@ -2419,12 +2464,18 @@ def _resolve_update_check_result(
     )
 
 
-def _setup_logging(log_dir: Path | None = None) -> str | None:
+def _setup_logging(
+    log_dir: Path | None = None, *, verbose: bool = False
+) -> str | None:
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
         handler.close()
-    root.setLevel(logging.INFO)
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    for noisy_name in ("httpx", "httpcore", "watchdog"):
+        logging.getLogger(noisy_name).setLevel(
+            logging.INFO if verbose else logging.WARNING
+        )
     formatter = logging.Formatter(
         "%(asctime)s %(name)s %(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -2460,9 +2511,11 @@ def _setup_logging(log_dir: Path | None = None) -> str | None:
             attempted,
         )
         return (
-            "ApplicantScout could not start its private file log. "
+            "ApplicantScout setup could not start its private file log. "
             f"Check access permissions for {attempted}. "
-            "Errors will only be available in the current console until this is fixed."
+            "Fix folder permissions or choose another log folder in Settings, "
+            "then restart. Errors will only be available in the current "
+            "console until this is fixed."
         )
     return None
 
@@ -2504,7 +2557,10 @@ def _clear_cache_dir(
 
 def _open_log_dir(log_dir: Path) -> str:
     if not open_folder(log_dir):
-        raise RuntimeError(f"Could not open {log_dir}")
+        raise RuntimeError(
+            f"Could not open log folder {log_dir}. "
+            f"Open it manually in File Explorer: {log_dir}"
+        )
     return f"Opened log folder: {log_dir}"
 
 
@@ -2640,8 +2696,13 @@ def _check_updates(
             control.checkpoint()
         status = getattr(result, "status", None)
         message = getattr(result, "message", "Update check failed.")
-        if status == "unavailable":
+        if status == "unavailable" or status == "blocked":
             raise RuntimeError(str(message))
+        if status != "available":
+            return str(message)
+        blocked_layout_reason = in_app_exe_update_blocked_reason()
+        if blocked_layout_reason is not None:
+            raise RuntimeError(blocked_layout_reason)
         if status != "available":
             return str(message)
         if not update_result_has_installable_asset(result):
@@ -3118,7 +3179,10 @@ _snapshot_apply_dispatcher_lock = threading.Lock()
 
 def _initialize_snapshot_apply_dispatcher(parent: QObject) -> None:
     global _snapshot_apply_dispatcher
-    _snapshot_apply_dispatcher = _SnapshotApplyDispatcher(parent)
+    with _snapshot_apply_dispatcher_lock:
+        if _snapshot_apply_dispatcher is not None:
+            return
+        _snapshot_apply_dispatcher = _SnapshotApplyDispatcher(parent)
 
 
 def _initialize_snapshot_apply_dispatcher_off_thread(
@@ -3158,7 +3222,10 @@ def _schedule_snapshot_apply(callback: Callable[[], None]) -> None:
         else:
             dispatcher = _initialize_snapshot_apply_dispatcher_off_thread(app)
     if dispatcher is None:
-        raise RuntimeError("snapshot apply dispatcher is not initialized")
+        raise RuntimeError(
+            "snapshot apply dispatcher is not initialized; take a fresh "
+            "screenshot or restart the companion and retry"
+        )
     dispatcher.schedule(callback)
 
 
@@ -3540,9 +3607,9 @@ def _shutdown_runtime(
     try:
         fetches_drained = window.shutdown_fetches()
         if not fetches_drained:
-            log.error("WCL fetch pool did not fully drain during shutdown.")
+            log.warning("WCL fetch pool did not fully drain during shutdown.")
     except Exception as exc:  # noqa: BLE001 - terminal cleanup boundary
-        log.error("Could not drain WCL fetch pool during shutdown: %s", exc)
+        log.warning("Could not drain WCL fetch pool during shutdown: %s", exc)
     # WHY: CharacterCache.close is fast (~0.1s) and thread-safe under hammer
     # (put() is guarded by the _closing flag), so persist unconditionally —
     # a stuck fetch pool must not silently drop the whole cache write.
@@ -3755,8 +3822,9 @@ def _replace_screenshot_watcher(
             # now-inert old watcher and leaks the live replacement. Preserve
             # ownership of the committed watcher and retire the old source;
             # later snapshots retain their reader-bound fallback path.
-            log.exception(
-                "Screenshot watcher committed, but its runtime source hook failed"
+            log.warning(
+                "Screenshot watcher committed, but its runtime source hook failed",
+                exc_info=log.isEnabledFor(logging.DEBUG),
             )
     if current_watcher is not None:
         # WHY: watchdog Observer.stop()+join can block for seconds on Windows
@@ -5267,6 +5335,24 @@ def _run_cleanup_screenshots_command(argv: list[str]) -> int:
     return screenshot_cleanup_exit_code(summary)
 
 
+def _parse_main_verbose(args: list[str]) -> tuple[list[str], bool]:
+    """Split the main-command ``--verbose`` flag without touching subcommands.
+
+    Subcommand parsers (cleanup-screenshots, screenshot module) are untouched:
+    this consumes only the top-level flag via a dedicated parser and returns
+    the remaining args verbatim.
+    """
+    parser = argparse.ArgumentParser(prog="applicant-scout", add_help=False)
+    parser.add_argument("--verbose", action="store_true")
+    try:
+        known, _unknown = parser.parse_known_args(args)
+    except SystemExit:
+        return list(args), False
+    verbose = bool(getattr(known, "verbose", False))
+    remaining = [arg for arg in args if arg != "--verbose"]
+    return remaining, verbose
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args and args[0] == DISCOVER_WOW_ARG:
@@ -5275,7 +5361,15 @@ def main(argv: list[str] | None = None) -> int:
         if len(args) != 3:
             return 2
         return run_screenshots_path_probe_command(args[1], args[2])
+    args, verbose = _parse_main_verbose(list(args))
     logging_setup_warning = _setup_logging()
+    if verbose:
+        # Verbose keeps the default-quiet third-party loggers at INFO while
+        # enabling DEBUG for first-party diagnostics (retained-state
+        # tracebacks honour this via isEnabledFor(DEBUG)).
+        logging.getLogger("applicant_scout").setLevel(logging.DEBUG)
+        for _noisy_name in ("httpx", "httpcore", "watchdog"):
+            logging.getLogger(_noisy_name).setLevel(logging.INFO)
     if args and args[0] == "cleanup-screenshots":
         if logging_setup_warning is not None:
             print(logging_setup_warning, file=sys.stderr)
@@ -5562,6 +5656,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         if window is not None:
             window.set_update_available(pending_update_version)
+        if _should_schedule_prompt_recheck(message, retry_available):
+            # One prompt re-check instead of waiting for the hourly timer.
+            QTimer.singleShot(
+                UPDATE_CHECK_PROMPT_RECHECK_MS, _run_silent_update_check
+            )
 
     def _handle_update_handoff_started(
         message: str, installer_launch: object | None
@@ -5569,6 +5668,13 @@ def main(argv: list[str] | None = None) -> int:
         if update_handoff_recovery is not None:
             total_bytes, staging_dir = install_progress_basis(installer_launch)
             control = active_update_control
+            expected_version = pending_update_version
+
+            def _verify_promotion(
+                expected: str | None = expected_version,
+            ) -> bool | None:
+                return verify_install_promotion(expected_version=expected)
+
             if (
                 control is not None
                 and total_bytes is not None
@@ -5579,9 +5685,12 @@ def main(argv: list[str] | None = None) -> int:
                     on_install_progress=control.report,
                     install_estimator=InstallProgressEstimator(total_bytes),
                     install_staging_dir=staging_dir,
+                    promotion_verifier=_verify_promotion,
                 )
             else:
-                update_handoff_recovery.arm(installer_launch)
+                update_handoff_recovery.arm(
+                    installer_launch, promotion_verifier=_verify_promotion
+                )
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",
@@ -5939,6 +6048,16 @@ def main(argv: list[str] | None = None) -> int:
         if not decision.is_current:
             return
         pending_update_version = decision.pending_update_version
+        blocked_layout_reason = in_app_exe_update_blocked_reason()
+        if blocked_layout_reason is not None and pending_update_version is not None:
+            # Portable/dev: never advertise the installer handoff. Hide the
+            # install affordance and explain the manual path instead of
+            # letting the installer target DefaultDirName.
+            pending_update_version = None
+            if settings_dialog is not None:
+                set_status = getattr(settings_dialog, "set_status", None)
+                if callable(set_status):
+                    set_status(blocked_layout_reason, error=True)
         if tray_controller is not None:
             tray_controller.set_update_available(pending_update_version)
         if window is not None:

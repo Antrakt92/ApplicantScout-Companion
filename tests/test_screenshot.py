@@ -2047,7 +2047,7 @@ def test_decode_log_includes_roster_count(monkeypatch, tmp_path: Path, caplog):
         "pyzbar_decode",
         lambda img, symbols=None: [SimpleNamespace(data=hex_payload)],
     )
-    caplog.set_level(logging.INFO, logger="applicant_scout.screenshot")
+    caplog.set_level(logging.DEBUG, logger="applicant_scout.screenshot")
 
     snap, marker = decode_screenshot(image_path)
 
@@ -3274,13 +3274,13 @@ def test_watcher_callback_exception_is_contained(
         raise RuntimeError("decode callback exploded")
 
     monkeypatch.setattr(watcher, "_on_new_file_guarded", fail_once)
-    caplog.set_level(logging.ERROR, logger="applicant_scout.screenshot")
+    caplog.set_level(logging.WARNING, logger="applicant_scout.screenshot")
 
     watcher._on_new_file(tmp_path / "WoWScrnShot_0001.jpg")
 
     assert calls == 1
+    assert "screenshot observer callback failed" in caplog.text
     assert "watcher remains active" in caplog.text
-    assert "decode callback exploded" in caplog.text
 
 
 def test_watcher_supervisor_restarts_dead_observer_and_rescans_backlog(

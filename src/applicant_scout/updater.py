@@ -35,7 +35,7 @@ UPDATE_DOWNLOADS_DIR_NAME = "updates"
 _GITHUB_API_VERSION = "2026-03-10"
 _SEMVER_RE = re.compile(r"^\s*[vV]?([0-9]+)\.([0-9]+)\.([0-9]+)(?:\+[0-9A-Za-z.-]+)?\s*$")
 
-UpdateStatus = Literal["available", "up_to_date", "unavailable"]
+UpdateStatus = Literal["available", "up_to_date", "unavailable", "blocked"]
 _INSTALLER_PREFIX = "ApplicantScoutCompanionSetup-"
 _INSTALLER_ARGS = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
 _SELF_UPDATE_FLAG = "/APSCOUT_SELFUPDATE=1"
@@ -240,10 +240,11 @@ class InstallProgressEstimator:
         """Terminal progress: call only after the installer exit was observed.
 
         With a known total this is the single 100% signal. With an unknown
-        total it is a percent-free terminal state, never a success claim:
-        the handoff verification message remains the sole success signal.
+        (or degenerate, total <= 1) total it is a percent-free terminal state,
+        never a success claim: the handoff verification message remains the
+        sole success signal.
         """
-        if self._total_bytes is None:
+        if self._total_bytes is None or self._total_bytes <= 1:
             return UpdateProgress(
                 "installing",
                 self._high_water_mark,
@@ -313,6 +314,61 @@ def install_progress_basis(
         else None
     )
     return total, install_staging_dir()
+
+
+# Promotion verification after the installer process exits (mirrors
+# packaging/inno/ApplicantScoutCompanion.iss): CommitPayloadSwap moves the
+# staged `.apscout-next` payload to `current` with the new
+# `.apscout-payload-version`, and FinalizePayloadSwap removes the durable
+# `.apscout-promotion-pending` marker to commit to the promoted payload. An
+# exit code of 0 alone does not prove promotion happened, so the handoff
+# recovery path checks this cheapest reliable state before declaring the
+# update retry-available.
+_PAYLOAD_VERSION_FILE_NAME = ".apscout-payload-version"
+_PROMOTION_PENDING_FILE_NAME = ".apscout-promotion-pending"
+
+
+def read_installed_payload_version(
+    install_root: Path | None = None,
+) -> str | None:
+    """Promoted payload version, or None when unreadable/unresolvable."""
+    root = install_root if install_root is not None else _install_root_for_staging()
+    if root is None:
+        return None
+    try:
+        text = (root / "current" / _PAYLOAD_VERSION_FILE_NAME).read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return None
+    return text.strip() or None
+
+
+def verify_install_promotion(
+    *, expected_version: str | None, install_root: Path | None = None
+) -> bool | None:
+    """Check the installer actually promoted ``expected_version``.
+
+    Returns True when the promoted payload version matches and no pending
+    promotion marker remains, False on a proven mismatch, and None when the
+    layout cannot answer (unknown expected version or unresolvable install
+    root): callers keep the legacy exit-code path for None.
+    """
+    expected = _semver_text(expected_version or "")
+    if expected is None:
+        return None
+    root = install_root if install_root is not None else _install_root_for_staging()
+    if root is None:
+        return None
+    installed = read_installed_payload_version(root)
+    if installed is None or _semver_text(installed) != expected:
+        return False
+    try:
+        if (root / _PROMOTION_PENDING_FILE_NAME).exists():
+            return False
+    except OSError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -522,11 +578,13 @@ def check_for_update(
             and (checksum_name is None or checksum_url is None)
         ):
             return UpdateResult(
-                status="available",
+                status="blocked",
                 message=(
                     f"Version {latest_version} is available, but the installer "
-                    "checksum asset was not published."
+                    "checksum asset was not published, so automatic update is "
+                    "blocked. Quit and install manually."
                 ),
+                reason="missing_checksum",
                 latest_version=latest_version,
             )
         if asset_url is None:
@@ -974,6 +1032,9 @@ def launch_update_installer(
     *,
     require_trusted_signature: bool = True,
 ) -> InstallerLaunch:
+    blocked_reason = in_app_exe_update_blocked_reason()
+    if blocked_reason is not None:
+        raise RuntimeError(blocked_reason)
     if not installer_path.is_file():
         raise RuntimeError(f"Update installer was not downloaded: {installer_path}")
     if require_trusted_signature:
@@ -1078,6 +1139,56 @@ if ($null -ne $cert) {
 
 def _optional_json_text(value: object) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
+
+
+# In-app exe-update is owned only by registered installs. The installer
+# transaction (packaging/inno/ApplicantScoutCompanion.iss) proves ownership via
+# the install dir's own `unins000.exe` plus a recognizable companion payload,
+# and the running exe is `{app}\current\ApplicantScout.exe` (or the legacy
+# `{app}\ApplicantScout.exe`). Anything else must never reach the installer
+# handoff: without /DIR Inno falls back to DefaultDirName (orphaning the
+# copy), and the self-update source PID/path would point at the dev
+# interpreter instead of the installed app.
+_DEV_UPDATE_BLOCKED_MESSAGE = (
+    "In-app update is disabled while running from source. Install the "
+    "companion or download the installer manually to update."
+)
+_PORTABLE_UPDATE_BLOCKED_MESSAGE = (
+    "In-app update is not available for this copy (no installer registration "
+    "was found). Download the portable ZIP manually from the release page to "
+    "update."
+)
+
+
+def in_app_exe_update_blocked_reason(
+    *,
+    is_frozen: bool | None = None,
+    executable: str | os.PathLike[str] | None = None,
+    unins000_exists: bool | None = None,
+) -> str | None:
+    """Why the in-app exe update is unavailable, or None when supported.
+
+    Portable layout (no `unins000.exe` / legacy exe name / missing installer
+    registration) and unfrozen dev runs are blocked with an explanatory
+    message. Parameters default to live detection and exist for tests.
+    """
+    frozen = getattr(sys, "frozen", False) if is_frozen is None else is_frozen
+    if not frozen:
+        return _DEV_UPDATE_BLOCKED_MESSAGE
+    exe = Path(executable) if executable is not None else Path(sys.executable)
+    if exe.name.lower() != "applicantscout.exe":
+        return _PORTABLE_UPDATE_BLOCKED_MESSAGE
+    install_root = exe.parent
+    if exe.parent.name.casefold() == "current":
+        install_root = exe.parent.parent
+    exists = (
+        (install_root / "unins000.exe").is_file()
+        if unins000_exists is None
+        else unins000_exists
+    )
+    if not exists:
+        return _PORTABLE_UPDATE_BLOCKED_MESSAGE
+    return None
 
 
 def _installer_self_update_args() -> list[str]:
