@@ -2,19 +2,6 @@
 
 ## Unreleased
 
-## 0.21.1 - 26-Sep-2026 — Pending-reboot installer guard
-
-Paired release with ApplicantScout addon `0.13.1`. Version 0.21.0 was tagged
-but never published.
-
-### Fixed
-
-- Refuse to install over companion files with a pending Windows reboot
-  operation; restart Windows before updating instead of risking a corrupt
-  payload.
-- Drop deferred overlay refreshes during window teardown instead of touching
-  released widgets.
-
 ## 0.21.0 - 26-Sep-2026 — Party tab, launcher badge and loading-screen stability
 
 Paired release with ApplicantScout addon `0.13.0`.
@@ -80,6 +67,11 @@ Paired release with ApplicantScout addon `0.13.0`.
   actionable logs without private data.
 - Fix unreadable white-on-light text in table metric cells, and a background
   startup crash from snapshot dispatch.
+- Refuse to install over companion files with a pending Windows reboot
+  operation; restart Windows before updating instead of risking a corrupt
+  payload.
+- Drop deferred overlay refreshes during window teardown instead of touching
+  released widgets.
 
 ## 0.20.1 - 24-Sep-2026
 
