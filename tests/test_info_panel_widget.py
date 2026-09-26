@@ -4366,6 +4366,13 @@ def test_successful_decode_clears_previous_health_failure(monkeypatch, qtbot, tm
     qtbot.addWidget(window)
 
     try:
+        for timer in (
+            window._quota_timer,
+            window._foreground_timer,
+            window._wcl_retry_timer,
+            window._raid_boss_retry_timer,
+        ):
+            timer.stop()
         times = iter([100.0, 100.0, 105.0, 107.0])
         monkeypatch.setattr(overlay_mod.time, "time", lambda: next(times))
         window.note_decode_failed("WoWScrnShot_0001.jpg", "CRC mismatch")
