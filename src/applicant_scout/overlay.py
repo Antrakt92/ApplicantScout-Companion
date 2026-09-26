@@ -1602,6 +1602,16 @@ class OverlayLauncher(_KeyboardButton):
         self.show()
         self.raise_()
 
+    def set_overlay_open(self, is_open: bool) -> None:
+        """Reflect toggle state in tooltip/a11y (badge stays visible)."""
+        name = (
+            "Hide ApplicantScout overlay"
+            if is_open
+            else "Show ApplicantScout overlay"
+        )
+        self.setAccessibleName(name)
+        self.setToolTip(name)
+
     def show_without_repositioning(self) -> None:
         if not self.isVisible():
             self.show()
@@ -3664,7 +3674,7 @@ class OverlayWindow(QMainWindow):
         self._closed = False
         self._fetch_shutdown_result: bool | None = None
         self._launcher = OverlayLauncher()
-        self._launcher.clicked.connect(self.restore_from_launcher)
+        self._launcher.clicked.connect(self._toggle_from_launcher)
         self._launcher.dragStarted.connect(
             self._pause_foreground_polling_for_launcher_drag
         )
@@ -4229,6 +4239,7 @@ class OverlayWindow(QMainWindow):
             return
         self._collapsed_to_launcher = True
         self.hide()
+        self._launcher.set_overlay_open(False)
         if self._launcher.is_dragging():
             self._launcher.show_without_repositioning()
             return
@@ -4243,6 +4254,63 @@ class OverlayWindow(QMainWindow):
 
     def restore_from_tray(self) -> None:
         self._restore_from_launcher(activate=True, require_game_foreground=False)
+
+    def _toggle_from_launcher(self) -> None:
+        """Badge click toggles: hidden overlay opens, open overlay collapses.
+
+        OPEN keeps the require_game_foreground semantics (in-game click path);
+        CLOSE is always safe and never requires foreground.
+        """
+        if self._closed:
+            return
+        if self._is_overlay_effectively_hidden():
+            self._restore_from_launcher(activate=False, require_game_foreground=True)
+        else:
+            self._collapse_from_launcher_toggle()
+
+    def _collapse_from_launcher_toggle(self) -> None:
+        """Badge-click close: collapse_to_launcher state, badge stays visible."""
+        if self._closed:
+            return
+        self._collapsed_to_launcher = True
+        self.hide()
+        self._launcher.set_overlay_open(False)
+        if self._launcher.is_dragging():
+            self._launcher.show_without_repositioning()
+        elif self._game_foreground:
+            if self._launcher.isVisible():
+                # Never auto-move on toggle: the badge keeps its saved
+                # position even if it now overlaps the closed window area.
+                self._launcher.raise_()
+            else:
+                self._launcher.show_at(self._default_launcher_position())
+        else:
+            self._launcher.hide()
+        self._update_foreground_polling()
+
+    def _ensure_launcher_visible_for_open_overlay(self) -> None:
+        """Keep the badge visible while the overlay is open (toggle UX).
+
+        Never repositions a visible badge; a hidden badge reappears at its
+        saved position. Outside game foreground the badge stays hidden per
+        the existing foreground rules.
+        """
+        if self._launcher.is_dragging():
+            self._launcher.show_without_repositioning()
+            return
+        if self._game_foreground:
+            if self._launcher.isVisible():
+                self._launcher.raise_()
+            else:
+                self._launcher.show_at(self._default_launcher_position())
+        else:
+            self._launcher.hide()
+
+    def _hide_launcher_for_foreground_loss(self) -> None:
+        """Hide the badge on confirmed foreground loss + reset toggle state."""
+        self._launcher_visible_after_non_game_foreground = False
+        self._launcher.hide()
+        self._launcher.set_overlay_open(False)
 
     def _restore_from_launcher(
         self, *, activate: bool, require_game_foreground: bool
@@ -4263,8 +4331,7 @@ class OverlayWindow(QMainWindow):
         ):
             self._game_foreground = False
             self._collapsed_to_launcher = True
-            self._launcher_visible_after_non_game_foreground = False
-            self._launcher.hide()
+            self._hide_launcher_for_foreground_loss()
             return
         self._game_foreground = True
         foreground_grace_until = (
@@ -4283,9 +4350,12 @@ class OverlayWindow(QMainWindow):
         )
         self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
-        self._launcher.hide()
         self.show()
         self.raise_()
+        # Toggle UX: the badge stays visible while the overlay is open (kept
+        # at its saved position, never auto-moved) so a second click closes.
+        self._ensure_launcher_visible_for_open_overlay()
+        self._launcher.set_overlay_open(True)
         if activate:
             self.activateWindow()
             QTimer.singleShot(0, self._focus_accessibility_entry)
@@ -4474,8 +4544,7 @@ class OverlayWindow(QMainWindow):
                 self._last_system_ui_sighting_monotonic = now
                 self._open_overlay_foreground_loss_grace_until = 0.0
                 self._game_foreground = False
-                self._launcher_visible_after_non_game_foreground = False
-                self._launcher.hide()
+                self._hide_launcher_for_foreground_loss()
                 if self.isVisible() and not self.isActiveWindow():
                     self.hide()
                 self._update_foreground_polling()
@@ -4527,18 +4596,20 @@ class OverlayWindow(QMainWindow):
                 and self._is_overlay_effectively_hidden()
                 and self._launcher.isVisible()
             ):
-                self._launcher_visible_after_non_game_foreground = False
-                self._launcher.hide()
+                self._hide_launcher_for_foreground_loss()
                 self._update_foreground_polling()
                 return
             if not foreground and self.isVisible() and not self.isActiveWindow():
                 self.hide()
+                # Badge follows a confirmed loss: with toggle UX the badge is
+                # visible while the overlay is open, so it must hide together
+                # with the window here (not linger alone outside the game).
+                self._hide_launcher_for_foreground_loss()
                 self._update_foreground_polling()
             return
         self._game_foreground = foreground
         if not foreground:
-            self._launcher_visible_after_non_game_foreground = False
-            self._launcher.hide()
+            self._hide_launcher_for_foreground_loss()
             if self.isVisible() and not self.isActiveWindow():
                 self.hide()
             self._update_foreground_polling()
@@ -4559,6 +4630,10 @@ class OverlayWindow(QMainWindow):
         else:
             self.show()
             self.raise_()
+            # Game return restores the full toggle pair: an open overlay
+            # comes back together with its badge (hidden by the loss above).
+            self._ensure_launcher_visible_for_open_overlay()
+            self._launcher.set_overlay_open(True)
         self._update_foreground_polling()
 
     def _on_source_tab_changed(self, key: str) -> None:
@@ -6178,7 +6253,7 @@ class OverlayWindow(QMainWindow):
                 and self._launcher.is_dragging()
             ):
                 return
-            self._launcher.hide()
+            self._hide_launcher_for_foreground_loss()
             if not self.isActiveWindow():
                 self.hide()
             self._update_foreground_polling()
@@ -7754,7 +7829,10 @@ class OverlayWindow(QMainWindow):
     def showEvent(self, event):  # type: ignore[override]
         self._clamp_runtime_geometry()
         self._collapsed_to_launcher = False
-        self._launcher.hide()
+        # Toggle UX: the badge stays visible while the overlay is open (kept
+        # at its saved position so a second badge click closes the window).
+        self._ensure_launcher_visible_for_open_overlay()
+        self._launcher.set_overlay_open(True)
         super().showEvent(event)
         # Mouse may have moved while window was hidden — drop stale hover.
         # Pin survives intentionally (it's persistent user state), but hover is

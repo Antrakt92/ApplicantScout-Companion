@@ -4852,13 +4852,16 @@ def test_launcher_click_restores_hidden_overlay_without_collapse(
         window.restore_from_launcher()
         qtbot.waitUntil(window.isVisible, timeout=1000)
 
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays visible while the overlay is open.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
     finally:
         client.close()
 
 
-def test_badge_hidden_when_overlay_open(qtbot, tmp_path):
+def test_badge_stays_visible_when_overlay_open(qtbot, tmp_path):
+    # Toggle UX (replaces the old hide-on-open assertion): the badge stays
+    # visible while the overlay is open and works as a toggle.
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -4868,10 +4871,168 @@ def test_badge_hidden_when_overlay_open(qtbot, tmp_path):
 
     try:
         qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        badge_pos = window._launcher.pos()
         window.restore_from_launcher()
         qtbot.waitUntil(window.isVisible, timeout=1000)
 
+        assert window._launcher.isVisible()
+        # No smart-repositioning on open: the badge keeps its saved position.
+        assert window._launcher.pos() == badge_pos
+        assert window._launcher.accessibleName() == "Hide ApplicantScout overlay"
+        assert window._launcher.toolTip() == "Hide ApplicantScout overlay"
+    finally:
+        client.close()
+
+
+def test_badge_toggle_open_close_open_cycle(qtbot, tmp_path):
+    """Badge click toggles open → close → open without moving the badge."""
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(
+        AppState(), client, cache, tmp_path, game_foreground_probe=lambda: True
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        assert window._collapsed_to_launcher
+        assert not window.isVisible()
+        assert window._launcher.accessibleName() == "Show ApplicantScout overlay"
+
+        # Open via toggle.
+        window._toggle_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        badge_pos = window._launcher.pos()
+        assert window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+        assert window._launcher.accessibleName() == "Hide ApplicantScout overlay"
+
+        # Close via toggle: collapse semantics, badge stays, no reposition.
+        window._toggle_from_launcher()
+        qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+        assert window._launcher.isVisible()
+        assert window._launcher.pos() == badge_pos
+        assert window._collapsed_to_launcher
+        assert window._launcher.accessibleName() == "Show ApplicantScout overlay"
+
+        # Open again via toggle.
+        window._toggle_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert window._launcher.isVisible()
+        assert window._launcher.pos() == badge_pos
+        assert not window._collapsed_to_launcher
+        assert window._launcher.accessibleName() == "Hide ApplicantScout overlay"
+    finally:
+        client.close()
+
+
+def test_badge_close_then_window_collapse_consistent(qtbot, tmp_path):
+    """Badge-click close and hide-button close land in the same state."""
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(
+        AppState(), client, cache, tmp_path, game_foreground_probe=lambda: True
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window._toggle_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        # Close via a real badge click.
+        qtbot.mouseClick(window._launcher, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        assert window._collapsed_to_launcher
+        assert window._launcher.accessibleName() == "Show ApplicantScout overlay"
+
+        # Reopen, then close via the in-window collapse control.
+        window._toggle_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        qtbot.mouseClick(
+            window._title_bar.hide_button, Qt.MouseButton.LeftButton
+        )
+        qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        assert window._collapsed_to_launcher
+        assert window._launcher.accessibleName() == "Show ApplicantScout overlay"
+
+        # Both close paths reopen identically.
+        window._toggle_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+    finally:
+        client.close()
+
+
+def test_foreground_hide_show_with_badge_present(qtbot, tmp_path, monkeypatch):
+    """Foreground loss hides the open pair; return restores the badge only."""
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    now = {"value": 60.0}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window._toggle_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert window._launcher.isVisible()
+
+        # Transient loss: grace holds both surfaces, fast polling continues.
+        foreground["active"] = False
+        monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+        assert window._launcher.isVisible()
+        assert (
+            window._foreground_timer.interval()
+            == overlay_mod.GAME_FOREGROUND_POLL_MS
+        )
+
+        # Confirmed loss: the pair hides together, watchdog drops to slow.
+        now["value"] += overlay_mod.OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S + 0.1
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
         assert not window._launcher.isVisible()
+        assert window._foreground_timer.isActive()
+        assert (
+            window._foreground_timer.interval()
+            == overlay_mod.GAME_FOREGROUND_POLL_SLOW_MS
+        )
+
+        # Game return: badge comes back (fast poll), window stays hidden.
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+        assert (
+            window._foreground_timer.interval()
+            == overlay_mod.GAME_FOREGROUND_POLL_MS
+        )
+
+        # Toggle reopens the full pair from the restored badge.
+        window._toggle_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        assert window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
     finally:
         client.close()
 
@@ -4906,7 +5067,9 @@ def test_open_overlay_debounces_transient_foreground_loss(
         window._sync_game_foreground_visibility()
 
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays up with the open window through the
+        # anti-flicker grace and hides together with it on confirmed loss.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
 
         now["value"] += overlay_mod.LAUNCHER_FOREGROUND_GRACE_S + 0.1
@@ -4955,7 +5118,8 @@ def test_open_overlay_foreground_loss_stays_visible_while_cursor_is_over_overlay
         window._sync_game_foreground_visibility()
 
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays up while the open window is held.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
     finally:
         client.close()
@@ -5027,7 +5191,8 @@ def test_launcher_restore_does_not_activate_overlay_window(qtbot, tmp_path, monk
         window.restore_from_launcher()
 
         qtbot.waitUntil(window.isVisible, timeout=1000)
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays visible while the overlay is open.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert activated == []
     finally:
@@ -5063,7 +5228,8 @@ def test_launcher_mouse_click_restores_overlay_when_probe_sees_launcher(
         )
 
         qtbot.waitUntil(window.isVisible, timeout=1000)
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays visible while the overlay is open.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert window._game_foreground
     finally:
@@ -5146,7 +5312,8 @@ def test_launcher_click_restore_skips_foreground_probe_on_hot_path(qtbot, tmp_pa
 
         assert probe_calls["count"] == 0
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays visible while the overlay is open.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
     finally:
         client.close()
@@ -5179,7 +5346,8 @@ def test_launcher_click_restores_overlay_when_launcher_has_foreground(
         window.restore_from_launcher()
 
         qtbot.waitUntil(window.isVisible, timeout=1000)
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays visible while the overlay is open.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert window._game_foreground
     finally:
@@ -5213,7 +5381,8 @@ def test_tray_restore_shows_and_activates_overlay_outside_game_foreground(
         window.restore_from_tray()
 
         qtbot.waitUntil(window.isVisible, timeout=1000)
-        assert not window._launcher.isVisible()
+        # Toggle UX: tray restore brings back the full pair (window + badge).
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert activated == [True]
     finally:
@@ -5251,7 +5420,8 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
         window._sync_game_foreground_visibility()
 
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays up while the open window is held.
+        assert window._launcher.isVisible()
         assert window._open_overlay_foreground_loss_grace_until == pytest.approx(
             now["value"] + overlay_mod.OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S
         )
@@ -5261,7 +5431,8 @@ def test_open_overlay_stays_visible_while_companion_window_is_active(
         window._flush_overlay_refresh()
 
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays up while the open window is held.
+        assert window._launcher.isVisible()
         assert window._fetches_in_flight == {}
         assert window._raid_boss_fetches_in_flight == {}
 
@@ -5338,7 +5509,8 @@ def test_title_bar_hide_button_collapses_to_launcher_without_shutdown(qtbot, tmp
 
         qtbot.mouseClick(window._launcher, Qt.MouseButton.LeftButton)
         qtbot.waitUntil(window.isVisible, timeout=1000)
-        assert not window._launcher.isVisible()
+        # Toggle UX: the badge stays visible while the overlay is open.
+        assert window._launcher.isVisible()
 
         assert window._state is state
         assert window._wcl_client is client
@@ -5384,7 +5556,8 @@ def test_overlay_close_collapses_and_tray_restore_reopens_fresh_state(qtbot, tmp
         window.restore_from_tray()
 
         qtbot.waitUntil(window.isVisible, timeout=1000)
-        assert not window._launcher.isVisible()
+        # Toggle UX: tray restore brings back the full pair (window + badge).
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert window._table.rowCount() == 1
         assert window._table.item(0, COL_NAME).text()
@@ -5679,7 +5852,8 @@ def test_launcher_click_fallback_restores_overlay_without_release_grace(
         assert not window._launcher.is_dragging()
         assert window._foreground_timer.isActive()
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: the click fallback restores the full pair (window + badge).
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
     finally:
         if QWidget.mouseGrabber() is window._launcher:
@@ -5721,7 +5895,8 @@ def test_launcher_click_fallback_allows_threshold_cursor_jitter(
 
         assert not window._launcher.is_dragging()
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: the click fallback restores the full pair (window + badge).
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert not (tmp_path / "launcher.json").exists()
     finally:
@@ -6155,7 +6330,8 @@ def test_delayed_roster_after_last_applicant_removed_keeps_open_listing_on_appli
         window._flush_overlay_refresh()
 
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: a directly shown window keeps its badge up.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert window._active_tab == "applicants"
 
@@ -6164,7 +6340,8 @@ def test_delayed_roster_after_last_applicant_removed_keeps_open_listing_on_appli
         window._flush_overlay_refresh()
 
         assert window.isVisible()
-        assert not window._launcher.isVisible()
+        # Toggle UX: a directly shown window keeps its badge up.
+        assert window._launcher.isVisible()
         assert not window._collapsed_to_launcher
         assert window._active_tab == "applicants"
         assert window._source_tab_initialized

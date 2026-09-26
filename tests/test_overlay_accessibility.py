@@ -905,7 +905,10 @@ def test_first_row_click_survives_ambiguous_null_foreground_transient(
         assert window._pinned_id == "tank"
         assert window.isVisible()
         assert not window._collapsed_to_launcher
-        assert not window._launcher.isVisible()
+        # Toggle UX: the held-open window keeps its badge up through the
+        # ambiguous transient (it hides together with the window on
+        # confirmed loss, never alone).
+        assert window._launcher.isVisible()
     finally:
         window.close()
         client.close()
