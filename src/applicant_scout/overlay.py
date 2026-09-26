@@ -2234,13 +2234,15 @@ class ApplicantInfoPanel(QFrame):
         header_layout.addWidget(self._name_label)
         header_layout.addWidget(self._realm_label)
         header_layout.addStretch(1)
+        # The WCL/boss-detail action button is created here but lives in the
+        # inline status row below, where the status text is, not in the
+        # far-right header slot (header keeps name/realm/stretch/unpin only).
         self._wcl_retry_button = _KeyboardButton("Retry WCL")
         self._wcl_retry_button.setObjectName("infoWclRetryButton")
         self._wcl_retry_button.setFixedHeight(22)
         self._wcl_retry_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._wcl_retry_button.setToolTip("Retry Warcraft Logs for this row")
         self._wcl_retry_button.clicked.connect(self.wclRetryRequested.emit)
-        header_layout.addWidget(self._wcl_retry_button)
         self._unpin_button = _KeyboardButton("×")
         self._unpin_button.setObjectName("infoUnpinButton")
         self._unpin_button.setFixedSize(22, 22)
@@ -2353,10 +2355,21 @@ class ApplicantInfoPanel(QFrame):
         self._detail_legend.setStyleSheet("color: #b8b8c8; font-size: 10px;")
         outer.addWidget(self._detail_legend)
 
+        self._status_row = QWidget(self)
+        self._status_row.setObjectName("infoPanelStatusRow")
+        status_row_layout = QHBoxLayout(self._status_row)
+        status_row_layout.setContentsMargins(0, 0, 0, 0)
+        status_row_layout.setSpacing(6)
+        # Inline action slot: the button sits where the status text is, so
+        # the eye meets the action. The raid idle prompt hides the passive
+        # label (its text is still set); error/loading texts stay visible
+        # next to the button in this same row.
+        status_row_layout.addWidget(self._wcl_retry_button)
         self._status_label = QLabel("")
         self._status_label.setObjectName("infoPanelStatus")
         self._status_label.setWordWrap(True)
-        outer.addWidget(self._status_label)
+        status_row_layout.addWidget(self._status_label, stretch=1)
+        outer.addWidget(self._status_row)
 
         self._state_stage = QWidget(self)
         state_stage_layout = QVBoxLayout(self._state_stage)
@@ -2556,6 +2569,7 @@ class ApplicantInfoPanel(QFrame):
         self._status_label.setToolTip("")
         self._status_label.setAccessibleDescription("")
         self._status_label.setVisible(False)
+        self._status_row.setVisible(False)
         self._state_text_label.setText("")
         self._state_text_label.setToolTip("")
         self._state_icon_label.setText("")
@@ -2576,6 +2590,12 @@ class ApplicantInfoPanel(QFrame):
         if not visible and widget.isVisible() and _widget_has_focus(widget):
             self.focusFallbackRequested.emit()
         widget.setVisible(visible)
+
+    def _sync_status_row(self) -> None:
+        """Collapse the inline status row when neither text nor action shows."""
+        self._status_row.setVisible(
+            not self._status_label.isHidden() or not self._wcl_retry_button.isHidden()
+        )
 
     def _set_identity(self, applicant: Applicant) -> None:
         raw_name, _, raw_realm = applicant.name.partition("-")
@@ -2789,6 +2809,10 @@ class ApplicantInfoPanel(QFrame):
         self._status_label.setToolTip("")
         self._status_label.setAccessibleDescription("")
         self._status_label.setVisible(False)
+        # NOTE: the status row stays visible here on purpose. Every path
+        # below either calls _show_status (which syncs the row) or hides the
+        # button first via _set_action_visible (which must still see the
+        # button on-screen to move focus away from it).
         self._state_stage.setVisible(False)
         self._bottom_filler.setVisible(True)
         if status in ("loading", "pending"):
@@ -2882,6 +2906,7 @@ class ApplicantInfoPanel(QFrame):
             )
         else:
             self._set_action_visible(self._wcl_retry_button, False)
+            self._status_row.setVisible(False)
 
     def _show_status(
         self,
@@ -2905,7 +2930,15 @@ class ApplicantInfoPanel(QFrame):
         )
         color = "#ff6666" if error else "#8d8d98"
         self._status_label.setStyleSheet(f"color: {color};")
-        self._status_label.setVisible(bool(display_text and not centered))
+        # Raid idle prompt ("Boss details not loaded") is replaced by the
+        # inline action button itself; its text stays set. Every other state
+        # keeps the passive label so loading/error text still renders here.
+        inline_action = bool(
+            text and retry_available and not error and action_text == "Load boss details"
+        )
+        self._status_label.setVisible(
+            bool(display_text and not centered) and not inline_action
+        )
         state_text = text
         if len(state_text) > 120:
             state_text = state_text[:119].rstrip() + "…"
@@ -2939,6 +2972,7 @@ class ApplicantInfoPanel(QFrame):
             self._wcl_retry_button.toolTip()
         )
         self._set_action_visible(self._wcl_retry_button, bool(text and retry_available))
+        self._sync_status_row()
 
     def _clear_metrics_and_dungeons(self) -> None:
         for label in self._metric_labels.values():

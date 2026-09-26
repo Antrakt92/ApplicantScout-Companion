@@ -576,6 +576,160 @@ def test_manual_raid_boss_detail_button_queues_fetch(qtbot, tmp_path):
         window.close()
 
 
+def _raid_idle_window(qtbot, tmp_path):
+    """Build a hovered raid window showing the idle boss-detail prompt."""
+    prefs = MetricPreferences(
+        mplus=True,
+        raid_normal=False,
+        raid_heroic=False,
+        raid_mythic=True,
+    )
+    client = WCLClient(WCLAuth("client", "secret", tmp_path), metric_preferences=prefs)
+    state = AppState()
+    state.player.full_name = "Host-Ravencrest"
+    state.listing = _raid_listing()
+    state.add_or_update(_app(name="Scout-Ravencrest", raid_boss_parses={}))
+    window = OverlayWindow(
+        state, client, CharacterCache(tmp_path), tmp_path, metric_preferences=prefs
+    )
+    qtbot.addWidget(window)
+    window._pool = None
+    window._refresh_table()
+    window._hover_id = "42"
+    window._sync_delegate_and_panel()
+    window._raid_boss_fetches_in_flight.clear()
+    window._panel._on_detail_mode_clicked("mplus")
+    window._panel._on_detail_mode_clicked("raid")
+    assert window._panel._status_label.text() == "Boss details not loaded"
+    return window
+
+
+def test_raid_idle_prompt_replaced_by_inline_load_button(qtbot, tmp_path):
+    window = _raid_idle_window(qtbot, tmp_path)
+    try:
+        panel = window._panel
+        button = panel._wcl_retry_button
+        assert button.text() == "Load boss details"
+        assert not button.isHidden()
+        assert button.parentWidget() is panel._status_row
+        assert not panel._status_row.isHidden()
+        assert panel._status_label.isHidden()
+
+        window._pool = _QueuedPool()
+        button.click()
+
+        assert window._raid_boss_fetches_in_flight
+        assert panel._status_label.text() == "Fetching raid boss details…"
+        assert not panel._status_label.isHidden()
+        assert button.isHidden()
+        assert not panel._status_row.isHidden()
+    finally:
+        window.close()
+
+
+def test_raid_loading_and_cooldown_states_render_as_text_in_status_row(
+    qtbot, tmp_path
+):
+    window = _raid_idle_window(qtbot, tmp_path)
+    try:
+        window._pool = _QueuedPool()
+        _request_visible_raid_boss_details(window)
+        panel = window._panel
+        assert panel._status_label.text() == "Fetching raid boss details…"
+        assert not panel._status_label.isHidden()
+        assert panel._wcl_retry_button.isHidden()
+        assert not panel._status_row.isHidden()
+
+        failed = next(iter(window._raid_boss_fetches_in_flight.values()))
+        window._on_raid_boss_fetch_done(
+            failed, {}, "network", overlay_mod.WCL_ERROR_NETWORK
+        )
+        assert panel._status_label.text() == "Raid boss details on cooldown…"
+        assert not panel._status_label.isHidden()
+        assert panel._wcl_retry_button.isHidden()
+        assert not panel._status_row.isHidden()
+    finally:
+        window.close()
+
+
+def test_raid_unavailable_error_keeps_text_with_inline_retry(qtbot, tmp_path):
+    window = _raid_idle_window(qtbot, tmp_path)
+    try:
+        window._pool = _QueuedPool()
+        _request_visible_raid_boss_details(window)
+        failed = next(iter(window._raid_boss_fetches_in_flight.values()))
+        window._on_raid_boss_fetch_done(
+            failed,
+            {},
+            "GraphQL error: Encounter not found",
+            overlay_mod.WCL_ERROR_GRAPHQL,
+        )
+        panel = window._panel
+        button = panel._wcl_retry_button
+        assert panel._status_label.text() == "Raid boss details unavailable"
+        assert not panel._status_label.isHidden()
+        assert button.text() == "Retry WCL"
+        assert not button.isHidden()
+        assert button.parentWidget() is panel._status_row
+        assert not panel._status_row.isHidden()
+
+        button.click()
+
+        assert window._raid_boss_fetches_in_flight
+        assert panel._status_label.text() == "Fetching raid boss details…"
+    finally:
+        window.close()
+
+
+def test_raid_auth_failure_hides_inline_action_but_keeps_text(qtbot, tmp_path):
+    window = _raid_idle_window(qtbot, tmp_path)
+    try:
+        window._pool = _QueuedPool()
+        _request_visible_raid_boss_details(window)
+        failed = next(iter(window._raid_boss_fetches_in_flight.values()))
+        window._on_raid_boss_fetch_done(
+            failed, {}, "Authentication failed", overlay_mod.WCL_ERROR_AUTH
+        )
+        panel = window._panel
+        assert panel._status_label.text() == "Raid boss details unavailable"
+        assert not panel._status_label.isHidden()
+        assert panel._wcl_retry_button.isHidden()
+        assert not panel._status_row.isHidden()
+    finally:
+        window.close()
+
+
+def test_inline_load_button_keeps_accessibility_and_header_balance(
+    qtbot, tmp_path
+):
+    window = _raid_idle_window(qtbot, tmp_path)
+    try:
+        window.show()
+        panel = window._panel
+        button = panel._wcl_retry_button
+        assert button.focusPolicy() == Qt.FocusPolicy.TabFocus
+        assert button.accessibleName() == "Load boss details for Scout-Ravencrest"
+        assert button.accessibleDescription() == button.toolTip()
+        assert "boss-by-boss" in button.toolTip()
+        assert button in window._accessibility_tab_controls()
+
+        window._pool = _QueuedPool()
+        button.setFocus()
+        qtbot.keyClick(button, Qt.Key.Key_Return)
+        assert window._raid_boss_fetches_in_flight
+
+        header = panel._unpin_button.parentWidget()
+        layout = header.layout()
+        assert layout.count() == 4
+        assert layout.itemAt(0).widget() is panel._name_label
+        assert layout.itemAt(1).widget() is panel._realm_label
+        assert layout.itemAt(2).widget() is None
+        assert layout.itemAt(3).widget() is panel._unpin_button
+        assert button.parentWidget() is panel._status_row
+    finally:
+        window.close()
+
+
 @pytest.mark.parametrize("pinned", [False, True])
 def test_narrow_raid_header_keeps_manual_action_readable(
     qtbot, tmp_path, pinned, monkeypatch
