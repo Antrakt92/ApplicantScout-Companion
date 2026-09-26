@@ -202,11 +202,15 @@
           "sha256": "7bef20046045199c037b7cbfedaa1c5464730fa948b2c9ec8afbf718e63774d4"
         },
         {
-          "path": "PySide6/QtNetwork.pyd",
-          "sha256": "c5038bb71fc9d57330fa2d8eeec65aab69fcf02687cc8f54dbfb5995cfec6a71"
-        },
-        {
-          "path": "PySide6/QtWidgets.pyd",
+   "path": "PySide6/QtNetwork.pyd",
+   "sha256": "c5038bb71fc9d57330fa2d8eeec65aab69fcf02687cc8f54dbfb5995cfec6a71"
+  },
+  {
+   "path": "PySide6/QtSvg.pyd",
+   "sha256": "2d128bbd2839aaad93f96d4d0705912065d2dcc20c92cb028f0441979bdb7280"
+  },
+  {
+   "path": "PySide6/QtWidgets.pyd",
           "sha256": "f12f4ca641998e5706d5f7b0023147d573f0f2d2361e26dadf31bdbf05fbfd1d"
         }
       ],
