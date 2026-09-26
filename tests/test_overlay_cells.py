@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtWidgets import QTableWidgetItem
 
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
@@ -18,12 +20,16 @@ from applicant_scout.overlay import (
     NAME_COLUMN_MAX_WIDTH,
     RowWidthInput,
     _bold_cell_font,
-    _mplus_dual_cell,
     _fit_cell,
+    _mplus_dual_cell,
+    _raid_dual_cell,
+    _set_cell_background,
+    _set_cell_foreground,
     _text_colour_for_bg,
     measure_column_width,
 )
 from applicant_scout.overlay_presenters import rio_display_text
+from applicant_scout.scoring import CONTEXT_MPLUS, CandidateFit
 from applicant_scout.state import Applicant, Listing
 
 
@@ -103,6 +109,128 @@ def test_mplus_dual_cell_listing_error_status_precedes_stale_fit():
     item = _mplus_dual_cell(_app(fetch_status="error"), _mplus_listing())
 
     assert item.text() == "?"
+
+
+def _explicit_role_colour(item: QTableWidgetItem, role: Qt.ItemDataRole) -> str | None:
+    """Read the stored brush role — the actual delegate paint input.
+
+    WHY: item.foreground().color() reports black even when no ForegroundRole
+    is stored, so only the role data proves the contrast colour survives to
+    paint (white-on-light regression guard).
+    """
+    stored = item.data(role)
+    if isinstance(stored, QBrush):
+        return stored.color().name()
+    if isinstance(stored, QColor):
+        return stored.name()
+    return None
+
+
+def test_set_cell_foreground_black_writes_explicit_role_on_fresh_item():
+    item = QTableWidgetItem("42/38")
+
+    _set_cell_foreground(item, "#000000")
+
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+
+
+def test_set_cell_foreground_none_clears_stale_role():
+    item = QTableWidgetItem("42/38")
+    _set_cell_foreground(item, "#000000")
+
+    _set_cell_foreground(item, None)
+
+    assert item.data(Qt.ItemDataRole.ForegroundRole) is None
+
+
+def test_set_cell_foreground_same_colour_keeps_role_without_clearing():
+    item = QTableWidgetItem("42/38")
+    _set_cell_foreground(item, "#000000")
+
+    _set_cell_foreground(item, "#000000")
+
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+
+
+def test_set_cell_background_black_writes_explicit_role_on_fresh_item():
+    item = QTableWidgetItem("—")
+
+    _set_cell_background(item, "#000000")
+
+    assert _explicit_role_colour(item, Qt.ItemDataRole.BackgroundRole) == "#000000"
+
+
+def test_set_cell_background_none_clears_stale_role():
+    item = QTableWidgetItem("42/38")
+    _set_cell_background(item, "#1eff00")
+
+    _set_cell_background(item, None)
+
+    assert item.data(Qt.ItemDataRole.BackgroundRole) is None
+
+
+def test_raid_dual_cell_orange_stores_dark_text_role():
+    item = _raid_dual_cell(97.0, 88.0, "ready")
+
+    assert item.text() == "97/88"
+    assert item.background().color().name() == QColor("#ff8000").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+
+
+def test_raid_dual_cell_green_stores_dark_text_role():
+    item = _raid_dual_cell(42.0, 38.0, "ready")
+
+    assert item.text() == "42/38"
+    assert item.background().color().name() == QColor("#1eff00").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+
+
+def test_raid_dual_cell_dark_blue_keeps_white_text_role():
+    item = _raid_dual_cell(62.0, 55.0, "ready")
+
+    assert item.background().color().name() == QColor("#0070ff").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#ffffff"
+
+
+def test_raid_dual_cell_rerender_light_over_dark_refreshes_text_role():
+    item = _raid_dual_cell(62.0, 55.0, "ready")
+
+    rerendered = _raid_dual_cell(97.0, 88.0, "ready", item=item)
+
+    assert rerendered is item
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+
+
+def test_mplus_dual_cell_orange_stores_dark_text_role():
+    item = _mplus_dual_cell(_app(mplus_dps=97.0, mplus_dps_median=88.0))
+
+    assert item.background().color().name() == QColor("#ff8000").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+
+
+def test_mplus_dual_cell_green_stores_dark_text_role():
+    item = _mplus_dual_cell(_app(mplus_dps=42.0, mplus_dps_median=38.0))
+
+    assert item.background().color().name() == QColor("#1eff00").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+
+
+def test_fit_cell_orange_stores_dark_text_role():
+    fit = CandidateFit(context=CONTEXT_MPLUS, score=97.0, display="~97")
+    item = _fit_cell(_app(), _mplus_listing(), fit=fit)
+
+    assert item.text() == "~97"
+    assert item.background().color().name() == QColor("#ff8000").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+
+
+def test_fit_cell_green_stores_dark_text_role():
+    fit = CandidateFit(context=CONTEXT_MPLUS, score=42.0, display="~42")
+    item = _fit_cell(_app(), _mplus_listing(), fit=fit)
+
+    assert item.text() == "~42"
+    assert item.background().color().name() == QColor("#1eff00").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
 
 
 def test_fit_cell_listing_not_found_can_show_scorecard_fit():

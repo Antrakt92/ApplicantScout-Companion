@@ -27,6 +27,7 @@ from PySide6.QtCore import (
     QRectF,
 )
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QCursor,
     QFont,
@@ -7580,6 +7581,15 @@ def _text_colour_for_bg(bg_hex: str | None) -> str:
     return _presenters.text_colour_for_bg(bg_hex)
 
 
+def _role_brush_colour(value: object) -> QColor | None:
+    """Resolve the colour carried by a stored item-data brush role, if any."""
+    if isinstance(value, QBrush):
+        return value.color()
+    if isinstance(value, QColor):
+        return value
+    return None
+
+
 def _set_cell_foreground(item: QTableWidgetItem, colour: str | None) -> None:
     """Apply an optional foreground, restoring the view default when absent.
 
@@ -7589,16 +7599,27 @@ def _set_cell_foreground(item: QTableWidgetItem, colour: str | None) -> None:
     if colour is None:
         if item.data(Qt.ItemDataRole.ForegroundRole) is not None:
             item.setData(Qt.ItemDataRole.ForegroundRole, None)
-    elif item.foreground().color() != QColor(colour):
-        item.setForeground(QColor(colour))
+        return
+    wanted = QColor(colour)
+    # WHY: compare the stored ForegroundRole, not item.foreground().color().
+    # A fresh item's default brush already reports black, so a black request
+    # (the contrast answer for every light percentile background: orange,
+    # green, tan, pink) compared "equal" and skipped the write — leaving no
+    # role, and the delegate then painted the QSS default off-white text.
+    if _role_brush_colour(item.data(Qt.ItemDataRole.ForegroundRole)) != wanted:
+        item.setForeground(wanted)
 
 
 def _set_cell_background(item: QTableWidgetItem, colour: str | None) -> None:
     if colour is None:
         if item.data(Qt.ItemDataRole.BackgroundRole) is not None:
             item.setData(Qt.ItemDataRole.BackgroundRole, None)
-    elif item.background().color() != QColor(colour):
-        item.setBackground(QColor(colour))
+        return
+    wanted = QColor(colour)
+    # Same stored-role comparison as the foreground: a fresh item's default
+    # brush reports black, which must not shadow an explicit black request.
+    if _role_brush_colour(item.data(Qt.ItemDataRole.BackgroundRole)) != wanted:
+        item.setBackground(wanted)
 
 
 def _stamp_cell_font_sig(item: QTableWidgetItem) -> None:

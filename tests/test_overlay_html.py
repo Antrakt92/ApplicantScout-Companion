@@ -217,6 +217,23 @@ def test_text_colour_for_bg_returns_readable_contrast(bg, fg):
     assert _text_colour_for_bg(bg) == fg
 
 
+@pytest.mark.parametrize(
+    ("bg", "fg"),
+    [
+        ("#ff8000", "#000000"),  # orange percentile cells (e.g. ~97)
+        ("#1eff00", "#000000"),  # green percentile cells (e.g. 42)
+        ("#e5cc80", "#000000"),  # tan/gold top-percentile cells
+        ("#e268a8", "#000000"),  # pink/lavender high-percentile cells
+        ("#a335ee", "#ffffff"),  # purple cells stay white-on-dark
+        ("#0070ff", "#ffffff"),  # blue cells stay white-on-dark
+        ("#666666", "#ffffff"),  # grey bucket stays white-on-dark
+        ("#2a2a33", "#ffffff"),  # dark fallback stays white-on-dark
+    ],
+)
+def test_text_colour_for_bg_metric_palette_contrast(bg, fg):
+    assert _text_colour_for_bg(bg) == fg
+
+
 def test_raid_cell_visuals_use_percentile_background_and_contrast():
     bg = percentile_colour(91.0)
     assert _raid_cell_visuals(91.0, 78.0, "ready") == (
