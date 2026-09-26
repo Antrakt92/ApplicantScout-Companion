@@ -1458,6 +1458,58 @@ class OverlayLauncher(_KeyboardButton):
         outline = QPainterPath()
         outline.addRoundedRect(QRectF(self.rect()), 11, 11)
         self.setMask(QRegion(outline.toFillPolygon().toPolygon()))
+        self._badge_cache: dict[float, QPixmap | None] = {}
+
+    # Shield identity composited over the rounded badge background. The SVG
+    # stays on disk (no asset churn); the "AS" text remains the fallback when
+    # the SVG is missing or unloadable. Mask/hitButton/drag/a11y/size untouched.
+    _BADGE_SVG_PATH = Path(__file__).with_name("assets") / "app_icon.svg"
+    _BADGE_LOGICAL_PX = 28
+
+    def _badge_pixmap(self, dpr: float) -> QPixmap | None:
+        from PySide6.QtGui import QImage
+        from PySide6.QtSvg import QSvgRenderer
+
+        scale = max(1.0, float(dpr or 1.0))
+        key = round(scale, 3)
+        if key in self._badge_cache:
+            return self._badge_cache[key]
+        svg_path = self._BADGE_SVG_PATH
+        renderer = QSvgRenderer(str(svg_path)) if svg_path.is_file() else QSvgRenderer()
+        if not renderer.isValid():
+            self._badge_cache[key] = None
+            return None
+        side = self._BADGE_LOGICAL_PX
+        physical = max(1, int(round(side * scale)))
+        image = QImage(physical, physical, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            renderer.render(painter)
+        finally:
+            painter.end()
+        pixmap = QPixmap.fromImage(image)
+        pixmap.setDevicePixelRatio(scale)
+        self._badge_cache[key] = pixmap
+        return pixmap
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        pixmap = self._badge_pixmap(self.devicePixelRatioF() or 1.0)
+        if pixmap is None or pixmap.isNull():
+            return  # "AS" text fallback already painted by the base class.
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            side = self._BADGE_LOGICAL_PX
+            x = (self.width() - side) // 2
+            y = (self.height() - side) // 2
+            painter.drawPixmap(QRect(x, y, side, side), pixmap)
+        finally:
+            painter.end()
 
     def hitButton(self, pos: QPoint) -> bool:  # noqa: N802
         return self.mask().contains(pos)

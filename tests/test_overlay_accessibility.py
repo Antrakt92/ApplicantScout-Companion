@@ -755,3 +755,82 @@ def test_tray_restore_enters_focus_chain_but_launcher_restore_stays_passive(
     finally:
         window.close()
         client.close()
+
+
+def _launcher_with_stylesheet(qtbot):
+    launcher = overlay_mod.OverlayLauncher()
+    qtbot.addWidget(launcher)
+    launcher.setStyleSheet(overlay_mod._STYLESHEET)
+    return launcher
+
+
+def test_launcher_badge_composites_svg_shield_over_rounded_background(qtbot):
+    from PySide6.QtGui import QImage
+
+    launcher = _launcher_with_stylesheet(qtbot)
+    if not overlay_mod.OverlayLauncher._BADGE_SVG_PATH.is_file():
+        pytest.skip("shield SVG missing; fallback path covered by sibling test")
+    pixmap = launcher._badge_pixmap(1.0)
+    assert pixmap is not None and not pixmap.isNull()
+    image = QImage(launcher.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    launcher.render(image)
+    assert image.pixelColor(launcher.rect().center()).alpha() > 0
+    for corner in (
+        QPoint(0, 0),
+        QPoint(launcher.width() - 1, 0),
+        QPoint(0, launcher.height() - 1),
+        launcher.rect().bottomRight(),
+    ):
+        assert image.pixelColor(corner).alpha() == 0
+        assert not launcher.mask().contains(corner)
+        assert not launcher.hitButton(corner)
+    assert launcher.hitButton(launcher.rect().center())
+
+
+def test_launcher_badge_pixmap_is_device_pixel_ratio_aware(qtbot):
+    launcher = _launcher_with_stylesheet(qtbot)
+    if not overlay_mod.OverlayLauncher._BADGE_SVG_PATH.is_file():
+        pytest.skip("shield SVG missing; fallback path covered by sibling test")
+    logical = overlay_mod.OverlayLauncher._BADGE_LOGICAL_PX
+    at_1x = launcher._badge_pixmap(1.0)
+    at_2x = launcher._badge_pixmap(2.0)
+    assert at_1x is not None and at_2x is not None
+    assert (at_1x.width(), at_1x.devicePixelRatio()) == (logical, 1.0)
+    assert (at_2x.width(), at_2x.devicePixelRatio()) == (logical * 2, 2.0)
+
+
+def test_launcher_badge_falls_back_to_as_text_without_svg(qtbot, tmp_path):
+    launcher = _launcher_with_stylesheet(qtbot)
+    launcher._badge_cache.clear()
+    missing = tmp_path / "no-such-icon.svg"
+    original = overlay_mod.OverlayLauncher._BADGE_SVG_PATH
+    overlay_mod.OverlayLauncher._BADGE_SVG_PATH = missing
+    try:
+        assert launcher._badge_pixmap(1.0) is None
+        assert launcher.text() == "AS"
+        assert launcher.accessibleName() == "Show ApplicantScout overlay"
+        assert "passive in-game mode" in launcher.accessibleDescription()
+    finally:
+        overlay_mod.OverlayLauncher._BADGE_SVG_PATH = original
+        launcher._badge_cache.clear()
+
+
+def test_launcher_badge_preserves_size_hitmask_a11y_and_drag_contract(qtbot):
+    launcher = _launcher_with_stylesheet(qtbot)
+    assert (launcher.width(), launcher.height()) == (
+        overlay_mod.LAUNCHER_SIZE,
+        overlay_mod.LAUNCHER_SIZE,
+    )
+    assert launcher.accessibleName() == "Show ApplicantScout overlay"
+    assert (
+        launcher.accessibleDescription()
+        == "Restore the overlay in passive in-game mode. Use the system tray Show "
+        "overlay action for keyboard access."
+    )
+    assert launcher.toolTip() == "Show ApplicantScout overlay"
+    assert launcher.cursor().shape() == Qt.CursorShape.OpenHandCursor
+    assert not launcher.is_dragging()
+    assert not launcher.is_click_emitting()
+    assert launcher.hitButton(launcher.rect().center())
+    assert not launcher.hitButton(QPoint(1, 1))
