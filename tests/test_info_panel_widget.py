@@ -8242,3 +8242,149 @@ def test_alt_tab_roundtrip_open_overlay_restores_surface_with_no_new_data(
         )
     finally:
         client.close()
+
+
+def _make_open_overlay_for_loss_timing(qtbot, tmp_path, monkeypatch, now, foreground):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+    monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
+    monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+    qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+    window.restore_from_launcher()
+    qtbot.waitUntil(window.isVisible, timeout=1000)
+    return window, client
+
+
+def test_open_overlay_loss_hides_within_short_anti_flicker_grace(
+    qtbot, tmp_path, monkeypatch
+):
+    """Regression: alt-tab out hides fast (~0.4s), not ~5s.
+
+    Absolute bounds (not the constant) lock the user-visible timing: the
+    window stays up DURING the short grace (anti-flicker kept) and hides
+    right after it.
+    """
+    foreground = {"active": True}
+    now = {"value": 600.0}
+    window, client = _make_open_overlay_for_loss_timing(
+        qtbot, tmp_path, monkeypatch, now, foreground
+    )
+    try:
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+
+        now["value"] += 0.2
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+
+        now["value"] += 0.3  # 0.5s past loss: past the short grace
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+    finally:
+        client.close()
+
+
+def test_open_overlay_loss_grace_is_single_shot_not_rearmed(
+    qtbot, tmp_path, monkeypatch
+):
+    """Repeated loss syncs must not push the hide deadline out."""
+    foreground = {"active": True}
+    now = {"value": 700.0}
+    window, client = _make_open_overlay_for_loss_timing(
+        qtbot, tmp_path, monkeypatch, now, foreground
+    )
+    try:
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        deadline = window._open_overlay_foreground_loss_grace_until
+        assert deadline == pytest.approx(now["value"] + 0.4)
+
+        now["value"] += 0.3
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+        assert window._open_overlay_foreground_loss_grace_until == pytest.approx(
+            deadline
+        )
+
+        now["value"] += 0.2  # past the original deadline
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+    finally:
+        client.close()
+
+
+def test_open_overlay_loss_hides_despite_active_launcher_grace(
+    qtbot, tmp_path, monkeypatch
+):
+    """A live launcher grace (recent click-restore/drag) must not hold the
+    OPEN overlay over non-game apps."""
+    foreground = {"active": True}
+    now = {"value": 800.0}
+    window, client = _make_open_overlay_for_loss_timing(
+        qtbot, tmp_path, monkeypatch, now, foreground
+    )
+    try:
+        window._launcher_foreground_grace_until = now["value"] + 10.0
+
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+
+        now["value"] += 1.0
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+    finally:
+        client.close()
+
+
+def test_open_overlay_loss_gain_loss_flicker_hides_promptly(
+    qtbot, tmp_path, monkeypatch
+):
+    """A rapid loss/gain/loss flicker restarts one short grace; it must not
+    stretch the hide into seconds."""
+    foreground = {"active": True}
+    now = {"value": 900.0}
+    window, client = _make_open_overlay_for_loss_timing(
+        qtbot, tmp_path, monkeypatch, now, foreground
+    )
+    try:
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+
+        now["value"] += 0.1
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+
+        now["value"] += 0.1
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+
+        now["value"] += 0.5  # past the restarted short grace
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+    finally:
+        client.close()

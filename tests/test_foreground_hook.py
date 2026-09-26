@@ -177,3 +177,40 @@ def test_hook_stops_with_terminal_shutdown(qtbot, tmp_path, monkeypatch) -> None
         assert window._foreground_hook is None
     finally:
         client.close()
+
+
+def test_hook_loss_event_reaches_sync_promptly(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Focus LOSS must reach the sync path just like gain.
+
+    The hook maps HWND→bool for both directions; the overlay slot must not
+    drop the False half (the show path is instant via hook — the hide path
+    must be too, subject only to the short anti-flicker grace in sync).
+    """
+    created: list[_FakeHook] = []
+
+    class _RecordingHook(_FakeHook):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            super().__init__()
+            created.append(self)
+
+    window, client = _make_window(qtbot, tmp_path, monkeypatch, _RecordingHook)
+    try:
+        fake = created[0]
+        calls: list[bool] = []
+        original = window._sync_game_foreground_visibility
+
+        def _counting_sync() -> None:
+            calls.append(True)
+            original()
+
+        monkeypatch.setattr(window, "_sync_game_foreground_visibility", _counting_sync)
+        callback = cast("Callable[[bool], None]", fake.callback)
+        assert callback is not None
+        callback(False)
+        qtbot.waitUntil(lambda: len(calls) >= 1, timeout=1000)
+        callback(True)
+        qtbot.waitUntil(lambda: len(calls) >= 2, timeout=1000)
+    finally:
+        client.close()

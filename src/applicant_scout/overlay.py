@@ -227,7 +227,12 @@ QUOTA_FALLBACK_POLL_MS = 30000
 LAUNCHER_DRAG_POLL_MS = 16
 LAUNCHER_DRAG_RELEASE_GRACE_S = 1.0
 LAUNCHER_FOREGROUND_GRACE_S = 3.0
-OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S = 1.25
+# Short single-shot anti-flicker grace for confirmed game-focus loss. The
+# WinEvent hook + fast poll deliver the loss promptly, so the open overlay
+# only waits out one paint/focus transient before hiding. Never re-armed by
+# repeated loss syncs (see _sync_game_foreground_visibility); only genuine
+# interaction holds (active window / cursor over overlay) extend visibility.
+OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S = 0.4
 VK_LBUTTON = 0x01
 MPLUS_GROUP_COLUMN_WIDTH = 112
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
@@ -4152,7 +4157,14 @@ class OverlayWindow(QMainWindow):
             else 0.0
         )
         self._launcher_foreground_grace_until = foreground_grace_until
-        self._open_overlay_foreground_loss_grace_until = foreground_grace_until
+        # The open overlay never inherits the 3s launcher grace: on confirmed
+        # focus loss it hides after the short single-shot anti-flicker grace
+        # so it never covers other apps. The badge keeps its own grace above.
+        self._open_overlay_foreground_loss_grace_until = (
+            time.monotonic() + OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S
+            if launcher_interaction_foreground
+            else 0.0
+        )
         self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
         self._launcher.hide()
@@ -4342,12 +4354,10 @@ class OverlayWindow(QMainWindow):
         if not foreground and launcher_interaction_foreground:
             self._launcher_visible_after_non_game_foreground = True
             return
-        if (
-            not foreground
-            and not self._is_overlay_effectively_hidden()
-            and time.monotonic() < self._launcher_foreground_grace_until
-        ):
-            return
+        # No launcher-grace hold on the open overlay: once the short loss
+        # grace above has expired, the full window hides even inside
+        # LAUNCHER_FOREGROUND_GRACE_S so it never covers non-game apps.
+        # The badge path above keeps its own grace.
         if foreground == self._game_foreground:
             if (
                 not foreground
