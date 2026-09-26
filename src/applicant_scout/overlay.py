@@ -90,6 +90,7 @@ from . import overlay_fetch as _overlay_fetch
 from . import overlay_health as _overlay_health
 from . import overlay_row_renderer as _overlay_row_renderer
 from . import overlay_table as _overlay_table
+from .foreground_hook import ForegroundHook, ForegroundHookError
 from .metric_preferences import (
     DEFAULT_METRIC_PREFERENCES,
     MetricPreferences,
@@ -3492,6 +3493,11 @@ class ApplicantInfoPanel(QFrame):
 
 
 class OverlayWindow(QMainWindow):
+    # Fired from the WinEventHook thread (see foreground_hook.py); the slot
+    # re-enters the existing poll sync path on the GUI thread, so hook
+    # delivery stays thread-safe via Qt's queued connection.
+    _foreground_hook_fired = Signal(bool)
+
     def __init__(
         self,
         state: AppState,
@@ -3528,6 +3534,8 @@ class OverlayWindow(QMainWindow):
         self._show_settings = show_settings
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
         self._game_foreground = self._is_game_foreground()
+        self._foreground_hook: ForegroundHook | None = None
+        self._foreground_hook_fired.connect(self._on_foreground_hook)
         self._open_overlay_foreground_loss_grace_until = 0.0
         self._launcher_foreground_grace_until = 0.0
         self._launcher_visible_after_non_game_foreground = False
@@ -3976,6 +3984,7 @@ class OverlayWindow(QMainWindow):
         self._foreground_timer.setInterval(GAME_FOREGROUND_POLL_MS)
         self._foreground_timer.timeout.connect(self._sync_game_foreground_visibility)
         self._foreground_timer.start()
+        self._start_foreground_hook()
         self._refresh_status_row()  # initial paint of neutral quota/shot chips
         for applicant in self._fetch_rows():
             applicant.project_wcl_data_to_preferences(
@@ -4160,6 +4169,45 @@ class OverlayWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             _log.warning("Game foreground probe failed: %s", exc)
             return True
+
+    def _start_foreground_hook(self) -> None:
+        """Start event-driven foreground detection next to the poll timer.
+
+        The hook only accelerates the existing sync path; the slow poll
+        stays as fallback (hook events can drop under load). Any install
+        failure keeps current poll behavior unchanged.
+        """
+        if getattr(self, "_closed", True):
+            return
+        try:
+            hook = ForegroundHook()
+            hook.start(self._on_foreground_hook_from_thread)
+        except ForegroundHookError as exc:
+            _log.warning(
+                "Foreground hook unavailable, keeping poll fallback: %s", exc
+            )
+            return
+        self._foreground_hook = hook
+
+    def _on_foreground_hook_from_thread(self, game_foreground: bool) -> None:
+        """Marshal the hook-thread callback into Qt (thread-safe)."""
+        try:
+            self._foreground_hook_fired.emit(game_foreground)
+        except Exception:  # noqa: BLE001 — hook thread must never crash
+            _log.warning("Could not forward foreground hook event.", exc_info=True)
+
+    def _on_foreground_hook(self, _game_foreground: bool) -> None:
+        """Route hook events into the existing timer-tick sync path."""
+        self._sync_game_foreground_visibility()
+
+    def _stop_foreground_hook(self) -> None:
+        hook = self._foreground_hook
+        self._foreground_hook = None
+        if hook is not None:
+            try:
+                hook.stop()
+            except Exception:  # noqa: BLE001 — terminal cleanup boundary
+                _log.warning("Could not stop foreground hook.", exc_info=True)
 
     def _is_overlay_effectively_hidden(self) -> bool:
         """True when no open overlay window is on screen.
@@ -7584,6 +7632,7 @@ class OverlayWindow(QMainWindow):
         self._quota_timer.stop()
         self._wcl_retry_timer.stop()
         self._raid_boss_retry_timer.stop()
+        self._stop_foreground_hook()
         self.flush_geometry()
         self.hide()
         self._launcher.hide()
