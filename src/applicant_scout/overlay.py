@@ -1339,6 +1339,39 @@ def _widget_has_focus(widget: QWidget) -> bool:
     return focus is not None and (focus is widget or widget.isAncestorOf(focus))
 
 
+def _default_system_ui_foreground_kind() -> str:
+    """Classify the foreground window as "switcher", "transient", or "none".
+
+    "switcher" is an unambiguous task-switcher sighting matched by window
+    CLASS (XamlExplorerHostIslandWindow — title varies, e.g. "Task
+    Switching" — plus ForegroundStaging). "transient" is a NULL foreground
+    hwnd: no window currently has keyboard focus. That happens between task
+    switcher states, but ALSO during ordinary cross-process activation —
+    e.g. the moment a click on this overlay moves activation away from the
+    game — so it is not proof of a task switcher on its own. "none" is
+    anything else (including probe failures, which fail open).
+    """
+    if sys.platform != "win32":
+        return "none"
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+    except (AttributeError, OSError):
+        return "none"
+    if not hwnd:
+        return "transient"
+    try:
+        buffer = ctypes.create_unicode_buffer(256)
+        length = user32.GetClassNameW(hwnd, buffer, len(buffer))
+    except (AttributeError, OSError):
+        return "none"
+    if not length or length <= 0:
+        return "none"
+    if buffer.value in _TASK_SWITCHER_WINDOW_CLASSES:
+        return "switcher"
+    return "none"
+
+
 def _default_system_ui_foreground_probe() -> bool:
     """True when the foreground window is transient system UI or absent.
 
@@ -1348,23 +1381,7 @@ def _default_system_ui_foreground_probe() -> bool:
     the overlay additionally timestamps the sighting so the show path waits
     for stable game foreground (TASK_SWITCHER_SETTLE_S).
     """
-    if sys.platform != "win32":
-        return False
-    try:
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-    except (AttributeError, OSError):
-        return False
-    if not hwnd:
-        return True
-    try:
-        buffer = ctypes.create_unicode_buffer(256)
-        length = user32.GetClassNameW(hwnd, buffer, len(buffer))
-    except (AttributeError, OSError):
-        return False
-    if not length or length <= 0:
-        return False
-    return buffer.value in _TASK_SWITCHER_WINDOW_CLASSES
+    return _default_system_ui_foreground_kind() != "none"
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -3555,6 +3572,7 @@ class OverlayWindow(QMainWindow):
         show_settings: Callable[[], None] | None = None,
         game_foreground_probe: Callable[[], bool] | None = None,
         system_ui_foreground_probe: Callable[[], bool] | None = None,
+        system_ui_foreground_kind_probe: Callable[[], str] | None = None,
     ):
         super().__init__()
 
@@ -3584,6 +3602,23 @@ class OverlayWindow(QMainWindow):
         self._system_ui_foreground_probe = (
             system_ui_foreground_probe or _default_system_ui_foreground_probe
         )
+        if system_ui_foreground_kind_probe is not None:
+            self._system_ui_foreground_kind_probe = system_ui_foreground_kind_probe
+        elif system_ui_foreground_probe is not None:
+            # Legacy bool injection (tests): True meant an unambiguous
+            # switcher sighting, so keep the instant-hide semantics there.
+            # Only the default live probe distinguishes the ambiguous NULL
+            # transient (see _sync_game_foreground_visibility).
+            bool_probe = self._system_ui_foreground_probe
+
+            def _kind_from_legacy_bool_probe() -> str:
+                return "switcher" if bool(bool_probe()) else "none"
+
+            self._system_ui_foreground_kind_probe = _kind_from_legacy_bool_probe
+        else:
+            self._system_ui_foreground_kind_probe = (
+                _default_system_ui_foreground_kind
+            )
         self._last_system_ui_sighting_monotonic: float | None = None
         self._game_foreground = self._is_game_foreground()
         self._foreground_hook: ForegroundHook | None = None
@@ -4236,6 +4271,14 @@ class OverlayWindow(QMainWindow):
             _log.warning("System-UI foreground probe failed: %s", exc)
             return False
 
+    def _is_system_ui_foreground_kind(self) -> str:
+        try:
+            kind = self._system_ui_foreground_kind_probe()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("System-UI foreground kind probe failed: %s", exc)
+            return "none"
+        return kind if kind in ("switcher", "transient") else "none"
+
     def _start_foreground_hook(self) -> None:
         """Start event-driven foreground detection next to the poll timer.
 
@@ -4374,22 +4417,37 @@ class OverlayWindow(QMainWindow):
         foreground = self._is_game_foreground()
         now = time.monotonic()
         if self._is_system_ui_foreground():
-            # Task switcher (or its transient NULL-hwnd siblings): unambiguous
-            # system UI, not a focus flicker — hide immediately without the
-            # anti-flicker grace and stamp the sighting so the show path below
-            # waits for stable game foreground (TASK_SWITCHER_SETTLE_S).
-            # Interaction holds do not apply here: while Alt+Tab is held the
-            # DWM switcher owns the screen and our topmost windows must stay
+            # Task switcher (matched by CLASS — titles vary) or a NULL
+            # foreground hwnd. A switcher class is unambiguous system UI, not
+            # a focus flicker — hide immediately without the anti-flicker
+            # grace and stamp the sighting so the show path below waits for
+            # stable game foreground (TASK_SWITCHER_SETTLE_S). Interaction
+            # holds do not apply there: while Alt+Tab is held the DWM
+            # switcher owns the screen and our topmost windows must stay
             # under it. The active-window guard on hide() itself is kept.
-            self._last_system_ui_sighting_monotonic = now
-            self._open_overlay_foreground_loss_grace_until = 0.0
-            self._game_foreground = False
-            self._launcher_visible_after_non_game_foreground = False
-            self._launcher.hide()
-            if self.isVisible() and not self.isActiveWindow():
-                self.hide()
-            self._update_foreground_polling()
-            return
+            #
+            # A bare NULL hwnd ("transient") is ambiguous: it also occurs
+            # during ordinary cross-process activation, e.g. the moment a
+            # click on this overlay moves activation away from the game.
+            # Hiding an overlay the user is actively using (active window or
+            # cursor over it) on that single sample collapses the window
+            # out from under a row click. Such samples fall through to the
+            # ordinary foreground-loss path below, which applies the short
+            # anti-flicker grace plus the interaction holds instead.
+            kind = self._is_system_ui_foreground_kind()
+            held = self.isActiveWindow() or self._cursor_over_open_overlay()
+            if not (kind == "transient" and held):
+                self._last_system_ui_sighting_monotonic = now
+                self._open_overlay_foreground_loss_grace_until = 0.0
+                self._game_foreground = False
+                self._launcher_visible_after_non_game_foreground = False
+                self._launcher.hide()
+                if self.isVisible() and not self.isActiveWindow():
+                    self.hide()
+                self._update_foreground_polling()
+                return
+            # Ambiguous transient under active use: fall through to the
+            # ordinary foreground-loss path below (short grace + holds).
         open_overlay_visible = not self._is_overlay_effectively_hidden()
         open_overlay_interaction_foreground = (
             open_overlay_visible

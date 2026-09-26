@@ -853,3 +853,59 @@ def test_launcher_badge_uses_dedicated_small_size_svg(qtbot):
         assert pixmap is not None and not pixmap.isNull()
     finally:
         launcher._badge_cache.clear()
+
+
+def test_first_row_click_survives_ambiguous_null_foreground_transient(
+    qtbot, tmp_path, monkeypatch
+):
+    """First click on a person row must not collapse the overlay when a
+    NULL-hwnd focus-transition sample lands mid-click.
+
+    Live report (in-game, group data shown): the first click on a person row
+    collapsed the whole overlay; the launcher badge had to be clicked to
+    reopen. The click path itself never hides (pin applies the stripe now and
+    defers panel/geometry sync). The kill is the system-UI instant-hide branch
+    in OverlayWindow._sync_game_foreground_visibility: GetForegroundWindow can
+    return NULL transiently while the click moves activation across processes
+    (the documented no-keyboard-focus moment), the NULL clause reports system
+    UI, and the branch hides an inactive open overlay with no grace and no
+    cursor hold. An ambiguous transient under active use must fall through to
+    the ordinary loss path (short grace + holds) instead.
+    """
+    window, client = _build_window(tmp_path, qtbot)
+    try:
+        foreground = {"active": True}
+        window._game_foreground_probe = lambda: foreground["active"]
+        window._system_ui_foreground_probe = lambda: True
+        # Ambiguous NULL-hwnd transient (not a switcher class). The overlay
+        # reads this attribute when present; without the fix it is ignored
+        # and the sync below hides the window.
+        window._system_ui_foreground_kind_probe = lambda: "transient"
+        window._game_foreground = True
+        window._collapsed_to_launcher = False
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window._refresh_table()
+
+        row = window._row_for_id["tank"]
+        window._on_cell_clicked(row, COL_NAME)
+        qtbot.wait(50)  # flush the deferred pin sync
+
+        assert window._pinned_id == "tank"
+        assert window.isVisible()
+
+        # Click-transition sample: companion foreground mid-transition (game
+        # probe drops), ambiguous system-UI sighting, window not yet active,
+        # cursor still over the clicked row.
+        foreground["active"] = False
+        monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: True)
+        window._sync_game_foreground_visibility()
+
+        assert window._pinned_id == "tank"
+        assert window.isVisible()
+        assert not window._collapsed_to_launcher
+        assert not window._launcher.isVisible()
+    finally:
+        window.close()
+        client.close()
