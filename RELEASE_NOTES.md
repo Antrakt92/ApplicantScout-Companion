@@ -2,15 +2,42 @@
 
 ## Unreleased
 
-### Improved
+## 0.21.0 - 26-Sep-2026 — Party tab, launcher badge and loading-screen stability
 
+Paired release with ApplicantScout addon `0.13.0`.
+
+### Added
+
+- Open the Party tab automatically when you join a group with no applicants
+  yet, so you immediately see who you are playing with. Applicants still open first
+  when there is anything to review.
+- Keep a small launcher badge whenever the overlay is hidden. It works as an
+  open/close toggle and stays sharp on HiDPI displays.
+- Load raid boss details on demand from the player panel with a compact
+  inline button.
 - Show when a Companion update is available directly in the overlay.
 - Warn in the overlay when the WoW addon is older than required or newer
   than the paired companion version, with update guidance.
+
+### Improved
+
+- Stop the overlay from closing itself on raid loading screens: a missing
+  game window is no longer treated as leaving the game, and a manually
+  reopened overlay stays open for a few seconds. Alt-tabbing to another app
+  still hides it as before.
+- Bring the overlay back instantly when the game is focused again, and keep
+  it hidden under the task switcher until the game is stable.
+- Fit the player summary (Fit, past-season chips, Normal/Heroic/Mythic/M+
+  parses) into one row to save vertical space.
+- Wrap hover tooltips so they no longer cover the whole table.
+- Sort any column with three clicks: largest first, then smallest first,
+  then back to the default order.
 - Keep the overlay responsive during hover, refresh and settings actions, and
   shorten startup checks without delaying QR screenshots or cache writes.
 - Apply first-run setup and Settings changes in the background and keep
   dialogs non-modal.
+- Show live progress while the update downloads, without update popups
+  stealing focus.
 - Get the WoW addon from CurseForge or Wago; setup copy names current Retail
   and PTR builds without pinned version numbers.
 - Use PySide6 for the Windows interface while keeping the existing overlay and
@@ -36,6 +63,10 @@
   upgrades and leftover files; preserve user settings during uninstall.
 - Keep the portable application's entry point and packaged license/source
   notices consistent with the Windows build.
+- Harden first-run setup against interrupted or damaged state, and keep quiet,
+  actionable logs without private data.
+- Fix unreadable white-on-light text in table metric cells, and a background
+  startup crash from snapshot dispatch.
 
 ## 0.20.1 - 24-Sep-2026
 
