@@ -8989,6 +8989,61 @@ raise SystemExit(
     assert "before=[] deliveries=[" in completed.stdout
 
 
+def test_snapshot_apply_dispatcher_initializes_from_worker_thread():
+    script = r"""
+import os
+import threading
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+from PySide6.QtWidgets import QApplication
+import applicant_scout.__main__ as main_mod
+
+app = QApplication([])
+assert main_mod._snapshot_apply_dispatcher is None
+gui_thread_id = threading.get_ident()
+deliveries = []
+
+def deliver():
+    deliveries.append(threading.get_ident())
+    app.quit()
+
+worker = threading.Thread(
+    target=lambda: main_mod._schedule_snapshot_apply(deliver)
+)
+worker.start()
+worker.join(timeout=2.0)
+before_event_loop = list(deliveries)
+from PySide6.QtCore import QTimer
+QTimer.singleShot(5000, app.quit)
+app.exec()
+print(f"before={before_event_loop!r} deliveries={deliveries!r}")
+raise SystemExit(
+    0
+    if not worker.is_alive()
+    and before_event_loop == []
+    and deliveries == [gui_thread_id]
+    and main_mod._snapshot_apply_dispatcher is not None
+    else 2
+)
+"""
+    env = dict(main_mod.os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+
+    completed = main_mod.subprocess.run(
+        [main_mod.sys.executable, "-c", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "before=[] deliveries=[" in completed.stdout
+
+
 def test_replace_screenshot_watcher_ignores_old_signal_emitted_during_old_stop_after_commit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

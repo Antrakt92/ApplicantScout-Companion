@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, QEventLoop, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, QEventLoop, Signal, QCoreApplication
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
@@ -3094,7 +3094,7 @@ class _SnapshotApplier(Protocol):
 class _SnapshotApplyDispatcher(QObject):
     _callbackReady = Signal(object)
 
-    def __init__(self, parent: QObject) -> None:
+    def __init__(self, parent: QObject | None) -> None:
         super().__init__(parent)
         # Always queue, including emissions from the GUI thread during watcher
         # commit. This lets the source transition finish before state is applied.
@@ -3113,11 +3113,36 @@ class _SnapshotApplyDispatcher(QObject):
 
 
 _snapshot_apply_dispatcher: _SnapshotApplyDispatcher | None = None
+_snapshot_apply_dispatcher_lock = threading.Lock()
 
 
 def _initialize_snapshot_apply_dispatcher(parent: QObject) -> None:
     global _snapshot_apply_dispatcher
     _snapshot_apply_dispatcher = _SnapshotApplyDispatcher(parent)
+
+
+def _initialize_snapshot_apply_dispatcher_off_thread(
+    app: QCoreApplication,
+) -> _SnapshotApplyDispatcher | None:
+    """Create the dispatcher from a worker thread without breaking affinity.
+
+    The dispatcher must live in the GUI thread (its slots touch Qt), but it
+    may be first needed there by a watchdog worker when no GUI-thread flush
+    has ever run. Creating it parentless off-thread and moving it over is
+    legal Qt; the global + lock make it exactly-once. Returns None only if
+    Qt itself refuses (then the caller keeps the old fail-closed raise).
+    """
+    global _snapshot_apply_dispatcher
+    with _snapshot_apply_dispatcher_lock:
+        if _snapshot_apply_dispatcher is not None:
+            return _snapshot_apply_dispatcher
+        try:
+            dispatcher = _SnapshotApplyDispatcher(None)
+            dispatcher.moveToThread(app.thread())
+        except RuntimeError:
+            return None
+        _snapshot_apply_dispatcher = dispatcher
+        return dispatcher
 
 
 def _schedule_snapshot_apply(callback: Callable[[], None]) -> None:
@@ -3126,9 +3151,12 @@ def _schedule_snapshot_apply(callback: Callable[[], None]) -> None:
         callback()
         return
     dispatcher = _snapshot_apply_dispatcher
-    if dispatcher is None and QThread.currentThread() is app.thread():
-        _initialize_snapshot_apply_dispatcher(app)
-        dispatcher = _snapshot_apply_dispatcher
+    if dispatcher is None:
+        if QThread.currentThread() is app.thread():
+            _initialize_snapshot_apply_dispatcher(app)
+            dispatcher = _snapshot_apply_dispatcher
+        else:
+            dispatcher = _initialize_snapshot_apply_dispatcher_off_thread(app)
     if dispatcher is None:
         raise RuntimeError("snapshot apply dispatcher is not initialized")
     dispatcher.schedule(callback)
