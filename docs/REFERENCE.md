@@ -171,7 +171,7 @@ through the slash commands below.
 /apscout setup          show companion download and setup
 /apscout status         show a short capture summary
 /apscout status diag    show detailed QR diagnostics
-/apscout selftest       start/finish in-game self-diagnostics export
+/apscout selftest       start/finish/show in-game diagnostics + copy window
 /apscout playstyle [off|learning|relaxed|competitive|carry] set M+ default playstyle
 /apscout reset          clear transport cache, queue fresh snapshot
 /apscout shotnow        request snapshot while enabled; defers in combat/M+/boss fights
