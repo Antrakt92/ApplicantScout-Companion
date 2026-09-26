@@ -251,6 +251,22 @@ def is_wow_running(
     return any(name.casefold() in expected for name in image_names)
 
 
+def foreground_window_handle() -> int | None:
+    """Return the foreground window handle on Windows, or None.
+
+    None covers every "no focused window" shape: non-Windows platforms,
+    probe failures, and a NULL hwnd (loading screens, mode flips, task
+    switcher transients report exactly this).
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+    except (AttributeError, OSError):
+        return None
+    return int(hwnd) if hwnd else None
+
+
 def foreground_process_id() -> int | None:
     """Return the process id for the foreground window on Windows."""
     if sys.platform != "win32":
@@ -264,6 +280,53 @@ def foreground_process_id() -> int | None:
         return int(pid.value) if pid.value else None
     except (AttributeError, OSError):
         return None
+
+
+ForegroundState = Literal["game", "other", "unknown"]
+
+
+def classify_foreground_state(
+    hwnd: int | None,
+    pid: int | None,
+    process_name: str | None,
+    process_names: tuple[str, ...] = WOW_PROCESS_NAMES,
+) -> ForegroundState:
+    """Classify a foreground-window snapshot without touching Win32.
+
+    "game" needs positive WoW evidence (resolvable exe match). "other" needs
+    positive non-WoW evidence (a focused window owned by another process).
+    "unknown" is everything else — NULL hwnd or unresolvable pid/process
+    name, i.e. raid-join loading screens, mode flips, and DWM transients
+    where no app is actually focused. Callers must only auto-hide on
+    "other"; "unknown" never hides a visible overlay.
+    """
+    if not hwnd:
+        return "unknown"
+    if pid is None or pid <= 0:
+        return "unknown"
+    if not process_name:
+        return "unknown"
+    lowered = process_name.casefold()
+    if any(lowered == expected.casefold() for expected in process_names):
+        return "game"
+    return "other"
+
+
+def foreground_state(
+    process_names: tuple[str, ...] = WOW_PROCESS_NAMES,
+) -> ForegroundState:
+    """Return the tri-state foreground classification for the live window."""
+    if sys.platform != "win32":
+        return "game"
+    hwnd = foreground_window_handle()
+    if not hwnd:
+        return "unknown"
+    pid = foreground_process_id()
+    if pid is None:
+        return "unknown"
+    return classify_foreground_state(
+        hwnd, pid, process_name_for_pid(pid), process_names
+    )
 
 
 def process_name_for_pid(pid: int) -> str | None:
@@ -299,13 +362,7 @@ def process_name_for_pid(pid: int) -> str | None:
 
 def is_wow_foreground(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
     """Return True when the active window belongs to WoW."""
-    pid = foreground_process_id()
-    if pid is None:
-        return sys.platform != "win32"
-    name = process_name_for_pid(pid)
-    if not name:
-        return False
-    return any(name.casefold() == process_name.casefold() for process_name in process_names)
+    return foreground_state(process_names) == "game"
 
 
 def is_wow_sync_watcher_running(

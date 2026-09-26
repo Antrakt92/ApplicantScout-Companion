@@ -234,15 +234,27 @@ LAUNCHER_FOREGROUND_GRACE_S = 3.0
 # repeated loss syncs (see _sync_game_foreground_visibility); only genuine
 # interaction holds (active window / cursor over overlay) extend visibility.
 OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S = 0.4
+# Manual re-open latch: a user-initiated show while the game is not
+# positively foreground (tray restore outside the game, badge click during
+# a loading screen) stamps this grace. While fresh, the foreground sync
+# never hides the overlay but keeps tracking _game_foreground so hide +
+# recovery behave normally after expiry. In-game restores do NOT stamp it
+# (alt-tabbing away from an open overlay still hides after the short loss
+# grace above), and snapshot-driven auto-shows (_maybe_show, game-return
+# restores) never stamp it either.
+MANUAL_REOPEN_FOREGROUND_GRACE_S = 5.0
 # Task-switcher settle: while Alt+Tab is held, foreground flaps game →
 # switcher → game roughly every second (live trace: XamlExplorerHostIslandWindow
 # "Task Switching", ForegroundStaging, NULL-hwnd transients between). Every
 # game flap would otherwise show()+raise_() our topmost windows ABOVE the
 # DWM-composited switcher. While switcher-class windows (matched by CLASS —
-# titles vary) or a NULL foreground hwnd are sighted, surfaces hide immediately
-# (no anti-flicker grace: the switcher is unambiguous, unlike focus flickers)
-# and the last sighting timestamp blocks the show path until the game
-# foreground is stable for this long.
+# titles vary) are sighted, surfaces hide immediately (no anti-flicker grace:
+# the switcher is unambiguous, unlike focus flickers) and the last sighting
+# timestamp blocks the show path until the game foreground is stable for
+# this long. A bare NULL foreground hwnd is NOT a switcher sighting — raid
+# joins / loading screens report no focused window exactly like this, so it
+# falls under the UNKNOWN foreground state (never hides, never arms the
+# loss grace) instead of the immediate-hide path.
 TASK_SWITCHER_SETTLE_MS = 800
 TASK_SWITCHER_SETTLE_S = TASK_SWITCHER_SETTLE_MS / 1000.0
 _TASK_SWITCHER_WINDOW_CLASSES = frozenset(
@@ -1411,6 +1423,18 @@ def _default_system_ui_foreground_probe() -> bool:
     for stable game foreground (TASK_SWITCHER_SETTLE_S).
     """
     return _default_system_ui_foreground_kind() != "none"
+
+
+def _normalize_foreground_state(value: object) -> str:
+    """Map a foreground probe result to "game" / "other" / "unknown".
+
+    Tri-state probes return one of the literals directly; legacy boolean
+    probes map True → "game" and False → "other" (positive non-game
+    evidence, preserving the historical alt-tab-hide contract).
+    """
+    if isinstance(value, str) and value in ("game", "other", "unknown"):
+        return value
+    return "game" if value else "other"
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -3683,6 +3707,7 @@ class OverlayWindow(QMainWindow):
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
         show_settings: Callable[[], None] | None = None,
         game_foreground_probe: Callable[[], bool] | None = None,
+        game_foreground_state_probe: Callable[[], object] | None = None,
         system_ui_foreground_probe: Callable[[], bool] | None = None,
         system_ui_foreground_kind_probe: Callable[[], str] | None = None,
     ):
@@ -3711,6 +3736,11 @@ class OverlayWindow(QMainWindow):
         self._metric_preferences = metric_preferences
         self._show_settings = show_settings
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
+        # Tri-state source for "game" / "other" / "unknown" (raid-join
+        # loading screens report NULL/unresolvable foreground = "unknown",
+        # never positive evidence of another app). When absent, the boolean
+        # game probe is normalized (True → "game", False → "other").
+        self._game_foreground_state_probe = game_foreground_state_probe
         self._system_ui_foreground_probe = (
             system_ui_foreground_probe or _default_system_ui_foreground_probe
         )
@@ -3736,6 +3766,7 @@ class OverlayWindow(QMainWindow):
         self._foreground_hook: ForegroundHook | None = None
         self._foreground_hook_fired.connect(self._on_foreground_hook)
         self._open_overlay_foreground_loss_grace_until = 0.0
+        self._manual_reopen_grace_until = 0.0
         self._launcher_foreground_grace_until = 0.0
         self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
@@ -4404,13 +4435,26 @@ class OverlayWindow(QMainWindow):
         if (
             require_game_foreground
             and not launcher_interaction_foreground
-            and not self._is_game_foreground()
+            and self._foreground_state() == "other"
         ):
             self._game_foreground = False
             self._collapsed_to_launcher = True
             self._hide_launcher_for_foreground_loss()
             return
+        restore_while_game_away = not self._game_foreground
         self._game_foreground = True
+        if restore_while_game_away:
+            # Manual re-open latch: the user explicitly asked for the overlay
+            # while the game was not positively foreground (tray restore
+            # outside the game, badge click during a loading screen), so the
+            # next foreground ticks must not hide it again. Read from the
+            # cached flag (no probe call — the badge-click hot path skips the
+            # probe, see test_launcher_click_restore_skips_foreground_probe).
+            # In-game restores skip the latch so alt-tab keeps today's
+            # short-grace hide timing.
+            self._manual_reopen_grace_until = (
+                time.monotonic() + MANUAL_REOPEN_FOREGROUND_GRACE_S
+            )
         foreground_grace_until = (
             time.monotonic() + LAUNCHER_FOREGROUND_GRACE_S
             if launcher_interaction_foreground
@@ -4439,12 +4483,29 @@ class OverlayWindow(QMainWindow):
             QTimer.singleShot(0, self._focus_accessibility_entry)
         self._update_foreground_polling()
 
-    def _is_game_foreground(self) -> bool:
+    def _foreground_state(self) -> str:
+        """Return "game" / "other" / "unknown" for the live foreground.
+
+        "unknown" (NULL hwnd or unresolvable pid/process — loading screens,
+        mode flips, DWM transients) means no app is positively focused and
+        must never hide a visible overlay. Probe failures fail open as
+        "game", matching the historical boolean fail-open contract.
+        """
+        state_probe = getattr(self, "_game_foreground_state_probe", None)
+        if state_probe is not None:
+            try:
+                return _normalize_foreground_state(state_probe())
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("Game foreground state probe failed: %s", exc)
+                return "game"
         try:
-            return bool(self._game_foreground_probe())
+            return _normalize_foreground_state(self._game_foreground_probe())
         except Exception as exc:  # noqa: BLE001
             _log.warning("Game foreground probe failed: %s", exc)
-            return True
+            return "game"
+
+    def _is_game_foreground(self) -> bool:
+        return self._foreground_state() == "game"
 
     def _is_system_ui_foreground(self) -> bool:
         try:
@@ -4596,29 +4657,45 @@ class OverlayWindow(QMainWindow):
             return
         if self._launcher.is_dragging():
             return
-        foreground = self._is_game_foreground()
+        state = self._foreground_state()
+        foreground = state == "game"
         now = time.monotonic()
+        if (
+            now < self._manual_reopen_grace_until
+            and not self._is_overlay_effectively_hidden()
+        ):
+            # Manual re-open latch: the user explicitly showed the overlay
+            # while the game was not positively foreground. Never hide on
+            # these ticks, but keep tracking the real foreground state so
+            # hide + recovery behave normally once the latch expires. A
+            # switcher sighting is still timestamped so the settle window
+            # applies after expiry.
+            if self._is_system_ui_foreground_kind() == "switcher":
+                self._last_system_ui_sighting_monotonic = now
+            self._game_foreground = foreground
+            self._update_foreground_polling()
+            return
         if self._is_system_ui_foreground():
-            # Task switcher (matched by CLASS — titles vary) or a NULL
-            # foreground hwnd. A switcher class is unambiguous system UI, not
-            # a focus flicker — hide immediately without the anti-flicker
-            # grace and stamp the sighting so the show path below waits for
-            # stable game foreground (TASK_SWITCHER_SETTLE_S). Interaction
-            # holds do not apply there: while Alt+Tab is held the DWM
-            # switcher owns the screen and our topmost windows must stay
-            # under it. The active-window guard on hide() itself is kept.
+            # Only a positively-identified task switcher (matched by CLASS —
+            # titles vary) hides immediately: it is unambiguous system UI,
+            # not a focus flicker, so there is no anti-flicker grace and the
+            # sighting is stamped so the show path below waits for stable
+            # game foreground (TASK_SWITCHER_SETTLE_S). Interaction holds do
+            # not apply there: while Alt+Tab is held the DWM switcher owns
+            # the screen and our topmost windows must stay under it. The
+            # active-window guard on hide() itself is kept.
             #
-            # A bare NULL hwnd ("transient") is ambiguous: it also occurs
-            # during ordinary cross-process activation, e.g. the moment a
-            # click on this overlay moves activation away from the game.
-            # Hiding an overlay the user is actively using (active window or
-            # cursor over it) on that single sample collapses the window
-            # out from under a row click. Such samples fall through to the
-            # ordinary foreground-loss path below, which applies the short
-            # anti-flicker grace plus the interaction holds instead.
+            # A bare NULL hwnd ("transient") is NOT positive evidence of
+            # another app: raid joins / loading screens / mode flips report
+            # no focused window exactly like this, as does ordinary
+            # cross-process activation (e.g. the moment a click on this
+            # overlay moves activation away from the game). Such samples fall
+            # through to the tri-state path below, where UNKNOWN never hides
+            # a visible overlay and never arms/confirms the loss grace; a
+            # positively-identified other app ("other") still takes the
+            # ordinary foreground-loss path (short grace + holds).
             kind = self._is_system_ui_foreground_kind()
-            held = self.isActiveWindow() or self._cursor_over_open_overlay()
-            if not (kind == "transient" and held):
+            if kind == "switcher":
                 self._last_system_ui_sighting_monotonic = now
                 self._open_overlay_foreground_loss_grace_until = 0.0
                 self._game_foreground = False
@@ -4627,8 +4704,16 @@ class OverlayWindow(QMainWindow):
                     self.hide()
                 self._update_foreground_polling()
                 return
-            # Ambiguous transient under active use: fall through to the
-            # ordinary foreground-loss path below (short grace + holds).
+            # Transient without a switcher class: fall through to the
+            # tri-state foreground handling below.
+        if state == "unknown":
+            # Loading screen / raid join / mode flip / DWM transient:
+            # GetForegroundWindow reports NULL or an unresolvable window, so
+            # no other app is positively focused. Never hide what is visible
+            # and never arm/confirm the loss grace into a hide; the next
+            # "game" sample restores normally through the show path below.
+            self._update_foreground_polling()
+            return
         open_overlay_visible = not self._is_overlay_effectively_hidden()
         open_overlay_interaction_foreground = (
             open_overlay_visible
@@ -6361,6 +6446,16 @@ class OverlayWindow(QMainWindow):
         if self._closed:
             return
         if not self._game_foreground:
+            if (
+                not self._is_overlay_effectively_hidden()
+                and self._foreground_state() == "unknown"
+            ):
+                # Snapshot/decode burst during a loading screen (NULL /
+                # unresolvable foreground, stale cached flag): no app is
+                # positively focused, so a visible overlay stays up instead
+                # of hiding here.
+                self._update_foreground_polling()
+                return
             if (
                 self._is_overlay_effectively_hidden()
                 and self._launcher.is_dragging()

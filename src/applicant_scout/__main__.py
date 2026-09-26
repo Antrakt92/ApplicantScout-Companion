@@ -128,6 +128,7 @@ from .wow_lifecycle import (
     WATCH_WOW_ARG,
     configure_wow_sync_startup,
     enable_wow_sync_startup_approval,
+    foreground_state,
     is_wow_foreground,
     is_wow_running,
     start_wow_sync_watcher,
@@ -6071,6 +6072,7 @@ def main(argv: list[str] | None = None) -> int:
             metric_preferences=cfg.metric_preferences,
             show_settings=_show_settings,
             game_foreground_probe=is_wow_foreground,
+            game_foreground_state_probe=foreground_state,
         )
         _validate_oauth_async(wcl_client)
         window.usage_activity = UsageActivity(usage_client)
