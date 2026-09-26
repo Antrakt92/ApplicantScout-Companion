@@ -10350,7 +10350,8 @@ def test_update_handoff_recovery_recovers_when_installer_exits():
 
     assert callbacks == [
         (
-            main_mod.UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE,
+            "Update installer failed (code 7). "
+            "You can retry the update or quit and install manually.",
             True,
         )
     ]

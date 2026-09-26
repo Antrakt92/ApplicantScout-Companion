@@ -3,15 +3,18 @@
 from contextlib import AbstractContextManager
 import hashlib
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from PySide6.QtGui import QIcon
 from test_config import usage_main_harness as usage_main_harness
 
 from applicant_scout import __main__ as main_mod
+from applicant_scout import overlay_health as health_mod
 from applicant_scout import settings_dialog as settings_mod
 from applicant_scout import updater
 from applicant_scout.config import Config
@@ -407,6 +410,7 @@ class _ProgressFakeTimer:
         self.interval = None
         self.started = False
         self.stopped = False
+        self.deleted = False
         self.timeout = _Signal()
         _ProgressFakeTimer.instances.append(self)
 
@@ -418,6 +422,9 @@ class _ProgressFakeTimer:
 
     def stop(self) -> None:
         self.stopped = True
+
+    def deleteLater(self) -> None:
+        self.deleted = True
 
 
 def _progress_controller(monotonic, recovered):
@@ -555,3 +562,269 @@ def test_settings_install_progress_shows_percent_and_hides_cancel(qtbot, tmp_pat
     assert dialog.status_label.text() == "Installing update\u2026 50%"
     assert dialog.cancel_update_button.isHidden()
     assert control.cancel() is False
+
+
+def test_install_progress_skips_completion_on_nonzero_exit_and_reports_code(tmp_path):
+    _ProgressFakeTimer.instances.clear()
+    clock = [0.0]
+    recovered = []
+    seen: list[updater.UpdateProgress] = []
+    state: dict[str, int | None] = {"code": None}
+    launch = SimpleNamespace(poll=lambda: state["code"])
+    controller = _progress_controller(lambda: clock[0], recovered)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "part.bin").write_bytes(b"x" * 1000)
+    controller.arm(
+        launch,
+        on_install_progress=seen.append,
+        install_estimator=updater.InstallProgressEstimator(3000),
+        install_staging_dir=staging,
+    )
+
+    recovery_timer, progress_timer = _ProgressFakeTimer.instances[-2:]
+    progress_timer.timeout.emit()
+    assert "33%" in seen[-1].message
+
+    # Crash/killed installer: no 100% flash, progress stops silently; the
+    # recovery tick owns the exit verdict.
+    state["code"] = 3
+    progress_timer.timeout.emit()
+
+    assert len(seen) == 1
+    assert progress_timer.stopped
+    assert progress_timer.deleted
+    assert recovered == []
+
+    recovery_timer.timeout.emit()
+
+    assert recovered == [
+        (
+            "Update installer failed (code 3). "
+            "You can retry the update or quit and install manually.",
+            True,
+        )
+    ]
+
+
+def test_handoff_disarm_deletes_timers_after_stop(tmp_path):
+    _ProgressFakeTimer.instances.clear()
+    recovered = []
+    controller = _progress_controller(lambda: 0.0, recovered)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    controller.arm(
+        SimpleNamespace(poll=lambda: None),
+        on_install_progress=lambda _progress: None,
+        install_estimator=updater.InstallProgressEstimator(3000),
+        install_staging_dir=staging,
+    )
+
+    recovery_timer, progress_timer = _ProgressFakeTimer.instances[-2:]
+    controller.disarm()
+
+    assert recovery_timer.stopped and recovery_timer.deleted
+    assert progress_timer.stopped and progress_timer.deleted
+
+    _ProgressFakeTimer.instances.clear()
+    controller.arm(
+        SimpleNamespace(poll=lambda: None),
+        on_install_progress=lambda _progress: None,
+        install_estimator=updater.InstallProgressEstimator(3000),
+        install_staging_dir=staging,
+    )
+    recovery_timer, progress_timer = _ProgressFakeTimer.instances[-2:]
+    controller._stop_install_progress()
+
+    assert progress_timer.stopped and progress_timer.deleted
+    assert not recovery_timer.stopped and not recovery_timer.deleted
+
+
+def test_tray_update_state_shows_install_percent(qapp):
+    controller = main_mod.TrayController(
+        app=qapp,
+        icon=QIcon(),
+        window=MagicMock(),
+        show_settings=lambda: None,
+        open_logs=lambda: "",
+        run_update=lambda: None,
+        quit_app=lambda: None,
+    )
+    controller.set_update_in_progress(True)
+
+    assert controller.update_action.text() == "Installing update..."
+    assert controller.tray.toolTip() == (
+        "ApplicantScout Companion update is installing"
+    )
+
+    controller.set_update_progress(updater.UpdateProgress("installing", 1500, 3000))
+
+    assert controller.update_action.text() == "Installing update... 50%"
+    assert "50%" in controller.tray.toolTip()
+    assert not controller.update_action.isEnabled()
+    assert not controller.quit_action.isEnabled()
+
+    controller.set_update_progress(updater.UpdateProgress("downloading", 5, 10))
+
+    assert controller.update_action.text() == "Installing update..."
+
+    controller.set_update_progress(updater.UpdateProgress("installing", 1, 0))
+
+    assert controller.update_action.text() == "Installing update..."
+
+    controller.set_update_in_progress(False)
+    controller.set_update_in_progress(True)
+
+    assert controller.update_action.text() == "Installing update..."
+
+
+def _health_kwargs(**overrides) -> dict:
+    params = dict(
+        restored_pending=False,
+        restored_saved_at=None,
+        restored_deadline=None,
+        wire_rejects=0,
+        wire_reject_threshold=3,
+        wire_reject_message="newer format",
+        wire_reject_active=False,
+        failed_at=None,
+        last_decode_time=None,
+        failed_path="shot.png",
+        failed_reason="reject",
+        addon_warning=None,
+        app_update_version="9.9.9",
+        applicants_unavailable=False,
+        roster_unavailable=False,
+        lfg_unavailable=False,
+        now=1000.0,
+    )
+    params.update(overrides)
+    return params
+
+
+def test_health_chip_installing_suppresses_app_update_hint():
+    chip = health_mod.health_chip_state(
+        **_health_kwargs(install_in_progress=True, install_percent=42)
+    )
+
+    assert (chip.text, chip.chip_state) == ("Installing\u2026 42%", "active")
+    assert "9.9.9" not in chip.tooltip
+    assert "Open Settings" not in chip.tooltip
+    assert chip.accessible == chip.tooltip
+
+
+def test_health_chip_installing_without_total_shows_spinner():
+    chip = health_mod.health_chip_state(
+        **_health_kwargs(install_in_progress=True, install_percent=None)
+    )
+
+    assert (chip.text, chip.chip_state) == ("Installing\u2026", "active")
+    assert "9.9.9" not in chip.tooltip
+
+
+def test_health_chip_app_update_hint_returns_without_handoff():
+    chip = health_mod.health_chip_state(**_health_kwargs())
+
+    assert (chip.text, chip.chip_state) == ("App update", "warning")
+    assert "9.9.9" in chip.tooltip
+
+
+def test_update_attempt_generations_keep_live_attempt_locked():
+    gate = main_mod._UpdateQuitGate()
+    first = gate.begin_update_attempt()
+    second = gate.begin_update_attempt()
+
+    assert first != second
+    assert gate.finish_update_attempt(first) is False
+    assert gate.update_in_progress
+    assert gate.finish_update_attempt(second) is True
+    assert not gate.update_in_progress
+
+
+def test_control_quit_during_handoff_waits_bounded_for_installer_exit():
+    gate = main_mod._UpdateQuitGate(handoff_exit_timeout_s=5.0)
+    gate.begin_update_attempt()
+    assert gate.mark_installer_handoff_started() is True
+
+    waits: list[float] = []
+    gate.set_handoff_exit_waiter(lambda timeout: waits.append(timeout) or True)
+
+    assert gate.prepare_control_quit(lambda: False) is True
+    assert waits == [5.0]
+    assert not gate.can_user_quit()
+
+    gate.set_handoff_exit_waiter(None)
+
+    assert gate.prepare_control_quit(lambda: False) is True
+
+    gate.rollback_installer_handoff()
+    gate.set_update_in_progress(True)
+
+    assert gate.prepare_control_quit(lambda: True) is True
+    assert gate.prepare_control_quit(lambda: False) is False
+
+
+def test_wait_for_installer_exit_returns_on_exit_and_times_out():
+    recovered: list = []
+    controller = main_mod._UpdateHandoffRecoveryController(
+        None,
+        on_recover=lambda message, retry: recovered.append((message, retry)),
+        timer_factory=_ProgressFakeTimer,
+        monotonic=time.monotonic,
+    )
+
+    controller._installer_launch = SimpleNamespace(poll=lambda: 0)
+    assert controller.wait_for_installer_exit(5.0) is True
+
+    controller._installer_launch = SimpleNamespace(poll=lambda: None)
+    started = time.monotonic()
+    assert controller.wait_for_installer_exit(0.06) is False
+    assert time.monotonic() - started < 5.0
+
+    controller._installer_launch = None
+    assert controller.wait_for_installer_exit(5.0) is True
+
+    def _boom():
+        raise RuntimeError("synthetic poll failure")
+
+    controller._installer_launch = SimpleNamespace(poll=_boom)
+    assert controller.wait_for_installer_exit(5.0) is False
+
+
+def test_install_progress_skips_identical_reports_but_keeps_first_change_and_final(
+    monkeypatch,
+):
+    clock = [10.0]
+    monkeypatch.setattr(updater.time, "monotonic", lambda: clock[0])
+    seen: list[updater.UpdateProgress] = []
+    control = updater.UpdateDownloadControl(seen.append)
+
+    first = updater.UpdateProgress("installing", 1000, 3000)
+    control.report(first)
+    # Past the throttle window identical reports must still be skipped.
+    clock[0] += 5.0
+    control.report(updater.UpdateProgress("installing", 1000, 3000))
+    control.report(updater.UpdateProgress("installing", 1000, 3000))
+    assert seen == [first]
+
+    clock[0] += 5.0
+    changed = updater.UpdateProgress("installing", 1500, 3000)
+    control.report(changed)
+    assert seen == [first, changed]
+
+    # The same-phase throttle still bounds rapid changes.
+    clock[0] += 0.05
+    control.report(updater.UpdateProgress("installing", 1600, 3000))
+    assert seen == [first, changed]
+
+    # Phase changes and the terminal report are always delivered.
+    clock[0] += 5.0
+    control.report(updater.UpdateProgress("verifying"))
+    final = updater.UpdateProgress("installing", 3000, 3000)
+    control.report(final)
+    assert seen == [first, changed, updater.UpdateProgress("verifying"), final]
+
+    # Skipping reports never disturbs cancel/checkpoint semantics.
+    assert control.cancel() is True
+    with pytest.raises(updater.UpdateCancelled):
+        control.checkpoint()

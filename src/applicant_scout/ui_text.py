@@ -69,6 +69,17 @@ def format_update_install(downloaded_bytes: int, total_bytes: int | None) -> str
     return f"Installing update{ELLIPSIS}"
 
 
+def format_update_install_terminal() -> str:
+    """Terminal installing text after the installer exit was observed.
+
+    Used only when the install total is unknown, so no percent can be
+    shown. This is deliberately not a success claim ("done" would be
+    wrong while unverified): the handoff verification message remains
+    the sole success signal.
+    """
+    return f"Installing update{ELLIPSIS} finishing{ELLIPSIS}"
+
+
 def format_update_download(downloaded_bytes: int, total_bytes: int | None) -> str:
     """Downloading-progress text for known or unknown totals."""
     if total_bytes:

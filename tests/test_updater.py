@@ -1768,8 +1768,44 @@ def test_install_estimator_without_total_reports_plain_message():
     estimator = updater_mod.InstallProgressEstimator(None)
 
     assert estimator.observe(500).message == "Installing update\u2026"
-    assert estimator.complete() == updater_mod.UpdateProgress("installing")
+    completed = estimator.complete()
+    assert completed != updater_mod.UpdateProgress("installing")
+    assert completed.message == updater_mod.format_update_install_terminal()
+    assert "%" not in completed.message
     assert updater_mod.InstallProgressEstimator(None).observe(-3).downloaded_bytes == 0
+
+
+def test_install_estimator_degenerate_total_reports_spinner_not_stuck_zero():
+    estimator = updater_mod.InstallProgressEstimator(1)
+
+    assert estimator.total_bytes == 1
+    assert estimator.observe(0).message == "Installing update\u2026"
+    progress = estimator.observe(5)
+    assert progress.total_bytes is None
+    assert progress.downloaded_bytes == 5
+    assert "%" not in progress.message
+    # Completion stays the sole percent signal for degenerate totals too.
+    assert estimator.complete() == updater_mod.UpdateProgress(
+        "installing", 1, 1
+    )
+    assert estimator.complete().message == "Installing update\u2026 100%"
+
+
+def test_install_estimator_unknown_total_completion_is_terminal_not_spinner():
+    estimator = updater_mod.InstallProgressEstimator(None)
+    estimator.observe(500)
+
+    completed = estimator.complete()
+
+    assert completed.install_complete is True
+    assert completed.total_bytes is None
+    assert completed.message != updater_mod.UpdateProgress("installing").message
+    assert "100%" not in completed.message
+    assert "%" not in completed.message
+    # A fresh estimator still yields an explicit terminal state.
+    fresh = updater_mod.InstallProgressEstimator(None).complete()
+    assert fresh != updater_mod.UpdateProgress("installing")
+    assert fresh.message == completed.message
 
 
 def test_begin_installation_with_total_reports_percent_and_blocks_cancel():

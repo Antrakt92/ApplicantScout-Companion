@@ -24,6 +24,7 @@ from .config import user_cache_dir
 from .ui_text import (
     format_update_download,
     format_update_install,
+    format_update_install_terminal,
     update_phase_message,
 )
 
@@ -75,12 +76,15 @@ class UpdateProgress:
     phase: Literal["checking", "downloading", "verifying", "installing"]
     downloaded_bytes: int = 0
     total_bytes: int | None = None
+    install_complete: bool = False
 
     @property
     def message(self) -> str:
         if self.phase == "downloading":
             return format_update_download(self.downloaded_bytes, self.total_bytes)
         if self.phase == "installing":
+            if self.install_complete and self.total_bytes is None:
+                return format_update_install_terminal()
             return format_update_install(self.downloaded_bytes, self.total_bytes)
         return update_phase_message(self.phase)
 
@@ -123,6 +127,11 @@ class UpdateDownloadControl:
         now = time.monotonic()
         with self._lock:
             previous = self._last_progress
+            if previous is not None and previous == progress:
+                # Identical re-report (e.g. unchanged staging bytes on the
+                # install poll): skip delivery. First, change, and phase
+                # reports still flow through the throttle below.
+                return
             if previous is not None and previous.phase == progress.phase and now - self._last_report_at < 0.1:
                 return
             self._last_progress = progress
@@ -143,8 +152,6 @@ class InstallerLaunch:
 # before promotion (mirrors `[Files] DestDir: "{app}\.apscout-next"` in
 # packaging/inno/ApplicantScoutCompanion.iss).
 _INSTALL_STAGING_DIR_NAME = ".apscout-next"
-# Cadence for measuring the staging directory while the installer runs.
-_INSTALL_PROGRESS_POLL_INTERVAL_SECONDS = 0.3
 # Expected installed payload = downloaded installer size × this factor.
 #
 # Anchor choice (no new fetch for estimation): the release manifest
@@ -203,7 +210,9 @@ class InstallProgressEstimator:
     moves (`.apscout-next` → `current`), so the high-water mark never
     reports backwards and reports stop at 99%: the final 100% is emitted
     only after the installer process exit is observed (see `complete()`),
-    never from byte counting alone.
+    never from byte counting alone. With an unknown (or degenerate) total
+    there is no percent to show: progress stays spinner-style and
+    `complete()` returns a percent-free terminal state instead.
     """
 
     def __init__(self, total_bytes: int | None) -> None:
@@ -219,15 +228,28 @@ class InstallProgressEstimator:
     def observe(self, staged_bytes: int) -> UpdateProgress:
         staged = max(0, staged_bytes)
         self._high_water_mark = max(self._high_water_mark, staged)
-        if self._total_bytes is None:
+        if self._total_bytes is None or self._total_bytes <= 1:
+            # Degenerate anchor (at most one byte): percent math cannot
+            # represent 1-99%, so report spinner-style progress instead of
+            # a permanently stuck 0%.
             return UpdateProgress("installing", self._high_water_mark, None)
         reported = min(self._high_water_mark, self._total_bytes - 1)
         return UpdateProgress("installing", max(0, reported), self._total_bytes)
 
     def complete(self) -> UpdateProgress:
-        """Final 100%: call only after the installer exit was observed."""
+        """Terminal progress: call only after the installer exit was observed.
+
+        With a known total this is the single 100% signal. With an unknown
+        total it is a percent-free terminal state, never a success claim:
+        the handoff verification message remains the sole success signal.
+        """
         if self._total_bytes is None:
-            return UpdateProgress("installing")
+            return UpdateProgress(
+                "installing",
+                self._high_water_mark,
+                None,
+                install_complete=True,
+            )
         return UpdateProgress("installing", self._total_bytes, self._total_bytes)
 
 
