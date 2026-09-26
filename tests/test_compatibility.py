@@ -26,10 +26,13 @@ def test_paired_addon_version_is_accepted():
 
 
 def test_newer_addon_version_warns_to_update_companion():
-    warning = addon_version_warning("0.13.0")
+    paired = _parse_semver(PAIRED_ADDON_VERSION)
+    assert paired is not None
+    newer = f"{paired[0]}.{paired[1] + 1}.0"
+    warning = addon_version_warning(newer)
 
     assert warning is not None
-    assert "0.13.0" in warning
+    assert newer in warning
     assert PAIRED_ADDON_VERSION in warning
     assert "/reload" in warning
 
