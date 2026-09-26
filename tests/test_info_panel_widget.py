@@ -4373,8 +4373,17 @@ def test_successful_decode_clears_previous_health_failure(monkeypatch, qtbot, tm
             window._raid_boss_retry_timer,
         ):
             timer.stop()
-        times = iter([100.0, 100.0, 105.0, 107.0])
-        monkeypatch.setattr(overlay_mod.time, "time", lambda: next(times))
+        times = [100.0, 100.0, 105.0, 107.0]
+
+        def _next_time():
+            # Inexhaustible: a teardown timer event may squeeze in one extra
+            # read after the window is gone; repeating the last stamp keeps
+            # the assertions deterministic instead of raising StopIteration.
+            if len(times) > 1:
+                return times.pop(0)
+            return times[0]
+
+        monkeypatch.setattr(overlay_mod.time, "time", _next_time)
         window.note_decode_failed("WoWScrnShot_0001.jpg", "CRC mismatch")
         window.note_decode(object())
         assert window._health_label.text() == "Shot 2s ago"
