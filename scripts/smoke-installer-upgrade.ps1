@@ -78,6 +78,7 @@ function Invoke-InstallerSmoke {
         -PassThru `
         -Wait `
         -WindowStyle Hidden
+    Write-Output ("Installer smoke invocation: ExpectFailure={0} PostPromotionFailure={1} FinalizationFailure={2} PendingRenameFailure={3} TransientRenameFailure={4} ExitCode={5}" -f $ExpectFailure, $PostPromotionFailure, $FinalizationFailure, $PendingRenameFailure, $TransientRenameFailure, $Process.ExitCode)
     if ($ExpectFailure -and $Process.ExitCode -eq 0) {
         throw "Installer failure smoke unexpectedly succeeded."
     }
