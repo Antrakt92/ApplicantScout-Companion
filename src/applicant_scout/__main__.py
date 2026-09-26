@@ -345,6 +345,7 @@ class TrayController:
         self.update_action.triggered.connect(lambda *_args: run_update())
         self._latest_update_version: str | None = None
         self._update_in_progress = False
+        self._install_percent: int | None = None
 
         self.open_logs_action = _add_menu_action(self.menu, "Open logs")
         self.open_logs_action.triggered.connect(
@@ -375,14 +376,37 @@ class TrayController:
 
     def set_update_in_progress(self, in_progress: bool) -> None:
         self._update_in_progress = in_progress
+        if not in_progress:
+            self._install_percent = None
         self._render_update_state()
+
+    def set_update_progress(self, progress: UpdateProgress) -> None:
+        """Mirror installer-handoff percent into the tray action/tooltip."""
+        if progress.phase == "installing" and progress.total_bytes:
+            self._install_percent = min(
+                100, progress.downloaded_bytes * 100 // progress.total_bytes
+            )
+        else:
+            self._install_percent = None
+        if self._update_in_progress:
+            self._render_update_state()
 
     def _render_update_state(self) -> None:
         if self._update_in_progress:
-            self.update_action.setText("Installing update...")
+            if self._install_percent is not None:
+                self.update_action.setText(
+                    f"Installing update... {self._install_percent}%"
+                )
+                tooltip = (
+                    "ApplicantScout Companion update is installing "
+                    f"({self._install_percent}%)."
+                )
+            else:
+                self.update_action.setText("Installing update...")
+                tooltip = "ApplicantScout Companion update is installing"
             self.update_action.setEnabled(False)
             self.quit_action.setEnabled(False)
-            self.tray.setToolTip("ApplicantScout Companion update is installing")
+            self.tray.setToolTip(tooltip)
             return
         self.quit_action.setEnabled(True)
         if self._latest_update_version:
@@ -2009,6 +2033,9 @@ class _UpdateCompletion:
     installer_handoff: bool = False
     installer_launch: object | None = None
     cancelled: bool = False
+    # Attempt generation of the starter that produced this completion
+    # (fix 6). 0 = unknown/legacy source: clears unconditionally.
+    generation: int = 0
 
 
 def _update_completion_from_result(
@@ -2025,10 +2052,13 @@ def _update_completion_from_result(
 
 
 class _UpdateQuitGate:
-    def __init__(self) -> None:
+    def __init__(self, *, handoff_exit_timeout_s: float = 15.0) -> None:
         self._lock = threading.Lock()
         self._update_in_progress = False
         self._installer_handoff_started = False
+        self._attempt_generation = 0
+        self._handoff_exit_timeout_s = handoff_exit_timeout_s
+        self._handoff_exit_waiter: Callable[[float], bool] | None = None
 
     @property
     def update_in_progress(self) -> bool:
@@ -2040,6 +2070,28 @@ class _UpdateQuitGate:
             self._update_in_progress = in_progress
             if not in_progress:
                 self._installer_handoff_started = False
+
+    def begin_update_attempt(self) -> int:
+        """Starter side of the attempt generation (fix 6): mark busy, get id."""
+        with self._lock:
+            self._update_in_progress = True
+            self._attempt_generation += 1
+            return self._attempt_generation
+
+    def finish_update_attempt(self, generation: int) -> bool:
+        """Finisher clears only its own attempt; stale ids keep the lock."""
+        with self._lock:
+            if generation != self._attempt_generation:
+                return False
+            self._update_in_progress = False
+            self._installer_handoff_started = False
+            return True
+
+    def set_handoff_exit_waiter(
+        self, waiter: Callable[[float], bool] | None
+    ) -> None:
+        with self._lock:
+            self._handoff_exit_waiter = waiter
 
     def mark_installer_handoff_started(self) -> bool:
         with self._lock:
@@ -2063,8 +2115,21 @@ class _UpdateQuitGate:
 
     def prepare_control_quit(self, normal_prepare: Callable[[], bool]) -> bool:
         with self._lock:
-            if self._update_in_progress and self._installer_handoff_started:
-                return True
+            handoff = self._update_in_progress and self._installer_handoff_started
+            waiter = self._handoff_exit_waiter
+            timeout_s = self._handoff_exit_timeout_s
+        if handoff:
+            # Control-quit during installer handoff: the installer keeps
+            # running headless after this process exits, so wait bounded
+            # (<=15s) for its exit instead of abandoning it unverified, then
+            # quit regardless. Promotion success is confirmed by the next
+            # hourly update check. User-quit stays blocked via can_user_quit.
+            if waiter is not None:
+                try:
+                    waiter(timeout_s)
+                except Exception as exc:  # noqa: BLE001 - quit regardless
+                    log.warning("Could not wait for update installer exit: %s", exc)
+            return True
         return normal_prepare()
 
 
@@ -2128,15 +2193,28 @@ class _UpdateHandoffRecoveryController:
     def disarm(self) -> None:
         if self._timer is not None:
             self._timer.stop()
+            self._delete_timer(self._timer)
         self._timer = None
         self._installer_launch = None
         self._started_at = None
         if self._progress_timer is not None:
             self._progress_timer.stop()
+            self._delete_timer(self._progress_timer)
         self._progress_timer = None
         self._on_install_progress = None
         self._install_estimator = None
         self._install_staging_dir = None
+
+    @staticmethod
+    def _delete_timer(timer: Any) -> None:
+        """Queue Qt deletion after stop (fix 2); test fakes lack deleteLater."""
+        delete = getattr(timer, "deleteLater", None)
+        if not callable(delete):
+            return
+        try:
+            delete()
+        except RuntimeError:
+            pass  # Qt wrapper already destroyed.
 
     def _tick(self) -> None:
         if self._started_at is None:
@@ -2144,18 +2222,26 @@ class _UpdateHandoffRecoveryController:
         poll = getattr(self._installer_launch, "poll", None)
         if callable(poll):
             try:
-                if poll() is not None:
-                    self._recover(UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)
-                    return
+                exit_code = poll()
             except Exception as exc:  # noqa: BLE001
                 log.warning("Could not poll update installer process: %s", exc)
                 self._recover(UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)
+                return
+            if exit_code is not None:
+                if exit_code == 0:
+                    self._recover(UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)
+                else:
+                    self._recover(
+                        f"Update installer failed (code {exit_code}). "
+                        "You can retry the update or quit and install manually.",
+                        True,
+                    )
                 return
         if self._monotonic() - self._started_at >= self._timeout_s:
             self._recover(UPDATE_HANDOFF_TIMEOUT_MESSAGE, False)
 
     def _tick_install_progress(self) -> None:
-        """Report staging-dir progress; 100% only on observed installer exit."""
+        """Report staging-dir progress; 100% only on clean (code 0) exit."""
         estimator = self._install_estimator
         staging_dir = self._install_staging_dir
         on_progress = self._on_install_progress
@@ -2164,10 +2250,15 @@ class _UpdateHandoffRecoveryController:
             return
         try:
             poll = getattr(self._installer_launch, "poll", None)
-            if callable(poll) and poll() is not None:
-                on_progress(estimator.complete())
-                self._stop_install_progress()
-                return
+            if callable(poll):
+                exit_code = poll()
+                if exit_code is not None:
+                    if exit_code == 0:
+                        on_progress(estimator.complete())
+                    # Nonzero/killed: stop silently without 100%; the
+                    # recovery tick owns the exit verdict and surfaces it.
+                    self._stop_install_progress()
+                    return
             on_progress(estimator.observe(measure_directory_bytes(staging_dir)))
         except Exception as exc:  # noqa: BLE001
             log.warning("Could not report update install progress: %s", exc)
@@ -2176,10 +2267,28 @@ class _UpdateHandoffRecoveryController:
     def _stop_install_progress(self) -> None:
         if self._progress_timer is not None:
             self._progress_timer.stop()
+            self._delete_timer(self._progress_timer)
         self._progress_timer = None
         self._on_install_progress = None
         self._install_estimator = None
         self._install_staging_dir = None
+
+    def wait_for_installer_exit(self, timeout_s: float) -> bool:
+        """Block (bounded) until the handoff installer exits; True on exit."""
+        poll = getattr(self._installer_launch, "poll", None)
+        if not callable(poll):
+            return True
+        deadline = self._monotonic() + max(0.0, timeout_s)
+        while True:
+            try:
+                if poll() is not None:
+                    return True
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not poll update installer process: %s", exc)
+                return False
+            if self._monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
     def _recover(self, message: str, retry_available: bool) -> None:
         self.disarm()
@@ -5168,6 +5277,9 @@ def main(argv: list[str] | None = None) -> int:
     watcher: ScreenshotWatcher | None = None
     live_snapshot_writer: LiveSnapshotCacheWriter | None = None
     active_update_control: UpdateDownloadControl | None = None
+    # Latest progress of the live attempt (fix 5): forwarded to freshly
+    # created dialogs so handoff-phase cancel state applies at setup.
+    last_update_progress: UpdateProgress | None = None
     # H3: bounded quit-time wait for the async settings pipeline (assigned in
     # _show_settings once the dialog exists; also registered into the pipeline).
     settings_apply_drain: Callable[[], bool] | None = None
@@ -5341,27 +5453,59 @@ def main(argv: list[str] | None = None) -> int:
     current_screenshots_dir = screenshots_dir
     wow_exit_timer: QTimer | None = None
 
-    def _set_update_in_progress(in_progress: bool) -> None:
-        nonlocal active_update_control
-        if in_progress and not update_quit_gate.update_in_progress:
-            control = UpdateDownloadControl(
-                lambda progress: update_signals.progressed.emit(control, progress)
-            )
-            active_update_control = control
-        elif not in_progress:
+    def _set_update_in_progress(
+        in_progress: bool, *, generation: int | None = None
+    ) -> int:
+        """Gate + control/UI sync for one update attempt (fix 6: generations).
+
+        Starters (in_progress=True) register a new attempt id and return it;
+        finishers clear only when `generation` matches the latest starter, so
+        a stale completion cannot drop a live attempt's lock and controls.
+        `generation=None` on the finish path forces the clear (handoff
+        recovery owns the attempt it armed; legacy/test completions use 0).
+        Button/lock behavior is otherwise identical.
+        """
+        nonlocal active_update_control, last_update_progress
+        if in_progress:
+            already = update_quit_gate.update_in_progress
+            attempt = update_quit_gate.begin_update_attempt()
+            last_update_progress = None
+            if not already:
+                control = UpdateDownloadControl(
+                    lambda progress: update_signals.progressed.emit(control, progress)
+                )
+                active_update_control = control
+        else:
+            if generation:
+                if not update_quit_gate.finish_update_attempt(generation):
+                    return generation
+            else:
+                update_quit_gate.set_update_in_progress(False)
             active_update_control = None
-        update_quit_gate.set_update_in_progress(in_progress)
+            last_update_progress = None
+            attempt = generation or 0
+            if window is not None:
+                window.set_update_progress(None)
         if tray_controller is not None:
             tray_controller.set_update_available(pending_update_version)
             tray_controller.set_update_in_progress(in_progress)
         if settings_dialog is not None:
             settings_dialog.set_update_in_progress(in_progress)
+        return attempt
 
     def _handle_update_progress(control: object, progress: object) -> None:
+        nonlocal last_update_progress
         if control is not active_update_control or not update_quit_gate.update_in_progress:
             return
-        if settings_dialog is not None and isinstance(progress, UpdateProgress):
+        if not isinstance(progress, UpdateProgress):
+            return
+        last_update_progress = progress
+        if settings_dialog is not None:
             settings_dialog.set_update_progress(progress)
+        if tray_controller is not None:
+            tray_controller.set_update_progress(progress)
+        if window is not None:
+            window.set_update_progress(progress)
 
     update_signals.progressed.connect(_handle_update_progress)
 
@@ -5617,13 +5761,29 @@ def main(argv: list[str] | None = None) -> int:
         dialog.usageConsentChanged.connect(_usage_consent_changed)
         dialog.credentialsValidated.connect(_handle_credentials_validated)
         dialog.updateStarted.connect(window.flush_geometry)
-        dialog.updateStarted.connect(lambda: _set_update_in_progress(True))
-        dialog.updateFinished.connect(lambda _error: _set_update_in_progress(False))
+        # Fix 6: the starter captures its attempt id; the finisher clears
+        # only that same attempt, so a concurrent tray+dialog double-entry
+        # cannot drop a live attempt's lock.
+        dialog_attempt: dict[str, int] = {"generation": 0}
+
+        def _dialog_update_started() -> None:
+            dialog_attempt["generation"] = _set_update_in_progress(True)
+
+        def _dialog_update_finished(_error: bool) -> None:
+            _set_update_in_progress(False, generation=dialog_attempt["generation"])
+
+        dialog.updateStarted.connect(_dialog_update_started)
+        dialog.updateFinished.connect(_dialog_update_finished)
         dialog.updateCompleted.connect(_handle_dialog_update_completed)
         dialog.updateHandoffStarted.connect(_handle_update_handoff_started)
         dialog.quitRequested.connect(_request_quit_application)
         dialog.destroyed.connect(lambda *_args: _forget_dialog())
+        # Fix 5: apply the live handoff phase synchronously at setup so a
+        # dialog created during installing hides cancel (and shows status)
+        # immediately instead of waiting for the next progress tick.
         dialog.set_update_in_progress(update_quit_gate.update_in_progress)
+        if last_update_progress is not None:
+            dialog.set_update_progress(last_update_progress)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -5647,6 +5807,11 @@ def main(argv: list[str] | None = None) -> int:
         app,
         on_recover=_recover_update_handoff,
     )
+    # Fix 7: control-quit during installer handoff waits bounded for the
+    # installer exit (see _UpdateQuitGate.prepare_control_quit).
+    update_quit_gate.set_handoff_exit_waiter(
+        update_handoff_recovery.wait_for_installer_exit
+    )
 
     def _run_update() -> None:
         if update_quit_gate.update_in_progress:
@@ -5655,23 +5820,29 @@ def main(argv: list[str] | None = None) -> int:
         if not _flush_settings_before_update(settings_dialog):
             return
         window.flush_geometry()
-        _set_update_in_progress(True)
+        attempt = _set_update_in_progress(True)
 
         def _worker() -> None:
             try:
                 result = _check_updates_with_handoff()
                 completion = _update_completion_from_result(result)
-                update_signals.completed.emit(completion)
+                update_signals.completed.emit(
+                    replace(completion, generation=attempt)
+                )
             except Exception as exc:  # noqa: BLE001
                 update_signals.completed.emit(
-                    _UpdateCompletion(f"Update failed: {exc}", error=True)
+                    _UpdateCompletion(
+                        f"Update failed: {exc}", error=True, generation=attempt
+                    )
                 )
 
         _start_daemon_thread(
             _worker,
             name="ApplicantScoutUpdater",
             on_start_error=lambda exc: update_signals.completed.emit(
-                _UpdateCompletion(f"Update failed: {exc}", error=True)
+                _UpdateCompletion(
+                    f"Update failed: {exc}", error=True, generation=attempt
+                )
             ),
         )
 
@@ -5682,13 +5853,13 @@ def main(argv: list[str] | None = None) -> int:
             return
         if completion.cancelled:
             update_handoff_recovery.disarm()
-            _set_update_in_progress(False)
+            _set_update_in_progress(False, generation=completion.generation)
             if settings_dialog is not None:
                 settings_dialog.set_status(completion.message)
             return
         if completion.error:
             update_handoff_recovery.disarm()
-            _set_update_in_progress(False)
+            _set_update_in_progress(False, generation=completion.generation)
             _notify_update_failure(
                 window=window,
                 tray_controller=tray_controller,
@@ -5704,7 +5875,7 @@ def main(argv: list[str] | None = None) -> int:
             return
         update_handoff_recovery.disarm()
         pending_update_version = None
-        _set_update_in_progress(False)
+        _set_update_in_progress(False, generation=completion.generation)
         if settings_dialog is not None:
             settings_dialog.set_update_available(None)
         if tray_controller is not None:

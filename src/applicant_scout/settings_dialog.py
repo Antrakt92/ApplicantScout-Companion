@@ -900,6 +900,7 @@ class SettingsDialog(QDialog):
         self._usage_consent_generation = 0
         self._wcl_example_dialog: QDialog | None = None
         self._latest_update_version: str | None = None
+        self._last_update_progress: UpdateProgress | None = None
         self.usageConsentSaveFinished.connect(self._finish_usage_consent_save)
         self._title_drag_offset: QPoint | None = None
         gui_app = QApplication.instance()
@@ -1616,18 +1617,29 @@ class SettingsDialog(QDialog):
             return
         self._update_in_progress = in_progress
         self._update_cancel_requested = False
+        if not in_progress:
+            self._last_update_progress = None
         self.cancel_update_button.setVisible(in_progress and self._cancel_update is not None)
         self.cancel_update_button.setEnabled(in_progress)
+        if in_progress and self._is_install_phase(self._last_update_progress):
+            # Handoff is already installing: hide cancel at setup instead of
+            # showing it until the first progress tick (display-only; the
+            # click path stays safe via cancel()->False).
+            self.cancel_update_button.setVisible(False)
+            self.cancel_update_button.setEnabled(False)
+            assert self._last_update_progress is not None
+            self._render_installing_button(self._last_update_progress)
         if in_progress:
             self._autosave_timer.stop()
         self._refresh_settings_interaction_state()
         if in_progress:
             self.update_button.show()
-            _set_tooltip_and_accessibility(
-                self.update_button,
-                tooltip=UPDATE_INSTALLING_TOOLTIP,
-                accessible_name=UPDATE_ACCESSIBLE_NAME,
-            )
+            if not self._is_install_phase(self._last_update_progress):
+                _set_tooltip_and_accessibility(
+                    self.update_button,
+                    tooltip=UPDATE_INSTALLING_TOOLTIP,
+                    accessible_name=UPDATE_ACCESSIBLE_NAME,
+                )
         elif self.update_button.isHidden():
             _set_tooltip_and_accessibility(
                 self.update_button,
@@ -1638,12 +1650,42 @@ class SettingsDialog(QDialog):
             self.set_update_available(self._latest_update_version)
             self._refresh_settings_interaction_state()
 
+    @staticmethod
+    def _is_install_phase(progress: UpdateProgress | None) -> bool:
+        return progress is not None and progress.phase == "installing"
+
+    @staticmethod
+    def _install_percent(progress: UpdateProgress) -> int | None:
+        # Same integer math as ui_text.format_update_install backing
+        # UpdateProgress.message, so the button percent always matches the
+        # visible status text.
+        if not progress.total_bytes:
+            return None
+        return min(100, progress.downloaded_bytes * 100 // progress.total_bytes)
+
+    def _render_installing_button(self, progress: UpdateProgress) -> None:
+        """Installing tooltip + accessible text with percent parity."""
+        percent = self._install_percent(progress)
+        installing_tip = (
+            f"Installing ApplicantScout update… {percent}%"
+            if percent is not None
+            else UPDATE_INSTALLING_TOOLTIP
+        )
+        _set_tooltip_and_accessibility(
+            self.update_button,
+            tooltip=installing_tip,
+            accessible_name=UPDATE_ACCESSIBLE_NAME,
+        )
+
     def set_update_progress(self, progress: UpdateProgress) -> None:
+        self._last_update_progress = progress
         if not self._update_in_progress:
             return
         cancellable = progress.phase != "installing" and self._cancel_update is not None
         self.cancel_update_button.setVisible(cancellable)
         self.cancel_update_button.setEnabled(cancellable and not self._update_cancel_requested)
+        if progress.phase == "installing":
+            self._render_installing_button(progress)
         if not self._update_cancel_requested:
             self._set_status(progress.message, busy=True)
 

@@ -3348,3 +3348,61 @@ def test_settings_dialog_section_groups_keep_composition(qtbot, tmp_path: Path):
     assert scouting_section.isAncestorOf(dialog.browse_button)
     assert dialog.findChild(QPushButton, "cancelUpdate") is dialog.cancel_update_button
     assert dialog.findChild(QLabel, "settingsStatus") is dialog.status_label
+
+
+def test_settings_dialog_update_button_tooltip_reflects_install_percent(
+    qtbot, tmp_path: Path
+):
+    from applicant_scout.updater import UpdateProgress
+
+    dialog = SettingsDialog(_cfg(tmp_path), cancel_update=lambda: False)
+    qtbot.addWidget(dialog)
+    dialog.set_update_available("v0.2.0")
+    dialog.set_update_in_progress(True)
+
+    assert dialog.update_button.toolTip() == "Installing ApplicantScout update..."
+    assert dialog.update_button.accessibleDescription() == (
+        "Installing ApplicantScout update..."
+    )
+
+    dialog.set_update_progress(UpdateProgress("installing", 1500, 3000))
+
+    assert dialog.update_button.toolTip() == "Installing ApplicantScout update… 50%"
+    # Accessible parity: the visible status text carries the same percent.
+    assert dialog.update_button.accessibleDescription() == (
+        dialog.update_button.toolTip()
+    )
+    assert "50%" in dialog.status_label.text()
+
+    dialog.set_update_progress(UpdateProgress("installing", 0, None))
+
+    assert dialog.update_button.toolTip() == "Installing ApplicantScout update..."
+    assert dialog.update_button.accessibleDescription() == (
+        dialog.update_button.toolTip()
+    )
+
+
+def test_settings_dialog_hides_cancel_at_setup_when_already_installing(
+    qtbot, tmp_path: Path
+):
+    from applicant_scout.updater import UpdateProgress
+
+    dialog = SettingsDialog(_cfg(tmp_path), cancel_update=lambda: False)
+    qtbot.addWidget(dialog)
+    dialog.set_update_available("v0.2.0")
+
+    # Fresh dialog during handoff: the installing phase is known at setup,
+    # so cancel hides on the busy transition without waiting for a tick.
+    dialog.set_update_progress(UpdateProgress("installing", 1500, 3000))
+    assert dialog.cancel_update_button.isHidden()
+
+    dialog.set_update_in_progress(True)
+
+    assert dialog.cancel_update_button.isHidden()
+    assert not dialog.cancel_update_button.isEnabled()
+    assert "50%" in dialog.update_button.toolTip()
+
+    dialog.set_update_in_progress(False)
+    dialog.set_update_in_progress(True)
+
+    assert not dialog.cancel_update_button.isHidden()

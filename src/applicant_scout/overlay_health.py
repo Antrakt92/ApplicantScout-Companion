@@ -186,6 +186,8 @@ def health_chip_state(
     roster_unavailable: bool,
     lfg_unavailable: bool,
     now: float,
+    install_in_progress: bool = False,
+    install_percent: int | None = None,
 ) -> HealthChipState:
     """Pure decision half of ``OverlayWindow._refresh_health_label``.
 
@@ -255,11 +257,29 @@ def health_chip_state(
         )
     if addon_warning:
         detail = addon_warning
-        if app_update_version:
+        if app_update_version and not install_in_progress:
             detail += "\n" + app_update_message(app_update_version)
         return HealthChipState(
             text="Addon update",
             chip_state="warning",
+            tooltip=detail,
+            accessible=detail,
+        )
+    if install_in_progress:
+        # Installer handoff: suppress the stale "App update / Open Settings
+        # to install" hint until the handoff resolves.
+        if install_percent is not None:
+            text = f"Installing… {install_percent}%"
+            detail = (
+                "ApplicantScout Companion update is installing "
+                f"({install_percent}%)."
+            )
+        else:
+            text = "Installing…"
+            detail = "ApplicantScout Companion update is installing."
+        return HealthChipState(
+            text=text,
+            chip_state="active",
             tooltip=detail,
             accessible=detail,
         )

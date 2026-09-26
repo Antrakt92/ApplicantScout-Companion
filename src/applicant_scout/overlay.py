@@ -118,6 +118,7 @@ from .scoring import (
     safe_percent,
 )
 from .screenshot import is_wire_version_reject_reason
+from .updater import UpdateProgress
 from .state import (
     Applicant,
     AppState,
@@ -3880,6 +3881,8 @@ class OverlayWindow(QMainWindow):
         self._last_decode_roster_unavailable = False
         self._addon_version_warning: str | None = None
         self._pending_app_update_version: str | None = None
+        self._install_in_progress = False
+        self._install_percent: int | None = None
         self._restored_listing_pending = False
         self._restored_applicants_pending = False
         self._restored_roster_pending = False
@@ -4893,6 +4896,25 @@ class OverlayWindow(QMainWindow):
         self._pending_app_update_version = latest_version
         self._refresh_health_label()
 
+    def set_update_progress(self, progress: UpdateProgress | None) -> None:
+        """Track installer-handoff progress for the health chip.
+
+        Installing phase shows "Installing… N%" (spinner text when the total
+        is unknown); any other phase or None clears back to the update hint.
+        """
+        if progress is not None and progress.phase == "installing":
+            self._install_in_progress = True
+            total = progress.total_bytes
+            self._install_percent = (
+                min(100, progress.downloaded_bytes * 100 // total)
+                if total
+                else None
+            )
+        else:
+            self._install_in_progress = False
+            self._install_percent = None
+        self._refresh_health_label()
+
     def _reflow_status_row(self, window_width: int) -> None:
         """Keep all three status chips readable at the supported 300px width."""
         compact = window_width < STATUS_ROW_SINGLE_LINE_MIN_WIDTH
@@ -4997,6 +5019,8 @@ class OverlayWindow(QMainWindow):
             roster_unavailable=self._last_decode_roster_unavailable,
             lfg_unavailable=self._last_decode_lfg_unavailable,
             now=time.time(),
+            install_in_progress=self._install_in_progress,
+            install_percent=self._install_percent,
         )
         self._set_status_chip_text(
             self._health_label, chip.text, chip.tooltip, chip.accessible
