@@ -233,6 +233,20 @@ LAUNCHER_FOREGROUND_GRACE_S = 3.0
 # repeated loss syncs (see _sync_game_foreground_visibility); only genuine
 # interaction holds (active window / cursor over overlay) extend visibility.
 OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S = 0.4
+# Task-switcher settle: while Alt+Tab is held, foreground flaps game →
+# switcher → game roughly every second (live trace: XamlExplorerHostIslandWindow
+# "Task Switching", ForegroundStaging, NULL-hwnd transients between). Every
+# game flap would otherwise show()+raise_() our topmost windows ABOVE the
+# DWM-composited switcher. While switcher-class windows (matched by CLASS —
+# titles vary) or a NULL foreground hwnd are sighted, surfaces hide immediately
+# (no anti-flicker grace: the switcher is unambiguous, unlike focus flickers)
+# and the last sighting timestamp blocks the show path until the game
+# foreground is stable for this long.
+TASK_SWITCHER_SETTLE_MS = 800
+TASK_SWITCHER_SETTLE_S = TASK_SWITCHER_SETTLE_MS / 1000.0
+_TASK_SWITCHER_WINDOW_CLASSES = frozenset(
+    {"XamlExplorerHostIslandWindow", "ForegroundStaging"}
+)
 VK_LBUTTON = 0x01
 MPLUS_GROUP_COLUMN_WIDTH = 112
 MPLUS_PACKAGE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 20
@@ -1323,6 +1337,34 @@ def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
 def _widget_has_focus(widget: QWidget) -> bool:
     focus = QApplication.focusWidget()
     return focus is not None and (focus is widget or widget.isAncestorOf(focus))
+
+
+def _default_system_ui_foreground_probe() -> bool:
+    """True when the foreground window is transient system UI or absent.
+
+    Matches the task switcher by window CLASS (XamlExplorerHostIslandWindow —
+    title varies, e.g. "Task Switching" — plus ForegroundStaging) or a NULL
+    foreground hwnd. The exe-based game check already returns False for these;
+    the overlay additionally timestamps the sighting so the show path waits
+    for stable game foreground (TASK_SWITCHER_SETTLE_S).
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+    except (AttributeError, OSError):
+        return False
+    if not hwnd:
+        return True
+    try:
+        buffer = ctypes.create_unicode_buffer(256)
+        length = user32.GetClassNameW(hwnd, buffer, len(buffer))
+    except (AttributeError, OSError):
+        return False
+    if not length or length <= 0:
+        return False
+    return buffer.value in _TASK_SWITCHER_WINDOW_CLASSES
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -3512,6 +3554,7 @@ class OverlayWindow(QMainWindow):
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
         show_settings: Callable[[], None] | None = None,
         game_foreground_probe: Callable[[], bool] | None = None,
+        system_ui_foreground_probe: Callable[[], bool] | None = None,
     ):
         super().__init__()
 
@@ -3538,6 +3581,10 @@ class OverlayWindow(QMainWindow):
         self._metric_preferences = metric_preferences
         self._show_settings = show_settings
         self._game_foreground_probe = game_foreground_probe or (lambda: True)
+        self._system_ui_foreground_probe = (
+            system_ui_foreground_probe or _default_system_ui_foreground_probe
+        )
+        self._last_system_ui_sighting_monotonic: float | None = None
         self._game_foreground = self._is_game_foreground()
         self._foreground_hook: ForegroundHook | None = None
         self._foreground_hook_fired.connect(self._on_foreground_hook)
@@ -4182,6 +4229,13 @@ class OverlayWindow(QMainWindow):
             _log.warning("Game foreground probe failed: %s", exc)
             return True
 
+    def _is_system_ui_foreground(self) -> bool:
+        try:
+            return bool(self._system_ui_foreground_probe())
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("System-UI foreground probe failed: %s", exc)
+            return False
+
     def _start_foreground_hook(self) -> None:
         """Start event-driven foreground detection next to the poll timer.
 
@@ -4319,6 +4373,23 @@ class OverlayWindow(QMainWindow):
             return
         foreground = self._is_game_foreground()
         now = time.monotonic()
+        if self._is_system_ui_foreground():
+            # Task switcher (or its transient NULL-hwnd siblings): unambiguous
+            # system UI, not a focus flicker — hide immediately without the
+            # anti-flicker grace and stamp the sighting so the show path below
+            # waits for stable game foreground (TASK_SWITCHER_SETTLE_S).
+            # Interaction holds do not apply here: while Alt+Tab is held the
+            # DWM switcher owns the screen and our topmost windows must stay
+            # under it. The active-window guard on hide() itself is kept.
+            self._last_system_ui_sighting_monotonic = now
+            self._open_overlay_foreground_loss_grace_until = 0.0
+            self._game_foreground = False
+            self._launcher_visible_after_non_game_foreground = False
+            self._launcher.hide()
+            if self.isVisible() and not self.isActiveWindow():
+                self.hide()
+            self._update_foreground_polling()
+            return
         open_overlay_visible = not self._is_overlay_effectively_hidden()
         open_overlay_interaction_foreground = (
             open_overlay_visible
@@ -4378,6 +4449,16 @@ class OverlayWindow(QMainWindow):
             self._launcher.hide()
             if self.isVisible() and not self.isActiveWindow():
                 self.hide()
+            self._update_foreground_polling()
+            return
+        last_sighting = self._last_system_ui_sighting_monotonic
+        if last_sighting is not None and now - last_sighting < TASK_SWITCHER_SETTLE_S:
+            # Game flapped back while the switcher is still around — stay
+            # hidden until the foreground is stable. _game_foreground stays
+            # False so the next tick re-enters this branch instead of latching
+            # a show above the switcher. Launcher-interaction restores keep
+            # their own grace path (_restore_from_launcher, untouched).
+            self._game_foreground = False
             self._update_foreground_polling()
             return
         self._launcher_visible_after_non_game_foreground = False

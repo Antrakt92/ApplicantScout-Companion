@@ -8388,3 +8388,183 @@ def test_open_overlay_loss_gain_loss_flicker_hides_promptly(
         assert not window._launcher.isVisible()
     finally:
         client.close()
+
+
+def _make_overlay_with_switcher_probes(
+    qtbot, tmp_path, monkeypatch, now, foreground, system_ui
+):
+    """Open-overlay harness with an injectable task-switcher sighting probe."""
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+        system_ui_foreground_probe=lambda: system_ui["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+    monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
+    monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+    return window, client
+
+
+def test_task_switcher_flap_keeps_surfaces_hidden_until_game_stable(
+    qtbot, tmp_path, monkeypatch
+):
+    """Regression: Alt+Tab flap game→switcher→game→staging→game stays hidden.
+
+    Live trace (2560x1440, WoW class "waApplication Window"): while Alt+Tab is
+    held, foreground flaps roughly every second between game,
+    XamlExplorerHostIslandWindow ("Task Switching"), ForegroundStaging, browser
+    and NULL-hwnd transients. Every game flap used to show()+raise_() our
+    topmost windows ABOVE the DWM-composited switcher. Surfaces must restore
+    only after TASK_SWITCHER_SETTLE_S of stable game foreground (badge owns
+    the hidden state, never auto-pops the full window).
+    """
+    assert overlay_mod.TASK_SWITCHER_SETTLE_MS == 800
+    foreground = {"active": True}
+    system_ui = {"active": False}
+    now = {"value": 1000.0}
+    window, client = _make_overlay_with_switcher_probes(
+        qtbot, tmp_path, monkeypatch, now, foreground, system_ui
+    )
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        # t+0.0: switcher sighted → immediate hide, no 0.4s loss grace.
+        system_ui["active"] = True
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert window._open_overlay_foreground_loss_grace_until == 0.0
+        assert window._last_system_ui_sighting_monotonic == pytest.approx(1000.0)
+        assert not window._game_foreground
+
+        # t+0.3: flap back to game → suppressed (within settle).
+        now["value"] += 0.3
+        system_ui["active"] = False
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._game_foreground
+
+        # t+0.5: ForegroundStaging sibling → hidden, sighting refreshed.
+        now["value"] += 0.2
+        system_ui["active"] = True
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert window._last_system_ui_sighting_monotonic == pytest.approx(1000.5)
+
+        # t+0.7: game again → suppressed (0.2s since last sighting).
+        now["value"] += 0.2
+        system_ui["active"] = False
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+
+        # t+0.8: NULL-hwnd transient → treated as system UI, hidden.
+        now["value"] += 0.1
+        system_ui["active"] = True
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+
+        # t+1.0: switcher again, then an immediate game flap → suppressed.
+        now["value"] += 0.2
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        now["value"] += 0.1
+        system_ui["active"] = False
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+
+        # t+1.9: 0.8s+ after the last sighting → stable, badge restores.
+        now["value"] += 0.8
+        window._sync_game_foreground_visibility()
+        assert window._game_foreground
+        assert not window.isVisible()
+        assert window._launcher.isVisible()
+
+        # Steady game keeps the badge without re-showing the full window.
+        now["value"] += 0.5
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert window._launcher.isVisible()
+        assert window._foreground_timer.isActive()
+    finally:
+        client.close()
+
+
+def test_task_switcher_sighting_hides_immediately_without_loss_grace(
+    qtbot, tmp_path, monkeypatch
+):
+    """A switcher sighting hides on the first sync (unlike browser loss)."""
+    foreground = {"active": True}
+    system_ui = {"active": False}
+    now = {"value": 2000.0}
+    window, client = _make_overlay_with_switcher_probes(
+        qtbot, tmp_path, monkeypatch, now, foreground, system_ui
+    )
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        system_ui["active"] = True
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert window._open_overlay_foreground_loss_grace_until == 0.0
+    finally:
+        client.close()
+
+
+def test_task_switcher_sighting_hides_visible_badge_until_stable(
+    qtbot, tmp_path, monkeypatch
+):
+    """A collapsed-to-badge state also stays under the switcher."""
+    foreground = {"active": False}
+    system_ui = {"active": False}
+    now = {"value": 3000.0}
+    window, client = _make_overlay_with_switcher_probes(
+        qtbot, tmp_path, monkeypatch, now, foreground, system_ui
+    )
+    try:
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+
+        system_ui["active"] = True
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert not window._launcher.isVisible()
+
+        now["value"] += 0.3
+        system_ui["active"] = False
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+        assert not window._launcher.isVisible()
+
+        now["value"] += overlay_mod.TASK_SWITCHER_SETTLE_S
+        window._sync_game_foreground_visibility()
+        assert window._launcher.isVisible()
+    finally:
+        client.close()

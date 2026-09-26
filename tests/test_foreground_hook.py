@@ -7,7 +7,9 @@ class is replaced with a fake before any OverlayWindow is built.
 
 from __future__ import annotations
 
+import ctypes
 import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -212,5 +214,148 @@ def test_hook_loss_event_reaches_sync_promptly(
         qtbot.waitUntil(lambda: len(calls) >= 1, timeout=1000)
         callback(True)
         qtbot.waitUntil(lambda: len(calls) >= 2, timeout=1000)
+    finally:
+        client.close()
+
+
+def _patch_windll(monkeypatch: pytest.MonkeyPatch, user32: object) -> None:
+    """Force the win32 branch of the default system-UI probe with a fake user32."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        ctypes, "windll", types.SimpleNamespace(user32=user32), raising=False
+    )
+
+
+def _user32_with(
+    hwnd: int,
+    class_name: str | None = None,
+    *,
+    fail_foreground: bool = False,
+    fail_class_name: bool = False,
+) -> object:
+    def _foreground() -> int:
+        if fail_foreground:
+            raise OSError("no foreground window")
+        return hwnd
+
+    def _class_name(_hwnd: int, buf: object, _size: int) -> int:
+        if fail_class_name or class_name is None:
+            return 0
+        buf.value = class_name  # type: ignore[attr-defined]
+        return len(class_name)
+
+    return types.SimpleNamespace(
+        GetForegroundWindow=_foreground, GetClassNameW=_class_name
+    )
+
+
+def test_default_system_ui_probe_treats_null_hwnd_as_system_ui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_windll(monkeypatch, _user32_with(0))
+    assert overlay_mod._default_system_ui_foreground_probe() is True
+
+
+def test_default_system_ui_probe_matches_switcher_class_not_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XamlExplorerHostIslandWindow matches whatever its title says."""
+    _patch_windll(monkeypatch, _user32_with(0x999, "XamlExplorerHostIslandWindow"))
+    assert overlay_mod._default_system_ui_foreground_probe() is True
+
+
+def test_default_system_ui_probe_matches_foreground_staging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_windll(monkeypatch, _user32_with(0x999, "ForegroundStaging"))
+    assert overlay_mod._default_system_ui_foreground_probe() is True
+
+
+def test_default_system_ui_probe_ignores_game_and_other_classes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for class_name in ("waApplication Window", "Chrome_WidgetWin_1", "Shell_TrayWnd"):
+        _patch_windll(monkeypatch, _user32_with(0x999, class_name))
+        assert overlay_mod._default_system_ui_foreground_probe() is False
+
+
+def test_default_system_ui_probe_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unresolvable foreground/class state never suppresses the show path."""
+    _patch_windll(monkeypatch, _user32_with(0x999, fail_class_name=True))
+    assert overlay_mod._default_system_ui_foreground_probe() is False
+    _patch_windll(monkeypatch, _user32_with(0x999, fail_foreground=True))
+    assert overlay_mod._default_system_ui_foreground_probe() is False
+
+
+def test_default_system_ui_probe_off_windows_is_never_system_ui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert overlay_mod._default_system_ui_foreground_probe() is False
+
+
+def test_hook_callback_during_switcher_hides_immediately_and_settles(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """End-to-end through the fake hook: switcher callback hides at once,
+    a game callback inside the settle window stays hidden, and a later game
+    callback restores the badge."""
+    created: list[_FakeHook] = []
+
+    class _RecordingHook(_FakeHook):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            super().__init__()
+            created.append(self)
+
+    foreground = {"active": True}
+    system_ui = {"active": False}
+    now = {"value": 4000.0}
+    config_dir = Path(str(tmp_path))
+    monkeypatch.setattr(overlay_mod, "ForegroundHook", _RecordingHook)
+    auth = WCLAuth("client", "secret", config_dir)
+    client = WCLClient(auth)
+    cache = CharacterCache(config_dir)
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        config_dir,
+        game_foreground_probe=lambda: foreground["active"],
+        system_ui_foreground_probe=lambda: system_ui["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+    try:
+        monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
+        monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        fake = created[0]
+        callback = cast("Callable[[bool], None]", fake.callback)
+        assert callback is not None
+
+        system_ui["active"] = True
+        foreground["active"] = False
+        callback(False)
+        qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+        assert not window._launcher.isVisible()
+        assert window._open_overlay_foreground_loss_grace_until == 0.0
+
+        now["value"] += 0.3
+        system_ui["active"] = False
+        foreground["active"] = True
+        window._on_foreground_hook(True)
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+
+        now["value"] += overlay_mod.TASK_SWITCHER_SETTLE_S
+        window._on_foreground_hook(True)
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
     finally:
         client.close()
