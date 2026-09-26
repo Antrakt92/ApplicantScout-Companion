@@ -8114,3 +8114,131 @@ def test_compact_headers_route_tooltips_and_hidden_legends_use_no_layout_space(
     finally:
         window.close()
         client.close()
+
+
+def test_alt_tab_roundtrip_restores_badge_with_no_new_data(qtbot, tmp_path):
+    """Alt-tab out/in with zero snapshots must restore the badge.
+
+    Regression for the alt-tab dead state: both surfaces hidden used to
+    stop the foreground timer, so with no new data arriving nothing ever
+    polled again and neither surface came back.
+    """
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        assert window._foreground_timer.isActive()
+        assert (
+            window._foreground_timer.interval()
+            == overlay_mod.GAME_FOREGROUND_POLL_MS
+        )
+
+        # Alt-tab out: badge hides but the watchdog must stay alive slow.
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert window._foreground_timer.isActive()
+        assert (
+            window._foreground_timer.interval()
+            == overlay_mod.GAME_FOREGROUND_POLL_SLOW_MS
+        )
+
+        # Still away, still no data: a further slow tick changes nothing
+        # but proves detection is alive (timer did not stop).
+        window._sync_game_foreground_visibility()
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert window._foreground_timer.isActive()
+
+        # Alt-tab back with ZERO new data: badge must return.
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+        assert window._foreground_timer.isActive()
+        assert (
+            window._foreground_timer.interval()
+            == overlay_mod.GAME_FOREGROUND_POLL_MS
+        )
+    finally:
+        client.close()
+
+
+def test_alt_tab_roundtrip_open_overlay_restores_surface_with_no_new_data(
+    qtbot, tmp_path, monkeypatch
+):
+    """Alt-tab out/in over an open overlay must restore a surface, data-free.
+
+    The open window hides after its foreground-loss grace; the persistent
+    badge then owns the hidden state, so game return shows the badge (never
+    auto-pops the full window) — with no snapshot arriving in between.
+    """
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    now = {"value": 500.0}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: now["value"])
+        monkeypatch.setattr(window, "_cursor_over_open_overlay", lambda: False)
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        # Alt-tab out: grace first keeps the window, expiry hides both —
+        # and the watchdog must stay alive slow instead of stopping.
+        foreground["active"] = False
+        monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+        window._sync_game_foreground_visibility()
+        assert window.isVisible()
+
+        now["value"] += overlay_mod.OPEN_OVERLAY_FOREGROUND_LOSS_GRACE_S + 0.1
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+        assert window._foreground_timer.isActive()
+        assert (
+            window._foreground_timer.interval()
+            == overlay_mod.GAME_FOREGROUND_POLL_SLOW_MS
+        )
+
+        # Alt-tab back with ZERO new data: badge owns the hidden state.
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+
+        assert not window.isVisible()
+        assert window._launcher.isVisible()
+        assert window._foreground_timer.isActive()
+        assert (
+            window._foreground_timer.interval()
+            == overlay_mod.GAME_FOREGROUND_POLL_MS
+        )
+    finally:
+        client.close()

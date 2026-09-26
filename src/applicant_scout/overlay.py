@@ -213,6 +213,12 @@ INFO_PANEL_DETAIL_BASE_ROWS = 9
 INFO_PANEL_EXTRA_DETAIL_ROW_HEIGHT = 17
 LAUNCHER_SIZE = 42
 GAME_FOREGROUND_POLL_MS = 500
+# Slow alt-tab watchdog: when both overlay and launcher are hidden there is
+# still a surface whose visibility could change (game return must restore
+# it), so polling drops to this cadence instead of stopping. Stopping here
+# caused the alt-tab dead state: with no new snapshot/data arriving, nothing
+# ever restarted the timer and neither surface came back.
+GAME_FOREGROUND_POLL_SLOW_MS = 3000
 # Event-driven quota refresh (fetch completions push the latest snapshot
 # directly); this fallback only advances the reset countdown and the
 # "shot Xs ago" chip when quota/decode state exists. Idle windows stop it.
@@ -4178,17 +4184,19 @@ class OverlayWindow(QMainWindow):
         self._launcher_foreground_grace_until = (
             time.monotonic() + LAUNCHER_FOREGROUND_GRACE_S
         )
-        if not self._foreground_timer.isActive():
-            self._foreground_timer.start()
+        self._update_foreground_polling()
 
     def _update_foreground_polling(self) -> None:
-        """Stop the 500ms game-foreground poll when nothing is visible.
+        """Keep the game-foreground poll alive at fast/slow cadence.
 
-        Both the overlay and the launcher hidden means there is no surface
-        whose visibility could change — polling would only burn wakeups.
-        Restarted on snapshot arrival (note_decode/note_snapshot_applied)
-        and whenever a surface shows again. Never touches the timer during
-        a launcher drag (drag pause owns it there)."""
+        Anything visible (overlay or launcher) polls at 500ms so
+        foreground loss hides surfaces promptly. Both hidden means no
+        surface to hide, but a later game return must still restore one —
+        so polling drops to GAME_FOREGROUND_POLL_SLOW_MS instead of
+        stopping. Restarted intervals also apply on snapshot arrival
+        (note_decode/note_snapshot_applied) and whenever a surface shows
+        again. Never touches the timer during a launcher drag (drag pause
+        owns it there)."""
         if getattr(self, "_closed", True):
             return
         if not hasattr(self, "_foreground_timer"):
@@ -4198,11 +4206,17 @@ class OverlayWindow(QMainWindow):
         if self._launcher.is_dragging():
             return
         overlay_visible = not self._is_overlay_effectively_hidden()
-        if overlay_visible or self._launcher.isVisible():
-            if not self._foreground_timer.isActive():
-                self._foreground_timer.start()
-        elif self._foreground_timer.isActive():
-            self._foreground_timer.stop()
+        wanted = (
+            GAME_FOREGROUND_POLL_MS
+            if (overlay_visible or self._launcher.isVisible())
+            else GAME_FOREGROUND_POLL_SLOW_MS
+        )
+        if (
+            not self._foreground_timer.isActive()
+            or self._foreground_timer.interval() != wanted
+        ):
+            self._foreground_timer.setInterval(wanted)
+            self._foreground_timer.start()
 
     def _update_quota_polling(self) -> None:
         """Keep the status-row timer event-driven with a slow fallback.
@@ -4841,8 +4855,8 @@ class OverlayWindow(QMainWindow):
         )
         self._tab_bar.set_party_count_stale(self._last_decode_roster_unavailable)
         self._refresh_health_label()
-        # A fresh snapshot is live evidence: resume polling a stopped
-        # foreground/quota timer so visibility and status chips track it.
+        # A fresh snapshot is live evidence: refresh the foreground/quota
+        # cadence so visibility and status chips track it.
         self._update_foreground_polling()
         self._update_quota_polling()
 
