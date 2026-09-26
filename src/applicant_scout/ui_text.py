@@ -61,6 +61,14 @@ def update_phase_message(phase: str) -> str:
     return _UPDATE_PHASE_MESSAGES[phase]
 
 
+def format_update_install(downloaded_bytes: int, total_bytes: int | None) -> str:
+    """Installing-progress text for known or unknown totals."""
+    if total_bytes:
+        percent = min(100, downloaded_bytes * 100 // total_bytes)
+        return f"Installing update{ELLIPSIS} {format_percent(percent)}"
+    return f"Installing update{ELLIPSIS}"
+
+
 def format_update_download(downloaded_bytes: int, total_bytes: int | None) -> str:
     """Downloading-progress text for known or unknown totals."""
     if total_bytes:

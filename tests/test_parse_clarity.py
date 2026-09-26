@@ -231,3 +231,13 @@ def test_ui_text_centralizes_missing_token_and_moved_helpers():
         == "Downloading update… 50%"
     )
     assert "MB" in updater.UpdateProgress("downloading", 1024 * 1024, None).message
+
+def test_installing_message_shows_percent_only_when_total_known():
+    assert ui_text.format_update_install(0, None) == "Installing update\u2026"
+    assert ui_text.format_update_install(1500, 3000) == "Installing update\u2026 50%"
+    assert ui_text.format_update_install(2999, 3000) == "Installing update\u2026 99%"
+    assert ui_text.format_update_install(3000, 3000) == "Installing update\u2026 100%"
+    assert ui_text.format_update_install(9000, 3000) == "Installing update\u2026 100%"
+    assert updater.UpdateProgress("installing", 1, 2).message == (
+        "Installing update\u2026 50%"
+    )

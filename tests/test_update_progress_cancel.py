@@ -3,6 +3,8 @@
 from contextlib import AbstractContextManager
 import hashlib
 import threading
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
@@ -397,3 +399,159 @@ def test_main_controls_share_attempt_and_drop_old_progress_after_retry(
 
     usage_main_harness.run_loop.side_effect = event_loop
     assert main_mod.main([]) == 0
+
+class _ProgressFakeTimer:
+    instances: "list[_ProgressFakeTimer]" = []
+
+    def __init__(self, _parent=None) -> None:
+        self.interval = None
+        self.started = False
+        self.stopped = False
+        self.timeout = _Signal()
+        _ProgressFakeTimer.instances.append(self)
+
+    def setInterval(self, interval: int) -> None:
+        self.interval = interval
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+def _progress_controller(monotonic, recovered):
+    return main_mod._UpdateHandoffRecoveryController(
+        None,
+        on_recover=lambda message, retry: recovered.append((message, retry)),
+        timer_factory=_ProgressFakeTimer,
+        monotonic=monotonic,
+        timeout_ms=60_000,
+        poll_interval_ms=50,
+    )
+
+
+def test_install_progress_reports_percent_then_holds_and_caps(tmp_path):
+    _ProgressFakeTimer.instances.clear()
+    clock = [0.0]
+    recovered = []
+    seen: list[updater.UpdateProgress] = []
+    state = {"exited": False}
+    launch = SimpleNamespace(poll=lambda: 0 if state["exited"] else None)
+    controller = _progress_controller(lambda: clock[0], recovered)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    controller.arm(
+        launch,
+        on_install_progress=seen.append,
+        install_estimator=updater.InstallProgressEstimator(3000),
+        install_staging_dir=staging,
+    )
+
+    assert [timer.interval for timer in _ProgressFakeTimer.instances] == [50, 300]
+    recovery_timer, progress_timer = _ProgressFakeTimer.instances
+    (staging / "part.bin").write_bytes(b"x" * 1000)
+    progress_timer.timeout.emit()
+    (staging / "part.bin").write_bytes(b"x" * 1500)
+    progress_timer.timeout.emit()
+    # Promotion phase moves the payload away: progress must hold, not regress.
+    (staging / "part.bin").unlink()
+    staging.rmdir()
+    progress_timer.timeout.emit()
+    # Anchor overshoot (factor underestimate) still caps below completion.
+    staging.mkdir()
+    (staging / "part.bin").write_bytes(b"x" * 9000)
+    progress_timer.timeout.emit()
+
+    assert [item.message for item in seen] == [
+        "Installing update\u2026 33%",
+        "Installing update\u2026 50%",
+        "Installing update\u2026 50%",
+        "Installing update\u2026 99%",
+    ]
+    assert not progress_timer.stopped
+
+    state["exited"] = True
+    progress_timer.timeout.emit()
+
+    assert seen[-1] == updater.UpdateProgress("installing", 3000, 3000)
+    assert seen[-1].message == "Installing update\u2026 100%"
+    assert progress_timer.stopped
+    # The existing handoff/recovery verification is untouched: process exit
+    # still recovers with retry through the recovery timer.
+    assert recovered == []
+    assert not recovery_timer.stopped
+    recovery_timer.timeout.emit()
+    assert recovered == [(main_mod.UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE, True)]
+    assert recovery_timer.stopped
+
+
+def test_install_progress_stops_quietly_when_poll_fails():
+    _ProgressFakeTimer.instances.clear()
+    recovered = []
+    seen: list[updater.UpdateProgress] = []
+
+    def fail_poll():
+        raise RuntimeError("synthetic poll failure")
+
+    controller = _progress_controller(lambda: 0.0, recovered)
+    controller.arm(
+        SimpleNamespace(poll=fail_poll),
+        on_install_progress=seen.append,
+        install_estimator=updater.InstallProgressEstimator(3000),
+        install_staging_dir=Path("."),
+    )
+
+    _ProgressFakeTimer.instances[-1].timeout.emit()
+
+    # No definitive exit observed, so no 100%; the failure is fail-quiet and
+    # the existing recovery tick still owns the exit verdict.
+    assert seen == []
+    assert _ProgressFakeTimer.instances[-1].stopped
+    assert recovered == []
+
+
+def test_install_handoff_without_progress_basis_arms_single_timer():
+    _ProgressFakeTimer.instances.clear()
+    recovered = []
+    controller = _progress_controller(lambda: 0.0, recovered)
+
+    controller.arm(SimpleNamespace(poll=lambda: None))
+
+    assert len(_ProgressFakeTimer.instances) == 1
+    assert _ProgressFakeTimer.instances[0].interval == 50
+
+
+def test_begin_installation_with_total_keeps_installation_non_cancellable():
+    control = updater.UpdateDownloadControl()
+    control.begin_installation(total_bytes=3000)
+
+    assert control.cancel() is False
+    control.checkpoint()
+
+    late = updater.UpdateDownloadControl()
+    assert late.cancel() is True
+    with pytest.raises(updater.UpdateCancelled):
+        late.begin_installation(total_bytes=3000)
+
+
+def test_settings_install_progress_shows_percent_and_hides_cancel(qtbot, tmp_path):
+    cfg = Config(
+        wcl_client_id="client", wcl_client_secret="secret", region="EU",
+        chatlog_path=tmp_path / "Logs" / "WoWChatLog.txt",
+        cache_dir=tmp_path / "cache", config_dir=tmp_path / "config",
+        screenshots_path=tmp_path / "Screenshots", log_dir=tmp_path / "logs",
+    )
+    control = updater.UpdateDownloadControl()
+    dialog = settings_mod.SettingsDialog(cfg, cancel_update=control.cancel)
+    qtbot.addWidget(dialog)
+    dialog.set_update_available("0.2.0")
+    dialog.set_update_in_progress(True)
+    control.begin_installation(total_bytes=3000)
+
+    dialog.set_update_progress(updater.UpdateProgress("installing", 1500, 3000))
+
+    assert dialog.status_label.text() == "Installing update\u2026 50%"
+    assert dialog.cancel_update_button.isHidden()
+    assert control.cancel() is False

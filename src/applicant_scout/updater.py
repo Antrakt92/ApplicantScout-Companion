@@ -21,7 +21,11 @@ from typing import Any, Callable, Literal
 import httpx
 
 from .config import user_cache_dir
-from .ui_text import format_update_download, update_phase_message
+from .ui_text import (
+    format_update_download,
+    format_update_install,
+    update_phase_message,
+)
 
 
 DEFAULT_RELEASE_REPO = "Antrakt92/ApplicantScout-Companion"
@@ -76,6 +80,8 @@ class UpdateProgress:
     def message(self) -> str:
         if self.phase == "downloading":
             return format_update_download(self.downloaded_bytes, self.total_bytes)
+        if self.phase == "installing":
+            return format_update_install(self.downloaded_bytes, self.total_bytes)
         return update_phase_message(self.phase)
 
 
@@ -106,12 +112,12 @@ class UpdateDownloadControl:
             if self._cancelled:
                 raise UpdateCancelled("Update cancelled.")
 
-    def begin_installation(self) -> None:
+    def begin_installation(self, *, total_bytes: int | None = None) -> None:
         with self._lock:
             if self._cancelled:
                 raise UpdateCancelled("Update cancelled.")
             self._installing = True
-        self.report(UpdateProgress("installing"))
+        self.report(UpdateProgress("installing", 0, total_bytes))
 
     def report(self, progress: UpdateProgress) -> None:
         now = time.monotonic()
@@ -131,6 +137,160 @@ class InstallerLaunch:
 
     def poll(self) -> int | None:
         return self._process.poll()
+
+
+# Staging directory the Inno installer copies the candidate payload into
+# before promotion (mirrors `[Files] DestDir: "{app}\.apscout-next"` in
+# packaging/inno/ApplicantScoutCompanion.iss).
+_INSTALL_STAGING_DIR_NAME = ".apscout-next"
+# Cadence for measuring the staging directory while the installer runs.
+_INSTALL_PROGRESS_POLL_INTERVAL_SECONDS = 0.3
+# Expected installed payload = downloaded installer size × this factor.
+#
+# Anchor choice (no new fetch for estimation): the release manifest
+# (scripts/release-artifact-manifest.ps1) records sizes only for the
+# installer exe, its .sha256 sidecar, the portable zip, and five small
+# required portable entries — not the full installed payload (_internal/,
+# Qt DLLs, licenses/). The in-app updater additionally never downloads the
+# manifest (installer + checksum sidecar only), so per-file manifest sizes
+# are unavailable at runtime. The fallback therefore anchors on the
+# downloaded installer file the app already holds. The installer compresses
+# with Inno lzma2 solid compression and its own disk-space check budgets
+# ~2-3x the payload; the upper bound (3.0) errs toward under-reporting, and
+# any residual error is absorbed by the monotonic high-water mark plus the
+# 99% cap below.
+_INSTALL_SIZE_UNCOMPRESSED_FACTOR = 3.0
+
+
+def expected_install_total_bytes(*, installer_size_bytes: int) -> int | None:
+    """Expected installed payload size anchored on the downloaded installer."""
+    if installer_size_bytes <= 0:
+        return None
+    return int(installer_size_bytes * _INSTALL_SIZE_UNCOMPRESSED_FACTOR)
+
+
+def measure_directory_bytes(path: Path) -> int:
+    """Best-effort recursive byte size; missing/unreadable parts count as 0."""
+    total = 0
+    stack = [path]
+    try:
+        if not path.is_dir():
+            return 0
+    except OSError:
+        return 0
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total
+
+
+class InstallProgressEstimator:
+    """Monotonic, 99%-capped translation of staged bytes into progress.
+
+    The installer gives no progress API, so while it runs the app measures
+    the `{app}\\.apscout-next` staging directory. During commit the payload
+    moves (`.apscout-next` → `current`), so the high-water mark never
+    reports backwards and reports stop at 99%: the final 100% is emitted
+    only after the installer process exit is observed (see `complete()`),
+    never from byte counting alone.
+    """
+
+    def __init__(self, total_bytes: int | None) -> None:
+        self._total_bytes = (
+            total_bytes if total_bytes is not None and total_bytes > 0 else None
+        )
+        self._high_water_mark = 0
+
+    @property
+    def total_bytes(self) -> int | None:
+        return self._total_bytes
+
+    def observe(self, staged_bytes: int) -> UpdateProgress:
+        staged = max(0, staged_bytes)
+        self._high_water_mark = max(self._high_water_mark, staged)
+        if self._total_bytes is None:
+            return UpdateProgress("installing", self._high_water_mark, None)
+        reported = min(self._high_water_mark, self._total_bytes - 1)
+        return UpdateProgress("installing", max(0, reported), self._total_bytes)
+
+    def complete(self) -> UpdateProgress:
+        """Final 100%: call only after the installer exit was observed."""
+        if self._total_bytes is None:
+            return UpdateProgress("installing")
+        return UpdateProgress("installing", self._total_bytes, self._total_bytes)
+
+
+def _install_root_for_staging() -> Path | None:
+    """Best-effort install root for staging measurement (no fetch, no I/O)."""
+    if getattr(sys, "frozen", False):
+        executable = Path(sys.executable)
+        if executable.name.lower() != "applicantscout.exe":
+            return None
+        install_root = executable.parent
+        if executable.parent.name.casefold() == "current":
+            install_root = executable.parent.parent
+        return install_root
+    # Unfrozen/dev runs launch without /DIR, so Inno falls back to its
+    # DefaultDirName; measure there best-effort.
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    return Path(local_app_data) / "Programs" / "ApplicantScout Companion"
+
+
+def install_staging_dir(install_root: Path | None = None) -> Path | None:
+    """Staging directory the installer fills, or None when unresolvable."""
+    root = install_root if install_root is not None else _install_root_for_staging()
+    if root is None:
+        return None
+    return root / _INSTALL_STAGING_DIR_NAME
+
+
+def installer_path_from_launch(launch: object) -> Path | None:
+    """Best-effort installer path from a launch handle (Popen args only)."""
+    process = getattr(launch, "_process", None)
+    args = getattr(process, "args", None)
+    if isinstance(args, (list, tuple)) and args:
+        candidate = args[0]
+        if isinstance(candidate, (str, os.PathLike)):
+            return Path(candidate)
+    return None
+
+
+def install_progress_basis(
+    launch: object, *, installer_size_bytes: int | None = None
+) -> tuple[int | None, Path | None]:
+    """Best-effort (total_bytes, staging_dir); unknown parts are None.
+
+    The total anchors on the downloaded installer size (measured from the
+    launched installer file unless given); the staging dir resolves from
+    the local install layout. Nothing is fetched.
+    """
+    size = installer_size_bytes
+    if size is None:
+        installer_path = installer_path_from_launch(launch)
+        if installer_path is not None:
+            try:
+                size = installer_path.stat().st_size
+            except OSError:
+                size = None
+    total = (
+        expected_install_total_bytes(installer_size_bytes=size)
+        if size is not None
+        else None
+    )
+    return total, install_staging_dir()
 
 
 @dataclass(frozen=True)

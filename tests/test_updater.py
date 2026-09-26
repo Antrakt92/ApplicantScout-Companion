@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -1679,3 +1680,165 @@ def test_update_check_maps_fuzz_failures_to_unavailable(error, reason):
     assert result.status == "unavailable"
     assert result.reason == reason
     assert result.asset_url is None
+
+def test_installing_progress_message_shows_percent_when_total_known():
+    assert (
+        updater_mod.UpdateProgress("installing", 50, 100).message
+        == "Installing update\u2026 50%"
+    )
+    assert (
+        updater_mod.UpdateProgress("installing", 0, 100).message
+        == "Installing update\u2026 0%"
+    )
+    assert (
+        updater_mod.UpdateProgress("installing", 100, 100).message
+        == "Installing update\u2026 100%"
+    )
+
+
+def test_installing_progress_message_keeps_legacy_text_without_total():
+    assert updater_mod.UpdateProgress("installing").message == "Installing update\u2026"
+    assert (
+        updater_mod.UpdateProgress("installing", 5, None).message
+        == "Installing update\u2026"
+    )
+
+
+def test_expected_install_total_anchors_on_installer_size():
+    assert (
+        updater_mod.expected_install_total_bytes(installer_size_bytes=100)
+        == 100 * updater_mod._INSTALL_SIZE_UNCOMPRESSED_FACTOR
+    )
+    assert updater_mod.expected_install_total_bytes(installer_size_bytes=0) is None
+    assert updater_mod.expected_install_total_bytes(installer_size_bytes=-7) is None
+
+
+def test_measure_directory_bytes_sums_recursively(tmp_path):
+    root = tmp_path / "staging"
+    (root / "nested").mkdir(parents=True)
+    (root / "a.bin").write_bytes(b"a" * 10)
+    (root / "nested" / "b.bin").write_bytes(b"b" * 25)
+
+    assert updater_mod.measure_directory_bytes(root) == 35
+    assert updater_mod.measure_directory_bytes(tmp_path / "missing") == 0
+    assert updater_mod.measure_directory_bytes(root / "a.bin") == 0
+
+
+def test_install_estimator_is_monotonic_and_caps_below_complete(tmp_path):
+    estimator = updater_mod.InstallProgressEstimator(3000)
+    seen: list[updater_mod.UpdateProgress] = []
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "part.bin").write_bytes(b"x" * 1000)
+    seen.append(estimator.observe(updater_mod.measure_directory_bytes(staging)))
+    (staging / "part.bin").write_bytes(b"x" * 1500)
+    seen.append(estimator.observe(updater_mod.measure_directory_bytes(staging)))
+    # Promotion phase: the staging directory moves away; bytes must hold.
+    for child in staging.iterdir():
+        child.unlink()
+    staging.rmdir()
+    seen.append(estimator.observe(updater_mod.measure_directory_bytes(staging)))
+    # Overshoot past the anchor (factor underestimate) must still cap at 99%.
+    staging.mkdir()
+    (staging / "part.bin").write_bytes(b"x" * 9000)
+    seen.append(estimator.observe(updater_mod.measure_directory_bytes(staging)))
+
+    assert [item.phase for item in seen] == ["installing"] * 4
+    assert [item.downloaded_bytes for item in seen] == [1000, 1500, 1500, 2999]
+    assert [item.message for item in seen] == [
+        "Installing update\u2026 33%",
+        "Installing update\u2026 50%",
+        "Installing update\u2026 50%",
+        "Installing update\u2026 99%",
+    ]
+
+
+def test_install_estimator_complete_reports_full_percent_only():
+    estimator = updater_mod.InstallProgressEstimator(3000)
+
+    assert estimator.observe(9000).message == "Installing update\u2026 99%"
+    assert estimator.complete() == updater_mod.UpdateProgress(
+        "installing", 3000, 3000
+    )
+    assert estimator.complete().message == "Installing update\u2026 100%"
+
+
+def test_install_estimator_without_total_reports_plain_message():
+    estimator = updater_mod.InstallProgressEstimator(None)
+
+    assert estimator.observe(500).message == "Installing update\u2026"
+    assert estimator.complete() == updater_mod.UpdateProgress("installing")
+    assert updater_mod.InstallProgressEstimator(None).observe(-3).downloaded_bytes == 0
+
+
+def test_begin_installation_with_total_reports_percent_and_blocks_cancel():
+    seen: list[updater_mod.UpdateProgress] = []
+    control = updater_mod.UpdateDownloadControl(seen.append)
+
+    control.begin_installation(total_bytes=200)
+
+    assert seen == [updater_mod.UpdateProgress("installing", 0, 200)]
+    assert seen[0].message == "Installing update\u2026 0%"
+    assert control.cancel() is False
+
+
+def test_install_staging_dir_resolves_dot_apscout_next(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        updater_mod, "_install_root_for_staging", lambda: tmp_path
+    )
+
+    assert updater_mod.install_staging_dir() == tmp_path / ".apscout-next"
+    assert (
+        updater_mod.install_staging_dir(tmp_path / "custom")
+        == tmp_path / "custom" / ".apscout-next"
+    )
+
+
+def test_install_staging_dir_returns_none_without_install_root(monkeypatch):
+    monkeypatch.setattr(updater_mod, "_install_root_for_staging", lambda: None)
+
+    assert updater_mod.install_staging_dir() is None
+
+
+def test_install_progress_basis_uses_downloaded_installer_size(
+    tmp_path, monkeypatch
+):
+    installer = tmp_path / "ApplicantScoutCompanionSetup-0.2.0.exe"
+    installer.write_bytes(b"x" * 40)
+    monkeypatch.setattr(
+        updater_mod, "_install_root_for_staging", lambda: tmp_path
+    )
+    launch = updater_mod.InstallerLaunch(
+        _process=SimpleNamespace(args=[str(installer)])
+    )
+
+    total, staging = updater_mod.install_progress_basis(launch)
+
+    assert total == updater_mod.expected_install_total_bytes(
+        installer_size_bytes=40
+    )
+    assert staging == tmp_path / ".apscout-next"
+
+
+def test_install_progress_basis_without_installer_size_has_no_total(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        updater_mod, "_install_root_for_staging", lambda: tmp_path
+    )
+
+    total, staging = updater_mod.install_progress_basis(SimpleNamespace())
+
+    assert total is None
+    assert staging == tmp_path / ".apscout-next"
+
+
+def test_installer_path_from_launch_rejects_unshaped_handles():
+    assert updater_mod.installer_path_from_launch(SimpleNamespace()) is None
+    assert (
+        updater_mod.installer_path_from_launch(
+            SimpleNamespace(_process=SimpleNamespace(args="/path/with spaces/setup.exe"))
+        )
+        is None
+    )

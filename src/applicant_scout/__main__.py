@@ -99,9 +99,13 @@ from .settings_dialog import (
 from .state import Applicant, AppState, LeaderKey, Listing, RosterMember, WoWPlayer
 from .updater import (
     UPDATE_DOWNLOADS_DIR_NAME,
+    InstallProgressEstimator,
     check_for_update,
     download_update_installer,
+    expected_install_total_bytes,
+    install_progress_basis,
     launch_update_installer,
+    measure_directory_bytes,
     UpdateResult,
     UpdateDownloadControl,
     UpdateCancelled,
@@ -158,6 +162,7 @@ _DUPLICATE_PROBE_TIMEOUT_MS = 75
 UPDATE_CHECK_INITIAL_MS = 1_000
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 UPDATE_HANDOFF_POLL_INTERVAL_MS = 1_000
+UPDATE_HANDOFF_INSTALL_PROGRESS_MS = 300
 UPDATE_HANDOFF_RECOVERY_MS = 180_000
 UPDATE_HANDOFF_INSTALLER_EXITED_MESSAGE = (
     "Update installer exited before closing ApplicantScout. "
@@ -2073,6 +2078,7 @@ class _UpdateHandoffRecoveryController:
         monotonic: Callable[[], float] = time.monotonic,
         timeout_ms: int = UPDATE_HANDOFF_RECOVERY_MS,
         poll_interval_ms: int = UPDATE_HANDOFF_POLL_INTERVAL_MS,
+        progress_interval_ms: int = UPDATE_HANDOFF_INSTALL_PROGRESS_MS,
     ) -> None:
         self._parent = parent
         self._on_recover = on_recover
@@ -2080,11 +2086,23 @@ class _UpdateHandoffRecoveryController:
         self._monotonic = monotonic
         self._timeout_s = timeout_ms / 1000
         self._poll_interval_ms = poll_interval_ms
+        self._progress_interval_ms = progress_interval_ms
         self._timer: Any | None = None
         self._installer_launch: object | None = None
         self._started_at: float | None = None
+        self._progress_timer: Any | None = None
+        self._on_install_progress: Callable[[UpdateProgress], None] | None = None
+        self._install_estimator: InstallProgressEstimator | None = None
+        self._install_staging_dir: Path | None = None
 
-    def arm(self, installer_launch: object | None) -> None:
+    def arm(
+        self,
+        installer_launch: object | None,
+        *,
+        on_install_progress: Callable[[UpdateProgress], None] | None = None,
+        install_estimator: InstallProgressEstimator | None = None,
+        install_staging_dir: Path | None = None,
+    ) -> None:
         self.disarm()
         self._installer_launch = installer_launch
         self._started_at = self._monotonic()
@@ -2093,6 +2111,19 @@ class _UpdateHandoffRecoveryController:
         timer.timeout.connect(self._tick)
         timer.start()
         self._timer = timer
+        if (
+            on_install_progress is not None
+            and install_estimator is not None
+            and install_staging_dir is not None
+        ):
+            self._on_install_progress = on_install_progress
+            self._install_estimator = install_estimator
+            self._install_staging_dir = install_staging_dir
+            progress_timer = self._timer_factory(self._parent)
+            progress_timer.setInterval(self._progress_interval_ms)
+            progress_timer.timeout.connect(self._tick_install_progress)
+            progress_timer.start()
+            self._progress_timer = progress_timer
 
     def disarm(self) -> None:
         if self._timer is not None:
@@ -2100,6 +2131,12 @@ class _UpdateHandoffRecoveryController:
         self._timer = None
         self._installer_launch = None
         self._started_at = None
+        if self._progress_timer is not None:
+            self._progress_timer.stop()
+        self._progress_timer = None
+        self._on_install_progress = None
+        self._install_estimator = None
+        self._install_staging_dir = None
 
     def _tick(self) -> None:
         if self._started_at is None:
@@ -2116,6 +2153,33 @@ class _UpdateHandoffRecoveryController:
                 return
         if self._monotonic() - self._started_at >= self._timeout_s:
             self._recover(UPDATE_HANDOFF_TIMEOUT_MESSAGE, False)
+
+    def _tick_install_progress(self) -> None:
+        """Report staging-dir progress; 100% only on observed installer exit."""
+        estimator = self._install_estimator
+        staging_dir = self._install_staging_dir
+        on_progress = self._on_install_progress
+        if estimator is None or staging_dir is None or on_progress is None:
+            self._stop_install_progress()
+            return
+        try:
+            poll = getattr(self._installer_launch, "poll", None)
+            if callable(poll) and poll() is not None:
+                on_progress(estimator.complete())
+                self._stop_install_progress()
+                return
+            on_progress(estimator.observe(measure_directory_bytes(staging_dir)))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not report update install progress: %s", exc)
+            self._stop_install_progress()
+
+    def _stop_install_progress(self) -> None:
+        if self._progress_timer is not None:
+            self._progress_timer.stop()
+        self._progress_timer = None
+        self._on_install_progress = None
+        self._install_estimator = None
+        self._install_staging_dir = None
 
     def _recover(self, message: str, retry_available: bool) -> None:
         self.disarm()
@@ -2478,7 +2542,15 @@ def _check_updates(
             if control is not None else download_update_installer(result)
         )
         if control is not None:
-            control.begin_installation()
+            try:
+                installer_size = installer.stat().st_size
+            except OSError:
+                installer_size = 0
+            control.begin_installation(
+                total_bytes=expected_install_total_bytes(
+                    installer_size_bytes=installer_size
+                )
+            )
         if not update_quit_gate.mark_installer_handoff_started():
             raise RuntimeError("Update installer handoff is not active.")
         # WHY: current broad releases are unsigned by policy; the installer and
@@ -5323,7 +5395,21 @@ def main(argv: list[str] | None = None) -> int:
         message: str, installer_launch: object | None
     ) -> None:
         if update_handoff_recovery is not None:
-            update_handoff_recovery.arm(installer_launch)
+            total_bytes, staging_dir = install_progress_basis(installer_launch)
+            control = active_update_control
+            if (
+                control is not None
+                and total_bytes is not None
+                and staging_dir is not None
+            ):
+                update_handoff_recovery.arm(
+                    installer_launch,
+                    on_install_progress=control.report,
+                    install_estimator=InstallProgressEstimator(total_bytes),
+                    install_staging_dir=staging_dir,
+                )
+            else:
+                update_handoff_recovery.arm(installer_launch)
         if tray_controller is not None:
             tray_controller.tray.showMessage(
                 "ApplicantScout update",
