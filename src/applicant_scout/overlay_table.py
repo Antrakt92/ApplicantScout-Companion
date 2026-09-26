@@ -47,6 +47,10 @@ class TableModel:
     #: reads ``package_fit_by_raw`` instead (equivalent — it checks
     #: ``.display`` itself, so filtered-out groups fall through identically).
     sort_package_fits_by_raw: dict[str, PackageFit] = field(default_factory=dict)
+    #: Signature of the inputs last consumed by :func:`index_group_maps`.
+    #: Lets a repeat call on an unchanged model (the window re-indexes after
+    #: its manual column sort) skip the rebuild with identical results.
+    _index_signature: tuple | None = field(default=None, repr=False, compare=False)
 
 
 def refresh_table_model(
@@ -124,10 +128,23 @@ def index_group_maps(
     Runs after the final row order is known (the window applies its manual
     column sort between :func:`refresh_table_model` and this call), so group
     positions and package lanes follow the displayed order. Idempotent:
-    re-running on an unchanged order rebuilds identical maps.
+    re-running on an unchanged order rebuilds identical maps — detected via
+    the stored signature and skipped outright, since every input (order,
+    fetch states, listing, fit source) is literally the same object.
     """
     resolve_fit = package_fit_fn or package_fit
     package_fits_by_raw = model.sort_package_fits_by_raw
+    signature = (
+        tuple(
+            (applicant.applicant_id, applicant.fetch_status)
+            for applicant in model.sorted_applicants
+        ),
+        id(listing),
+        id(resolve_fit),
+        id(package_fits_by_raw),
+    )
+    if signature == model._index_signature:
+        return model
     model.group_size_by_raw = {}
     model.group_position_by_id = {}
     model.group_ready_by_raw = {}
@@ -155,4 +172,5 @@ def index_group_maps(
                 fit = resolve_fit(members, listing)
             if fit.display:
                 model.package_fit_by_raw[raw_aid] = fit
+    model._index_signature = signature
     return model

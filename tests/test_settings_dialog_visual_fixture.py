@@ -418,6 +418,20 @@ def test_settings_visual_fixture_keeps_password_field_masked(qtbot):
     assert secret_field.echoMode() == QLineEdit.EchoMode.Password
 
 
+def test_settings_visual_fixture_secret_reveal_button_is_laid_out(qtbot):
+    dialog = create_settings_visual_dialog("normal-default")
+    qtbot.addWidget(dialog)
+
+    reveal_button = dialog.findChild(QPushButton, "revealWclClientSecret")
+    assert reveal_button is dialog.reveal_secret_button
+    secret_row = dialog.client_secret_edit.parentWidget()
+    assert secret_row is not None
+    secret_layout = secret_row.layout()
+    assert secret_layout is not None
+    assert secret_layout.indexOf(reveal_button) != -1
+    assert reveal_button.text() == "Show"
+
+
 @pytest.mark.parametrize("scenario_name", sorted(SETTINGS_DIALOG_VISUAL_SCENARIOS))
 def test_settings_visual_fixture_dialogs_keep_section_groups(qtbot, scenario_name: str):
     dialog = create_settings_visual_dialog(scenario_name)

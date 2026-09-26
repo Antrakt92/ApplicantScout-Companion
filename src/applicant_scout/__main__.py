@@ -89,7 +89,7 @@ from .screenshots_path_probe import WOW_CLIENT_ROOT_NAMES
 from .settings_dialog import (
     ReleaseNotesDialog,
     SCREENSHOTS_PATH_PROBE_ARG,
-    SETTINGS_QUIT_BLOCKED_MESSAGE,
+    SETTINGS_QUIT_BLOCKED_MESSAGE as SETTINGS_QUIT_BLOCKED_MESSAGE,
     SettingsDialog,
     SettingsUpdateResult,
     open_folder,
@@ -150,8 +150,6 @@ CONTROL_SHOW_SETTINGS_COMMAND = _runtime_control.CONTROL_SHOW_SETTINGS_COMMAND
 UPDATE_QUIT_BLOCKED_MESSAGE = (
     "Update is installing. Wait for it to finish before quitting."
 )
-# Re-exported for app_bootstrap.make_quit_pipeline (attribute access).
-_SETTINGS_QUIT_BLOCKED_MESSAGE = SETTINGS_QUIT_BLOCKED_MESSAGE
 WOW_EXIT_POLL_MS = 5000
 WOW_EXIT_MISSES_BEFORE_QUIT = 3
 # H2: pre-QApplication duplicate probe budget. One scoped connect only; the
@@ -5141,10 +5139,15 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(holder, dict):
             holder["drain"] = settings_apply_drain
 
+    def _set_settings_apply_drain(drain: Callable[[], bool] | None) -> None:
+        # Single setter for the quit-time settings drain: assign and sync
+        # into the pipeline together so future rebinds cannot go stale.
+        nonlocal settings_apply_drain
+        settings_apply_drain = drain
+        _sync_settings_drain_into_pipeline()
+
     def _cancel_update_download() -> bool:
         return active_update_control.cancel() if active_update_control is not None else False
-
-    about_to_quit = getattr(app, "aboutToQuit", None)
 
     try:
         control_server = _create_control_server(
@@ -5190,8 +5193,9 @@ def main(argv: list[str] | None = None) -> int:
         test_installation=os.environ.get("APSCOUT_USAGE_TEST_INSTALLATION") == "1",
     )
     setattr(app, "_usage_client", usage_client)
-    if about_to_quit is not None:
-        about_to_quit.connect(usage_client.close)
+    usage_about_to_quit = getattr(app, "aboutToQuit", None)
+    if usage_about_to_quit is not None:
+        usage_about_to_quit.connect(usage_client.close)
     # H1: trust the saved path so probe/discovery subprocesses never block the
     # GUI thread; verification runs in the background after first paint.
     loaded = _load_startup_config(verify_screenshots_path=False)
@@ -5332,7 +5336,6 @@ def main(argv: list[str] | None = None) -> int:
         nonlocal auth
         nonlocal cfg
         nonlocal current_screenshots_dir
-        nonlocal settings_apply_drain
         nonlocal settings_dialog
         nonlocal watcher
         nonlocal wow_exit_timer
@@ -5501,8 +5504,7 @@ def main(argv: list[str] | None = None) -> int:
             on_busy=_mark_apply_busy,
             on_ready=_commit_apply_outcome,
         )
-        settings_apply_drain = settings_applier.drain
-        _sync_settings_drain_into_pipeline()
+        _set_settings_apply_drain(settings_applier.drain)
 
         def _handle_values_changed(values) -> None:
             _apply_settings_values(values, apply_credentials=False)

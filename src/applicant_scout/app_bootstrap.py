@@ -40,7 +40,13 @@ class AppRuntime:
 
 @dataclass
 class QuitPipeline:
-    """Quit-time ordering: flush once, then quit; gates stay injectable."""
+    """Quit-time ordering: flush once, then quit; gates stay injectable.
+
+    The async settings drain is synced into ``settings_drain_holder`` (see
+    ``make_quit_pipeline``) through main's settings-drain setter, which
+    assigns and syncs together so rebinds cannot go stale; the flush reads
+    the holder live at quit time.
+    """
 
     flush: Callable[[], None]
     quit_app: Callable[[], None]

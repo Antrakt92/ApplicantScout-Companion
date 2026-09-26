@@ -48,6 +48,7 @@ _ALL_METRIC_PREFERENCE_SCOPES = tuple(
 # A requested scope has at most 15 broader Boolean supersets. Cache reads use
 # these exact keys instead of scanning every cached character, which keeps GUI-
 # thread lookup cost bounded as the persistent cache grows during a session.
+# Read-only table shared by every lookup; do not mutate.
 _COVERING_METRIC_SCOPE_KEYS = {
     requested.cache_key(): tuple(
         (stored.cache_key(), _metric_preference_breadth(stored))
@@ -109,7 +110,11 @@ def _entry_is_fresh(
 
 
 def _cap_entries_data(data: dict[str, _CacheEntry], max_entries: int) -> None:
-    """Evict oldest-fetched_at entries beyond max_entries (H4)."""
+    """Evict oldest-fetched_at entries beyond max_entries (H4).
+
+    ``data`` is the live ``CharacterCache`` store; call only with
+    ``CharacterCache._lock`` held.
+    """
     overflow = len(data) - max_entries
     if overflow <= 0:
         return
@@ -125,7 +130,11 @@ def _prune_expired_data(
     ttl_seconds: float,
     not_found_ttl_seconds: float,
 ) -> bool:
-    """Drop stale entries. Returns True when anything was removed."""
+    """Drop stale entries. Returns True when anything was removed.
+
+    ``data`` is the live ``CharacterCache`` store; call only with
+    ``CharacterCache._lock`` held.
+    """
     changed = False
     for key, entry in list(data.items()):
         if not _entry_is_fresh(
@@ -155,6 +164,8 @@ def cache_get(
     Returns (negative_candidate, candidates) ordered exact-first, then newest
     covering scope, mirroring the former CharacterCache._lookup_snapshot core.
     Callers convert the winning entry and apply their own generation guards.
+    ``entries`` is the live ``CharacterCache`` store; call only with
+    ``CharacterCache._lock`` held.
     """
     current = time.time() if now is None else now
     requested_scope_key = metric_preferences.cache_key()
@@ -217,7 +228,10 @@ def cache_put(
     """Insert one entry, then cap over max_entries.
 
     not_found inserts evict same-identity keys first (sweep_prefixes);
-    positive inserts clear a prior not_found marker instead."""
+    positive inserts clear a prior not_found marker instead.
+    ``entries`` is the live ``CharacterCache`` store; call only with
+    ``CharacterCache._lock`` held.
+    """
     if not_found:
         for stored_key in list(entries):
             if stored_key.startswith(sweep_prefixes):
@@ -240,7 +254,10 @@ def cache_evict(
     """Prune expired entries, then cap over max_entries when given.
 
     Returns True when anything was removed. max_entries=None prunes only,
-    which is what snapshot saves need without touching put-path eviction."""
+    which is what snapshot saves need without touching put-path eviction.
+    ``entries`` is the live ``CharacterCache`` store; call only with
+    ``CharacterCache._lock`` held.
+    """
     current = time.time() if now is None else now
     pruned = _prune_expired_data(
         entries,

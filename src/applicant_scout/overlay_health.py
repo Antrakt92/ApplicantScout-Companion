@@ -14,6 +14,7 @@ calls this function, and writes the resulting chip.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from . import ui_text
@@ -43,7 +44,8 @@ _AUTH_CHIP_DEFAULT = ChipState(
     detail="Warcraft Logs credentials have not been checked in this session.",
 )
 
-AUTH_CHIP_STATES: dict[tuple[str, str], ChipState] = {
+# Read-only lookup shared via overlay.AUTH_CHIP_STATES; do not mutate.
+AUTH_CHIP_STATES: Mapping[tuple[str, str], ChipState] = {
     ("checking", ""): ChipState(
         text="Auth check",
         chip_state="active",

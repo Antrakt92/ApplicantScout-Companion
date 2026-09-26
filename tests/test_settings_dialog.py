@@ -301,6 +301,20 @@ def test_settings_secret_reveal_preserves_values_and_does_not_save(qtbot, tmp_pa
     assert dialog.reveal_secret_button.text() == "Show"
 
 
+def test_settings_secret_reveal_button_is_laid_out_in_secret_row(qtbot, tmp_path: Path):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+
+    secret_row = dialog.client_secret_edit.parentWidget()
+    assert secret_row is not None
+    assert dialog.reveal_secret_button.parentWidget() is secret_row
+    secret_layout = secret_row.layout()
+    assert secret_layout is not None
+    assert secret_layout.indexOf(dialog.reveal_secret_button) != -1
+    assert secret_layout.itemAt(0).widget() is dialog.client_secret_edit
+    assert not dialog.reveal_secret_button.isHidden()
+
+
 def test_settings_secret_is_masked_after_hide_and_reopen(qtbot, tmp_path: Path):
     dialog = SettingsDialog(_cfg(tmp_path))
     qtbot.addWidget(dialog)

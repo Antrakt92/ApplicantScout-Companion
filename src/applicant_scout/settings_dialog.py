@@ -1015,6 +1015,16 @@ class SettingsDialog(QDialog):
         self.reveal_secret_button.toggled.connect(self._set_client_secret_visible)
         self._set_client_secret_visible(False)
         QWidget.setTabOrder(self.client_secret_edit, self.reveal_secret_button)
+        # The section builder parents the reveal button to the secret row but
+        # does not insert it into the row layout; attach it here so the
+        # "Show" toggle is actually displayed next to the secret field.
+        _secret_row = self.client_secret_edit.parentWidget()
+        _secret_layout = _secret_row.layout() if _secret_row is not None else None
+        if (
+            _secret_layout is not None
+            and _secret_layout.indexOf(self.reveal_secret_button) == -1
+        ):
+            _secret_layout.addWidget(self.reveal_secret_button)
 
         self.region_combo = wcl_built.region_combo
 
