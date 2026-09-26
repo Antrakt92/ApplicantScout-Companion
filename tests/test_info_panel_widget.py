@@ -4593,7 +4593,130 @@ def test_open_overlay_hides_outside_game_and_restores_when_game_returns(
         foreground["active"] = True
         window._sync_game_foreground_visibility()
 
-        assert window.isVisible()
+        # Persistent-badge behavior: a hidden overlay never auto-pops the
+        # full window on game return, even without a prior collapse — the
+        # badge owns the hidden state and the user restores via click
+        # (see test_launcher_click_restores_hidden_overlay_without_collapse).
+        assert not window.isVisible()
+        assert window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+    finally:
+        client.close()
+
+
+def test_hidden_overlay_without_collapse_shows_badge_when_game_returns(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        # Plain hide() without collapse: the tray-hide / foreground-loss
+        # path that used to leave no clickable in-game surface.
+        window.hide()
+        qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+        assert not window._collapsed_to_launcher
+
+        foreground["active"] = False
+        window._sync_game_foreground_visibility()
+        assert not window._launcher.isVisible()
+
+        foreground["active"] = True
+        window._sync_game_foreground_visibility()
+
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+        assert not window._collapsed_to_launcher
+    finally:
+        client.close()
+
+
+def test_maybe_show_prefers_badge_over_popping_hidden_overlay(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window.hide()
+        qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+        assert not window._collapsed_to_launcher
+
+        window._maybe_show()
+
+        assert window._launcher.isVisible()
+        assert not window.isVisible()
+    finally:
+        client.close()
+
+
+def test_launcher_click_restores_hidden_overlay_without_collapse(
+    qtbot, tmp_path
+):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    foreground = {"active": True}
+    window = OverlayWindow(
+        AppState(),
+        client,
+        cache,
+        tmp_path,
+        game_foreground_probe=lambda: foreground["active"],
+    )
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+        window.hide()
+        qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+        window._launcher.show_at(window._default_launcher_position())
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        assert not window._collapsed_to_launcher
+
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
+        assert not window._launcher.isVisible()
+        assert not window._collapsed_to_launcher
+    finally:
+        client.close()
+
+
+def test_badge_hidden_when_overlay_open(qtbot, tmp_path):
+    auth = WCLAuth("client", "secret", tmp_path)
+    client = WCLClient(auth)
+    cache = CharacterCache(tmp_path)
+    window = OverlayWindow(AppState(), client, cache, tmp_path)
+    qtbot.addWidget(window)
+    qtbot.addWidget(window._launcher)
+
+    try:
+        qtbot.waitUntil(window._launcher.isVisible, timeout=1000)
+        window.restore_from_launcher()
+        qtbot.waitUntil(window.isVisible, timeout=1000)
+
         assert not window._launcher.isVisible()
     finally:
         client.close()

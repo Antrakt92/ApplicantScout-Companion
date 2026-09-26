@@ -4104,7 +4104,7 @@ class OverlayWindow(QMainWindow):
         if self._closed:
             return
         launcher_interaction_foreground = (
-            self._collapsed_to_launcher
+            self._is_overlay_effectively_hidden()
             and self._launcher.isVisible()
             and self._game_foreground
             and not self._launcher_visible_after_non_game_foreground
@@ -4145,6 +4145,16 @@ class OverlayWindow(QMainWindow):
             _log.warning("Game foreground probe failed: %s", exc)
             return True
 
+    def _is_overlay_effectively_hidden(self) -> bool:
+        """True when no open overlay window is on screen.
+
+        The overlay counts as open only while its window is visible and not
+        collapsed to the launcher badge. A plain hide() (foreground loss,
+        empty state, tray hide) without the collapse flag still leaves no
+        clickable in-game surface, so the launcher badge owns that state.
+        """
+        return not (self.isVisible() and not self._collapsed_to_launcher)
+
     def _cursor_over_open_overlay(self) -> bool:
         return self.isVisible() and self.frameGeometry().contains(QCursor.pos())
 
@@ -4177,7 +4187,7 @@ class OverlayWindow(QMainWindow):
             return
         if self._launcher.is_dragging():
             return
-        overlay_visible = self.isVisible() and not self._collapsed_to_launcher
+        overlay_visible = not self._is_overlay_effectively_hidden()
         if overlay_visible or self._launcher.isVisible():
             if not self._foreground_timer.isActive():
                 self._foreground_timer.start()
@@ -4225,7 +4235,7 @@ class OverlayWindow(QMainWindow):
             return
         foreground = self._is_game_foreground()
         now = time.monotonic()
-        open_overlay_visible = self.isVisible() and not self._collapsed_to_launcher
+        open_overlay_visible = not self._is_overlay_effectively_hidden()
         open_overlay_interaction_foreground = (
             open_overlay_visible
             and not foreground
@@ -4250,7 +4260,7 @@ class OverlayWindow(QMainWindow):
         else:
             self._open_overlay_foreground_loss_grace_until = 0.0
         launcher_interaction_foreground = (
-            self._collapsed_to_launcher
+            self._is_overlay_effectively_hidden()
             and self._launcher.isVisible()
             and (
                 self._launcher.isActiveWindow()
@@ -4262,15 +4272,14 @@ class OverlayWindow(QMainWindow):
             return
         if (
             not foreground
-            and self.isVisible()
-            and not self._collapsed_to_launcher
+            and not self._is_overlay_effectively_hidden()
             and time.monotonic() < self._launcher_foreground_grace_until
         ):
             return
         if foreground == self._game_foreground:
             if (
                 not foreground
-                and self._collapsed_to_launcher
+                and self._is_overlay_effectively_hidden()
                 and self._launcher.isVisible()
             ):
                 self._launcher_visible_after_non_game_foreground = False
@@ -4290,7 +4299,7 @@ class OverlayWindow(QMainWindow):
             self._update_foreground_polling()
             return
         self._launcher_visible_after_non_game_foreground = False
-        if self._collapsed_to_launcher:
+        if self._is_overlay_effectively_hidden():
             self._launcher.show_at(self._default_launcher_position())
         else:
             self.show()
@@ -5904,14 +5913,17 @@ class OverlayWindow(QMainWindow):
         if self._closed:
             return
         if not self._game_foreground:
-            if self._collapsed_to_launcher and self._launcher.is_dragging():
+            if (
+                self._is_overlay_effectively_hidden()
+                and self._launcher.is_dragging()
+            ):
                 return
             self._launcher.hide()
             if not self.isActiveWindow():
                 self.hide()
             self._update_foreground_polling()
             return
-        if self._collapsed_to_launcher:
+        if self._is_overlay_effectively_hidden():
             self._launcher.show_at(self._default_launcher_position())
             self._update_foreground_polling()
             return
