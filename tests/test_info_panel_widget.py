@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QFont, QHelpEvent, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
+    QSizePolicy,
     QStyleOptionViewItem,
     QTableWidget,
     QWidget,
@@ -286,7 +287,11 @@ def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
     assert rio_label.text() == "M×2"
     assert "#ffe36a" in rio_label.styleSheet()
     assert wcl_key_label.text() == ""
-    assert value_label.text() == "M 46 / 68"
+    # A lone difficulty pair renders as a text-hugging RichText segment span
+    # (same as multi-segment rows), never a full-rect label background.
+    assert value_label.textFormat() == Qt.TextFormat.RichText
+    assert "M 46 / 68" in value_label.text()
+    assert value_label.styleSheet() == ""
     assert name_label.width() == RAID_NAME_WIDTH
     assert rio_label.width() == RAID_SINGLE_KILL_WIDTH
     assert wcl_key_label.width() == 0
@@ -362,7 +367,9 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     assert panel._dungeon_rows[1][0].text() == "Entombed Sentinels"
     assert panel._dungeon_rows[1][1].text() == ""
     assert panel._dungeon_rows[8][0].text() == "Nymrissa Wavecaller"
-    assert panel._dungeon_rows[8][3].text() == "M 55 / 66"
+    assert panel._dungeon_rows[8][3].textFormat() == Qt.TextFormat.RichText
+    assert "M 55 / 66" in panel._dungeon_rows[8][3].text()
+    assert panel._dungeon_rows[8][3].styleSheet() == ""
     assert panel._visible_detail_rows == 9
     target_height = panel.target_height()
     assert target_height >= INFO_PANEL_PREFERRED_HEIGHT
@@ -625,6 +632,117 @@ def test_raid_idle_prompt_replaced_by_inline_load_button(qtbot, tmp_path):
         assert not panel._status_row.isHidden()
     finally:
         window.close()
+
+
+def test_inline_load_button_stays_compact_chip(qtbot, tmp_path):
+    window = _raid_idle_window(qtbot, tmp_path)
+    try:
+        panel = window._panel
+        button = panel._wcl_retry_button
+        assert button.text() == "Load boss details"
+        assert button.height() == 22
+        assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+        assert button.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
+        # The cap hugs the caption (floored at the compact-chip width) so the
+        # text never elides, while Fixed policy stops panel-wide stretch.
+        assert button.maximumWidth() == max(200, button.sizeHint().width())
+        layout = panel._status_row.layout()
+        assert layout.itemAt(0).widget() is button
+        assert layout.itemAt(0).alignment() & Qt.AlignmentFlag.AlignLeft
+
+        window.show()
+        QApplication.processEvents()
+        assert button.width() >= button.sizeHint().width()
+        assert button.mapTo(panel, QPoint()).x() <= 12
+        assert (
+            button.mapTo(panel, QPoint()).x() + button.width()
+            <= panel.width() - 10
+        )
+    finally:
+        window.close()
+
+
+def test_summary_flow_combines_fit_metrics_and_history(qtbot):
+    panel = ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setApplicantData(
+        _app(rio_previous_score=3485, rio_previous_season=0),
+        _listing(),
+    )
+
+    assert isinstance(panel._summary_row.layout(), overlay_mod._BadgeFlowLayout)
+    flow = panel._summary_row.layout()
+    assert [flow.itemAt(index).widget() for index in range(flow.count())] == [
+        panel._metric_labels["Fit"],
+        panel._rio_history_label,
+        panel._rio_main_history_label,
+        panel._rio_warband_history_label,
+        panel._metric_labels["N"],
+        panel._metric_labels["H"],
+        panel._metric_labels["M"],
+        panel._metric_labels["M+"],
+    ]
+    assert not panel._summary_row.isHidden()
+    for key in ("N", "H", "M", "M+", "Fit"):
+        assert not panel._metric_labels[key].isHidden()
+    assert not panel._rio_history_label.isHidden()
+    assert panel._rio_main_history_label.isHidden()
+    assert panel._rio_warband_history_label.isHidden()
+
+    panel.setPlaceholder()
+    assert panel._summary_row.isHidden()
+
+
+def test_single_segment_raid_parse_renders_text_hugging_span(qtbot):
+    panel = ApplicantInfoPanel(
+        None,
+        MetricPreferences(
+            mplus=True,
+            raid_normal=False,
+            raid_heroic=False,
+            raid_mythic=True,
+        ),
+    )
+    qtbot.addWidget(panel)
+    panel.setApplicantData(
+        _app(
+            raid_normal=None,
+            raid_normal_median=None,
+            raid_heroic=None,
+            raid_heroic_median=None,
+            raid_mythic=70.0,
+            raid_mythic_median=60.0,
+            rio_raid_progress={
+                "M": {
+                    "killed": 1,
+                    "total": 9,
+                    "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
+                }
+            },
+            raid_boss_parses={
+                "M": [
+                    {
+                        "encounter_id": 3470,
+                        "name": "Nek'zali the Soulcoiler",
+                        "overall": 46.0,
+                        "ilvl": 68.0,
+                    }
+                ]
+            },
+        ),
+        _raid_listing(),
+    )
+
+    _name_label, _rio_label, wcl_key_label, value_label = panel._dungeon_rows[0]
+    assert wcl_key_label.text() == ""
+    # Same rendering as multi-segment rows: per-segment spans hug the text,
+    # so the lone pair never paints a full-rect label background.
+    assert value_label.textFormat() == Qt.TextFormat.RichText
+    assert "46" in value_label.text() and "68" in value_label.text()
+    assert "background-color" in value_label.text()
+    assert value_label.styleSheet() == ""
+    assert value_label.width() == RAID_SINGLE_METRIC_WIDTH
+    assert value_label.alignment() & Qt.AlignmentFlag.AlignHCenter
 
 
 def test_raid_loading_and_cooldown_states_render_as_text_in_status_row(
@@ -1891,7 +2009,7 @@ def test_panel_shows_local_rio_history_only_when_present(qtbot):
     panel.setApplicantData(_app(score=0, rio_previous_score=2876, rio_previous_season=2))
     assert panel._rio_label.text() == ""
     assert panel._rio_history_label.text() == "RIO past S3 ~2876"
-    assert not panel._rio_history_row.isHidden()
+    assert not panel._summary_row.isHidden()
 
     panel.setApplicantData(
         _app(
@@ -1906,7 +2024,7 @@ def test_panel_shows_local_rio_history_only_when_present(qtbot):
     assert panel._rio_history_label.text() == "past S1 ~3485"
     assert panel._rio_main_history_label.text() == "main past S1 ~4020"
     assert panel._rio_warband_history_label.text() == "warband past S1 ~4024"
-    assert not panel._rio_history_row.isHidden()
+    assert not panel._summary_row.isHidden()
     for label in (
         panel._rio_history_label,
         panel._rio_main_history_label,
@@ -1947,11 +2065,13 @@ def test_panel_shows_local_rio_history_only_when_present(qtbot):
     assert panel._rio_history_label.text() == ""
     assert panel._rio_main_history_label.text() == ""
     assert panel._rio_warband_history_label.text() == ""
-    assert panel._rio_history_row.isHidden()
+    # No history chips, but metric badges remain: the merged summary flow
+    # stays visible instead of collapsing.
+    assert not panel._summary_row.isHidden()
 
     panel.setApplicantData(_app(rio_warband_previous_score=4024, rio_warband_previous_season=0))
     panel.setPlaceholder()
-    assert panel._rio_history_row.isHidden()
+    assert panel._summary_row.isHidden()
 
 
 @pytest.mark.real_display
@@ -1990,8 +2110,13 @@ def test_panel_history_and_current_score_fit_at_minimum_width(qtbot):
         panel._rio_warband_history_label.sizeHint().width()
         <= panel._rio_warband_history_label.width()
     )
-    assert panel._rio_history_row.isVisibleTo(panel)
-    assert panel._rio_history_row.mapTo(panel, QPoint(0, 0)).y() < (
+    assert panel._summary_row.isVisibleTo(panel)
+    # History chips share the merged summary flow with the metric badges, so
+    # they sit on the same wrapping line(s) — history keeps its pre-merge
+    # position ahead of the M+ badge in flow order.
+    assert panel._rio_history_label.parentWidget() is panel._summary_row
+    assert panel._metric_labels["M+"].parentWidget() is panel._summary_row
+    assert panel._rio_history_label.mapTo(panel, QPoint(0, 0)).y() <= (
         panel._metric_labels["M+"].mapTo(panel, QPoint(0, 0)).y()
     )
 

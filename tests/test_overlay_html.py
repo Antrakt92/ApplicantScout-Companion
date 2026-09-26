@@ -11,7 +11,8 @@ from dataclasses import replace
 
 import pytest
 
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QPoint, QRect
+from PySide6.QtWidgets import QWidget, QToolTip
 
 from applicant_scout.constants import percentile_colour
 from applicant_scout.overlay import (
@@ -21,11 +22,16 @@ from applicant_scout.overlay import (
     COLUMN_HEADERS,
     COLUMN_WIDTHS,
     HEADER_TOOLTIPS,
+    MPLUS_FIT_EXPLANATION,
     NAME_COLUMN_MAX_WIDTH,
+    _STYLESHEET,
+    _TOOLTIP_WRAP_WIDTH,
     _mplus_cell_visuals,
     _normalize_loaded_geometry,
     _raid_cell_visuals,
+    _render_tooltip,
     _text_colour_for_bg,
+    _wrap_tooltip_text,
 )
 from applicant_scout.overlay_presenters import (
     mplus_dungeon_metric_text,
@@ -157,6 +163,54 @@ def _mplus_listing() -> Listing:
         key_level=14,
         category_id=2,
         difficulty_id=8,
+    )
+
+
+def test_tooltip_wrap_leaves_short_text_untouched():
+    assert _wrap_tooltip_text("") == ""
+    assert (
+        _wrap_tooltip_text("Retry Warcraft Logs for this row")
+        == "Retry Warcraft Logs for this row"
+    )
+
+
+def test_tooltip_wrap_constrains_header_and_fit_explanations():
+    tips = [
+        *HEADER_TOOLTIPS,
+        MPLUS_FIT_EXPLANATION,
+        f"{HEADER_TOOLTIPS[COL_MPLUS]}\nClick to sort; click again to reverse; click a third time to clear.",
+    ]
+    assert any(
+        len(line) > _TOOLTIP_WRAP_WIDTH for tip in tips for line in tip.split("\n")
+    )
+    for tip in tips:
+        wrapped = _wrap_tooltip_text(tip)
+        assert all(
+            len(line) <= _TOOLTIP_WRAP_WIDTH for line in wrapped.split("\n")
+        ), tip[:60]
+        # Wrapping only reflows whitespace: words and blank separators survive.
+        assert wrapped.split() == tip.split()
+        assert sum(1 for line in wrapped.split("\n") if not line) == sum(
+            1 for line in tip.split("\n") if not line
+        )
+
+
+def test_tooltip_stylesheet_caps_rendered_width():
+    assert "max-width: 400px" in _STYLESHEET
+
+
+def test_render_tooltip_wraps_long_text_before_show(qtbot, monkeypatch):
+    shown: list[tuple] = []
+    monkeypatch.setattr(QToolTip, "showText", lambda *args: shown.append(args))
+    widget = QWidget()
+    qtbot.addWidget(widget)
+    tip = HEADER_TOOLTIPS[COL_FIT]
+    assert _render_tooltip(widget, tip, QPoint(70, 90)) is True
+    assert len(shown) == 1
+    _pos, text, _parent = shown[0]
+    assert text == _wrap_tooltip_text(tip)
+    assert all(
+        len(line) <= _TOOLTIP_WRAP_WIDTH for line in text.split("\n")
     )
 
 

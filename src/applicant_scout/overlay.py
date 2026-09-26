@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QSizeGrip,
+    QSizePolicy,
     QSpinBox,
     QStyledItemDelegate,
     QTableWidget,
@@ -850,6 +851,34 @@ class _RaidBossFetchTask(QRunnable):
 # Tooltip-rendering subclass (Qt-on-Windows translucent-overlay workaround)
 
 
+# Tooltips render through QToolTip.showText() on a screen-parented widget that
+# ignores the overlay layout width, so an unwrapped paragraph becomes one
+# giant tooltip covering the table. Wrap to ~80 columns (paragraph breaks
+# preserved) at render time; stored toolTip()/accessibleDescription text stays
+# untouched for tests and screen readers.
+_TOOLTIP_WRAP_WIDTH = 80
+
+
+def _wrap_tooltip_text(tip: str, width: int = _TOOLTIP_WRAP_WIDTH) -> str:
+    """Wraps tooltip paragraphs to `width` columns, keeping blank separators."""
+    lines: list[str] = []
+    for paragraph in str(tip).split("\n"):
+        if not paragraph.strip():
+            lines.append("")
+            continue
+        current = ""
+        for word in paragraph.split():
+            candidate = f"{current} {word}".strip()
+            if len(candidate) > width and current:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+    return "\n".join(lines).strip()
+
+
 def _render_tooltip(parent_widget, tip: str, global_pos) -> bool:
     """Renders or hides the tooltip via QToolTip.showText() bypass.
 
@@ -865,7 +894,7 @@ def _render_tooltip(parent_widget, tip: str, global_pos) -> bool:
     from PySide6.QtWidgets import QToolTip
 
     if tip:
-        QToolTip.showText(global_pos, tip, parent_widget)
+        QToolTip.showText(global_pos, _wrap_tooltip_text(tip), parent_widget)
     else:
         QToolTip.hideText()
     return True
@@ -2250,6 +2279,15 @@ class ApplicantInfoPanel(QFrame):
         self._wcl_retry_button = _KeyboardButton("Retry WCL")
         self._wcl_retry_button.setObjectName("infoWclRetryButton")
         self._wcl_retry_button.setFixedHeight(22)
+        # The inline "Load boss details" action must stay a compact chip at
+        # the left of the status row: Fixed policy + left alignment keep it
+        # from stretching across the panel when the status label hides. The
+        # cap is refreshed in _show_status so the longer caption never
+        # elides on wide fonts.
+        self._wcl_retry_button.setMaximumWidth(200)
+        self._wcl_retry_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self._wcl_retry_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._wcl_retry_button.setToolTip("Retry Warcraft Logs for this row")
         self._wcl_retry_button.clicked.connect(self.wclRetryRequested.emit)
@@ -2283,10 +2321,21 @@ class ApplicantInfoPanel(QFrame):
             identity_layout.addWidget(label)
         outer.addWidget(identity)
 
-        self._rio_history_row = QWidget(self)
-        history_layout = _BadgeFlowLayout(self._rio_history_row)
-        history_layout.setContentsMargins(0, 0, 0, 0)
-        history_layout.setSpacing(4)
+        # Single summary flow: Fit, past-season RIO chips, and the Normal /
+        # Heroic / Mythic / M+ badges share one wrapping _BadgeFlowLayout so a
+        # lone "Normal 72/71 + M+ DPS 31 +10" pair never costs a dedicated row
+        # when width allows, while narrow panels still wrap instead of clip.
+        # (Flow order preserves the old top-to-bottom reading order: Fit,
+        # then history, then metric badges.)
+        self._summary_row = QWidget(self)
+        summary_layout = _BadgeFlowLayout(self._summary_row)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(4)
+        self._metric_labels: dict[str, QLabel] = {
+            key: QLabel("") for key in ("N", "H", "M", "M+", "Fit")
+        }
+        self._metric_labels["Fit"].setObjectName("infoMetricBadge")
+        summary_layout.addWidget(self._metric_labels["Fit"])
         self._rio_history_label = QLabel("")
         self._rio_main_history_label = QLabel("")
         self._rio_warband_history_label = QLabel("")
@@ -2301,24 +2350,13 @@ class ApplicantInfoPanel(QFrame):
                 "border: 1px solid #57482d; border-radius: 3px; "
                 "padding: 2px 5px; font-weight: bold;"
             )
-            history_layout.addWidget(label)
-        self._rio_history_row.hide()
-        outer.addWidget(self._rio_history_row)
-
-        metrics = QWidget(self)
-        metrics_layout = _BadgeFlowLayout(metrics)
-        metrics_layout.setContentsMargins(0, 0, 0, 0)
-        metrics_layout.setSpacing(4)
-        self._metric_labels: dict[str, QLabel] = {
-            key: QLabel("") for key in ("N", "H", "M", "M+", "Fit")
-        }
-        for key in ("N", "H", "M", "M+", "Fit"):
+            summary_layout.addWidget(label)
+        for key in ("N", "H", "M", "M+"):
             label = self._metric_labels[key]
             label.setObjectName("infoMetricBadge")
-            metrics_layout.addWidget(label)
-        metrics_layout.removeWidget(self._metric_labels["Fit"])
-        outer.addWidget(metrics)
-        identity_layout.addWidget(self._metric_labels["Fit"])
+            summary_layout.addWidget(label)
+        self._summary_row.hide()
+        outer.addWidget(self._summary_row)
 
         self._package_label = QLabel("")
         self._package_label.setObjectName("infoPackageBadge")
@@ -2374,7 +2412,11 @@ class ApplicantInfoPanel(QFrame):
         # the eye meets the action. The raid idle prompt hides the passive
         # label (its text is still set); error/loading texts stay visible
         # next to the button in this same row.
-        status_row_layout.addWidget(self._wcl_retry_button)
+        status_row_layout.addWidget(
+            self._wcl_retry_button,
+            stretch=0,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
         self._status_label = QLabel("")
         self._status_label.setObjectName("infoPanelStatus")
         self._status_label.setWordWrap(True)
@@ -2563,7 +2605,7 @@ class ApplicantInfoPanel(QFrame):
             label.setVisible(False)
         self._set_action_visible(self._unpin_button, False)
         self._set_action_visible(self._wcl_retry_button, False)
-        self._rio_history_row.hide()
+        self._summary_row.hide()
         for label in self._metric_labels.values():
             label.setText("")
             label.setToolTip("")
@@ -2639,7 +2681,6 @@ class ApplicantInfoPanel(QFrame):
             self._rio_label.setText("")
             self._rio_label.setVisible(False)
         has_rio_label = bool(current_text)
-        has_history = False
         for label, source in (
             (self._rio_history_label, "character"),
             (self._rio_main_history_label, "main"),
@@ -2650,11 +2691,24 @@ class ApplicantInfoPanel(QFrame):
                 label.setText(history_text if has_rio_label else f"RIO {history_text}")
                 label.setVisible(True)
                 has_rio_label = True
-                has_history = True
             else:
                 label.setText("")
                 label.setVisible(False)
-        self._rio_history_row.setVisible(has_history)
+        # Metric badges refresh after this (via _set_metric_badges); the row
+        # syncs again there, so any stale badge visibility here is transient.
+        self._sync_summary_row()
+
+    def _sync_summary_row(self) -> None:
+        """Collapse the merged Fit/history/metric flow when all chips hide."""
+        chips = (
+            self._rio_history_label,
+            self._rio_main_history_label,
+            self._rio_warband_history_label,
+            *self._metric_labels.values(),
+        )
+        self._summary_row.setVisible(
+            any(not chip.isHidden() for chip in chips)
+        )
 
     def _set_package(
         self,
@@ -2967,6 +3021,12 @@ class ApplicantInfoPanel(QFrame):
         self._state_stage.setVisible(bool(text and centered))
         self._bottom_filler.setVisible(not bool(text and centered))
         self._wcl_retry_button.setText(action_text)
+        # Hug the action text: track the caption's size hint (floored at the
+        # compact-chip width) so "Load boss details" never elides on wide
+        # fonts, while Fixed policy + left alignment stop panel-wide stretch.
+        self._wcl_retry_button.setMaximumWidth(
+            max(200, self._wcl_retry_button.sizeHint().width())
+        )
         self._wcl_retry_button.setToolTip(
             "Load boss-by-boss Warcraft Logs details for this row"
             if action_text == "Load boss details"
@@ -3000,6 +3060,7 @@ class ApplicantInfoPanel(QFrame):
                 label.setVisible(False)
         self._dungeon_widget.setVisible(False)
         self._visible_detail_rows = 0
+        self._sync_summary_row()
 
     def _detail_context_key(self, listing: Listing | None) -> str:
         context = detect_listing_context(listing)
@@ -3160,6 +3221,7 @@ class ApplicantInfoPanel(QFrame):
             self._metric_labels["Fit"].setVisible(False)
             self._metric_labels["Fit"].setToolTip("")
             self._metric_labels["Fit"].setAccessibleDescription("")
+        self._sync_summary_row()
         return shown
 
     def _mplus_fit_status_text(
@@ -3506,7 +3568,16 @@ class ApplicantInfoPanel(QFrame):
                 wcl_key_label.setText("")
                 wcl_key_label.setStyleSheet("")
                 segments = row.get("segments")
-                if isinstance(segments, list) and len(segments) > 1:
+                # Single-segment values render exactly like multi-segment ones:
+                # per-segment RichText spans hug the text, so a lone "N 95/97"
+                # never paints a full-rect QLabel background across the column.
+                # The PlainText + label-background branch below is only a
+                # fallback for rows that carry a value without segment data.
+                if isinstance(segments, list) and any(
+                    isinstance(segment, dict)
+                    and str(segment.get("text") or "").strip()
+                    for segment in segments
+                ):
                     value_label.setTextFormat(Qt.TextFormat.RichText)
                     value_label.setText(_presenters.raid_parse_segments_html(segments))
                     value_label.setStyleSheet("")
@@ -3555,12 +3626,9 @@ class ApplicantInfoPanel(QFrame):
         else:
             compact_segments = [dict(segment, text=str(segment.get("text", "")).replace(" ", "")) for segment in segments]
             rendered = "<br>".join(_presenters.raid_parse_segments_html([segment]) for segment in compact_segments)
-        # A single normal-width pair keeps its simple label representation.
-        if len(segments) == 1 and metrics.horizontalAdvance(full_text) <= max(0, value.width() - 8):
-            value.setTextFormat(Qt.TextFormat.PlainText)
-            rendered = full_text
-        else:
-            value.setTextFormat(Qt.TextFormat.RichText)
+        # Segment spans (single or multi) always stay RichText so the
+        # background hugs the text instead of filling the label rect.
+        value.setTextFormat(Qt.TextFormat.RichText)
         if value.text() != rendered:
             value.setText(rendered)
 
@@ -3717,7 +3785,7 @@ class OverlayWindow(QMainWindow):
         layout.addWidget(self._title_bar)
 
         self._active_tab = "applicants"
-        self._source_tab_initialized = bool(self._state.listing or self._state.count())
+        self._source_tab_initialized = bool(self._state.count())
         self._sort_by_tab: dict[str, tuple[int, bool]] = {}
         self._hover_by_tab: dict[str, str | None] = {
             "applicants": None,
@@ -3801,7 +3869,7 @@ class OverlayWindow(QMainWindow):
             header_item = self._table.horizontalHeaderItem(col)
             if header_item is not None:
                 header_item.setToolTip(
-                    f"{tip_text}\nClick to sort; click again to reverse the order."
+                    f"{tip_text}\nClick to sort; click again to reverse; click a third time to clear."
                 )
         # The header is a separate QHeaderView child. Install an event filter on
         # its viewport so QHelpEvents route to OverlayWindow.eventFilter and its
@@ -4069,6 +4137,10 @@ class OverlayWindow(QMainWindow):
             )
         self.setGeometry(x, y, w, h)
         self.show_launcher_only()
+        # show_launcher_only ends any visible session (clearing the tab flag),
+        # but construction is not a session end — restore the count-driven
+        # latch so pre-existing applicants keep Applicants on first events.
+        self._source_tab_initialized = bool(self._state.count())
 
         # Last-decode timestamp populated by note_decode slot connected to
         # ScreenshotWatcher.snapshotReceived. Read by _refresh_health_label.
@@ -4239,6 +4311,9 @@ class OverlayWindow(QMainWindow):
             return
         self._collapsed_to_launcher = True
         self.hide()
+        # Manual tab choice is per-visible-session: forget it on hide so the
+        # next show/restore re-evaluates from current counts.
+        self._source_tab_initialized = False
         self._launcher.set_overlay_open(False)
         if self._launcher.is_dragging():
             self._launcher.show_without_repositioning()
@@ -4274,6 +4349,8 @@ class OverlayWindow(QMainWindow):
             return
         self._collapsed_to_launcher = True
         self.hide()
+        # See show_launcher_only: manual tab choice does not survive hide.
+        self._source_tab_initialized = False
         self._launcher.set_overlay_open(False)
         if self._launcher.is_dragging():
             self._launcher.show_without_repositioning()
@@ -4350,6 +4427,7 @@ class OverlayWindow(QMainWindow):
         )
         self._launcher_visible_after_non_game_foreground = False
         self._collapsed_to_launcher = False
+        self._reevaluate_source_tab_for_show()
         self.show()
         self.raise_()
         # Toggle UX: the badge stays visible while the overlay is open (kept
@@ -4648,10 +4726,15 @@ class OverlayWindow(QMainWindow):
         if not 0 <= column < len(COLUMN_HEADERS) or self._table.isColumnHidden(column):
             return
         previous = self._sort_by_tab.get(self._active_tab)
-        descending = column not in {COL_SPEC, COL_NAME}
-        if previous is not None and previous[0] == column:
-            descending = not previous[1]
-        self._sort_by_tab[self._active_tab] = (column, descending)
+        default_descending = column not in {COL_SPEC, COL_NAME}
+        if previous is None or previous[0] != column:
+            self._sort_by_tab[self._active_tab] = (column, default_descending)
+        elif previous[1] == default_descending:
+            self._sort_by_tab[self._active_tab] = (column, not default_descending)
+        else:
+            # Third click on the same column clears the manual sort so the
+            # table falls back to the default model order.
+            del self._sort_by_tab[self._active_tab]
         self._metric_column_widths_dirty = True
         self._refresh_table()
 
@@ -4837,13 +4920,36 @@ class OverlayWindow(QMainWindow):
             return False
         return not self._party_roster_is_raid()
 
+    def _reevaluate_source_tab_for_show(self) -> None:
+        # Show/restore entry points re-run the count-driven selection while
+        # hidden when the user has not manually picked a tab in the current
+        # visible session. Manual picks set _source_tab_initialized via
+        # _on_source_tab_changed; hide-to-launcher clears it so the next
+        # show re-evaluates instead of reusing a stale session choice.
+        if self._source_tab_initialized:
+            return
+        previous = self._active_tab
+        self._initialize_source_tab()
+        if self._active_tab != previous:
+            self._refresh_table()
+            self._update_title()
+
     def _initialize_source_tab(self) -> None:
         # Choose a useful first view, then leave navigation to the user even
         # when a listing ends, the roster empties, or new applicants arrive.
+        # Selection is count-driven only: an active listing with zero
+        # applicants never forces Applicants (grouped with no applicants yet
+        # still opens Party). Only the grouped case ever switches tabs —
+        # every other state latches the current tab (fresh windows default
+        # to Applicants), so live session resets never yank a visible Party
+        # view back to Applicants. Live on_roster_changed/on_applicant_*
+        # handlers additionally skip this while visible; show/restore paths
+        # re-evaluate while hidden via _reevaluate_source_tab_for_show.
         if self._source_tab_initialized:
             return
-        if self._state.listing is not None or self._state.count():
+        if self._state.count() > 0:
             self._source_tab_initialized = True
+            self._select_tab_state("applicants")
         elif len(self._state.party_members) > 1:
             # Grouped with no applicants yet: start on Party. The roster is
             # the canonical group size — the addon includes the player row
@@ -4853,6 +4959,8 @@ class OverlayWindow(QMainWindow):
             self._source_tab_initialized = True
             self._select_tab_state("party")
             self._clear_role_filter()
+        else:
+            self._source_tab_initialized = True
 
     def on_applicant_added(self, applicant: Applicant) -> None:
         if applicant.applicant_id in self._pending_removed_applicant_ids:
@@ -4863,7 +4971,8 @@ class OverlayWindow(QMainWindow):
             ):
                 self._keyboard_id = None
                 self._keyboard_preview_active = False
-        self._initialize_source_tab()
+        if not self.isVisible():
+            self._initialize_source_tab()
         # Order matters: launch fetch FIRST so applicant.fetch_status flips to
         # "loading" before _refresh_table reads it. Otherwise the cell briefly
         # renders the default "pending" state (which displays as "no data") for
@@ -4873,7 +4982,8 @@ class OverlayWindow(QMainWindow):
         self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_updated(self, applicant: Applicant) -> None:
-        self._initialize_source_tab()
+        if not self.isVisible():
+            self._initialize_source_tab()
         # Re-fetch ONLY when fetch_status is "pending" — apply_snapshot resets
         # to pending on (a) newly seen applicant id and (b) spec_id change.
         # Other field updates (score, ilvl, role) don't invalidate WCL data, so
@@ -4934,7 +5044,8 @@ class OverlayWindow(QMainWindow):
                 self._schedule_overlay_refresh(update_title=True)
                 return
             if has_party:
-                self._initialize_source_tab()
+                if not self.isVisible():
+                    self._initialize_source_tab()
                 self._schedule_overlay_refresh(update_title=True, maybe_show=True)
                 return
             self.show_launcher_only()
@@ -4947,7 +5058,8 @@ class OverlayWindow(QMainWindow):
             self._last_raid_listing = listing
         elif listing is not None:
             self._last_raid_listing = None
-        self._initialize_source_tab()
+        if not self.isVisible():
+            self._initialize_source_tab()
         if (
             self._manual_target_key is not None
             and listing is not None
@@ -5127,7 +5239,8 @@ class OverlayWindow(QMainWindow):
             self._schedule_overlay_refresh(update_title=True, maybe_show=False)
             self.show_launcher_only()
             return
-        self._initialize_source_tab()
+        if not self.isVisible():
+            self._initialize_source_tab()
         self._schedule_overlay_refresh(
             update_title=True,
             maybe_show=self._active_tab == "party" and bool(self._state.party_members),
@@ -6263,6 +6376,7 @@ class OverlayWindow(QMainWindow):
             self._update_foreground_polling()
             return
         if not self.isVisible():
+            self._reevaluate_source_tab_for_show()
             g = self.geometry()
             _log.info(
                 "Showing overlay at (%d,%d) %dx%d",
@@ -8726,6 +8840,7 @@ QToolTip {
     border-radius: 4px;
     padding: 7px;
     font-size: 11px;
+    max-width: 400px;
     /* opacity must be 255 — translucency on tooltip in this overlay setup hides it */
     opacity: 255;
 }

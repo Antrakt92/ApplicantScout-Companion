@@ -2348,3 +2348,189 @@ def test_roster_growth_does_not_yank_applicants_initial_tab(
 
     assert win._active_tab == "applicants"
     assert win._id_by_row == ["7:1"]
+
+
+def test_third_click_clears_numeric_sort_to_default_order(qtbot, tmp_path):
+    win, _state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    default_order = list(win._id_by_row)
+
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert win._id_by_row == [high.applicant_id, low.applicant_id]
+    assert win._sort_by_tab["applicants"] == (COL_ILVL, True)
+
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert win._id_by_row == [low.applicant_id, high.applicant_id]
+    assert win._sort_by_tab["applicants"] == (COL_ILVL, False)
+
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert "applicants" not in win._sort_by_tab
+    assert win._active_manual_sort() is None
+    assert win._id_by_row == default_order
+    header = win._table.horizontalHeader()
+    # Cleared sorts fall back to the default model order: the applicants tab
+    # keeps the default sort indicator instead of the cleared column.
+    assert header.isSortIndicatorShown()
+    assert header.sortIndicatorSection() != COL_ILVL
+    tip = win._table.horizontalHeaderItem(COL_ILVL).toolTip()
+    assert "third" in tip.lower()
+
+
+def test_third_click_clears_text_sort_to_default_order(qtbot, tmp_path):
+    win, _state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    default_order = list(win._id_by_row)
+
+    _click_sort_header(qtbot, win, COL_NAME)
+    assert win._id_by_row == [low.applicant_id, high.applicant_id]
+    assert win._sort_by_tab["applicants"] == (COL_NAME, False)
+
+    _click_sort_header(qtbot, win, COL_NAME)
+    assert win._id_by_row == [high.applicant_id, low.applicant_id]
+
+    _click_sort_header(qtbot, win, COL_NAME)
+    assert "applicants" not in win._sort_by_tab
+    assert win._active_manual_sort() is None
+    assert win._id_by_row == default_order
+
+
+def test_sort_clear_is_independent_per_tab(qtbot, tmp_path):
+    win, state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+    state.party_members.update({low.applicant_id: low, high.applicant_id: high})
+
+    _click_sort_header(qtbot, win, COL_NAME)
+    assert win._sort_by_tab["applicants"] == (COL_NAME, False)
+    win._on_source_tab_changed("party")
+    _click_sort_header(qtbot, win, COL_ILVL)
+    _click_sort_header(qtbot, win, COL_ILVL)
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert "party" not in win._sort_by_tab
+    assert win._active_manual_sort() is None
+    assert not win._table.horizontalHeader().isSortIndicatorShown()
+
+    win._on_source_tab_changed("applicants")
+    assert win._sort_by_tab["applicants"] == (COL_NAME, False)
+    assert win._id_by_row == [low.applicant_id, high.applicant_id]
+    assert win._table.horizontalHeader().sortIndicatorSection() == COL_NAME
+
+
+def test_switching_columns_restarts_at_default_direction(qtbot, tmp_path):
+    win, _state, low, high = _sorting_window(qtbot, tmp_path, "applicants")
+
+    _click_sort_header(qtbot, win, COL_ILVL)
+    assert win._sort_by_tab["applicants"] == (COL_ILVL, True)
+    _click_sort_header(qtbot, win, COL_NAME)
+    assert win._sort_by_tab["applicants"] == (COL_NAME, False)
+    assert win._id_by_row == [low.applicant_id, high.applicant_id]
+
+
+def test_initial_tab_grouped_with_listing_and_zero_applicants_selects_party(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.listing = _listing()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "party"
+    assert win._source_tab_initialized
+    assert win._id_by_row == ["host-realm", "friend-realm"]
+
+
+def test_initial_tab_solo_with_listing_and_zero_applicants_stays_applicants(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.listing = _listing()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._source_tab_initialized
+
+
+def test_initial_tab_applicants_present_with_listing_selects_applicants(
+    qtbot, tmp_path
+):
+    state = AppState()
+    state.listing = _listing()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == ["7:1"]
+
+
+def test_hide_restore_reevaluates_tab_after_manual_choice(qtbot, tmp_path):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+    assert win._active_tab == "party"
+
+    qtbot.mouseClick(win._tab_bar._buttons["applicants"], Qt.MouseButton.LeftButton)
+    assert win._active_tab == "applicants"
+
+    win.show_launcher_only()
+    assert not win._source_tab_initialized
+    win.restore_from_tray()
+    win._flush_overlay_refresh()
+
+    assert win.isVisible()
+    assert win._active_tab == "party"
+
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    win.on_applicant_added(state.applicants["7:1"])
+    win._flush_overlay_refresh()
+    assert win._active_tab == "party"
+
+    win.show_launcher_only()
+    win.restore_from_tray()
+    win._flush_overlay_refresh()
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == ["7:1"]
+
+
+def test_visible_roster_growth_does_not_yank_applicants_tab(qtbot, tmp_path):
+    state = AppState()
+    state.applicants["7:1"] = _app("7:1", "Applicant-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._launch_fetch = lambda _applicant: None
+    win._refresh_table()
+    win.show()
+    qtbot.waitUntil(win.isVisible, timeout=1000)
+    assert win._active_tab == "applicants"
+
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm", "TANK")
+    state.party_members["friend-realm"] = _member(
+        "friend-realm", "Friend-Realm", "HEALER"
+    )
+    win.on_roster_changed()
+    win._flush_overlay_refresh()
+
+    assert win.isVisible()
+    assert win._active_tab == "applicants"
+    assert win._id_by_row == ["7:1"]
