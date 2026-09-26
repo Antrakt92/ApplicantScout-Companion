@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
+from shiboken6 import isValid as _is_qobject_valid
 from PySide6.QtCore import (
     QEvent,
     Qt,
@@ -4251,6 +4252,14 @@ class OverlayWindow(QMainWindow):
             and not self._refresh_needs_title
             and not self._refresh_needs_show
         ):
+            return
+        if not _is_qobject_valid(self) or not _is_qobject_valid(self._table):
+            # Deferred single-shot firing during teardown: the window wrapper
+            # outlives its C++ children. Drop the pending refresh instead of
+            # touching deleted widgets.
+            self._refresh_flush_pending = False
+            self._refresh_needs_title = False
+            self._refresh_needs_show = False
             return
         update_title = self._refresh_needs_title
         maybe_show = self._refresh_needs_show

@@ -8,6 +8,8 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QApplication
 
+from applicant_scout import overlay as overlay_mod
+
 from applicant_scout.__main__ import StateMachine
 from applicant_scout.constants import percentile_colour
 from applicant_scout.metric_preferences import MetricPreferences
@@ -2534,3 +2536,25 @@ def test_visible_roster_growth_does_not_yank_applicants_tab(qtbot, tmp_path):
     assert win.isVisible()
     assert win._active_tab == "applicants"
     assert win._id_by_row == ["7:1"]
+
+
+def test_flush_overlay_refresh_drops_pending_work_after_window_teardown(
+    monkeypatch, qtbot, tmp_path
+):
+    state = AppState()
+    state.party_members["host-realm"] = _member("host-realm", "Host-Realm")
+    win = _window(tmp_path, qtbot, state)
+    win._schedule_overlay_refresh()
+    assert win._refresh_flush_pending
+
+    def _fail_if_touched():
+        raise AssertionError("flush touched widgets after teardown")
+
+    monkeypatch.setattr(overlay_mod, "_is_qobject_valid", lambda _obj: False)
+    monkeypatch.setattr(win, "_apply_metric_column_visibility", _fail_if_touched)
+
+    win._flush_overlay_refresh()
+
+    assert not win._refresh_flush_pending
+    assert not win._refresh_needs_title
+    assert not win._refresh_needs_show

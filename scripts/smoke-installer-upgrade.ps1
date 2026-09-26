@@ -45,6 +45,7 @@ function Invoke-InstallerSmoke {
 
     $Arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS", "/DIR=`"$ExpectedRoot`"")
     $TransientRenameLog = $null
+    $PendingRenameLog = $null
     if ($PostPromotionFailure) {
         $ExpectFailure = $true
         $Arguments += "/APSCOUT_TEST_FAIL_POST_PROMOTION=1"
@@ -54,7 +55,13 @@ function Invoke-InstallerSmoke {
         $Arguments += "/APSCOUT_TEST_FAIL_FINALIZATION=1"
     }
     elseif ($PendingRenameFailure) {
+        # The installer must refuse (nonzero exit) when Windows holds a
+        # pending reboot operation on payload files; the caller then proves
+        # the previous payload still works and no staging markers leak.
         $ExpectFailure = $true
+        $PendingRenameLog = Join-Path $env:RUNNER_TEMP "ApplicantScout-pending-rename-smoke.log"
+        Remove-Item -LiteralPath $PendingRenameLog -Force -ErrorAction SilentlyContinue
+        $Arguments += "/LOG=`"$PendingRenameLog`""
     }
     elseif ($TransientRenameFailure) {
         $TransientRenameLog = Join-Path $env:RUNNER_TEMP "ApplicantScout-transient-rename-smoke.log"
@@ -84,6 +91,15 @@ function Invoke-InstallerSmoke {
         $TransientRenameEvidence = Get-Content -LiteralPath $TransientRenameLog -Raw
         if ($TransientRenameEvidence -notlike "*Injected one transient payload directory rename failure for upgrade smoke.*") {
             throw "Installer transient-rename smoke did not exercise the retry path."
+        }
+    }
+    if ($PendingRenameFailure) {
+        if (-not (Test-Path -LiteralPath $PendingRenameLog)) {
+            throw "Installer pending-rename smoke did not produce its diagnostic log."
+        }
+        $PendingRenameEvidence = Get-Content -LiteralPath $PendingRenameLog -Raw
+        if ($PendingRenameEvidence -notlike "*PrepareToInstall failed:*pending reboot operation*") {
+            throw "Installer pending-rename smoke did not refuse on the reboot guard."
         }
     }
 }
