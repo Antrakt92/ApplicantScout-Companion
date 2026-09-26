@@ -5,8 +5,14 @@
 ### Improved
 
 - Show when a Companion update is available directly in the overlay.
+- Warn in the overlay when the WoW addon is older than required or newer
+  than the paired companion version, with update guidance.
 - Keep the overlay responsive during hover, refresh and settings actions, and
   shorten startup checks without delaying QR screenshots or cache writes.
+- Apply first-run setup and Settings changes in the background and keep
+  dialogs non-modal.
+- Get the WoW addon from CurseForge or Wago; setup copy names current Retail
+  and PTR builds without pinned version numbers.
 - Use PySide6 for the Windows interface while keeping the existing overlay and
   settings layout.
 
@@ -14,6 +20,8 @@
 
 - Keep usage statistics off until you choose to share them; preserve existing
   choices, and allow turning reporting off in Settings.
+- Show the privacy notice during install and offer anonymous usage reports
+  unchecked by default; builds stay unsigned until signing is configured.
 - Validate update destinations and versions before download, protect saved
   state from damaged update metadata, and avoid exposing credentials in logs.
 
@@ -21,6 +29,9 @@
 
 - Finish background actions safely when Settings closes, and bound shutdown
   waits so exiting the app does not hang on a worker.
+- Reject a newer settings file instead of misreading it, and repair damaged
+  usage state without changing your sharing choice; do not reuse a 0.20+
+  config with older builds.
 - Make installer upgrades safer around downgrades, free space, interrupted
   upgrades and leftover files; preserve user settings during uninstall.
 - Keep the portable application's entry point and packaged license/source

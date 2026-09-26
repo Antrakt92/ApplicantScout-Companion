@@ -758,3 +758,28 @@ def test_explicit_optin_beats_installer_optout_and_wins_afterwards(tmp_path):
         assert later.consent_enabled
     finally:
         later.close()
+
+
+def test_deeply_nested_usage_state_self_heals_without_crashing(tmp_path):
+    # F1: json.loads raises RecursionError on deeply-nested input; _load must
+    # quarantine it like any other corrupt state and the client must stay
+    # fail-closed instead of propagating the crash.
+    path = tmp_path / "usage.json"
+    # 20000-deep nesting exceeds the JSON loader's recursion budget on every
+    # supported interpreter (3.14 still parses 5000-deep iteratively).
+    nested = "[" * 20000 + "]" * 20000
+    path.write_text(nested, encoding="utf-8")
+    sender = Recorder()
+    instance = client(tmp_path, sender)
+    try:
+        assert not instance.consent_enabled
+        assert not instance.record("addon_received")
+        assert sender.events == []
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "schema": 1, "consent": False,
+        }
+    finally:
+        instance.close()
+    backups = list(tmp_path.glob("usage.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == nested

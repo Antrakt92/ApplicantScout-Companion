@@ -60,6 +60,10 @@ proves the immutable public copy and assets.
    raid zone/encounter constants, reports the post-query quota snapshot, and
    fails if fewer than 50 points remain.
 5. Do not downgrade a 0.20+ config for PTR use (e.g. 0.20->0.19): newer config schema versions fail closed and 0.19 rejects non-_retail_ paths.
+6. Use Python 3.14 with `.venv\Scripts\python` for all release checks; workflows pin `python-version: '3.14'`.
+7. The weekly `strict-visual-weekly.yml` job rechecks Strict baselines read-only; the local strict gate in step 4 remains the media approval.
+8. Downgrade, disk-space and pending-reboot blocks are handled by the build installer guards; no manual step.
+9. Watch `windows-vs2026-canary.yml` for toolchain drift; it builds both package paths without publishing.
 
 ## Native dependency source evidence
 
