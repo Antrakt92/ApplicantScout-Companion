@@ -1208,48 +1208,92 @@ begin
   Result := (Major >= 0) and (Minor >= 0) and (Patch >= 0);
 end;
 
+function PayloadVersionToString(Major, Minor, Patch: Integer): String;
+begin
+  Result := IntToStr(Major) + '.' + IntToStr(Minor) + '.' + IntToStr(Patch);
+end;
+
+function IsNewerPayloadVersion(InstalledMajor, InstalledMinor, InstalledPatch, NewMajor, NewMinor, NewPatch: Integer): Boolean;
+begin
+  Result :=
+    (InstalledMajor > NewMajor) or
+    ((InstalledMajor = NewMajor) and (InstalledMinor > NewMinor)) or
+    ((InstalledMajor = NewMajor) and (InstalledMinor = NewMinor) and (InstalledPatch > NewPatch));
+end;
+
+function TryReadPayloadVersion(const PayloadDir: String; var Major, Minor, Patch: Integer): Boolean;
+var
+  Marker: AnsiString;
+begin
+  Result := False;
+  Major := -1;
+  Minor := -1;
+  Patch := -1;
+  if not DirExists(PayloadDir) then begin
+    Exit;
+  end;
+  if not LoadStringFromFile(AddBackslash(PayloadDir) + '.apscout-payload-version', Marker) then begin
+    Exit;
+  end;
+  Result := ParseDottedVersion(Trim(Marker), Major, Minor, Patch);
+end;
+
+function DowngradeBlockedForPayload(InstalledVersion: String; Major, Minor, Patch, NewMajor, NewMinor, NewPatch: Integer): String;
+begin
+  Result := '';
+  if not IsNewerPayloadVersion(Major, Minor, Patch, NewMajor, NewMinor, NewPatch) then begin
+    Exit;
+  end;
+  if not DowngradeExplicitlyAllowed() then begin
+    Result := 'The installed companion version ' + InstalledVersion +
+      ' is newer than {#MyAppVersion}. Downgrades are blocked; ' +
+      'rerun with /ALLOWDOWNGRADE=1 only to accept the downgrade.';
+  end;
+end;
+
 function CheckDowngradeBlocked(): String;
 var
-  InstalledMajor, InstalledMinor, InstalledPatch: Integer;
-  InstalledVersion: String;
-  Marker: AnsiString;
+  CurrentMajor, CurrentMinor, CurrentPatch: Integer;
+  BackupMajor, BackupMinor, BackupPatch: Integer;
+  HasCurrent, HasBackup: Boolean;
   NewMajor, NewMinor, NewPatch: Integer;
 begin
   { WHY: a silent downgrade over a newer payload can strand the updater and
     user data on an older schema. Fail closed unless the operator explicitly
-    opts in with /ALLOWDOWNGRADE=1. }
+    opts in with /ALLOWDOWNGRADE=1. An interrupted upgrade can leave the
+    current payload without its version marker while the backup still proves
+    the installed version, so consult both payloads before refusing. }
   Result := '';
-  if not DirExists(CurrentPayloadDir()) then begin
+  if not DirExists(CurrentPayloadDir()) and not DirExists(BackupPayloadDir()) then begin
     Exit;
   end;
-  if not LoadStringFromFile(
-    AddBackslash(CurrentPayloadDir()) + '.apscout-payload-version',
-    Marker
-  ) then begin
+  if not ParseDottedVersion('{#MyAppVersion}', NewMajor, NewMinor, NewPatch) then begin
+    Result := 'Could not parse the installer companion version {#MyAppVersion}.';
+    Exit;
+  end;
+  HasCurrent := TryReadPayloadVersion(CurrentPayloadDir(), CurrentMajor, CurrentMinor, CurrentPatch);
+  HasBackup := TryReadPayloadVersion(BackupPayloadDir(), BackupMajor, BackupMinor, BackupPatch);
+  if HasCurrent then begin
+    Result := DowngradeBlockedForPayload(
+      PayloadVersionToString(CurrentMajor, CurrentMinor, CurrentPatch),
+      CurrentMajor, CurrentMinor, CurrentPatch, NewMajor, NewMinor, NewPatch);
+    if Result <> '' then begin
+      Exit;
+    end;
+  end;
+  if HasBackup then begin
+    Result := DowngradeBlockedForPayload(
+      PayloadVersionToString(BackupMajor, BackupMinor, BackupPatch),
+      BackupMajor, BackupMinor, BackupPatch, NewMajor, NewMinor, NewPatch);
+    if Result <> '' then begin
+      Exit;
+    end;
+  end;
+  if not HasCurrent and not HasBackup then begin
     if not DowngradeExplicitlyAllowed() then begin
       Result := 'Could not determine the installed companion version from ' +
         AddBackslash(CurrentPayloadDir()) + '.apscout-payload-version. ' +
         'Rerun with /ALLOWDOWNGRADE=1 only to accept the unverified reinstall.';
-    end;
-    Exit;
-  end;
-  InstalledVersion := Trim(Marker);
-  if not ParseDottedVersion(InstalledVersion, InstalledMajor, InstalledMinor, InstalledPatch) or
-     not ParseDottedVersion('{#MyAppVersion}', NewMajor, NewMinor, NewPatch) then begin
-    if not DowngradeExplicitlyAllowed() then begin
-      Result := 'Could not compare the installed companion version (' +
-        InstalledVersion + ') with {#MyAppVersion}. ' +
-        'Rerun with /ALLOWDOWNGRADE=1 only to accept the unverified reinstall.';
-    end;
-    Exit;
-  end;
-  if (InstalledMajor > NewMajor) or
-     ((InstalledMajor = NewMajor) and (InstalledMinor > NewMinor)) or
-     ((InstalledMajor = NewMajor) and (InstalledMinor = NewMinor) and (InstalledPatch > NewPatch)) then begin
-    if not DowngradeExplicitlyAllowed() then begin
-      Result := 'The installed companion version ' + InstalledVersion +
-        ' is newer than {#MyAppVersion}. Downgrades are blocked; ' +
-        'rerun with /ALLOWDOWNGRADE=1 only to accept the downgrade.';
     end;
   end;
 end;
