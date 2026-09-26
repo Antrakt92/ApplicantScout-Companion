@@ -1460,13 +1460,16 @@ class OverlayLauncher(_KeyboardButton):
         self.setMask(QRegion(outline.toFillPolygon().toPolygon()))
         self._badge_cache: dict[float, QPixmap | None] = {}
 
-    # Shield identity composited over the rounded badge background. The SVG
-    # stays on disk (no asset churn); the "AS" text remains the fallback when
-    # the SVG is missing or unloadable. Mask/hitButton/drag/a11y/size untouched.
-    _BADGE_SVG_PATH = Path(__file__).with_name("assets") / "app_icon.svg"
+    # Shield identity composited over the rounded badge background. The
+    # small-size badge SVG stays on disk (no asset churn); the "AS" text
+    # remains the fallback when the SVG is missing or unloadable.
+    # Mask/hitButton/drag/a11y/size untouched.
+    _BADGE_SVG_PATH = Path(__file__).with_name("assets") / "launcher-badge.svg"
     _BADGE_LOGICAL_PX = 28
+    _BADGE_SUPERSAMPLE = 4
 
     def _badge_pixmap(self, dpr: float) -> QPixmap | None:
+        from PySide6.QtCore import QRectF
         from PySide6.QtGui import QImage
         from PySide6.QtSvg import QSvgRenderer
 
@@ -1481,15 +1484,22 @@ class OverlayLauncher(_KeyboardButton):
             return None
         side = self._BADGE_LOGICAL_PX
         physical = max(1, int(round(side * scale)))
-        image = QImage(physical, physical, QImage.Format.Format_ARGB32_Premultiplied)
-        image.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(image)
+        render_side = max(1, physical * self._BADGE_SUPERSAMPLE)
+        big = QImage(render_side, render_side, QImage.Format.Format_ARGB32_Premultiplied)
+        big.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(big)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-            renderer.render(painter)
+            renderer.render(painter, QRectF(0, 0, render_side, render_side))
         finally:
             painter.end()
+        image = big.scaled(
+            physical,
+            physical,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
         pixmap = QPixmap.fromImage(image)
         pixmap.setDevicePixelRatio(scale)
         self._badge_cache[key] = pixmap

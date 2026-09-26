@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">ApplicantScout launcher badge</title>
+  <desc id="desc">Small-size variant of the app shield: dark rounded shield with a bold amber scout lens and three data squares. No filters; thick strokes for crisp 28px rendering.</desc>
+  <defs>
+    <linearGradient id="bg" x1="36" y1="24" x2="220" y2="232" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0d1826"/>
+      <stop offset="0.58" stop-color="#14243a"/>
+      <stop offset="1" stop-color="#07101c"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="72" y1="50" x2="196" y2="196" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffd86a"/>
+      <stop offset="0.48" stop-color="#f2a51a"/>
+      <stop offset="1" stop-color="#c8750a"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="104" y1="82" x2="184" y2="166" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#79e4ff"/>
+      <stop offset="1" stop-color="#25a4d8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <path
+    d="M128 25 207 55v66c0 53-31 88-79 110-48-22-79-57-79-110V55l79-30Z"
+    fill="#0a1321"
+    opacity="0.68"
+  />
+  <path
+    d="M128 36 195 61v58c0 45-26 75-67 94-41-19-67-49-67-94V61l67-25Z"
+    fill="none"
+    stroke="#24415d"
+    stroke-width="10"
+    opacity="0.9"
+  />
+
+  <circle cx="118" cy="111" r="58" fill="none" stroke="url(#gold)" stroke-width="24"/>
+  <circle cx="118" cy="111" r="32" fill="none" stroke="#ffe89b" stroke-width="10" opacity="0.9"/>
+  <path d="M152 146 206 200" stroke="url(#gold)" stroke-width="26" stroke-linecap="round" fill="none"/>
+  <path d="M152 146 206 200" stroke="#ffe89b" stroke-width="10" stroke-linecap="round" fill="none" opacity="0.8"/>
+
+  <g fill="url(#cyan)">
+    <rect x="86" y="80" width="24" height="24" rx="5"/>
+    <rect x="118" y="80" width="24" height="24" rx="5"/>
+    <rect x="86" y="112" width="24" height="24" rx="5"/>
+  </g>
+</svg>

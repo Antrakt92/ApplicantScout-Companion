@@ -834,3 +834,22 @@ def test_launcher_badge_preserves_size_hitmask_a11y_and_drag_contract(qtbot):
     assert not launcher.is_click_emitting()
     assert launcher.hitButton(launcher.rect().center())
     assert not launcher.hitButton(QPoint(1, 1))
+
+
+def test_launcher_badge_uses_dedicated_small_size_svg(qtbot):
+    launcher = _launcher_with_stylesheet(qtbot)
+    badge_path = overlay_mod.OverlayLauncher._BADGE_SVG_PATH
+    assert badge_path.name == "launcher-badge.svg"
+    assert badge_path.is_file()
+    app_icon_path = badge_path.with_name("app_icon.svg")
+    assert app_icon_path.is_file()
+    assert badge_path != app_icon_path
+    badge_bytes = badge_path.read_bytes()
+    assert badge_bytes != app_icon_path.read_bytes()
+    assert b"feDropShadow" not in badge_bytes
+    launcher._badge_cache.clear()
+    try:
+        pixmap = launcher._badge_pixmap(1.0)
+        assert pixmap is not None and not pixmap.isNull()
+    finally:
+        launcher._badge_cache.clear()
