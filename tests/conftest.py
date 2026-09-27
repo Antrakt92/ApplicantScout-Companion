@@ -17,6 +17,8 @@ offscreen; run them explicitly with::
 """
 
 import os
+import threading
+import time
 
 if os.environ.get("APSCOUT_REAL_DISPLAY") != "1":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -37,6 +39,28 @@ def isolated_user_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     # caches, or startup shortcuts. Never let those reach the actual user profile.
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "user-local-data"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "user-roaming-data"))
+
+
+@pytest.fixture(autouse=True)
+def isolated_startup_file_maintenance(monkeypatch: pytest.MonkeyPatch):  # noqa: ARG001 - teardown dependency
+    # Depending on monkeypatch keeps its OS seams installed until owned workers
+    # finish. Otherwise a delayed ACL flush can call the next test's Popen mock.
+    from applicant_scout import atomic_io
+
+    def finish_owned_work():
+        deadline = time.monotonic() + 30.0
+        for worker in threading.enumerate():
+            if worker.name != "ApplicantScoutACLPrivatize":
+                continue
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            assert not worker.is_alive(), "startup ACL worker outlived its test"
+        atomic_io.set_startup_privatization_deferred(False)
+        with atomic_io._PRIVATE_ACL_LOCK:
+            atomic_io._DEFERRED_PRIVATE_PATHS.clear()
+
+    finish_owned_work()
+    yield
+    finish_owned_work()
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
