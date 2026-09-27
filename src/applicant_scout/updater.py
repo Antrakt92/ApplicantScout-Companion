@@ -339,7 +339,7 @@ def read_installed_payload_version(
         text = (root / "current" / _PAYLOAD_VERSION_FILE_NAME).read_text(
             encoding="utf-8"
         )
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     return text.strip() or None
 
