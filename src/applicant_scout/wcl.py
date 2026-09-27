@@ -425,7 +425,7 @@ class WCLAuth:
                 expires_at=expires_at,
                 client_fingerprint=client_fingerprint,
             )
-        except (json.JSONDecodeError, TypeError, ValueError, OSError):
+        except (TypeError, ValueError, RecursionError, OSError):
             return None
 
     def _save_cached(self, token: _Token) -> None:
@@ -2067,7 +2067,7 @@ class CharacterCache:
             return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeError, RecursionError) as exc:
+        except (ValueError, RecursionError) as exc:
             _log.warning("Ignoring corrupt character cache %s: %s", self._path, exc)
             _quarantine_corrupt_file(self._path)
             return {}

@@ -1843,7 +1843,7 @@ class _ManualScreenshotIndex:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, RecursionError) as exc:
             _log.warning("could not load screenshot manual index: %s", exc)
             return
         if not isinstance(raw, dict):

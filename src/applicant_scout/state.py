@@ -359,7 +359,7 @@ def load_geometry(config_dir: Path) -> WindowGeometry:
             _quarantine_corrupt_file(path)
             return WindowGeometry()
         return _geometry_from_dict(data)
-    except (json.JSONDecodeError, UnicodeError) as exc:
+    except (ValueError, RecursionError) as exc:
         _log.warning("Ignoring corrupt window geometry %s: %s", path, exc)
         _quarantine_corrupt_file(path)
         return WindowGeometry()
@@ -396,7 +396,7 @@ def load_launcher_position(config_dir: Path) -> LauncherPosition | None:
             _quarantine_corrupt_file(path)
             return None
         return _launcher_position_from_dict(data)
-    except (json.JSONDecodeError, UnicodeError) as exc:
+    except (ValueError, RecursionError) as exc:
         _log.warning("Ignoring corrupt launcher position %s: %s", path, exc)
         _quarantine_corrupt_file(path)
         return None
