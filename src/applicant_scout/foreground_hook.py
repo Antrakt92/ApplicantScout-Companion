@@ -99,6 +99,7 @@ class ForegroundHook:
         self._proc_ref: object = None
         self._install_error: BaseException | None = None
         self._lock = threading.Lock()
+        self._stop_requested = threading.Event()
 
     @property
     def running(self) -> bool:
@@ -121,6 +122,7 @@ class ForegroundHook:
                     "ForegroundHook needs Windows (SetWinEventHook)."
                 )
             self._callback = callback
+            self._stop_requested.clear()
             self._install_error = None
             self._thread_id = None
             self._hook_handle = None
@@ -132,8 +134,15 @@ class ForegroundHook:
                 daemon=True,
             )
             self._thread = thread
-            thread.start()
+            try:
+                thread.start()
+            except RuntimeError as exc:
+                self._thread = None
+                self._callback = None
+                self._stop_requested.set()
+                raise ForegroundHookError("Foreground hook thread could not start.") from exc
         if not ready.wait(timeout=_START_TIMEOUT_SECONDS):
+            self.stop(timeout=_STOP_TIMEOUT_SECONDS)
             raise ForegroundHookError("ForegroundHook install timed out.")
         error = self._install_error
         if error is not None:
@@ -148,10 +157,10 @@ class ForegroundHook:
     def stop(self, *, timeout: float = _STOP_TIMEOUT_SECONDS) -> None:
         """Unhook and join the message-loop thread (bounded wait)."""
         with self._lock:
+            self._stop_requested.set()
+            self._callback = None
             thread = self._thread
             thread_id = self._thread_id
-            self._thread = None
-            self._thread_id = None
         if thread is None:
             return
         if thread_id is not None and thread.is_alive():
@@ -159,9 +168,12 @@ class ForegroundHook:
         thread.join(timeout=timeout)
         if thread.is_alive():
             _log.warning("Foreground hook thread did not exit within %.1fs.", timeout)
+            return
         with self._lock:
-            self._hook_handle = None
-            self._callback = None
+            if self._thread is thread:
+                self._thread = None
+                self._thread_id = None
+                self._hook_handle = None
 
     # ── thread body ──────────────────────────────────────────────
 
@@ -187,7 +199,10 @@ class ForegroundHook:
                 _log.warning("Could not read foreground hook thread id.", exc_info=True)
         ready.set()
         try:
-            self._run_message_loop()
+            # A timed-out installer is no longer owned by the overlay. Release
+            # its late handle instead of entering an unowned message loop.
+            if not self._stop_requested.is_set():
+                self._run_message_loop()
         finally:
             try:
                 self._uninstall_hook(handle)
@@ -205,6 +220,8 @@ class ForegroundHook:
             _log.warning("Game-window check failed.", exc_info=True)
             return
         try:
+            if self._stop_requested.is_set():
+                return
             callback(game_foreground)
         except Exception:  # noqa: BLE001 — never crash from the hook thread
             _log.warning("Foreground hook callback failed.", exc_info=True)
@@ -264,7 +281,10 @@ class ForegroundHook:
         return int(handle) if handle else None
 
     def _uninstall_hook(self, handle: int) -> None:
-        ctypes.windll.user32.UnhookWinEvent(handle)
+        unhook = ctypes.windll.user32.UnhookWinEvent
+        unhook.argtypes = (wintypes.HANDLE,)
+        unhook.restype = wintypes.BOOL
+        unhook(handle)
 
     def _run_message_loop(self) -> None:
         """Pump GetMessageW until WM_QUIT (posted by stop())."""
