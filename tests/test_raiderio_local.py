@@ -1022,12 +1022,12 @@ def test_reader_hardens_decoded_lookup_payload_cache_parent_temp_and_target(
     monkeypatch.setattr(
         atomic_io_mod,
         "apply_private_directory_mode",
-        lambda path: calls.append(("dir", Path(path))) or True,
+        lambda path, **_kwargs: calls.append(("dir", Path(path))) or True,
     )
     monkeypatch.setattr(
         atomic_io_mod,
         "apply_private_file_mode",
-        lambda path: calls.append(("file", Path(path))) or True,
+        lambda path, **_kwargs: calls.append(("file", Path(path))) or True,
     )
     reader = RaiderIOLocalReader(tmp_path, cache_dir=cache_dir)
 
@@ -1098,10 +1098,10 @@ def test_lookup_payload_cache_private_mode_failure_does_not_block_profile_load_a
     monkeypatch.setattr(
         atomic_io_mod,
         "apply_private_directory_mode",
-        lambda _path: None,
+        lambda _path, **_kwargs: None,
     )
 
-    def fail_temp_mode(path: Path) -> None:
+    def fail_temp_mode(path: Path, **_kwargs: object) -> None:
         path = Path(path)
         file_calls.append(path)
         if path.name.endswith(".tmp"):

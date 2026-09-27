@@ -431,12 +431,12 @@ def test_atomic_private_write_fails_before_writing_when_windows_acl_is_unavailab
     monkeypatch.setattr(
         atomic_io,
         "apply_private_directory_mode",
-        lambda _path: False,
+        lambda _path, **_kwargs: False,
     )
     monkeypatch.setattr(
         atomic_io,
         "apply_private_file_mode",
-        lambda path: file_calls.append(Path(path)) or False,
+        lambda path, **_kwargs: file_calls.append(Path(path)) or False,
     )
 
     with pytest.raises(PermissionError, match="Could not secure temporary private file"):
@@ -457,12 +457,12 @@ def test_atomic_write_text_private_mode_hardens_parent_before_temp_and_target(
     monkeypatch.setattr(
         atomic_io,
         "apply_private_directory_mode",
-        lambda path: calls.append(("dir", Path(path))) or True,
+        lambda path, **_kwargs: calls.append(("dir", Path(path))) or True,
     )
     monkeypatch.setattr(
         atomic_io,
         "apply_private_file_mode",
-        lambda path: calls.append(("file", Path(path))) or True,
+        lambda path, **_kwargs: calls.append(("file", Path(path))) or True,
     )
 
     atomic_write_text(target, "secret", private=True)
@@ -790,3 +790,40 @@ def test_startup_deferral_records_without_spawns_and_flush_applies(
     assert atomic_io.flush_deferred_privatization() == 0
     assert len(mutations) == 4
     assert atomic_io._PRIVATE_ACL_CACHE
+
+
+@pytest.mark.parametrize("acl_available", [True, False])
+def test_startup_private_write_secures_contents_before_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, acl_available: bool
+):
+    target = tmp_path / "new-config" / "config.env"
+    secured: list[Path] = []
+    writes: list[bool] = []
+    monkeypatch.setattr(atomic_io, "_is_windows", lambda: True)
+
+    def secure(path: Path, *, directory: bool) -> bool:
+        assert not writes
+        assert directory or path.read_bytes() == b""
+        if acl_available:
+            secured.append(path)
+        return acl_available
+
+    def write_contents(_fd: int) -> None:
+        assert secured, "private contents reached disk before an ACL was secured"
+        writes.append(True)
+
+    monkeypatch.setattr(atomic_io, "_apply_windows_private_acl", secure)
+    atomic_io.set_startup_privatization_deferred(True)
+    if acl_available:
+        atomic_io._atomic_write(
+            target, private=True, text_mode=True, write_contents=write_contents
+        )
+        assert writes == [True]
+    else:
+        with pytest.raises(PermissionError):
+            atomic_io._atomic_write(
+                target, private=True, text_mode=True, write_contents=write_contents
+            )
+        assert writes == []
+        assert not target.exists()
+        assert _temp_files(target) == []

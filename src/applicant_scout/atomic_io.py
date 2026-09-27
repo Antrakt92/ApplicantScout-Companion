@@ -166,7 +166,8 @@ def set_startup_privatization_deferred(enabled: bool) -> None:
 
     While deferred, apply_private_*_mode performs chmod only and records the
     path; the identical icacls mutations run later on a background thread.
-    Same end state, ordered later. Never weakens the final descriptor.
+    Atomic private writes bypass deferral so new contents are protected before
+    reaching disk; deferral applies only to existing-path maintenance.
     """
     global _STARTUP_ACL_DEFERRED
     with _PRIVATE_ACL_LOCK:
@@ -394,7 +395,9 @@ def _private_acl_cache_key(
     return (os.path.normcase(os.path.abspath(os.fspath(path))), directory, identity)
 
 
-def _apply_private_path_mode(path: Path, *, mode: int, directory: bool) -> bool:
+def _apply_private_path_mode(
+    path: Path, *, mode: int, directory: bool, allow_deferred: bool = True
+) -> bool:
     cache_key = _private_acl_cache_key(path, directory=directory)
     with _PRIVATE_ACL_LOCK:
         if cache_key in _PRIVATE_ACL_CACHE:
@@ -407,7 +410,7 @@ def _apply_private_path_mode(path: Path, *, mode: int, directory: bool) -> bool:
     if _is_windows():
         with _PRIVATE_ACL_LOCK:
             deferred = _STARTUP_ACL_DEFERRED
-            if deferred:
+            if deferred and allow_deferred:
                 # H3: chmod is done; the identical icacls mutations are recorded
                 # for the post-startup background flush (same end state, later).
                 _DEFERRED_PRIVATE_PATHS.add(
@@ -422,12 +425,16 @@ def _apply_private_path_mode(path: Path, *, mode: int, directory: bool) -> bool:
     return True
 
 
-def apply_private_file_mode(path: Path) -> bool:
-    return _apply_private_path_mode(path, mode=_PRIVATE_FILE_MODE, directory=False)
+def apply_private_file_mode(path: Path, *, allow_deferred: bool = True) -> bool:
+    return _apply_private_path_mode(
+        path, mode=_PRIVATE_FILE_MODE, directory=False, allow_deferred=allow_deferred
+    )
 
 
-def apply_private_directory_mode(path: Path) -> bool:
-    return _apply_private_path_mode(path, mode=_PRIVATE_DIR_MODE, directory=True)
+def apply_private_directory_mode(path: Path, *, allow_deferred: bool = True) -> bool:
+    return _apply_private_path_mode(
+        path, mode=_PRIVATE_DIR_MODE, directory=True, allow_deferred=allow_deferred
+    )
 
 
 def _atomic_write(
@@ -440,7 +447,10 @@ def _atomic_write(
     path.parent.mkdir(parents=True, exist_ok=True)
     parent_private_ready = False
     if private:
-        parent_private_ready = bool(apply_private_directory_mode(path.parent))
+        # Deferred maintenance is not proof of a private inherited descriptor.
+        parent_private_ready = bool(
+            apply_private_directory_mode(path.parent, allow_deferred=False)
+        )
     fd = -1
     temp_path: Path | None = None
     try:
@@ -456,7 +466,9 @@ def _atomic_write(
         # Re-running icacls for the temp file and final target turns each
         # settings autosave into a subprocess storm on the GUI path.
         if private and not (_is_windows() and parent_private_ready):
-            temp_private_ready = bool(apply_private_file_mode(temp_path))
+            temp_private_ready = bool(
+                apply_private_file_mode(temp_path, allow_deferred=False)
+            )
             if _is_windows() and not temp_private_ready:
                 raise PermissionError(
                     f"Could not secure temporary private file for {path.name}"
@@ -467,7 +479,7 @@ def _atomic_write(
         os.replace(temp_path, path)
         temp_path = None
         if private and not (_is_windows() and parent_private_ready):
-            apply_private_file_mode(path)
+            apply_private_file_mode(path, allow_deferred=False)
     except BaseException:
         if fd != -1:
             try:
