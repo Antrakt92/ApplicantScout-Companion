@@ -6,8 +6,8 @@ import logging
 import re
 
 
-MINIMUM_ADDON_VERSION = "0.13.1"
-PAIRED_ADDON_VERSION = "0.13.1"
+MINIMUM_ADDON_VERSION = "0.13.2"
+PAIRED_ADDON_VERSION = "0.13.2"
 _SEMVER_RE = re.compile(r"^v?([0-9]+)\.([0-9]+)\.([0-9]+)$")
 _log = logging.getLogger("applicant_scout.compatibility")
 

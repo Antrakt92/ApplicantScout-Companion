@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.21.1 - 27-Sep-2026 — Clearer tooltips and reliability fixes
+## 0.21.2 - 27-Sep-2026 — Clearer tooltips and reliability fixes
 
-Paired release with ApplicantScout addon `0.13.1`.
+Paired release with ApplicantScout addon `0.13.2`.
 
 - Shorten overlay tooltips and remove them from obvious labels. Keep explanations
   for ratings and missing data; M+ uses DPS for every role, while raid healers use HPS.
