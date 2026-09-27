@@ -16,7 +16,7 @@ from applicant_scout import atomic_io
 
 completed = []
 
-def test_first_scope_leaves_startup_work(tmp_path):
+def test_first_scope_leaves_startup_work(tmp_path, monkeypatch):
     atomic_io.set_startup_privatization_deferred(True)
     with atomic_io._PRIVATE_ACL_LOCK:
         atomic_io._DEFERRED_PRIVATE_PATHS.add((str(tmp_path / 'old-profile'), True))
@@ -24,6 +24,9 @@ def test_first_scope_leaves_startup_work(tmp_path):
         time.sleep(0.15)
         completed.append(True)
     threading.Thread(target=finish, name='ApplicantScoutACLPrivatize', daemon=True).start()
+    clock_ticks = iter([1.0])
+    monkeypatch.setattr(time, 'monotonic', lambda: next(clock_ticks))
+    assert time.monotonic() == 1.0
 
 def test_second_scope_has_no_prior_profile_work():
     assert completed == [True], 'startup worker escaped its producing test'

@@ -18,7 +18,7 @@ offscreen; run them explicitly with::
 
 import os
 import threading
-import time
+from time import monotonic
 
 if os.environ.get("APSCOUT_REAL_DISPLAY") != "1":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -48,11 +48,12 @@ def isolated_startup_file_maintenance(monkeypatch: pytest.MonkeyPatch):  # noqa:
     from applicant_scout import atomic_io
 
     def finish_owned_work():
-        deadline = time.monotonic() + 30.0
+        # Tests may exhaust a mocked time.monotonic before fixture teardown.
+        deadline = monotonic() + 30.0
         for worker in threading.enumerate():
             if worker.name != "ApplicantScoutACLPrivatize":
                 continue
-            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            worker.join(timeout=max(0.0, deadline - monotonic()))
             assert not worker.is_alive(), "startup ACL worker outlived its test"
         atomic_io.set_startup_privatization_deferred(False)
         with atomic_io._PRIVATE_ACL_LOCK:
