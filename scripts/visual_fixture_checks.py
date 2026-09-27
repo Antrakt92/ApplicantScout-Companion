@@ -4,14 +4,30 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import sys
 import tempfile
-from typing import Any
+from typing import Any, Iterator
+from unittest.mock import patch
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QScreen
+
+
+@contextmanager
+def visual_fixture_screen() -> Iterator[None]:
+    """Give fixture layout a stable desktop without changing the OS display.
+
+    Hosted Windows desktops can be smaller than the representative UI. Keep
+    production clamping active against a synthetic screen while constructing
+    and settling fixtures, then restore the real screen methods immediately.
+    Native Qt font rendering and device pixel ratio remain unchanged.
+    """
+    with patch.object(QScreen, "availableGeometry", lambda _screen: QRect(0, 0, 1920, 1080)):
+        yield
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,9 @@ from applicant_scout.state import (
     Listing,
     RosterMember,
 )
-from scripts.visual_fixture_checks import VisualFixtureDiff, compare_visual_images
+from scripts.visual_fixture_checks import (
+    VisualFixtureDiff, compare_visual_images, visual_fixture_screen,
+)
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QImage, QPixmap
@@ -573,6 +575,7 @@ def resolve_visual_fixture_scenario(
         raise ValueError(f"unknown overlay visual fixture scenario {scenario!r}; choices: {names}") from exc
 
 
+@visual_fixture_screen()
 def create_overlay_visual_window(
     work_dir: Path,
     scenario: str | VisualFixtureScenario = DEFAULT_VISUAL_FIXTURE_SCENARIO,
@@ -602,6 +605,7 @@ def create_overlay_visual_window(
     return state, window, client
 
 
+@visual_fixture_screen()
 def show_overlay_visual_window(
     window: "OverlayWindow",
     scenario: str | VisualFixtureScenario = DEFAULT_VISUAL_FIXTURE_SCENARIO,

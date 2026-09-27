@@ -16,7 +16,9 @@ from applicant_scout.metric_preferences import (
 )
 from applicant_scout.settings_dialog import SettingsDialog
 from applicant_scout.usage import UsageClient
-from scripts.visual_fixture_checks import VisualFixtureDiff, compare_visual_images
+from scripts.visual_fixture_checks import (
+    VisualFixtureDiff, compare_visual_images, visual_fixture_screen,
+)
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QImage, QPixmap
@@ -176,6 +178,7 @@ def resolve_settings_visual_scenario(
         ) from exc
 
 
+@visual_fixture_screen()
 def create_settings_visual_dialog(
     scenario: str | SettingsDialogVisualScenario = DEFAULT_SETTINGS_VISUAL_SCENARIO,
     *,
@@ -211,6 +214,7 @@ def create_settings_visual_dialog(
     return dialog
 
 
+@visual_fixture_screen()
 def show_settings_visual_dialog(
     dialog: SettingsDialog,
     *,
