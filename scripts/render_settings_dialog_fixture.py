@@ -29,6 +29,7 @@ from scripts.settings_dialog_visual_fixture import (  # noqa: E402
 from scripts.visual_fixture_checks import (  # noqa: E402
     add_visual_fixture_arguments,
     check_rendered_pixmap,
+    visual_fixture_theme,
     parse_visual_fixture_args,
     run_visual_fixture_scenarios,
 )
@@ -83,14 +84,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     existing_app = QApplication.instance()
     app = existing_app if isinstance(existing_app, QApplication) else QApplication(sys.argv)
-
-    return run_visual_fixture_scenarios(
-        args,
-        scenarios=SETTINGS_DIALOG_VISUAL_SCENARIOS,
-        render_fixture=lambda scenario_name: _render_fixture_pixmap(app, scenario_name),
-        check_fixture=_check_rendered_pixmap,
-        label="settings dialog visual fixture",
-    )
+    with visual_fixture_theme(app):
+        return run_visual_fixture_scenarios(
+            args,
+            scenarios=SETTINGS_DIALOG_VISUAL_SCENARIOS,
+            render_fixture=lambda scenario_name: _render_fixture_pixmap(app, scenario_name),
+            check_fixture=_check_rendered_pixmap,
+            label="settings dialog visual fixture",
+        )
 
 
 if __name__ == "__main__":

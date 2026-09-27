@@ -14,7 +14,45 @@ from typing import Any, Iterator
 from unittest.mock import patch
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QScreen
+from PySide6.QtGui import QColor, QPalette, QScreen
+from PySide6.QtWidgets import QApplication
+
+
+def configure_visual_fixture_theme(app: QApplication) -> None:
+    """Pin native fixture controls to the committed representative dark theme.
+
+    Stylesheets do not own checkbox indicators and link palettes. Those would
+    otherwise inherit the runner's Windows theme and account accent colour.
+    This changes only the renderer process, never desktop preferences.
+    """
+    app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+    app.processEvents()
+    palette = app.palette()
+    colours = {
+        QPalette.ColorRole.Accent: "#f38064",
+        QPalette.ColorRole.Highlight: "#e2241a",
+        QPalette.ColorRole.Link: "#faa683",
+        QPalette.ColorRole.LinkVisited: "#f38064",
+        QPalette.ColorRole.BrightText: "#faa683",
+    }
+    for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+        for role, colour in colours.items():
+            palette.setColor(group, role, QColor(colour))
+    app.setPalette(palette)
+
+
+@contextmanager
+def visual_fixture_theme(app: QApplication) -> Iterator[None]:
+    """Keep renderer theme changes scoped when a caller reuses QApplication."""
+    palette = app.palette()
+    scheme = app.styleHints().colorScheme()
+    try:
+        configure_visual_fixture_theme(app)
+        yield
+    finally:
+        app.styleHints().setColorScheme(scheme)
+        app.processEvents()
+        app.setPalette(palette)
 
 
 @contextmanager

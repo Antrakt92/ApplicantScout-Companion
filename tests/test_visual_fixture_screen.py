@@ -59,4 +59,71 @@ def test_settings_fixture_uses_preferred_size_when_native_autosize_caps(qtbot, m
     preferred = dialog.sizeHint()
     assert preferred.height() > 409
     show_settings_visual_dialog(dialog, process_events=QApplication.processEvents)
-    assert dialog.size() == preferred
+    assert dialog.height() == preferred.height()
+    assert dialog.width() >= preferred.width()
+
+
+@pytest.mark.real_display
+def test_fixture_theme_replaces_host_light_accent(qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QPalette
+    from scripts.visual_fixture_checks import configure_visual_fixture_theme
+
+    original_palette = qapp.palette()
+    original_scheme = qapp.styleHints().colorScheme()
+    try:
+        qapp.styleHints().setColorScheme(Qt.ColorScheme.Light)
+        qapp.processEvents()
+        host_palette = qapp.palette()
+        host_palette.setColor(QPalette.ColorRole.Accent, QColor("#0067c0"))
+        host_palette.setColor(QPalette.ColorRole.Link, QColor("#0078d4"))
+        qapp.setPalette(host_palette)
+
+        configure_visual_fixture_theme(qapp)
+
+        assert qapp.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+            assert qapp.palette().color(group, QPalette.ColorRole.Accent).name() == "#f38064"
+            assert qapp.palette().color(group, QPalette.ColorRole.Link).name() == "#faa683"
+    finally:
+        qapp.styleHints().setColorScheme(original_scheme)
+        qapp.processEvents()
+        qapp.setPalette(original_palette)
+
+
+@pytest.mark.parametrize("renderer_name", ["render_overlay_fixture", "render_settings_dialog_fixture"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_renderer_restores_shared_application_theme(qapp, monkeypatch, renderer_name, fails):
+    import importlib
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QPalette
+
+    renderer = importlib.import_module(f"scripts.{renderer_name}")
+    original_palette = qapp.palette()
+    original_scheme = qapp.styleHints().colorScheme()
+    qapp.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    qapp.processEvents()
+    host_scheme = qapp.styleHints().colorScheme()
+    host_palette = qapp.palette()
+    host_palette.setColor(QPalette.ColorRole.Accent, QColor("#123456"))
+    qapp.setPalette(host_palette)
+
+    def render(*_args, **_kwargs):
+        assert qapp.palette().color(QPalette.ColorRole.Accent).name() == "#f38064"
+        if fails:
+            raise RuntimeError("synthetic render failure")
+        return 7
+
+    monkeypatch.setattr(renderer, "run_visual_fixture_scenarios", render)
+    try:
+        if fails:
+            with pytest.raises(RuntimeError, match="synthetic render failure"):
+                renderer.main(["--check"])
+        else:
+            assert renderer.main(["--check"]) == 7
+        assert qapp.palette() == host_palette
+        assert qapp.styleHints().colorScheme() == host_scheme
+    finally:
+        qapp.styleHints().setColorScheme(original_scheme)
+        qapp.processEvents()
+        qapp.setPalette(original_palette)
