@@ -28,6 +28,12 @@ jobs:
   strict-visual:
     runs-on: windows-2022
     timeout-minutes: 30
+    env:
+      # Match the committed fixtures' 125% rasterization independently of the
+      # runner's display DPI; resizing 100% glyphs cannot reproduce these pixels.
+      QT_ENABLE_HIGHDPI_SCALING: '0'
+      QT_FONT_DPI: '96'
+      QT_SCALE_FACTOR: '1.25'
     steps:
       - name: Checkout companion
         # actions/checkout v7.0.1 pinned to the upstream release commit.
@@ -60,6 +66,12 @@ jobs:
           python -m venv .venv
           .\.venv\Scripts\python -m pip install -r constraints-release.txt
           .\.venv\Scripts\python -m pip install -e '.[dev]' -c constraints-release.txt
+
+      - name: Report visual rendering environment
+        shell: pwsh
+        working-directory: ApplicantScout-Companion
+        run: |
+          .\.venv\Scripts\python -c "import os; from PySide6.QtCore import qVersion; from PySide6.QtGui import QFontInfo; from PySide6.QtWidgets import QApplication; app = QApplication([]); screen = app.primaryScreen(); print({'qt': qVersion(), 'platform': app.platformName(), 'font': QFontInfo(app.font()).family(), 'dpr': screen.devicePixelRatio(), 'logical_dpi': screen.logicalDotsPerInch(), 'scale': {k: os.environ.get(k) for k in ('QT_ENABLE_HIGHDPI_SCALING', 'QT_FONT_DPI', 'QT_SCALE_FACTOR')}})"
 
       - name: Check overlay visual baselines (Strict)
         shell: pwsh
