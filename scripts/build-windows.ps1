@@ -207,6 +207,7 @@ function Assert-CleanReleaseInputs {
         "scripts\check_native_sources.py",
         "docs\NATIVE-SOURCES.md",
         "docs\NATIVE-QT-SOURCES.md",
+        "docs\PRIVACY.md",
         "scripts\export_public_visual_assets.py",
         "scripts\overlay_visual_fixture.py",
         "scripts\render_overlay_fixture.py",
