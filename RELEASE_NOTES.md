@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.21.1 - 27-Sep-2026 — Clearer tooltips and reliability fixes
+
+Paired release with ApplicantScout addon `0.13.1`.
+
+- Shorten overlay tooltips and remove them from obvious labels. Keep explanations
+  for ratings and missing data; M+ uses DPS for every role, while raid healers use HPS.
+- Preserve non-English folder paths and multiline settings when saving configuration.
+- Recover safely from damaged cache and window-state files.
+- Protect private files from the moment they are written, including during startup.
+- Fix foreground-window tracking during shutdown and restart.
+- Stop an update if the installed version cannot be read safely.
+
 ## 0.21.0 - 26-Sep-2026 — Party tab, launcher badge and loading-screen stability
 
 Paired release with ApplicantScout addon `0.13.0`.
