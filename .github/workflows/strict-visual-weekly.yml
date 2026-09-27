@@ -34,6 +34,7 @@ jobs:
       QT_ENABLE_HIGHDPI_SCALING: '0'
       QT_FONT_DPI: '96'
       QT_SCALE_FACTOR: '1.25'
+      QT_STYLE_OVERRIDE: 'windows11'
     steps:
       - name: Checkout companion
         # actions/checkout v7.0.1 pinned to the upstream release commit.
@@ -71,7 +72,7 @@ jobs:
         shell: pwsh
         working-directory: ApplicantScout-Companion
         run: |
-          .\.venv\Scripts\python -c "import os; from PySide6.QtCore import qVersion; from PySide6.QtGui import QFontInfo; from PySide6.QtWidgets import QApplication; app = QApplication([]); screen = app.primaryScreen(); print({'qt': qVersion(), 'platform': app.platformName(), 'font': QFontInfo(app.font()).family(), 'dpr': screen.devicePixelRatio(), 'logical_dpi': screen.logicalDotsPerInch(), 'scale': {k: os.environ.get(k) for k in ('QT_ENABLE_HIGHDPI_SCALING', 'QT_FONT_DPI', 'QT_SCALE_FACTOR')}})"
+          .\.venv\Scripts\python -c "import os; from PySide6.QtCore import qVersion; from PySide6.QtGui import QFontInfo; from PySide6.QtWidgets import QApplication, QStyleFactory; app = QApplication([]); screen = app.primaryScreen(); styles = QStyleFactory.keys(); style = app.style().objectName(); print({'qt': qVersion(), 'platform': app.platformName(), 'font': QFontInfo(app.font()).family(), 'dpr': screen.devicePixelRatio(), 'logical_dpi': screen.logicalDotsPerInch(), 'style': style, 'available_styles': styles, 'scale': {k: os.environ.get(k) for k in ('QT_ENABLE_HIGHDPI_SCALING', 'QT_FONT_DPI', 'QT_SCALE_FACTOR')}}); assert 'windows11' in [key.lower() for key in styles] and style.lower() == 'windows11', 'Required fixture style unavailable or substituted'"
 
       - name: Check overlay visual baselines (Strict)
         shell: pwsh

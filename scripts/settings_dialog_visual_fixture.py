@@ -220,7 +220,9 @@ def show_settings_visual_dialog(
     *,
     process_events: Callable[[], None],
 ) -> None:
-    dialog.adjustSize()
+    # QWidget.adjustSize caps top-level windows to two thirds of the native
+    # desktop, bypassing the fixture's synthetic availableGeometry in C++.
+    dialog.resize(dialog.sizeHint())
     dialog.show()
     for _ in range(8):
         process_events()
