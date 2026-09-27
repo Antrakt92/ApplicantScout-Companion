@@ -454,69 +454,35 @@ def _metric_cell_font(
 # row hover panel.
 # Indexed by column INDEX (matches COLUMN_HEADERS positions) so refactors
 # of header text don't desync the lookup.
+_RAID_HEADER_TOOLTIP = (
+    "WCL best / median averages across bosses, for this spec.\n"
+    "Healers: HPS. Others: DPS."
+)
+
 HEADER_TOOLTIPS: list[str] = [
     # Spec
-    "Applicant's spec at the time they applied to your group.\n\n"
-    "Compact name (e.g. 'Brm', 'Holy', 'Resto'). '#NNNN' means the\n"
-    "spec_id is unknown to the companion — likely a new spec that needs\n"
-    "to be added to constants.py SPEC_SHORT_NAMES.",
+    "",
     # Name
-    "Applicant's character name (Charname-Realm in the hover panel).\n\n"
-    "Coloured by class (warrior brown, mage cyan, rogue yellow, etc.).\n"
-    "Hover the row for the full scout summary in the top panel.",
+    "",
     # iLvl
-    "Equipped item level reported by Blizzard's LFG API.\n\n"
-    "Higher = better gear ceiling, but doesn't tell skill on its own —\n"
-    "use alongside RIO + raid/M+ percentiles.",
+    "",
     # RIO
-    "RaiderIO M+ score for this character. If RaiderIO is installed and exposes\n"
-    "a higher main score for an alt, the cell shows current [main]. Known\n"
-    "M+/raid listings sort by their visible best percentile; no-listing or unknown\n"
-    "contexts use RaiderIO as fallback ordering support.\n\n"
-    "Coloured by tier band (gold ≥3200, purple ≥2700, blue ≥2200,\n"
-    "green ≥1700, white below). Mid-Midnight-S1 thresholds.",
+    "RaiderIO M+ score. Brackets show the main's score, when higher.",
     # WCL raid summaries are averages supplied by Warcraft Logs.
-    "Normal raid — WCL best / median performance averages for the current spec.\n\n"
-    "These summarize boss rankings; best is not the single highest boss parse. "
-    "A missing median is unavailable data, not proof of a single encounter.\n\n"
-    "Colour follows the best percentile: grey <25, green 25+, blue 50+, "
-    "purple 75+, orange 95+, pink 99, gold 100. Raid healers use HPS; others use DPS.",
-    "Heroic raid — WCL best / median performance averages for the current spec.\n\n"
-    "Same values and percentile colours as Normal. The separate Fit column "
-    "estimates suitability for the current listing.",
-    "Mythic raid — WCL best / median performance averages for the current spec.\n\n"
-    "Same values and percentile colours as Normal. A dash means unavailable data.",
-    "Mythic+ WCL best / median percentile averages, followed by highest logged key.\n\n"
-    "DPS for every role, including healers. Colour follows the best percentile. "
-    "A missing median means there is no repeat-run median signal; "
-    "single-run samples are identified in dungeon value tooltips. "
-    "The highest logged key is context, not the key of every displayed parse. "
-    "Fit for the selected target is shown separately.",
-    "~ marks a contextual Fit estimate for the named raid difficulty or M+ key, "
-    "not a WCL percentile or success probability. Evidence and any fallback "
-    "to another raid difficulty are explained in the detail panel. "
-    "For grouped applicants, G3 means a three-player group: "
-    "the shared estimate is on the left and each player's estimate on the right. "
-    "Applications sort by the listing's parse column; groups stay together "
-    "and use their lowest member percentile. "
-    "Hover a row for evidence and limitations.",
+    _RAID_HEADER_TOOLTIP,
+    _RAID_HEADER_TOOLTIP,
+    _RAID_HEADER_TOOLTIP,
+    "WCL best / median averages, then highest logged key.\n"
+    "DPS for every role, including healers.",
+    "Fit for this raid/key (0–100); not a WCL percentile or success probability.\n"
+    "G3 = 3 players. Group estimate on the left; individual on the right.",
 ]
 
 
 MPLUS_FIT_EXPLANATION = (
-    "Fit is a 0–100 estimate for the selected key, using Warcraft Logs performance "
-    "and RaiderIO completion evidence. It is not a WCL parse percentile. "
-    "M+ WCL values measure damage for every role; they do not assess healing, "
-    "survival, or utility.\n\n"
-    "Evidence strength describes the breadth and quality of available evidence. "
-    "It is not a success probability. Strong evidence can support a low Fit "
-    "when completed keys are below the target. "
-    "Dungeon coverage counts completion or WCL evidence that meets the scoring "
-    "thresholds, not every dungeon present in the logs. "
-    "A dungeon reported by both sources counts once; summary-only RaiderIO "
-    "coverage is combined conservatively.\n\n"
-    "The limit names the main gap holding this estimate back. "
-    "WCL best/median values remain visible in the dungeon rows; 1 run means a single sample."
+    "Fit uses WCL performance and RaiderIO completions for this key.\n"
+    "It is not a WCL parse percentile or a success probability.\n"
+    "M+ parses measure damage, not healing, survival, or utility."
 )
 
 
@@ -1838,7 +1804,6 @@ class SourceTabBar(QWidget):
             layout.addWidget(button)
         self._key_label = QLabel("Key")
         self._key_label.setObjectName("targetKeyLabel")
-        self._key_label.setToolTip("Target key for Fit. WCL parse colours stay unchanged.")
         self._key_label.setAccessibleName("Manual Mythic Plus target key label")
         key_label_font = self._key_label.font()
         key_label_font.setBold(True)
@@ -1863,7 +1828,7 @@ class SourceTabBar(QWidget):
             "Use Up or Down to set the current Mythic Plus key level. Zero means unknown."
         )
         self._key_spin.setToolTip(
-            "Set the target Mythic+ key for Fit. This does not change WCL parses or their colours."
+            "Target Mythic+ key for Fit."
         )
         key_spin_font = self._key_spin.font()
         key_spin_font.setBold(True)
@@ -1922,8 +1887,7 @@ class SourceTabBar(QWidget):
         )
         if self._applicant_count_stale:
             applicants_button.setToolTip(
-                "The latest valid QR could not read the complete applicant list. "
-                "Showing the last known count for this listing."
+                "Applicant list unavailable. Showing the last known count."
             )
             applicants_button.setAccessibleDescription(
                 f"Show the last known {_count_phrase(self._applicant_count, 'application')}; "
@@ -1940,8 +1904,7 @@ class SourceTabBar(QWidget):
         party_button.setText(f"Party ({self._party_count}{stale_marker})")
         if self._party_count_stale:
             party_button.setToolTip(
-                "The latest valid QR omitted the group roster. "
-                "Showing the last known Party count."
+                "Party list unavailable. Showing the last known count."
             )
             party_button.setAccessibleDescription(
                 f"Show the last known {_count_phrase(self._party_count, 'party member')}; "
@@ -2028,11 +1991,6 @@ class SourceTabBar(QWidget):
 # Role filter bar (above the info panel, below the title bar)
 
 
-ROLE_FILTER_TOOLTIPS: dict[str, str] = {
-    "TANK": "Show entries with a tank",
-    "HEALER": "Show entries with a healer",
-    "DAMAGER": "Show entries with a damage dealer",
-}
 ROLE_FILTER_RESET_TEXT = "All"
 ROLE_FILTER_RESET_TOOLTIP = "Show all roles"
 ROLE_FILTER_RESET_SIZE = QSize(34, 20)
@@ -2070,7 +2028,6 @@ class RoleFilterBar(QWidget):
             btn.setCheckable(True)
             btn.setObjectName(f"roleBtn_{role}")
             btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            btn.setToolTip(ROLE_FILTER_TOOLTIPS[role])
             accessible_role = {
                 "TANK": "Tank",
                 "HEALER": "Healer",
@@ -2878,7 +2835,9 @@ class ApplicantInfoPanel(QFrame):
         )
         description = f"{text}\n\n{' '.join(description_parts)}"
         self._package_label.setAccessibleDescription(description)
-        self._package_label.setToolTip(description)
+        self._package_label.setToolTip(
+            f"{text}\nEvidence follows the weakest member; not a success probability."
+        )
 
     def _set_status_or_data(
         self,
@@ -3191,7 +3150,7 @@ class ApplicantInfoPanel(QFrame):
                 bg,
                 fg or _text_colour_for_bg(bg),
             )
-            self._metric_labels[key].setToolTip(self._metric_labels[key].text())
+            self._metric_labels[key].setToolTip("")
             shown += 1
 
         if self._metric_preferences.mplus:
@@ -3204,7 +3163,7 @@ class ApplicantInfoPanel(QFrame):
                     bg,
                     _text_colour_for_bg(bg),
                 )
-                self._metric_labels["M+"].setToolTip(self._metric_labels["M+"].text())
+                self._metric_labels["M+"].setToolTip("")
                 shown += 1
             else:
                 self._metric_labels["M+"].setVisible(False)
@@ -3676,7 +3635,7 @@ class ApplicantInfoPanel(QFrame):
             if raid else (
                 "Mythic+ dungeon", "Highest completed key from RaiderIO",
                 "Highest key represented in Warcraft Logs",
-                "Warcraft Logs DPS percentile: best / median. Hover a value for single-run details.",
+                "WCL DPS percentile: best / median.",
             )
         )
         self._set_detail_row_widths(
@@ -3684,7 +3643,7 @@ class ApplicantInfoPanel(QFrame):
         )
         for label, title, description in zip(self._detail_headers, titles, descriptions, strict=True):
             label.setText(title)
-            label.setToolTip(description)
+            label.setToolTip(description if label is not self._detail_headers[0] else "")
             label.setAccessibleDescription(description)
             label.setVisible(bool(title))
 
@@ -3900,9 +3859,7 @@ class OverlayWindow(QMainWindow):
         for col, tip_text in enumerate(HEADER_TOOLTIPS):
             header_item = self._table.horizontalHeaderItem(col)
             if header_item is not None:
-                header_item.setToolTip(
-                    f"{tip_text}\nClick to sort; click again to reverse; click a third time to clear."
-                )
+                header_item.setToolTip(tip_text)
         # The header is a separate QHeaderView child. Install an event filter on
         # its viewport so QHelpEvents route to OverlayWindow.eventFilter and its
         # reliable screen-parented QToolTip.showText path.

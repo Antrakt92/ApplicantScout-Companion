@@ -66,12 +66,10 @@ def test_role_filter_tooltips_and_tooltip_widget_order(qtbot):
     bar = RoleFilterBar()
     qtbot.addWidget(bar)
 
-    assert bar._buttons["TANK"].toolTip() == "Show entries with a tank"
-    assert bar._buttons["HEALER"].toolTip() == "Show entries with a healer"
-    assert (
-        bar._buttons["DAMAGER"].toolTip()
-        == "Show entries with a damage dealer"
-    )
+    for button in bar._buttons.values():
+        assert button.toolTip() == ""
+        assert button.accessibleName()
+        assert button.accessibleDescription()
     assert bar._reset_btn.toolTip() == ROLE_FILTER_RESET_TOOLTIP
 
     tooltip_widgets = bar.tooltip_widgets()

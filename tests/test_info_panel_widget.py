@@ -2434,7 +2434,6 @@ def test_fit_explanation_is_available_to_mouse_and_clears_with_context(qtbot):
     assert badge in panel.tooltip_widgets()
     assert "not a WCL parse percentile" in badge.toolTip()
     assert "success probability" in badge.accessibleDescription()
-    assert "counts once" in badge.toolTip()
     assert "\nEvidence strength" in badge.toolTip()
     assert panel._status_label.isHidden()
 
@@ -2495,7 +2494,7 @@ def test_group_explanation_uses_overlay_tooltip_routing(qtbot, tmp_path, monkeyp
     try:
         assert label in window._action_tooltip_widgets
         assert window.eventFilter(label, event)
-        assert rendered == [(label, label.accessibleDescription(), position)]
+        assert rendered == [(label, label.toolTip(), position)]
         assert "weakest member" in label.toolTip()
         window._panel.setApplicantData(_app(), package=None)
         assert label.toolTip() == ""
@@ -2568,7 +2567,7 @@ def test_panel_accessibility_metadata_tracks_mplus_raid_and_error_status(qtbot):
     assert panel._status_label.accessibleName() == ""
     assert panel._status_label.isHidden()
     assert "Target +16" in panel._metric_labels["Fit"].toolTip()
-    assert "not a success probability" in panel._metric_labels["Fit"].accessibleDescription()
+    assert "not a WCL parse percentile or a success probability" in panel._metric_labels["Fit"].accessibleDescription()
 
     panel.setApplicantData(
         _app(),
@@ -4723,8 +4722,8 @@ def test_partial_group_roster_decode_marks_party_count_as_last_known(
 
         party_button = window._tab_bar._buttons["party"]
         assert party_button.text() == "Party (15?)"
-        assert "omitted the group roster" in party_button.toolTip()
-        assert "last known Party count" in party_button.toolTip()
+        assert "Party list unavailable" in party_button.toolTip()
+        assert "last known count" in party_button.toolTip()
         assert window._health_label.text() == "Shot partial"
         assert window._health_label.property("statusState") == "warning"
         assert "complete Party data" in window._health_label.toolTip()
@@ -8457,7 +8456,11 @@ def test_compact_detail_headers_align_and_follow_mode_changes(qtbot, width):
             assert header.width() == body.width()
             assert header.geometry().bottom() < body.geometry().top()
             assert header.fontMetrics().horizontalAdvance(header.text()) <= header.contentsRect().width()
-            assert header.toolTip() == header.accessibleDescription()
+            if column == 0:
+                assert header.toolTip() == ""
+                assert header.accessibleDescription()
+            else:
+                assert header.toolTip() == header.accessibleDescription()
         if mode == "mplus":
             assert panel._dungeon_rows[0][2].text() == "+14"
             assert "RaiderIO" in panel._detail_headers[1].toolTip()
@@ -8547,6 +8550,8 @@ def test_compact_headers_route_tooltips_and_hidden_legends_use_no_layout_space(
     client = WCLClient(WCLAuth("client", "secret", tmp_path))
     window = OverlayWindow(AppState(), client, CharacterCache(tmp_path), tmp_path)
     qtbot.addWidget(window)
+    for col in (overlay_mod.COL_SPEC, overlay_mod.COL_NAME, overlay_mod.COL_ILVL):
+        assert window._table.horizontalHeaderItem(col).toolTip() == ""
     rendered = []
     monkeypatch.setattr(
         overlay_mod, "_render_tooltip",

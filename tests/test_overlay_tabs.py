@@ -2374,7 +2374,7 @@ def test_third_click_clears_numeric_sort_to_default_order(qtbot, tmp_path):
     assert header.isSortIndicatorShown()
     assert header.sortIndicatorSection() != COL_ILVL
     tip = win._table.horizontalHeaderItem(COL_ILVL).toolTip()
-    assert "third" in tip.lower()
+    assert tip == ""
 
 
 def test_third_click_clears_text_sort_to_default_order(qtbot, tmp_path):

@@ -178,7 +178,7 @@ def test_tooltip_wrap_constrains_header_and_fit_explanations():
     tips = [
         *HEADER_TOOLTIPS,
         MPLUS_FIT_EXPLANATION,
-        f"{HEADER_TOOLTIPS[COL_MPLUS]}\nClick to sort; click again to reverse; click a third time to clear.",
+        "A long listing note " * 12,
     ]
     assert any(
         len(line) > _TOOLTIP_WRAP_WIDTH for tip in tips for line in tip.split("\n")
@@ -201,7 +201,9 @@ def test_tooltip_stylesheet_caps_rendered_width():
 
 def test_render_tooltip_wraps_long_text_before_show(qtbot, monkeypatch):
     shown: list[tuple] = []
+    hidden: list[bool] = []
     monkeypatch.setattr(QToolTip, "showText", lambda *args: shown.append(args))
+    monkeypatch.setattr(QToolTip, "hideText", lambda: hidden.append(True))
     widget = QWidget()
     qtbot.addWidget(widget)
     tip = HEADER_TOOLTIPS[COL_FIT]
@@ -209,6 +211,9 @@ def test_render_tooltip_wraps_long_text_before_show(qtbot, monkeypatch):
     assert len(shown) == 1
     _pos, text, _parent = shown[0]
     assert text == _wrap_tooltip_text(tip)
+    assert _render_tooltip(widget, "", QPoint(70, 90)) is True
+    assert hidden == [True]
+    assert len(shown) == 1
     assert all(
         len(line) <= _TOOLTIP_WRAP_WIDTH for line in text.split("\n")
     )
@@ -224,7 +229,8 @@ def test_column_width_contract_is_compact():
 
 def test_header_tooltips_match_columns_and_avoid_stale_scoring_claims():
     assert len(HEADER_TOOLTIPS) == len(COLUMN_HEADERS)
-    assert all(tip.strip() for tip in HEADER_TOOLTIPS)
+    assert HEADER_TOOLTIPS[:3] == ["", "", ""]
+    assert all(tip.strip() for tip in HEADER_TOOLTIPS[3:])
 
     combined = "\n".join(HEADER_TOOLTIPS).casefold()
     for stale_phrase in (
@@ -236,22 +242,22 @@ def test_header_tooltips_match_columns_and_avoid_stale_scoring_claims():
         assert stale_phrase not in combined
 
 
-def test_rio_header_tooltip_describes_conditional_sorting_semantics():
+def test_rio_header_tooltip_explains_bracketed_main_score():
     tip = HEADER_TOOLTIPS[COL_RIO].casefold()
 
-    assert "current [main]" in tip
-    assert "fallback" in tip
-    assert "context" in tip
+    assert "brackets" in tip
+    assert "main's score" in tip
+    assert "higher" in tip
 
 
 def test_mplus_and_fit_header_tooltips_distinguish_evidence_from_estimates():
     tip = HEADER_TOOLTIPS[COL_MPLUS].casefold()
     assert "best / median" in tip
     assert "dps for every role" in tip
-    assert "single-run samples" in tip
     fit_tip = HEADER_TOOLTIPS[COL_FIT].casefold()
     assert "not a wcl percentile" in fit_tip
-    assert "shared estimate is on the left" in fit_tip
+    assert "group estimate on the left" in fit_tip
+    assert "individual on the right" in fit_tip
 
 
 @pytest.mark.parametrize(
