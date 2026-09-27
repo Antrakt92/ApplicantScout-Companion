@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import json
-import re
+from io import StringIO
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -321,7 +321,8 @@ def is_config_ready(cfg: Config) -> bool:
 
 def _env_line(key: str, value: str) -> str:
     clean = value.replace("\r", " ").replace("\n", " ").strip()
-    return f"{key}={json.dumps(clean)}\n"
+    # dotenv decodes quoted backslashes but not JSON's Unicode escapes.
+    return f"{key}={json.dumps(clean, ensure_ascii=False)}\n"
 
 
 def _bool_env_line(key: str, value: bool) -> str:
@@ -346,17 +347,14 @@ _MANAGED_CONFIG_KEYS = frozenset(
         "APSCOUT_CHATLOG_PATH",
     }
 )
-_MANAGED_CONFIG_LINE = re.compile(
-    r"^\s*(?:export\s+)?(" + "|".join(sorted(_MANAGED_CONFIG_KEYS)) + r")\s*="
-)
 
 
 def _unmanaged_config_lines(contents: str) -> list[str]:
-    """Return lines this saver does not own, preserved verbatim."""
+    """Preserve complete dotenv bindings, including unknown multiline values."""
     return [
-        line
-        for line in contents.splitlines(keepends=True)
-        if not _MANAGED_CONFIG_LINE.match(line)
+        binding.original.string
+        for binding in parse_stream(StringIO(contents))
+        if binding.key not in _MANAGED_CONFIG_KEYS
     ]
 
 
@@ -481,12 +479,14 @@ def save_discovered_screenshots_path(path: Path, *, config_path: Path | None = N
     try:
         contents = source.read_text(encoding="utf-8")
         replacement = _env_line("APSCOUT_SCREENSHOTS_PATH", str(path))
-        lines = contents.splitlines(keepends=True)
+        lines = []
         matched = False
-        for index, line in enumerate(lines):
-            if re.match(r"^\s*(?:export\s+)?APSCOUT_SCREENSHOTS_PATH\s*=", line):
-                lines[index] = replacement
+        for binding in parse_stream(StringIO(contents)):
+            if binding.key == "APSCOUT_SCREENSHOTS_PATH":
+                lines.append(replacement)
                 matched = True
+            else:
+                lines.append(binding.original.string)
         if not matched:
             if contents and not contents.endswith(("\n", "\r")):
                 lines.append("\n")
