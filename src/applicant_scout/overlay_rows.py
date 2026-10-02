@@ -120,18 +120,18 @@ def freeze_render_value(value: object) -> object:
             for field in fields(value)
         )
     if isinstance(value, Mapping):
-        return tuple(
-            sorted(
-                (
-                    (
-                        freeze_render_value(key),
-                        freeze_render_value(item_value),
-                    )
-                    for key, item_value in value.items()
-                ),
-                key=repr,
-            )
-        )
+        pairs = [
+            (freeze_render_value(key), freeze_render_value(item_value))
+            for key, item_value in value.items()
+        ]
+        # Exact string repr literals cannot prefix each other, so their key
+        # alone preserves pair-repr ordering without formatting nested values.
+        # Other keys can share a repr and need the original value tie-breaker.
+        if all(type(key) is str for key, _item_value in pairs):
+            pairs.sort(key=lambda pair: repr(pair[0]))
+        else:
+            pairs.sort(key=repr)
+        return tuple(pairs)
     if isinstance(value, (list, tuple)):
         return tuple(freeze_render_value(item) for item in value)
     if isinstance(value, set):
