@@ -36,7 +36,12 @@ def test_second_scope_has_no_prior_profile_work():
         encoding="utf-8",
     )
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", str(tmp_path), "-q", "-p", "no:cacheprovider"],
+        [
+            sys.executable, "-m", "pytest", str(tmp_path), "-q", "-p", "no:cacheprovider",
+            # A different Windows drive must not make collection traverse Temp
+            # ancestors, where other ACL probes create/remove directories.
+            "--rootdir", str(tmp_path), "--confcutdir", str(tmp_path),
+        ],
         cwd=root,
         capture_output=True,
         text=True,
