@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from itertools import count
 import hashlib
 import json
 import logging
@@ -168,7 +169,8 @@ _TRANSIENT_SCAN_RETRY_DELAY_SECONDS = 0.15
 _TRANSIENT_SCAN_MAX_RETRIES = 2
 # Bump when no-marker classification changes so older fingerprints are
 # reconsidered exactly once by the new decoder rather than hidden forever.
-_MANUAL_INDEX_VERSION = 2
+_MANUAL_INDEX_VERSION = 3
+_SOURCE_OBSERVATION_ORDER = count(1)
 _MANUAL_INDEX_FILE_PREFIX = f"screenshot-manual-index-v{_MANUAL_INDEX_VERSION}"
 # M5: fingerprints are write-once per decoder revision, but a pathological
 # Screenshots folder (years of captures) could still grow the JSON without
@@ -288,6 +290,7 @@ class SnapshotSource:
     file_id: str
     size: int
     file_identity: tuple[int, int] | None = field(default=None, compare=False, repr=False)
+    observation_order: int = field(default=0, compare=False, repr=False)
 
 
 def _unlink_if_source_matches(
@@ -1728,6 +1731,7 @@ class _ScreenshotWorkKey:
     path: str
     mtime_ns: int
     size: int
+    file_identity: tuple[int, int] | None = None
 
 
 def _normalized_work_path(path: Path) -> str:
@@ -1745,6 +1749,8 @@ def _work_key_from_stat(path: Path, stat_result: os.stat_result) -> _ScreenshotW
             )
         ),
         size=int(stat_result.st_size),
+        file_identity=(int(stat_result.st_dev), int(stat_result.st_ino))
+        if hasattr(stat_result, "st_dev") and hasattr(stat_result, "st_ino") else None,
     )
 
 
@@ -1761,6 +1767,7 @@ class _ScreenshotWorkClaim:
         self.path_key = key.path
         self.key = key
         self.stat_result = stat_result
+        self.observation_order = next(_SOURCE_OBSERVATION_ORDER)
         self._seen_keys = {key}
         self._released = False
         self._release_keys_override: set[_ScreenshotWorkKey] | None = None
@@ -1772,6 +1779,8 @@ class _ScreenshotWorkClaim:
         except OSError:
             return None
         key = _work_key_from_stat(self.path, stat_result)
+        if key != self.key:
+            self.observation_order = next(_SOURCE_OBSERVATION_ORDER)
         self.key = key
         self.stat_result = stat_result
         self._seen_keys.add(key)
@@ -1928,15 +1937,24 @@ class _ManualScreenshotIndex:
             for entry in source_entries:
                 if (
                     not isinstance(entry, list)
-                    or len(entry) != 3
+                    or len(entry) != 4
                     or not isinstance(entry[0], str)
                     or not isinstance(entry[1], int)
                     or not isinstance(entry[2], int)
                     or entry[1] < 0
                     or entry[2] < 0
+                    or not (
+                        entry[3] is None or (
+                            isinstance(entry[3], list) and len(entry[3]) == 2
+                            and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in entry[3])
+                        )
+                    )
                 ):
                     continue
-                target.add(_ScreenshotWorkKey(entry[0], entry[1], entry[2]))
+                target.add(_ScreenshotWorkKey(
+                    entry[0], entry[1], entry[2],
+                    tuple(entry[3]) if entry[3] is not None else None,
+                ))
         # M5: persisted entries are already sorted; replay that order for
         # FIFO cap eviction (each fingerprint tracked exactly once).
         self._insertion_order.update(
@@ -1947,17 +1965,24 @@ class _ManualScreenshotIndex:
         )
         if (
             isinstance(deferred_cursor, list)
-            and len(deferred_cursor) == 3
+            and len(deferred_cursor) == 4
             and isinstance(deferred_cursor[0], str)
             and isinstance(deferred_cursor[1], int)
             and isinstance(deferred_cursor[2], int)
             and deferred_cursor[1] >= 0
             and deferred_cursor[2] >= 0
+            and (
+                deferred_cursor[3] is None or (
+                    isinstance(deferred_cursor[3], list) and len(deferred_cursor[3]) == 2
+                    and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in deferred_cursor[3])
+                )
+            )
         ):
             self._deferred_cursor = _ScreenshotWorkKey(
                 deferred_cursor[0],
                 deferred_cursor[1],
                 deferred_cursor[2],
+                tuple(deferred_cursor[3]) if deferred_cursor[3] is not None else None,
             )
 
     def snapshot(self) -> set[_ScreenshotWorkKey]:
@@ -2122,14 +2147,14 @@ class _ManualScreenshotIndex:
         if not self._dirty or self._state_path is None:
             return
         entries = [
-            [key.path, key.mtime_ns, key.size]
+            [key.path, key.mtime_ns, key.size, key.file_identity]
             for key in sorted(
                 self._keys,
                 key=lambda item: (item.path, item.mtime_ns, item.size),
             )
         ]
         deferred_entries = [
-            [key.path, key.mtime_ns, key.size]
+            [key.path, key.mtime_ns, key.size, key.file_identity]
             for key in sorted(
                 self._deferred_keys,
                 key=lambda item: (item.path, item.mtime_ns, item.size),
@@ -2145,6 +2170,7 @@ class _ManualScreenshotIndex:
                         self._deferred_cursor.path,
                         self._deferred_cursor.mtime_ns,
                         self._deferred_cursor.size,
+                        self._deferred_cursor.file_identity,
                     ]
                     if self._deferred_cursor is not None
                     else None
@@ -2274,13 +2300,13 @@ class _PendingFragmentAssembly:
     chunks: dict[int, bytes]
     files: dict[Path, SnapshotSource | None]
     newest_source: SnapshotSource | None
-    newest_source_key: tuple[int, str, int] | None
+    newest_source_key: tuple[int, str, int, int] | None
     last_seen: float
 
 
 def snapshot_source_order_key(
     source: object | None,
-) -> tuple[int, str, int] | None:
+) -> tuple[int, str, int, int] | None:
     if source is None:
         return None
     mtime_ns = getattr(source, "mtime_ns", None)
@@ -2292,7 +2318,21 @@ def snapshot_source_order_key(
         or not isinstance(size, int)
     ):
         return None
-    return mtime_ns, file_id, size
+    observation_order = getattr(source, "observation_order", 0)
+    if not isinstance(observation_order, int) or isinstance(observation_order, bool):
+        observation_order = 0
+    return mtime_ns, file_id, size, observation_order
+
+
+def same_snapshot_source_generation(left: object | None, right: object | None) -> bool:
+    left_key = snapshot_source_order_key(left)
+    right_key = snapshot_source_order_key(right)
+    if left_key is None or right_key is None or left_key[:3] != right_key[:3]:
+        return False
+    left_identity = getattr(left, "file_identity", None)
+    right_identity = getattr(right, "file_identity", None)
+    # Unknown identity cannot prove that equal metadata represents new work.
+    return left_identity is None or right_identity is None or left_identity == right_identity
 
 
 class _SnapshotFragmentAssembler:
@@ -2306,7 +2346,8 @@ class _SnapshotFragmentAssembler:
         self._signature: tuple[int, int, int] | None = None
         self._completed = False
         self._poisoned = False
-        self._frontier_source_key: tuple[int, str, int] | None = None
+        self._frontier_source_key: tuple[int, str, int, int] | None = None
+        self._frontier_source: SnapshotSource | None = None
         self._pending: _PendingFragmentAssembly | None = None
         self._barred_stream_id: int | None = None
         self._barred_generation: int | None = None
@@ -2360,8 +2401,8 @@ class _SnapshotFragmentAssembler:
 
     @staticmethod
     def _is_newer_source(
-        candidate: tuple[int, str, int] | None,
-        frontier: tuple[int, str, int] | None,
+        candidate: tuple[int, str, int, int] | None,
+        frontier: tuple[int, str, int, int] | None,
     ) -> bool:
         if frontier is None:
             return True
@@ -2378,7 +2419,7 @@ class _SnapshotFragmentAssembler:
         source_key = snapshot_source_order_key(snap.source)
         with self._lock:
             retired = list(self._expire_locked(current_time))
-            if not self._is_newer_source(source_key, self._frontier_source_key):
+            if same_snapshot_source_generation(snap.source, self._frontier_source) or not self._is_newer_source(source_key, self._frontier_source_key):
                 return _FragmentAssemblyOutcome(retired_files=tuple(retired))
             retired.extend(self._retire_pending_locked())
             if self._stream_id is not None and self._generation is not None:
@@ -2390,6 +2431,7 @@ class _SnapshotFragmentAssembler:
             self._completed = False
             self._poisoned = False
             self._frontier_source_key = source_key
+            self._frontier_source = snap.source
             return _FragmentAssemblyOutcome(
                 snapshot=snap,
                 retired_files=tuple(retired),
@@ -2421,7 +2463,7 @@ class _SnapshotFragmentAssembler:
                 return _FragmentAssemblyOutcome(retired_files=tuple(retired))
             same_stream = fragment.stream_id == self._stream_id
             if not same_stream:
-                if not self._is_newer_source(source_key, self._frontier_source_key):
+                if same_snapshot_source_generation(fragment.source, self._frontier_source) or not self._is_newer_source(source_key, self._frontier_source_key):
                     retired.append(_RetainedFragmentFile(path, fragment.source))
                     return _FragmentAssemblyOutcome(retired_files=tuple(retired))
                 retired.extend(self._retire_pending_locked())
@@ -2458,6 +2500,7 @@ class _SnapshotFragmentAssembler:
                 or source_key > self._frontier_source_key
             ):
                 self._frontier_source_key = source_key
+                self._frontier_source = fragment.source
 
             if self._pending is None:
                 self._pending = _PendingFragmentAssembly(
@@ -3087,12 +3130,15 @@ class ScreenshotWatcher(QObject):
         return not self._stopped.is_set()
 
     @staticmethod
-    def _source_from_stat(path: Path, stat_result: os.stat_result) -> SnapshotSource:
+    def _source_from_stat(
+        path: Path, stat_result: os.stat_result, *, observation_order: int = 0,
+    ) -> SnapshotSource:
         return SnapshotSource(
             mtime_ns=stat_result.st_mtime_ns,
             file_id=str(path),
             size=stat_result.st_size,
             file_identity=(stat_result.st_dev, stat_result.st_ino),
+            observation_order=observation_order,
         )
 
     @staticmethod
@@ -3301,7 +3347,9 @@ class ScreenshotWatcher(QObject):
             decode_succeeded=decode_succeeded,
             flush=False,
         )
-        source = self._source_from_stat(path, claim.stat_result)
+        source = self._source_from_stat(
+            path, claim.stat_result, observation_order=getattr(claim, "observation_order", 0),
+        )
         delete_current_marker = result.fragment is None
         if not generation_current:
             pass
@@ -3829,7 +3877,7 @@ class ScreenshotWatcher(QObject):
         source: SnapshotSource,
     ) -> None:
         path_key = _normalized_work_path(path)
-        expected_key = _ScreenshotWorkKey(path_key, source.mtime_ns, source.size)
+        expected_key = _ScreenshotWorkKey(path_key, source.mtime_ns, source.size, source.file_identity)
         with self._incomplete_retry_lock:
             if self._stopped.is_set():
                 return
@@ -4017,7 +4065,9 @@ class ScreenshotWatcher(QObject):
         if claim.refresh() is None or self._manual_index.contains(claim.key):
             return None
         decoded_key = claim.key
-        source = self._source_from_stat(path, claim.stat_result)
+        source = self._source_from_stat(
+            path, claim.stat_result, observation_order=getattr(claim, "observation_order", 0),
+        )
         decoded = self._decode_claim_generation(path, claim, decoded_key)
         if decoded is None:
             return None

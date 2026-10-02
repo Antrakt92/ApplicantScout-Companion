@@ -412,8 +412,8 @@ class SnapshotApplyQueue:
         self._pending: tuple[str, tuple[object, ...]] | None = None
         self._pending_cache_snapshots: tuple[Snapshot, ...] = ()
         self._retained_decode_failure: tuple[str, str, object | None] | None = None
-        self._last_applied_source_key: tuple[int, str, int] | None = None
-        self._last_reported_failure_key: tuple[int, str, int] | None = None
+        self._last_applied_source_key: tuple[int, str, int, int] | None = None
+        self._last_reported_failure_key: tuple[int, str, int, int] | None = None
         self._flush_pending = False
         self._planning_retry_attempted = False
         self._apply_retry_attempted = False
@@ -445,7 +445,7 @@ class SnapshotApplyQueue:
     @staticmethod
     def _source_order_key(
         source: object | None,
-    ) -> tuple[int, str, int] | None:
+    ) -> tuple[int, str, int, int] | None:
         return snapshot_source_order_key(source)
 
     @classmethod

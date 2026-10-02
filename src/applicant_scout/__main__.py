@@ -88,6 +88,7 @@ from .screenshot import (
     format_screenshot_cleanup_summary,
     positive_int_arg,
     snapshot_source_order_key,
+    same_snapshot_source_generation,
     snapshot_rio_context,
     screenshot_cleanup_exit_code,
     system_exit_code,
@@ -3164,7 +3165,8 @@ class _PreparedWatcherSignalScheduler:
 class _SnapshotSourceGate:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._latest_source_key: tuple[int, str, int] | None = None
+        self._latest_source_key: tuple[int, str, int, int] | None = None
+        self._latest_source: object | None = None
 
     def accept(self, source: object | None, *, advance: bool = True) -> bool:
         with self._lock:
@@ -3174,6 +3176,8 @@ class _SnapshotSourceGate:
         source_key = snapshot_source_order_key(source)
         if source_key is None:
             return True
+        if same_snapshot_source_generation(source, self._latest_source):
+            return False
         if not advance:
             return (
                 self._latest_source_key is None
@@ -3181,6 +3185,7 @@ class _SnapshotSourceGate:
             )
         if self._latest_source_key is None or source_key > self._latest_source_key:
             self._latest_source_key = source_key
+            self._latest_source = source
             return True
         return False
 

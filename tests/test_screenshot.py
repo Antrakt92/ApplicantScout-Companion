@@ -5033,7 +5033,7 @@ def test_manual_index_revision_invalidates_prior_no_marker_fingerprints(
 
     index = screenshot_mod._ManualScreenshotIndex(state_path)
 
-    assert screenshot_mod._MANUAL_INDEX_VERSION == 2
+    assert screenshot_mod._MANUAL_INDEX_VERSION == 3
     assert index.contains(key) is False
     assert not state_path.exists()
     index.flush()
