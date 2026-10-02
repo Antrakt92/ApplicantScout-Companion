@@ -1054,34 +1054,35 @@ var
   ConfigDir: String;
   StatePath: String;
   OptOutPath: String;
+  ChoicePath: String;
+  Choice: String;
 begin
   { WHY: the usage task defaults OFF so installs never silently opt in.
     Attached AfterInstall to the deliberately-final payload marker, so the
     choice is recorded during the Files phase. A saved Settings choice
     (usage.json) always wins; the installer only records its choice when no
-    preference exists yet. The app reads the opt-out sentinel before its
-    default-on applies, and first-run Settings reflects the resulting choice. }
+    preference exists yet. The app persists this explicit first-run choice
+    before enabling reports; absent or invalid choices default to no sharing. }
   ConfigDir := UsageConfigDir();
   StatePath := AddBackslash(ConfigDir) + 'usage.json';
   OptOutPath := AddBackslash(ConfigDir) + 'usage-installer-optout';
+  ChoicePath := AddBackslash(ConfigDir) + 'usage-installer-choice';
   if FileExists(StatePath) then begin
     Exit;
   end;
   if WizardIsTaskSelected('usage') then begin
-    if FileExists(OptOutPath) then begin
-      if not DeleteFile(OptOutPath) then begin
-        Log('WARNING: could not remove the installer usage opt-out: ' + OptOutPath + '.');
-      end;
-    end;
+    Choice := 'opt-in';
   end else begin
-    if not FileExists(OptOutPath) then begin
-      if not DirExists(ConfigDir) then begin
-        ForceDirectories(ConfigDir);
-      end;
-      if not SaveStringToFile(OptOutPath, 'opt-out' + #13#10, False) then begin
-        Log('WARNING: could not record the installer usage opt-out: ' + OptOutPath + '. First-run Settings still offers opt-out.');
-      end;
-    end;
+    Choice := 'opt-out';
+  end;
+  if not DirExists(ConfigDir) and not ForceDirectories(ConfigDir) then begin
+    RaiseException('Could not create the usage preference directory. Setup cannot save your choice.');
+  end;
+  if not SaveStringToFile(ChoicePath, Choice + #13#10, False) then begin
+    RaiseException('Could not save the usage reporting preference. Setup cannot save your choice.');
+  end;
+  if FileExists(OptOutPath) and not DeleteFile(OptOutPath) then begin
+    RaiseException('Could not replace the previous usage reporting preference. Setup cannot save your choice.');
   end;
 end;
 

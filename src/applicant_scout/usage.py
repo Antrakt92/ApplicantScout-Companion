@@ -62,6 +62,8 @@ USAGE_TEST_MARKER_FILENAME = "usage-test-installation"
 # before the first saved choice; an explicit Settings opt-in/out afterwards
 # (usage.json) always wins.
 USAGE_INSTALLER_OPT_OUT_FILENAME = "usage-installer-optout"
+# Exact installer choice for a fresh installation; saved application state wins.
+USAGE_INSTALLER_CHOICE_FILENAME = "usage-installer-choice"
 _VERSION = re.compile(r"(?:0|[1-9][0-9]{0,4})(?:\.(?:0|[1-9][0-9]{0,4})){2}\Z", re.ASCII)
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z", re.ASCII)
 _MAX_QUEUE = 32
@@ -117,7 +119,19 @@ def _installer_opted_out(state_dir: Path) -> bool:
     try:
         return (state_dir / USAGE_INSTALLER_OPT_OUT_FILENAME).exists()
     except OSError:
+        return True
+
+
+def _installer_consent(state_dir: Path) -> bool:
+    """Accept only an exact affirmative choice, before any saved app state."""
+    if _installer_opted_out(state_dir):
         return False
+    try:
+        with (state_dir / USAGE_INSTALLER_CHOICE_FILENAME).open("rb") as source:
+            choice = source.read(16)
+    except OSError:
+        return False
+    return choice in (b"opt-in\n", b"opt-in\r\n")
 
 
 class UsagePersistenceError(RuntimeError):
@@ -171,6 +185,7 @@ class UsageClient:
         self._closed = False
         self._generation = 0
         self._thread: threading.Thread | None = None
+        self._loaded_state_missing = False
         try:
             saved_consent = self._load()
         except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
@@ -185,10 +200,13 @@ class UsageClient:
             except OSError:
                 pass
         if saved_consent is None:
-            if consent is None and _installer_opted_out(state_dir):
-                initial_consent = False
+            if consent is None:
+                initial_consent = (
+                    _installer_consent(state_dir) if self._loaded_state_missing
+                    else DEFAULT_USAGE_CONSENT
+                )
             else:
-                initial_consent = DEFAULT_USAGE_CONSENT if consent is None else consent is True
+                initial_consent = consent is True
             try:
                 # Persist missing preferences before reporting; a saved opt-out
                 # must survive restart even when collection is unavailable.
@@ -303,6 +321,7 @@ class UsageClient:
             with self._path.open("r", encoding="utf-8") as source:
                 raw = source.read(_MAX_STATE_BYTES + 1)
         except FileNotFoundError:
+            self._loaded_state_missing = True
             return None
         try:
             if len(raw.encode("utf-8")) > _MAX_STATE_BYTES:
