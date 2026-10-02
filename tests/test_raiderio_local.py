@@ -1062,13 +1062,13 @@ def test_reader_hardens_existing_decoded_lookup_payload_cache_on_read_hit(
     monkeypatch.setattr(
         raiderio_local_mod,
         "apply_private_directory_mode",
-        lambda path: calls.append(("dir", Path(path))) or True,
+        lambda path, **_kwargs: calls.append(("dir", Path(path))) or True,
         raising=False,
     )
     monkeypatch.setattr(
         raiderio_local_mod,
         "apply_private_file_mode",
-        lambda path: calls.append(("file", Path(path))) or True,
+        lambda path, **_kwargs: calls.append(("file", Path(path))) or True,
         raising=False,
     )
 

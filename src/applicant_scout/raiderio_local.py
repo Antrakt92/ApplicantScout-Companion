@@ -1205,11 +1205,11 @@ def _lookup_payload_cache_path(
 
 def _harden_existing_lookup_payload_cache(path: Path) -> None:
     try:
-        apply_private_directory_mode(path.parent)
+        apply_private_directory_mode(path.parent, allow_deferred=True)
     except OSError:
         pass
     try:
-        apply_private_file_mode(path)
+        apply_private_file_mode(path, allow_deferred=True)
     except OSError:
         pass
 

@@ -29,10 +29,11 @@ _PRIVATE_ACL_CACHE: set[
 # now also runs on a background thread after startup (see H3), so the cache
 # and the pending set need a lock where the GUI-thread-only path did not.
 _PRIVATE_ACL_LOCK = threading.Lock()
-# Startup deferral (H3): while set, Windows ACL mutations are recorded instead
-# of applied so config/usage/cache init on the startup path costs chmod only.
+_PRIVATE_ACL_FLUSH_LOCK = threading.Lock()
+# Startup maintenance may explicitly defer ACL mutations. Sensitive consumers
+# use the verified-only default before accepting existing private files.
 # flush_deferred_privatization() applies the identical mutations later from a
-# background thread. Same end state, ordered later. Off by default.
+# background thread. Queued work is pending, not proof of protection.
 _STARTUP_ACL_DEFERRED = False
 _DEFERRED_PRIVATE_PATHS: set[tuple[str, bool]] = set()
 # Exact-match expectations for the zero-spawn already-private check.
@@ -164,8 +165,8 @@ def _apply_windows_private_acl(path: Path, *, directory: bool) -> bool:
 def set_startup_privatization_deferred(enabled: bool) -> None:
     """Defer Windows ACL mutations to flush_deferred_privatization() (H3).
 
-    While deferred, apply_private_*_mode performs chmod only and records the
-    path; the identical icacls mutations run later on a background thread.
+    With allow_deferred=True, apply_private_*_mode records the path and returns
+    False until protection is verified; ACL mutations run later in a worker.
     Atomic private writes bypass deferral so new contents are protected before
     reaching disk; deferral applies only to existing-path maintenance.
     """
@@ -174,30 +175,43 @@ def set_startup_privatization_deferred(enabled: bool) -> None:
         _STARTUP_ACL_DEFERRED = bool(enabled)
 
 
-def flush_deferred_privatization() -> int:
-    """Apply recorded Windows ACL mutations; return the privatized count."""
+def deferred_privatization_pending_count() -> int:
+    """Return work still requiring protection, including failed attempts."""
     with _PRIVATE_ACL_LOCK:
-        pending = sorted(_DEFERRED_PRIVATE_PATHS)
-        _DEFERRED_PRIVATE_PATHS.clear()
-    applied = 0
-    for path_text, directory in pending:
-        path = Path(path_text)
-        try:
-            exists = path.exists()
-        except OSError:
-            continue
-        if not exists:
-            continue
-        if _is_windows():
-            if _apply_windows_private_acl(path, directory=directory):
+        return len(_DEFERRED_PRIVATE_PATHS)
+
+
+def flush_deferred_privatization() -> int:
+    """Try each queued path once; keep failures for a later explicit retry."""
+    # Serialize flushes without blocking additions while ACL commands run.
+    with _PRIVATE_ACL_FLUSH_LOCK:
+        with _PRIVATE_ACL_LOCK:
+            pending = sorted(_DEFERRED_PRIVATE_PATHS)
+        applied = 0
+        for entry in pending:
+            path_text, directory = entry
+            path = Path(path_text)
+            try:
+                exists = path.exists()
+            except OSError:
+                continue
+            if not exists:
                 with _PRIVATE_ACL_LOCK:
-                    _PRIVATE_ACL_CACHE.add(
-                        _private_acl_cache_key(path, directory=directory)
-                    )
-                applied += 1
-        else:
+                    _DEFERRED_PRIVATE_PATHS.discard(entry)
+                continue
+            before = _private_acl_cache_key(path, directory=directory)
+            if _is_windows() and not _apply_windows_private_acl(path, directory=directory):
+                continue
+            after = _private_acl_cache_key(path, directory=directory)
+            # A replaced file needs its own verification; never cache proof
+            # obtained for a previous generation at the same pathname.
+            if before != after or after[2] is None:
+                continue
+            with _PRIVATE_ACL_LOCK:
+                _PRIVATE_ACL_CACHE.add(after)
+                _DEFERRED_PRIVATE_PATHS.discard(entry)
             applied += 1
-    return applied
+        return applied
 
 
 def _expected_private_sids(
@@ -396,7 +410,7 @@ def _private_acl_cache_key(
 
 
 def _apply_private_path_mode(
-    path: Path, *, mode: int, directory: bool, allow_deferred: bool = True
+    path: Path, *, mode: int, directory: bool, allow_deferred: bool = False
 ) -> bool:
     cache_key = _private_acl_cache_key(path, directory=directory)
     with _PRIVATE_ACL_LOCK:
@@ -411,12 +425,11 @@ def _apply_private_path_mode(
         with _PRIVATE_ACL_LOCK:
             deferred = _STARTUP_ACL_DEFERRED
             if deferred and allow_deferred:
-                # H3: chmod is done; the identical icacls mutations are recorded
-                # for the post-startup background flush (same end state, later).
+                # Pending maintenance cannot authorize a sensitive read/write.
                 _DEFERRED_PRIVATE_PATHS.add(
                     (os.path.normcase(os.path.abspath(os.fspath(path))), directory)
                 )
-                return True
+                return False
         acl_applied = _apply_windows_private_acl(path, directory=directory)
         if acl_applied:
             with _PRIVATE_ACL_LOCK:
@@ -425,13 +438,13 @@ def _apply_private_path_mode(
     return True
 
 
-def apply_private_file_mode(path: Path, *, allow_deferred: bool = True) -> bool:
+def apply_private_file_mode(path: Path, *, allow_deferred: bool = False) -> bool:
     return _apply_private_path_mode(
         path, mode=_PRIVATE_FILE_MODE, directory=False, allow_deferred=allow_deferred
     )
 
 
-def apply_private_directory_mode(path: Path, *, allow_deferred: bool = True) -> bool:
+def apply_private_directory_mode(path: Path, *, allow_deferred: bool = False) -> bool:
     return _apply_private_path_mode(
         path, mode=_PRIVATE_DIR_MODE, directory=True, allow_deferred=allow_deferred
     )

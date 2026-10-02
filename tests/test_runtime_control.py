@@ -475,9 +475,9 @@ def test_send_control_command_uses_one_total_response_deadline(
     socket = _ClientSocket(b"o", b"k")
     monotonic_values = iter((10.0, 10.3, 10.6))
     monkeypatch.setattr(
-        runtime_control.time,
-        "monotonic",
-        lambda: next(monotonic_values),
+        runtime_control,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(monotonic_values)),
     )
 
     result = runtime_control.send_control_command(

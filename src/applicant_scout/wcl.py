@@ -377,9 +377,12 @@ class WCLAuth:
             self._cache_owner_generation_by_path[self._token_cache_key] = (
                 self._cache_owner_generation
             )
-        if self._token_path.exists():
-            apply_private_file_mode(self._token_path)
-        self._token: Optional[_Token] = self._load_cached()
+        cached_token_ready = (
+            not self._token_path.exists() or apply_private_file_mode(self._token_path)
+        )
+        if not cached_token_ready:
+            _log.warning("Cached OAuth token protection failed; ignoring the cached token.")
+        self._token: Optional[_Token] = self._load_cached() if cached_token_ready else None
         # Two QRunnable workers can hit get_token() simultaneously for the
         # first request after token expiry. Without this lock both would call
         # _refresh — wasted HTTP roundtrip + theoretical race on token.json
@@ -1979,7 +1982,7 @@ class CharacterCache:
         self._save_timer: threading.Timer | None = None
         self._dirty = False
         if self._path.exists():
-            apply_private_file_mode(self._path)
+            apply_private_file_mode(self._path, allow_deferred=True)
         self._data: dict[str, _CacheEntry] = self._load()
         # Without this, two workers calling put() in parallel can race: thread A
         # iterating self._data inside json.dumps while thread B inserts a new

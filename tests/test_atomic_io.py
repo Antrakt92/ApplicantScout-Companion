@@ -773,7 +773,7 @@ def test_startup_deferral_records_without_spawns_and_flush_applies(
 
     atomic_io.set_startup_privatization_deferred(True)
     try:
-        assert apply_private_file_mode(target)
+        assert not apply_private_file_mode(target, allow_deferred=True)
         assert spawns == []
         assert len(atomic_io._DEFERRED_PRIVATE_PATHS) == 1
         assert not atomic_io._PRIVATE_ACL_CACHE

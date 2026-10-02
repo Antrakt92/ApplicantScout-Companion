@@ -33,6 +33,7 @@ from .usage_events import UsageActivity
 from .atomic_io import (
     apply_private_directory_mode,
     apply_private_file_mode,
+    deferred_privatization_pending_count,
     atomic_write_bytes,
     flush_deferred_privatization,
     set_startup_privatization_deferred,
@@ -5522,11 +5523,17 @@ def _start_startup_screenshots_verification(
 def _flush_startup_file_privatization() -> None:
     """Apply startup-deferred ACL mutations off the GUI thread (H3)."""
     set_startup_privatization_deferred(False)
+    flushed = 0
     try:
         flushed = flush_deferred_privatization()
     except Exception:  # noqa: BLE001 - best-effort hardening boundary
         log.exception("Background file privatization failed.")
-        return
+    pending = deferred_privatization_pending_count()
+    if pending:
+        log.warning(
+            "Private-file protection remains unverified for %d path(s); retained for retry.",
+            pending,
+        )
     if flushed:
         log.info(
             "Applied deferred file privatization for %d path(s).",
