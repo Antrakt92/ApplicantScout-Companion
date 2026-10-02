@@ -1636,7 +1636,7 @@ def safe_percent(value: object) -> float | None:
         return None
     try:
         pct = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not math.isfinite(pct) or pct < 0.0 or pct > 100.0:
         return None
@@ -1647,9 +1647,13 @@ def nonnegative_int(value: object) -> int:
     if isinstance(value, bool) or value is None:
         return 0
     if isinstance(value, int):
-        return value if value >= 0 else 0
-    if isinstance(value, str) and value.isdecimal():
-        return int(value)
+        return value if value >= 0 and value.bit_length() <= 63 else 0
+    if isinstance(value, str) and len(value) <= 19 and value.isdecimal():
+        try:
+            parsed = int(value)
+        except (ValueError, OverflowError):
+            return 0
+        return parsed if parsed.bit_length() <= 63 else 0
     return 0
 
 
