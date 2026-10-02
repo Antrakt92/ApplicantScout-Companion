@@ -1456,9 +1456,13 @@ def _safe_nonnegative_cache_int(v) -> int:
     if isinstance(v, bool) or v is None:
         return 0
     if isinstance(v, int):
-        return v if v >= 0 else 0
-    if isinstance(v, str) and v.isdecimal():
-        return int(v)
+        return v if v >= 0 and v.bit_length() <= 63 else 0
+    if isinstance(v, str) and len(v) <= 19 and v.isdecimal():
+        try:
+            parsed = int(v)
+        except (ValueError, OverflowError):
+            return 0
+        return parsed if parsed.bit_length() <= 63 else 0
     return 0
 
 
