@@ -3314,6 +3314,7 @@ class _WowSyncStartupConfigurator(QObject):
         self._state_lock = threading.Lock()
         self._work_lock = threading.Lock()
         self._close_lock = threading.Lock()
+        self._shutdown_requested = threading.Event()
         self._generation = 0
         self._desired_enabled: bool | None = None
         self._desired_restore_windows_approval = False
@@ -3336,6 +3337,8 @@ class _WowSyncStartupConfigurator(QObject):
         on_success: Callable[[], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
     ) -> int:
+        if self._shutdown_requested.is_set():
+            raise RuntimeError("WoW startup shortcut configurator is closed")
         with self._close_lock:
             return self._request_locked(
                 enabled,
@@ -3352,8 +3355,10 @@ class _WowSyncStartupConfigurator(QObject):
         on_success: Callable[[], None] | None,
         on_error: Callable[[Exception], None] | None,
     ) -> int:
+        if self._shutdown_requested.is_set():
+            raise RuntimeError("WoW startup shortcut configurator is closed")
         with self._state_lock:
-            if self._closed:
+            if self._closed or self._shutdown_requested.is_set():
                 raise RuntimeError("WoW startup shortcut configurator is closed")
             self._generation += 1
             generation = self._generation
@@ -3379,7 +3384,7 @@ class _WowSyncStartupConfigurator(QObject):
         thread = threading.Thread(
             target=_tracked_worker,
             name="ApplicantScoutStartupShortcut",
-            daemon=False,
+            daemon=True,
         )
         with self._state_lock:
             self._threads.add(thread)
@@ -3392,8 +3397,14 @@ class _WowSyncStartupConfigurator(QObject):
         return generation
 
     def _is_current(self, generation: int) -> bool:
+        if self._shutdown_requested.is_set():
+            return False
         with self._state_lock:
-            return not self._closed and self._generation == generation
+            return (
+                not self._closed
+                and not self._shutdown_requested.is_set()
+                and self._generation == generation
+            )
 
     def _apply_generation(
         self,
@@ -3415,7 +3426,11 @@ class _WowSyncStartupConfigurator(QObject):
                     self._configure(enabled)
                 with self._state_lock:
                     self._applied_enabled = enabled
-                    if self._closed or self._generation != generation:
+                    if (
+                        self._closed
+                        or self._shutdown_requested.is_set()
+                        or self._generation != generation
+                    ):
                         return
                     # A newer disable cannot interleave between this generation
                     # check and the explicit Windows approval change.
@@ -3445,54 +3460,111 @@ class _WowSyncStartupConfigurator(QObject):
 
                 self._notify(_deliver_current_success)
 
-    def close(self) -> Exception | None:
-        with self._close_lock:
+    def _reconcile_shutdown(self, deadline: float, desired_enabled: bool) -> None:
+        if not self._work_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return
+        try:
             with self._state_lock:
+                applied_enabled = self._applied_enabled
+                restore_windows_approval = self._desired_restore_windows_approval
+            if applied_enabled == desired_enabled and not restore_windows_approval:
+                return
+            if time.monotonic() >= deadline:
+                return
+            try:
+                # WHY: OS shortcut calls cannot be cancelled. Run them on a daemon
+                # so an in-flight call cannot retain process lifetime after quit.
+                self._configure(desired_enabled)
+                with self._state_lock:
+                    self._applied_enabled = desired_enabled
+                if desired_enabled and restore_windows_approval:
+                    if time.monotonic() >= deadline:
+                        return
+                    self._enable_approval()
+                with self._state_lock:
+                    self._desired_restore_windows_approval = False
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                with self._state_lock:
+                    if self._close_error is None:
+                        self._close_error = exc
+                log.warning(
+                    "Could not reconcile WoW lifecycle startup shortcut during shutdown: %s",
+                    exc,
+                )
+        finally:
+            self._work_lock.release()
+
+    def close(self) -> Exception | None:
+        deadline = time.monotonic() + max(0.0, _WOW_SYNC_CLOSE_JOIN_TIMEOUT_S)
+        self._shutdown_requested.set()
+        if not self._close_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return TimeoutError("WoW startup configurator shutdown is still in progress")
+        try:
+            if self._close_error is not None:
+                return self._close_error
+            if not self._state_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                self._close_error = TimeoutError(
+                    "WoW startup configurator state did not settle during shutdown"
+                )
+                return self._close_error
+            try:
                 if self._closed:
                     return self._close_error
                 self._closed = True
                 self._generation += 1
                 desired_enabled = self._desired_enabled
+                threads = tuple(self._threads)
+                needs_reconciliation = desired_enabled is not None and (
+                    bool(threads)
+                    or self._applied_enabled != desired_enabled
+                    or self._desired_restore_windows_approval
+                )
+            finally:
+                self._state_lock.release()
 
-            with self._work_lock:
-                with self._state_lock:
-                    applied_enabled = self._applied_enabled
-                    restore_windows_approval = self._desired_restore_windows_approval
-                if desired_enabled is not None and (
-                    applied_enabled != desired_enabled or restore_windows_approval
+            if needs_reconciliation and desired_enabled is not None:
+                reconciliation = threading.Thread(
+                    target=lambda: self._reconcile_shutdown(deadline, desired_enabled),
+                    name="ApplicantScoutStartupShutdown",
+                    daemon=True,
+                )
+                reconciliation.start()
+                reconciliation.join(timeout=max(0.0, deadline - time.monotonic()))
+                # A completed helper can also have exhausted the deadline while
+                # waiting for work ownership; do not report successful cleanup.
+                if not self._state_lock.acquire(
+                    timeout=max(0.0, deadline - time.monotonic())
                 ):
-                    try:
-                        self._configure(desired_enabled)
-                        if desired_enabled and restore_windows_approval:
-                            self._enable_approval()
-                    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                        self._close_error = exc
-                        log.warning(
-                            "Could not reconcile WoW lifecycle startup shortcut during shutdown: %s",
-                            exc,
+                    self._close_error = TimeoutError(
+                        "WoW startup configurator state did not settle during shutdown"
+                    )
+                    return self._close_error
+                try:
+                    if self._close_error is None and (
+                        reconciliation.is_alive()
+                        or self._applied_enabled != desired_enabled
+                        or self._desired_restore_windows_approval
+                    ):
+                        self._close_error = TimeoutError(
+                            "WoW startup shortcut reconciliation exceeded shutdown deadline"
                         )
-                    else:
-                        with self._state_lock:
-                            self._applied_enabled = desired_enabled
-                            self._desired_restore_windows_approval = False
+                        log.warning("%s; continuing quit.", self._close_error)
+                finally:
+                    self._state_lock.release()
 
-            while True:
-                with self._state_lock:
-                    threads = tuple(self._threads)
-                if not threads:
-                    break
-                for thread in threads:
-                    # WHY: an unbounded join() hangs quit forever when the
-                    # shortcut worker never returns — bound it and continue.
-                    thread.join(timeout=_WOW_SYNC_CLOSE_JOIN_TIMEOUT_S)
-                    if thread.is_alive():
-                        log.warning(
-                            "WoW startup configurator thread %s did not finish "
-                            "within %.1fs during shutdown; continuing quit.",
-                            thread.name,
-                            _WOW_SYNC_CLOSE_JOIN_TIMEOUT_S,
-                        )
+            for thread in threads:
+                # WHY: join each retained worker once against the same deadline.
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+                if thread.is_alive():
+                    log.warning(
+                        "WoW startup configurator thread %s did not finish "
+                        "within %.1fs during shutdown; continuing quit.",
+                        thread.name,
+                        _WOW_SYNC_CLOSE_JOIN_TIMEOUT_S,
+                    )
             return self._close_error
+        finally:
+            self._close_lock.release()
 
 
 class _RetiredScreenshotWatchers:

@@ -8823,7 +8823,8 @@ def test_wow_sync_configurator_close_bounds_slow_worker(caplog):
     with caplog.at_level("WARNING"):
         assert configurator.close() is None
 
-    assert join_timeouts == [main_mod._WOW_SYNC_CLOSE_JOIN_TIMEOUT_S]
+    assert len(join_timeouts) == 1
+    assert 0 <= join_timeouts[0] <= main_mod._WOW_SYNC_CLOSE_JOIN_TIMEOUT_S
     assert "did not finish" in caplog.text
 
 
