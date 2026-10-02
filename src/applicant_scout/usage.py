@@ -292,6 +292,30 @@ class UsageClient:
             and request.enabled == self._desired_consent
         )
 
+    def complete_consent_noop(self, request: UsageConsentRequest) -> bool:
+        """An established identical choice needs neither a writer nor its lock."""
+        with self._condition:
+            return (
+                self._consent_request_current(request) and not request.needs_write
+                and not self._consent_write_pending and not self._failed
+                and self._consent == request.enabled
+            )
+
+    def fail_consent_request(self, request: UsageConsentRequest) -> bool:
+        """Retire an unavailable writer without waiting for disk or an older save."""
+        with self._condition:
+            if (
+                not self._consent_request_current(request) or not request.needs_write
+                or not self._consent_write_pending
+            ):
+                return False
+            self._consent_generation += 1
+            self._consent_write_pending = False
+            self._failed = True
+            self._consent = False
+            self._condition.notify_all()
+            return True
+
     def apply_consent(self, request: UsageConsentRequest) -> bool:
         """Apply an already registered intent; delayed workers cannot re-register."""
         try:

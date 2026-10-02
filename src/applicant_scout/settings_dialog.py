@@ -92,6 +92,12 @@ log = logging.getLogger(__name__)
 
 CredentialTester = Callable[[str, str, str], str]
 SimpleAction = Callable[[], str]
+
+
+class _UsageConsentWorkerUnavailable(RuntimeError):
+    """Consent persistence could not be scheduled in the background."""
+
+
 WCL_CREATE_CLIENT_EXAMPLE_PATH = (
     Path(__file__).with_name("assets") / "wcl_create_client_example.jpg"
 )
@@ -1567,16 +1573,7 @@ class SettingsDialog(QDialog):
         app = QApplication.instance()
         dispatcher = _dialog_worker_dispatcher(app) if isinstance(app, QApplication) else None
 
-        def _worker() -> None:
-            try:
-                if request is None:
-                    client.set_consent(enabled)
-                elif not client.apply_consent(request):
-                    return  # Retired client-owned intent, including dialog reopen.
-            except Exception as exc:  # noqa: BLE001 - report, never break the GUI
-                success, error = False, exc
-            else:
-                success, error = True, None
+        def _complete(success: bool, error: Exception | None) -> None:
             if dispatcher is None:
                 owner = owner_ref()
                 if owner is not None:
@@ -1587,8 +1584,29 @@ class SettingsDialog(QDialog):
                 except RuntimeError:
                     pass  # QApplication may have closed while the worker ran.
 
+        def _launch_failed() -> None:
+            if request is not None and not client.fail_consent_request(request):
+                return  # Newer intent or a closed client already owns the state.
+            _complete(False, _UsageConsentWorkerUnavailable())
+
+        def _worker() -> None:
+            try:
+                if request is None:
+                    client.set_consent(enabled)
+                elif not client.apply_consent(request):
+                    return  # Retired client-owned intent, including dialog reopen.
+            except Exception as exc:  # noqa: BLE001 - report, never break the GUI
+                success, error = False, exc
+            else:
+                success, error = True, None
+            _complete(success, error)
+
+        if request is not None and not request.needs_write:
+            if client.complete_consent_noop(request):
+                _complete(True, None)
+            return
         if dispatcher is None:
-            _worker()
+            _launch_failed()
             return
         try:
             worker = threading.Thread(
@@ -1597,12 +1615,12 @@ class SettingsDialog(QDialog):
                 daemon=True,
             )
             worker.start()
-        except Exception:  # noqa: BLE001 - thread launch failed; stay functional
-            _worker()
+        except Exception:  # noqa: BLE001 - never move disk work onto the GUI thread
+            _launch_failed()
 
     @Slot(int, bool, object)
     def _finish_usage_consent_save(
-        self, generation: int, success: bool, _error: object
+        self, generation: int, success: bool, error: object
     ) -> None:
         if generation != self._usage_consent_generation:
             return
@@ -1613,11 +1631,15 @@ class SettingsDialog(QDialog):
         if client is not None and self.usage_check.isChecked() != client.consent_enabled:
             with QSignalBlocker(self.usage_check):
                 self.usage_check.setChecked(client.consent_enabled)
-        self.set_status(
+        message = (
             "Usage reporting is off for this session, but the preference could not be saved. "
             "The previous choice may return after restart. "
-            "Check that your Windows settings folder is writable.", error=True
         )
+        if isinstance(error, _UsageConsentWorkerUnavailable):
+            message += "The background task is unavailable. Retry your choice when it is available."
+        else:
+            message += "Check that your Windows settings folder is writable."
+        self.set_status(message, error=True)
         self.usageConsentChanged.emit(False)
 
     def values(self) -> SettingsValues:

@@ -179,9 +179,10 @@ def test_retirement_between_publication_and_activation_cannot_enable(tmp_path, m
         client.close()
 
 
-def test_settings_thread_start_failure_uses_registered_intent(qtbot, tmp_path, monkeypatch):
+def test_settings_thread_start_failure_stays_off_and_explicit_retry_saves(qtbot, tmp_path, monkeypatch):
     client = _client(tmp_path)
     dialog = _dialog(qtbot, tmp_path, client)
+    real_thread = settings_mod.threading.Thread
 
     class UnavailableThread:
         def __init__(self, **_kwargs):
@@ -191,12 +192,22 @@ def test_settings_thread_start_failure_uses_registered_intent(qtbot, tmp_path, m
             raise RuntimeError("synthetic thread exhaustion")
 
     monkeypatch.setattr(settings_mod.threading, "Thread", UnavailableThread)
+    changes = []
+    dialog.usageConsentChanged.connect(changes.append)
     try:
+        before = client._path.read_bytes()
         dialog.usage_check.setChecked(True)
-        qtbot.waitUntil(lambda: client.consent_enabled)
-        dialog.usage_check.setChecked(False)
-        qtbot.waitUntil(lambda: not client.consent_enabled)
-        assert _saved(client)["consent"] is False
+        qtbot.waitUntil(lambda: changes == [False])
+        assert not client.consent_enabled
+        assert not dialog.usage_check.isChecked()
+        assert client._path.read_bytes() == before
+        assert "background" in dialog.status_label.text().lower()
+
+        monkeypatch.setattr(settings_mod.threading, "Thread", real_thread)
+        dialog.usage_check.setChecked(True)
+        qtbot.waitUntil(lambda: changes == [False, True])
+        assert client.consent_enabled
+        assert _saved(client)["consent"] is True
     finally:
         client.close()
 
