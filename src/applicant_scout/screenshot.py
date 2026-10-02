@@ -52,6 +52,7 @@ from watchdog.observers import Observer
 from . import log_throttle as _log_throttle
 from .atomic_io import atomic_write_text
 from .producer_identity import is_placeholder_transport_identity
+from .verified_file_cleanup import unlink_verified_file
 
 
 _log = logging.getLogger("applicant_scout.screenshot")
@@ -283,6 +284,7 @@ class SnapshotSource:
     mtime_ns: int
     file_id: str
     size: int
+    file_identity: tuple[int, int] | None = field(default=None, compare=False, repr=False)
 
 
 def _unlink_if_source_matches(
@@ -290,18 +292,18 @@ def _unlink_if_source_matches(
     expected: SnapshotSource | None,
 ) -> bool:
     """Delete only the file generation that was inspected by the caller."""
-    try:
-        if expected is not None:
-            current = path.stat()
-            if (
-                current.st_mtime_ns != expected.mtime_ns
-                or current.st_size != expected.size
-            ):
-                return False
-        path.unlink()
-    except FileNotFoundError:
-        return True
-    return True
+    if expected is None or expected.file_identity is None:
+        return False
+    if os.path.normcase(os.path.abspath(expected.file_id)) != os.path.normcase(
+        os.path.abspath(path)
+    ):
+        return False
+    return unlink_verified_file(
+        path,
+        identity=expected.file_identity,
+        mtime_ns=expected.mtime_ns,
+        size=expected.size,
+    )
 
 
 @dataclass
@@ -1617,6 +1619,7 @@ def cleanup_appscout_screenshots(
             mtime_ns=decoded_stat.st_mtime_ns,
             file_id=str(path),
             size=decoded_stat.st_size,
+            file_identity=(decoded_stat.st_dev, decoded_stat.st_ino),
         )
         try:
             if _unlink_if_source_matches(path, decoded_source):
@@ -2940,6 +2943,7 @@ class ScreenshotWatcher(QObject):
             mtime_ns=stat_result.st_mtime_ns,
             file_id=str(path),
             size=stat_result.st_size,
+            file_identity=(stat_result.st_dev, stat_result.st_ino),
         )
 
     @staticmethod

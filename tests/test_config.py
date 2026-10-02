@@ -8348,6 +8348,7 @@ def test_worker_snapshot_is_retained_before_source_file_can_be_deleted(
         mtime_ns=stat_result.st_mtime_ns,
         file_id=str(image_path),
         size=stat_result.st_size,
+        file_identity=(stat_result.st_dev, stat_result.st_ino),
     )
     snap = Snapshot(listing=None, version=None, source=source)
     watcher = screenshot_mod.ScreenshotWatcher(tmp_path)
