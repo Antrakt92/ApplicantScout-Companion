@@ -9,7 +9,7 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import httpx
@@ -85,6 +85,7 @@ from .constants import (
     rio_score_colour,
 )
 from .compatibility import addon_version_warning
+from .fetch_operation import FetchOperation
 from .usage_events import UsageActivity
 from . import overlay_presenters as _presenters
 from . import overlay_rows as _overlay_rows
@@ -512,6 +513,8 @@ class _FetchIdentity:
     runtime_generation: int = 0
     metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES
     listing_session_generation: int = 0
+    # Target equality remains reusable; a worker lifetime has separate ownership.
+    operation: FetchOperation | None = field(default=None, compare=False, repr=False)
 
     @property
     def storage_key(self) -> str:
@@ -605,12 +608,16 @@ def _discard_tracked_fetch(
     identity = in_flight.pop(storage_key, None)
     if identity is None:
         return
-    waiters = waiters_by_target.get(identity.network_key)
-    if waiters is None:
+    for network_key, waiters in list(waiters_by_target.items()):
+        waiter = waiters.get(storage_key)
+        if waiter is None or waiter.operation is not identity.operation or waiter != identity:
+            continue
+        waiters.pop(storage_key)
+        if not waiters:
+            waiters_by_target.pop(network_key, None)
+            if identity.operation is not None:
+                identity.operation.retire()
         return
-    waiters.pop(storage_key, None)
-    if not waiters:
-        waiters_by_target.pop(identity.network_key, None)
 
 
 def _coalesce_tracked_fetch(
@@ -618,14 +625,63 @@ def _coalesce_tracked_fetch(
     in_flight: dict[str, _FetchIdentity],
     waiters_by_target: dict[str, dict[str, _FetchIdentity]],
 ) -> bool:
-    if not waiters_by_target.get(identity.network_key):
-        return False
-    _discard_tracked_fetch(identity.storage_key, in_flight, waiters_by_target)
-    in_flight[identity.storage_key] = identity
-    waiters_by_target.setdefault(identity.network_key, {})[identity.storage_key] = (
-        identity
+    for waiters in waiters_by_target.values():
+        owner = next((
+            waiter for waiter in waiters.values()
+            if waiter.network_key == identity.network_key
+            and in_flight.get(waiter.storage_key) == waiter
+            and in_flight[waiter.storage_key].operation is waiter.operation
+            and (waiter.operation is None or waiter.operation.is_active())
+        ), None)
+        if owner is None:
+            continue
+        previous = in_flight.get(identity.storage_key)
+        if previous is not None and previous.operation is not owner.operation:
+            _discard_tracked_fetch(identity.storage_key, in_flight, waiters_by_target)
+        shared = replace(identity, operation=owner.operation)
+        in_flight[shared.storage_key] = shared
+        waiters[shared.storage_key] = shared
+        return True
+    return False
+
+
+def _operation_owns_route(
+    identity: _FetchIdentity,
+    waiters_by_target: Mapping[str, Mapping[str, _FetchIdentity]],
+) -> bool:
+    operation = identity.operation
+    if operation is None:
+        return True  # direct cache result has no worker ownership
+    waiters = waiters_by_target.get(identity.network_key)
+    return (
+        operation.is_active() and bool(waiters)
+        and all(waiter.operation is operation for waiter in waiters.values())
     )
-    return True
+
+
+def _fetch_completion_route_key(
+    identity: _FetchIdentity,
+    waiters_by_target: Mapping[str, Mapping[str, _FetchIdentity]],
+) -> str:
+    # Workers complete on their original route; a cache hit uses current row
+    # targets, including party waiters rebound after the listing was cleared.
+    if identity.operation is not None or identity.network_key in waiters_by_target:
+        return identity.network_key
+    for network_key, waiters in waiters_by_target.items():
+        if any(waiter.network_key == identity.network_key for waiter in waiters.values()):
+            return network_key
+    return identity.network_key
+
+
+def _retire_unrepresented_operations(
+    before: Mapping[str, Mapping[str, _FetchIdentity]],
+    after: Mapping[str, Mapping[str, _FetchIdentity]],
+) -> None:
+    retained = {identity.operation for waiters in after.values() for identity in waiters.values()}
+    for waiters in before.values():
+        for identity in waiters.values():
+            if identity.operation is not None and identity.operation not in retained:
+                identity.operation.retire()
 
 
 def _tracked_fetch_covers(
@@ -635,6 +691,7 @@ def _tracked_fetch_covers(
     current = in_flight.get(identity.storage_key)
     return (
         current is not None
+        and (current.operation is None or current.operation.is_active())
         and _same_fetch_target_except_preferences(current, identity)
         and current.metric_preferences.covers(identity.metric_preferences)
     )
@@ -650,7 +707,10 @@ class _FetchTask(QRunnable):
     ):
         super().__init__()
         self.signals = _FetchSignals()
-        self._identity = identity
+        self._identity = (
+            identity if identity.operation is not None
+            else replace(identity, operation=FetchOperation())
+        )
         self._name = name
         self._client = client
         self._cache = cache
@@ -658,6 +718,8 @@ class _FetchTask(QRunnable):
 
     def run(self) -> None:
         identity = self._identity
+        if identity.operation is not None and not identity.operation.is_active():
+            return
         started_at = time.perf_counter()
         _log.debug(
             "WCL fetch started: %s-%s region=%s spec=%s role=%s prefs=%s",
@@ -676,6 +738,8 @@ class _FetchTask(QRunnable):
             identity.metric_role,
             identity.metric_preferences,
         )
+        if identity.operation is not None and not identity.operation.is_active():
+            return
         if cached is not None and self._cache.generation == self._cache_generation:
             _log.debug(
                 "WCL fetch cache hit: %s-%s in %.2fs",
@@ -765,13 +829,19 @@ class _RaidBossFetchTask(QRunnable):
     ):
         super().__init__()
         self.signals = _RaidBossFetchSignals()
-        self._identity = identity
+        self._identity = (
+            identity if identity.operation is not None
+            else replace(identity, operation=FetchOperation())
+        )
         self._name = name
         self._client = client
         self._cache = cache
         self._cache_generation = cache.generation
 
     def run(self) -> None:
+        operation = self._identity.operation
+        if operation is not None and not operation.is_active():
+            return
         def _emit_network_result(
             rows: dict[str, list[dict[str, object]]],
             error: str,
@@ -788,6 +858,8 @@ class _RaidBossFetchTask(QRunnable):
             self._identity.metric_role,
             self._identity.metric_preferences,
         )
+        if operation is not None and not operation.is_active():
+            return
         if cached is not None and self._cache.generation == self._cache_generation:
             self.signals.done.emit(self._identity, cached, "", "")
             return
@@ -5033,6 +5105,7 @@ class OverlayWindow(QMainWindow):
         self._schedule_overlay_refresh(maybe_show=True)
 
     def on_applicant_updated(self, applicant: Applicant) -> None:
+        self._retire_inapplicable_fetches(applicant)
         if not self.isVisible():
             self._initialize_source_tab()
         # Re-fetch ONLY when fetch_status is "pending" — apply_snapshot resets
@@ -5151,6 +5224,7 @@ class OverlayWindow(QMainWindow):
                 if (
                     identity.row_source != "party"
                     or in_flight.get(identity.storage_key) != identity
+                    or in_flight[identity.storage_key].operation is not identity.operation
                 ):
                     continue
                 member = self._state.party_members.get(identity.applicant_id)
@@ -5190,6 +5264,8 @@ class OverlayWindow(QMainWindow):
             if identity.row_source == "party"
         }
         self._listing_session_generation += 1
+        old_fetch_waiters = self._fetch_waiters_by_target
+        old_detail_waiters = self._raid_boss_fetch_waiters_by_target
         (
             self._fetches_in_flight,
             self._fetch_waiters_by_target,
@@ -5205,6 +5281,10 @@ class OverlayWindow(QMainWindow):
             self._raid_boss_fetches_in_flight,
             self._raid_boss_fetch_waiters_by_target,
             self._raid_detail_preferences(),
+        )
+        _retire_unrepresented_operations(old_fetch_waiters, self._fetch_waiters_by_target)
+        _retire_unrepresented_operations(
+            old_detail_waiters, self._raid_boss_fetch_waiters_by_target
         )
         self._raid_boss_fetch_failures.clear()
         self._clear_role_filter()
@@ -5245,6 +5325,13 @@ class OverlayWindow(QMainWindow):
             self.show_launcher_only()
 
     def on_roster_changed(self) -> None:
+        for in_flight, discard in (
+            (self._fetches_in_flight, self._discard_fetch_by_storage_key),
+            (self._raid_boss_fetches_in_flight, self._discard_raid_boss_fetch_by_storage_key),
+        ):
+            for storage_key, identity in list(in_flight.items()):
+                if identity.row_source == "party" and identity.applicant_id not in self._state.party_members:
+                    discard(storage_key)
         current_roster_is_raid = (
             self._party_roster_is_raid() if self._state.party_members else None
         )
@@ -5264,6 +5351,7 @@ class OverlayWindow(QMainWindow):
                 self._last_raid_listing = None
             self._last_authoritative_roster_is_raid = current_roster_is_raid
         for member in self._state.party_members.values():
+            self._retire_inapplicable_fetches(member)
             if member.fetch_status == "pending" and not self._restored_roster_pending:
                 self._launch_fetch(member)
         if (
@@ -7111,6 +7199,32 @@ class OverlayWindow(QMainWindow):
     def _apply_metric_minimum_width(self) -> None:
         self.setMinimumWidth(USER_MIN_WINDOW_WIDTH)
 
+    def _retire_inapplicable_fetches(self, applicant: Applicant) -> None:
+        row_source = self._row_source_for(applicant)
+        storage_key = (
+            applicant.applicant_id if row_source == "applicants"
+            else f"{row_source}:{applicant.applicant_id}"
+        )
+        for in_flight, preferences, discard in (
+            (self._fetches_in_flight, self._metric_preferences, self._discard_fetch_by_storage_key),
+            (self._raid_boss_fetches_in_flight, self._raid_detail_preferences(),
+             self._discard_raid_boss_fetch_by_storage_key),
+        ):
+            tracked = in_flight.get(storage_key)
+            if tracked is None:
+                continue
+            current = _fetch_identity_for_applicant(
+                applicant, self._state.player.full_name, self._wcl_client.region,
+                preferences, self._wcl_runtime_generation,
+                self._listing_session_generation, row_source=row_source,
+            )
+            if (
+                current is None or not current[0].metric_preferences.any_enabled
+                or not _same_fetch_target_except_preferences(tracked, current[0])
+                or not tracked.metric_preferences.covers(current[0].metric_preferences)
+            ):
+                discard(storage_key)
+
     def apply_metric_preferences(
         self,
         metric_preferences: MetricPreferences,
@@ -7123,6 +7237,7 @@ class OverlayWindow(QMainWindow):
         self._apply_metric_column_visibility()
         self._apply_metric_minimum_width()
         for applicant in self._fetch_rows():
+            self._retire_inapplicable_fetches(applicant)
             row_source = self._row_source_for(applicant)
             storage_key = (
                 applicant.applicant_id
@@ -7156,6 +7271,10 @@ class OverlayWindow(QMainWindow):
 
     def bump_wcl_runtime_generation(self) -> None:
         self._wcl_runtime_generation += 1
+        for storage_key in list(self._fetches_in_flight):
+            self._discard_fetch_by_storage_key(storage_key)
+        for storage_key in list(self._raid_boss_fetches_in_flight):
+            self._discard_raid_boss_fetch_by_storage_key(storage_key)
         for applicant in self._fetch_rows():
             applicant.clear_wcl_data()
         self._refresh_table()
@@ -7324,7 +7443,7 @@ class OverlayWindow(QMainWindow):
     ) -> None:
         if self._closed or (
             fetched_identity.runtime_generation != self._wcl_runtime_generation
-        ):
+        ) or not _operation_owns_route(fetched_identity, self._fetch_waiters_by_target):
             return
         record_api_result = getattr(self._wcl_client, "record_api_result", None)
         if callable(record_api_result):
@@ -7347,7 +7466,7 @@ class OverlayWindow(QMainWindow):
     ) -> None:
         if self._closed or (
             fetched_identity.runtime_generation != self._wcl_runtime_generation
-        ):
+        ) or not _operation_owns_route(fetched_identity, self._raid_boss_fetch_waiters_by_target):
             return
         record_api_result = getattr(self._wcl_client, "record_api_result", None)
         if callable(record_api_result):
@@ -7382,6 +7501,7 @@ class OverlayWindow(QMainWindow):
         if self._coalesce_raid_boss_fetch_if_target_in_flight(identity):
             self._refresh_quota_label()
             return True
+        identity = replace(identity, operation=FetchOperation())
         self._mark_raid_boss_fetch_in_flight(identity)
         self._mark_raid_boss_fetch_waiting_on_target(identity)
         task = _RaidBossFetchTask(identity, charname, self._wcl_client, self._cache)
@@ -7469,6 +7589,7 @@ class OverlayWindow(QMainWindow):
             self._refresh_quota_label()
             self._update_quota_polling()
             return
+        identity = replace(identity, operation=FetchOperation())
         self._mark_fetch_in_flight(identity)
         self._mark_fetch_waiting_on_target(identity)
         task = _FetchTask(identity, charname, self._wcl_client, self._cache)
@@ -7500,20 +7621,33 @@ class OverlayWindow(QMainWindow):
         fetched_identity: _FetchIdentity,
         ranks: CharacterRanks,
     ) -> None:
-        if self._closed:
+        if self._closed or not _operation_owns_route(fetched_identity, self._fetch_waiters_by_target):
             return
         was_current = (
             self._fetches_in_flight.get(fetched_identity.storage_key)
             == fetched_identity
         )
         waiters = self._fetch_waiters_by_target.pop(
-            fetched_identity.network_key,
+            _fetch_completion_route_key(fetched_identity, self._fetch_waiters_by_target),
             None,
         )
         if waiters is not None:
-            waiters.setdefault(fetched_identity.storage_key, fetched_identity)
-            for waiter_identity in list(waiters.values()):
-                self._on_fetch_done(waiter_identity, ranks)
+            operations = {waiter.operation for waiter in waiters.values()}
+            if fetched_identity.operation is None:
+                waiters.setdefault(fetched_identity.storage_key, fetched_identity)
+            try:
+                for waiter_identity in list(waiters.values()):
+                    current = self._fetches_in_flight.get(waiter_identity.storage_key)
+                    if waiter_identity.operation is not None and (
+                        current is None or current != waiter_identity
+                        or current.operation is not waiter_identity.operation
+                    ):
+                        continue
+                    self._on_fetch_done(replace(waiter_identity, operation=None), ranks)
+            finally:
+                for operation in operations:
+                    if operation is not None:
+                        operation.retire()
             return
         if was_current:
             self._discard_fetch_by_storage_key(fetched_identity.storage_key)
@@ -7645,21 +7779,31 @@ class OverlayWindow(QMainWindow):
         error: str,
         error_kind: str = "",
     ) -> None:
-        if self._closed:
+        if self._closed or not _operation_owns_route(fetched_identity, self._raid_boss_fetch_waiters_by_target):
             return
         waiters = self._raid_boss_fetch_waiters_by_target.pop(
-            fetched_identity.network_key,
+            _fetch_completion_route_key(fetched_identity, self._raid_boss_fetch_waiters_by_target),
             None,
         )
         if waiters is not None:
-            waiters.setdefault(fetched_identity.storage_key, fetched_identity)
-            for waiter_identity in list(waiters.values()):
-                self._on_raid_boss_fetch_done(
-                    waiter_identity,
-                    rows,
-                    error,
-                    error_kind,
-                )
+            operations = {waiter.operation for waiter in waiters.values()}
+            if fetched_identity.operation is None:
+                waiters.setdefault(fetched_identity.storage_key, fetched_identity)
+            try:
+                for waiter_identity in list(waiters.values()):
+                    current = self._raid_boss_fetches_in_flight.get(waiter_identity.storage_key)
+                    if waiter_identity.operation is not None and (
+                        current is None or current != waiter_identity
+                        or current.operation is not waiter_identity.operation
+                    ):
+                        continue
+                    self._on_raid_boss_fetch_done(
+                        replace(waiter_identity, operation=None), rows, error, error_kind
+                    )
+            finally:
+                for operation in operations:
+                    if operation is not None:
+                        operation.retire()
             return
         self._discard_raid_boss_fetch_if_current(fetched_identity)
         self._refresh_quota_label()
@@ -8069,6 +8213,10 @@ class OverlayWindow(QMainWindow):
         if self._closed:
             return
         self._closed = True
+        for storage_key in list(self._fetches_in_flight):
+            self._discard_fetch_by_storage_key(storage_key)
+        for storage_key in list(self._raid_boss_fetches_in_flight):
+            self._discard_raid_boss_fetch_by_storage_key(storage_key)
         self._foreground_timer.stop()
         self._quota_timer.stop()
         self._wcl_retry_timer.stop()

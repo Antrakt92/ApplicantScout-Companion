@@ -400,8 +400,8 @@ def test_shutdown_fetches_ignores_late_completion_and_retry_callbacks(qtbot, tmp
 
         assert applicant.fetch_status == "loading"
         assert applicant.raid_heroic is None
-        assert identity.storage_key in window._fetches_in_flight
-        assert identity.storage_key in window._raid_boss_fetches_in_flight
+        assert window._fetches_in_flight == {}
+        assert window._raid_boss_fetches_in_flight == {}
         assert window._refresh_flush_pending is False
         assert syncs == []
     finally:
