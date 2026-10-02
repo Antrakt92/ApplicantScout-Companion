@@ -478,12 +478,17 @@ class WCLAuth:
         with self._refresh_lock:
             self._refresh()
 
-    def invalidate(self) -> None:
-        """Force refresh on next get_token (call on 401 response)."""
+    def invalidate(self, rejected_token: str | None = None) -> None:
+        """Invalidate only the rejected token, or explicitly reset all token state."""
         with self._token_state_lock:
+            if rejected_token is not None and (
+                self._token is None or self._token.access_token != rejected_token
+            ):
+                return
             self._invalidate_generation += 1
             self._token = None
-        self._delete_cached_token()
+            # Keep deletion ordered before a parallel refresh publishes its cache.
+            self._delete_cached_token()
 
     def _refresh(self) -> str:
         with self._token_state_lock:
@@ -1182,7 +1187,7 @@ class WCLClient:
                 with self._quota_lock:
                     is_current_auth = auth_generation == self._auth_generation
                 if is_current_auth:
-                    auth.invalidate()
+                    auth.invalidate(token)
                     continue
             if resp.status_code in (401, 403):
                 raise WCLApiError(
