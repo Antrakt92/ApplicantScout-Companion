@@ -19,6 +19,8 @@ class _CacheEntry:
     fetched_at: float
     ranks: dict | None = None  # asdict(CharacterRanks)
     raid_boss_details: dict | None = None
+    # Session-only ordering; loaded entries predate every current request.
+    publication_epoch: int = 0
 
 
 def _metric_preference_breadth(metric_preferences: MetricPreferences) -> int:

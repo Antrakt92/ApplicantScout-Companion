@@ -715,6 +715,7 @@ class _FetchTask(QRunnable):
         self._client = client
         self._cache = cache
         self._cache_generation = cache.generation
+        self._cache_publication_epoch = getattr(cache, "publication_epoch", None)
 
     def run(self) -> None:
         identity = self._identity
@@ -814,6 +815,8 @@ class _FetchTask(QRunnable):
                 identity.metric_role,
                 identity.metric_preferences,
                 expected_generation=self._cache_generation,
+                expected_operation=identity.operation,
+                expected_publication_epoch=self._cache_publication_epoch,
             )
         self.signals.networkDone.emit(identity, ranks)
         self.signals.done.emit(identity, ranks)
@@ -837,6 +840,7 @@ class _RaidBossFetchTask(QRunnable):
         self._client = client
         self._cache = cache
         self._cache_generation = cache.generation
+        self._cache_publication_epoch = getattr(cache, "publication_epoch", None)
 
     def run(self) -> None:
         operation = self._identity.operation
@@ -894,6 +898,8 @@ class _RaidBossFetchTask(QRunnable):
             self._identity.metric_role,
             self._identity.metric_preferences,
             expected_generation=self._cache_generation,
+            expected_operation=self._identity.operation,
+            expected_publication_epoch=self._cache_publication_epoch,
         )
         _emit_network_result(rows, "", "")
 

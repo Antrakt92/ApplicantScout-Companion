@@ -16,6 +16,7 @@ from typing import Optional
 import httpx
 
 from .atomic_io import apply_private_file_mode, atomic_write_text
+from .fetch_operation import FetchOperation
 from .constants import (
     CURRENT_MPLUS_ZONE_ID,
     CURRENT_RAID_ENCOUNTER_ZONE_IDS,
@@ -2002,6 +2003,11 @@ class CharacterCache:
         with self._lock:
             return self._generation
 
+    @property
+    def publication_epoch(self) -> int:
+        with self._lock:
+            return self._save_epoch
+
     @staticmethod
     def _key_prefix(
         name: str,
@@ -2122,7 +2128,12 @@ class CharacterCache:
             ):
                 continue
             try:
-                entry = _CacheEntry(**v)
+                # Publication ordering starts anew for each cache instance;
+                # persisted or injected session metadata is never authority.
+                entry = _CacheEntry(**{
+                    field: value for field, value in v.items()
+                    if field != "publication_epoch"
+                })
             except (TypeError, ValueError):
                 _log.debug("Discarding corrupt cache entry for key=%s", k)
                 continue
@@ -2167,7 +2178,14 @@ class CharacterCache:
                     {
                         "__version__": _CACHE_VERSION,
                         "__query_fingerprint__": self._query_fingerprint,
-                        "entries": {k: asdict(v) for k, v in snapshot.entries},
+                        "entries": {
+                            k: {
+                                "fetched_at": v.fetched_at,
+                                "ranks": v.ranks,
+                                "raid_boss_details": v.raid_boss_details,
+                            }
+                            for k, v in snapshot.entries
+                        },
                     }
                 ),
                 private=True,
@@ -2474,11 +2492,15 @@ class CharacterCache:
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
         *,
         expected_generation: int | None = None,
+        expected_operation: FetchOperation | None = None,
+        expected_publication_epoch: int | None = None,
     ) -> bool:
         key = self._key(name, server_slug, region, spec_id, role, metric_preferences)
         not_found_key = self._not_found_key(name, server_slug, region)
         with self._lock:
             if self._closing:
+                return False
+            if expected_operation is not None and not expected_operation.is_active():
                 return False
             if (
                 expected_generation is not None
@@ -2488,21 +2510,41 @@ class CharacterCache:
             if ranks.not_found:
                 identity_prefix = f"{region}:{server_slug}:{name.lower()}:"
                 raid_boss_identity_prefix = f"rb:{identity_prefix}"
+                # A negative sweeps every spec/scope, so newer evidence anywhere
+                # for this character wins even when both requests remain active.
+                if expected_publication_epoch is not None and any(
+                    entry.publication_epoch > expected_publication_epoch
+                    for stored_key, entry in self._data.items()
+                    if stored_key.startswith((identity_prefix, raid_boss_identity_prefix))
+                    or stored_key == not_found_key
+                ):
+                    return False
                 cache_put(
                     self._data,
                     key=key,
                     not_found_key=not_found_key,
-                    entry=_CacheEntry(fetched_at=time.time(), ranks=asdict(ranks)),
+                    entry=_CacheEntry(
+                        fetched_at=time.time(), ranks=asdict(ranks),
+                        publication_epoch=self._save_epoch + 1,
+                    ),
                     not_found=True,
                     sweep_prefixes=(identity_prefix, raid_boss_identity_prefix),
                     max_entries=self.MAX_ENTRIES,
                 )
             else:
+                if expected_publication_epoch is not None and any(
+                    entry is not None and entry.publication_epoch > expected_publication_epoch
+                    for entry in (self._data.get(key), self._data.get(not_found_key))
+                ):
+                    return False
                 cache_put(
                     self._data,
                     key=key,
                     not_found_key=not_found_key,
-                    entry=_CacheEntry(fetched_at=time.time(), ranks=asdict(ranks)),
+                    entry=_CacheEntry(
+                        fetched_at=time.time(), ranks=asdict(ranks),
+                        publication_epoch=self._save_epoch + 1,
+                    ),
                     max_entries=self.MAX_ENTRIES,
                 )
             self._save_epoch += 1
@@ -2522,6 +2564,8 @@ class CharacterCache:
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
         *,
         expected_generation: int | None = None,
+        expected_operation: FetchOperation | None = None,
+        expected_publication_epoch: int | None = None,
     ) -> bool:
         key = self._raid_boss_key(
             name,
@@ -2535,14 +2579,23 @@ class CharacterCache:
         with self._lock:
             if self._closing:
                 return False
+            if expected_operation is not None and not expected_operation.is_active():
+                return False
             if (
                 expected_generation is not None
                 and expected_generation != self._generation
             ):
                 return False
+            not_found_key = self._not_found_key(name, server_slug, region)
+            if expected_publication_epoch is not None and any(
+                entry is not None and entry.publication_epoch > expected_publication_epoch
+                for entry in (self._data.get(key), self._data.get(not_found_key))
+            ):
+                return False
             self._data[key] = _CacheEntry(
                 fetched_at=time.time(),
                 raid_boss_details=sanitized,
+                publication_epoch=self._save_epoch + 1,
             )
             _cap_entries_data(self._data, self.MAX_ENTRIES)
             self._save_epoch += 1
