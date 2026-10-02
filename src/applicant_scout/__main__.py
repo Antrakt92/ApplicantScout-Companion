@@ -80,6 +80,7 @@ from .raiderio_local import (
 )
 from .screenshot import (
     DecodedRosterMember,
+    RioSummaryContext,
     ScreenshotWatcher,
     Snapshot,
     clear_screenshot_manual_indexes,
@@ -87,6 +88,7 @@ from .screenshot import (
     format_screenshot_cleanup_summary,
     positive_int_arg,
     snapshot_source_order_key,
+    snapshot_rio_context,
     screenshot_cleanup_exit_code,
     system_exit_code,
 )
@@ -1226,6 +1228,7 @@ class StateMachine(QObject):
         decoded: DecodedRosterMember,
         *,
         rio_summary_target_key: int = 0,
+        rio_summary_context: RioSummaryContext | None = None,
         rio_profile=None,
     ) -> RosterMember:
         cls_name = CLASS_ID_TO_NAME.get(decoded.class_id, "?")
@@ -1262,7 +1265,16 @@ class StateMachine(QObject):
             rio_timed_at_or_above_minus2=decoded.rio_timed_at_or_above_minus2,
             rio_completed_at_or_above_minus1=decoded.rio_completed_at_or_above_minus1,
             rio_dungeon_count=decoded.rio_dungeon_count,
-            rio_summary_target_key=rio_summary_target_key,
+            rio_summary_target_key=(
+                rio_summary_context.key_level if rio_summary_context is not None
+                else rio_summary_target_key
+            ),
+            rio_summary_activity_id=(
+                rio_summary_context.activity_id if rio_summary_context is not None else 0
+            ),
+            rio_summary_dungeon_name=(
+                rio_summary_context.dungeon_name if rio_summary_context is not None else ""
+            ),
             rio_dungeons=self._rio_dungeon_rows_from_profile(
                 rio_profile, decoded.rio_dungeons
             ),
@@ -1309,6 +1321,7 @@ class StateMachine(QObject):
         region_identity_changed: bool = False,
         default_realm_changed: bool = False,
         rio_summary_target_key: int = 0,
+        rio_summary_context: RioSummaryContext | None = None,
         emit_signal: bool = True,
     ) -> bool:
         diff = self._diff_roster(roster)
@@ -1326,6 +1339,7 @@ class StateMachine(QObject):
             member = self._roster_member_from_decoded(
                 decoded,
                 rio_summary_target_key=rio_summary_target_key,
+                rio_summary_context=rio_summary_context,
                 rio_profile=rio_profile,
             )
             if existing is not None:
@@ -1607,6 +1621,7 @@ class StateMachine(QObject):
         default_realm_changed: bool,
     ) -> ListingOutcome:
         """Apply leader-key + listing branches; consumed=True ends the snapshot."""
+        roster_rio_context = snapshot_rio_context(snap, roster=True)
         # ─── Leader keystone ───
         old_leader_key = self._state.leader_key
         new_leader_key: LeaderKey | None = None
@@ -1676,11 +1691,7 @@ class StateMachine(QObject):
                 effective_listing = new_listing
                 listing_changed = True
 
-            rio_summary_target_key = 0
-            if new_leader_key is not None:
-                rio_summary_target_key = new_leader_key.key_level
-            elif effective_listing is not None and effective_listing.key_level > 0:
-                rio_summary_target_key = effective_listing.key_level
+            rio_summary_target_key = snapshot_rio_context(snap).key_level
 
             if not snap.roster_unavailable:
                 self._apply_roster_snapshot(
@@ -1688,6 +1699,7 @@ class StateMachine(QObject):
                     region_identity_changed=region_identity_changed,
                     default_realm_changed=default_realm_changed,
                     rio_summary_target_key=rio_summary_target_key,
+                    rio_summary_context=roster_rio_context,
                 )
             self._refresh_preserved_identity_rows(
                 applicants=True,
@@ -1720,6 +1732,7 @@ class StateMachine(QObject):
                     rio_summary_target_key=(
                         new_leader_key.key_level if new_leader_key is not None else 0
                     ),
+                    rio_summary_context=roster_rio_context,
                     emit_signal=False,
                 )
             self.listingChanged.emit()
@@ -1744,6 +1757,7 @@ class StateMachine(QObject):
                     rio_summary_target_key=(
                         new_leader_key.key_level if new_leader_key is not None else 0
                     ),
+                    rio_summary_context=roster_rio_context,
                 )
             if leader_key_changed:
                 self.listingChanged.emit()
@@ -1755,11 +1769,7 @@ class StateMachine(QObject):
                 leader_key_changed=leader_key_changed,
             )
 
-        rio_summary_target_key = 0
-        if new_leader_key is not None:
-            rio_summary_target_key = new_leader_key.key_level
-        elif new_listing.key_level > 0:
-            rio_summary_target_key = new_listing.key_level
+        rio_summary_target_key = snapshot_rio_context(snap).key_level
 
         # The producer discards the entire applicant block when any declared
         # member is missing. Preserve prior rows only for the exact same listing;
@@ -1771,6 +1781,7 @@ class StateMachine(QObject):
                     region_identity_changed=region_identity_changed,
                     default_realm_changed=default_realm_changed,
                     rio_summary_target_key=rio_summary_target_key,
+                    rio_summary_context=roster_rio_context,
                 )
             self._refresh_preserved_identity_rows(
                 applicants=True,
@@ -1835,6 +1846,7 @@ class StateMachine(QObject):
         if outcome.consumed:
             return
         rio_summary_target_key = outcome.rio_summary_target_key
+        rio_context = snapshot_rio_context(snap)
 
         # ─── Applicants diff ───
         # Composite key f"{applicant_id}:{member_idx}" — required for multi-
@@ -1925,6 +1937,8 @@ class StateMachine(QObject):
                     ),
                     rio_dungeon_count=da.rio_dungeon_count,
                     rio_summary_target_key=rio_summary_target_key,
+                    rio_summary_activity_id=rio_context.activity_id,
+                    rio_summary_dungeon_name=rio_context.dungeon_name,
                     rio_dungeons=self._rio_dungeon_rows_from_profile(
                         rio_profile, da.rio_dungeons
                     ),
@@ -2001,6 +2015,8 @@ class StateMachine(QObject):
                 )
                 existing.rio_dungeon_count = da.rio_dungeon_count
                 existing.rio_summary_target_key = rio_summary_target_key
+                existing.rio_summary_activity_id = rio_context.activity_id
+                existing.rio_summary_dungeon_name = rio_context.dungeon_name
                 existing.rio_dungeons = self._rio_dungeon_rows_from_profile(
                     rio_profile, da.rio_dungeons
                 )
@@ -2032,6 +2048,7 @@ class StateMachine(QObject):
                 region_identity_changed=region_identity_changed,
                 default_realm_changed=default_realm_changed,
                 rio_summary_target_key=rio_summary_target_key,
+                rio_summary_context=snapshot_rio_context(snap, roster=True),
             )
 
 

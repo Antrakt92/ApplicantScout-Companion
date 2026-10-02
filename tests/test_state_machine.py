@@ -3199,7 +3199,7 @@ def test_state_machine_tracks_leader_key_without_listing():
     assert state.leader_key.player_name == "Leader-Realm"
 
 
-def test_state_machine_uses_leader_key_for_compact_rio_target_key():
+def test_state_machine_uses_serialized_listing_for_compact_rio_target_key():
     state = AppState()
     sm = StateMachine(state)
 
@@ -3220,8 +3220,9 @@ def test_state_machine_uses_leader_key_for_compact_rio_target_key():
     assert state.listing is not None
     assert state.listing.key_level == 15
     assert state.leader_key is not None
-    assert state.applicants["7:1"].rio_summary_target_key == 17
-    assert state.party_members["leader-realm"].rio_summary_target_key == 17
+    assert state.leader_key.key_level == 17
+    assert state.applicants["7:1"].rio_summary_target_key == 15
+    assert state.party_members["leader-realm"].rio_summary_target_key == 15
 
 
 def test_roster_snapshot_maps_current_and_main_scores_separately():

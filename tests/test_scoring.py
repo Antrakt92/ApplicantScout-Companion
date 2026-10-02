@@ -55,6 +55,8 @@ def _app(
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
     rio_summary_target_key: int = 0,
+    rio_summary_activity_id: int = 0,
+    rio_summary_dungeon_name: str = "",
     rio_dungeons: list[dict] | None = None,
     dps_breakdown: list[dict] | None = None,
     hps_breakdown: list[dict] | None = None,
@@ -83,6 +85,8 @@ def _app(
         rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
         rio_dungeon_count=rio_dungeon_count,
         rio_summary_target_key=rio_summary_target_key,
+        rio_summary_activity_id=rio_summary_activity_id,
+        rio_summary_dungeon_name=rio_summary_dungeon_name,
         rio_dungeons=rio_dungeons or [],
         role=role,
         raid_normal=raid_normal,
@@ -814,6 +818,8 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
         rio_summary_target_key=target.key_level,
+        rio_summary_activity_id=target.activity_id,
+        rio_summary_dungeon_name=target.dungeon_name,
         rio_dungeons=[{"name": "Kings' Rest", "key_level": 15}],
     )
 
@@ -831,6 +837,8 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
         rio_summary_target_key=target.key_level,
+        rio_summary_activity_id=target.activity_id,
+        rio_summary_dungeon_name=target.dungeon_name,
         rio_dungeons=[{"name": "Kings' Rest", "key_level": 15}],
     )
     assert fit.primary_key == 17
@@ -1691,6 +1699,8 @@ def test_mplus_anonymous_summary_does_not_duplicate_best_same_dungeon():
     summary: dict[str, Any] = dict(
         rio_profile=True,
         rio_summary_target_key=12,
+        rio_summary_activity_id=target.activity_id,
+        rio_summary_dungeon_name=target.dungeon_name,
         rio_dungeon_count=8,
         rio_best_key=12,
         rio_best_dungeon_key=12,
@@ -1717,6 +1727,8 @@ def test_mplus_partial_rio_names_do_not_duplicate_anonymous_highest_key():
     summary: dict[str, Any] = dict(
         rio_profile=True,
         rio_summary_target_key=12,
+        rio_summary_activity_id=target.activity_id,
+        rio_summary_dungeon_name=target.dungeon_name,
         rio_dungeon_count=8,
         rio_best_key=16,
         rio_best_dungeon_key=16,
@@ -1780,6 +1792,8 @@ def test_mplus_anonymous_summary_does_not_assume_wcl_is_another_dungeon():
     summary: dict[str, Any] = dict(
         rio_profile=True,
         rio_summary_target_key=12,
+        rio_summary_activity_id=target.activity_id,
+        rio_summary_dungeon_name=target.dungeon_name,
         rio_dungeon_count=8,
         rio_best_key=12,
         rio_best_dungeon_key=12,
@@ -1810,6 +1824,8 @@ def test_mplus_specific_summary_retains_identity_without_redundant_rows(
     summary: dict[str, Any] = dict(
         rio_profile=True,
         rio_summary_target_key=12,
+        rio_summary_activity_id=target.activity_id,
+        rio_summary_dungeon_name=target.dungeon_name,
         rio_dungeon_count=8,
         rio_best_key=12,
         rio_best_dungeon_key=12,

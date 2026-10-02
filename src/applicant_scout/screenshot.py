@@ -306,6 +306,15 @@ def _unlink_if_source_matches(
     )
 
 
+@dataclass(frozen=True)
+class RioSummaryContext:
+    """Capture target for compact evidence, independent of later UI context."""
+
+    key_level: int = 0
+    activity_id: int = 0
+    dungeon_name: str = ""
+
+
 @dataclass
 class Snapshot:
     """Result of decoding one screenshot."""
@@ -320,6 +329,31 @@ class Snapshot:
     roster_unavailable: bool = False
     applicants_unavailable: bool = False
     source: SnapshotSource | None = field(default=None, compare=False, repr=False)
+    # GUI coalescing provenance only; original wire/cache snapshots infer it
+    # from their own listing/leader blocks, never from current application state.
+    applicants_rio_context: RioSummaryContext | None = field(
+        default=None, compare=False, repr=False
+    )
+    roster_rio_context: RioSummaryContext | None = field(
+        default=None, compare=False, repr=False
+    )
+
+
+def snapshot_rio_context(snap: Snapshot, *, roster: bool = False) -> RioSummaryContext:
+    if snap.terminal_clear:
+        return RioSummaryContext()
+    preserved = snap.roster_rio_context if roster else snap.applicants_rio_context
+    if preserved is not None:
+        return preserved
+    listing = snap.listing
+    key_level = listing.key_level if listing is not None else 0
+    if key_level <= 0 and snap.leader_key is not None:
+        key_level = snap.leader_key.key_level
+    return RioSummaryContext(
+        key_level=max(0, key_level),
+        activity_id=listing.activity_id if listing is not None else 0,
+        dungeon_name=listing.dungeon_name if listing is not None else "",
+    )
 
 
 @dataclass(frozen=True)

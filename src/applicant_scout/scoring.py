@@ -388,7 +388,7 @@ def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
     listing_keys = listing_dungeon_keys(listing)
     best_key = (
         positive_int(applicant.rio_best_dungeon_key)
-        if _mplus_rio_summary_matches_target(applicant, listing.key_level)
+        if _mplus_rio_summary_matches_dungeon(applicant, listing)
         else 0
     )
     for entry in applicant.rio_dungeons:
@@ -860,7 +860,7 @@ def _mplus_rio_dungeon_key_levels(
                 by_dungeon[target_key] = max(
                     by_dungeon.get(target_key, 0), by_dungeon.pop(alias)
                 )
-        if _mplus_rio_summary_matches_target(applicant, listing.key_level):
+        if _mplus_rio_summary_matches_dungeon(applicant, listing):
             summary_key = positive_int(applicant.rio_best_dungeon_key)
             if summary_key > 0:
                 by_dungeon[target_key] = max(by_dungeon.get(target_key, 0), summary_key)
@@ -898,6 +898,28 @@ def _mplus_rio_key_levels(
 
 def _mplus_rio_summary_matches_target(applicant: Applicant, target_key: int) -> bool:
     return target_key > 0 and positive_int(applicant.rio_summary_target_key) == target_key
+
+
+def _mplus_rio_summary_matches_dungeon(applicant: Applicant, listing: Listing) -> bool:
+    if not _mplus_rio_summary_matches_target(applicant, listing.key_level):
+        return False
+    captured_activity = positive_int(applicant.rio_summary_activity_id)
+    target_activity = positive_int(listing.activity_id)
+    captured_name = (
+        mplus_dungeon_name_for_activity_id(captured_activity)
+        or applicant.rio_summary_dungeon_name
+    )
+    target_name = (
+        mplus_dungeon_name_for_activity_id(target_activity) or listing.dungeon_name
+    )
+    captured_key = normalise_dungeon_name(captured_name)
+    target_key = normalise_dungeon_name(target_name)
+    unknown_names = {"", "mythic", "mythicplus", "unknown", "unknowndungeon"}
+    if captured_key in unknown_names or target_key in unknown_names:
+        return False
+    return (
+        captured_activity > 0 and captured_activity == target_activity
+    ) or captured_key == target_key
 
 
 def _mplus_completion_key_levels(
@@ -963,7 +985,7 @@ def _mplus_synthetic_rio_key_levels(
         levels.append(0)
 
     best_key = positive_int(applicant.rio_best_key)
-    same_key = positive_int(same_dungeon_key or applicant.rio_best_dungeon_key)
+    same_key = positive_int(same_dungeon_key)
     named_bounds = [max(best_key, same_key)]
     # Equal best/target-dungeon keys may refer to one run. A strictly higher
     # overall best proves a second dungeon beyond the target dungeon's best.

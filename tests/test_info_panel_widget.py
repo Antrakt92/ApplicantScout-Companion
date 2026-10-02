@@ -2390,6 +2390,8 @@ def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
         rio_summary_target_key=listing.key_level,
+        rio_summary_activity_id=listing.activity_id,
+        rio_summary_dungeon_name=listing.dungeon_name,
     )
 
     panel.setApplicantData(app, listing)

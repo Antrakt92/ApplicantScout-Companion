@@ -14,7 +14,7 @@ from .producer_identity import (
     producer_identities_conflict as normalized_producer_identities_conflict,
     producer_identity_matches as normalized_producer_identity_matches,
 )
-from .screenshot import Snapshot, snapshot_source_order_key
+from .screenshot import RioSummaryContext, Snapshot, snapshot_rio_context, snapshot_source_order_key
 
 
 _log = logging.getLogger("applicant_scout.snapshot_pipeline")
@@ -226,6 +226,14 @@ def merge_snapshot_segment(snapshots: tuple[Snapshot, ...]) -> Snapshot:
         lfg_unavailable=listing_source is None,
         roster_unavailable=roster_source is None,
         applicants_unavailable=applicants_source is None,
+        applicants_rio_context=(
+            snapshot_rio_context(applicants_source) if applicants_source is not None
+            else RioSummaryContext()
+        ),
+        roster_rio_context=(
+            snapshot_rio_context(roster_source, roster=True) if roster_source is not None
+            else RioSummaryContext()
+        ),
     )
 
 
