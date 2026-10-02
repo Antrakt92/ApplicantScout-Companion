@@ -27,6 +27,7 @@ are preserved.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hashlib
 import json
 import logging
@@ -2615,6 +2616,9 @@ class ScreenshotWatcher(QObject):
         self._work_claims = _ScreenshotWorkClaims()
         self._manual_index = _manual_index_for(screenshots_dir, cache_dir)
         self._fragment_assembler = _SnapshotFragmentAssembler()
+        self._snapshot_publication_lock = threading.Lock()
+        self._snapshot_publications: deque[Snapshot] = deque()
+        self._snapshot_publication_active = False
         self._fragment_clock = fragment_clock or time.monotonic
         self._fragment_timer_factory = fragment_timer_factory or threading.Timer
         self._fragment_expiry_lock = threading.Lock()
@@ -2966,6 +2970,76 @@ class ScreenshotWatcher(QObject):
         if failure is not None:
             self._emit_decode_failed(*failure)
 
+    def _queue_snapshot_publication_locked(self, snap: Snapshot) -> bool:
+        self._snapshot_publications.append(snap)
+        if self._snapshot_publication_active:
+            return False
+        self._snapshot_publication_active = True
+        return True
+
+    def _drain_snapshot_publications(self) -> bool:
+        # WHY: acceptance orders frames, but signal callbacks can block or
+        # re-enter the watcher. One publisher drains that order outside locks.
+        while True:
+            with self._snapshot_publication_lock:
+                if self._stopped.is_set():
+                    self._snapshot_publications.clear()
+                    self._snapshot_publication_active = False
+                    return False
+                if not self._snapshot_publications:
+                    self._snapshot_publication_active = False
+                    return True
+                snap = self._snapshot_publications.popleft()
+            try:
+                alive = self._emit_snapshot(snap)
+            except Exception:
+                with self._snapshot_publication_lock:
+                    self._snapshot_publication_active = False
+                raise
+            if not alive:
+                with self._snapshot_publication_lock:
+                    self._snapshot_publications.clear()
+                    self._snapshot_publication_active = False
+                return False
+
+    def _accept_snapshot_for_publication(
+        self, snap: Snapshot, *, publish: bool = True,
+    ) -> tuple[_FragmentAssemblyOutcome, bool]:
+        with self._snapshot_publication_lock:
+            outcome = self._fragment_assembler.accept_snapshot(
+                snap, now=self._fragment_clock(),
+            )
+            if outcome.accepted:
+                self._cancel_fragment_expiry()
+            drain = bool(
+                outcome.accepted and publish
+                and self._queue_snapshot_publication_locked(snap)
+            )
+        alive = self._drain_snapshot_publications() if drain else not self._stopped.is_set()
+        return outcome, alive
+
+    def _accept_fragment_for_publication(
+        self, fragment: SnapshotFragment, path: Path, *,
+        publish: bool = True, apply_cutoff_ns: int | None = None,
+    ) -> tuple[_FragmentAssemblyOutcome, bool]:
+        with self._snapshot_publication_lock:
+            outcome = self._fragment_assembler.accept_fragment(
+                fragment, path, now=self._fragment_clock(),
+            )
+            drain = False
+            if outcome.error_reason is not None or outcome.snapshot is not None:
+                self._cancel_fragment_expiry()
+            elif outcome.accepted:
+                self._arm_fragment_expiry(fragment)
+            snap = outcome.snapshot
+            if snap is not None and publish and (
+                apply_cutoff_ns is None
+                or (snap.source is not None and snap.source.mtime_ns >= apply_cutoff_ns)
+            ):
+                drain = self._queue_snapshot_publication_locked(snap)
+        alive = self._drain_snapshot_publications() if drain else not self._stopped.is_set()
+        return outcome, alive
+
     def _emit_snapshot(self, snap: Snapshot) -> bool:
         if self._stopped.is_set():
             return False
@@ -3256,14 +3330,14 @@ class ScreenshotWatcher(QObject):
             elif not ctx.recent or ctx.apply_closed:
                 delete_current_marker = True
             else:
-                fragment_outcome = self._fragment_assembler.accept_fragment(
+                fragment_outcome, publication_alive = self._accept_fragment_for_publication(
                     self._fragment_with_source(result.fragment, source),
                     path,
-                    now=self._fragment_clock(),
+                    publish=ctx.snapshot_apply_cutoff_ns is not None,
+                    apply_cutoff_ns=ctx.snapshot_apply_cutoff_ns,
                 )
                 if fragment_outcome.error_reason is not None:
                     ctx.fragment_frontier_active = False
-                    self._cancel_fragment_expiry()
                     if not self._emit_decode_failed(
                         path,
                         fragment_outcome.error_reason,
@@ -3277,7 +3351,6 @@ class ScreenshotWatcher(QObject):
                     ctx.apply_closed = True
                 elif fragment_outcome.snapshot is not None:
                     ctx.fragment_frontier_active = False
-                    self._cancel_fragment_expiry()
                     assembled_source = fragment_outcome.snapshot.source
                     is_fresh = (
                         ctx.snapshot_apply_cutoff_ns is not None
@@ -3286,7 +3359,7 @@ class ScreenshotWatcher(QObject):
                         >= ctx.snapshot_apply_cutoff_ns
                     )
                     if is_fresh:
-                        if not self._emit_snapshot(fragment_outcome.snapshot):
+                        if not publication_alive:
                             outcome.terminate = True
                             return outcome
                         ctx.deleted += self._delete_retired_fragment_files(
@@ -3307,7 +3380,6 @@ class ScreenshotWatcher(QObject):
                     )
                     if fragment_outcome.accepted:
                         ctx.fragment_frontier_active = True
-                        self._arm_fragment_expiry(result.fragment)
         elif result.snapshot is not None:
             if (
                 ctx.deferred_failure is None
@@ -3315,26 +3387,24 @@ class ScreenshotWatcher(QObject):
                 and not ctx.authority_blocked
             ):
                 whole = self._snapshot_with_source(result.snapshot, source)
-                snapshot_outcome = self._fragment_assembler.accept_snapshot(
-                    whole,
-                    now=self._fragment_clock(),
-                )
-                if snapshot_outcome.accepted:
-                    self._cancel_fragment_expiry()
-                ctx.deleted += self._delete_retired_fragment_files(
-                    snapshot_outcome.retired_files
-                )
                 is_fresh = (
                     ctx.recent
                     and ctx.snapshot_apply_cutoff_ns is not None
                     and source.mtime_ns >= ctx.snapshot_apply_cutoff_ns
+                )
+                snapshot_outcome, publication_alive = self._accept_snapshot_for_publication(
+                    whole,
+                    publish=is_fresh and not ctx.apply_closed,
+                )
+                ctx.deleted += self._delete_retired_fragment_files(
+                    snapshot_outcome.retired_files
                 )
                 if (
                     snapshot_outcome.accepted
                     and is_fresh
                     and not ctx.apply_closed
                 ):
-                    if not self._emit_snapshot(whole):
+                    if not publication_alive:
                         outcome.terminate = True
                         return outcome
                     _log.debug("backlog: applied snapshot from %s", path.name)
@@ -3839,25 +3909,20 @@ class ScreenshotWatcher(QObject):
             return
 
         if result.fragment is not None:
-            outcome = self._fragment_assembler.accept_fragment(
+            outcome, publication_alive = self._accept_fragment_for_publication(
                 self._fragment_with_source(result.fragment, source),
                 path,
-                now=self._fragment_clock(),
             )
             if outcome.error_reason is not None:
-                self._cancel_fragment_expiry()
                 if not self._emit_decode_failed(path, outcome.error_reason, source):
                     return
                 self._delete_retired_fragment_files(outcome.retired_files)
             elif outcome.snapshot is not None:
-                self._cancel_fragment_expiry()
-                if not self._emit_snapshot(outcome.snapshot):
+                if not publication_alive:
                     return
                 self._delete_retired_fragment_files(outcome.retired_files)
             else:
                 self._delete_retired_fragment_files(outcome.retired_files)
-                if outcome.accepted:
-                    self._arm_fragment_expiry(result.fragment)
             # Valid incomplete fragments intentionally remain on disk and emit
             # no GUI signal. Completion/supersession/poison/TTL retires them.
             return
@@ -3865,14 +3930,11 @@ class ScreenshotWatcher(QObject):
         snap = result.snapshot
         if snap is not None:
             whole = self._snapshot_with_source(snap, source)
-            outcome = self._fragment_assembler.accept_snapshot(
+            outcome, publication_alive = self._accept_snapshot_for_publication(
                 whole,
-                now=self._fragment_clock(),
             )
-            if outcome.accepted:
-                self._cancel_fragment_expiry()
             self._delete_retired_fragment_files(outcome.retired_files)
-            if outcome.accepted and not self._emit_snapshot(whole):
+            if outcome.accepted and not publication_alive:
                 return
 
         if not result.has_marker:
