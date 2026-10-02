@@ -2109,7 +2109,7 @@ class _UpdateQuitGate:
         if handoff:
             # The installer waits for this process to exit before promotion.
             # Acknowledge now; the quit pipeline still flushes owned state.
-            # The relaunched process verifies the installed payload.
+            # The installer validates the staged payload before promotion.
             return True
         return normal_prepare()
 
