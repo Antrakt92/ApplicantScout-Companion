@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
@@ -138,6 +140,18 @@ class UsagePersistenceError(RuntimeError):
     """The local usage preference could not be saved; reporting stays off."""
 
 
+@dataclass(frozen=True)
+class UsageConsentRequest:
+    generation: int
+    enabled: bool
+    owner: object
+    needs_write: bool = True
+
+
+class _UsagePublicationRetired(Exception):
+    """An older request must not replace the current persisted choice."""
+
+
 class UsageClient:
     """Nonblocking, bounded reporting of allowlisted milestones after consent.
 
@@ -184,6 +198,10 @@ class UsageClient:
         self._consent = False
         self._closed = False
         self._generation = 0
+        self._consent_owner = object()
+        self._consent_generation = 0
+        self._desired_consent = False
+        self._consent_write_pending = False
         self._thread: threading.Thread | None = None
         self._loaded_state_missing = False
         try:
@@ -239,35 +257,83 @@ class UsageClient:
         return self._available
 
     def set_consent(self, enabled: bool) -> None:
+        """Synchronous compatibility route; register before any slow work."""
+        self.apply_consent(self.request_consent(enabled))
+
+    def request_consent(self, enabled: bool) -> UsageConsentRequest:
+        """Register the user's intent immediately, without waiting for disk I/O."""
         with self._condition:
             consent = enabled is True
-            if self._closed or (consent == self._consent and not self._failed):
-                return
+            if self._closed or (
+                consent == self._consent and consent == self._desired_consent
+                and not self._failed and not self._consent_write_pending
+            ):
+                return UsageConsentRequest(
+                    self._consent_generation, consent, self._consent_owner, False,
+                )
             # Stop immediately, including when the subsequent opt-out save fails.
+            self._consent_generation += 1
+            self._desired_consent = consent
+            self._consent_write_pending = True
             self._consent = False
             self._generation += 1
             self._queue.clear()
             self._pending.clear()
             self._attempted.clear()
             self._condition.notify_all()
+            return UsageConsentRequest(
+                self._consent_generation, consent, self._consent_owner,
+            )
+
+    def _consent_request_current(self, request: UsageConsentRequest) -> bool:
+        return (
+            not self._closed and request.owner is self._consent_owner
+            and request.generation == self._consent_generation
+            and request.enabled == self._desired_consent
+        )
+
+    def apply_consent(self, request: UsageConsentRequest) -> bool:
+        """Apply an already registered intent; delayed workers cannot re-register."""
         try:
             with self._state_lock:
-                self._write_state(consent, "", [])
-                self._install_id = ""
-                self._seen = []
-                self._failed = False
+                with self._condition:
+                    if not self._consent_request_current(request):
+                        return False
+                    if not request.needs_write or (
+                        not self._consent_write_pending and not self._failed
+                        and self._consent == request.enabled
+                    ):
+                        return True
+                self._write_state(request.enabled, "", [], consent_request=request)
+                with self._condition:
+                    if not self._consent_request_current(request):
+                        return False
+                    self._install_id = ""
+                    self._seen = []
+                    self._failed = False
+                    self._consent_write_pending = False
+        except _UsagePublicationRetired:
+            return False
         except OSError as exc:
-            self._failed = True
+            with self._condition:
+                if not self._consent_request_current(request):
+                    return False
+                self._failed = True
+                self._consent_write_pending = False
             raise UsagePersistenceError(
                 "Could not save the usage preference. Reporting is off for this session."
             ) from exc
-        if consent:
-            self._enable()
+        if request.enabled:
+            return self._enable(request)
+        return True
 
-    def _enable(self) -> None:
+    def _enable(self, request: UsageConsentRequest | None = None) -> bool:
         with self._condition:
-            if self._closed:
-                return
+            if self._closed or (
+                request is not None and not self._consent_request_current(request)
+            ):
+                return False
+            self._desired_consent = True
             self._consent = True
             if self._available and self._thread is None:
                 try:
@@ -279,11 +345,12 @@ class UsageClient:
                     # Optional reporting must not interrupt startup or Settings
                     # when the OS cannot allocate another background thread.
                     self._failed = True
-                    return
+                    return True  # Saved choice remains; collection is unavailable.
                 self._thread = worker
             self._condition.notify_all()
         self.record("consent_started")
         self.record("version_seen")
+        return True
 
     def record(self, event: str) -> bool:
         if event not in USAGE_EVENTS:
@@ -363,7 +430,7 @@ class UsageClient:
             and _VERSION.fullmatch(parts[1]) and _DAY.fullmatch(parts[2])
         )
 
-    def _prepare(self, event: str, day: str) -> bool:
+    def _prepare(self, event: str, day: str, generation: int) -> bool:
         key = f"{event}|{self._version}|{day}"
         if key in self._seen:
             return False
@@ -375,11 +442,11 @@ class UsageClient:
             return False
         if not self._install_id:
             install_id = str(uuid4())
-            self._write_state(True, install_id, self._seen)
+            self._write_state(True, install_id, self._seen, event_generation=generation)
             self._install_id = install_id
         return True
 
-    def _mark_seen(self, event: str, day: str) -> None:
+    def _mark_seen(self, event: str, day: str, generation: int) -> None:
         key = f"{event}|{self._version}|{day}"
         updated = [*self._seen, key]
         if len(updated) > _MAX_SEEN:
@@ -388,14 +455,47 @@ class UsageClient:
             updated = updated[-(_MAX_SEEN - bool(first)):]
             if first and first not in updated:
                 updated.insert(0, first)
-        self._write_state(True, self._install_id, updated)
+        self._write_state(True, self._install_id, updated, event_generation=generation)
         self._seen = updated
 
-    def _write_state(self, consent: bool, install_id: str, seen: list[str]) -> None:
+    @contextmanager
+    def _publication_guard(
+        self,
+        consent_request: UsageConsentRequest | None,
+        event_generation: int | None,
+    ) -> Iterator[None]:
+        with self._condition:
+            if (
+                consent_request is not None
+                and not self._consent_request_current(consent_request)
+            ) or (
+                event_generation is not None and not self._current(event_generation)
+            ):
+                raise _UsagePublicationRetired
+            yield
+
+    def _write_state(
+        self,
+        consent: bool,
+        install_id: str,
+        seen: list[str],
+        *,
+        consent_request: UsageConsentRequest | None = None,
+        event_generation: int | None = None,
+    ) -> None:
         state: dict[str, object] = {"schema": 1, "consent": consent}
         if consent:
             state.update(install_id=install_id, seen=seen)
-        atomic_write_text(self._path, json.dumps(state), private=True)
+        if consent_request is None and event_generation is None:
+            # Construction is not yet exposed to Settings or reporting workers.
+            atomic_write_text(self._path, json.dumps(state), private=True)
+        else:
+            atomic_write_text(
+                self._path, json.dumps(state), private=True,
+                publication_guard=lambda: self._publication_guard(
+                    consent_request, event_generation,
+                ),
+            )
 
     def _run(self) -> None:
         while True:
@@ -414,7 +514,7 @@ class UsageClient:
                     with self._condition:
                         if not self._current(generation):
                             continue
-                    prepared = self._prepare(event, day)
+                    prepared = self._prepare(event, day, generation)
                     install_id = self._install_id
                 if prepared:
                     payload: dict[str, str | int] = {
@@ -426,7 +526,9 @@ class UsageClient:
                             with self._condition:
                                 if not self._current(generation):
                                     continue
-                            self._mark_seen(event, day)
+                            self._mark_seen(event, day, generation)
+            except _UsagePublicationRetired:
+                continue
             except (OSError, ValueError, TypeError, UnicodeError):
                 # Corruption never silently resets the identity and inflates users.
                 with self._condition:

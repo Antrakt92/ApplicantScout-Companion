@@ -32,9 +32,11 @@ def test_shipped_client_has_a_production_endpoint_and_preserves_optout(tmp_path)
 
 @pytest.fixture(autouse=True)
 def fast_private_writes(monkeypatch):
-    def write(path, text, *, private):
+    def write(path, text, *, private, publication_guard=None):
         assert private is True
-        atomic_io.atomic_write_text(path, text, private=False)
+        atomic_io.atomic_write_text(
+            path, text, private=False, publication_guard=publication_guard,
+        )
     monkeypatch.setattr(usage, "atomic_write_text", write)
     monkeypatch.setattr(usage, "_RETRY_DELAYS", (0.01, 0.02))
 
@@ -468,10 +470,10 @@ def test_offline_first_optin_recovers_startup_milestones_on_restart(tmp_path):
 def test_identity_must_be_durable_before_any_send(tmp_path, monkeypatch):
     original_write = usage.atomic_write_text
 
-    def fail_identity_save(path, text, *, private):
+    def fail_identity_save(path, text, *, private, publication_guard=None):
         if json.loads(text).get("install_id"):
             raise OSError("disk full")
-        original_write(path, text, private=private)
+        original_write(path, text, private=private, publication_guard=publication_guard)
 
     monkeypatch.setattr(usage, "atomic_write_text", fail_identity_save)
     sender = Recorder()
@@ -485,10 +487,10 @@ def test_identity_must_be_durable_before_any_send(tmp_path, monkeypatch):
 def test_crash_after_ack_retries_same_identity_tuple_for_service_dedup(tmp_path, monkeypatch):
     original_write = usage.atomic_write_text
 
-    def fail_ack_save(path, text, *, private):
+    def fail_ack_save(path, text, *, private, publication_guard=None):
         if json.loads(text).get("seen"):
             raise OSError("disk full")
-        original_write(path, text, private=private)
+        original_write(path, text, private=private, publication_guard=publication_guard)
 
     monkeypatch.setattr(usage, "atomic_write_text", fail_ack_save)
     sender = Recorder()
@@ -568,11 +570,11 @@ def test_revoke_during_worker_save_cannot_restore_consent(tmp_path, monkeypatch)
     entered = threading.Event()
     release = threading.Event()
 
-    def blocked_write(path, text, *, private):
+    def blocked_write(path, text, *, private, publication_guard=None):
         if "addon_received" in text:
             entered.set()
             assert release.wait(3)
-        original_write(path, text, private=private)
+        original_write(path, text, private=private, publication_guard=publication_guard)
 
     monkeypatch.setattr(usage, "atomic_write_text", blocked_write)
     instance.record("addon_received")

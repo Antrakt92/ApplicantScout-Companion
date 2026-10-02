@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from contextlib import AbstractContextManager, nullcontext
 from collections.abc import Callable
 import io
 import os
@@ -456,6 +457,7 @@ def _atomic_write(
     private: bool,
     text_mode: bool,
     write_contents: Callable[[int], None],
+    publication_guard: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     parent_private_ready = False
@@ -489,7 +491,9 @@ def _atomic_write(
         write_contents(fd)
         owned_fd, fd = fd, -1
         os.close(owned_fd)
-        os.replace(temp_path, path)
+        # Slow staging, fsync and ACL preparation stay outside the owner lock.
+        with publication_guard() if publication_guard is not None else nullcontext():
+            os.replace(temp_path, path)
         temp_path = None
         if private and not (_is_windows() and parent_private_ready):
             apply_private_file_mode(path, allow_deferred=False)
@@ -507,7 +511,13 @@ def _atomic_write(
         raise
 
 
-def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
+def atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    private: bool = False,
+    publication_guard: Callable[[], AbstractContextManager[None]] | None = None,
+) -> None:
     """Replace ``path`` with complete UTF-8 text or leave the old file intact.
 
     The temp file is created in the target directory so ``os.replace`` remains
@@ -527,6 +537,7 @@ def atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
         private=private,
         text_mode=True,
         write_contents=_write,
+        publication_guard=publication_guard,
     )
 
 

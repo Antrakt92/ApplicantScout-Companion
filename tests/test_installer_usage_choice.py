@@ -15,9 +15,11 @@ CHOICE_FILENAME = "usage-installer-choice"
 
 @pytest.fixture(autouse=True)
 def isolated_private_writes(monkeypatch):
-    def write(path, text, *, private):
+    def write(path, text, *, private, publication_guard=None):
         assert private is True
-        atomic_io.atomic_write_text(path, text, private=False)
+        atomic_io.atomic_write_text(
+            path, text, private=False, publication_guard=publication_guard,
+        )
 
     monkeypatch.setattr(usage, "atomic_write_text", write)
 

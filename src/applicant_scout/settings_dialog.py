@@ -1560,13 +1560,19 @@ class SettingsDialog(QDialog):
             return
         self._usage_consent_generation += 1
         generation = self._usage_consent_generation
+        # Intent belongs to the client and is registered before thread scheduling;
+        # an older worker must never re-enable a later revoked choice.
+        request = client.request_consent(enabled) if isinstance(client, UsageClient) else None
         owner_ref = weakref.ref(self)
         app = QApplication.instance()
         dispatcher = _dialog_worker_dispatcher(app) if isinstance(app, QApplication) else None
 
         def _worker() -> None:
             try:
-                client.set_consent(enabled)
+                if request is None:
+                    client.set_consent(enabled)
+                elif not client.apply_consent(request):
+                    return  # Retired client-owned intent, including dialog reopen.
             except Exception as exc:  # noqa: BLE001 - report, never break the GUI
                 success, error = False, exc
             else:
