@@ -1455,6 +1455,16 @@ class SettingsDialog(QDialog):
             if title_overlap > best_title_overlap:
                 best_title_overlap = title_overlap
                 best_bounds = bounds
+        if best_bounds is None:
+            primary = QApplication.primaryScreen()
+            best_bounds = primary.availableGeometry() if primary is not None else None
+        if best_bounds is not None and best_bounds.width() > 0:
+            narrow = best_bounds.width() < 560
+            self.setMinimumWidth(min(560, best_bounds.width()))
+            self.body_scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded
+                if narrow else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
         if best_bounds is not None and (
             geometry.width() > best_bounds.width()
             or geometry.height() > best_bounds.height()
