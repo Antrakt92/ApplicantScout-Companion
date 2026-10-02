@@ -4676,8 +4676,17 @@ class _CoalescedSettingsApplier(QObject):
                 daemon=True,
             )
             thread.start()
-        except Exception:  # noqa: BLE001 - thread launch failed; stay functional
-            _worker()
+        except Exception as exc:  # noqa: BLE001 - report without GUI-thread disk work
+            error = RuntimeError(
+                f"Could not start the settings background task: {exc}. "
+                "Retry your change when it is available."
+            )
+            self.finished.emit(
+                _SettingsApplyOutcome(
+                    generation, False, None, values, apply_credentials,
+                    error, rollback_snapshot,
+                )
+            )
 
     def _on_finished(self, raw: object) -> None:
         if not isinstance(raw, _SettingsApplyOutcome):
