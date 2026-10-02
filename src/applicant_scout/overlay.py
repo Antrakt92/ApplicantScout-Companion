@@ -2194,7 +2194,32 @@ class RoleFilterBar(QWidget):
 # Applicant info hover/pin panel (above the table, below the title bar)
 
 
-class _IdentityLabel(QLabel):
+class _GuardedLabel(QLabel):
+    """Text-only panel labels avoid unchanged native property updates."""
+
+    def setText(self, text: str | None) -> None:  # noqa: N802
+        text = "" if text is None else text
+        if self.text() != text:
+            super().setText(text)
+
+    def setStyleSheet(self, style: str) -> None:  # noqa: N802
+        if self.styleSheet() != style:
+            super().setStyleSheet(style)
+
+    def setToolTip(self, text: str) -> None:  # noqa: N802
+        if self.toolTip() != text:
+            super().setToolTip(text)
+
+    def setAccessibleName(self, name: str) -> None:  # noqa: N802
+        if self.accessibleName() != name:
+            super().setAccessibleName(name)
+
+    def setAccessibleDescription(self, description: str) -> None:  # noqa: N802
+        if self.accessibleDescription() != description:
+            super().setAccessibleDescription(description)
+
+
+class _IdentityLabel(_GuardedLabel):
     """Keep full identity metadata while yielding header space to its actions."""
 
     def setText(self, text: str | None) -> None:  # noqa: N802
@@ -2368,13 +2393,13 @@ class ApplicantInfoPanel(QFrame):
         identity_layout = _BadgeFlowLayout(identity)
         identity_layout.setContentsMargins(0, 0, 0, 0)
         identity_layout.setSpacing(4)
-        self._spec_label = QLabel("")
+        self._spec_label = _GuardedLabel("")
         self._spec_label.setObjectName("infoSpecBadge")
-        self._role_label = QLabel("")
+        self._role_label = _GuardedLabel("")
         self._role_label.setObjectName("infoRoleBadge")
-        self._ilvl_label = QLabel("")
+        self._ilvl_label = _GuardedLabel("")
         self._ilvl_label.setObjectName("infoMeta")
-        self._rio_label = QLabel("")
+        self._rio_label = _GuardedLabel("")
         self._rio_label.setObjectName("infoMeta")
         for label in (
             self._spec_label,
@@ -2396,13 +2421,13 @@ class ApplicantInfoPanel(QFrame):
         summary_layout.setContentsMargins(0, 0, 0, 0)
         summary_layout.setSpacing(4)
         self._metric_labels: dict[str, QLabel] = {
-            key: QLabel("") for key in ("N", "H", "M", "M+", "Fit")
+            key: _GuardedLabel("") for key in ("N", "H", "M", "M+", "Fit")
         }
         self._metric_labels["Fit"].setObjectName("infoMetricBadge")
         summary_layout.addWidget(self._metric_labels["Fit"])
-        self._rio_history_label = QLabel("")
-        self._rio_main_history_label = QLabel("")
-        self._rio_warband_history_label = QLabel("")
+        self._rio_history_label = _GuardedLabel("")
+        self._rio_main_history_label = _GuardedLabel("")
+        self._rio_warband_history_label = _GuardedLabel("")
         for label in (
             self._rio_history_label,
             self._rio_main_history_label,
@@ -2422,7 +2447,7 @@ class ApplicantInfoPanel(QFrame):
         self._summary_row.hide()
         outer.addWidget(self._summary_row)
 
-        self._package_label = QLabel("")
+        self._package_label = _GuardedLabel("")
         self._package_label.setObjectName("infoPackageBadge")
         self._package_label.setMinimumWidth(0)
         self._package_label.setWordWrap(True)
@@ -2467,7 +2492,7 @@ class ApplicantInfoPanel(QFrame):
             detail_layout.addWidget(button)
         detail_layout.addStretch(1)
         outer.addWidget(self._detail_tabs)
-        self._detail_legend = QLabel("")
+        self._detail_legend = _GuardedLabel("")
         self._detail_legend.setWordWrap(True)
         self._detail_legend.setStyleSheet("color: #b8b8c8; font-size: 10px;")
         outer.addWidget(self._detail_legend)
@@ -2486,7 +2511,7 @@ class ApplicantInfoPanel(QFrame):
             stretch=0,
             alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
         )
-        self._status_label = QLabel("")
+        self._status_label = _GuardedLabel("")
         self._status_label.setObjectName("infoPanelStatus")
         self._status_label.setWordWrap(True)
         status_row_layout.addWidget(self._status_label, stretch=1)
@@ -2503,11 +2528,11 @@ class ApplicantInfoPanel(QFrame):
         state_card_layout = QVBoxLayout(self._state_card)
         state_card_layout.setContentsMargins(12, 8, 12, 8)
         state_card_layout.setSpacing(2)
-        self._state_icon_label = QLabel("")
+        self._state_icon_label = _GuardedLabel("")
         self._state_icon_label.setObjectName("infoPanelStateIcon")
         self._state_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         state_card_layout.addWidget(self._state_icon_label)
-        self._state_text_label = QLabel("")
+        self._state_text_label = _GuardedLabel("")
         self._state_text_label.setObjectName("infoPanelStateText")
         self._state_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._state_text_label.setWordWrap(True)
@@ -2522,7 +2547,7 @@ class ApplicantInfoPanel(QFrame):
         self._dungeon_grid.setHorizontalSpacing(6)
         self._dungeon_grid.setVerticalSpacing(1)
         self._detail_headers: tuple[QLabel, QLabel, QLabel, QLabel] = (
-            QLabel(""), QLabel(""), QLabel(""), QLabel("")
+            _GuardedLabel(""), _GuardedLabel(""), _GuardedLabel(""), _GuardedLabel("")
         )
         for column, label in enumerate(self._detail_headers):
             label.setStyleSheet("color: #b8b8c8; font-size: 10px;")
@@ -2530,13 +2555,13 @@ class ApplicantInfoPanel(QFrame):
         self._dungeon_rows: list[tuple[QLabel, QLabel, QLabel, QLabel]] = []
         max_raid_detail_rows = len(CURRENT_RAID_ENCOUNTERS) * 3
         for row in range(max(INFO_PANEL_DETAIL_BASE_ROWS, max_raid_detail_rows)):
-            name = QLabel("")
+            name = _GuardedLabel("")
             name.setObjectName("infoDungeonName")
-            rio_key = QLabel("")
+            rio_key = _GuardedLabel("")
             rio_key.setObjectName("infoDungeonKey")
-            wcl_key = QLabel("")
+            wcl_key = _GuardedLabel("")
             wcl_key.setObjectName("infoDungeonWclKey")
-            value = QLabel("")
+            value = _GuardedLabel("")
             value.setObjectName("infoDungeonMetric")
             name.setFixedWidth(DUNGEON_NAME_WIDTH)
             rio_key.setFixedWidth(DUNGEON_KEY_WIDTH)
