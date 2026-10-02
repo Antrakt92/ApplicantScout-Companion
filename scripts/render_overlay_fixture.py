@@ -24,6 +24,7 @@ from scripts.overlay_visual_fixture import (  # noqa: E402
     OVERLAY_VISUAL_SCENARIOS,
     compare_overlay_visual_images,
     create_overlay_visual_window,
+    cleanup_overlay_visual_window,
     grab_overlay_visual_image,
     show_overlay_visual_window,
 )
@@ -65,8 +66,7 @@ def _render_fixture_pixmap(app: QCoreApplication, scenario_name: str):
                 raise RuntimeError("Rendered overlay visual fixture is null")
             return pixmap
         finally:
-            window.close()
-            client.close()
+            cleanup_overlay_visual_window(window, client)
 
 
 def _check_rendered_pixmap(

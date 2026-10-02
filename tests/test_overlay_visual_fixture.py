@@ -18,6 +18,7 @@ from scripts.overlay_visual_fixture import (
     VISUAL_FIXTURE_REGEN_COMMAND,
     compare_overlay_visual_images,
     create_overlay_visual_window,
+    cleanup_overlay_visual_window,
     grab_overlay_visual_image,
     show_overlay_visual_window,
 )
@@ -155,7 +156,7 @@ def test_overlay_visual_fixture_disables_background_fetch_launchers(qtbot, tmp_p
         assert window._fetches_in_flight == {}
         assert window._raid_boss_fetches_in_flight == {}
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 def _sampled_colours(image: QImage) -> set[int]:
@@ -212,7 +213,7 @@ def test_overlay_visual_fixture_renders_representative_state(qtbot, tmp_path):
             for row in range(window._table.rowCount())
         )
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 def test_overlay_visual_fixture_settles_with_reserved_panel_height(qtbot, tmp_path):
@@ -226,7 +227,7 @@ def test_overlay_visual_fixture_settles_with_reserved_panel_height(qtbot, tmp_pa
         assert window._panel.height() == window._panel_reserved_height
         assert window._panel.height() >= window._panel.target_height()
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 @pytest.mark.parametrize("scenario_name", sorted(OVERLAY_VISUAL_SCENARIOS))
@@ -248,7 +249,7 @@ def test_visual_fixture_waits_for_scroll_card_and_table_geometry(qtbot, tmp_path
         QApplication.processEvents()
         assert (card.geometry(), table.geometry(), card.viewport().geometry()) == before
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 @pytest.mark.real_display
@@ -294,7 +295,7 @@ def test_overlay_visual_fixture_uses_content_safe_width_for_enabled_metrics(
         assert role_item is not None
         assert viewport.rect().contains(window._table.visualItemRect(role_item))
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 @pytest.mark.parametrize("scenario_name", sorted(OVERLAY_VISUAL_SCENARIOS))
@@ -318,7 +319,7 @@ def test_overlay_visual_fixture_scenarios_render_nonblank(
         assert window._fetches_in_flight == {}
         assert window._raid_boss_fetches_in_flight == {}
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 def test_party_manual_key_visual_scenario_uses_manual_override_path(qtbot, tmp_path):
@@ -340,7 +341,7 @@ def test_party_manual_key_visual_scenario_uses_manual_override_path(qtbot, tmp_p
         assert listing.key_level == 16
         assert window._table.rowCount() == len(window._state.party_members)
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 def test_party_no_listing_manual_key_visual_scenario_synthesizes_listing(
@@ -365,7 +366,7 @@ def test_party_no_listing_manual_key_visual_scenario_synthesizes_listing(
         assert listing.dungeon_name == "Mythic+"
         assert listing.key_level == 14
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 def test_metrics_raid_only_visual_scenario_hides_disabled_columns(qtbot, tmp_path):
@@ -388,7 +389,7 @@ def test_metrics_raid_only_visual_scenario_hides_disabled_columns(qtbot, tmp_pat
         assert not window._panel._metric_labels["M"].isHidden()
         assert window._panel._metric_labels["M+"].isHidden()
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 @pytest.mark.real_display
@@ -427,7 +428,7 @@ def test_raid_listing_visual_scenario_covers_raid_context(qtbot, tmp_path):
         assert window._panel.height() >= window._panel.target_height()
         assert window._raid_boss_fetches_in_flight == {}
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 def test_wcl_retry_visual_scenario_surfaces_retry_button(qtbot, tmp_path):
@@ -446,7 +447,7 @@ def test_wcl_retry_visual_scenario_surfaces_retry_button(qtbot, tmp_path):
         assert "GraphQL error" in window._panel._status_label.text()
         assert not window._panel._wcl_retry_button.isHidden()
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 def test_visual_fixture_disabled_tracking_blocks_cursor_hover(
@@ -478,7 +479,7 @@ def test_visual_fixture_disabled_tracking_blocks_cursor_hover(
         assert window._pinned_id == VISUAL_FIXTURE_PINNED_ID
         assert window._panel._name_label.text() == "ScoutHealer"
     finally:
-        client.close()
+        cleanup_overlay_visual_window(window, client)
 
 
 def _solid_image(width: int, height: int, color: QColor) -> QImage:

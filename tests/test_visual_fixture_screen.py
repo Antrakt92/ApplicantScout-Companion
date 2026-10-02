@@ -4,7 +4,9 @@ from PySide6.QtGui import QScreen
 from PySide6.QtWidgets import QApplication
 import pytest
 
-from scripts.overlay_visual_fixture import create_overlay_visual_window, show_overlay_visual_window
+from scripts.overlay_visual_fixture import (
+    create_overlay_visual_window, cleanup_overlay_visual_window, show_overlay_visual_window,
+)
 from scripts.settings_dialog_visual_fixture import create_settings_visual_dialog, show_settings_visual_dialog
 
 
@@ -18,8 +20,7 @@ def test_overlay_fixture_size_ignores_small_desktop(qtbot, tmp_path, monkeypatch
             show_overlay_visual_window(window, scenario, process_events=QApplication.processEvents)
             return window.size()
         finally:
-            window.shutdown_fetches()
-            client.close()
+            cleanup_overlay_visual_window(window, client)
 
     expected = size(tmp_path / "normal")
     monkeypatch.setattr(QScreen, "availableGeometry", lambda _self: QRect(0, 0, 819, 582))

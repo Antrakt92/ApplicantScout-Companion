@@ -575,6 +575,17 @@ def resolve_visual_fixture_scenario(
         raise ValueError(f"unknown overlay visual fixture scenario {scenario!r}; choices: {names}") from exc
 
 
+def cleanup_overlay_visual_window(window: "OverlayWindow", client: "WCLClient") -> None:
+    """Stop native hooks before Qt disposes the tray-owned fixture window."""
+    try:
+        window.shutdown_fetches()
+    finally:
+        try:
+            window.close()
+        finally:
+            client.close()
+
+
 @visual_fixture_screen()
 def create_overlay_visual_window(
     work_dir: Path,
