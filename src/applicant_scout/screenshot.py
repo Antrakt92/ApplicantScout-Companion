@@ -38,7 +38,7 @@ import threading
 import time
 import zlib
 from collections.abc import Callable, Iterator
-from collections import deque
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -1871,7 +1871,7 @@ class _ManualScreenshotIndex:
         self._deferred_cursor: _ScreenshotWorkKey | None = None
         # M5: insertion order for FIFO cap eviction (fingerprints are
         # write-once, so insertion order approximates recency).
-        self._insertion_order: deque[_ScreenshotWorkKey] = deque()
+        self._insertion_order: OrderedDict[_ScreenshotWorkKey, None] = OrderedDict()
         self._dirty = False
 
     def _load_locked(self) -> None:
@@ -1936,8 +1936,8 @@ class _ManualScreenshotIndex:
                 target.add(_ScreenshotWorkKey(entry[0], entry[1], entry[2]))
         # M5: persisted entries are already sorted; replay that order for
         # FIFO cap eviction (each fingerprint tracked exactly once).
-        self._insertion_order.extend(
-            sorted(
+        self._insertion_order.update(
+            (key, None) for key in sorted(
                 self._keys | self._deferred_keys,
                 key=lambda item: (item.path, item.mtime_ns, item.size),
             )
@@ -2001,7 +2001,7 @@ class _ManualScreenshotIndex:
             self._load_locked()
             if key not in self._keys:
                 self._keys.add(key)
-                self._insertion_order.append(key)
+                self._insertion_order.setdefault(key, None)
                 self._dirty = True
             if key in self._deferred_keys:
                 self._deferred_keys.discard(key)
@@ -2016,7 +2016,7 @@ class _ManualScreenshotIndex:
             if key not in self._deferred_keys:
                 self._deferred_keys.add(key)
                 if key not in self._keys:
-                    self._insertion_order.append(key)
+                    self._insertion_order.setdefault(key, None)
                 self._dirty = True
             self._evict_overflow_locked()
             if flush:
@@ -2027,7 +2027,7 @@ class _ManualScreenshotIndex:
         while len(self._keys) + len(self._deferred_keys) > _MANUAL_INDEX_MAX_KEYS:
             if not self._insertion_order:
                 break
-            oldest = self._insertion_order.popleft()
+            oldest, _ = self._insertion_order.popitem(last=False)
             if oldest not in self._keys and oldest not in self._deferred_keys:
                 continue
             self._keys.discard(oldest)
@@ -2058,6 +2058,8 @@ class _ManualScreenshotIndex:
             if stale:
                 self._keys.difference_update(stale)
                 self._deferred_keys.difference_update(stale)
+                for key in stale:
+                    self._insertion_order.pop(key, None)
                 if self._deferred_cursor in stale:
                     self._deferred_cursor = None
                 self._dirty = True
@@ -2068,6 +2070,8 @@ class _ManualScreenshotIndex:
             self._load_locked()
             if key in self._deferred_keys:
                 self._deferred_keys.discard(key)
+                if key not in self._keys:
+                    self._insertion_order.pop(key, None)
                 self._dirty = True
             if flush:
                 self._flush_locked()
@@ -2083,6 +2087,8 @@ class _ManualScreenshotIndex:
             if stale:
                 self._keys.difference_update(stale)
                 self._deferred_keys.difference_update(stale)
+                for key in stale:
+                    self._insertion_order.pop(key, None)
                 if self._deferred_cursor in stale:
                     self._deferred_cursor = None
                 self._dirty = True
