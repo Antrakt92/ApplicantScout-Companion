@@ -64,7 +64,7 @@ def _rendered_field_names(applicant: Applicant) -> tuple[str, ...]:
 
 
 def rendered_applicant_key(applicant: Applicant) -> tuple:
-    """Freeze only the fields that table cells or the info panel render.
+    """Freeze shared table and panel fields; the panel adds its own detail key.
 
     Whole-object freezes re-hash the large `raid_boss_parses` detail payload
     on every hover tick and fetch completion even though no cell reads it.
