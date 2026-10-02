@@ -17,6 +17,10 @@ import httpx
 
 from .atomic_io import apply_private_file_mode, atomic_write_text
 from .fetch_operation import FetchOperation
+from .wcl_availability import (
+    PRIVATE_RANKINGS_USER_MESSAGE, RAID_DETAIL_SCOPES, RaidBossDetails,
+    all_selected_restricted, normalize_availability, project_availability,
+)
 from .constants import (
     CURRENT_MPLUS_ZONE_ID,
     CURRENT_RAID_ENCOUNTER_ZONE_IDS,
@@ -61,7 +65,7 @@ WCL_ERROR_RESTRICTED = "restricted"
 _PRIVATE_RANKINGS_PROVIDER_MESSAGE = (
     "you do not have permission to see this character's rankings."
 )
-_PRIVATE_RANKINGS_USER_MESSAGE = "Rankings are private on Warcraft Logs"
+_PRIVATE_RANKINGS_USER_MESSAGE = PRIVATE_RANKINGS_USER_MESSAGE
 WCL_RATE_LIMIT_RETRY_SECONDS = 300.0
 WCL_SERVER_RETRY_SECONDS = 30.0
 WCL_NETWORK_RETRY_SECONDS = 30.0
@@ -309,6 +313,8 @@ class CharacterRanks:
     not_found: bool = False
     error: str = ""
     error_kind: str = ""
+
+    availability: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def empty(
@@ -752,7 +758,14 @@ def _raid_zone_alias_payload(char: dict, alias: str) -> dict:
             f"Malformed WCL response: {alias}.error is unexpected",
             error_kind=WCL_ERROR_MALFORMED,
         )
-    return zone_data
+    return {} if _is_private_rankings_payload(zone_data) else zone_data
+
+
+def _alias_availability(char: dict, aliases: list[str]) -> str:
+    private = sum(_is_private_rankings_payload(char.get(alias)) for alias in aliases)
+    if private == len(aliases) and aliases:
+        return "restricted"
+    return "partial" if private else "available"
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -848,23 +861,6 @@ def _ranks_from_graphql(
             error_kind=WCL_ERROR_MALFORMED,
         )
 
-    enabled_aliases: list[str] = []
-    if metric_preferences.mplus:
-        enabled_aliases.extend(alias for alias, _eid, _name in MPLUS_ENCOUNTERS)
-    if metric_preferences.raid_normal:
-        enabled_aliases.append("raidNormal")
-    if metric_preferences.raid_heroic:
-        enabled_aliases.append("raidHeroic")
-    if metric_preferences.raid_mythic:
-        enabled_aliases.append("raidMythic")
-    if enabled_aliases and all(
-        _is_private_rankings_payload(char.get(alias)) for alias in enabled_aliases
-    ):
-        return CharacterRanks.empty(
-            error=_PRIVATE_RANKINGS_USER_MESSAGE,
-            error_kind=WCL_ERROR_RESTRICTED,
-        )
-
     # Build per-dungeon breakdown from the 8 aliased encounterRankings.
     # _process_encounter_ranks filters to applicant's spec + highest
     # timed key, then computes best/median/run_count for that subset.
@@ -896,6 +892,17 @@ def _ranks_from_graphql(
         else None
     )
 
+    availability = {
+        scope: _alias_availability(char, aliases)
+        for scope, aliases in (
+            ("mplus", [alias for alias, _eid, _name in MPLUS_ENCOUNTERS]),
+            ("raid_normal", ["raidNormal"]),
+            ("raid_heroic", ["raidHeroic"]),
+            ("raid_mythic", ["raidMythic"]),
+        )
+        if getattr(metric_preferences, scope)
+    }
+    restricted = all_selected_restricted(availability, metric_preferences)
     return CharacterRanks(
         raid_normal=_zone_avg(raid_normal_data),
         raid_heroic=_zone_avg(raid_heroic_data),
@@ -909,6 +916,9 @@ def _ranks_from_graphql(
         mplus_hps_median=None,
         mplus_dps_breakdown=breakdown,
         mplus_hps_breakdown=[],
+        availability=availability,
+        error=_PRIVATE_RANKINGS_USER_MESSAGE if restricted else "",
+        error_kind=WCL_ERROR_RESTRICTED if restricted else "",
     )
 
 
@@ -1350,7 +1360,7 @@ class WCLClient:
         if not isinstance(data_root, dict):
             graphql_result = _ranks_for_graphql_errors(graphql_errors)
             if graphql_result is not None and graphql_result.not_found:
-                return {}
+                return RaidBossDetails(not_found=True)
             raise WCLApiError(
                 "Malformed WCL response: data is not an object",
                 error_kind=WCL_ERROR_MALFORMED,
@@ -1361,7 +1371,7 @@ class WCLClient:
         graphql_result = _ranks_for_graphql_errors(graphql_errors)
         if graphql_result is not None:
             if graphql_result.not_found:
-                return {}
+                return RaidBossDetails(not_found=True)
             if graphql_result.error:
                 raise WCLApiError(
                     graphql_result.error,
@@ -1380,13 +1390,14 @@ class WCLClient:
             )
         char = character_data.get("character")
         if char is None:
-            return {}
+            return RaidBossDetails(not_found=True)
         if not isinstance(char, dict):
             raise WCLApiError(
                 "Malformed WCL response: character is not an object",
                 error_kind=WCL_ERROR_MALFORMED,
             )
         rows: dict[str, list[dict[str, object]]] = {}
+        availability: dict[str, str] = {}
         for difficulty, (
             _prefix,
             _wcl_difficulty,
@@ -1397,12 +1408,17 @@ class WCLClient:
             _validate_raid_boss_detail_aliases(
                 char, difficulty, CURRENT_RAID_ENCOUNTERS
             )
+            availability[difficulty] = _alias_availability(char, [
+                f"{_prefix}_{alias}_{metric}"
+                for alias, _eid, _name in CURRENT_RAID_ENCOUNTERS
+                for metric in ("overall", "ilvl")
+            ])
             parsed = _raid_boss_rows_from_character(
                 char, difficulty, CURRENT_RAID_ENCOUNTERS, spec_name
             )
             if parsed:
                 rows[difficulty] = parsed
-        return rows
+        return RaidBossDetails(rows, availability=availability)
 
 
 def _safe_nonnegative_cache_int(v) -> int:
@@ -1498,7 +1514,14 @@ def _project_ranks_to_metric_preferences(
             mplus_dps_breakdown=[],
             mplus_hps_breakdown=[],
         )
-    return projected
+    availability = project_availability(ranks.availability, metric_preferences)
+    error, error_kind = projected.error, projected.error_kind
+    if availability:
+        if all_selected_restricted(availability, metric_preferences):
+            error, error_kind = _PRIVATE_RANKINGS_USER_MESSAGE, WCL_ERROR_RESTRICTED
+        elif error_kind == WCL_ERROR_RESTRICTED:
+            error, error_kind = "", ""
+    return replace(projected, availability=availability, error=error, error_kind=error_kind)
 
 
 def _spec_norm(s: str) -> str:
@@ -1560,7 +1583,7 @@ def _raid_boss_rows_from_character(
 
 
 def _best_rank_percent(enc_data: object, spec_name: str = "") -> Optional[float]:
-    if not isinstance(enc_data, dict):
+    if not isinstance(enc_data, dict) or _is_private_rankings_payload(enc_data):
         return None
     ranks = enc_data.get("ranks")
     if not isinstance(ranks, list):
@@ -1924,7 +1947,8 @@ class _CacheSaveSnapshot:
 # data and must not survive the metric change.
 # v8 = raid summaries filter to the applying spec; pre-v8 raid aggregates
 # combine specs even though their cache keys already contain a spec ID.
-_CACHE_VERSION = 8
+# v9 = scope availability distinguishes private rankings from accessible empty data.
+_CACHE_VERSION = 9
 
 
 def _quarantine_corrupt_file(path: Path) -> Path | None:
@@ -2183,6 +2207,7 @@ class CharacterCache:
                                 "fetched_at": v.fetched_at,
                                 "ranks": v.ranks,
                                 "raid_boss_details": v.raid_boss_details,
+                                "raid_boss_availability": v.raid_boss_availability,
                             }
                             for k, v in snapshot.entries
                         },
@@ -2465,6 +2490,7 @@ class CharacterCache:
                     ranks_dict[fld] = default
                 elif not isinstance(ranks_dict[fld], expected_type):
                     return None
+            ranks_dict["availability"] = normalize_availability(ranks_dict.get("availability"))
             return CharacterRanks(**ranks_dict)
         except (TypeError, ValueError):
             return None
@@ -2476,9 +2502,14 @@ class CharacterCache:
     ) -> dict[str, list[dict[str, object]]] | None:
         if not isinstance(entry.raid_boss_details, dict):
             return None
-        return _sanitize_raid_boss_detail_rows(
-            entry.raid_boss_details,
-            metric_preferences,
+        availability = normalize_availability(entry.raid_boss_availability, scopes=RAID_DETAIL_SCOPES)
+        selected = _raid_difficulty_keys_for_preferences(metric_preferences)
+        if any(difficulty not in availability for difficulty in selected):
+            return None
+        rows = _sanitize_raid_boss_detail_rows(entry.raid_boss_details, metric_preferences)
+        return RaidBossDetails(
+            {key: value for key, value in rows.items() if availability[key] != "restricted"},
+            availability={key: availability[key] for key in selected},
         )
 
     def put(
@@ -2576,6 +2607,12 @@ class CharacterCache:
             metric_preferences,
         )
         sanitized = _sanitize_raid_boss_detail_rows(rows, metric_preferences)
+        if isinstance(rows, RaidBossDetails) and rows.not_found:
+            return False
+        availability = (
+            dict(rows.availability) if isinstance(rows, RaidBossDetails)
+            else {key: "available" for key in _raid_difficulty_keys_for_preferences(metric_preferences)}
+        )
         with self._lock:
             if self._closing:
                 return False
@@ -2595,6 +2632,7 @@ class CharacterCache:
             self._data[key] = _CacheEntry(
                 fetched_at=time.time(),
                 raid_boss_details=sanitized,
+                raid_boss_availability=availability,
                 publication_epoch=self._save_epoch + 1,
             )
             _cap_entries_data(self._data, self.MAX_ENTRIES)

@@ -1089,6 +1089,8 @@ class StateMachine(QObject):
             for difficulty, rows in source.raid_boss_parses.items()
         }
         target.wcl_metric_preferences = source.wcl_metric_preferences
+        target.wcl_availability = dict(source.wcl_availability)
+        target.raid_boss_availability = dict(source.raid_boss_availability)
 
     @staticmethod
     def _preserve_known_transport_fields(source: Applicant, target: Applicant) -> None:

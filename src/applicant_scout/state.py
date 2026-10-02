@@ -12,6 +12,11 @@ from typing import Optional
 
 from .atomic_io import atomic_write_text
 from .metric_preferences import MetricPreferences
+from .wcl_availability import (
+    PRIVATE_RANKINGS_USER_MESSAGE,
+    all_selected_restricted,
+    project_availability,
+)
 
 
 _log = logging.getLogger("applicant_scout.state")
@@ -122,6 +127,8 @@ class Applicant:
     # None means unknown/no usable WCL data, so runtime scope changes must refetch
     # before relying on enabled metrics.
     wcl_metric_preferences: Optional[MetricPreferences] = None
+    wcl_availability: dict[str, str] = field(default_factory=dict)
+    raid_boss_availability: dict[str, str] = field(default_factory=dict)
     # pending / loading / ready / error / not_found / restricted
     fetch_status: str = "pending"
     error_message: str = ""
@@ -145,10 +152,16 @@ class Applicant:
         self.mplus_hps_breakdown = []
         self.raid_boss_parses = {}
         self.wcl_metric_preferences = None
+        self.wcl_availability = {}
+        self.raid_boss_availability = {}
 
     def wcl_data_covers(self, metric_preferences: MetricPreferences) -> bool:
         return (
-            self.fetch_status == "ready"
+            (
+                self.fetch_status == "ready"
+                or self.fetch_status == "restricted"
+                and all_selected_restricted(self.wcl_availability, metric_preferences)
+            )
             and self.wcl_metric_preferences is not None
             and self.wcl_metric_preferences.covers(metric_preferences)
         )
@@ -158,18 +171,22 @@ class Applicant:
     ) -> None:
         """Drop disabled WCL fields so hidden metrics cannot affect scoring."""
         previous = self.wcl_metric_preferences
+        previous_availability = self.wcl_availability
         if not metric_preferences.raid_normal:
             self.raid_normal = None
             self.raid_normal_median = None
             self.raid_boss_parses.pop("N", None)
+            self.raid_boss_availability.pop("N", None)
         if not metric_preferences.raid_heroic:
             self.raid_heroic = None
             self.raid_heroic_median = None
             self.raid_boss_parses.pop("H", None)
+            self.raid_boss_availability.pop("H", None)
         if not metric_preferences.raid_mythic:
             self.raid_mythic = None
             self.raid_mythic_median = None
             self.raid_boss_parses.pop("M", None)
+            self.raid_boss_availability.pop("M", None)
         if not metric_preferences.mplus:
             self.mplus_dps = None
             self.mplus_hps = None
@@ -182,6 +199,16 @@ class Applicant:
             if previous is not None and previous.covers(metric_preferences)
             else None
         )
+        self.wcl_availability = project_availability(previous_availability, metric_preferences)
+        if previous_availability and self.fetch_status in {"ready", "restricted"}:
+            if all_selected_restricted(self.wcl_availability, metric_preferences):
+                self.fetch_status = "restricted"
+                self.error_message = PRIVATE_RANKINGS_USER_MESSAGE
+                self.wcl_error_kind = "restricted"
+            elif self.fetch_status == "restricted":
+                self.fetch_status = "ready"
+                self.error_message = ""
+                self.wcl_error_kind = ""
 
 
 @dataclass

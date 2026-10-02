@@ -86,6 +86,7 @@ from .constants import (
 )
 from .compatibility import addon_version_warning
 from .fetch_operation import FetchOperation
+from .wcl_availability import RaidBossDetails
 from .usage_events import UsageActivity
 from . import overlay_presenters as _presenters
 from . import overlay_rows as _overlay_rows
@@ -901,6 +902,9 @@ class _RaidBossFetchTask(QRunnable):
             expected_operation=self._identity.operation,
             expected_publication_epoch=self._cache_publication_epoch,
         )
+        if isinstance(rows, RaidBossDetails) and rows.not_found:
+            _emit_network_result(rows, "Character not found on Warcraft Logs", "not_found")
+            return
         _emit_network_result(rows, "", "")
 
 
@@ -3024,6 +3028,8 @@ class ApplicantInfoPanel(QFrame):
                     "Retry WCL" if raid_detail_status_error else "Load boss details"
                 ),
             )
+        elif any(status in {"restricted", "partial"} for status in applicant.wcl_availability.values()):
+            self._show_status("Some Warcraft Logs rankings are private")
         elif not visible_metrics and not visible_rows:
             self._show_status(
                 "No Warcraft Logs data",
@@ -7362,7 +7368,7 @@ class OverlayWindow(QMainWindow):
             ("H", prefs.raid_heroic),
             ("M", prefs.raid_mythic),
         ):
-            if enabled and key not in applicant.raid_boss_parses:
+            if enabled and key not in applicant.raid_boss_parses and applicant.raid_boss_availability.get(key) != "restricted":
                 return True
         return False
 
@@ -7411,6 +7417,21 @@ class OverlayWindow(QMainWindow):
     def _raid_detail_status_for(
         self, applicant: Applicant
     ) -> tuple[str, bool, bool] | None:
+        prefs = self._raid_detail_preferences()
+        statuses = [
+            applicant.raid_boss_availability.get(key)
+            for key, enabled in (("N", prefs.raid_normal), ("H", prefs.raid_heroic), ("M", prefs.raid_mythic))
+            if enabled
+        ]
+        if not self._missing_raid_boss_details(applicant) and any(
+            status in {"restricted", "partial"} for status in statuses
+        ):
+            message = (
+                "Raid boss rankings are private on Warcraft Logs"
+                if all(status == "restricted" for status in statuses)
+                else "Some raid boss rankings are private on Warcraft Logs"
+            )
+            return message, False, False
         resolved = self._current_raid_boss_fetch_for(applicant)
         if resolved is None:
             return None
@@ -7477,7 +7498,10 @@ class OverlayWindow(QMainWindow):
         record_api_result = getattr(self._wcl_client, "record_api_result", None)
         if callable(record_api_result):
             record_api_result(
-                succeeded=not bool(error),
+                succeeded=(
+                    not bool(error)
+                    or isinstance(_rows, RaidBossDetails) and _rows.not_found
+                ),
                 error_kind=error_kind,
             )
         self._refresh_auth_label()
@@ -7722,6 +7746,9 @@ class OverlayWindow(QMainWindow):
             applicant.clear_wcl_data(fetch_status="restricted")
             applicant.error_message = ranks.error
             applicant.wcl_error_kind = WCL_ERROR_RESTRICTED
+            applicant.wcl_availability = dict(ranks.availability)
+            applicant.wcl_metric_preferences = fetched_identity.metric_preferences
+            applicant.project_wcl_data_to_preferences(current_identity.metric_preferences)
         elif ranks.error:
             applicant.clear_wcl_data(fetch_status="error")
             applicant.error_message = ranks.error
@@ -7732,6 +7759,7 @@ class OverlayWindow(QMainWindow):
             applicant.error_message = ""
             applicant.wcl_error_kind = ""
             applicant.wcl_metric_preferences = fetched_identity.metric_preferences
+            applicant.wcl_availability = dict(ranks.availability)
             applicant.raid_normal = ranks.raid_normal
             applicant.raid_heroic = ranks.raid_heroic
             applicant.raid_mythic = ranks.raid_mythic
@@ -7852,12 +7880,21 @@ class OverlayWindow(QMainWindow):
             None,
         )
         applicant.raid_boss_parses = {}
+        applicant.raid_boss_availability = {}
         for difficulty, enabled in (
-            ("N", fetched_identity.metric_preferences.raid_normal),
-            ("H", fetched_identity.metric_preferences.raid_heroic),
-            ("M", fetched_identity.metric_preferences.raid_mythic),
+            ("N", current_identity.metric_preferences.raid_normal),
+            ("H", current_identity.metric_preferences.raid_heroic),
+            ("M", current_identity.metric_preferences.raid_mythic),
         ):
             if enabled:
+                availability = (
+                    rows.availability.get(difficulty) if isinstance(rows, RaidBossDetails)
+                    else "available"
+                )
+                if availability is not None:
+                    applicant.raid_boss_availability[difficulty] = availability
+                if availability == "restricted":
+                    continue
                 applicant.raid_boss_parses[difficulty] = [
                     dict(row) for row in rows.get(difficulty, [])
                 ]
