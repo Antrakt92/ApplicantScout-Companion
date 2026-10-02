@@ -617,6 +617,15 @@ class WCLApiError(_WCLError):
     pass
 
 
+class WCLRequestCancelled(Exception):
+    """A retired worker must not start another request or publish a result."""
+
+
+def _require_active_operation(operation: FetchOperation | None) -> None:
+    if operation is not None and not operation.is_active():
+        raise WCLRequestCancelled
+
+
 def _json_object_response(resp, error_cls: type[Exception], context: str) -> dict:
     try:
         body = resp.json()
@@ -1183,8 +1192,11 @@ class WCLClient:
         auth: WCLAuth,
         auth_generation: int,
         body: dict[str, object],
+        *,
+        expected_operation: FetchOperation | None = None,
     ) -> httpx.Response:
         for attempt in range(2):
+            _require_active_operation(expected_operation)
             self._require_current_auth(auth_generation)
             try:
                 token = auth.get_token()
@@ -1196,6 +1208,7 @@ class WCLClient:
                 raise
             # OAuth can block while Settings replaces credentials or shutdown
             # retires the client. Do not start another request for that work.
+            _require_active_operation(expected_operation)
             self._require_current_auth(auth_generation)
             try:
                 resp = self._http.post(
@@ -1247,13 +1260,17 @@ class WCLClient:
         auth: WCLAuth,
         auth_generation: int,
         body: dict[str, object],
+        *,
+        expected_operation: FetchOperation | None = None,
     ) -> dict:
         """POST a CharacterRanks GraphQL body, return the parsed response dict.
 
         Thin wrapper over _post_graphql_with_auth_retry: token-aware retry,
         401/429/5xx classification, and malformed-body rejection all stay on
         the shared path untouched."""
-        resp = self._post_graphql_with_auth_retry(auth, auth_generation, body)
+        resp = self._post_graphql_with_auth_retry(
+            auth, auth_generation, body, expected_operation=expected_operation,
+        )
         return _json_object_response(resp, WCLApiError, "WCL response")
 
     def fetch_character_ranks(
@@ -1264,6 +1281,8 @@ class WCLClient:
         role: str = "DAMAGER",
         region: Optional[str] = None,
         metric_preferences: MetricPreferences | None = None,
+        *,
+        expected_operation: FetchOperation | None = None,
     ) -> CharacterRanks:
         """One query → raid (3 difficulties) + 8 per-encounter M+ rankings.
 
@@ -1326,7 +1345,9 @@ class WCLClient:
             ),
         }
 
-        data = self._post_ranks_query(auth, auth_generation, body)
+        data = self._post_ranks_query(
+            auth, auth_generation, body, expected_operation=expected_operation,
+        )
         # Update quota snapshot regardless of errors — rateLimitData is at
         # the root, present even on GraphQL-level errors (HTTP 200).
         data_root_obj = data.get("data")
@@ -1351,6 +1372,8 @@ class WCLClient:
         role: str = "DAMAGER",
         region: Optional[str] = None,
         metric_preferences: MetricPreferences | None = None,
+        *,
+        expected_operation: FetchOperation | None = None,
     ) -> dict[str, list[dict[str, object]]]:
         metric_preferences = metric_preferences or self.metric_preferences
         metric_preferences = MetricPreferences(
@@ -1384,7 +1407,9 @@ class WCLClient:
                 "specName": spec_name,
             },
         }
-        resp = self._post_graphql_with_auth_retry(auth, auth_generation, body)
+        resp = self._post_graphql_with_auth_retry(
+            auth, auth_generation, body, expected_operation=expected_operation,
+        )
         data = _json_object_response(resp, WCLApiError, "WCL response")
         graphql_errors = _graphql_errors(data.get("errors"))
         data_root = data.get("data")

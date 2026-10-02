@@ -144,6 +144,7 @@ from .window_geometry import clamp_geometry_to_screens
 from .wcl import (
     WCLClient,
     WCLApiError,
+    WCLRequestCancelled,
     WCLAuthError,
     WCL_ERROR_AUTH,
     WCL_ERROR_GRAPHQL,
@@ -762,7 +763,10 @@ class _FetchTask(QRunnable):
                 identity.metric_role,
                 region=identity.region,
                 metric_preferences=identity.metric_preferences,
+                expected_operation=identity.operation,
             )
+        except WCLRequestCancelled:
+            return
         except WCLApiError as e:
             ranks = CharacterRanks.empty(error=str(e), error_kind=e.error_kind)
         except WCLAuthError as e:
@@ -879,7 +883,10 @@ class _RaidBossFetchTask(QRunnable):
                 self._identity.metric_role,
                 region=self._identity.region,
                 metric_preferences=self._identity.metric_preferences,
+                expected_operation=self._identity.operation,
             )
+        except WCLRequestCancelled:
+            return
         except WCLApiError as exc:
             _emit_network_result({}, str(exc), exc.error_kind)
             return
