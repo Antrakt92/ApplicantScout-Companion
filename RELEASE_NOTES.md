@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.22.1 - 02-Oct-2026 — Keyboard sorting and reliability
+## 0.22.2 - 02-Oct-2026 — Keyboard sorting and reliability
 
-Paired release with ApplicantScout addon `0.13.4`.
+Paired release with ApplicantScout addon `0.13.5`.
 
 - Add a keyboard-accessible grouped sort menu.
 - Improve class-name contrast, detail refreshes and settings on narrow screens.

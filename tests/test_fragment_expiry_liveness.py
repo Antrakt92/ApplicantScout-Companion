@@ -1,6 +1,7 @@
 """Expiry cleanup must not block shutdown or publish failures after newer data."""
 
 from dataclasses import replace
+import os
 from threading import Event, Thread
 from types import SimpleNamespace
 
@@ -252,6 +253,9 @@ def test_queued_timeout_is_retired_before_handoff_by_newer_snapshot(tmp_path, mo
         assert entered.wait(1)
         next_path = tmp_path / "WoWScrnShot_pending-next.jpg"
         next_path.write_bytes(b"next")
+        # File creation timestamps can be equal on the Windows runner.
+        next_time_ns = first.source.mtime_ns + 1_000_000_000
+        os.utime(next_path, ns=(next_time_ns, next_time_ns))
         next_source = watcher._source_from_stat(next_path, next_path.stat())
         assert next_source.mtime_ns > first.source.mtime_ns
         accepted, alive = watcher._accept_fragment_for_publication(
