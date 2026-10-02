@@ -4014,6 +4014,9 @@ class _ReaderBoundMachine:
         self._machine = machine
         self._rio_reader = rio_reader
 
+    def recover_snapshot_apply_failure(self) -> None:
+        self._machine.recover_snapshot_apply_failure()
+
     def apply_snapshot(self, snap: Snapshot) -> None:
         current_reader = getattr(self._machine, "_rio_reader", None)
         if current_reader is self._rio_reader:
