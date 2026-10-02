@@ -224,6 +224,15 @@ jobs:
           $InstallerName = "ApplicantScoutCompanionSetup-$TagVersion.exe"
           $PortableName = "ApplicantScoutCompanion-$TagVersion-portable.zip"
           $ReleaseUrl = "https://github.com/Antrakt92/ApplicantScout-Companion/releases/download/v$TagVersion"
+          $Signature = Get-AuthenticodeSignature -LiteralPath "dist\$InstallerName"
+          if ($Signature.Status -eq "NotSigned") {
+            $SigningNotice = "Windows installer is unsigned. Checksums verify file integrity, not publisher identity."
+          } elseif ($Signature.Status -eq "Valid" -and $Signature.SignerCertificate) {
+            $Signer = $Signature.SignerCertificate.Subject -replace "[`r`n]+", " "
+            $SigningNotice = "Windows installer digitally signed by $Signer."
+          } else {
+            throw "Installer signature could not be verified: $($Signature.Status)."
+          }
           $CanonicalBody = @(
             "### Downloads"
             ""
@@ -234,7 +243,7 @@ jobs:
             ""
             $CurrentNotes
             ""
-            "Free code signing provided by SignPath.io, certificate by SignPath Foundation"
+            $SigningNotice
           ) -join "`n"
           $CanonicalBody += "`n"
           $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)

@@ -63,7 +63,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 ; this unchecked by default (including silent installs); leaving it unchecked
 ; records an install-time opt-out that the app honors until the user
 ; explicitly opts in via Settings.
-Name: "usage"; Description: "Help improve with anonymous usage reports (optional)"; GroupDescription: "Privacy:"; Flags: unchecked
+Name: "usage"; Description: "Share optional usage reports with a random installation ID"; GroupDescription: "Privacy:"; Flags: unchecked
 
 [Files]
 ; Copy the complete candidate before touching the working payload. The code

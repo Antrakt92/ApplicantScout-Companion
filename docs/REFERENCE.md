@@ -28,10 +28,10 @@ capture.
 
 ## Trust And Local Data
 
-**Optional usage statistics start enabled when no preference has been saved.**
+**Optional usage statistics stay off until you opt in.**
 Existing choices are preserved. Reports contain a random installation ID, version
 and daily setup/use milestones. Names, screenshots and credentials are excluded.
-Turn sharing off at any time in Settings. Participating packaged builds send
+Choose sharing during installation or in Settings, and turn it off there at any time. Participating packaged builds send
 reports to the ApplicantScout service hosted on Cloudflare.
 Read [what is shared and retained](PRIVACY.md).
 
