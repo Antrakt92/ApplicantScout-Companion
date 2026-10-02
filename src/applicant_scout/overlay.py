@@ -4140,6 +4140,7 @@ class OverlayWindow(QMainWindow):
         self._panel_reserved_height = INFO_PANEL_PREFERRED_HEIGHT
         self._panel_render_key: tuple | None = None
         self._candidate_fits_for_sync: Mapping[str, CandidateFit] | None = None
+        self._refresh_render_keys: _overlay_rows.RefreshRenderKeys | None = None
 
         # Map of applicant_id -> table row (kept in sync with _id_by_row).
         self._row_for_id: dict[str, int] = {}
@@ -6008,9 +6009,15 @@ class OverlayWindow(QMainWindow):
             selection_source,
             self._active_tab,
             visible_id,
-            _overlay_rows.rendered_applicant_key(applicant),
-            _listing_render_key(listing),
-            _freeze_render_value(package),
+            self._refresh_render_keys.applicant(applicant)
+            if self._refresh_render_keys is not None
+            else _overlay_rows.rendered_applicant_key(applicant),
+            self._refresh_render_keys.listing()
+            if self._refresh_render_keys is not None
+            else _listing_render_key(listing),
+            self._refresh_render_keys.package(package)
+            if self._refresh_render_keys is not None
+            else _freeze_render_value(package),
             visible_id == self._pinned_id,
             _freeze_render_value(raid_detail_status),
             wcl_retry_available,
@@ -6580,13 +6587,17 @@ class OverlayWindow(QMainWindow):
         raw_aid, _ = _split_composite(applicant.applicant_id)
         return (
             self._active_tab,
-            _overlay_rows.rendered_applicant_key(applicant),
+            self._refresh_render_keys.applicant(applicant)
+            if self._refresh_render_keys is not None
+            else _overlay_rows.rendered_applicant_key(applicant),
             listing_key if listing_key is not None else _listing_render_key(listing),
             self._metric_preferences.cache_key(),
             self._manual_target_key,
             self._group_size_by_raw.get(raw_aid, 1),
             self._group_ready_by_raw.get(raw_aid, False),
-            _freeze_render_value(self._package_fit_by_raw.get(raw_aid)),
+            self._refresh_render_keys.package(self._package_fit_by_raw.get(raw_aid))
+            if self._refresh_render_keys is not None
+            else _freeze_render_value(self._package_fit_by_raw.get(raw_aid)),
         )
 
     def _reuse_cell_item(self, row: int, col: int, text: str) -> QTableWidgetItem:
@@ -6689,6 +6700,15 @@ class OverlayWindow(QMainWindow):
         self._accessible_interaction_state_by_id = current_state
 
     def _refresh_table(self) -> None:
+        listing = self._effective_listing()
+        previous_keys = self._refresh_render_keys
+        self._refresh_render_keys = _overlay_rows.RefreshRenderKeys(listing)
+        try:
+            self._refresh_table_with_keys(listing)
+        finally:
+            self._refresh_render_keys = previous_keys
+
+    def _refresh_table_with_keys(self, listing: Listing | None) -> None:
         """Refresh the table using the selected or default source order.
         Full rebuild when row identity/order changes; otherwise only rows whose
         render key changed are rewritten. This keeps burst snapshots from
@@ -6723,11 +6743,14 @@ class OverlayWindow(QMainWindow):
             party=len(self._state.party_members),
         )
 
-        listing = self._effective_listing()
         self._apply_metric_column_visibility()
         # Frozen once per refresh: _row_render_key needs it per row and
         # freezing the same listing 30× dominated the same-order path.
-        listing_key = _listing_render_key(listing)
+        listing_key = (
+            self._refresh_render_keys.listing()
+            if self._refresh_render_keys is not None
+            else _listing_render_key(listing)
+        )
         # P2: sorting/grouping/fit-prefetch live in overlay_table; the window
         # keeps row-identity diffing, item lifetime, and hover/pin/filter sync.
         manual_sort = self._active_manual_sort()
@@ -6741,6 +6764,7 @@ class OverlayWindow(QMainWindow):
             or (manual_sort is not None and manual_sort[0] == COL_FIT),
             package_fit_fn=package_fit,
             candidate_fit_fn=candidate_fit,
+            refresh_keys=self._refresh_render_keys,
         )
         sorted_applicants = model.sorted_applicants
         sorted_candidate_fit_by_id = model.candidate_fit_by_id
@@ -6845,11 +6869,12 @@ class OverlayWindow(QMainWindow):
         self._apply_role_filter()
         self._reconcile_keyboard_current(prev_keyboard, prev_keyboard_row)
         # Re-apply correct stripe rows + refresh panel content (single point).
+        previous_fits = self._candidate_fits_for_sync
         self._candidate_fits_for_sync = sorted_candidate_fit_by_id
         try:
             self._sync_delegate_and_panel()
         finally:
-            self._candidate_fits_for_sync = None
+            self._candidate_fits_for_sync = previous_fits
 
     def _is_filter_active(self) -> bool:
         """True iff the role filter actually hides anything. Empty set OR

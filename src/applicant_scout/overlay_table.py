@@ -67,6 +67,7 @@ def refresh_table_model(
     | None = None,
     candidate_fit_fn: Callable[[Applicant, Listing | None], CandidateFit]
     | None = None,
+    refresh_keys: _overlay_rows.RefreshRenderKeys | None = None,
 ) -> TableModel:
     """Build the sorted applicant model for one table refresh.
 
@@ -110,6 +111,7 @@ def refresh_table_model(
         package_fit_cache=package_fit_cache,
         fit_cache_context=prefs.cache_key(),
         package_fit_fn=package_fit_fn,
+        refresh_keys=refresh_keys,
     )
     index_group_maps(model, listing, package_fit_fn)
     return model

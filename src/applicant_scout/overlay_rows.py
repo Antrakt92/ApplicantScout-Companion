@@ -20,6 +20,7 @@ from .scoring import (
 from .state import Applicant, Listing
 
 
+_CANONICAL_PACKAGE_FIT = package_fit
 _SUNK_STATES: frozenset[str] = frozenset({"error", "not_found", "restricted"})
 _PROVISIONAL_STATES: frozenset[str] = frozenset({"loading", "pending"})
 _MPLUS_CATEGORY_ID = 2
@@ -142,6 +143,52 @@ def listing_render_key(listing: Listing | None) -> object:
     return freeze_render_value(listing)
 
 
+class RefreshRenderKeys:
+    """Detached comparison keys shared only within one synchronous refresh.
+
+    Source references guard object identity; comparison values contain the
+    same immutable tuples as the uncached helpers. Create a new context for
+    every refresh so in-place evidence changes are observed on the next one.
+    """
+
+    def __init__(self, listing: Listing | None) -> None:
+        self._listing_key = listing_render_key(listing)
+        self._applicant_keys: dict[int, tuple[Applicant, tuple]] = {}
+        self._package_keys: dict[int, tuple[PackageFit, object]] = {}
+
+    def applicant(self, applicant: Applicant) -> tuple:
+        cached = self._applicant_keys.get(id(applicant))
+        if cached is not None and cached[0] is applicant:
+            return cached[1]
+        key = rendered_applicant_key(applicant)
+        self._applicant_keys[id(applicant)] = (applicant, key)
+        return key
+
+    def listing(self) -> object:
+        return self._listing_key
+
+    def package(self, package: PackageFit | None) -> object:
+        if package is None:
+            return None
+        cached = self._package_keys.get(id(package))
+        if cached is not None and cached[0] is package:
+            return cached[1]
+        key = freeze_render_value(package)
+        self._package_keys[id(package)] = (package, key)
+        return key
+
+
+def _package_fit_render_key(
+    render_key: tuple,
+    package_fit_fn: Callable[[Iterable[Applicant], Listing | None], PackageFit],
+) -> tuple:
+    # Item level affects display, but canonical scoring never reads it. Custom
+    # scorers retain every field because their inputs may include item level.
+    if package_fit_fn is _CANONICAL_PACKAGE_FIT:
+        return tuple(field for field in render_key if field[0] != "ilvl")
+    return render_key
+
+
 def mplus_key_level(entry: object) -> int:
     if not isinstance(entry, dict):
         return 0
@@ -204,6 +251,7 @@ def sort_applicants_grouped_with_package_fits(
     package_fit_cache: dict[str, tuple[object, PackageFit]] | None = None,
     fit_cache_context: object = None,
     package_fit_fn: Callable[[Iterable[Applicant], Listing | None], PackageFit] = package_fit,
+    refresh_keys: RefreshRenderKeys | None = None,
 ) -> tuple[list[Applicant], dict[str, PackageFit], dict[str, CandidateFit]]:
     """Sort groups atomically while retaining package and member fit results."""
     apps = list(applicants)
@@ -235,8 +283,15 @@ def sort_applicants_grouped_with_package_fits(
         for raw_aid, members in group_members.items():
             fit_cache_key = (
                 fit_cache_context,
-                listing_render_key(listing),
-                tuple(rendered_applicant_key(member) for member in members),
+                refresh_keys.listing() if refresh_keys is not None else listing_render_key(listing),
+                tuple(
+                    _package_fit_render_key(
+                        refresh_keys.applicant(member)
+                        if refresh_keys is not None else rendered_applicant_key(member),
+                        package_fit_fn,
+                    )
+                    for member in members
+                ),
             )
             cached_fit = (
                 package_fit_cache.get(raw_aid)
