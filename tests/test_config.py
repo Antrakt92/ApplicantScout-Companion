@@ -8829,8 +8829,9 @@ def test_wow_sync_configurator_close_bounds_slow_worker(caplog):
     assert "did not finish" in caplog.text
 
 
-def test_retired_watchers_stop_all_requests_first_and_warns_over_budget(
-    monkeypatch: pytest.MonkeyPatch, caplog
+@pytest.mark.parametrize("budget", [0.0, 1.0])
+def test_retired_watchers_stop_all_requests_first_within_budget(
+    monkeypatch: pytest.MonkeyPatch, caplog, budget
 ):
     """P1-a: stops share one budget; slow stragglers log and quit continues."""
     events: list[tuple[str, str]] = []
@@ -8848,18 +8849,24 @@ def test_retired_watchers_stop_all_requests_first_and_warns_over_budget(
     tracker = main_mod._RetiredScreenshotWatchers()
     tracker._watchers[1] = FakeWatcher("a")  # type: ignore[assignment]
     tracker._watchers[2] = FakeWatcher("b")  # type: ignore[assignment]
-    monkeypatch.setattr(main_mod, "_RETIRED_WATCHERS_STOP_BUDGET_S", 0.0)
+    monkeypatch.setattr(main_mod, "_RETIRED_WATCHERS_STOP_BUDGET_S", budget)
 
     with caplog.at_level("WARNING"):
         tracker.stop_all()
 
-    assert events == [
+    expected = [
         ("a", "request"),
         ("b", "request"),
         ("a", "stop"),
         ("b", "stop"),
     ]
-    assert "budget" in caplog.text
+    if budget == 0.0:
+        assert events == []
+        assert set(tracker._watchers) == {1, 2}
+        assert "budget" in caplog.text
+    else:
+        assert events == expected
+        assert tracker._watchers == {}
 
 
 def test_shutdown_runtime_closes_remaining_resources_after_cache_failure(caplog):

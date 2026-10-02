@@ -3572,6 +3572,10 @@ class _RetiredScreenshotWatchers:
         self._lock = threading.Lock()
         self._stop_lock = threading.Lock()
         self._watchers: dict[int, ScreenshotWatcher] = {}
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_deadline: float | None = None
+        self._shutdown_worker: threading.Thread | None = None
+        self._shutdown_complete = False
 
     def _stop_one(
         self,
@@ -3582,10 +3586,20 @@ class _RetiredScreenshotWatchers:
     ) -> None:
         # WHY: shutdown can overlap the deferred retirement worker. Watcher.stop()
         # mutates and joins the observer, so calls for retained watchers must not race.
-        with self._stop_lock:
+        deadline = self._shutdown_deadline
+        if deadline is None:
+            self._stop_lock.acquire()
+        elif not self._stop_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return
+        try:
             with self._lock:
                 if self._watchers.get(identity) is not watcher:
                     return
+            # A retirement queued before shutdown may have waited behind a
+            # blocked stop. It must not start another stop after the budget.
+            deadline = self._shutdown_deadline
+            if deadline is not None and time.monotonic() >= deadline:
+                return
             try:
                 watcher.stop()
             except Exception as exc:  # noqa: BLE001 - ownership remains for retry
@@ -3594,6 +3608,8 @@ class _RetiredScreenshotWatchers:
             with self._lock:
                 if self._watchers.get(identity) is watcher:
                     self._watchers.pop(identity, None)
+        finally:
+            self._stop_lock.release()
 
     def retire(
         self,
@@ -3604,6 +3620,7 @@ class _RetiredScreenshotWatchers:
         identity = id(watcher)
         with self._lock:
             self._watchers[identity] = watcher
+            self._shutdown_complete = False
         request_stop = getattr(watcher, "request_stop", None)
         if callable(request_stop):
             try:
@@ -3633,12 +3650,58 @@ class _RetiredScreenshotWatchers:
             log.warning("Could not schedule previous screenshot watcher stop: %s", exc)
 
     def stop_all(self) -> None:
-        with self._lock:
+        deadline = time.monotonic() + max(0.0, _RETIRED_WATCHERS_STOP_BUDGET_S)
+        if not self._shutdown_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            log.warning("Retired screenshot watcher shutdown lock exceeded the shutdown budget")
+            return
+        try:
+            if self._shutdown_deadline is None:
+                self._shutdown_deadline = deadline
+            deadline = self._shutdown_deadline
+            worker = self._shutdown_worker
+            retry_available = worker is None or (
+                not worker.is_alive() and not self._shutdown_complete
+            )
+            if retry_available and time.monotonic() < deadline:
+                worker = threading.Thread(
+                    target=self._stop_all_until,
+                    args=(deadline,),
+                    name="ApplicantScoutRetiredWatchersShutdown",
+                    daemon=True,
+                )
+                try:
+                    worker.start()
+                except RuntimeError as exc:
+                    log.warning("Could not schedule retired screenshot watcher shutdown: %s", exc)
+                    return
+                self._shutdown_worker = worker
+            worker = self._shutdown_worker
+            if worker is not None:
+                worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            if not self._shutdown_complete:
+                log.warning(
+                    "Retired screenshot watcher cleanup incomplete within the %.1fs "
+                    "shutdown budget; unfinished watchers remain owned; continuing.",
+                    _RETIRED_WATCHERS_STOP_BUDGET_S,
+                )
+        finally:
+            self._shutdown_lock.release()
+
+    def _stop_all_until(self, deadline: float) -> None:
+        # request_stop(), observer joins and ownership locks can all stall.
+        # A single daemon owns this work; the caller waits only its budget.
+        if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return
+        try:
             watchers = tuple(self._watchers.items())
+        finally:
+            self._lock.release()
         # WHY: request_stop() is async — issue it to every watcher first so
         # their observers begin stopping in parallel instead of serializing
         # per-watcher blocking stops (up to ~4s each on Windows paths).
         for _identity, watcher in watchers:
+            if time.monotonic() >= deadline:
+                return
             request_stop = getattr(watcher, "request_stop", None)
             if callable(request_stop):
                 try:
@@ -3648,21 +3711,9 @@ class _RetiredScreenshotWatchers:
                         "Could not request retired screenshot watcher stop during shutdown: %s",
                         exc,
                     )
-        # WHY: Observer.stop()+join is not thread-safe across watchers, so
-        # joins stay serialized but share one budget — slow stragglers are
-        # logged and shutdown continues instead of hanging quit.
-        deadline = time.monotonic() + _RETIRED_WATCHERS_STOP_BUDGET_S
-        budget_warned = False
-        for index, (identity, watcher) in enumerate(watchers):
-            if not budget_warned and time.monotonic() >= deadline:
-                budget_warned = True
-                log.warning(
-                    "Retired screenshot watcher stops exceeded the %.1fs "
-                    "shutdown budget with %d of %d remaining; continuing.",
-                    _RETIRED_WATCHERS_STOP_BUDGET_S,
-                    len(watchers) - index,
-                    len(watchers),
-                )
+        for identity, watcher in watchers:
+            if time.monotonic() >= deadline:
+                return
             self._stop_one(
                 identity,
                 watcher,
@@ -3670,6 +3721,11 @@ class _RetiredScreenshotWatchers:
                     "Could not stop retired screenshot watcher during shutdown: %s"
                 ),
             )
+        if self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            try:
+                self._shutdown_complete = not self._watchers
+            finally:
+                self._lock.release()
 
 
 def _quiesce_screenshot_ingestion(
