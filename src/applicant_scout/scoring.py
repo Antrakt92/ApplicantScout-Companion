@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 
 from .constants import (
@@ -120,6 +120,9 @@ class _MPlusWCLSignal:
     median_percent: float | None
     run_count: int
     same_dungeon: bool = False
+    normalized_dungeon: tuple[str, str] | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 @dataclass(frozen=True)
@@ -621,6 +624,7 @@ def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCL
         normalised_name = normalise_dungeon_name(dungeon_name)
         if not normalised_name:
             continue
+        normalized_dungeon = (dungeon_name, normalised_name)
         for bracket in _iter_mplus_brackets(entry):
             key_level = positive_int(bracket.get("key_level"))
             percentile = safe_percent(bracket.get("parse_percent"))
@@ -634,6 +638,7 @@ def _mplus_wcl_signals(applicant: Applicant, listing: Listing) -> list[_MPlusWCL
                     median_percent=safe_percent(bracket.get("median_percent")),
                     run_count=nonnegative_int(bracket.get("run_count")),
                     same_dungeon=normalised_name in target_dungeon_keys,
+                    normalized_dungeon=normalized_dungeon,
                 )
             )
     return signals
@@ -1291,7 +1296,11 @@ def _mplus_wcl_total_runs(signals: list[_MPlusWCLSignal]) -> int:
 
 
 def _mplus_wcl_dungeon_key(signal: _MPlusWCLSignal) -> str | None:
-    dungeon_key = normalise_dungeon_name(signal.dungeon_name)
+    normalized_dungeon = signal.normalized_dungeon
+    if normalized_dungeon is None or normalized_dungeon[0] != signal.dungeon_name:
+        dungeon_key = normalise_dungeon_name(signal.dungeon_name)
+    else:
+        dungeon_key = normalized_dungeon[1]
     if not dungeon_key or signal.key_level <= 0:
         return None
     return dungeon_key
