@@ -42,9 +42,9 @@ _CONTENT_AUDIT_INTERVAL_SECONDS = 300.0
 _REGION_LOAD_ATTEMPTS = 2
 _PROVIDER_HEADER_MAX_CHARS = 64 * 1024
 LOOKUP_PAYLOAD_CACHE_DIR_NAME = "raiderio-local"
-_LOOKUP_PAYLOAD_CACHE_VERSION = 3
+_LOOKUP_PAYLOAD_CACHE_VERSION = 4
 _LOOKUP_PAYLOAD_CACHE_SUFFIX = ".payload.bin"
-_LOOKUP_PAYLOAD_CACHE_MAGIC = b"ASRIOv3\0"
+_LOOKUP_PAYLOAD_CACHE_MAGIC = b"ASRIOv4\0"
 _LOOKUP_PAYLOAD_CACHE_HEADER = struct.Struct(">8s32sQ32s")
 _LOOKUP_PAYLOAD_CACHE_LOCK = threading.Lock()
 _LOOKUP_PAYLOAD_CACHE_GENERATIONS: dict[Path, int] = {}
@@ -1401,6 +1401,8 @@ def _find_lua_string_end(text: str, start: int) -> int:
 
 
 def _decode_lua_string_bytes(value: str) -> bytes:
+    escapes = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11,
+               "\\": 92, '"': 34, "'": 39}
     out = bytearray()
     idx = 0
     size = len(value)
@@ -1411,16 +1413,28 @@ def _decode_lua_string_bytes(value: str) -> bytes:
             idx += 1
             continue
         idx += 1
+        if idx == size:
+            raise ValueError("incomplete RaiderIO Lua escape")
         if idx < size and "0" <= value[idx] <= "9":
             end = idx + 1
             while end < size and end < idx + 3 and "0" <= value[end] <= "9":
                 end += 1
-            out.append(int(value[idx:end]) & 0xFF)
+            byte = int(value[idx:end])
+            if byte > 255:
+                raise ValueError("RaiderIO Lua decimal escape exceeds one byte")
+            out.append(byte)
             idx = end
-        elif idx < len(value):
+        else:
             escaped = value[idx]
-            out.extend(escaped.encode("utf-8"))
             idx += 1
+            if escaped in "\r\n":
+                if idx < size and value[idx] in "\r\n" and value[idx] != escaped:
+                    idx += 1
+                out.append(10)
+            elif escaped in escapes:
+                out.append(escapes[escaped])
+            else:
+                raise ValueError("unsupported RaiderIO Lua escape")
     return bytes(out)
 
 
