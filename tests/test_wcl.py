@@ -190,7 +190,7 @@ class _FakeAuth:
     def get_token(self) -> str:
         return "test-token"
 
-    def invalidate(self) -> None:
+    def invalidate(self, _rejected_token: str | None = None) -> None:
         self.invalidations += 1
 
 
@@ -1806,7 +1806,7 @@ def test_second_oauth_refresh_network_error_sets_short_retry_after_401(
                 raise httpx.ReadTimeout("oauth refresh timed out")
             return "stale-token"
 
-        def invalidate(self) -> None:
+        def invalidate(self, _rejected_token: str | None = None) -> None:
             self.invalidated = True
 
     auth = TimeoutAfterInvalidateAuth()
@@ -1918,7 +1918,7 @@ def test_second_oauth_refresh_503_sets_short_retry_after_401(
                 )
             return "stale-token"
 
-        def invalidate(self) -> None:
+        def invalidate(self, _rejected_token: str | None = None) -> None:
             self.invalidated = True
 
     auth = ServerErrorAfterInvalidateAuth()
