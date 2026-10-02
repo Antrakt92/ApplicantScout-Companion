@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSizeGrip,
     QSizePolicy,
@@ -173,6 +174,7 @@ _FETCH_SHUTDOWN_TIMEOUT_MS = 8000
 # Keep existing evidence column indices stable; Fit is moved visually after RIO.
 # Cap Name growth so one long character name cannot force the overlay wide.
 COLUMN_HEADERS = ["Spec", "Name", "iLvl", "RIO", "Normal", "Heroic", "Mythic", "M+ DPS", "Fit"]
+_SortMenuContext = tuple[str, tuple[int, bool] | None, tuple[tuple[int, str], ...]]
 COLUMN_WIDTHS = [74, 112, 44, 84, 64, 64, 64, 112, 90]
 NAME_COLUMN_MAX_WIDTH = 126
 DUNGEON_NAME_WIDTH = 148
@@ -2104,6 +2106,7 @@ class RoleFilterBar(QWidget):
 
         self._buttons: dict[str, QPushButton] = {}
         self._active: set[str] = set()
+        self._role_button_text: dict[str, str] = {}
         # Order: TANK | HEAL | DPS — matches Blizzard role-checkbox UI in
         # Group Finder for muscle-memory consistency.
         for role in ("TANK", "HEALER", "DAMAGER"):
@@ -2128,6 +2131,7 @@ class RoleFilterBar(QWidget):
                 btn.setText(f"{ROLE_GLYPHS[role]} {ROLE_LABELS[role]}")
             btn.toggled.connect(lambda on, r=role: self._on_toggled(r, on))
             self._buttons[role] = btn
+            self._role_button_text[role] = btn.text()
             layout.addWidget(btn)
 
         layout.addStretch(1)
@@ -2189,6 +2193,47 @@ class RoleFilterBar(QWidget):
             self._status.setText("")
         else:
             self._status.setText(f"showing {visible} / {total} entries")
+        self._sync_compact_layout()
+
+    def _sync_compact_layout(self) -> None:
+        layout = self.layout()
+        if layout is None:
+            return
+        for role, button in self._buttons.items():
+            text = self._role_button_text[role]
+            if button.text() != text:
+                button.setText(text)
+        buttons: list[QPushButton] = []
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            button = item.widget() if item is not None else None
+            if isinstance(button, QPushButton) and not button.isHidden():
+                buttons.append(button)
+        button_width = sum(
+            max(button.minimumSizeHint().width(), button.minimumWidth())
+            for button in buttons
+        )
+        has_status = bool(self._status.text())
+        required = button_width + 16 + 5 * (len(buttons) - 1)
+        if has_status:
+            required += self._status.minimumSizeHint().width() + 5
+        compact = required > self.width()
+        icons_only = compact and button_width + 8 + 3 * (len(buttons) - 1) > self.width()
+        for role, button in self._buttons.items():
+            if icons_only:
+                text = "" if not button.icon().isNull() else ROLE_GLYPHS[role]
+                if button.text() != text:
+                    button.setText(text)
+            tooltip = button.accessibleName() if icons_only else ""
+            if button.toolTip() != tooltip:
+                button.setToolTip(tooltip)
+        layout.setContentsMargins(4 if compact else 8, 3, 4 if compact else 8, 3)
+        layout.setSpacing(3 if compact else 5)
+        self._status.setVisible(has_status and not compact)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_compact_layout()
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -3937,8 +3982,20 @@ class OverlayWindow(QMainWindow):
         self._role_filter_bar = RoleFilterBar(container)
         self._role_filter_bar.filterChanged.connect(self._on_role_filter_changed)
         layout.addWidget(self._role_filter_bar)
+        self._sort_button = _KeyboardButton("Sort", self._role_filter_bar)
+        self._sort_button.setObjectName("groupedSortButton")
+        self._sort_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self._sort_button.setToolTip("Choose sort order; applicant groups stay together.")
+        self._sort_button.clicked.connect(self._open_sort_menu)
+        role_layout = self._role_filter_bar.layout()
+        if role_layout is not None:
+            role_layout.addWidget(self._sort_button)
+        self._sort_menu = QMenu(self)
+        self._sort_menu.setAccessibleName("Grouped sort order")
+        self._sort_menu_context: _SortMenuContext | None = None
         self._action_tooltip_widgets = (
             *self._role_filter_bar.tooltip_widgets(),
+            self._sort_button,
             self._title_bar.settings_button,
             self._title_bar.hide_button,
         )
@@ -4388,6 +4445,7 @@ class OverlayWindow(QMainWindow):
             self._role_filter_bar._buttons["HEALER"],
             self._role_filter_bar._buttons["DAMAGER"],
             self._role_filter_bar._reset_btn,
+            self._sort_button,
             self._panel._wcl_retry_button,
             self._panel._unpin_button,
             self._panel._detail_buttons["raid"],
@@ -4816,7 +4874,11 @@ class OverlayWindow(QMainWindow):
         open_overlay_interaction_foreground = (
             open_overlay_visible
             and not foreground
-            and (self.isActiveWindow() or self._cursor_over_open_overlay())
+            and (
+                self.isActiveWindow()
+                or self._cursor_over_open_overlay()
+                or self._sort_menu.isVisible()
+            )
         )
         if open_overlay_interaction_foreground:
             self._open_overlay_foreground_loss_grace_until = (
@@ -4911,15 +4973,86 @@ class OverlayWindow(QMainWindow):
         previous = self._sort_by_tab.get(self._active_tab)
         default_descending = column not in {COL_SPEC, COL_NAME}
         if previous is None or previous[0] != column:
-            self._sort_by_tab[self._active_tab] = (column, default_descending)
+            self._set_manual_sort(column, default_descending)
         elif previous[1] == default_descending:
-            self._sort_by_tab[self._active_tab] = (column, not default_descending)
+            self._set_manual_sort(column, not default_descending)
         else:
             # Third click on the same column clears the manual sort so the
             # table falls back to the default model order.
-            del self._sort_by_tab[self._active_tab]
+            self._set_manual_sort(None)
+
+    def _set_manual_sort(self, column: int | None, descending: bool = True) -> None:
+        if column is None:
+            self._sort_by_tab.pop(self._active_tab, None)
+        elif 0 <= column < len(COLUMN_HEADERS) and not self._table.isColumnHidden(column):
+            self._sort_by_tab[self._active_tab] = (column, descending)
+        else:
+            return
         self._metric_column_widths_dirty = True
         self._refresh_table()
+
+    def _open_sort_menu(self) -> None:
+        self._sort_menu.clear()
+        opened_context = self._sort_context()
+        self._sort_menu_context = opened_context
+        selected = self._active_manual_sort()
+        default = self._sort_menu.addAction("Default grouped order")
+        default.setCheckable(True)
+        default.setChecked(selected is None)
+        default.triggered.connect(
+            lambda _checked=False: self._apply_sort_menu_choice(opened_context, None)
+        )
+        self._sort_menu.addSeparator()
+        for column in range(self._table.columnCount()):
+            if self._table.isColumnHidden(column):
+                continue
+            item = self._table.horizontalHeaderItem(column)
+            title = item.text() if item is not None else COLUMN_HEADERS[column]
+            submenu = self._sort_menu.addMenu(title)
+            for descending, direction in ((False, "Ascending"), (True, "Descending")):
+                action = submenu.addAction(direction)
+                action.setCheckable(True)
+                action.setChecked(selected == (column, descending))
+                action.triggered.connect(
+                    lambda _checked=False, col=column, desc=descending:
+                    self._apply_sort_menu_choice(opened_context, col, desc)
+                )
+        self._sort_menu.popup(
+            self._sort_button.mapToGlobal(QPoint(0, self._sort_button.height()))
+        )
+
+    def _sort_context(self) -> _SortMenuContext:
+        columns = []
+        for column in range(self._table.columnCount()):
+            if self._table.isColumnHidden(column):
+                continue
+            item = self._table.horizontalHeaderItem(column)
+            columns.append((column, item.text() if item is not None else COLUMN_HEADERS[column]))
+        return self._active_tab, self._active_manual_sort(), tuple(columns)
+
+    def _apply_sort_menu_choice(
+        self, opened_context: _SortMenuContext, column: int | None,
+        descending: bool = True,
+    ) -> None:
+        if not self._closed and opened_context == self._sort_context():
+            self._set_manual_sort(column, descending)
+
+    def _update_sort_accessibility(self) -> None:
+        if self._sort_menu.isVisible() and self._sort_menu_context != self._sort_context():
+            self._sort_menu.close()
+        selected = self._active_manual_sort()
+        order = "default grouped order"
+        if selected is not None:
+            column, descending = selected
+            item = self._table.horizontalHeaderItem(column)
+            title = item.text() if item is not None else COLUMN_HEADERS[column]
+            order = f"{title}, {'descending' if descending else 'ascending'}"
+        source = "party" if self._active_tab == "party" else "applicants"
+        self._sort_button.setAccessibleName(f"Sort {source}")
+        self._sort_button.setAccessibleDescription(
+            f"Current order: {order}. Open the sort menu to choose a column and direction. "
+            "Applicant groups stay together."
+        )
 
     def _active_manual_sort(self) -> tuple[int, bool] | None:
         selected = self._sort_by_tab.get(self._active_tab)
@@ -5006,6 +5139,7 @@ class OverlayWindow(QMainWindow):
         if key not in self._hover_by_tab:
             return
         if key != self._active_tab:
+            self._sort_menu.close()
             self._reset_panel_height_reservation()
             self._hover_by_tab[self._active_tab] = self._hover_id
             self._pinned_by_tab[self._active_tab] = self._pinned_id
@@ -7269,6 +7403,7 @@ class OverlayWindow(QMainWindow):
             if header.text() != title:
                 header.setText(title)
                 self._metric_column_widths_dirty = True
+        self._update_sort_accessibility()
         current_visibility = tuple(
             self._table.isColumnHidden(col) for col in (COL_N, COL_H, COL_M)
         )
@@ -8314,6 +8449,10 @@ class OverlayWindow(QMainWindow):
             self._reresolve_hover_from_cursor()
         finally:
             self._handling_resize = False
+
+    def hideEvent(self, event):
+        self._sort_menu.close()
+        super().hideEvent(event)
 
     def closeEvent(self, event):
         if self._closed:

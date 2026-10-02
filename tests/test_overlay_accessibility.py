@@ -192,6 +192,7 @@ def test_overlay_exposes_named_controls_without_weakening_passive_show(qtbot, tm
             window._role_filter_bar._buttons["HEALER"],
             window._role_filter_bar._buttons["DAMAGER"],
             window._role_filter_bar._reset_btn,
+            window._sort_button,
             window._panel._wcl_retry_button,
             window._panel._unpin_button,
             window._panel._detail_buttons["raid"],
@@ -410,7 +411,7 @@ def test_table_tab_and_backtab_leave_cell_navigation(qtbot, tmp_path, monkeypatc
             lambda reason=Qt.FocusReason.OtherFocusReason: forward_focus.append(reason),
         )
         monkeypatch.setattr(
-            window._role_filter_bar._buttons["DAMAGER"],
+            window._sort_button,
             "setFocus",
             lambda reason=Qt.FocusReason.OtherFocusReason: backward_focus.append(
                 reason
