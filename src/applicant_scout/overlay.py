@@ -74,6 +74,7 @@ from PySide6.QtWidgets import (
 from .constants import (
     ALL_ROLES,
     CLASS_COLOURS,
+    CLASS_TEXT_COLOURS,
     CURRENT_RAID_ENCOUNTERS,
     ROLE_COLOURS,
     ROLE_GLYPHS,
@@ -2762,7 +2763,9 @@ class ApplicantInfoPanel(QFrame):
         raw_name, _, raw_realm = applicant.name.partition("-")
         class_hex = CLASS_COLOURS.get(applicant.cls, "#FFFFFF")
         self._name_label.setText(raw_name or "?")
-        self._name_label.setStyleSheet(f"color: {class_hex};")
+        self._name_label.setStyleSheet(
+            f"color: {CLASS_TEXT_COLOURS.get(applicant.cls, '#FFFFFF')};"
+        )
         self._name_label.setVisible(True)
         self._realm_label.setText(raw_realm)
         self._realm_label.setVisible(bool(raw_realm))
