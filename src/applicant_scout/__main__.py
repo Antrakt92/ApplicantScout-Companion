@@ -4531,6 +4531,7 @@ class _SettingsApplyOutcome:
     values: object
     apply_credentials: bool
     error: Exception | None
+    rollback_snapshot: _PersistedConfigSnapshot | None = None
 
 
 class _SettingsApplySignals(QObject):
@@ -4565,6 +4566,9 @@ class _CoalescedSettingsApplier(QObject):
         self._generation = 0
         self._pending: tuple[int, object, bool] | None = None
         self._busy = False
+        # Skipped prepares have already written disk bytes. Carry the last
+        # committed bytes until a GUI commit actually promotes the runtime.
+        self._rollback_snapshot: _PersistedConfigSnapshot | None = None
         self._on_busy: Callable[[], None] | None = None
         self._on_ready: Callable[[_SettingsApplyOutcome], None] | None = None
         self.finished.connect(self._on_finished)
@@ -4599,24 +4603,29 @@ class _CoalescedSettingsApplier(QObject):
             self._busy = True
         generation, values, apply_credentials = item
         old_cfg = self._current_cfg()
+        rollback_snapshot = self._rollback_snapshot
 
         def _worker() -> None:
+            snapshot = rollback_snapshot
             try:
+                if snapshot is None:
+                    snapshot = _capture_persisted_config_snapshot(old_cfg)
                 prepared = _prepare_settings_apply(
                     cfg=old_cfg,
                     values=values,
                     apply_credentials=apply_credentials,
+                    persisted_snapshot=snapshot,
                 )
             except Exception as exc:  # noqa: BLE001 - delivered to the GUI slot
                 self.finished.emit(
                     _SettingsApplyOutcome(
-                        generation, False, None, values, apply_credentials, exc
+                        generation, False, None, values, apply_credentials, exc, snapshot
                     )
                 )
             else:
                 self.finished.emit(
                     _SettingsApplyOutcome(
-                        generation, True, prepared, values, apply_credentials, None
+                        generation, True, prepared, values, apply_credentials, None, snapshot
                     )
                 )
 
@@ -4638,9 +4647,10 @@ class _CoalescedSettingsApplier(QObject):
             return
         outcome = raw
         with self._lock:
-            self._busy = False
             pending = self._pending
             latest = self._generation
+        if outcome.rollback_snapshot is not None:
+            self._rollback_snapshot = outcome.rollback_snapshot
         deliver = True
         if pending is not None and outcome.generation != latest:
             # Superseded: coalesce watcher/overlay rebuilds. Never drop a
@@ -4648,9 +4658,21 @@ class _CoalescedSettingsApplier(QObject):
             _pending_generation, _pending_values, pending_credentials = pending
             if not outcome.apply_credentials or pending_credentials:
                 deliver = False
-        if deliver and self._on_ready is not None:
-            self._on_ready(outcome)
-        self._pump()
+        try:
+            if deliver and self._on_ready is not None:
+                self._on_ready(outcome)
+        finally:
+            # UI reporting can raise after the runtime has already committed.
+            # Keep that successful state as the baseline for the next worker.
+            if (
+                deliver
+                and outcome.prepared is not None
+                and self._current_cfg() is outcome.prepared.new_cfg
+            ):
+                self._rollback_snapshot = None
+            with self._lock:
+                self._busy = False
+            self._pump()
 
     def drain(self, timeout_s: float = 5.0) -> bool:
         """Pump events until the pipeline is idle. GUI thread only."""
@@ -4706,22 +4728,34 @@ def _prepare_settings_apply(
     cfg: Config,
     values,
     apply_credentials: bool,
+    persisted_snapshot: _PersistedConfigSnapshot | None = None,
 ) -> _PreparedSettingsApply:
     """Build the new config and persist it. No Qt interaction (H3 worker)."""
     old_cfg = cfg
-    new_cfg = _settings_values_to_config(
-        old_cfg,
-        values,
-        apply_credentials=apply_credentials,
-    )
-    new_cfg = _apply_process_env_overrides_to_config(new_cfg)
-    new_screenshots_dir = screenshots_path_candidate(new_cfg)
-    persisted_snapshot = _capture_persisted_config_snapshot(old_cfg)
-    _persist_settings_values(
-        old_cfg,
-        values,
-        apply_credentials=apply_credentials,
-    )
+    restore_on_failure = persisted_snapshot is not None
+    if persisted_snapshot is None:
+        persisted_snapshot = _capture_persisted_config_snapshot(old_cfg)
+    try:
+        new_cfg = _settings_values_to_config(
+            old_cfg,
+            values,
+            apply_credentials=apply_credentials,
+        )
+        new_cfg = _apply_process_env_overrides_to_config(new_cfg)
+        new_screenshots_dir = screenshots_path_candidate(new_cfg)
+        restore_on_failure = True
+        _persist_settings_values(
+            old_cfg,
+            values,
+            apply_credentials=apply_credentials,
+        )
+    except Exception:
+        if restore_on_failure:
+            try:
+                _restore_persisted_config_snapshot(persisted_snapshot)
+            except Exception:
+                log.exception("Failed to restore settings after preparation failure")
+        raise
     return _PreparedSettingsApply(
         old_cfg=old_cfg,
         new_cfg=new_cfg,
@@ -5908,6 +5942,13 @@ def main(argv: list[str] | None = None) -> int:
                     7000,
                 )
 
+        # One disk transaction owner survives dialog closure and reopening.
+        settings_applier = _CoalescedSettingsApplier(
+            app if isinstance(app, QObject) else None,
+            current_cfg=lambda: cfg,
+        )
+        _set_settings_apply_drain(settings_applier.drain)
+
         def _show_settings() -> None:
             nonlocal auth
             nonlocal cfg
@@ -5953,10 +5994,12 @@ def main(argv: list[str] | None = None) -> int:
 
             def _forget_dialog() -> None:
                 nonlocal settings_dialog
-                settings_dialog = None
+                if settings_dialog is dialog:
+                    settings_dialog = None
 
             def _request_startup_shortcut(enabled: bool) -> None:
-                dialog.set_wow_sync_repair_pending(True)
+                if settings_dialog is dialog:
+                    dialog.set_wow_sync_repair_pending(True)
                 # Narrowed for the type checker: closured main locals keep
                 # their declared Optional type (set once before the dialog).
                 assert wow_sync_startup_configurator is not None
@@ -5996,7 +6039,8 @@ def main(argv: list[str] | None = None) -> int:
                 settings_applier.submit(values, apply_credentials=apply_credentials)
 
             def _mark_apply_busy() -> None:
-                dialog.set_status("Saving...", busy=True)
+                if settings_dialog is dialog:
+                    dialog.set_status("Saving...", busy=True)
 
             def _commit_apply_outcome(outcome: _SettingsApplyOutcome) -> None:
                 nonlocal auth
@@ -6006,13 +6050,13 @@ def main(argv: list[str] | None = None) -> int:
                 nonlocal wow_exit_timer
                 values = outcome.values
                 apply_credentials = outcome.apply_credentials
-                if settings_dialog is not dialog:
-                    return
+                dialog_active = settings_dialog is dialog
                 if not outcome.ok or outcome.prepared is None:
                     exc = outcome.error
                     log.warning("Could not apply settings change: %s", exc)
-                    dialog.report_values_apply_result(False)
-                    dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
+                    if dialog_active:
+                        dialog.report_values_apply_result(False)
+                        dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
                     return
                 try:
                     result = _commit_settings_apply(
@@ -6043,16 +6087,21 @@ def main(argv: list[str] | None = None) -> int:
                     subprocess.SubprocessError,
                 ) as exc:
                     log.warning("Could not apply settings change: %s", exc)
-                    dialog.report_values_apply_result(False)
-                    dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
+                    if dialog_active:
+                        dialog.report_values_apply_result(False)
+                        dialog.set_status(f"Could not save/apply settings: {exc}", error=True)
                     return
                 startup_shortcut_changed = cfg.sync_with_wow != result.cfg.sync_with_wow
-                dialog.report_values_apply_result(True)
                 cfg = result.cfg
                 auth = result.auth
                 watcher = result.watcher
                 current_screenshots_dir = result.current_screenshots_dir
                 wow_exit_timer = result.wow_exit_timer
+                if startup_shortcut_changed:
+                    _request_startup_shortcut(cfg.sync_with_wow)
+                if not dialog_active:
+                    return
+                dialog.report_values_apply_result(True)
                 overrides = result.overrides
                 path_warning = dialog.current_screenshots_warning()
                 if apply_credentials:
@@ -6072,18 +6121,10 @@ def main(argv: list[str] | None = None) -> int:
                         error=status_error,
                         warning=status_warning,
                     )
-                if startup_shortcut_changed:
-                    _request_startup_shortcut(cfg.sync_with_wow)
-
-            settings_applier = _CoalescedSettingsApplier(
-                app if isinstance(app, QObject) else None,
-                current_cfg=lambda: cfg,
-            )
             settings_applier.configure(
                 on_busy=_mark_apply_busy,
                 on_ready=_commit_apply_outcome,
             )
-            _set_settings_apply_drain(settings_applier.drain)
 
             def _handle_values_changed(values) -> None:
                 _apply_settings_values(values, apply_credentials=False)
