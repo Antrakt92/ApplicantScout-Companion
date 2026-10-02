@@ -2050,13 +2050,11 @@ def _update_completion_from_result(
 
 
 class _UpdateQuitGate:
-    def __init__(self, *, handoff_exit_timeout_s: float = 15.0) -> None:
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._update_in_progress = False
         self._installer_handoff_started = False
         self._attempt_generation = 0
-        self._handoff_exit_timeout_s = handoff_exit_timeout_s
-        self._handoff_exit_waiter: Callable[[float], bool] | None = None
 
     @property
     def update_in_progress(self) -> bool:
@@ -2085,12 +2083,6 @@ class _UpdateQuitGate:
             self._installer_handoff_started = False
             return True
 
-    def set_handoff_exit_waiter(
-        self, waiter: Callable[[float], bool] | None
-    ) -> None:
-        with self._lock:
-            self._handoff_exit_waiter = waiter
-
     def mark_installer_handoff_started(self) -> bool:
         with self._lock:
             if not self._update_in_progress:
@@ -2114,19 +2106,10 @@ class _UpdateQuitGate:
     def prepare_control_quit(self, normal_prepare: Callable[[], bool]) -> bool:
         with self._lock:
             handoff = self._update_in_progress and self._installer_handoff_started
-            waiter = self._handoff_exit_waiter
-            timeout_s = self._handoff_exit_timeout_s
         if handoff:
-            # Control-quit during installer handoff: the installer keeps
-            # running headless after this process exits, so wait bounded
-            # (<=15s) for its exit instead of abandoning it unverified, then
-            # quit regardless. Promotion success is confirmed by the next
-            # hourly update check. User-quit stays blocked via can_user_quit.
-            if waiter is not None:
-                try:
-                    waiter(timeout_s)
-                except Exception as exc:  # noqa: BLE001 - quit regardless
-                    log.warning("Could not wait for update installer exit: %s", exc)
+            # The installer waits for this process to exit before promotion.
+            # Acknowledge now; the quit pipeline still flushes owned state.
+            # The relaunched process verifies the installed payload.
             return True
         return normal_prepare()
 
@@ -6298,12 +6281,6 @@ def main(argv: list[str] | None = None) -> int:
             app,
             on_recover=_recover_update_handoff,
         )
-        # Fix 7: control-quit during installer handoff waits bounded for the
-        # installer exit (see _UpdateQuitGate.prepare_control_quit).
-        update_quit_gate.set_handoff_exit_waiter(
-            update_handoff_recovery.wait_for_installer_exit
-        )
-
         def _run_update() -> None:
             if update_quit_gate.update_in_progress:
                 return

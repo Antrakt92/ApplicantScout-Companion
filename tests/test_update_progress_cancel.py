@@ -745,19 +745,18 @@ def test_update_attempt_generations_keep_live_attempt_locked():
     assert not gate.update_in_progress
 
 
-def test_control_quit_during_handoff_waits_bounded_for_installer_exit():
-    gate = main_mod._UpdateQuitGate(handoff_exit_timeout_s=5.0)
+def test_control_quit_during_handoff_does_not_wait_for_installer_exit():
+    gate = main_mod._UpdateQuitGate()
     gate.begin_update_attempt()
     assert gate.mark_installer_handoff_started() is True
 
-    waits: list[float] = []
-    gate.set_handoff_exit_waiter(lambda timeout: waits.append(timeout) or True)
-
-    assert gate.prepare_control_quit(lambda: False) is True
-    assert waits == [5.0]
+    prepare_calls: list[bool] = []
+    started = time.monotonic()
+    assert gate.prepare_control_quit(lambda: prepare_calls.append(True) or False) is True
+    # The installer cannot exit until the source process acknowledges and exits.
+    assert prepare_calls == []
+    assert time.monotonic() - started < 0.5
     assert not gate.can_user_quit()
-
-    gate.set_handoff_exit_waiter(None)
 
     assert gate.prepare_control_quit(lambda: False) is True
 
