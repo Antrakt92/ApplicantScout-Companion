@@ -988,20 +988,20 @@ def _snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
 
 def _decoded_listing_from_dict(data: dict[str, Any]) -> DecodedListing:
     return DecodedListing(
-        activity_id=_strict_int_field(data, "activity_id"),
-        key_level=_strict_int_field(data, "key_level"),
+        activity_id=_strict_uint_field(data, "activity_id", maximum=0xFFFFFFFF),
+        key_level=_strict_uint_field(data, "key_level"),
         dungeon_name=_strict_str_field(data, "dungeon_name"),
         listing_name=_strict_str_field(data, "listing_name"),
         comment=_strict_str_field(data, "comment"),
-        category_id=_strict_int_field(data, "category_id"),
-        difficulty_id=_strict_int_field(data, "difficulty_id"),
+        category_id=_strict_uint_field(data, "category_id", maximum=0xFFFF),
+        difficulty_id=_strict_uint_field(data, "difficulty_id", maximum=0xFFFF),
     )
 
 
 def _decoded_leader_key_from_dict(data: dict[str, Any]) -> DecodedLeaderKey:
     return DecodedLeaderKey(
-        key_level=_strict_int_field(data, "key_level"),
-        challenge_map_id=_strict_int_field(data, "challenge_map_id"),
+        key_level=_strict_uint_field(data, "key_level"),
+        challenge_map_id=_strict_uint_field(data, "challenge_map_id", maximum=0xFFFF),
         player_name=_strict_str_field(data, "player_name"),
     )
 
@@ -1010,71 +1010,71 @@ def _decoded_version_from_dict(data: dict[str, Any]) -> DecodedVersion:
     return DecodedVersion(
         addon_version=_strict_str_field(data, "addon_version"),
         game_version=_strict_str_field(data, "game_version"),
-        region_id=_strict_int_field(data, "region_id"),
+        region_id=_strict_uint_field(data, "region_id"),
         player_name=_strict_str_field(data, "player_name"),
     )
 
 
 def _decoded_applicant_from_dict(data: dict[str, Any]) -> DecodedApplicant:
     return DecodedApplicant(
-        applicant_id=_strict_int_field(data, "applicant_id"),
-        class_id=_strict_int_field(data, "class_id"),
-        spec_id=_strict_int_field(data, "spec_id"),
-        ilvl=_strict_int_field(data, "ilvl"),
-        score=_strict_int_field(data, "score"),
-        role=_strict_int_field(data, "role"),
+        applicant_id=_strict_uint_field(data, "applicant_id", maximum=0xFFFFFFFF),
+        class_id=_strict_uint_field(data, "class_id"),
+        spec_id=_strict_uint_field(data, "spec_id", maximum=0xFFFF),
+        ilvl=_strict_uint_field(data, "ilvl", maximum=0xFFFF),
+        score=_strict_uint_field(data, "score", maximum=0xFFFF),
+        role=_strict_uint_field(data, "role", maximum=3),
         name=_strict_str_field(data, "name"),
-        main_score=_strict_int_field(data, "main_score"),
+        main_score=_strict_uint_field(data, "main_score", maximum=0xFFFF),
         rio_profile=_strict_bool(_required_field(data, "rio_profile")),
-        rio_best_key=_strict_int_field(data, "rio_best_key"),
-        rio_best_dungeon_key=_strict_int_field(data, "rio_best_dungeon_key"),
-        rio_timed_at_or_above=_strict_int_field(data, "rio_timed_at_or_above"),
-        rio_timed_at_or_above_minus1=_strict_int_field(
+        rio_best_key=_strict_uint_field(data, "rio_best_key"),
+        rio_best_dungeon_key=_strict_uint_field(data, "rio_best_dungeon_key"),
+        rio_timed_at_or_above=_strict_uint_field(data, "rio_timed_at_or_above"),
+        rio_timed_at_or_above_minus1=_strict_uint_field(
             data,
             "rio_timed_at_or_above_minus1",
         ),
-        rio_timed_at_or_above_minus2=_strict_int_field(
+        rio_timed_at_or_above_minus2=_strict_uint_field(
             data,
             "rio_timed_at_or_above_minus2",
         ),
-        rio_completed_at_or_above_minus1=_strict_int_field(
+        rio_completed_at_or_above_minus1=_strict_uint_field(
             data,
             "rio_completed_at_or_above_minus1",
         ),
-        rio_dungeon_count=_strict_int_field(data, "rio_dungeon_count"),
+        rio_dungeon_count=_strict_uint_field(data, "rio_dungeon_count"),
         rio_dungeons=_list_of_dicts(_required_field(data, "rio_dungeons")),
-        member_idx=_strict_int_field(data, "member_idx"),
+        member_idx=_strict_uint_field(data, "member_idx", minimum=1, maximum=5),
     )
 
 
 def _decoded_roster_member_from_dict(data: dict[str, Any]) -> DecodedRosterMember:
     return DecodedRosterMember(
-        unit_index=_strict_int_field(data, "unit_index"),
-        flags=_strict_int_field(data, "flags"),
-        subgroup=_strict_int_field(data, "subgroup"),
-        class_id=_strict_int_field(data, "class_id"),
-        spec_id=_strict_int_field(data, "spec_id"),
-        ilvl=_strict_int_field(data, "ilvl"),
-        score=_strict_int_field(data, "score"),
-        main_score=_strict_int_field(data, "main_score"),
+        unit_index=_strict_uint_field(data, "unit_index"),
+        flags=_strict_uint_field(data, "flags"),
+        subgroup=_strict_uint_field(data, "subgroup"),
+        class_id=_strict_uint_field(data, "class_id"),
+        spec_id=_strict_uint_field(data, "spec_id", maximum=0xFFFF),
+        ilvl=_strict_uint_field(data, "ilvl", maximum=0xFFFF),
+        score=_strict_uint_field(data, "score", maximum=0xFFFF),
+        main_score=_strict_uint_field(data, "main_score", maximum=0xFFFF),
         rio_profile=_strict_bool(_required_field(data, "rio_profile")),
-        rio_best_key=_strict_int_field(data, "rio_best_key"),
-        rio_best_dungeon_key=_strict_int_field(data, "rio_best_dungeon_key"),
-        rio_timed_at_or_above=_strict_int_field(data, "rio_timed_at_or_above"),
-        rio_timed_at_or_above_minus1=_strict_int_field(
+        rio_best_key=_strict_uint_field(data, "rio_best_key"),
+        rio_best_dungeon_key=_strict_uint_field(data, "rio_best_dungeon_key"),
+        rio_timed_at_or_above=_strict_uint_field(data, "rio_timed_at_or_above"),
+        rio_timed_at_or_above_minus1=_strict_uint_field(
             data,
             "rio_timed_at_or_above_minus1",
         ),
-        rio_timed_at_or_above_minus2=_strict_int_field(
+        rio_timed_at_or_above_minus2=_strict_uint_field(
             data,
             "rio_timed_at_or_above_minus2",
         ),
-        rio_completed_at_or_above_minus1=_strict_int_field(
+        rio_completed_at_or_above_minus1=_strict_uint_field(
             data,
             "rio_completed_at_or_above_minus1",
         ),
-        rio_dungeon_count=_strict_int_field(data, "rio_dungeon_count"),
-        role=_strict_int_field(data, "role"),
+        rio_dungeon_count=_strict_uint_field(data, "rio_dungeon_count"),
+        role=_strict_uint_field(data, "role", maximum=3),
         name=_strict_str_field(data, "name"),
         rio_dungeons=_list_of_dicts(_required_field(data, "rio_dungeons")),
     )
@@ -1107,11 +1107,21 @@ def _required_field(data: dict[str, Any], key: str) -> object:
     return data[key]
 
 
-def _strict_int_field(data: dict[str, Any], key: str) -> int:
+def _strict_uint_field(
+    data: dict[str, Any],
+    key: str,
+    *,
+    minimum: int = 0,
+    maximum: int = 0xFF,
+) -> int:
+    # These cached fields come from unsigned wire integers. Validate before
+    # restoring them into scoring or Qt; Python integers have no size limit.
     value = _required_field(data, key)
-    if type(value) is int:
-        return value
-    raise ValueError(f"{key} expected int")
+    if type(value) is not int:
+        raise ValueError(f"{key} expected int")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{key} outside supported range {minimum}..{maximum}")
+    return value
 
 
 def _strict_str_field(data: dict[str, Any], key: str) -> str:
