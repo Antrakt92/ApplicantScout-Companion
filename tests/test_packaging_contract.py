@@ -2038,24 +2038,37 @@ def test_release_workflow_separates_read_only_build_from_narrow_draft_writer():
     )
 
 
-def test_release_body_has_current_notes_and_direct_downloads(tmp_path: Path):
+@pytest.mark.parametrize("signature_status", ["NotSigned", "Valid", "HashMismatch"])
+def test_release_body_has_current_notes_and_direct_downloads(tmp_path: Path, signature_status):
     workflow = _read_repo_text(".github/workflows/release.yml")
     step = _step_block(_job_block(workflow, "build"), "Extract release notes")
     run = step.split("        run: |\n", 1)[1]
     script = "\n".join(line[10:] for line in run.splitlines() if line.strip())
     path = tmp_path / "extract.ps1"
-    path.write_text('$ErrorActionPreference = "Stop"\n' + script, encoding="utf-8")
+    signature_stub = (
+        'function Get-AuthenticodeSignature { param([string]$LiteralPath)\n'
+        'if (-not (Test-Path -LiteralPath $LiteralPath)) { throw "Missing installer" }\n'
+        f'[pscustomobject]@{{ Status = "{signature_status}"; '
+        'SignerCertificate = [pscustomobject]@{ Subject = "CN=Synthetic Publisher" } }\n}\n'
+    )
+    path.write_text('$ErrorActionPreference = "Stop"\n' + signature_stub + script, encoding="utf-8")
     current = "## 1.2.3 - 10-Sep-2026\n\n- Current."
     history = current + "\n\n## 1.0.0 - 01-Jan-2026\n\n- Initial.\n"
     (tmp_path / "RELEASE_NOTES.md").write_bytes(
         ("# Release notes\n\n## Unreleased\n\n- Future work.\n\n" + history).replace("\n", "\r\n").encode()
     )
     (tmp_path / "dist").mkdir()
+    (tmp_path / "dist/ApplicantScoutCompanionSetup-1.2.3.exe").write_bytes(b"synthetic-installer")
     result = subprocess.run(
         ["pwsh", "-NoProfile", "-File", str(path)], cwd=tmp_path,
         env={**os.environ, "GITHUB_REF_NAME": "v1.2.3"},
         capture_output=True, text=True, check=False,
     )
+    if signature_status == "HashMismatch":
+        assert result.returncode != 0
+        assert "signature could not be verified" in result.stdout + result.stderr
+        assert not (tmp_path / "dist/release-body.md").exists()
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     body = (tmp_path / "dist" / "release-body.md").read_text(encoding="utf-8")
     release_url = "https://github.com/Antrakt92/ApplicantScout-Companion/releases/download/v1.2.3"
@@ -2063,12 +2076,11 @@ def test_release_body_has_current_notes_and_direct_downloads(tmp_path: Path):
     assert f"[Portable ZIP]({release_url}/ApplicantScoutCompanion-1.2.3-portable.zip)" in body
     assert "integrity artifacts" in body
     assert current in body
-    assert body.endswith(
-        "Free code signing provided by SignPath.io, certificate by SignPath Foundation\n"
-    )
-    assert body.index(current) < body.index(
-        "Free code signing provided by SignPath.io, certificate by SignPath Foundation"
-    )
+    if signature_status == "Valid":
+        assert body.endswith("Windows installer digitally signed by CN=Synthetic Publisher.\n")
+    else:
+        assert body.endswith("Windows installer is unsigned. Checksums verify file integrity, not publisher identity.\n")
+    assert "Free code signing provided" not in body
     assert "## 1.0.0" not in body
     assert "Future work" not in body
     assert history in (tmp_path / "RELEASE_NOTES.md").read_text(encoding="utf-8")
@@ -4237,14 +4249,6 @@ def test_installer_shows_privacy_and_defaults_usage_off_with_optout_wiring():
     assert "procedure CurStepChanged(CurStep: TSetupStep);" not in inno_script
 
 
-def test_release_body_appends_signpath_policy_statement():
-    workflow = _read_repo_text(".github/workflows/release.yml")
-    step = _step_block(_job_block(workflow, "build"), "Extract release notes")
-
-    assert (
-        "Free code signing provided by SignPath.io, certificate by SignPath Foundation"
-        in step
-    )
 
 
 def test_strict_visual_weekly_runs_strict_baselines_without_publishing():

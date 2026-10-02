@@ -128,7 +128,8 @@ the source. The `.sha256` sidecar verifies file integrity, not publisher identit
 
 ## Code Signing Policy
 
-Free code signing provided by SignPath.io, certificate by SignPath Foundation
+If a future release uses SignPath, its signing attribution will be:
+"Free code signing provided by SignPath.io, certificate by SignPath Foundation."
 
 This is a single-maintainer project: Author, Reviewer, and Approver are all
 Antrakt ([github.com/Antrakt92](https://github.com/Antrakt92)). Windows release
