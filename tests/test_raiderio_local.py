@@ -1729,6 +1729,8 @@ def test_reader_retries_when_mplus_source_changes_during_load(
         *,
         payload_cache_dir: Path | None = None,
         payload_cache_generation: int | None = None,
+        reuse_mplus: raiderio_local_mod._MplusRegionData | None = None,
+        reuse_raid: raiderio_local_mod._RaidRegionData | None = None,
     ) -> raiderio_local_mod._RegionDB | None:
         nonlocal calls
         candidate = load_region_db(
@@ -1736,6 +1738,8 @@ def test_reader_retries_when_mplus_source_changes_during_load(
             token,
             payload_cache_dir=payload_cache_dir,
             payload_cache_generation=payload_cache_generation,
+            reuse_mplus=reuse_mplus,
+            reuse_raid=reuse_raid,
         )
         calls += 1
         if calls == 1:
@@ -1773,6 +1777,8 @@ def test_reader_retries_when_raid_source_changes_during_load(
         *,
         payload_cache_dir: Path | None = None,
         payload_cache_generation: int | None = None,
+        reuse_mplus: raiderio_local_mod._MplusRegionData | None = None,
+        reuse_raid: raiderio_local_mod._RaidRegionData | None = None,
     ) -> raiderio_local_mod._RegionDB | None:
         nonlocal calls
         candidate = load_region_db(
@@ -1780,6 +1786,8 @@ def test_reader_retries_when_raid_source_changes_during_load(
             token,
             payload_cache_dir=payload_cache_dir,
             payload_cache_generation=payload_cache_generation,
+            reuse_mplus=reuse_mplus,
+            reuse_raid=reuse_raid,
         )
         calls += 1
         if calls == 1:
@@ -1816,6 +1824,8 @@ def test_reader_bounds_unstable_retries_and_does_not_poison_payload_cache(
         *,
         payload_cache_dir: Path | None = None,
         payload_cache_generation: int | None = None,
+        reuse_mplus: raiderio_local_mod._MplusRegionData | None = None,
+        reuse_raid: raiderio_local_mod._RaidRegionData | None = None,
     ) -> raiderio_local_mod._RegionDB | None:
         nonlocal calls
         score, pit_level = generations[calls]
@@ -1826,6 +1836,8 @@ def test_reader_bounds_unstable_retries_and_does_not_poison_payload_cache(
             token,
             payload_cache_dir=payload_cache_dir,
             payload_cache_generation=payload_cache_generation,
+            reuse_mplus=reuse_mplus,
+            reuse_raid=reuse_raid,
         )
 
     monkeypatch.setattr(raiderio_local_mod._RegionDB, "load", replace_then_load)
@@ -1866,6 +1878,8 @@ def test_concurrent_region_loads_share_one_stable_refresh(
         *,
         payload_cache_dir: Path | None = None,
         payload_cache_generation: int | None = None,
+        reuse_mplus: raiderio_local_mod._MplusRegionData | None = None,
+        reuse_raid: raiderio_local_mod._RaidRegionData | None = None,
     ) -> raiderio_local_mod._RegionDB | None:
         nonlocal calls
         with call_lock:
@@ -1877,6 +1891,8 @@ def test_concurrent_region_loads_share_one_stable_refresh(
             token,
             payload_cache_dir=payload_cache_dir,
             payload_cache_generation=payload_cache_generation,
+            reuse_mplus=reuse_mplus,
+            reuse_raid=reuse_raid,
         )
 
     monkeypatch.setattr(raiderio_local_mod._RegionDB, "load", slow_load)

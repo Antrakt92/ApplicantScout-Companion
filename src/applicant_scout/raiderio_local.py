@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import hmac
 import logging
@@ -14,6 +14,7 @@ import struct
 import threading
 import time
 from pathlib import Path
+from typing import TypeVar
 
 from .atomic_io import (
     apply_private_directory_mode,
@@ -142,6 +143,14 @@ class _CharacterLayout:
 
 
 @dataclass(frozen=True)
+class _HalfCacheState:
+    db_fingerprint: _RegionDBFingerprint | None
+    last_attempt_at: float
+    available: bool
+    fallback_since: float | None = None
+
+
+@dataclass(frozen=True)
 class _RegionCacheEntry:
     db: _RegionDB | None
     db_fingerprint: _RegionDBFingerprint | None
@@ -150,6 +159,8 @@ class _RegionCacheEntry:
     last_attempt_at: float
     last_content_audit_at: float
     fallback_since: float | None = None
+    mplus: _HalfCacheState | None = None
+    raid: _HalfCacheState | None = None
 
 
 class RaiderIOLocalReader:
@@ -181,15 +192,7 @@ class RaiderIOLocalReader:
         else:
             with self._lock:
                 entry = self._cache.get(token)
-                db = (
-                    entry.db
-                    if entry is not None
-                    and not _positive_fallback_grace_expired(
-                        entry,
-                        time.monotonic(),
-                    )
-                    else None
-                )
+                db = _visible_region_db(entry, time.monotonic()) if entry is not None else None
         if db is None:
             return None
         return db.lookup_profile(name, realm)
@@ -249,69 +252,59 @@ class RaiderIOLocalReader:
             ):
                 return entry.db
             previous_entry = entry
-            retry_due = entry is not None and _cache_entry_retry_due(entry, now)
         fingerprint = _region_db_fingerprint(self._retail_root, token)
         now = time.monotonic()
         if (
             previous_entry is not None
-            and not retry_due
+            and not _cache_entry_retry_due(previous_entry, now)
             and previous_entry.observed_fingerprint == fingerprint
         ):
             with self._lock:
-                self._cache[token] = _RegionCacheEntry(
-                    db=previous_entry.db,
-                    db_fingerprint=previous_entry.db_fingerprint,
+                self._cache[token] = replace(
+                    previous_entry,
                     observed_fingerprint=fingerprint,
                     observed_stat=_stat_from_fingerprint(fingerprint),
-                    last_attempt_at=previous_entry.last_attempt_at,
                     last_content_audit_at=now,
-                    fallback_since=previous_entry.fallback_since,
                 )
             return previous_entry.db
         loaded, fingerprint = self._load_stable_region_db(token, fingerprint)
         now = time.monotonic()
         observed_stat = _stat_from_fingerprint(fingerprint)
+        previous_db = previous_entry.db if previous_entry is not None else None
+        mplus_data, mplus_state = _merge_region_half(
+            loaded._mplus_data if loaded is not None else _empty_mplus_data(),
+            previous_db._mplus_data if previous_db is not None else _empty_mplus_data(),
+            previous_entry.mplus if previous_entry is not None else None,
+            fingerprint[:3], now,
+        )
+        raid_data, raid_state = _merge_region_half(
+            loaded._raid_data if loaded is not None else _empty_raid_data(),
+            previous_db._raid_data if previous_db is not None else _empty_raid_data(),
+            previous_entry.raid if previous_entry is not None else None,
+            fingerprint[3:], now,
+        )
+        db = _RegionDB.from_halves(mplus_data, raid_data)
+        failure_starts = [
+            state.fallback_since for state in (mplus_state, raid_state)
+            if state.fallback_since is not None
+        ]
         with self._lock:
-            if loaded is None and previous_entry is not None and previous_entry.db is not None:
-                fallback_since = previous_entry.fallback_since
-                if fallback_since is None:
-                    fallback_since = now
-                if (
-                    now - fallback_since
-                    >= _POSITIVE_CACHE_FAILURE_GRACE_SECONDS
-                ):
-                    self._cache[token] = _RegionCacheEntry(
-                        db=None,
-                        db_fingerprint=None,
-                        observed_fingerprint=fingerprint,
-                        observed_stat=observed_stat,
-                        last_attempt_at=now,
-                        last_content_audit_at=now,
-                    )
-                    return None
-                self._cache[token] = _RegionCacheEntry(
-                    db=previous_entry.db,
-                    db_fingerprint=(
-                        previous_entry.db_fingerprint
-                        if previous_entry.db_fingerprint is not None
-                        else previous_entry.observed_fingerprint
-                    ),
-                    observed_fingerprint=fingerprint,
-                    observed_stat=observed_stat,
-                    last_attempt_at=now,
-                    last_content_audit_at=now,
-                    fallback_since=fallback_since,
-                )
-                return previous_entry.db
             self._cache[token] = _RegionCacheEntry(
-                db=loaded,
-                db_fingerprint=fingerprint if loaded is not None else None,
+                db=db,
+                db_fingerprint=(
+                    (mplus_state.db_fingerprint or fingerprint[:3])
+                    + (raid_state.db_fingerprint or fingerprint[3:])
+                    if db is not None else None
+                ),
                 observed_fingerprint=fingerprint,
                 observed_stat=observed_stat,
                 last_attempt_at=now,
                 last_content_audit_at=now,
+                fallback_since=min(failure_starts) if failure_starts else None,
+                mplus=mplus_state,
+                raid=raid_state,
             )
-        return loaded
+        return db
 
     def _load_stable_region_db(
         self,
@@ -321,13 +314,30 @@ class RaiderIOLocalReader:
         payload_cache_generation = _lookup_payload_cache_generation(
             self._payload_cache_dir
         )
+        with self._lock:
+            previous = self._cache.get(token)
         for attempt in range(_REGION_LOAD_ATTEMPTS):
+            attempt_fingerprint = fingerprint
             try:
                 loaded = _RegionDB.load(
                     self._retail_root,
                     token,
                     payload_cache_dir=self._payload_cache_dir,
                     payload_cache_generation=payload_cache_generation,
+                    reuse_mplus=(
+                        previous.db._mplus_data
+                        if previous is not None and previous.db is not None
+                        and previous.mplus is not None and previous.mplus.available
+                        and previous.mplus.db_fingerprint == fingerprint[:3]
+                        else None
+                    ),
+                    reuse_raid=(
+                        previous.db._raid_data
+                        if previous is not None and previous.db is not None
+                        and previous.raid is not None and previous.raid.available
+                        and previous.raid.db_fingerprint == fingerprint[3:]
+                        else None
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 _log.warning("RaiderIO local DB unavailable for %s: %s", token, exc)
@@ -343,6 +353,17 @@ class RaiderIOLocalReader:
                 _REGION_LOAD_ATTEMPTS,
                 token,
             )
+            if loaded is not None:
+                # One family changing during both bounded attempts must not
+                # invalidate the other family's independently stable bundle.
+                return _RegionDB.from_halves(
+                    loaded._mplus_data
+                    if attempt_fingerprint[:3] == latest_fingerprint[:3]
+                    else _empty_mplus_data(),
+                    loaded._raid_data
+                    if attempt_fingerprint[3:] == latest_fingerprint[3:]
+                    else _empty_raid_data(),
+                ), fingerprint
         return None, fingerprint
 
 
@@ -363,6 +384,59 @@ class _RaidRegionData:
     lookup_payload: bytes | None
     realm_cache: dict[str, _RealmData]
     available: bool
+
+
+def _empty_mplus_data() -> _MplusRegionData:
+    return _MplusRegionData([], None, None, {}, False)
+
+
+def _empty_raid_data() -> _RaidRegionData:
+    return _RaidRegionData([], [], None, None, {}, False)
+
+
+_HalfData = TypeVar("_HalfData", _MplusRegionData, _RaidRegionData)
+
+
+def _half_grace_expired(state: _HalfCacheState | None, now: float) -> bool:
+    return (
+        state is not None and state.fallback_since is not None
+        and now - state.fallback_since >= _POSITIVE_CACHE_FAILURE_GRACE_SECONDS
+    )
+
+
+def _merge_region_half(
+    loaded: _HalfData,
+    previous: _HalfData,
+    state: _HalfCacheState | None,
+    fingerprint: _RegionDBFingerprint,
+    now: float,
+) -> tuple[_HalfData, _HalfCacheState]:
+    if loaded.available:
+        return loaded, _HalfCacheState(fingerprint, now, True)
+    successful_fingerprint = state.db_fingerprint if state is not None else None
+    fallback_since = state.fallback_since if state is not None else None
+    if successful_fingerprint is not None and fallback_since is None:
+        fallback_since = now
+    failed = _HalfCacheState(successful_fingerprint, now, False, fallback_since)
+    # Retain a whole validated bundle, never mix a character index and payload
+    # from different loads. Further failures cannot renew its grace period.
+    if previous.available and not _half_grace_expired(failed, now):
+        return previous, failed
+    return loaded, failed
+
+
+def _visible_region_db(entry: _RegionCacheEntry, now: float) -> _RegionDB | None:
+    db = entry.db
+    if db is None:
+        return None
+    mplus_expired = _half_grace_expired(entry.mplus, now)
+    raid_expired = _half_grace_expired(entry.raid, now)
+    if not mplus_expired and not raid_expired:
+        return db
+    return _RegionDB.from_halves(
+        _empty_mplus_data() if mplus_expired else db._mplus_data,
+        _empty_raid_data() if raid_expired else db._raid_data,
+    )
 
 
 def _validate_mplus_pair(
@@ -556,6 +630,27 @@ class _RegionDB:
         self._previous_raids = previous_raids
         self._mplus_realm_cache = mplus_realm_cache or {}
         self._raid_realm_cache = raid_realm_cache or {}
+        self._mplus_data = _MplusRegionData(
+            self._dungeons, mplus_meta, mplus_lookup_payload, self._mplus_realm_cache,
+            mplus_meta is not None and mplus_lookup_payload is not None,
+        )
+        self._raid_data = _RaidRegionData(
+            current_raids, previous_raids, raid_meta, raid_lookup_payload,
+            self._raid_realm_cache, raid_meta is not None and raid_lookup_payload is not None,
+        )
+
+    @classmethod
+    def from_halves(cls, mplus: _MplusRegionData, raid: _RaidRegionData) -> _RegionDB | None:
+        if not mplus.available and not raid.available:
+            return None
+        return cls(
+            mplus_lookup_payload=mplus.lookup_payload,
+            mplus_meta=mplus.meta, dungeons=mplus.dungeons,
+            mplus_realm_cache=mplus.realm_cache,
+            raid_lookup_payload=raid.lookup_payload,
+            raid_meta=raid.meta, current_raids=raid.current_raids,
+            previous_raids=raid.previous_raids, raid_realm_cache=raid.realm_cache,
+        )
 
     @classmethod
     def load(
@@ -565,6 +660,8 @@ class _RegionDB:
         *,
         payload_cache_dir: Path | None = None,
         payload_cache_generation: int | None = None,
+        reuse_mplus: _MplusRegionData | None = None,
+        reuse_raid: _RaidRegionData | None = None,
     ) -> _RegionDB | None:
         if payload_cache_dir is not None and payload_cache_generation is None:
             payload_cache_generation = _lookup_payload_cache_generation(
@@ -584,53 +681,23 @@ class _RegionDB:
         has_raid = raid_characters_path.is_file() and raid_lookup_path.is_file()
         if not has_mplus and not has_raid:
             return None
-        dungeons: list[str] = []
-        mplus_meta: _ProviderMeta | None = None
-        mplus_lookup_payload: bytes | None = None
-        mplus_realm_cache: dict[str, _RealmData] = {}
+        mplus_data = _empty_mplus_data()
         if has_mplus:
-            mplus_data = _load_mplus_region(
+            mplus_data = reuse_mplus or _load_mplus_region(
                 db_root,
                 token,
                 payload_cache_dir=payload_cache_dir,
                 payload_cache_generation=payload_cache_generation,
             )
-            dungeons = mplus_data.dungeons
-            mplus_meta = mplus_data.meta
-            mplus_lookup_payload = mplus_data.lookup_payload
-            mplus_realm_cache = mplus_data.realm_cache
-            has_mplus = mplus_data.available
-        raid_meta: _ProviderMeta | None = None
-        raid_lookup_payload: bytes | None = None
-        current_raids: list[_RaidInfo] = []
-        previous_raids: list[_RaidInfo] = []
-        raid_realm_cache: dict[str, _RealmData] = {}
+        raid_data = _empty_raid_data()
         if has_raid:
-            raid_data = _load_raid_region(
+            raid_data = reuse_raid or _load_raid_region(
                 db_root,
                 token,
                 payload_cache_dir=payload_cache_dir,
                 payload_cache_generation=payload_cache_generation,
             )
-            current_raids = raid_data.current_raids
-            previous_raids = raid_data.previous_raids
-            raid_meta = raid_data.meta
-            raid_lookup_payload = raid_data.lookup_payload
-            raid_realm_cache = raid_data.realm_cache
-            has_raid = raid_data.available
-        if not has_mplus and not has_raid:
-            return None
-        return cls(
-            mplus_lookup_payload=mplus_lookup_payload,
-            mplus_meta=mplus_meta,
-            dungeons=dungeons,
-            raid_lookup_payload=raid_lookup_payload,
-            raid_meta=raid_meta,
-            current_raids=current_raids,
-            previous_raids=previous_raids,
-            mplus_realm_cache=mplus_realm_cache,
-            raid_realm_cache=raid_realm_cache,
-        )
+        return cls.from_halves(mplus_data, raid_data)
 
     def lookup_profile(self, name: str, realm: str) -> RaiderIOLocalProfile | None:
         name = name.strip()
@@ -745,6 +812,17 @@ def _cache_entry_is_stale(
 
 
 def _cache_entry_retry_due(entry: _RegionCacheEntry, now: float) -> bool:
+    if entry.mplus is not None and entry.raid is not None:
+        for state, data_available in (
+            (entry.mplus, entry.db is not None and entry.db._mplus_data.available),
+            (entry.raid, entry.db is not None and entry.db._raid_data.available),
+        ):
+            if not state.available and (
+                now - state.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
+                or (data_available and _half_grace_expired(state, now))
+            ):
+                return True
+        return False
     if entry.db is not None:
         return entry.fallback_since is not None and (
             now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
