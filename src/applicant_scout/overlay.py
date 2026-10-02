@@ -6045,6 +6045,7 @@ class OverlayWindow(QMainWindow):
             else _freeze_render_value(package),
             visible_id == self._pinned_id,
             _freeze_render_value(raid_detail_status),
+            _freeze_render_value(applicant.raid_boss_parses),
             wcl_retry_available,
             self._metric_preferences.cache_key(),
         )
