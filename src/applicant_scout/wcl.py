@@ -10,6 +10,8 @@ import os
 import threading
 import time
 from dataclasses import dataclass, asdict, field, replace
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Optional
 
@@ -67,6 +69,26 @@ _PRIVATE_RANKINGS_PROVIDER_MESSAGE = (
 )
 _PRIVATE_RANKINGS_USER_MESSAGE = PRIVATE_RANKINGS_USER_MESSAGE
 WCL_RATE_LIMIT_RETRY_SECONDS = 300.0
+WCL_MAX_RETRY_AFTER_SECONDS = 86400.0
+
+
+def _retry_after_seconds(value: str | None, *, now: float) -> float:
+    """Accept HTTP delay-seconds or dates without unbounded provider cooldowns."""
+    if not isinstance(value, str) or len(value) > 128:
+        return WCL_RATE_LIMIT_RETRY_SECONDS
+    value = value.strip()
+    if value and value.isascii() and value.isdecimal():
+        if len(value) > 10:
+            return WCL_RATE_LIMIT_RETRY_SECONDS
+        return min(float(int(value)), WCL_MAX_RETRY_AFTER_SECONDS)
+    try:
+        deadline = parsedate_to_datetime(value)
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        seconds = deadline.timestamp() - now
+    except (TypeError, ValueError, OverflowError, OSError):
+        return WCL_RATE_LIMIT_RETRY_SECONDS
+    return min(max(0.0, seconds), WCL_MAX_RETRY_AFTER_SECONDS)
 WCL_SERVER_RETRY_SECONDS = 30.0
 WCL_NETWORK_RETRY_SECONDS = 30.0
 
@@ -1138,13 +1160,14 @@ class WCLClient:
         self._set_retry_block_if_current(auth_generation, WCL_ERROR_NETWORK)
 
     def _set_retry_block_if_current(
-        self, auth_generation: int, error_kind: str
+        self, auth_generation: int, error_kind: str, *, retry_seconds: float | None = None
     ) -> None:
         with self._quota_lock:
             if auth_generation != self._auth_generation:
                 return
             if error_kind == WCL_ERROR_RATE_LIMITED:
-                self._rate_limited_until = time.time() + WCL_RATE_LIMIT_RETRY_SECONDS
+                delay = WCL_RATE_LIMIT_RETRY_SECONDS if retry_seconds is None else retry_seconds
+                self._rate_limited_until = max(self._rate_limited_until, time.time() + delay)
             elif error_kind == WCL_ERROR_SERVER:
                 self._server_retry_until = time.time() + WCL_SERVER_RETRY_SECONDS
             elif error_kind == WCL_ERROR_NETWORK:
@@ -1195,11 +1218,14 @@ class WCLClient:
                     error_kind=WCL_ERROR_AUTH,
                 )
             if resp.status_code == 429:
+                retry_seconds = _retry_after_seconds(
+                    getattr(resp, "headers", {}).get("Retry-After"), now=time.time()
+                )
                 self._set_retry_block_if_current(
-                    auth_generation, WCL_ERROR_RATE_LIMITED
+                    auth_generation, WCL_ERROR_RATE_LIMITED, retry_seconds=retry_seconds
                 )
                 raise WCLApiError(
-                    "Rate limited (HTTP 429) — cooldown 5min",
+                    f"Rate limited (HTTP 429) — retrying in {retry_seconds:.0f}s",
                     error_kind=WCL_ERROR_RATE_LIMITED,
                 )
             if resp.status_code >= 500:
