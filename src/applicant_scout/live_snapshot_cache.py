@@ -445,6 +445,10 @@ class LiveSnapshotCacheWriter:
         self._pending: _PendingLiveSnapshotCacheOperation | None = None
         self._timer: threading.Timer | None = None
         self._closed = False
+        self._close_requested = threading.Event()
+        self._close_lock = threading.Lock()
+        self._close_worker: threading.Thread | None = None
+        self._close_result = False
         self._generation = 0
         self._last_saved_content: dict[str, Any] | None = None
         self._last_saved_at: float | None = None
@@ -463,7 +467,7 @@ class LiveSnapshotCacheWriter:
         next_source_id = _coerce_source_id(source_id)
         with self._write_lock:
             with self._lock:
-                if self._closed or next_source_id == self._source_id:
+                if self._close_requested.is_set() or self._closed or next_source_id == self._source_id:
                     return False
                 self._source_id = next_source_id
                 self._generation += 1
@@ -489,6 +493,8 @@ class LiveSnapshotCacheWriter:
         return True
 
     def submit(self, snap: Snapshot, *, now: float | None = None) -> None:
+        if self._close_requested.is_set():
+            return
         with self._lock:
             source_id = self._source_id
             generation = self._generation
@@ -505,7 +511,7 @@ class LiveSnapshotCacheWriter:
         # the deep content comparison entirely.
         digest = _snapshot_digest_key(snap)
         with self._lock:
-            if self._closed:
+            if self._closed or self._close_requested.is_set():
                 return
             # Building outside the lock may overlap a clear or A -> B -> A
             # source switch. The same source name does not revive old work.
@@ -520,7 +526,7 @@ class LiveSnapshotCacheWriter:
             operation = replace(operation, digest=digest)
         flush_now = False
         with self._lock:
-            if self._closed:
+            if self._closed or self._close_requested.is_set():
                 return
             # Building outside the lock may overlap a clear or A -> B -> A
             # source switch. The same source name does not revive old work.
@@ -571,7 +577,7 @@ class LiveSnapshotCacheWriter:
         with self._write_lock:
             with self._lock:
                 self._cancel_timer_locked()
-                if self._closed:
+                if self._closed or self._close_requested.is_set():
                     return self._pending is None
                 operation = self._pending
                 self._pending = None
@@ -601,7 +607,7 @@ class LiveSnapshotCacheWriter:
         """Serialize a durable clear after any in-flight save."""
         with self._write_lock:
             with self._lock:
-                if self._closed:
+                if self._closed or self._close_requested.is_set():
                     return False
                 self._generation += 1
                 self._cancel_timer_locked()
@@ -623,43 +629,99 @@ class LiveSnapshotCacheWriter:
             return succeeded
 
     def close(self) -> bool:
-        # WHY: reject new submissions before boundedly joining any timer-owned
-        # write; a failed in-flight operation is then available for final retry.
-        with self._lock:
-            self._closed = True
-            self._cancel_timer_locked()
-
-        if not self._write_lock.acquire(timeout=self._close_timeout_seconds):
-            _log.warning(
-                "Timed out after %.2fs draining the live snapshot cache writer.",
-                self._close_timeout_seconds,
-            )
+        # Native persistence cannot be interrupted. Retain one daemon owner,
+        # while the caller's single deadline includes locks and pending I/O.
+        deadline = time.monotonic() + self._close_timeout_seconds
+        self._close_requested.set()
+        if not self._close_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            _log.warning("Live snapshot shutdown did not complete within its deadline.")
             return False
+        completed = False
+        joining = False
+        start_failed = False
         try:
-            with self._lock:
+            worker = self._close_worker
+            if worker is not None and not worker.is_alive() and self._close_result:
+                completed = True
+                return True
+            if worker is None or not worker.is_alive():
+                if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                    return False
+                try:
+                    self._closed = True
+                    self._cancel_timer_locked()
+                    if time.monotonic() >= deadline:
+                        if not self._write_lock.acquire(blocking=False):
+                            return False
+                        try:
+                            completed = self._pending is None
+                            return completed
+                        finally:
+                            self._write_lock.release()
+                finally:
+                    self._lock.release()
+                self._close_result = False
+                worker = threading.Thread(
+                    target=lambda: self._finish_close(deadline),
+                    name="ApplicantScoutLiveSnapshotClose",
+                    daemon=True,
+                )
+                self._close_worker = worker
+                try:
+                    worker.start()
+                except Exception:  # noqa: BLE001 - retain pending persistence
+                    self._close_worker = None
+                    start_failed = True
+                    return False
+            joining = True
+        finally:
+            self._close_lock.release()
+            if start_failed:
+                _log.warning("Could not start live snapshot shutdown worker; persistence remains pending.")
+            elif not joining and not completed:
+                _log.warning("Live snapshot shutdown did not complete within its deadline.")
+        worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        completed = not worker.is_alive() and self._close_result
+        if not completed:
+            _log.warning("Live snapshot shutdown is incomplete; persistence remains pending.")
+        return completed
+
+    def _finish_close(self, deadline: float) -> None:
+        if not self._write_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return
+        operation: _PendingLiveSnapshotCacheOperation | None = None
+        generation = 0
+        try:
+            if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                return
+            try:
                 operation = self._pending
-                self._pending = None
                 generation = self._generation
+                if operation is not None:
+                    if time.monotonic() >= deadline:
+                        return
+                    self._pending = None
+            finally:
+                self._lock.release()
             if operation is None:
-                return True
-
-            # M7 (unified with CharacterCache.close): one bounded retry on the
-            # quit path — a transient filesystem failure gets a second chance
-            # without leaving another daemon timer alive during shutdown. A
-            # twice-failed operation is requeued, so a later close() (or
-            # flush()) still gets its chance.
-            if self._perform_operation(operation):
-                self._record_successful_operation(operation, generation)
-                return True
-            if self._perform_operation(operation):
-                self._record_successful_operation(operation, generation)
-                return True
-
+                self._close_result = True
+                return
+            # Retry once only while the same caller deadline permits a new
+            # operation. A timed-out in-flight failure remains available to
+            # a later close after this worker has finished.
+            for _attempt in range(2):
+                if time.monotonic() >= deadline:
+                    break
+                if self._perform_operation(operation):
+                    self._record_successful_operation(operation, generation)
+                    self._close_result = True
+                    return
             self._requeue_failed_operation(operation, generation)
-            _log.warning(
-                "Failed to drain the live snapshot cache writer on close."
-            )
-            return False
+            _log.warning("Live snapshot shutdown persistence remains pending after failed attempts.")
+        except Exception:  # noqa: BLE001 - shutdown must preserve failed work
+            if operation is not None:
+                self._requeue_failed_operation(operation, generation)
+            _log.warning("Live snapshot shutdown persistence failed.", exc_info=True)
         finally:
             self._write_lock.release()
 
@@ -698,7 +760,7 @@ class LiveSnapshotCacheWriter:
             if self._pending is not None or generation != self._generation:
                 return
             self._pending = operation
-            if not self._closed and self._defer_saves:
+            if not self._closed and not self._close_requested.is_set() and self._defer_saves:
                 self._schedule_locked()
 
     def _perform_operation(self, operation: _PendingLiveSnapshotCacheOperation) -> bool:
