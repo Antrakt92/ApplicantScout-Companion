@@ -43,6 +43,16 @@ CLASS_COLOURS: dict[str, str] = {
     "WARRIOR": "#C69B6D",
 }
 
+# Name text needs brighter variants on the dark overlay. Class badges keep
+# Blizzard's original palette above.
+CLASS_TEXT_COLOURS: dict[str, str] = {
+    **CLASS_COLOURS,
+    "DEATHKNIGHT": "#EF6B80",
+    "DEMONHUNTER": "#C871E3",
+    "EVOKER": "#45AA94",
+    "SHAMAN": "#409DF6",
+}
+
 
 # Spec ID → compact spec name. Class is already encoded by the table cell
 # background, so duplicate spec names like Holy/Prot/Resto intentionally stay

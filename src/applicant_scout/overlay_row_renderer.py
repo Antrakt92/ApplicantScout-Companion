@@ -25,7 +25,7 @@ from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
 
 from . import overlay_rows as _overlay_rows
 from . import overlay_presenters as _presenters
-from .constants import CLASS_COLOURS, SPEC_SHORT_NAMES, rio_score_colour
+from .constants import CLASS_COLOURS, CLASS_TEXT_COLOURS, SPEC_SHORT_NAMES, rio_score_colour
 from .scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
@@ -142,7 +142,7 @@ def render_row_cells(
     display_name = applicant.name.split("-", 1)[0]
     name_item = env.reuse_item(row, env.col_name, display_name)
     env.set_cell_foreground(
-        name_item, CLASS_COLOURS.get(applicant.cls, "#FFFFFF")
+        name_item, CLASS_TEXT_COLOURS.get(applicant.cls, "#FFFFFF")
     )
     name_item.setFont(env.bold_font(env.table_font()))
     env.stamp_cell_font_sig(name_item)
