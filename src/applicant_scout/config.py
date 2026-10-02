@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import sys
 import json
+import threading
 from io import StringIO
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv.parser import parse_stream
@@ -33,6 +34,24 @@ VALID_WCL_REGIONS = frozenset(REGION_ID_TO_WCL.values())
 _BOOL_TRUE_TOKENS = frozenset({"1", "true", "yes", "on"})
 _BOOL_FALSE_TOKENS = frozenset({"0", "false", "no", "off"})
 _BOOL_TOKEN_HELP = "1, 0, true, false, yes, no, on, off"
+CONFIG_WRITE_LOCK = threading.RLock()
+_CONFIG_WRITE_GENERATION = 0
+
+
+def config_write_generation() -> int:
+    """Observe completed writes without doing disk work on the GUI thread."""
+    return _CONFIG_WRITE_GENERATION
+
+
+def _record_config_write() -> None:
+    """Advance ownership after a write; caller holds CONFIG_WRITE_LOCK."""
+    global _CONFIG_WRITE_GENERATION
+    _CONFIG_WRITE_GENERATION += 1
+
+
+def saved_config_source(config_path: Path | None = None) -> Path | None:
+    target = config_path or user_config_path()
+    return target if target.is_file() else _legacy_env_path()
 
 
 @dataclass
@@ -59,6 +78,9 @@ class Config:
     # screenshots_path stays None (same validation as unset), but reload shows
     # an empty field instead of re-deriving the default path.
     screenshots_path_explicit_empty: bool = False
+    # Initial load ownership for asynchronous startup repair; never persisted.
+    config_source_path: Path | None = field(default=None, repr=False, compare=False)
+    config_generation: int | None = field(default=None, repr=False, compare=False)
 
 
 class ConfigError(RuntimeError):
@@ -458,42 +480,71 @@ def save_config_values(
         )
     if values.chatlog_path.strip():
         lines.append(_env_line("APSCOUT_CHATLOG_PATH", values.chatlog_path))
-    if target.is_file():
-        try:
-            existing = target.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise ConfigError(
-                f"Could not read ApplicantScout config at {target}: {exc}"
-            ) from exc
-        lines.extend(_unmanaged_config_lines(existing))
-    atomic_write_text(target, "".join(lines), private=True)
+    with CONFIG_WRITE_LOCK:
+        if target.is_file():
+            try:
+                existing = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise ConfigError(
+                    f"Could not read ApplicantScout config at {target}: {exc}"
+                ) from exc
+            lines.extend(_unmanaged_config_lines(existing))
+        atomic_write_text(target, "".join(lines), private=True)
+        _record_config_write()
     return target
 
 
-def save_discovered_screenshots_path(path: Path, *, config_path: Path | None = None) -> None:
-    """Change only the saved path, preserving other local settings verbatim."""
+def save_discovered_screenshots_path(
+    path: Path,
+    *,
+    config_path: Path | None = None,
+    expected_path: Path | None = None,
+    expected_source: Path | None = None,
+    expected_generation: int | None = None,
+) -> bool:
+    """Save a discovery only if its original binding still owns the saved path."""
     target = config_path or user_config_path()
-    source = target if target.is_file() else _legacy_env_path()
-    if source is None:
-        raise ConfigError("No saved settings to update with the discovered WoW path")
-    try:
-        contents = source.read_text(encoding="utf-8")
-        replacement = _env_line("APSCOUT_SCREENSHOTS_PATH", str(path))
-        lines = []
-        matched = False
-        for binding in parse_stream(StringIO(contents)):
-            if binding.key == "APSCOUT_SCREENSHOTS_PATH":
+    with CONFIG_WRITE_LOCK:
+        source = saved_config_source(target)
+        if (
+            (expected_source is not None and source != expected_source)
+            or (expected_generation is not None and config_write_generation() != expected_generation)
+        ):
+            return False
+        if source is None:
+            if expected_path is not None:
+                return False
+            raise ConfigError("No saved settings to update with the discovered WoW path")
+        try:
+            contents = source.read_text(encoding="utf-8")
+            if expected_path is not None:
+                raw_path = _read_env_file(source).get("APSCOUT_SCREENSHOTS_PATH")
+                current_path = Path(raw_path.strip()) if raw_path and raw_path.strip() else None
+                # WHY: Settings may commit while discovery probes run. Check
+                # and replace under the same lock used by ordinary saves.
+                if (
+                    current_path != expected_path
+                    or os.environ.get("APSCOUT_SCREENSHOTS_PATH") is not None
+                ):
+                    return False
+            replacement = _env_line("APSCOUT_SCREENSHOTS_PATH", str(path))
+            lines = []
+            matched = False
+            for binding in parse_stream(StringIO(contents)):
+                if binding.key == "APSCOUT_SCREENSHOTS_PATH":
+                    lines.append(replacement)
+                    matched = True
+                else:
+                    lines.append(binding.original.string)
+            if not matched:
+                if contents and not contents.endswith(("\n", "\r")):
+                    lines.append("\n")
                 lines.append(replacement)
-                matched = True
-            else:
-                lines.append(binding.original.string)
-        if not matched:
-            if contents and not contents.endswith(("\n", "\r")):
-                lines.append("\n")
-            lines.append(replacement)
-        atomic_write_text(target, "".join(lines), private=True)
-    except (OSError, UnicodeError) as exc:
-        raise ConfigError(f"Could not save discovered WoW Screenshots folder: {exc}") from exc
+            atomic_write_text(target, "".join(lines), private=True)
+            _record_config_write()
+        except (OSError, UnicodeError) as exc:
+            raise ConfigError(f"Could not save discovered WoW Screenshots folder: {exc}") from exc
+    return True
 
 
 def _parse_cache_ttl_seconds(raw: str | None) -> int | None:
@@ -580,7 +631,10 @@ def _parse_config_schema_version(raw: str | None) -> int | None:
 def load_config() -> Config:
     """Load config values without prompting or depending on process CWD."""
     config_dir, cache_dir, log_dir, config_path = _prepare_user_storage()
-    values = read_user_config_values()
+    with CONFIG_WRITE_LOCK:
+        values = read_user_config_values()
+        config_source_path = saved_config_source(config_path)
+        config_generation = config_write_generation()
     _parse_config_schema_version(_value(values, CONFIG_SCHEMA_KEY, ""))
     client_id = _value(values, "WCL_CLIENT_ID")
     client_secret = _value(values, "WCL_CLIENT_SECRET")
@@ -652,4 +706,6 @@ def load_config() -> Config:
         draft_wcl_client_id=draft_client_id,
         draft_wcl_client_secret=draft_client_secret,
         screenshots_path_explicit_empty=screenshots_explicit_empty,
+        config_source_path=config_source_path,
+        config_generation=config_generation,
     )

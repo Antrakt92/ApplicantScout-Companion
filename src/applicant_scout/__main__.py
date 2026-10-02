@@ -38,10 +38,13 @@ from .atomic_io import (
     set_startup_privatization_deferred,
 )
 from .config import (
+    CONFIG_WRITE_LOCK,
     Config,
     ConfigError,
     _parse_bool_setting,
     _parse_cache_ttl_seconds,
+    _record_config_write,
+    config_write_generation,
     is_config_ready,
     load_config,
     normalize_wcl_region,
@@ -49,6 +52,7 @@ from .config import (
     resolve_screenshots_path,
     save_config_values,
     save_discovered_screenshots_path,
+    saved_config_source,
     screenshots_path_candidate,
     user_cache_dir,
     user_config_path,
@@ -4516,23 +4520,28 @@ def _persist_settings_values(
 
 def _capture_persisted_config_snapshot(cfg: Config) -> _PersistedConfigSnapshot:
     path = cfg.config_path or user_config_path()
-    try:
-        contents = path.read_bytes()
-    except FileNotFoundError:
-        contents = None
+    with CONFIG_WRITE_LOCK:
+        try:
+            contents = path.read_bytes()
+        except FileNotFoundError:
+            contents = None
     return _PersistedConfigSnapshot(path=path, contents=contents)
 
 
 def _restore_persisted_config_snapshot(snapshot: _PersistedConfigSnapshot) -> None:
-    if snapshot.contents is None:
-        try:
-            snapshot.path.unlink()
-        except FileNotFoundError:
-            pass
-        return
+    with CONFIG_WRITE_LOCK:
+        if snapshot.contents is None:
+            try:
+                snapshot.path.unlink()
+            except FileNotFoundError:
+                pass
+            else:
+                _record_config_write()
+            return
 
-    path = snapshot.path
-    atomic_write_bytes(path, snapshot.contents, private=True)
+        path = snapshot.path
+        atomic_write_bytes(path, snapshot.contents, private=True)
+        _record_config_write()
 
 
 def _settings_values_to_config(
@@ -5308,16 +5317,23 @@ class _StartupScreenshotsVerification:
     cfg: Config
     screenshots_dir: Path
     message: str | None = None
+    config_generation: int | None = None
 
 
 def _verify_startup_screenshots_dir(
-    cfg: Config, screenshots_dir: Path
+    cfg: Config, screenshots_dir: Path,
+    *, is_current: Callable[[], bool] | None = None,
 ) -> _StartupScreenshotsVerification:
     """Probe + moved-install discovery without any UI (H1 worker body).
 
     Same decision logic the synchronous startup path used to run inline;
     callers surface ``warning``/``env_error`` on the GUI thread.
     """
+    with CONFIG_WRITE_LOCK:
+        expected_source = cfg.config_source_path or saved_config_source(cfg.config_path)
+        expected_generation = cfg.config_generation
+        if expected_generation is None:
+            expected_generation = config_write_generation()
     warning = run_bounded_screenshots_path_probe(screenshots_dir)
     if warning is None:
         return _StartupScreenshotsVerification("ok", cfg, screenshots_dir)
@@ -5338,14 +5354,23 @@ def _verify_startup_screenshots_dir(
             and discovered != screenshots_dir
             and run_bounded_screenshots_path_probe(discovered) is None
         ):
-            save_discovered_screenshots_path(
-                discovered, config_path=cfg.config_path
-            )
+            with CONFIG_WRITE_LOCK:
+                if is_current is not None and not is_current():
+                    return _StartupScreenshotsVerification("ok", cfg, screenshots_dir)
+                if not save_discovered_screenshots_path(
+                    discovered, config_path=cfg.config_path, expected_path=cfg.screenshots_path,
+                    expected_source=expected_source, expected_generation=expected_generation,
+                ):
+                    # A newer choice owns the path. Do not surface an obsolete
+                    # repair or warning for the startup snapshot.
+                    return _StartupScreenshotsVerification("ok", cfg, screenshots_dir)
+                repair_generation = config_write_generation()
             log.info("Found moved WoW Screenshots folder: %s", discovered)
             return _StartupScreenshotsVerification(
                 "repaired",
                 replace(cfg, screenshots_path=discovered),
                 discovered,
+                config_generation=repair_generation,
             )
     if os.environ.get("APSCOUT_SCREENSHOTS_PATH") is not None:
         return _StartupScreenshotsVerification(
@@ -5373,6 +5398,14 @@ def _surface_startup_verification(
     The watcher keeps running on the trusted saved path for this session; a
     repaired moved install is already persisted and takes effect on restart.
     """
+    if (
+        outcome.config_generation is not None
+        and (
+            config_write_generation() != outcome.config_generation
+            or os.environ.get("APSCOUT_SCREENSHOTS_PATH") is not None
+        )
+    ):
+        return
     if outcome.kind == "ok":
         return
     if outcome.kind == "repaired":
@@ -5409,6 +5442,7 @@ class _StartupScreenshotsVerificationRun:
         self._lock = threading.Lock()
         self._outcome: _StartupScreenshotsVerification | None = None
         self._surfaced = False
+        self._cancelled = threading.Event()
         self._signals: _StartupVerificationSignals | None = None
 
     def start(self, signals: _StartupVerificationSignals) -> None:
@@ -5421,9 +5455,12 @@ class _StartupScreenshotsVerificationRun:
         )
 
     def _run(self) -> None:
+        if self._cancelled.is_set():
+            return
         try:
             outcome = _verify_startup_screenshots_dir(
-                self._cfg, self._screenshots_dir
+                self._cfg, self._screenshots_dir,
+                is_current=lambda: not self._cancelled.is_set(),
             )
         except Exception as exc:  # noqa: BLE001 - surfacing boundary
             log.warning("Background screenshots path check failed: %s", exc)
@@ -5434,10 +5471,18 @@ class _StartupScreenshotsVerificationRun:
                 f"Screenshots folder warning: could not check path: {exc}",
             )
         with self._lock:
+            if self._cancelled.is_set():
+                return
             self._outcome = outcome
         signals = self._signals
-        if signals is not None:
-            signals.verified.emit(outcome)
+        if signals is not None and not self._cancelled.is_set():
+            try:
+                signals.verified.emit(outcome)
+            except RuntimeError:
+                # Qt may destroy the signal owner after cancellation and
+                # between the check above and emit. Live-owner errors remain.
+                if not self._cancelled.is_set():
+                    raise
 
     def _run_sync_fallback(self) -> None:
         # Thread launch failed: keep today's gating, on the GUI thread.
@@ -5446,6 +5491,12 @@ class _StartupScreenshotsVerificationRun:
 
     def _on_verified(self, _outcome: object) -> None:
         self.surface()
+
+    def cancel(self) -> None:
+        """Retire queued/background outcomes before application cleanup."""
+        self._cancelled.set()
+        with self._lock:
+            self._surfaced = True
 
     def surface(self) -> bool:
         """Surface a ready outcome; safe from any thread, effective on GUI."""
@@ -5681,6 +5732,7 @@ def main(argv: list[str] | None = None) -> int:
     tray_controller: TrayController | None = None
     update_handoff_recovery: _UpdateHandoffRecoveryController | None = None
     watcher: ScreenshotWatcher | None = None
+    startup_verification: _StartupScreenshotsVerificationRun | None = None
     live_snapshot_writer: LiveSnapshotCacheWriter | None = None
     active_update_control: UpdateDownloadControl | None = None
     # Latest progress of the live attempt (fix 5): forwarded to freshly
@@ -6521,6 +6573,8 @@ def main(argv: list[str] | None = None) -> int:
         # Widened startup cleanup: usage_client close,
         # runtime_owner/control_server release, privatization flag reset.
         # Non-blocking by construction (_early_shutdown never raises).
+        if startup_verification is not None:
+            startup_verification.cancel()
         _early_shutdown(
             control_server=control_server,
             configurator=wow_sync_startup_configurator,

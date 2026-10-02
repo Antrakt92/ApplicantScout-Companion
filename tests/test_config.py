@@ -4537,7 +4537,8 @@ def test_load_startup_config_repairs_moved_wow_without_rewriting_other_settings(
     cfg.config_path.parent.mkdir()
     original = 'WCL_CLIENT_SECRET="example"\nCUSTOM_SETTING="keep me"\n'
     cfg.config_path.write_text(
-        original + f'APSCOUT_SCREENSHOTS_PATH="{old}"\n', encoding="utf-8"
+        original + config_mod._env_line("APSCOUT_SCREENSHOTS_PATH", str(old)),
+        encoding="utf-8",
     )
     monkeypatch.delenv("APSCOUT_SCREENSHOTS_PATH", raising=False)
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
@@ -12031,7 +12032,8 @@ def test_verify_startup_screenshots_dir_repairs_moved_wow(
     cfg.config_path.parent.mkdir()
     original = "WCL_CLIENT_SECRET=\"example\"\nCUSTOM_SETTING=\"keep me\"\n"
     cfg.config_path.write_text(
-        original + f"APSCOUT_SCREENSHOTS_PATH=\"{old}\"\n", encoding="utf-8"
+        original + config_mod._env_line("APSCOUT_SCREENSHOTS_PATH", str(old)),
+        encoding="utf-8",
     )
     monkeypatch.delenv("APSCOUT_SCREENSHOTS_PATH", raising=False)
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
