@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.22.0 - 02-Oct-2026 — Keyboard sorting and reliability
+
+Paired release with ApplicantScout addon `0.13.3`.
+
+- Add a keyboard-accessible grouped sort menu.
+- Improve class-name contrast, detail refreshes and settings on narrow screens.
+- Preserve manual detail actions and current results during refreshes.
+- Reduce repeated panel updates and dungeon-name processing.
+- Improve screenshot ordering, replacement detection and cleanup.
+- Keep settings and usage preferences consistent during background work.
+- Improve Warcraft Logs retries, cache persistence and shutdown handling.
+- Keep installer progress checks off the interface thread and acknowledge update shutdown promptly.
+
 ## 0.21.2 - 27-Sep-2026 — Clearer tooltips and reliability fixes
 
 Paired release with ApplicantScout addon `0.13.2`.
