@@ -2058,6 +2058,7 @@ class CharacterCache:
         *,
         defer_saves: bool = False,
         save_debounce_seconds: float = 1.0,
+        close_timeout_seconds: float = 2.0,
     ):
         self._path = cache_dir / "character-cache.json"
         self._query_fingerprint = _character_cache_query_fingerprint()
@@ -2081,6 +2082,11 @@ class CharacterCache:
         self._closing = False
         self._close_done = threading.Event()
         self._close_result: bool | None = None
+        self._close_requested = threading.Event()
+        self._close_lock = threading.Lock()
+        self._close_worker: threading.Thread | None = None
+        self._close_timeout_seconds = max(0.0, close_timeout_seconds)
+        self._close_failed_attempts = 0
 
     @property
     def generation(self) -> int:
@@ -2253,26 +2259,31 @@ class CharacterCache:
             and snapshot.generation == self._generation
         )
 
-    def _write_snapshot_with_write_lock(self, snapshot: _CacheSaveSnapshot) -> bool:
+    def _encode_snapshot(self, snapshot: _CacheSaveSnapshot) -> str:
+        return json.dumps(
+            {
+                "__version__": _CACHE_VERSION,
+                "__query_fingerprint__": self._query_fingerprint,
+                "entries": {
+                    k: {
+                        "fetched_at": v.fetched_at,
+                        "ranks": v.ranks,
+                        "raid_boss_details": v.raid_boss_details,
+                        "raid_boss_availability": v.raid_boss_availability,
+                    }
+                    for k, v in snapshot.entries
+                },
+            }
+        )
+
+    def _write_snapshot_with_write_lock(
+        self, snapshot: _CacheSaveSnapshot, *, encoded_text: str | None = None,
+    ) -> bool:
         # Caller must hold self._write_lock.
         try:
             atomic_write_text(
                 self._path,
-                json.dumps(
-                    {
-                        "__version__": _CACHE_VERSION,
-                        "__query_fingerprint__": self._query_fingerprint,
-                        "entries": {
-                            k: {
-                                "fetched_at": v.fetched_at,
-                                "ranks": v.ranks,
-                                "raid_boss_details": v.raid_boss_details,
-                                "raid_boss_availability": v.raid_boss_availability,
-                            }
-                            for k, v in snapshot.entries
-                        },
-                    }
-                ),
+                self._encode_snapshot(snapshot) if encoded_text is None else encoded_text,
                 private=True,
             )
         except OSError:
@@ -2281,9 +2292,11 @@ class CharacterCache:
 
     def _start_save_timer_locked(self) -> None:
         # Caller must hold self._lock.
-        if self._closing:
+        if self._closing or self._close_requested.is_set():
             return
-        self._save_timer = threading.Timer(self._save_debounce_seconds, self.flush)
+        self._save_timer = threading.Timer(
+            self._save_debounce_seconds, lambda: self.flush(_deferred=True),
+        )
         self._save_timer.daemon = True
         self._save_timer.start()
 
@@ -2297,12 +2310,16 @@ class CharacterCache:
         self._start_save_timer_locked()
         return False
 
-    def flush(self) -> bool:
+    def flush(self, *, _deferred: bool = False) -> bool:
         """Serialize and persist the newest dirty snapshot."""
         timer: threading.Timer | None = None
         snapshot: _CacheSaveSnapshot | None = None
         with self._write_lock:
             with self._lock:
+                # Cancel cannot stop a timer callback already waiting for this
+                # barrier. It must not retry terminal shutdown failures later.
+                if _deferred and self._close_requested.is_set():
+                    return not self._dirty
                 timer = self._save_timer
                 self._save_timer = None
                 if not self._dirty:
@@ -2322,58 +2339,119 @@ class CharacterCache:
                 if (
                     self._dirty
                     and self._defer_saves
-                    and not self._closing
+                    and not self._closing and not self._close_requested.is_set()
                     and (self._save_timer is None or not self._save_timer.is_alive())
                 ):
                     self._start_save_timer_locked()
             return write_succeeded
 
     def close(self) -> bool:
-        """Reject new mutations and synchronously persist all accepted writes."""
-        timer: threading.Timer | None = None
-        wait_for_close = False
-        with self._lock:
-            if self._close_result is not None:
-                return self._close_result
-            if self._closing:
-                wait_for_close = True
-            else:
-                self._closing = True
-                timer = self._save_timer
-                self._save_timer = None
-        if wait_for_close:
-            self._close_done.wait()
-            with self._lock:
-                return bool(self._close_result)
-
-        result = False
+        """Reject mutations and boundedly wait for one final persistence owner."""
+        deadline = time.monotonic() + self._close_timeout_seconds
+        self._close_requested.set()
+        if not self._close_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            _log.warning("Character cache shutdown exceeded its deadline.")
+            return False
+        joining = False
+        result: bool | None = None
         try:
-            if timer is not None and timer is not threading.current_thread():
-                timer.cancel()
-                if timer.is_alive():
-                    timer.join()
-            result = self.flush()
-            if not result:
-                # One bounded retry handles a transient failure without leaving
-                # another daemon timer alive during interpreter shutdown.
-                result = self.flush()
-            with self._lock:
-                result = result and not self._dirty
-        except Exception:  # noqa: BLE001 - terminal persistence boundary
-            _log.exception("Unexpected failure while closing character cache")
-            result = False
+            if self._close_result is not None:
+                result = self._close_result
+                return result
+            worker = self._close_worker
+            if worker is None or not worker.is_alive():
+                if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                    return False
+                try:
+                    self._closing = True
+                    timer = self._save_timer
+                    self._save_timer = None
+                    if timer is not None:
+                        timer.cancel()
+                finally:
+                    self._lock.release()
+                if time.monotonic() >= deadline:
+                    return False
+                self._close_done.clear()
+                worker = threading.Thread(
+                    target=lambda: self._finish_close(deadline),
+                    name="ApplicantScoutCharacterCacheClose", daemon=True,
+                )
+                self._close_worker = worker
+                try:
+                    worker.start()
+                except Exception:  # noqa: BLE001 - pending work stays retryable
+                    self._close_worker = None
+                    return False
+            joining = True
         finally:
-            with self._lock:
-                self._close_result = result
+            self._close_lock.release()
+            if not joining and result is None:
+                _log.warning("Character cache shutdown is incomplete; persistence remains pending.")
+        worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        result = self._close_result if not worker.is_alive() else None
+        if result is None:
+            _log.warning("Character cache shutdown is incomplete; persistence remains pending.")
+        return bool(result)
+
+    def _finish_close(self, deadline: float) -> None:
+        # The write barrier accounts for claimed saves and accepted clears even
+        # when dirty is false. Native I/O already started cannot be interrupted.
+        if not self._write_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return
+        try:
+            while self._close_failed_attempts < 2:
+                if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                    return
+                try:
+                    if not self._dirty:
+                        self._close_result = True
+                        return
+                    if time.monotonic() >= deadline:
+                        return
+                    snapshot = self._snapshot_for_save_locked()
+                    if time.monotonic() >= deadline:
+                        return
+                    self._dirty = False
+                finally:
+                    self._lock.release()
+                succeeded = False
+                try:
+                    encoded_text = self._encode_snapshot(snapshot)
+                    if time.monotonic() >= deadline:
+                        with self._lock:
+                            if self._snapshot_is_current_locked(snapshot):
+                                self._dirty = True
+                        return
+                    succeeded = self._write_snapshot_with_write_lock(snapshot, encoded_text=encoded_text)
+                except Exception:  # noqa: BLE001 - retain accepted snapshot
+                    _log.exception("Unexpected failure while closing character cache")
+                with self._lock:
+                    if not succeeded:
+                        self._close_failed_attempts += 1
+                        if self._snapshot_is_current_locked(snapshot):
+                            self._dirty = True
+                    elif not self._dirty:
+                        self._close_result = True
+                        return
+                if time.monotonic() >= deadline:
+                    break
+            if self._close_failed_attempts >= 2:
+                self._close_result = False
+                _log.warning("Character cache shutdown failed after two persistence attempts.")
+        finally:
+            self._write_lock.release()
+            if self._close_result is not None:
                 self._close_done.set()
-        return result
 
     def clear(self) -> bool:
         """Drop both in-memory and persisted character-rank cache."""
+        if self._close_requested.is_set():
+            return False
         timer: threading.Timer | None = None
         with self._write_lock:
             with self._lock:
-                if self._closing:
+                if self._closing or self._close_requested.is_set():
                     return False
                 timer = self._save_timer
                 self._save_timer = None
@@ -2397,7 +2475,7 @@ class CharacterCache:
                     if (
                         self._dirty
                         and self._defer_saves
-                        and not self._closing
+                        and not self._closing and not self._close_requested.is_set()
                         and (
                             self._save_timer is None or not self._save_timer.is_alive()
                         )
@@ -2586,10 +2664,12 @@ class CharacterCache:
         expected_operation: FetchOperation | None = None,
         expected_publication_epoch: int | None = None,
     ) -> bool:
+        if self._close_requested.is_set():
+            return False
         key = self._key(name, server_slug, region, spec_id, role, metric_preferences)
         not_found_key = self._not_found_key(name, server_slug, region)
         with self._lock:
-            if self._closing:
+            if self._closing or self._close_requested.is_set():
                 return False
             if expected_operation is not None and not expected_operation.is_active():
                 return False
@@ -2658,6 +2738,8 @@ class CharacterCache:
         expected_operation: FetchOperation | None = None,
         expected_publication_epoch: int | None = None,
     ) -> bool:
+        if self._close_requested.is_set():
+            return False
         key = self._raid_boss_key(
             name,
             server_slug,
@@ -2674,7 +2756,7 @@ class CharacterCache:
             else {key: "available" for key in _raid_difficulty_keys_for_preferences(metric_preferences)}
         )
         with self._lock:
-            if self._closing:
+            if self._closing or self._close_requested.is_set():
                 return False
             if expected_operation is not None and not expected_operation.is_active():
                 return False
