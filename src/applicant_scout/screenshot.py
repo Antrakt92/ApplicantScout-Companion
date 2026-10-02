@@ -146,6 +146,8 @@ WIRE_VERSION_REJECT_REASON = "unsupported wire version"
 # Manual fingerprints persist, so later starts advance through older files without
 # letting one pathological folder consume minutes of CPU beside WoW.
 _BACKLOG_CLEANUP_LIMIT = 500
+_BACKLOG_EXAMINED_LIMIT = 500
+_BACKLOG_PHASE_SECONDS = 1.0
 # Recent frames retain the larger envelope above because a fresh fragmented
 # snapshot may need many files to reassemble. Historical files are cleanup-only:
 # keep their native QR/JPG work to a small slice per launch so starting the
@@ -3146,6 +3148,12 @@ class ScreenshotWatcher(QObject):
         only on PROCEED.
         """
         if claim is None:
+            try:
+                key = _work_key_from_stat(path, path.stat())
+            except OSError:
+                return BacklogAction.SKIP
+            if self._manual_index.contains(key):
+                return BacklogAction.SKIP
             if ctx.recent and not _wait_for_stable_size(path):
                 _log.debug(
                     "backlog: skipping unstable recent screenshot %s",
@@ -3425,9 +3433,28 @@ class ScreenshotWatcher(QObject):
             apply_closed=apply_closed,
             authority_blocked=authority_blocked,
         )
+        examined = 0
+        deadline: float | None = None
         for path, _candidate_stat in candidates:
             if self._stopped.is_set() or ctx.remaining <= 0:
                 break
+            # Known manual generations are bounded by the index's own key
+            # limit, and cannot consume the unknown-file restore budget.
+            try:
+                current_key = _work_key_from_stat(path, path.stat())
+            except OSError:
+                continue
+            if self._manual_index.contains(current_key):
+                continue
+            if deadline is None:
+                deadline = time.monotonic() + _BACKLOG_PHASE_SECONDS
+            if examined >= _BACKLOG_EXAMINED_LIMIT or time.monotonic() >= deadline:
+                # A truncated phase must not emit a deferred failure or start
+                # older cleanup as if the unseen candidates were classified.
+                return (
+                    ctx.remaining, ctx.apply_closed, True, ctx.deleted, True,
+                )
+            examined += 1
             if (
                 self._classify_backlog_candidate(path, None, ctx)
                 is BacklogAction.SKIP
