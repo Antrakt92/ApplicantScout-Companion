@@ -462,18 +462,25 @@ def test_install_progress_reports_percent_then_holds_and_caps(tmp_path):
 
     assert [timer.interval for timer in _ProgressFakeTimer.instances] == [50, 300]
     recovery_timer, progress_timer = _ProgressFakeTimer.instances
+
+    def sample_tick():
+        progress_timer.timeout.emit()
+        sample = controller._progress_sample
+        assert sample is not None and sample.done.wait(1)
+        progress_timer.timeout.emit()
+
     (staging / "part.bin").write_bytes(b"x" * 1000)
-    progress_timer.timeout.emit()
+    sample_tick()
     (staging / "part.bin").write_bytes(b"x" * 1500)
-    progress_timer.timeout.emit()
+    sample_tick()
     # Promotion phase moves the payload away: progress must hold, not regress.
     (staging / "part.bin").unlink()
     staging.rmdir()
-    progress_timer.timeout.emit()
+    sample_tick()
     # Anchor overshoot (factor underestimate) still caps below completion.
     staging.mkdir()
     (staging / "part.bin").write_bytes(b"x" * 9000)
-    progress_timer.timeout.emit()
+    sample_tick()
 
     assert [item.message for item in seen] == [
         "Installing update\u2026 33%",
@@ -587,6 +594,9 @@ def test_install_progress_skips_completion_on_nonzero_exit_and_reports_code(tmp_
     )
 
     recovery_timer, progress_timer = _ProgressFakeTimer.instances[-2:]
+    progress_timer.timeout.emit()
+    sample = controller._progress_sample
+    assert sample is not None and sample.done.wait(1)
     progress_timer.timeout.emit()
     assert "33%" in seen[-1].message
 

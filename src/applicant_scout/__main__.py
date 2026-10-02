@@ -2126,6 +2126,13 @@ def _should_schedule_prompt_recheck(message: str, retry_available: bool) -> bool
 
 
 class _UpdateHandoffRecoveryController:
+    @dataclass
+    class _ProgressSample:
+        generation: int
+        done: threading.Event
+        value: int | None = None
+        error: Exception | None = None
+
     def __init__(
         self,
         parent: QObject | None,
@@ -2152,6 +2159,9 @@ class _UpdateHandoffRecoveryController:
         self._install_estimator: InstallProgressEstimator | None = None
         self._install_staging_dir: Path | None = None
         self._promotion_verifier: Callable[[], bool | None] | None = None
+        self._progress_generation = 0
+        # Retain ownership until even a retired native traversal finishes.
+        self._progress_sample: _UpdateHandoffRecoveryController._ProgressSample | None = None
 
     def arm(
         self,
@@ -2193,13 +2203,7 @@ class _UpdateHandoffRecoveryController:
         self._installer_launch = None
         self._started_at = None
         self._promotion_verifier = None
-        if self._progress_timer is not None:
-            self._progress_timer.stop()
-            self._delete_timer(self._progress_timer)
-        self._progress_timer = None
-        self._on_install_progress = None
-        self._install_estimator = None
-        self._install_staging_dir = None
+        self._stop_install_progress()
 
     @staticmethod
     def _delete_timer(timer: Any) -> None:
@@ -2263,6 +2267,7 @@ class _UpdateHandoffRecoveryController:
         estimator = self._install_estimator
         staging_dir = self._install_staging_dir
         on_progress = self._on_install_progress
+        generation = self._progress_generation
         if estimator is None or staging_dir is None or on_progress is None:
             self._stop_install_progress()
             return
@@ -2270,19 +2275,52 @@ class _UpdateHandoffRecoveryController:
             poll = getattr(self._installer_launch, "poll", None)
             if callable(poll):
                 exit_code = poll()
+                if generation != self._progress_generation:
+                    return
                 if exit_code is not None:
+                    self._stop_install_progress()
                     if exit_code == 0:
                         on_progress(estimator.complete())
                     # Nonzero/killed: stop silently without 100%; the
                     # recovery tick owns the exit verdict and surfaces it.
-                    self._stop_install_progress()
                     return
-            on_progress(estimator.observe(measure_directory_bytes(staging_dir)))
+            sample = self._progress_sample
+            if sample is not None:
+                if not sample.done.is_set():
+                    return
+                self._progress_sample = None
+                if sample.generation == generation:
+                    if sample.error is not None:
+                        raise sample.error
+                    if sample.value is not None:
+                        on_progress(estimator.observe(sample.value))
+                    return
+            sample = self._ProgressSample(generation, threading.Event())
+            self._progress_sample = sample
+
+            def _sample_directory() -> None:
+                try:
+                    sample.value = measure_directory_bytes(staging_dir)
+                except Exception as exc:  # noqa: BLE001 - consumed by the GUI timer
+                    sample.error = exc
+                finally:
+                    sample.done.set()
+
+            try:
+                worker = threading.Thread(
+                    target=_sample_directory, name="ApplicantScoutInstallProgress", daemon=True,
+                )
+                worker.start()
+            except Exception:
+                self._progress_sample = None
+                raise
         except Exception as exc:  # noqa: BLE001
             log.warning("Could not report update install progress: %s", exc)
-            self._stop_install_progress()
+            if generation == self._progress_generation:
+                self._stop_install_progress()
 
     def _stop_install_progress(self) -> None:
+        self._progress_generation += 1
         if self._progress_timer is not None:
             self._progress_timer.stop()
             self._delete_timer(self._progress_timer)
