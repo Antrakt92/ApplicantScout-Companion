@@ -1166,7 +1166,7 @@ def test_reader_invalidates_mplus_caches_when_content_changes_with_same_stat(
     assert first.current_score == 3074
     old_cache_files = list(cache_dir.rglob("*.payload.bin"))
     assert len(old_cache_files) == 1
-    assert ".v3." in old_cache_files[0].name
+    assert ".v4." in old_cache_files[0].name
 
     lookup_path = (
         tmp_path
