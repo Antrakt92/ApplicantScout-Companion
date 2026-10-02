@@ -2430,6 +2430,11 @@ class ApplicantInfoPanel(QFrame):
 
         self._current_applicant: Applicant | None = None
         self._current_listing: Listing | None = None
+        self._current_fit: CandidateFit | None = None
+        self._raid_detail_status = ""
+        self._raid_detail_status_error = False
+        self._raid_detail_retry_available = False
+        self._wcl_retry_available = False
         self._current_detail_context_key = ""
         self._detail_mode = "mplus"
         self._detail_rows_enabled = False
@@ -2576,9 +2581,10 @@ class ApplicantInfoPanel(QFrame):
         )
 
     def set_metric_preferences(self, metric_preferences: MetricPreferences) -> None:
+        if self._metric_preferences != metric_preferences:
+            self._current_fit = None
         self._metric_preferences = metric_preferences
-        if self._current_applicant is not None:
-            self._set_status_or_data(self._current_applicant, self._current_listing)
+        self._refresh_current_data()
 
     def sizeHint(self) -> QSize:  # type: ignore[override]
         hint = super().sizeHint()
@@ -2611,6 +2617,11 @@ class ApplicantInfoPanel(QFrame):
         self._hide_data_widgets()
         self._current_applicant = None
         self._current_listing = None
+        self._current_fit = None
+        self._raid_detail_status = ""
+        self._raid_detail_status_error = False
+        self._raid_detail_retry_available = False
+        self._wcl_retry_available = False
         self.setAccessibleDescription("No applicant is currently selected.")
         self._show_status(
             "Select or hover a row for applicant details.",
@@ -2635,6 +2646,11 @@ class ApplicantInfoPanel(QFrame):
         current_fit = fit or candidate_fit(applicant, listing)
         self._current_applicant = applicant
         self._current_listing = listing
+        self._current_fit = current_fit
+        self._raid_detail_status = raid_detail_status
+        self._raid_detail_status_error = raid_detail_status_error
+        self._raid_detail_retry_available = raid_detail_retry_available
+        self._wcl_retry_available = wcl_retry_available
         self.setAccessibleDescription(f"Details for {applicant.name}.")
         self._unpin_button.setAccessibleName(f"Clear pinned applicant {applicant.name}")
         self._unpin_button.setAccessibleDescription(
@@ -2643,15 +2659,19 @@ class ApplicantInfoPanel(QFrame):
         self._set_action_visible(self._unpin_button, pinned)
         self._set_identity(applicant)
         self._set_package(package, applicant, listing, fit=current_fit)
-        self._set_status_or_data(
-            applicant,
-            listing,
-            fit=current_fit,
-            raid_detail_status=raid_detail_status,
-            raid_detail_status_error=raid_detail_status_error,
-            raid_detail_retry_available=raid_detail_retry_available,
-            wcl_retry_available=wcl_retry_available,
-        )
+        self._refresh_current_data()
+
+    def _refresh_current_data(self) -> None:
+        if self._current_applicant is not None:
+            self._set_status_or_data(
+                self._current_applicant,
+                self._current_listing,
+                fit=self._current_fit,
+                raid_detail_status=self._raid_detail_status,
+                raid_detail_status_error=self._raid_detail_status_error,
+                raid_detail_retry_available=self._raid_detail_retry_available,
+                wcl_retry_available=self._wcl_retry_available,
+            )
 
     def _hide_data_widgets(self) -> None:
         for label in (
@@ -3192,8 +3212,7 @@ class ApplicantInfoPanel(QFrame):
     def _on_detail_mode_clicked(self, mode: str) -> None:
         self._detail_mode_by_context[self._current_detail_context_key] = mode
         self._set_detail_mode(mode)
-        if self._current_applicant is not None:
-            self._set_status_or_data(self._current_applicant, self._current_listing)
+        self._refresh_current_data()
         self.detailChanged.emit()
 
     def _set_metric_badges(
@@ -6440,6 +6459,7 @@ class OverlayWindow(QMainWindow):
         self._sync_table_current_id()
 
     def _on_panel_detail_changed(self) -> None:
+        self._panel_render_key = None
         self._reset_panel_height_reservation()
         self._sync_delegate_and_panel()
 
