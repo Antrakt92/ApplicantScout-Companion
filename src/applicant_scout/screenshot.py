@@ -2261,6 +2261,14 @@ class _RetainedFragmentFile:
     source: SnapshotSource | None
 
 
+@dataclass(frozen=True)
+class _FragmentTimeoutNotification:
+    token: int
+    path: Path
+    reason: str
+    source: SnapshotSource | None
+
+
 @dataclass
 class _PendingFragmentAssembly:
     chunks: dict[int, bytes]
@@ -2617,7 +2625,7 @@ class ScreenshotWatcher(QObject):
         self._manual_index = _manual_index_for(screenshots_dir, cache_dir)
         self._fragment_assembler = _SnapshotFragmentAssembler()
         self._snapshot_publication_lock = threading.Lock()
-        self._snapshot_publications: deque[Snapshot] = deque()
+        self._snapshot_publications: deque[Snapshot | _FragmentTimeoutNotification] = deque()
         self._snapshot_publication_active = False
         self._fragment_clock = fragment_clock or time.monotonic
         self._fragment_timer_factory = fragment_timer_factory or threading.Timer
@@ -2831,8 +2839,9 @@ class ScreenshotWatcher(QObject):
             return True
 
     def request_stop(self) -> None:
+        # Publish cancellation before waiting for short state bookkeeping.
+        self._stopped.set()
         with self._fragment_expiry_lock:
-            self._stopped.set()
             self._fragment_expiry_token += 1
             timer = self._fragment_expiry_timer
             self._fragment_expiry_timer = None
@@ -2937,40 +2946,53 @@ class ScreenshotWatcher(QObject):
         identity: tuple[int, int],
     ) -> None:
         retry_timer: Any | None = None
-        failure: tuple[Path, str, SnapshotSource | None] | None = None
-        with self._fragment_expiry_lock:
-            if (
-                self._stopped.is_set()
-                or token != self._fragment_expiry_token
-                or identity != self._fragment_expiry_identity
-            ):
-                return
-            self._fragment_expiry_timer = None
-            outcome = self._fragment_assembler.expire(now=self._fragment_clock())
-            if outcome.retry_after is not None:
-                retry_timer = self._make_fragment_timer_locked(
-                    identity,
-                    outcome.retry_after,
-                )
-            else:
-                self._delete_retired_fragment_files(outcome.retired_files)
+        failure: _FragmentTimeoutNotification | None = None
+        with self._snapshot_publication_lock:
+            with self._fragment_expiry_lock:
                 if (
-                    outcome.error_reason is not None
-                    and not self._fragment_degraded_reported
+                    self._stopped.is_set()
+                    or token != self._fragment_expiry_token
+                    or identity != self._fragment_expiry_identity
                 ):
-                    self._fragment_degraded_reported = True
-                    failure = (
-                        outcome.diagnostic_path or self._dir,
-                        outcome.error_reason,
-                        outcome.diagnostic_source,
+                    return
+                self._fragment_expiry_timer = None
+                outcome = self._fragment_assembler.expire(now=self._fragment_clock())
+                if outcome.retry_after is not None:
+                    retry_timer = self._make_fragment_timer_locked(
+                        identity,
+                        outcome.retry_after,
                     )
-                self._fragment_expiry_identity = None
+                else:
+                    if (
+                        outcome.error_reason is not None
+                        and not self._fragment_degraded_reported
+                    ):
+                        self._fragment_degraded_reported = True
+                        failure = _FragmentTimeoutNotification(
+                            token,
+                            outcome.diagnostic_path or self._dir,
+                            outcome.error_reason,
+                            outcome.diagnostic_source,
+                        )
+                    self._fragment_expiry_identity = None
+        # File generations were detached atomically, but deletion may stall on
+        # antivirus or storage. Neither shutdown nor new arrivals wait for it.
+        if outcome.retired_files:
+            self._delete_retired_fragment_files(outcome.retired_files)
         if retry_timer is not None:
             self._start_fragment_timer(retry_timer)
         if failure is not None:
-            self._emit_decode_failed(*failure)
+            with self._snapshot_publication_lock:
+                with self._fragment_expiry_lock:
+                    if self._stopped.is_set() or token != self._fragment_expiry_token:
+                        return
+                    drain = self._queue_snapshot_publication_locked(failure)
+            if drain:
+                self._drain_snapshot_publications()
 
-    def _queue_snapshot_publication_locked(self, snap: Snapshot) -> bool:
+    def _queue_snapshot_publication_locked(
+        self, snap: Snapshot | _FragmentTimeoutNotification,
+    ) -> bool:
         self._snapshot_publications.append(snap)
         if self._snapshot_publication_active:
             return False
@@ -2990,8 +3012,15 @@ class ScreenshotWatcher(QObject):
                     self._snapshot_publication_active = False
                     return True
                 snap = self._snapshot_publications.popleft()
+                if isinstance(snap, _FragmentTimeoutNotification):
+                    with self._fragment_expiry_lock:
+                        if snap.token != self._fragment_expiry_token:
+                            continue
             try:
-                alive = self._emit_snapshot(snap)
+                if isinstance(snap, _FragmentTimeoutNotification):
+                    alive = self._emit_decode_failed(snap.path, snap.reason, snap.source)
+                else:
+                    alive = self._emit_snapshot(snap)
             except Exception:
                 with self._snapshot_publication_lock:
                     self._snapshot_publication_active = False
