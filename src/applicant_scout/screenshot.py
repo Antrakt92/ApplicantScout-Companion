@@ -337,6 +337,10 @@ class Snapshot:
     roster_rio_context: RioSummaryContext | None = field(
         default=None, compare=False, repr=False
     )
+    producer_version_history: tuple[DecodedVersion, ...] = field(
+        default=(), compare=False, repr=False
+    )
+    reset_producer_identity: bool = field(default=False, compare=False, repr=False)
 
 
 def snapshot_rio_context(snap: Snapshot, *, roster: bool = False) -> RioSummaryContext:

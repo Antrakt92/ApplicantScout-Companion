@@ -7805,10 +7805,16 @@ def test_snapshot_apply_queue_preserves_complementary_authoritative_domains(
     assert state.listing is not None
     assert {row.name for row in state.applicants.values()} == {expected_applicant}
     assert {row.name for row in state.party_members.values()} == {expected_roster}
-    assert applicant_adds == [expected_applicant]
-    assert roster_updates == [True]
+    # Character/removal transitions must reach consumers before the new row.
+    assert applicant_adds == (
+        ["Healer-Realm", expected_applicant]
+        if snapshots == "full_then_lfg_partial" else [expected_applicant]
+    )
+    assert roster_updates == (
+        [True, True] if snapshots == "full_then_roster_partial" else [True]
+    )
     assert decoded == [burst[-1]]
-    assert len(applied) == 1
+    assert len(applied) == (2 if snapshots.startswith("full_then") else 1)
     assert cached == list(burst)
     cached_full = [
         snap
@@ -7984,6 +7990,13 @@ def test_snapshot_apply_queue_preserves_authority_before_placeholder_version(
 ):
     callbacks: list[object] = []
     applied: list[Snapshot] = []
+    state = AppState()
+    machine = main_mod.StateMachine(state)
+
+    def apply(snap: Snapshot) -> None:
+        applied.append(snap)
+        machine.apply_snapshot(snap)
+
     full = _live_snapshot()
     assert full.version is not None
     restricted = Snapshot(
@@ -7998,7 +8011,7 @@ def test_snapshot_apply_queue_preserves_authority_before_placeholder_version(
         applicants_unavailable=True,
     )
     queue = main_mod._SnapshotApplyQueue(
-        SimpleNamespace(apply_snapshot=applied.append),
+        SimpleNamespace(apply_snapshot=apply),
         object(),
         lambda *_args: None,
         signal_gate=main_mod._WatcherSignalGate(),
@@ -8010,11 +8023,14 @@ def test_snapshot_apply_queue_preserves_authority_before_placeholder_version(
     queue.enqueue_snapshot(restricted)
     callbacks.pop(0)()
 
-    assert len(applied) == 1
-    merged = applied[0]
-    assert merged.listing == full.listing
-    assert merged.applicants == full.applicants
-    assert merged.version == restricted.version
+    assert len(applied) == 2
+    assert applied[0].listing == full.listing
+    assert applied[0].applicants == full.applicants
+    assert applied[1].version == restricted.version
+    assert state.player.full_name == full.version.player_name
+    assert state.player.region_id == full.version.region_id
+    assert state.player.addon_version == restricted.version.addon_version
+    assert {row.name for row in state.applicants.values()} == {"Healer-Realm"}
 
 
 def test_snapshot_apply_queue_preserves_positive_leader_before_zero_partial():

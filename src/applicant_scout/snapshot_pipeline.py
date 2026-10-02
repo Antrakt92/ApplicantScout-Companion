@@ -10,11 +10,20 @@ from typing import Any, Protocol
 
 from . import log_throttle as _log_throttle
 from .producer_identity import (
+    is_placeholder_transport_identity,
     normalize_producer_identity,
     producer_identities_conflict as normalized_producer_identities_conflict,
     producer_identity_matches as normalized_producer_identity_matches,
+    resolve_transport_player,
 )
-from .screenshot import RioSummaryContext, Snapshot, snapshot_rio_context, snapshot_source_order_key
+from .screenshot import (
+    DecodedApplicant,
+    RioSummaryContext,
+    Snapshot,
+    snapshot_rio_context,
+    snapshot_source_order_key,
+)
+from .state import WoWPlayer
 
 
 _log = logging.getLogger("applicant_scout.snapshot_pipeline")
@@ -91,11 +100,11 @@ def listing_snapshot_segments(
 
 
 def compact_snapshot_segment(snapshots: tuple[object, ...]) -> tuple[object, ...]:
-    """Coalesce authority within each uninterrupted listing context."""
+    """Coalesce authority without discarding fallback or row lifecycle steps."""
     retained: list[object] = []
     # A -> B -> A is still a listing transition: losing B would preserve or
     # resurrect departed applicants when the last A has a restricted read.
-    for segment in listing_snapshot_segments(snapshots):
+    for segment in snapshot_semantic_segments(snapshots):
         covered = 0
         retained_reversed: list[object] = []
         for snap in reversed(segment):
@@ -107,6 +116,75 @@ def compact_snapshot_segment(snapshots: tuple[object, ...]) -> tuple[object, ...
     return tuple(retained)
 
 
+def _row_continuity_signature(snap: Snapshot, *, roster: bool) -> tuple:
+    rows = snap.roster if roster else snap.applicants
+    by_id = {}
+    for row in rows:
+        name = row.name.strip()
+        if not name or (not roster and is_placeholder_transport_identity(name)):
+            continue
+        row_id = (
+            f"{row.applicant_id}:{row.member_idx}"
+            if isinstance(row, DecodedApplicant) else name.lower()
+        )
+        # Name, spec and metric-role transitions retire enrichment. Gear must
+        # survive a later unknown read, but class and score use newest authority.
+        by_id[row_id] = (row.name, row.spec_id, row.ilvl, row.role)
+    return tuple(sorted(by_id.items()))
+
+
+def snapshot_semantic_segments(
+    snapshots: tuple[object, ...],
+) -> tuple[tuple[object, ...], ...]:
+    """Preserve sequential fallback and removal/reappearance before merging.
+
+    Each surface tracks its last authoritative observation across partial
+    frames. Repeated observations still coalesce; dependent transitions apply
+    in order so existing rows and producer identity resolve against real state.
+    """
+    segments: list[tuple[object, ...]] = []
+    for listing_segment in listing_snapshot_segments(snapshots):
+        current: list[object] = []
+        observed: dict[str, object] = {}
+        for snap in listing_segment:
+            incoming: dict[str, object] = {}
+            if isinstance(snap, Snapshot):
+                if snap.version is not None:
+                    incoming["version"] = (
+                        snap.version.player_name, snap.version.region_id,
+                        snap.producer_version_history,
+                    )
+                elif "version" not in observed:
+                    # Rows captured before the first producer observation must
+                    # not be rebound to a later character by a merged frame.
+                    incoming["version"] = None
+                if not snap.lfg_unavailable or snap.listing is not None:
+                    incoming["listing_seed"] = snap.listing
+                if not snap.lfg_unavailable and (
+                    snap.listing is None or not snap.applicants_unavailable
+                ):
+                    incoming["applicants"] = (
+                        _row_continuity_signature(snap, roster=False)
+                        if snap.listing is not None else ()
+                    )
+                if not snap.roster_unavailable:
+                    incoming["roster"] = _row_continuity_signature(snap, roster=True)
+            if current and any(
+                key in observed and observed[key] != value
+                for key, value in incoming.items()
+            ):
+                segments.append(tuple(current))
+                current = []
+                observed = {}
+                if isinstance(snap, Snapshot) and snap.version is None:
+                    incoming["version"] = None
+            current.append(snap)
+            observed.update(incoming)
+        if current:
+            segments.append(tuple(current))
+    return tuple(segments)
+
+
 def append_pending_snapshot(
     pending: tuple[object, ...],
     snap: object,
@@ -115,14 +193,43 @@ def append_pending_snapshot(
     # later partial/full frame so listing-session and waiter cleanup still runs.
     if bool(getattr(snap, "terminal_clear", False)):
         return (snap,)
-    if isinstance(snap, Snapshot) and snap.version is not None and any(
-        producer_identities_conflict(previous.version, snap.version)
+    history = tuple(
+        version
         for previous in pending
-        if isinstance(previous, Snapshot) and previous.version is not None
+        if isinstance(previous, Snapshot)
+        for version in (
+            *previous.producer_version_history,
+            *((previous.version,) if previous.version is not None else ()),
+        )
+    )
+    # A fully specified identity/region makes older fallback context redundant.
+    # Keep only its suffix so ordinary character-switch bursts stay bounded.
+    for index in range(len(history) - 1, -1, -1):
+        name, realm, region = version_producer_identity(history[index])
+        if name and realm and region is not None:
+            history = history[index:]
+            break
+    player = WoWPlayer()
+    for version in history:
+        player = resolve_transport_player(player, version)
+    incoming_player = (
+        resolve_transport_player(player, snap.version)
+        if isinstance(snap, Snapshot) and snap.version is not None else player
+    )
+    if normalized_producer_identities_conflict(
+        normalize_producer_identity(player.full_name, player.region_id),
+        normalize_producer_identity(incoming_player.full_name, incoming_player.region_id),
     ):
         # Keep the reset even if the producer switches back before GUI apply.
         # This is an in-memory barrier; cache writes retain the original frames.
-        return (Snapshot(listing=None, version=None, terminal_clear=True), snap)
+        assert isinstance(snap, Snapshot)
+        return (
+            Snapshot(
+                listing=None, version=None, terminal_clear=True,
+                reset_producer_identity=True,
+            ),
+            replace(snap, producer_version_history=history + snap.producer_version_history),
+        )
     if pending and bool(getattr(pending[0], "terminal_clear", False)):
         return (pending[0],) + compact_snapshot_segment(pending[1:] + (snap,))
     return compact_snapshot_segment(pending + (snap,))
@@ -170,7 +277,11 @@ def latest_producer_segment(snapshots: tuple[Snapshot, ...]) -> tuple[Snapshot, 
 
 
 def merge_snapshot_segment(snapshots: tuple[Snapshot, ...]) -> Snapshot:
-    """Compose final in-memory authority without fabricating a cache snapshot."""
+    """Compose one semantic segment without fabricating a cache snapshot.
+
+    Fallback and row lifecycle boundaries must first be separated by
+    snapshot_semantic_segments; they require distinct state application steps.
+    """
     snapshots = latest_producer_segment(snapshots)
     latest = snapshots[-1]
     listing_source = next(
@@ -193,8 +304,8 @@ def merge_snapshot_segment(snapshots: tuple[Snapshot, ...]) -> Snapshot:
         (snap for snap in reversed(snapshots) if not snap.roster_unavailable),
         None,
     )
-    version = next(
-        (snap.version for snap in reversed(snapshots) if snap.version is not None),
+    version_source = next(
+        (snap for snap in reversed(snapshots) if snap.version is not None),
         None,
     )
     leader_source = next(
@@ -216,7 +327,10 @@ def merge_snapshot_segment(snapshots: tuple[Snapshot, ...]) -> Snapshot:
                 listing_seed_source.listing if listing_seed_source is not None else None
             )
         ),
-        version=version,
+        version=version_source.version if version_source is not None else None,
+        producer_version_history=(
+            version_source.producer_version_history if version_source is not None else ()
+        ),
         leader_key=(leader_source.leader_key if leader_source is not None else None),
         applicants=(
             list(applicants_source.applicants) if applicants_source is not None else []
@@ -261,7 +375,7 @@ def snapshot_application_plan(
             planned_terminal = replace(terminal, version=None)
         steps.append((planned_terminal, cache_terminal))
     if segment:
-        listing_segments = listing_snapshot_segments(latest_producer_segment(segment))
+        listing_segments = snapshot_semantic_segments(segment)
         for index, listing_segment in enumerate(listing_segments):
             typed_segment = tuple(
                 snap for snap in listing_segment if isinstance(snap, Snapshot)

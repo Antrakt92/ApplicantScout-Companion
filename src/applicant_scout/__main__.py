@@ -71,7 +71,7 @@ from .live_snapshot_cache import (
 )
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from .overlay import OverlayWindow
-from .producer_identity import is_placeholder_transport_identity
+from .producer_identity import is_placeholder_transport_identity, resolve_transport_player
 from .raiderio_local import (
     LOOKUP_PAYLOAD_CACHE_DIR_NAME,
     RaiderIOLocalReader,
@@ -1439,56 +1439,14 @@ class StateMachine(QObject):
         self.rosterChanged.emit()
 
     def _resolve_snapshot_player(self, snap: Snapshot) -> WoWPlayer | None:
-        version = snap.version
-        if version is None:
+        if snap.version is None:
             return None
-
-        old_player = self._state.player
-        old_full_name = old_player.full_name.strip()
-        incoming_full_name = version.player_name.strip()
-        old_identity_is_valid = bool(old_full_name) and not (
-            is_placeholder_transport_identity(old_full_name)
-        )
-        incoming_identity_is_valid = bool(incoming_full_name) and not (
-            is_placeholder_transport_identity(incoming_full_name)
-        )
-
-        resolved_full_name = incoming_full_name
-        resolved_region_id = version.region_id
-        old_region_is_valid = REGION_ID_TO_WCL.get(old_player.region_id) is not None
-        incoming_region_is_valid = REGION_ID_TO_WCL.get(version.region_id) is not None
-
-        if not incoming_identity_is_valid:
-            resolved_full_name = old_full_name if old_identity_is_valid else ""
-            if old_identity_is_valid and old_region_is_valid:
-                resolved_region_id = old_player.region_id
-        elif old_identity_is_valid:
-            incoming_name, separator, _incoming_realm = incoming_full_name.partition(
-                "-"
-            )
-            old_name, old_separator, _old_realm = old_full_name.partition("-")
-            region_changed = (
-                old_region_is_valid
-                and incoming_region_is_valid
-                and old_player.region_id != version.region_id
-            )
-            if (
-                not separator
-                and old_separator
-                and incoming_name.casefold() == old_name.casefold()
-                and not region_changed
-            ):
-                resolved_full_name = old_full_name
-
-        if not incoming_region_is_valid and old_region_is_valid:
-            resolved_region_id = old_player.region_id
-
-        return WoWPlayer(
-            addon_version=version.addon_version,
-            game_version=version.game_version,
-            region_id=resolved_region_id,
-            full_name=resolved_full_name,
-        )
+        player = self._state.player
+        # Producer barriers retire old rows, but omitted region/realm fields
+        # still resolve in chronological order without applying old row data.
+        for version in (*snap.producer_version_history, snap.version):
+            player = resolve_transport_player(player, version)
+        return player
 
     def _compute_identity_delta(
         self, resolved_player: WoWPlayer | None
@@ -1824,6 +1782,12 @@ class StateMachine(QObject):
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
+        if snap.reset_producer_identity:
+            # Retain the player as the history's fallback seed, but prevent a
+            # returning bare name from inheriting the retired tracker's realm.
+            self._producer_player_name = ""
+            self._producer_player_realm = ""
+            self._producer_region = None
         resolved_player = self._resolve_snapshot_player(snap)
         identity = self._compute_identity_delta(resolved_player)
         version = self._apply_version_block(snap, resolved_player, identity)
