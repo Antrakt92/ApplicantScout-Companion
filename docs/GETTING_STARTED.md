@@ -26,7 +26,8 @@ and extract it so the file is at
 `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`.
 GitHub's automatic **Source code** ZIP is not the install package.
 
-The same addon supports Retail 12.1.0 and PTR 12.1.5. For PTR, use its
+The addon package includes Retail 12.1.0 and PTR 12.1.5 interface metadata.
+In-game PTR testing is still pending. For PTR, use its
 `_ptr_\Interface\AddOns` or `_xptr_\Interface\AddOns` folder instead.
 
 ## 2. Connect Warcraft Logs
@@ -99,9 +100,9 @@ empty WCL result does not necessarily mean setup failed.
 Updates pause in combat, throughout an active Mythic+ run, and during raid boss
 encounters. Try the first check out of combat, before starting a key.
 
-The addon shows a short setup guide the first time you load it. After closing
-it, you can reopen it at any time with `/apscout setup` to copy the companion
-download link.
+The addon opens its installation and settings window on login until you choose
+**Don't show on login** beside the close button. Closing the window postpones it
+until your next login or reload. Type `/apscout` to reopen it at any time.
 
 ## If something is missing
 
