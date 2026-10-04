@@ -1,6 +1,7 @@
 # Third-Party Notices
 
-ApplicantScout Companion source code is distributed under the MIT License.
+ApplicantScout Companion's original source code uses the custom license in LICENSE.
+Previously granted MIT permissions remain valid.
 Windows builds bundle third-party Python packages, native libraries, and Qt
 runtime files. Their licenses remain with their respective copyright holders.
 
@@ -41,7 +42,7 @@ The build excludes Qt Virtual Keyboard, which this application does not use.
 
 The next Windows build uses the open-source PySide6 wheels from PyPI. Earlier
 published builds may use PyQt; consult each release's tagged notices. No
-commercial Qt license is asserted. The MIT license covers ApplicantScout's own source;
+commercial Qt license is asserted. The custom license covers ApplicantScout's own source;
 it does not replace the terms applying to the combined binary and its libraries.
 
 For a released application, use its matching tag in the

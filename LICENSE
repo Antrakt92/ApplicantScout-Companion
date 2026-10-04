@@ -1,21 +1,93 @@
-MIT License
+Antrakt Attribution and CurseForge Rewards License 1.0
+Custom license based on MIT; not the standard MIT License.
+Effective for copies offered under these terms from 04-Oct-2026.
 
 Copyright (c) 2026 Antrakt
+Project: ApplicantScout Companion
+Original project: https://github.com/Antrakt92/ApplicantScout-Companion
+Source: https://github.com/Antrakt92/ApplicantScout-Companion
+CurseForge rewards recipient username: antrakt92
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Scope and permission
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+The "Covered Material" is the original code and accompanying material owned
+by Antrakt/Antrakt92 in this project. Third-party code, libraries, assets and
+other material identified in THIRD-PARTY-NOTICES.md or carrying separate
+notices are excluded and retain their respective licenses.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Permission is granted, without a purchase fee or prior contact with the author,
+to use, copy, modify, merge, publish, distribute, sublicense and/or sell copies
+of the Covered Material, subject to the following conditions.
+
+2. Meaningful reuse, notices and public attribution
+
+"Meaningful Reuse" means distributing the whole project, a fork or port, or
+copying or adapting an original implementation of a significant user-facing
+feature from the Covered Material. It is determined by the functionality
+transferred, not by a line count or a percentage of source code.
+
+Isolated lines, small helper snippets, standard programming constructs and
+API calls are excluded. Independently implementing a similar idea, writing
+compatibility code, or interacting with the original project as a dependency
+without incorporating its implementation is also excluded. These excluded
+uses may be copied, modified and redistributed without reward sharing or
+the additional public attribution requirement; retain applicable copyright
+and license notices in copies or substantial portions as required below.
+
+Include this license and the applicable copyright notices in all copies or
+substantial portions of the Covered Material. When publicly distributing a
+project involving Meaningful Reuse of the Covered Material, credit Antrakt92, identify ApplicantScout Companion as the source,
+and provide a working link to the original project shown above in the project
+description or accompanying documentation. Preserve these conditions for the
+Covered Material in downstream copies; no endorsement by the author is implied.
+
+3. CurseForge Reward Points
+
+If that publicly distributed project earns CurseForge Reward Points, its
+publisher must allocate at least 10% of the Reward Points earned by that
+specific project to the CurseForge account with username antrakt92 using
+CurseForge's project Members reward-allocation feature. Keep that allocation
+in effect for as long as the project earns points and involves Meaningful
+Reuse of the Covered Material. This is not 10% of the publisher's account
+balance, other projects, donations or other revenue.
+
+The minimum allocation to antrakt92 is 10% in total per earning project, not
+10% per reused source project, feature or file. The same allocation satisfies
+this condition for all Antrakt/Antrakt92 projects licensed under these terms;
+using several such projects does not increase the minimum to 20%, 30% or more.
+
+No separate permission request, private message or negotiated agreement is
+required. Send the project member invitation required by CurseForge and set
+the allocation when the platform permits it. An outstanding invitation awaiting
+the author's acceptance does not by itself breach this condition; once accepted,
+the allocation must be enabled before further reward accrual where the platform
+permits. No payment is required for a project that does not earn these points.
+Ordinary installation, gameplay, links and collections that merely reference
+the original project do not trigger this condition.
+
+4. Historical and third-party permissions
+
+This license does not revoke or restrict permissions already granted under MIT
+or another license. Earlier MIT copies, and material obtained from those copies,
+may continue to be used, modified and redistributed under their existing terms
+without the reward-sharing or additional attribution conditions above. The
+pre-change source snapshot at
+https://github.com/Antrakt92/ApplicantScout-Companion/tree/49d448979145d4b33ff5f38ee9e43fffa4a4cb48
+remains available under its recorded license. New original contributions first
+offered solely under this license are covered by these custom terms.
+
+These terms do not replace third-party notices, source-access obligations or
+other third-party license requirements. They do not restrict modification or
+replacement of LGPL libraries, or reverse engineering of the combined work
+for debugging modifications to those libraries. No rights in third-party
+trademarks, game assets or data are granted by this license.
+
+5. Disclaimer
+
+THE COVERED MATERIAL IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE COVERED MATERIAL
+OR THE USE OR OTHER DEALINGS IN THE COVERED MATERIAL.

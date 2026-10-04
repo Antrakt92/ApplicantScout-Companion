@@ -188,7 +188,12 @@ change the choice in Settings at any time.
 
 ## License
 
-ApplicantScout Companion source is [MIT licensed](LICENSE). Windows builds also
-include software under other licenses, including LGPL Qt and PySide6. See
-[third-party notices and source access](THIRD-PARTY-NOTICES.md) and the bundled
-`licenses/` directory for the applicable terms.
+ApplicantScout Companion is free to use. The project's original code uses the [Antrakt Attribution and CurseForge Rewards License 1.0](https://github.com/Antrakt92/ApplicantScout-Companion/blob/main/LICENSE), a custom license based on MIT.
+
+Public forks, ports and projects reusing an original implementation of a significant user-facing feature must credit Antrakt92, name [ApplicantScout Companion](https://github.com/Antrakt92/ApplicantScout-Companion) and link to the original.
+
+If such a project earns CurseForge Reward Points, allocate at least 10% of that project's points in total to the CurseForge account `antrakt92` through Members.
+
+Reusing several Antrakt92 projects does not add percentages. Isolated lines, small helper snippets, standard API calls, independently implemented ideas and compatibility or dependency-only use are exempt from reward sharing and additional public attribution. No separate permission request is needed; CurseForge requires the author to accept the member invitation.
+
+Previously granted MIT permissions remain valid. Third-party code keeps its original license. See [third-party notices](https://github.com/Antrakt92/ApplicantScout-Companion/blob/main/THIRD-PARTY-NOTICES.md).
