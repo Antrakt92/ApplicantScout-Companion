@@ -17,8 +17,8 @@ experience in one table, with missing data clearly marked.
 [ApplicantScout WoW addon](https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay).
 You need both installed and running to receive group data.**
 
-Supports current Retail Midnight and PTR builds — exact supported Interfaces
-are listed on the
+For current WoW Retail: Midnight. The addon also includes PTR interface metadata,
+but in-game PTR testing is still pending. Supported Interfaces are listed on the
 [addon page](https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay).
 For PTR, install the addon in that
 client's AddOns folder and select its `Screenshots` folder in Companion Settings.
@@ -66,22 +66,29 @@ Blizzard password.
    [this repository's releases page](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest).
    Use `ApplicantScoutCompanionSetup-*.exe`; the portable ZIP is mainly for
    manual/dev use.
-3. Create Warcraft Logs API credentials:
-   1. Sign in to [Warcraft Logs and open API Clients](https://www.warcraftlogs.com/api/clients/).
-   2. Click **Create Client**.
-   3. Name: anything clear, for example `ApplicantScoutPersonal`.
-   4. Redirect URL: exactly `http://localhost`.
-   5. Public Client: leave unchecked.
-   6. Create the client, then copy both the generated **Client ID** and
-      **Client Secret**.
-
-   Before you click **Create**, the form should look like this:
-
-   ![Warcraft Logs Create Client form](docs/images/wcl-create-client.jpg)
+3. Follow the [illustrated setup guide](docs/GETTING_STARTED.md#2-connect-warcraft-logs)
+   to create a free Warcraft Logs API client.
 4. Launch ApplicantScout Companion from the Start Menu. First-run setup asks for
    your WCL Client ID/Secret and the active WoW `_retail_\Screenshots` folder.
 5. Reload WoW, enable ApplicantScout, then host a Mythic+ or raid listing or
    join a group. The overlay updates when applicant or roster snapshots arrive.
+
+<details>
+<summary>Warcraft Logs API client fields</summary>
+
+1. Sign in to [Warcraft Logs and open API Clients](https://www.warcraftlogs.com/api/clients/).
+2. Click **Create Client**.
+3. Name: anything clear, for example `ApplicantScoutPersonal`.
+4. Redirect URL: exactly `http://localhost`.
+5. Public Client: leave unchecked.
+6. Create the client, then copy both the generated **Client ID** and
+   **Client Secret**.
+
+Before you click **Create**, the form should look like this:
+
+![Warcraft Logs Create Client form](docs/images/wcl-create-client.jpg)
+
+</details>
 
 ## Overlay Data
 
@@ -126,21 +133,6 @@ Current Windows builds are unsigned. SmartScreen may warn or show an unknown
 publisher. Download from the linked GitHub release and proceed only if you trust
 the source. The `.sha256` sidecar verifies file integrity, not publisher identity.
 
-## Code Signing Policy
-
-If a future release uses SignPath, its signing attribution will be:
-"Free code signing provided by SignPath.io, certificate by SignPath Foundation."
-
-This is a single-maintainer project: Author, Reviewer, and Approver are all
-Antrakt ([github.com/Antrakt92](https://github.com/Antrakt92)). Windows release
-binaries are built by CI from this repository. They are currently unsigned —
-there is no publisher identity yet. If free signing through SignPath is
-approved, future release builds will be signed through that pipeline.
-
-Usage reporting is optional. The installer offers it defaulting to off and never
-opts you in silently; see [what is sent and retained](docs/PRIVACY.md). You can
-change the choice in Settings at any time.
-
 ## Settings And Updates
 
 Settings lets you choose the Screenshots folder, WCL data types and usage sharing.
@@ -173,6 +165,26 @@ problems. Report vulnerabilities through the private route in [SECURITY.md](SECU
 See [CONTRIBUTING.md](CONTRIBUTING.md) for a complete source setup, checks and
 Windows build requirements. [Release history](RELEASE_NOTES.md) lists changes;
 [the documentation index](docs/README.md) links the full reference.
+
+<details>
+<summary>Code signing policy</summary>
+
+## Code Signing Policy
+
+If a future release uses SignPath, its signing attribution will be:
+"Free code signing provided by SignPath.io, certificate by SignPath Foundation."
+
+This is a single-maintainer project: Author, Reviewer, and Approver are all
+Antrakt ([github.com/Antrakt92](https://github.com/Antrakt92)). Windows release
+binaries are built by CI from this repository. They are currently unsigned —
+there is no publisher identity yet. If free signing through SignPath is
+approved, future release builds will be signed through that pipeline.
+
+Usage reporting is optional. The installer offers it defaulting to off and never
+opts you in silently; see [what is sent and retained](docs/PRIVACY.md). You can
+change the choice in Settings at any time.
+
+</details>
 
 ## License
 
