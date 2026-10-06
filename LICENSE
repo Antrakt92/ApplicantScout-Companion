@@ -1,88 +1,73 @@
-Antrakt Attribution and CurseForge Rewards License 1.0
+Antrakt Attribution and CurseForge Rewards License 1.1
 Custom license based on MIT; not the standard MIT License.
-Effective for copies offered under these terms from 04-Oct-2026.
 
 Copyright (c) 2026 Antrakt
 Project: ApplicantScout Companion
 Original project: https://github.com/Antrakt92/ApplicantScout-Companion
 Source: https://github.com/Antrakt92/ApplicantScout-Companion
-CurseForge rewards recipient username: antrakt92
+CurseForge rewards recipient: antrakt92
 
-1. Scope and permission
+You may use, copy, modify, merge, publish, distribute, sublicense and sell
+the original code and accompanying material owned by Antrakt/Antrakt92
+in this project under these conditions. No prior contact or approval is needed.
+Third-party material identified in THIRD-PARTY-NOTICES.md or carrying its
+own notice is excluded and retains its own license.
 
-The "Covered Material" is the original code and accompanying material owned
-by Antrakt/Antrakt92 in this project. Third-party code, libraries, assets and
-other material identified in THIRD-PARTY-NOTICES.md or carrying separate
-notices are excluded and retain their respective licenses.
+1. Notices and credit
 
-Permission is granted, without a purchase fee or prior contact with the author,
-to use, copy, modify, merge, publish, distribute, sublicense and/or sell copies
-of the Covered Material, subject to the following conditions.
+Keep this license and the applicable copyright notices in copies or
+substantial portions of the covered work. When publicly distributing a
+project that substantially reuses it, credit antrakt92, name ApplicantScout Companion,
+link to the original project above and identify your changes. Keep these
+conditions when redistributing or sublicensing the covered work.
 
-2. Meaningful reuse, notices and public attribution
+2. Substantial reuse
 
-"Meaningful Reuse" means distributing the whole project, a fork or port, or
-copying or adapting an original implementation of a significant user-facing
-feature from the Covered Material. It is determined by the functionality
-transferred, not by a line count or a percentage of source code.
+Substantial reuse means redistributing the project as a whole, including
+a fork or port, or incorporating or adapting its original implementation
+of a meaningful user-facing feature. Functionality, rather than a line
+count or percentage of your code, determines this.
 
-Isolated lines, small helper snippets, standard programming constructs and
-API calls are excluded. Independently implementing a similar idea, writing
-compatibility code, or interacting with the original project as a dependency
-without incorporating its implementation is also excluded. These excluded
-uses may be copied, modified and redistributed without reward sharing or
-the additional public attribution requirement; retain applicable copyright
-and license notices in copies or substantial portions as required below.
-
-Include this license and the applicable copyright notices in all copies or
-substantial portions of the Covered Material. When publicly distributing a
-project involving Meaningful Reuse of the Covered Material, credit Antrakt92, identify ApplicantScout Companion as the source,
-and provide a working link to the original project shown above in the project
-description or accompanying documentation. Preserve these conditions for the
-Covered Material in downstream copies; no endorsement by the author is implied.
+Isolated lines, incidental helpers, standard programming constructs and
+API calls require no reward share or additional public credit. Source
+credit is appreciated where appropriate.
 
 3. CurseForge Reward Points
 
-If that publicly distributed project earns CurseForge Reward Points, its
-publisher must allocate at least 10% of the Reward Points earned by that
-specific project to the CurseForge account with username antrakt92 using
-CurseForge's project Members reward-allocation feature. Keep that allocation
-in effect for as long as the project earns points and involves Meaningful
-Reuse of the Covered Material. This is not 10% of the publisher's account
-balance, other projects, donations or other revenue.
+If such a derivative project earns CurseForge Reward Points, allocate
+at least 10% of that project's points to antrakt92 through CurseForge's
+Members reward allocation. Maintain the share while it uses the covered
+work and earns points. This requirement applies separately to each
+Antrakt/Antrakt92 project substantially reused under this version.
+It concerns that derivative project only, not account earnings, other
+projects, donations or other revenue. No points earned means no payment.
 
-The minimum allocation to antrakt92 is 10% in total per earning project, not
-10% per reused source project, feature or file. The same allocation satisfies
-this condition for all Antrakt/Antrakt92 projects licensed under these terms;
-using several such projects does not increase the minimum to 20%, 30% or more.
+Send the member invitation required by CurseForge and enable the required
+share when it is accepted and the platform permits it. A pending invitation
+awaiting the author's acceptance does not by itself breach this condition.
+No separate permission request or negotiated agreement is needed.
+CurseForge's own rules still apply.
 
-No separate permission request, private message or negotiated agreement is
-required. Send the project member invitation required by CurseForge and set
-the allocation when the platform permits it. An outstanding invitation awaiting
-the author's acceptance does not by itself breach this condition; once accepted,
-the allocation must be enabled before further reward accrual where the platform
-permits. No payment is required for a project that does not earn these points.
-Ordinary installation, gameplay, links and collections that merely reference
-the original project do not trigger this condition.
+4. Uses that require no share
 
-4. Historical and third-party permissions
+Installation, gameplay, recommendations, links, dependency references and
+collections that reference the original download require no reward share.
+Independently written implementations, translations and compatibility
+patches also require no reward share or additional public credit unless
+they substantially reuse the covered implementation.
 
-This license does not revoke or restrict permissions already granted under MIT
-or another license. Earlier MIT copies, and material obtained from those copies,
-may continue to be used, modified and redistributed under their existing terms
-without the reward-sharing or additional attribution conditions above. The
-pre-change source snapshot at
+Third-party licenses and their source-access obligations remain in force.
+These terms do not restrict replacing or modifying LGPL libraries, or
+reverse engineering for debugging those modifications. They grant no
+rights in third-party trademarks, game assets or data.
+
+Version 1.1 applies only to copies explicitly distributed with it.
+Earlier copies, including MIT and version 1.0 copies, and material obtained
+from them retain their original grants. Editing a page or this file does
+not change those grants. New original contributions first offered solely
+under version 1.1 are covered by these terms.
+The earlier MIT source snapshot remains under its recorded license:
 https://github.com/Antrakt92/ApplicantScout-Companion/tree/49d448979145d4b33ff5f38ee9e43fffa4a4cb48
-remains available under its recorded license. New original contributions first
-offered solely under this license are covered by these custom terms.
-
-These terms do not replace third-party notices, source-access obligations or
-other third-party license requirements. They do not restrict modification or
-replacement of LGPL libraries, or reverse engineering of the combined work
-for debugging modifications to those libraries. No rights in third-party
-trademarks, game assets or data are granted by this license.
-
-5. Disclaimer
 
 THE COVERED MATERIAL IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
