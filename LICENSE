@@ -1,4 +1,4 @@
-Antrakt Attribution and CurseForge Rewards License 1.1
+Antrakt Attribution and CurseForge Rewards License 1.2
 Custom license based on MIT; not the standard MIT License.
 
 Copyright (c) 2026 Antrakt
@@ -37,10 +37,12 @@ credit is appreciated where appropriate.
 If such a derivative project earns CurseForge Reward Points, allocate
 at least 10% of that project's points to antrakt92 through CurseForge's
 Members reward allocation. Maintain the share while it uses the covered
-work and earns points. This requirement applies separately to each
-Antrakt/Antrakt92 project substantially reused under this version.
-It concerns that derivative project only, not account earnings, other
-projects, donations or other revenue. No points earned means no payment.
+work and earns points. A single 10% share to antrakt92 per derivative
+project satisfies the reward-sharing requirement for all Antrakt/Antrakt92
+projects reused in it. Reusing several source projects does not increase
+the required share. Each separate derivative project is assessed separately.
+The share concerns that derivative project only, not account earnings,
+other projects, donations or other revenue. No points earned means no payment.
 
 Send the member invitation required by CurseForge and enable the required
 share when it is accepted and the platform permits it. A pending invitation
@@ -61,11 +63,16 @@ These terms do not restrict replacing or modifying LGPL libraries, or
 reverse engineering for debugging those modifications. They grant no
 rights in third-party trademarks, game assets or data.
 
-Version 1.1 applies only to copies explicitly distributed with it.
-Earlier copies, including MIT and version 1.0 copies, and material obtained
-from them retain their original grants. Editing a page or this file does
-not change those grants. New original contributions first offered solely
-under version 1.1 are covered by these terms.
+Version 1.2 applies only to copies explicitly distributed with it.
+Earlier copies, including MIT and versions 1.0 and 1.1, and material
+obtained from them retain their original grants. Editing a page or this
+file does not change those grants. New original contributions first
+offered solely under version 1.2 are covered by these terms.
+
+As an additional permission from Antrakt/Antrakt92, the single-share rule
+in section 3 also satisfies this author's reward-sharing requirements
+under earlier custom-license versions, including 1.0 and 1.1. It imposes
+no new conditions on MIT copies or third-party material.
 The earlier MIT source snapshot remains under its recorded license:
 https://github.com/Antrakt92/ApplicantScout-Companion/tree/49d448979145d4b33ff5f38ee9e43fffa4a4cb48
 
