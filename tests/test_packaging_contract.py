@@ -2011,7 +2011,7 @@ def test_release_workflow_separates_read_only_build_from_narrow_draft_writer():
     assert "release-artifact-manifest.ps1" in create_manifest
     assert "-Mode Create" in create_manifest
     assert "-Purpose Build" in create_manifest
-    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in build
+    assert "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" in build
     assert "companion-release-build-attempt-${{ github.run_attempt }}" in build
     assert "build_attempt: ${{ steps.release-identity.outputs.attempt }}" in build
 
@@ -2020,7 +2020,7 @@ def test_release_workflow_separates_read_only_build_from_narrow_draft_writer():
     assert "persist-credentials: false" in _step_block(draft, "Checkout companion")
     assert "Install release dependencies" not in draft
     assert "choco install" not in draft
-    assert "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in draft
+    assert "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" in draft
     assert (
         "companion-release-build-attempt-${{ needs.build.outputs.build_attempt }}"
         in draft
