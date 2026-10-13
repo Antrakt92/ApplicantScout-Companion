@@ -7599,7 +7599,7 @@ def test_raid_listing_table_keeps_raw_evidence_coloured_and_fit_separate(
         fit_item = window._table.item(row, COL_FIT)
         assert fit_item.text().startswith("~")
         assert fit_item.text()[1:].isdigit()
-        assert fit_item.background().color().name() == overlay_mod.FIT_ESTIMATE_BACKGROUND
+        assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
         assert fit_item.background().style() != Qt.BrushStyle.NoBrush
         assert window._fetches_in_flight == {}
         assert window._raid_boss_fetches_in_flight == {}

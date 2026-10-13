@@ -2872,6 +2872,11 @@ def test_character_cache_orders_exact_and_covering_scopes_by_freshness(
             entry.fetched_at = now - exact_age
         elif scope_key == broader.cache_key():
             entry.fetched_at = now - broader_age
+        if cache_kind == "raid_boss_details":
+            # These backdated observations model persisted history; they have
+            # no live causal publication order in the current cache session.
+            entry.publication_epoch = 0
+            entry.raid_boss_publication_epochs = None
 
     if cache_kind == "ranks":
         result = cache.get(

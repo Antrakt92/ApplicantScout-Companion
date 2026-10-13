@@ -1093,10 +1093,25 @@ class StateMachine(QObject):
         target.wcl_metric_preferences = source.wcl_metric_preferences
         target.wcl_availability = dict(source.wcl_availability)
         target.raid_boss_availability = dict(source.raid_boss_availability)
+        target.raid_boss_publication_epochs = dict(source.raid_boss_publication_epochs)
+
+    @staticmethod
+    def _transport_class_known(class_name: str) -> bool:
+        return any(class_id > 0 and name == class_name for class_id, name in CLASS_ID_TO_NAME.items())
+
+    @staticmethod
+    def _transport_class_changed(source: Applicant, target_class: str) -> bool:
+        return (StateMachine._transport_class_known(source.cls)
+                and StateMachine._transport_class_known(target_class)
+                and source.cls != target_class)
 
     @staticmethod
     def _preserve_known_transport_fields(source: Applicant, target: Applicant) -> None:
         if target.name == source.name:
+            if (not StateMachine._transport_class_known(target.cls)
+                    and StateMachine._transport_class_known(source.cls)):
+                target.cls = source.cls
+        if target.name == source.name and not StateMachine._transport_class_changed(source, target.cls):
             if target.spec_id <= 0 < source.spec_id:
                 target.spec_id = source.spec_id
             if target.ilvl <= 0 < source.ilvl:
@@ -1357,6 +1372,7 @@ class StateMachine(QObject):
                 self._preserve_known_transport_fields(existing, member)
                 needs_refetch = (
                     existing.spec_id != member.spec_id
+                    or self._transport_class_changed(existing, member.cls)
                     or existing.name != member.name
                     or wcl_metric_role(existing.role) != wcl_metric_role(member.role)
                     or self._identity_context_changed(
@@ -1944,10 +1960,17 @@ class StateMachine(QObject):
                 # Preserve WCL percentiles only while the WCL result shape stays
                 # valid for this row. Gear/score changes are safe; character,
                 # spec, and DPS-vs-HEALER metric-role changes are not.
-                incoming_spec_id = da.spec_id if da.spec_id > 0 else existing.spec_id
-                incoming_ilvl = da.ilvl if da.ilvl > 0 else existing.ilvl
+                if (local_rio_identity_stable and not self._transport_class_known(cls_name)
+                        and self._transport_class_known(existing.cls)):
+                    cls_name = existing.cls
+                class_changed = self._transport_class_changed(existing, cls_name)
+                incoming_spec_id = (da.spec_id if da.spec_id > 0 or class_changed or not local_rio_identity_stable
+                                    else existing.spec_id)
+                incoming_ilvl = (da.ilvl if da.ilvl > 0 or class_changed or not local_rio_identity_stable
+                                 else existing.ilvl)
                 needs_refetch = (
                     existing.spec_id != incoming_spec_id
+                    or class_changed
                     or not local_rio_identity_stable
                     or wcl_metric_role(existing.role) != wcl_metric_role(role_name)
                 )

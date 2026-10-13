@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from .rio_score_tiers import RIO_SCORE_BUCKETS
 
-FIT_ESTIMATE_BACKGROUND = "#31404b"
-
-
 # Verified by scripts/seasonal/verify_wcl_season.py against the WCL GraphQL API.
 # Re-run the quota-aware release gate whenever the active season changes.
 CURRENT_MPLUS_ZONE_ID = 55  # Midnight Season 2

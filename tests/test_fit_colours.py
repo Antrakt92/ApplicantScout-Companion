@@ -1,4 +1,4 @@
-"""Fit estimates have a neutral palette distinct from WCL percentiles."""
+"""Fit rarity colours follow printed estimates while unknown evidence stays neutral."""
 
 from dataclasses import replace
 from types import SimpleNamespace
@@ -8,6 +8,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QImage
 
 from applicant_scout import overlay, scoring
+from applicant_scout.constants import percentile_colour
 from applicant_scout.state import Applicant, AppState, Listing
 
 
@@ -28,13 +29,13 @@ def _listing(key=15):
 
 
 @pytest.mark.parametrize("score", [0, 24.4, 24.6, 49.6, 74.6, 94.6, 98.6, 99.6, 105])
-def test_fit_table_and_detail_keep_a_neutral_estimate_colour(qtbot, score):
+def test_fit_table_and_detail_use_printed_estimate_colour(qtbot, score):
     app = _app()
     fit = scoring.CandidateFit(
         context=scoring.CONTEXT_MPLUS, score=score, display="estimate", target_key=15,
         is_available=True,
     )
-    expected = overlay.FIT_ESTIMATE_BACKGROUND
+    expected = percentile_colour(round(score))
     panel = overlay.ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     panel.setApplicantData(app, _listing(), fit=fit)
@@ -46,7 +47,7 @@ def test_fit_table_and_detail_keep_a_neutral_estimate_colour(qtbot, score):
     assert "not a WCL parse percentile" in panel._metric_labels["Fit"].toolTip()
 
 
-def test_group_and_individual_fit_keep_a_neutral_estimate_colour(qtbot):
+def test_group_and_individual_fit_use_their_own_printed_estimate_colour(qtbot):
     app = _app()
     fit = scoring.CandidateFit(
         context=scoring.CONTEXT_MPLUS, score=80, display="estimate", target_key=15,
@@ -61,10 +62,10 @@ def test_group_and_individual_fit_keep_a_neutral_estimate_colour(qtbot):
     panel.setApplicantData(app, _listing(), package, fit=fit)
     item = overlay._mplus_group_cell(package, app, _listing(), fit=fit)
 
-    assert item.data(overlay.MPLUS_PACKAGE_BG_ROLE) == overlay.FIT_ESTIMATE_BACKGROUND
-    assert item.data(overlay.MPLUS_INDIVIDUAL_BG_ROLE) == overlay.FIT_ESTIMATE_BACKGROUND
-    assert overlay.FIT_ESTIMATE_BACKGROUND in panel._package_label.styleSheet()
-    assert overlay.FIT_ESTIMATE_BACKGROUND in panel._metric_labels["Fit"].styleSheet()
+    assert item.data(overlay.MPLUS_PACKAGE_BG_ROLE) == percentile_colour(60)
+    assert item.data(overlay.MPLUS_INDIVIDUAL_BG_ROLE) == percentile_colour(80)
+    assert percentile_colour(60) in panel._package_label.styleSheet()
+    assert percentile_colour(80) in panel._metric_labels["Fit"].styleSheet()
 
 
 @pytest.mark.parametrize("status", ["pending", "loading", "error", "not_found", "restricted", "ready"])
@@ -81,7 +82,7 @@ def test_missing_fit_stays_neutral_and_has_no_badge(qtbot, status):
     assert panel._metric_labels["Fit"].isHidden()
 
 
-def test_target_key_change_updates_fit_without_recolouring_the_estimate_or_wcl(qtbot, tmp_path):
+def test_target_key_change_updates_estimate_colour_without_recolouring_wcl(qtbot, tmp_path):
     state = AppState()
     app = _app()
     app.mplus_dps_breakdown = [
@@ -105,7 +106,7 @@ def test_target_key_change_updates_fit_without_recolouring_the_estimate_or_wcl(q
     for key in (5, 25):
         window._tab_bar._key_spin.setValue(key)
         item = window._table.item(0, overlay.COL_FIT)
-        expected = overlay.FIT_ESTIMATE_BACKGROUND
+        expected = percentile_colour(int(item.text()[1:]))
         estimates.append(item.text())
         colours.append(item.background().color().name())
         assert colours[-1] == expected
@@ -113,7 +114,7 @@ def test_target_key_change_updates_fit_without_recolouring_the_estimate_or_wcl(q
         wcl_item = window._table.item(0, overlay.COL_MPLUS)
         wcl.append((wcl_item.text(), wcl_item.background().color().name()))
     assert estimates[0] != estimates[1]
-    assert colours[0] == colours[1]
+    assert colours[0] != colours[1]
     assert wcl[0] == wcl[1]
 
 

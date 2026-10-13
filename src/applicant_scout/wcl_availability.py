@@ -8,7 +8,10 @@ from .metric_preferences import MetricPreferences
 METRIC_SCOPES = ("mplus", "raid_normal", "raid_heroic", "raid_mythic")
 RAID_DETAIL_SCOPES = ("N", "H", "M")
 PRIVATE_RANKINGS_USER_MESSAGE = "Rankings are private on Warcraft Logs"
-_AVAILABILITY_STATES = frozenset({"available", "restricted", "partial"})
+UNUSABLE_AVAILABILITY_STATES = frozenset({
+    "restricted", "disabled", "unavailable", "error", "empty",
+})
+_AVAILABILITY_STATES = frozenset({"available", "partial"}) | UNUSABLE_AVAILABILITY_STATES
 
 
 def normalize_availability(
@@ -47,7 +50,13 @@ class RaidBossDetails(dict[str, list[dict[str, object]]]):
         *,
         availability: Mapping[str, str] | None = None,
         not_found: bool = False,
+        publication_epochs: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__(rows or {})
         self.availability = normalize_availability(availability, scopes=RAID_DETAIL_SCOPES)
         self.not_found = not_found
+        self.publication_epochs = {
+            difficulty: epoch for difficulty in RAID_DETAIL_SCOPES
+            if isinstance(epoch := (publication_epochs or {}).get(difficulty), int)
+            and not isinstance(epoch, bool) and epoch >= 0
+        }

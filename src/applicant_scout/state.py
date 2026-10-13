@@ -14,6 +14,7 @@ from .atomic_io import atomic_write_text
 from .metric_preferences import MetricPreferences
 from .wcl_availability import (
     PRIVATE_RANKINGS_USER_MESSAGE,
+    UNUSABLE_AVAILABILITY_STATES,
     all_selected_restricted,
     project_availability,
 )
@@ -48,9 +49,8 @@ class Applicant:
     rio_warband_previous_score: int = 0
     rio_warband_previous_season: Optional[int] = None
     # Compact target-relative RaiderIO completion summary from addon wire v5.
-    # Counts are computed by the addon against the active listing key at
-    # screenshot time, so they are evidence for this listing snapshot rather
-    # than generic season totals.
+    # Counts are recorded at the captured key; they establish level floors
+    # that remain valid when the requested target changes.
     rio_profile: bool = False
     rio_best_key: int = 0
     rio_best_dungeon_key: int = 0
@@ -59,7 +59,7 @@ class Applicant:
     rio_timed_at_or_above_minus2: int = 0
     rio_completed_at_or_above_minus1: int = 0
     rio_dungeon_count: int = 0
-    # The compact counts above are target-relative; ignore them after key changes.
+    # Preserve the original target when re-evaluating these cumulative bounds.
     rio_summary_target_key: int = 0
     # The compact same-dungeon best also requires its captured dungeon identity.
     rio_summary_activity_id: int = 0
@@ -136,6 +136,9 @@ class Applicant:
     fetch_status: str = "pending"
     error_message: str = ""
     wcl_error_kind: str = ""
+    # Session receipts keep a later manual access proof separate from an older
+    # aggregate request. They are not timestamps, quality or persisted identity.
+    raid_boss_publication_epochs: dict[str, int] = field(default_factory=dict)
 
     def clear_wcl_data(self, *, fetch_status: str = "pending") -> None:
         self.fetch_status = fetch_status
@@ -158,6 +161,7 @@ class Applicant:
         self.wcl_metric_preferences = None
         self.wcl_availability = {}
         self.raid_boss_availability = {}
+        self.raid_boss_publication_epochs = {}
 
     def wcl_data_covers(self, metric_preferences: MetricPreferences) -> bool:
         return (
@@ -170,31 +174,64 @@ class Applicant:
             and self.wcl_metric_preferences.covers(metric_preferences)
         )
 
+    def retract_private_raid_details(
+        self, availability: dict[str, str], *, expected_publication_epoch: int | None = None,
+    ) -> bool:
+        """A new privacy proof retires old details, not a later manual access proof."""
+        restricted = [
+            difficulty for difficulty, scope in
+            (("N", "raid_normal"), ("H", "raid_heroic"), ("M", "raid_mythic"))
+            if availability.get(scope) == "restricted"
+            and (expected_publication_epoch is None
+                 or self.raid_boss_publication_epochs.get(difficulty, 0) <= expected_publication_epoch)
+        ]
+        for difficulty in restricted:
+            self.raid_boss_parses.pop(difficulty, None)
+            self.raid_boss_availability[difficulty] = "restricted"
+            self.raid_boss_publication_epochs.pop(difficulty, None)
+        return bool(restricted)
+
     def project_wcl_data_to_preferences(
         self, metric_preferences: MetricPreferences
     ) -> None:
-        """Drop disabled WCL fields so hidden metrics cannot affect scoring."""
+        """Drop disabled or explicitly unavailable fields at their own source boundary."""
         previous = self.wcl_metric_preferences
         previous_availability = self.wcl_availability
-        if not metric_preferences.raid_normal:
+        if (not metric_preferences.raid_normal
+                or previous_availability.get("raid_normal") in UNUSABLE_AVAILABILITY_STATES):
             self.raid_normal = None
             self.raid_normal_median = None
             self.raid_evidence.pop("N", None)
+        if not metric_preferences.raid_normal:
             self.raid_boss_parses.pop("N", None)
             self.raid_boss_availability.pop("N", None)
-        if not metric_preferences.raid_heroic:
+            self.raid_boss_publication_epochs.pop("N", None)
+        elif self.raid_boss_availability.get("N") in UNUSABLE_AVAILABILITY_STATES:
+            self.raid_boss_parses.pop("N", None)
+        if (not metric_preferences.raid_heroic
+                or previous_availability.get("raid_heroic") in UNUSABLE_AVAILABILITY_STATES):
             self.raid_heroic = None
             self.raid_heroic_median = None
             self.raid_evidence.pop("H", None)
+        if not metric_preferences.raid_heroic:
             self.raid_boss_parses.pop("H", None)
             self.raid_boss_availability.pop("H", None)
-        if not metric_preferences.raid_mythic:
+            self.raid_boss_publication_epochs.pop("H", None)
+        elif self.raid_boss_availability.get("H") in UNUSABLE_AVAILABILITY_STATES:
+            self.raid_boss_parses.pop("H", None)
+        if (not metric_preferences.raid_mythic
+                or previous_availability.get("raid_mythic") in UNUSABLE_AVAILABILITY_STATES):
             self.raid_mythic = None
             self.raid_mythic_median = None
             self.raid_evidence.pop("M", None)
+        if not metric_preferences.raid_mythic:
             self.raid_boss_parses.pop("M", None)
             self.raid_boss_availability.pop("M", None)
-        if not metric_preferences.mplus:
+            self.raid_boss_publication_epochs.pop("M", None)
+        elif self.raid_boss_availability.get("M") in UNUSABLE_AVAILABILITY_STATES:
+            self.raid_boss_parses.pop("M", None)
+        if (not metric_preferences.mplus
+                or previous_availability.get("mplus") in UNUSABLE_AVAILABILITY_STATES):
             self.mplus_dps = None
             self.mplus_hps = None
             self.mplus_dps_median = None

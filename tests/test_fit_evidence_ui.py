@@ -64,13 +64,13 @@ def test_identical_timed_histories_sort_stably_regardless_of_general_rating():
         assert [row.applicant_id for row in rows] == ["1:1", "2:1"]
 
 
-def test_fit_palette_is_distinct_from_raw_damage_palette():
+def test_fit_palette_tracks_target_estimate_separately_from_raw_damage():
     applicant = _app("1:1", 16, 99)
     fit = scoring.candidate_fit(applicant, _listing())
     _text, _foreground, background = overlay._fit_cell_visuals(
         applicant, _listing(), fit=fit,
     )
-    assert background == overlay.FIT_ESTIMATE_BACKGROUND
+    assert background == percentile_colour(round(fit.score))
     assert background != overlay._mplus_cell_visuals(applicant)[2]
 
 
@@ -80,16 +80,16 @@ def test_missing_target_evidence_remains_unavailable_and_neutral(status):
     fit = scoring.candidate_fit(applicant, _listing())
     assert not fit.is_available
     item = overlay._fit_cell(applicant, _listing(), fit=fit)
-    assert item.text() == ("…" if status in {"pending", "loading"} else "—")
+    assert item.text() == "—"
     assert item.background().style() == Qt.BrushStyle.NoBrush
 
 
-def test_observed_below_target_zero_is_available_in_neutral_fit_cell():
+def test_observed_below_target_zero_is_available_in_grey_fit_cell():
     applicant = _app("1:1", 5, 99, score=1200)
     fit = scoring.candidate_fit(applicant, _listing())
     assert fit.is_available and fit.score == 0
     assert overlay._fit_cell_visuals(applicant, _listing(), fit=fit) == (
-        "~0", overlay.FIT_ESTIMATE_FOREGROUND, overlay.FIT_ESTIMATE_BACKGROUND,
+        "~0", overlay_presenters.text_colour_for_bg(percentile_colour(0)), percentile_colour(0),
     )
 
 

@@ -186,11 +186,11 @@ def test_raid_dual_cell_green_stores_dark_text_role():
     assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
 
 
-def test_raid_dual_cell_dark_blue_keeps_white_text_role():
+def test_raid_dual_cell_blue_uses_stronger_black_text_contrast():
     item = _raid_dual_cell(62.0, 55.0, "ready")
 
     assert item.background().color().name() == QColor("#0070ff").name()
-    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#ffffff"
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
 
 
 def test_raid_dual_cell_rerender_light_over_dark_refreshes_text_role():
@@ -216,22 +216,22 @@ def test_mplus_dual_cell_green_stores_dark_text_role():
     assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
 
 
-def test_high_fit_stores_neutral_background_and_explicit_light_text_role():
+def test_high_fit_stores_orange_background_and_explicit_dark_text_role():
     fit = CandidateFit(context=CONTEXT_MPLUS, score=97.0, display="~97", is_available=True)
     item = _fit_cell(_app(), _mplus_listing(), fit=fit)
 
     assert item.text() == "~97"
-    assert item.background().color().name() == QColor("#31404b").name()
-    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#e3ecf2"
+    assert item.background().color().name() == QColor("#ff8000").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
 
 
-def test_lower_fit_keeps_the_same_neutral_background_and_text_role():
+def test_lower_fit_uses_green_background_and_explicit_dark_text_role():
     fit = CandidateFit(context=CONTEXT_MPLUS, score=42.0, display="~42", is_available=True)
     item = _fit_cell(_app(), _mplus_listing(), fit=fit)
 
     assert item.text() == "~42"
-    assert item.background().color().name() == QColor("#31404b").name()
-    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#e3ecf2"
+    assert item.background().color().name() == QColor("#1eff00").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
 
 
 def test_fit_cell_listing_not_found_can_show_scorecard_fit():

@@ -77,7 +77,6 @@ from .constants import (
     CLASS_COLOURS,
     CLASS_TEXT_COLOURS,
     CURRENT_RAID_ENCOUNTERS,
-    FIT_ESTIMATE_BACKGROUND,
     ROLE_COLOURS,
     ROLE_GLYPHS,
     ROLE_LABELS,
@@ -113,6 +112,7 @@ from .scoring import (
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
+    fit_colour,
     listing_dungeon_keys,
     package_fit,
     positive_int,
@@ -171,7 +171,7 @@ _FETCH_SHUTDOWN_TIMEOUT_MS = 8000
 # Cap Name growth so one long character name cannot force the overlay wide.
 COLUMN_HEADERS = ["Spec", "Name", "iLvl", "RIO", "Normal", "Heroic", "Mythic", "M+ DPS", "Fit"]
 _SortMenuContext = tuple[str, tuple[int, bool] | None, tuple[tuple[int, str], ...]]
-COLUMN_WIDTHS = [74, 112, 44, 84, 64, 64, 64, 112, 90]
+COLUMN_WIDTHS = [74, 112, 44, 72, 64, 64, 64, 112, 90]
 NAME_COLUMN_MAX_WIDTH = 126
 DUNGEON_NAME_WIDTH = 148
 DUNGEON_KEY_WIDTH = 72
@@ -191,7 +191,6 @@ RAID_COMPACT_METRIC_WIDTH = 130
 METRIC_COLUMN_TEXT_PADDING = 14
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT = range(9)
 FIT_GROUP_BACKGROUND = "#343946"
-FIT_ESTIMATE_FOREGROUND = "#e3ecf2"
 RAID_COL_BY_TARGET = {"N": COL_N, "H": COL_H, "M": COL_M}
 WINDOW_CHROME_WIDTH = 12
 # Name and raid metric columns grow from rendered content after construction;
@@ -289,6 +288,7 @@ _RETRYABLE_WCL_ERROR_KINDS = frozenset(
     {WCL_ERROR_RATE_LIMITED, WCL_ERROR_SERVER, WCL_ERROR_NETWORK}
 )
 _MANUAL_WCL_RETRY_ERROR_KINDS = frozenset({WCL_ERROR_GRAPHQL, WCL_ERROR_MALFORMED})
+_RAID_DETAIL_SUPERSEDED = "superseded"
 ROLE_ICON_SIZE = QSize(16, 16)
 ROLE_ICON_FILES = {
     "TANK": "role_tank.png",
@@ -519,6 +519,7 @@ class _FetchIdentity:
     listing_session_generation: int = 0
     # Target equality remains reusable; a worker lifetime has separate ownership.
     operation: FetchOperation | None = field(default=None, compare=False, repr=False)
+    cache_publication_epoch: int | None = field(default=None, compare=False, repr=False)
 
     @property
     def storage_key(self) -> str:
@@ -642,7 +643,8 @@ def _coalesce_tracked_fetch(
         previous = in_flight.get(identity.storage_key)
         if previous is not None and previous.operation is not owner.operation:
             _discard_tracked_fetch(identity.storage_key, in_flight, waiters_by_target)
-        shared = replace(identity, operation=owner.operation)
+        shared = replace(identity, operation=owner.operation,
+                         cache_publication_epoch=owner.cache_publication_epoch)
         in_flight[shared.storage_key] = shared
         waiters[shared.storage_key] = shared
         return True
@@ -701,6 +703,27 @@ def _tracked_fetch_covers(
     )
 
 
+def _cache_response_may_be_delivered(
+    cache: CharacterCache, identity: _FetchIdentity, *, raid_details: bool, not_found: bool,
+) -> bool:
+    checker = getattr(cache, "can_deliver_response", None)
+    if callable(checker):
+        return checker(
+            identity.charname_key, identity.server_slug, identity.region,
+            identity.spec_id, identity.metric_role, identity.metric_preferences,
+            expected_publication_epoch=identity.cache_publication_epoch,
+            raid_details=raid_details, not_found=not_found,
+        ) is True
+    return identity.cache_publication_epoch is None
+
+
+def _unavailable_ranks(preferences: MetricPreferences) -> CharacterRanks:
+    return replace(CharacterRanks.empty(), availability={
+        scope: "unavailable" for scope in ("mplus", "raid_normal", "raid_heroic", "raid_mythic")
+        if getattr(preferences, scope)
+    })
+
+
 class _FetchTask(QRunnable):
     def __init__(
         self,
@@ -719,7 +742,10 @@ class _FetchTask(QRunnable):
         self._client = client
         self._cache = cache
         self._cache_generation = cache.generation
-        self._cache_publication_epoch = getattr(cache, "publication_epoch", None)
+        self._cache_publication_epoch = (identity.cache_publication_epoch
+                                         if identity.cache_publication_epoch is not None
+                                         else getattr(cache, "publication_epoch", None))
+        self._identity = replace(self._identity, cache_publication_epoch=self._cache_publication_epoch)
 
     def run(self) -> None:
         identity = self._identity
@@ -808,12 +834,13 @@ class _FetchTask(QRunnable):
                 identity.server_slug,
                 elapsed,
             )
+        network_ranks = ranks
         if (
             ranks.not_found
             or not ranks.error
             or ranks.error_kind == WCL_ERROR_RESTRICTED
         ):
-            self._cache.put(
+            published = self._cache.put(
                 self._name,
                 identity.server_slug,
                 identity.region,
@@ -825,7 +852,23 @@ class _FetchTask(QRunnable):
                 expected_operation=identity.operation,
                 expected_publication_epoch=self._cache_publication_epoch,
             )
-        self.signals.networkDone.emit(identity, ranks)
+            if published is False:
+                current_generation = self._cache.generation
+                current = self._cache.get(
+                    self._name, identity.server_slug, identity.region,
+                    identity.spec_id, identity.metric_role, identity.metric_preferences,
+                )
+                if identity.operation is not None and not identity.operation.is_active():
+                    return
+                if self._cache.generation != current_generation:
+                    current = None
+                if current is not None:
+                    ranks = current
+                elif not _cache_response_may_be_delivered(
+                    self._cache, identity, raid_details=False, not_found=ranks.not_found,
+                ):
+                    ranks = _unavailable_ranks(identity.metric_preferences)
+        self.signals.networkDone.emit(identity, network_ranks)
         self.signals.done.emit(identity, ranks)
 
 
@@ -847,7 +890,10 @@ class _RaidBossFetchTask(QRunnable):
         self._client = client
         self._cache = cache
         self._cache_generation = cache.generation
-        self._cache_publication_epoch = getattr(cache, "publication_epoch", None)
+        self._cache_publication_epoch = (identity.cache_publication_epoch
+                                         if identity.cache_publication_epoch is not None
+                                         else getattr(cache, "publication_epoch", None))
+        self._identity = replace(self._identity, cache_publication_epoch=self._cache_publication_epoch)
 
     def run(self) -> None:
         operation = self._identity.operation
@@ -899,7 +945,7 @@ class _RaidBossFetchTask(QRunnable):
         except Exception as exc:  # noqa: BLE001
             _emit_network_result({}, str(exc), "")
             return
-        self._cache.put_raid_boss_details(
+        published = self._cache.put_raid_boss_details(
             self._name,
             self._identity.server_slug,
             self._identity.region,
@@ -911,10 +957,37 @@ class _RaidBossFetchTask(QRunnable):
             expected_operation=self._identity.operation,
             expected_publication_epoch=self._cache_publication_epoch,
         )
-        if isinstance(rows, RaidBossDetails) and rows.not_found:
-            _emit_network_result(rows, "Character not found on Warcraft Logs", "not_found")
+        network_error = "Character not found on Warcraft Logs" if isinstance(rows, RaidBossDetails) and rows.not_found else ""
+        network_error_kind = "not_found" if network_error else ""
+        if published is not False and network_error:
+            _emit_network_result(rows, network_error, network_error_kind)
             return
-        _emit_network_result(rows, "", "")
+        current_generation = self._cache.generation
+        current = self._cache.get_raid_boss_details(
+            self._name, self._identity.server_slug, self._identity.region,
+            self._identity.spec_id, self._identity.metric_role,
+            self._identity.metric_preferences,
+        )
+        if operation is not None and not operation.is_active():
+            return
+        if self._cache.generation != current_generation:
+            current = None
+        if current is None and _cache_response_may_be_delivered(
+            self._cache, self._identity, raid_details=True,
+            not_found=isinstance(rows, RaidBossDetails) and rows.not_found,
+        ):
+            current = rows
+        if current is None:
+            self.signals.networkDone.emit(self._identity, rows, network_error, network_error_kind)
+            self.signals.done.emit(self._identity, {}, "Boss details changed; load them again.",
+                                   _RAID_DETAIL_SUPERSEDED)
+            return
+        self.signals.networkDone.emit(self._identity, rows, network_error, network_error_kind)
+        self.signals.done.emit(
+            self._identity, current,
+            network_error if isinstance(current, RaidBossDetails) and current.not_found else "",
+            network_error_kind if isinstance(current, RaidBossDetails) and current.not_found else "",
+        )
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -3336,7 +3409,10 @@ class ApplicantInfoPanel(QFrame):
                 self._metric_labels[key].setVisible(False)
                 continue
             best, median = _raid_values_for_key(applicant, key)
-            text, fg, bg = _raid_cell_visuals(best, median, applicant.fetch_status)
+            scope = "raid_" + {"N": "normal", "H": "heroic", "M": "mythic"}[key]
+            text, fg, bg = _raid_cell_visuals(
+                best, median, _presenters.wcl_scope_status(applicant, scope),
+            )
             if bg is None:
                 self._metric_labels[key].setVisible(False)
                 continue
@@ -5122,7 +5198,12 @@ class OverlayWindow(QMainWindow):
             if applicant.fetch_status != "ready":
                 return None
             if column == COL_MPLUS:
+                if _presenters.wcl_scope_status(applicant, "mplus") != "ready":
+                    return None
                 return role_mplus_view(applicant)[2]
+            scope = {COL_N: "raid_normal", COL_H: "raid_heroic", COL_M: "raid_mythic"}.get(column)
+            if scope is not None and _presenters.wcl_scope_status(applicant, scope) != "ready":
+                return None
             return safe_percent({
                 COL_N: applicant.raid_normal,
                 COL_H: applicant.raid_heroic,
@@ -7544,6 +7625,75 @@ class OverlayWindow(QMainWindow):
             self._raid_boss_fetch_waiters_by_target,
         )
 
+    @staticmethod
+    def _raid_detail_source_key(identity: _FetchIdentity) -> tuple:
+        return (identity.charname_key, identity.server_slug, identity.region,
+                identity.spec_id, identity.metric_role, identity.runtime_generation,
+                identity.listing_session_generation)
+
+    def _retract_raid_detail_privacy(
+        self, identity: _FetchIdentity, availability: Mapping[str, str], *, aggregate: bool,
+    ) -> None:
+        private = {scope: "restricted" for scope, state in availability.items()
+                   if scope in {"raid_normal", "raid_heroic", "raid_mythic"}
+                   and state == "restricted"}
+        if not private:
+            return
+        baseline = identity.cache_publication_epoch
+        source_key = self._raid_detail_source_key(identity)
+        newer_manual: dict[str, RaidBossDetails] = {}
+        getter = getattr(self._cache, "get_raid_boss_details", None)
+        if baseline is not None and callable(getter):
+            for difficulty, scope in (("N", "raid_normal"), ("H", "raid_heroic"), ("M", "raid_mythic")):
+                if scope not in private:
+                    continue
+                scoped = MetricPreferences(mplus=False, raid_normal=difficulty == "N",
+                                           raid_heroic=difficulty == "H", raid_mythic=difficulty == "M")
+                cached = getter(identity.charname_key, identity.server_slug, identity.region,
+                                identity.spec_id, identity.metric_role, scoped)
+                if (isinstance(cached, RaidBossDetails)
+                        and cached.availability.get(difficulty) in {"available", "partial"}
+                        and cached.publication_epochs.get(difficulty, -1) > baseline):
+                    newer_manual[difficulty] = cached
+        for row in self._fetch_rows():
+            resolved = _fetch_identity_for_applicant(
+                row, self._state.player.full_name, self._wcl_client.region,
+                self._metric_preferences, self._wcl_runtime_generation,
+                self._listing_session_generation, row_source=self._row_source_for(row),
+            )
+            if resolved is None or self._raid_detail_source_key(resolved[0]) != source_key:
+                continue
+            if aggregate:
+                row.wcl_availability.update(private)
+                row.project_wcl_data_to_preferences(self._metric_preferences)
+            for difficulty, cached in newer_manual.items():
+                row.raid_boss_parses[difficulty] = [dict(item) for item in cached.get(difficulty, [])]
+                row.raid_boss_availability[difficulty] = cached.availability[difficulty]
+                row.raid_boss_publication_epochs[difficulty] = cached.publication_epochs[difficulty]
+            difficulty_by_scope = {"raid_normal": "N", "raid_heroic": "H", "raid_mythic": "M"}
+            superseded = {
+                scope: state for scope, state in private.items()
+                if not (
+                    baseline is not None
+                    and row.raid_boss_availability.get(difficulty_by_scope[scope]) == "restricted"
+                    and not row.raid_boss_parses.get(difficulty_by_scope[scope])
+                    and row.raid_boss_publication_epochs.get(difficulty_by_scope[scope], -1) >= baseline
+                )
+            }
+            row.retract_private_raid_details(superseded, expected_publication_epoch=baseline)
+        # A completing route has already left this map; its healthy scopes can
+        # still fan out. Retire only older live requests for the revoked scopes.
+        for waiters in list(self._raid_boss_fetch_waiters_by_target.values()):
+            for waiter in list(waiters.values()):
+                if self._raid_detail_source_key(waiter) != source_key:
+                    continue
+                if not any(getattr(waiter.metric_preferences, scope) for scope in private):
+                    continue
+                if (baseline is not None and waiter.cache_publication_epoch is not None
+                        and waiter.cache_publication_epoch > baseline):
+                    continue
+                self._discard_raid_boss_fetch_by_storage_key(waiter.storage_key)
+
     def _mark_raid_boss_fetch_waiting_on_target(self, identity: _FetchIdentity) -> None:
         self._raid_boss_fetch_waiters_by_target.setdefault(identity.network_key, {})[
             identity.storage_key
@@ -7620,7 +7770,7 @@ class OverlayWindow(QMainWindow):
         )
         if failure is None:
             return False
-        return failure.error_kind in _MANUAL_WCL_RETRY_ERROR_KINDS
+        return failure.error_kind in _MANUAL_WCL_RETRY_ERROR_KINDS | {_RAID_DETAIL_SUPERSEDED}
 
     def _raid_detail_status_for(
         self, applicant: Applicant
@@ -7739,7 +7889,8 @@ class OverlayWindow(QMainWindow):
         if self._coalesce_raid_boss_fetch_if_target_in_flight(identity):
             self._refresh_quota_label()
             return True
-        identity = replace(identity, operation=FetchOperation())
+        identity = replace(identity, operation=FetchOperation(),
+                           cache_publication_epoch=getattr(self._cache, "publication_epoch", None))
         self._mark_raid_boss_fetch_in_flight(identity)
         self._mark_raid_boss_fetch_waiting_on_target(identity)
         task = _RaidBossFetchTask(identity, charname, self._wcl_client, self._cache)
@@ -7827,7 +7978,8 @@ class OverlayWindow(QMainWindow):
             self._refresh_quota_label()
             self._update_quota_polling()
             return
-        identity = replace(identity, operation=FetchOperation())
+        identity = replace(identity, operation=FetchOperation(),
+                           cache_publication_epoch=getattr(self._cache, "publication_epoch", None))
         self._mark_fetch_in_flight(identity)
         self._mark_fetch_waiting_on_target(identity)
         task = _FetchTask(identity, charname, self._wcl_client, self._cache)
@@ -7861,6 +8013,26 @@ class OverlayWindow(QMainWindow):
     ) -> None:
         if self._closed or not _operation_owns_route(fetched_identity, self._fetch_waiters_by_target):
             return
+        if fetched_identity.cache_publication_epoch is not None and (
+            ranks.not_found or not ranks.error or ranks.error_kind == WCL_ERROR_RESTRICTED
+        ):
+            getter = getattr(self._cache, "get", None)
+            current = None
+            if callable(getter):
+                generation = getattr(self._cache, "generation", None)
+                current = getter(
+                    fetched_identity.charname_key, fetched_identity.server_slug,
+                    fetched_identity.region, fetched_identity.spec_id,
+                    fetched_identity.metric_role, fetched_identity.metric_preferences,
+                )
+                if getattr(self._cache, "generation", None) != generation:
+                    current = None
+            if isinstance(current, CharacterRanks):
+                ranks = current
+            elif not _cache_response_may_be_delivered(
+                self._cache, fetched_identity, raid_details=False, not_found=ranks.not_found,
+            ):
+                ranks = _unavailable_ranks(fetched_identity.metric_preferences)
         was_current = (
             self._fetches_in_flight.get(fetched_identity.storage_key)
             == fetched_identity
@@ -7881,7 +8053,8 @@ class OverlayWindow(QMainWindow):
                         or current.operation is not waiter_identity.operation
                     ):
                         continue
-                    self._on_fetch_done(replace(waiter_identity, operation=None), ranks)
+                    self._on_fetch_done(replace(waiter_identity, operation=None,
+                                               cache_publication_epoch=fetched_identity.cache_publication_epoch), ranks)
             finally:
                 for operation in operations:
                     if operation is not None:
@@ -7951,12 +8124,26 @@ class OverlayWindow(QMainWindow):
             applicant.error_message = ""
             applicant.wcl_error_kind = ""
         elif ranks.error_kind == WCL_ERROR_RESTRICTED:
+            self._retract_raid_detail_privacy(fetched_identity, ranks.availability, aggregate=True)
+            baseline = fetched_identity.cache_publication_epoch
+            protected = {
+                key for key, epoch in applicant.raid_boss_publication_epochs.items()
+                if baseline is not None and epoch > baseline
+            }
+            protected_rows = {key: [dict(row) for row in applicant.raid_boss_parses.get(key, [])]
+                              for key in protected if key in applicant.raid_boss_parses}
+            protected_states = {key: applicant.raid_boss_availability[key] for key in protected
+                                if key in applicant.raid_boss_availability}
+            protected_epochs = {key: applicant.raid_boss_publication_epochs[key] for key in protected}
             applicant.clear_wcl_data(fetch_status="restricted")
             applicant.error_message = ranks.error
             applicant.wcl_error_kind = WCL_ERROR_RESTRICTED
             applicant.wcl_availability = dict(ranks.availability)
             applicant.wcl_metric_preferences = fetched_identity.metric_preferences
             applicant.project_wcl_data_to_preferences(current_identity.metric_preferences)
+            applicant.raid_boss_parses.update(protected_rows)
+            applicant.raid_boss_availability.update(protected_states)
+            applicant.raid_boss_publication_epochs.update(protected_epochs)
         elif ranks.error:
             applicant.clear_wcl_data(fetch_status="error")
             applicant.error_message = ranks.error
@@ -7968,6 +8155,7 @@ class OverlayWindow(QMainWindow):
             applicant.wcl_error_kind = ""
             applicant.wcl_metric_preferences = fetched_identity.metric_preferences
             applicant.wcl_availability = dict(ranks.availability)
+            self._retract_raid_detail_privacy(fetched_identity, ranks.availability, aggregate=True)
             applicant.raid_normal = ranks.raid_normal
             applicant.raid_evidence = {
                 difficulty: dict(evidence)
@@ -8027,6 +8215,25 @@ class OverlayWindow(QMainWindow):
     ) -> None:
         if self._closed or not _operation_owns_route(fetched_identity, self._raid_boss_fetch_waiters_by_target):
             return
+        if not error and (
+            fetched_identity.cache_publication_epoch is not None
+            or isinstance(rows, RaidBossDetails) and rows.publication_epochs
+        ):
+            getter = getattr(self._cache, "get_raid_boss_details", None)
+            current_rows = None
+            if callable(getter):
+                current_rows = getter(
+                    fetched_identity.charname_key, fetched_identity.server_slug,
+                    fetched_identity.region, fetched_identity.spec_id,
+                    fetched_identity.metric_role, fetched_identity.metric_preferences,
+                )
+            if isinstance(current_rows, RaidBossDetails):
+                rows = current_rows
+            elif not _cache_response_may_be_delivered(
+                self._cache, fetched_identity, raid_details=True,
+                not_found=isinstance(rows, RaidBossDetails) and rows.not_found,
+            ):
+                rows, error, error_kind = {}, "Boss details changed; load them again.", _RAID_DETAIL_SUPERSEDED
         waiters = self._raid_boss_fetch_waiters_by_target.pop(
             _fetch_completion_route_key(fetched_identity, self._raid_boss_fetch_waiters_by_target),
             None,
@@ -8044,7 +8251,9 @@ class OverlayWindow(QMainWindow):
                     ):
                         continue
                     self._on_raid_boss_fetch_done(
-                        replace(waiter_identity, operation=None), rows, error, error_kind
+                        replace(waiter_identity, operation=None,
+                                cache_publication_epoch=fetched_identity.cache_publication_epoch),
+                        rows, error, error_kind
                     )
             finally:
                 for operation in operations:
@@ -8079,6 +8288,19 @@ class OverlayWindow(QMainWindow):
             self._sync_delegate_and_panel()
             return
         if error:
+            if error_kind == _RAID_DETAIL_SUPERSEDED:
+                baseline = fetched_identity.cache_publication_epoch
+                for difficulty, enabled in (
+                    ("N", current_identity.metric_preferences.raid_normal),
+                    ("H", current_identity.metric_preferences.raid_heroic),
+                    ("M", current_identity.metric_preferences.raid_mythic),
+                ):
+                    if not enabled or (baseline is not None
+                                       and applicant.raid_boss_publication_epochs.get(difficulty, -1) > baseline):
+                        continue
+                    applicant.raid_boss_parses.pop(difficulty, None)
+                    if applicant.raid_boss_availability.get(difficulty) != "restricted":
+                        applicant.raid_boss_availability[difficulty] = "unavailable"
             self._record_raid_boss_fetch_failure(fetched_identity, error_kind, error)
             _log.debug(
                 "WCL raid boss detail fetch failed: %s kind=%s",
@@ -8091,8 +8313,16 @@ class OverlayWindow(QMainWindow):
             _raid_boss_fetch_failure_key(fetched_identity),
             None,
         )
+        if isinstance(rows, RaidBossDetails):
+            for difficulty, scope in (("N", "raid_normal"), ("H", "raid_heroic"), ("M", "raid_mythic")):
+                if rows.availability.get(difficulty) == "restricted":
+                    proof = replace(fetched_identity, cache_publication_epoch=rows.publication_epochs.get(
+                        difficulty, fetched_identity.cache_publication_epoch,
+                    ))
+                    self._retract_raid_detail_privacy(proof, {scope: "restricted"}, aggregate=False)
         applicant.raid_boss_parses = {}
         applicant.raid_boss_availability = {}
+        applicant.raid_boss_publication_epochs = {}
         for difficulty, enabled in (
             ("N", current_identity.metric_preferences.raid_normal),
             ("H", current_identity.metric_preferences.raid_heroic),
@@ -8105,6 +8335,8 @@ class OverlayWindow(QMainWindow):
                 )
                 if availability is not None:
                     applicant.raid_boss_availability[difficulty] = availability
+                if isinstance(rows, RaidBossDetails) and difficulty in rows.publication_epochs:
+                    applicant.raid_boss_publication_epochs[difficulty] = rows.publication_epochs[difficulty]
                 if availability == "restricted":
                     continue
                 applicant.raid_boss_parses[difficulty] = [
@@ -8682,9 +8914,14 @@ def _fit_cell_visuals(
 ) -> tuple[str, str | None, str | None]:
     current_fit = fit or candidate_fit(applicant, listing)
     if current_fit.context not in {CONTEXT_RAID, CONTEXT_MPLUS} or not current_fit.is_available:
-        return "…" if applicant.fetch_status in {"loading", "pending"} else "—", "#888", None
+        pending_raid = (
+            current_fit.context == CONTEXT_RAID
+            and applicant.fetch_status in {"loading", "pending"}
+        )
+        return "…" if pending_raid else "—", "#888", None
     text = f"~{int(round(current_fit.score))}"
-    return text, FIT_ESTIMATE_FOREGROUND, FIT_ESTIMATE_BACKGROUND
+    background = fit_colour(current_fit.score)
+    return text, _text_colour_for_bg(background), background
 
 
 def _fit_cell(
@@ -8755,7 +8992,7 @@ def _mplus_cell_visuals(
 ) -> tuple[str, str | None, str | None]:
     """Return raw WCL evidence, independent of the compatible context arguments."""
     del listing, fit
-    status = applicant.fetch_status
+    status = _presenters.wcl_scope_status(applicant, "mplus")
     if status in {"loading", "pending"}:
         return "…", "#888", None
 
@@ -8843,7 +9080,7 @@ def _mplus_group_cell(
 def _package_fit_colour(package: PackageFit) -> str:
     if not package.is_complete:
         return FIT_GROUP_BACKGROUND
-    return FIT_ESTIMATE_BACKGROUND
+    return fit_colour(package.score)
 
 
 def _app_update_message(latest_version: str) -> str:

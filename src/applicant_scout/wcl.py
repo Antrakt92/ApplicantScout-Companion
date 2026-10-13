@@ -20,7 +20,8 @@ import httpx
 from .atomic_io import apply_private_file_mode, atomic_write_text
 from .fetch_operation import FetchOperation
 from .wcl_availability import (
-    PRIVATE_RANKINGS_USER_MESSAGE, RAID_DETAIL_SCOPES, RaidBossDetails,
+    METRIC_SCOPES, PRIVATE_RANKINGS_USER_MESSAGE, RAID_DETAIL_SCOPES, RaidBossDetails,
+    UNUSABLE_AVAILABILITY_STATES,
     all_selected_restricted, normalize_availability, project_availability,
 )
 from .constants import (
@@ -45,6 +46,13 @@ from .wcl_cache_store import (
     cache_evict,
     cache_get,
     cache_put,
+    newer_public_raid_detail_evidence,
+    newer_raid_detail_evidence,
+    newer_rank_scope_evidence,
+    retract_private_raid_details,
+    retract_private_rank_summaries,
+    raid_detail_candidates,
+    raid_detail_scope_epoch,
     sanitize_raid_evidence,
 )
 
@@ -104,10 +112,10 @@ WCL_NETWORK_RETRY_SECONDS = 30.0
 # Why per-encounter (encounterRankings) not zone-level (zoneRankings):
 # zoneRankings aggregates across ALL bracket levels — a +20-pusher gets 99%
 # inflated by +5 farm runs they did. encounterRankings returns per-RUN data
-# (`ranks[]` array) so we can client-side filter to applicant's HIGHEST timed
+# (`ranks[]` array) so we can client-side filter to applicant's highest logged
 # key per dungeon — what raid leads care about for high-key push scouting.
 #
-# byBracket: true: percentile filtered to bracket of player's best timed key.
+# byBracket: true: percentile filtered to bracket of player's highest logged key.
 # Within that bracket, rankPercent = comparison against same-bracket peers.
 _QUERY_CACHE: dict[tuple[str, str], str] = {}
 _RAID_DETAIL_QUERY_CACHE: dict[tuple[str, str], str] = {}
@@ -274,22 +282,22 @@ class DungeonPerf:
     """Per-dungeon M+ breakdown entry — fed to the M+ cell tooltip so user can
     inspect WHICH dungeons + key levels contributed to the headline best/median.
 
-    Each entry represents the applicant's performance at their HIGHEST TIMED
-    KEY in this dungeon, in their currently-applying spec only. Values are
+    Each entry represents the applicant's performance at their highest logged
+    key in this dungeon, in their currently-applying spec only. Values are
     aggregated across ONLY runs at that top key level (lower-key runs excluded
     from this dungeon's stats — see _process_encounter_ranks).
 
     parse_percent: best DPS percentile across the top-key runs (max).
     median_percent: median percentile across the same run set.
     key_level: the bracket level these stats are computed at (player's highest
-    timed key in this dungeon, for their current spec).
+    logged key in this dungeon, for their current spec).
     run_count: how many runs at that key level fed into best/median. Critical
     confidence signal — N=1 means best=median=single run (lucky/unlucky risk),
-    N≥3 is statistically meaningful.
+    More runs provide additional context without proving mechanics or timing.
 
     brackets: all key-level summaries from the same WCL response. The top-level
-    fields stay highest-key/back-compat; context-fit scoring can inspect lower
-    relevant brackets without spending more API quota."""
+    fields stay highest-key/back-compat. These logged performance brackets do
+    not establish in-time completions and do not contribute to readiness Fit."""
 
     name: str
     parse_percent: Optional[float]
@@ -901,7 +909,7 @@ def _ranks_from_graphql(
 
     # Build per-dungeon breakdown from the 8 aliased encounterRankings.
     # _process_encounter_ranks filters to applicant's spec + highest
-    # timed key, then computes best/median/run_count for that subset.
+    # logged key, then computes best/median/run_count for that subset.
     breakdown: list[DungeonPerf] = []
     if metric_preferences.mplus:
         for alias, _eid, dungeon_name in MPLUS_ENCOUNTERS:
@@ -940,14 +948,19 @@ def _ranks_from_graphql(
         )
         if getattr(metric_preferences, scope)
     }
+    raid_zones = {"N": raid_normal_data, "H": raid_heroic_data, "M": raid_mythic_data}
+    for key, scope in (("N", "raid_normal"), ("H", "raid_heroic"), ("M", "raid_mythic")):
+        if (state := _raid_summary_unusable_state(raid_zones[key], spec_name)):
+            availability[scope] = state
+            raid_zones[key] = None
     restricted = all_selected_restricted(availability, metric_preferences)
     return CharacterRanks(
-        raid_normal=_zone_avg(raid_normal_data),
-        raid_heroic=_zone_avg(raid_heroic_data),
-        raid_mythic=_zone_avg(raid_mythic_data),
-        raid_normal_median=_zone_avg(raid_normal_data, "medianPerformanceAverage"),
-        raid_heroic_median=_zone_avg(raid_heroic_data, "medianPerformanceAverage"),
-        raid_mythic_median=_zone_avg(raid_mythic_data, "medianPerformanceAverage"),
+        raid_normal=_zone_avg(raid_zones["N"]),
+        raid_heroic=_zone_avg(raid_zones["H"]),
+        raid_mythic=_zone_avg(raid_zones["M"]),
+        raid_normal_median=_zone_avg(raid_zones["N"], "medianPerformanceAverage"),
+        raid_heroic_median=_zone_avg(raid_zones["H"], "medianPerformanceAverage"),
+        raid_mythic_median=_zone_avg(raid_zones["M"], "medianPerformanceAverage"),
         mplus_dps=best_avg,
         mplus_hps=None,
         mplus_dps_median=median_avg,
@@ -955,9 +968,7 @@ def _ranks_from_graphql(
         mplus_dps_breakdown=breakdown,
         raid_evidence={
             key: evidence
-            for key, zone in (
-                ("N", raid_normal_data), ("H", raid_heroic_data), ("M", raid_mythic_data)
-            )
+            for key, zone in raid_zones.items()
             if (evidence := _raid_evidence_from_zone(zone, spec_name))
         },
         mplus_hps_breakdown=[],
@@ -1555,25 +1566,35 @@ def _project_ranks_to_metric_preferences(
     metric_preferences: MetricPreferences,
 ) -> CharacterRanks:
     projected = ranks
-    if not metric_preferences.raid_normal:
+    availability = project_availability(ranks.availability, metric_preferences)
+    evidence = sanitize_raid_evidence(ranks.raid_evidence)
+    for key, scope in (("N", "raid_normal"), ("H", "raid_heroic"), ("M", "raid_mythic")):
+        if (
+            getattr(metric_preferences, scope)
+            and evidence.get(key, {}).get("boss_count") == 0
+            and (getattr(ranks, scope) is not None or getattr(ranks, scope + "_median") is not None)
+            and availability.get(scope) not in UNUSABLE_AVAILABILITY_STATES
+        ):
+            availability[scope] = "empty"
+    if not metric_preferences.raid_normal or availability.get("raid_normal") in UNUSABLE_AVAILABILITY_STATES:
         projected = replace(
             projected,
             raid_normal=None,
             raid_normal_median=None,
         )
-    if not metric_preferences.raid_heroic:
+    if not metric_preferences.raid_heroic or availability.get("raid_heroic") in UNUSABLE_AVAILABILITY_STATES:
         projected = replace(
             projected,
             raid_heroic=None,
             raid_heroic_median=None,
         )
-    if not metric_preferences.raid_mythic:
+    if not metric_preferences.raid_mythic or availability.get("raid_mythic") in UNUSABLE_AVAILABILITY_STATES:
         projected = replace(
             projected,
             raid_mythic=None,
             raid_mythic_median=None,
         )
-    if not metric_preferences.mplus:
+    if not metric_preferences.mplus or availability.get("mplus") in UNUSABLE_AVAILABILITY_STATES:
         projected = replace(
             projected,
             mplus_dps=None,
@@ -1583,7 +1604,6 @@ def _project_ranks_to_metric_preferences(
             mplus_dps_breakdown=[],
             mplus_hps_breakdown=[],
         )
-    availability = project_availability(ranks.availability, metric_preferences)
     error, error_kind = projected.error, projected.error_kind
     if availability:
         if all_selected_restricted(availability, metric_preferences):
@@ -1592,10 +1612,10 @@ def _project_ranks_to_metric_preferences(
             error, error_kind = "", ""
     selected_difficulties = _raid_difficulty_keys_for_preferences(metric_preferences)
     raid_evidence = {
-        key: row for key, row in sanitize_raid_evidence(projected.raid_evidence).items()
+        key: row for key, row in evidence.items()
         if key in selected_difficulties
         and availability.get({"N": "raid_normal", "H": "raid_heroic", "M": "raid_mythic"}[key])
-        != "restricted"
+        not in UNUSABLE_AVAILABILITY_STATES
     }
     return replace(
         projected, availability=availability, error=error, error_kind=error_kind,
@@ -1816,6 +1836,40 @@ def _compute_mplus_headline(
     return best_avg, median_avg
 
 
+def _raid_summary_unusable_state(zone_data: object, spec_name: str) -> str:
+    """Reject explicit row contradictions without requiring optional provider fields."""
+    if not isinstance(zone_data, dict) or (
+        _zone_avg(zone_data) is None
+        and _zone_avg(zone_data, "medianPerformanceAverage") is None
+    ):
+        return ""
+    rows = zone_data.get("rankings")
+    if not isinstance(rows, list):
+        return ""
+    if not rows:
+        return "empty"
+    if spec_name not in SPEC_ID_TO_WCL_NAME.values():
+        return ""
+    known_encounters = {eid for _alias, eid, _name in CURRENT_RAID_ENCOUNTERS}
+    wanted_spec = _spec_norm(spec_name)
+    for row in rows:
+        if not isinstance(row, dict) or "spec" not in row:
+            continue
+        encounter = row.get("encounter")
+        if not isinstance(encounter, dict):
+            continue
+        if _safe_nonnegative_cache_int(encounter.get("id")) not in known_encounters:
+            continue
+        if (
+            _safe_cache_percent(row.get("rankPercent")) is not None
+            or _safe_nonnegative_cache_int(row.get("totalKills")) > 0
+        ) and _spec_norm(row.get("spec")) != wanted_spec:
+            # The provider average cannot safely be recomputed from an optional
+            # subset once even one observed row contradicts the requested spec.
+            return "unavailable"
+    return ""
+
+
 def _raid_evidence_from_zone(zone_data: object, spec_name: str) -> dict:
     """Read optional summary boss rows without additional queries or invented kills."""
     if (
@@ -1868,23 +1922,11 @@ def _raid_evidence_from_zone(zone_data: object, spec_name: str) -> dict:
 def _zone_avg(
     zone_data: Optional[dict], key: str = "bestPerformanceAverage"
 ) -> Optional[float]:
-    """Reads either `bestPerformanceAverage` (default) or `medianPerformanceAverage`.
+    """Read the provider's raid average percentile for the requested difficulty.
 
-    For RAIDS: avg of best parse percentile across boss encounters at the given
-    difficulty. Standard "avg parse %" displayed everywhere in WCL.
-
-    For M+: with our `specName + metric: points_and_damage/healing` filters,
-    this is avg per-DUNGEON best percentile for the applicant's spec. WCL's
-    score formula (key_level + DPS factor) ensures "best per dungeon" usually
-    corresponds to the applicant's HIGHEST TIMED KEY in that dungeon, so the
-    avg approximates "parse % of highest key timed, averaged across 8 dungeons"
-    — which is what raid leads inspect when scouting M+ applicants.
-
-    NOTE: this is DIFFERENT from `allStars[0].rankPercent` (= AllStars Key %),
-    which is the percentile of the SUM of points across dungeons (a global
-    score-based rank). bestPerformanceAverage gives the avg of percentiles;
-    AllStars gives the percentile of the sum. They diverge for players with
-    uneven dungeon coverage."""
+    A summary value does not prove boss coverage or sample counts. These are
+    extracted separately from optional matching-spec encounter rows.
+    """
     if not isinstance(zone_data, dict):
         return None
     val = zone_data.get(key)
@@ -2054,6 +2096,7 @@ class _CacheLookupSnapshot:
     generation: int
     negative_candidate: _CacheEntry | None
     candidates: tuple[_CacheEntry, ...]
+    publication_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -2080,7 +2123,9 @@ class _CacheSaveSnapshot:
 # combine specs even though their cache keys already contain a spec ID.
 # v9 = scope availability distinguishes private rankings from accessible empty data.
 # v10 = raid summary coverage is retained; M+ best/median share a dungeon population.
-_CACHE_VERSION = 10
+# v11 = explicit empty/contradictory summary rows cannot certify raid aggregates.
+# v12 = independently ordered difficulty proofs survive narrow/broad cache projection.
+_CACHE_VERSION = 12
 
 
 def _quarantine_corrupt_file(path: Path) -> Path | None:
@@ -2151,6 +2196,13 @@ class CharacterCache:
         self._write_lock = threading.Lock()
         self._save_epoch = 0
         self._generation = 0
+        # Pending manual requests must not outlive a privacy proof just because
+        # TTL eviction removes its cache entry. Session barriers are bounded;
+        # retired barriers advance a conservative floor for older publishers.
+        self._raid_detail_privacy_epochs: dict[tuple[str, str], int] = {}
+        self._raid_detail_privacy_floor = 0
+        self._raid_summary_privacy_epochs: dict[tuple[str, str], int] = {}
+        self._raid_summary_privacy_floor = 0
         self._closing = False
         self._close_done = threading.Event()
         self._close_result: bool | None = None
@@ -2294,7 +2346,7 @@ class CharacterCache:
                 # persisted or injected session metadata is never authority.
                 entry = _CacheEntry(**{
                     field: value for field, value in v.items()
-                    if field != "publication_epoch"
+                    if field not in {"publication_epoch", "raid_boss_publication_epochs"}
                 })
             except (TypeError, ValueError):
                 _log.debug("Discarding corrupt cache entry for key=%s", k)
@@ -2531,6 +2583,10 @@ class CharacterCache:
                 self._generation += 1
                 self._save_epoch += 1
                 self._data.clear()
+                self._raid_detail_privacy_epochs.clear()
+                self._raid_detail_privacy_floor = 0
+                self._raid_summary_privacy_epochs.clear()
+                self._raid_summary_privacy_floor = 0
                 snapshot = self._snapshot_for_save_locked()
             if timer is not None and timer.is_alive():
                 timer.cancel()
@@ -2564,6 +2620,7 @@ class CharacterCache:
         prefix: str,
         not_found_key: str,
         metric_preferences: MetricPreferences,
+        raid_details: bool = False,
     ) -> _CacheLookupSnapshot:
         now = time.time()
         with self._lock:
@@ -2577,10 +2634,18 @@ class CharacterCache:
                 not_found_ttl_seconds=self._not_found_ttl_seconds(),
                 now=now,
             )
+            if raid_details:
+                candidates = raid_detail_candidates(
+                    self._data, prefix=prefix, ttl_seconds=self._ttl_seconds,
+                    not_found_ttl_seconds=self._not_found_ttl_seconds(), now=now,
+                    metric_preferences=metric_preferences,
+                )
+            publication_epoch = self._save_epoch
         return _CacheLookupSnapshot(
             generation=generation,
             negative_candidate=negative_candidate,
             candidates=candidates,
+            publication_epoch=publication_epoch,
         )
 
     def get(
@@ -2594,32 +2659,103 @@ class CharacterCache:
     ) -> Optional[CharacterRanks]:
         prefix = self._key_prefix(name, server_slug, region, spec_id, role)
         not_found_key = self._not_found_key(name, server_slug, region)
-        snapshot = self._lookup_snapshot(
-            prefix=prefix,
-            not_found_key=not_found_key,
-            metric_preferences=metric_preferences,
-        )
-        if snapshot.negative_candidate is not None:
-            ranks = self._ranks_from_entry(snapshot.negative_candidate)
+        for _attempt in range(3):
+            snapshot = self._lookup_snapshot(
+                prefix=prefix, not_found_key=not_found_key,
+                metric_preferences=metric_preferences,
+            )
+            result = None
+            negative = snapshot.negative_candidate
+            ranks = self._ranks_from_entry(negative) if negative is not None else None
             if ranks is not None and ranks.not_found:
-                with self._lock:
-                    if snapshot.generation != self._generation:
-                        return None
-                return CharacterRanks.empty(
-                    not_found=True,
-                    error=ranks.error,
-                    error_kind=ranks.error_kind,
+                result = CharacterRanks.empty(
+                    not_found=True, error=ranks.error, error_kind=ranks.error_kind,
                 )
-        if not snapshot.candidates:
-            return None
-        for entry in snapshot.candidates:
-            ranks = self._ranks_from_entry(entry)
-            if ranks is not None:
-                with self._lock:
-                    if snapshot.generation != self._generation:
-                        return None
-                return _project_ranks_to_metric_preferences(ranks, metric_preferences)
+            else:
+                for entry in snapshot.candidates:
+                    ranks = self._ranks_from_entry(entry)
+                    if ranks is not None:
+                        result = _project_ranks_to_metric_preferences(ranks, metric_preferences)
+                        break
+            with self._lock:
+                if snapshot.generation != self._generation:
+                    return None
+                if snapshot.publication_epoch == self._save_epoch:
+                    return result
         return None
+
+    def can_deliver_response(
+        self,
+        name: str,
+        server_slug: str,
+        region: str,
+        spec_id: int = 0,
+        role: str = "DAMAGER",
+        metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+        *,
+        expected_publication_epoch: int | None,
+        raid_details: bool = False,
+        not_found: bool = False,
+    ) -> bool:
+        """Allow uncached active evidence only when no later source proof supersedes it.
+
+        Clearing storage alone does not invalidate a still-active provider response.
+        Row identity, operation ownership and request-generation checks stay with
+        the caller; this read-only guard checks chronological source evidence.
+        """
+        if expected_publication_epoch is None:
+            return True
+        prefix = self._key_prefix(name, server_slug, region, spec_id, role)
+        negative_key = self._not_found_key(name, server_slug, region)
+        selected_scopes = (
+            set(_raid_difficulty_keys_for_preferences(metric_preferences)) if raid_details
+            else {scope for scope in METRIC_SCOPES if getattr(metric_preferences, scope)}
+        )
+        with self._lock:
+            negative = self._data.get(negative_key)
+            if negative is not None and negative.publication_epoch > expected_publication_epoch:
+                return False
+            if not_found:
+                character_prefix = f"{region}:{server_slug}:{name.lower()}:"
+                if any(
+                    entry.publication_epoch > expected_publication_epoch
+                    for key, entry in self._data.items()
+                    if key.startswith((character_prefix, f"rb:{character_prefix}"))
+                ):
+                    return False
+                return (
+                    expected_publication_epoch >= max(
+                        self._raid_detail_privacy_floor, self._raid_summary_privacy_floor,
+                    )
+                    and not any(
+                        epoch > expected_publication_epoch
+                        for epochs in (self._raid_detail_privacy_epochs, self._raid_summary_privacy_epochs)
+                        for (identity, _difficulty), epoch in epochs.items()
+                        if identity.startswith(character_prefix)
+                    )
+                )
+            privacy_epochs = self._raid_detail_privacy_epochs if raid_details else self._raid_summary_privacy_epochs
+            privacy_floor = self._raid_detail_privacy_floor if raid_details else self._raid_summary_privacy_floor
+            if selected_scopes and (
+                expected_publication_epoch < privacy_floor
+                or any(
+                    privacy_epochs.get((prefix, scope), 0) > expected_publication_epoch
+                    for scope in selected_scopes
+                )
+            ):
+                return False
+            if raid_details:
+                return not any(
+                    newer_raid_detail_evidence(
+                        self._data, identity_prefix=prefix, difficulty=difficulty,
+                        expected_publication_epoch=expected_publication_epoch,
+                    )
+                    for difficulty in selected_scopes
+                )
+            return not newer_rank_scope_evidence(
+                self._data, identity_prefix=prefix, metric_preferences=metric_preferences,
+                expected_publication_epoch=expected_publication_epoch,
+            )
 
     def get_raid_boss_details(
         self,
@@ -2629,30 +2765,47 @@ class CharacterCache:
         spec_id: int = 0,
         role: str = "DAMAGER",
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
-    ) -> dict[str, list[dict[str, object]]] | None:
+    ) -> RaidBossDetails | None:
         prefix = self._raid_boss_key_prefix(name, server_slug, region, spec_id, role)
         not_found_key = self._not_found_key(name, server_slug, region)
-        snapshot = self._lookup_snapshot(
-            prefix=prefix,
-            not_found_key=not_found_key,
-            metric_preferences=metric_preferences,
-        )
-        if snapshot.negative_candidate is not None:
-            ranks = self._ranks_from_entry(snapshot.negative_candidate)
+        selected = _raid_difficulty_keys_for_preferences(metric_preferences)
+        for _attempt in range(3):
+            snapshot = self._lookup_snapshot(
+                prefix=prefix, not_found_key=not_found_key,
+                metric_preferences=metric_preferences, raid_details=True,
+            )
+            negative = snapshot.negative_candidate
+            ranks = self._ranks_from_entry(negative) if negative is not None else None
             if ranks is not None and ranks.not_found:
-                with self._lock:
-                    if snapshot.generation != self._generation:
-                        return None
-                return None
-        if not snapshot.candidates:
-            return None
-        for entry in snapshot.candidates:
-            rows = self._raid_boss_details_from_entry(entry, metric_preferences)
-            if rows is not None:
-                with self._lock:
-                    if snapshot.generation != self._generation:
-                        return None
-                return rows
+                result = None
+            else:
+                winners: dict[str, tuple[int, float, RaidBossDetails]] = {}
+                for entry in snapshot.candidates:
+                    rows = self._raid_boss_details_from_entry(entry, metric_preferences)
+                    if rows is None:
+                        continue
+                    for difficulty in selected:
+                        if difficulty not in rows.availability:
+                            continue
+                        clock = (rows.publication_epochs[difficulty], entry.fetched_at)
+                        old = winners.get(difficulty)
+                        if old is None or clock > old[:2]:
+                            winners[difficulty] = (*clock, rows)
+                result = (
+                    RaidBossDetails(
+                        {difficulty: winner[2].get(difficulty, [])
+                         for difficulty, winner in winners.items()
+                         if winner[2].availability[difficulty] not in UNUSABLE_AVAILABILITY_STATES},
+                        availability={difficulty: winner[2].availability[difficulty]
+                                      for difficulty, winner in winners.items()},
+                        publication_epochs={difficulty: winner[0] for difficulty, winner in winners.items()},
+                    ) if all(difficulty in winners for difficulty in selected) else None
+                )
+            with self._lock:
+                if snapshot.generation != self._generation:
+                    return None
+                if snapshot.publication_epoch == self._save_epoch:
+                    return result
         return None
 
     def _ranks_from_entry(self, entry: _CacheEntry) -> Optional[CharacterRanks]:
@@ -2710,18 +2863,63 @@ class CharacterCache:
         self,
         entry: _CacheEntry,
         metric_preferences: MetricPreferences,
-    ) -> dict[str, list[dict[str, object]]] | None:
+    ) -> RaidBossDetails | None:
         if not isinstance(entry.raid_boss_details, dict):
             return None
         availability = normalize_availability(entry.raid_boss_availability, scopes=RAID_DETAIL_SCOPES)
         selected = _raid_difficulty_keys_for_preferences(metric_preferences)
-        if any(difficulty not in availability for difficulty in selected):
+        availability = {key: value for key, value in availability.items() if key in selected}
+        if not availability:
             return None
         rows = _sanitize_raid_boss_detail_rows(entry.raid_boss_details, metric_preferences)
         return RaidBossDetails(
-            {key: value for key, value in rows.items() if availability[key] != "restricted"},
-            availability={key: availability[key] for key in selected},
+            {key: value for key, value in rows.items()
+             if key in availability and availability[key] not in UNUSABLE_AVAILABILITY_STATES},
+            availability=availability,
+            publication_epochs={key: raid_detail_scope_epoch(entry, key) for key in availability},
         )
+
+    def _record_raid_privacy_locked(
+        self,
+        identity_prefix: str,
+        difficulties: set[str],
+        expected_publication_epoch: int | None,
+    ) -> None:
+        if not difficulties:
+            return
+        if expected_publication_epoch is not None:
+            difficulties = {
+                difficulty for difficulty in difficulties
+                if not newer_public_raid_detail_evidence(
+                    self._data, identity_prefix=identity_prefix, difficulties={difficulty},
+                    expected_publication_epoch=expected_publication_epoch,
+                )
+            }
+        retract_private_raid_details(
+            self._data, identity_prefix=identity_prefix, difficulties=difficulties,
+            publication_epoch=self._save_epoch + 1,
+            expected_publication_epoch=expected_publication_epoch,
+        )
+        for difficulty in difficulties:
+            self._raid_detail_privacy_epochs[(identity_prefix, difficulty)] = self._save_epoch + 1
+            preferences = MetricPreferences(
+                mplus=False, raid_normal=difficulty == "N", raid_heroic=difficulty == "H",
+                raid_mythic=difficulty == "M",
+            )
+            # Keep the fresh privacy proof independently of older other-scope
+            # rows. Its timestamp remains meaningful after session clocks reset.
+            self._data[f"rb:{identity_prefix}:{preferences.cache_key()}"] = _CacheEntry(
+                fetched_at=time.time(), raid_boss_details={},
+                raid_boss_availability={difficulty: "restricted"},
+                publication_epoch=self._save_epoch + 1,
+                raid_boss_publication_epochs={difficulty: self._save_epoch + 1},
+            )
+        _cap_entries_data(self._data, self.MAX_ENTRIES)
+        while len(self._raid_detail_privacy_epochs) > self.MAX_ENTRIES * len(RAID_DETAIL_SCOPES):
+            oldest = min(self._raid_detail_privacy_epochs, key=lambda key: self._raid_detail_privacy_epochs[key])
+            self._raid_detail_privacy_floor = max(
+                self._raid_detail_privacy_floor, self._raid_detail_privacy_epochs.pop(oldest),
+            )
 
     def put(
         self,
@@ -2739,6 +2937,7 @@ class CharacterCache:
     ) -> bool:
         if self._close_requested.is_set():
             return False
+        ranks = _project_ranks_to_metric_preferences(ranks, metric_preferences)
         key = self._key(name, server_slug, region, spec_id, role, metric_preferences)
         not_found_key = self._not_found_key(name, server_slug, region)
         with self._lock:
@@ -2754,6 +2953,17 @@ class CharacterCache:
             if ranks.not_found:
                 identity_prefix = f"{region}:{server_slug}:{name.lower()}:"
                 raid_boss_identity_prefix = f"rb:{identity_prefix}"
+                if expected_publication_epoch is not None and (
+                    expected_publication_epoch < max(
+                        self._raid_summary_privacy_floor, self._raid_detail_privacy_floor,
+                    ) or any(
+                        epoch > expected_publication_epoch
+                        for epochs in (self._raid_summary_privacy_epochs, self._raid_detail_privacy_epochs)
+                        for (identity, _difficulty), epoch in epochs.items()
+                        if identity.startswith(identity_prefix)
+                    )
+                ):
+                    return False
                 # A negative sweeps every spec/scope, so newer evidence anywhere
                 # for this character wins even when both requests remain active.
                 if expected_publication_epoch is not None and any(
@@ -2776,11 +2986,26 @@ class CharacterCache:
                     max_entries=self.MAX_ENTRIES,
                 )
             else:
-                if expected_publication_epoch is not None and any(
-                    entry is not None and entry.publication_epoch > expected_publication_epoch
-                    for entry in (self._data.get(key), self._data.get(not_found_key))
-                ):
-                    return False
+                if expected_publication_epoch is not None:
+                    identity_prefix = self._key_prefix(name, server_slug, region, spec_id, role)
+                    selected_scopes = {scope for scope in METRIC_SCOPES if getattr(metric_preferences, scope)}
+                    if selected_scopes and (
+                        expected_publication_epoch < self._raid_summary_privacy_floor
+                        or any(
+                            self._raid_summary_privacy_epochs.get((identity_prefix, scope), 0)
+                            > expected_publication_epoch for scope in selected_scopes
+                        )
+                    ):
+                        return False
+                    if any(
+                        entry is not None and entry.publication_epoch > expected_publication_epoch
+                        for entry in (self._data.get(key), self._data.get(not_found_key))
+                    ) or newer_rank_scope_evidence(
+                        self._data, identity_prefix=identity_prefix,
+                        metric_preferences=metric_preferences,
+                        expected_publication_epoch=expected_publication_epoch,
+                    ):
+                        return False
                 cache_put(
                     self._data,
                     key=key,
@@ -2791,6 +3016,29 @@ class CharacterCache:
                     ),
                     max_entries=self.MAX_ENTRIES,
                 )
+                private_scopes = {scope for scope in METRIC_SCOPES if ranks.availability.get(scope) == "restricted"}
+                if private_scopes:
+                    identity_prefix = self._key_prefix(name, server_slug, region, spec_id, role)
+                    retract_private_rank_summaries(
+                        self._data,
+                        identity_prefix=identity_prefix,
+                        scopes=private_scopes,
+                        expected_publication_epoch=expected_publication_epoch,
+                    )
+                    for scope in private_scopes:
+                        self._raid_summary_privacy_epochs[(identity_prefix, scope)] = self._save_epoch + 1
+                    while len(self._raid_summary_privacy_epochs) > self.MAX_ENTRIES * len(METRIC_SCOPES):
+                        oldest = min(self._raid_summary_privacy_epochs,
+                                     key=lambda item: self._raid_summary_privacy_epochs[item])
+                        self._raid_summary_privacy_floor = max(
+                            self._raid_summary_privacy_floor, self._raid_summary_privacy_epochs.pop(oldest),
+                        )
+                    self._record_raid_privacy_locked(
+                        identity_prefix,
+                        {difficulty for difficulty, scope in
+                         (("N", "raid_normal"), ("H", "raid_heroic"), ("M", "raid_mythic"))
+                         if scope in private_scopes}, expected_publication_epoch,
+                    )
             self._save_epoch += 1
             flush_now = self._schedule_save_locked()
         if flush_now:
@@ -2828,6 +3076,11 @@ class CharacterCache:
             dict(rows.availability) if isinstance(rows, RaidBossDetails)
             else {key: "available" for key in _raid_difficulty_keys_for_preferences(metric_preferences)}
         )
+        sanitized = {
+            key: value for key, value in sanitized.items()
+            if availability.get(key) not in UNUSABLE_AVAILABILITY_STATES
+        }
+        private_difficulties = {key for key in RAID_DETAIL_SCOPES if availability.get(key) == "restricted"}
         with self._lock:
             if self._closing or self._close_requested.is_set():
                 return False
@@ -2839,16 +3092,40 @@ class CharacterCache:
             ):
                 return False
             not_found_key = self._not_found_key(name, server_slug, region)
-            if expected_publication_epoch is not None and any(
-                entry is not None and entry.publication_epoch > expected_publication_epoch
-                for entry in (self._data.get(key), self._data.get(not_found_key))
-            ):
+            negative = self._data.get(not_found_key)
+            if (expected_publication_epoch is not None and negative is not None
+                    and negative.publication_epoch > expected_publication_epoch):
                 return False
+            identity_prefix = self._key_prefix(name, server_slug, region, spec_id, role)
+            eligible = set(_raid_difficulty_keys_for_preferences(metric_preferences)).intersection(availability)
+            if expected_publication_epoch is not None:
+                if expected_publication_epoch < self._raid_detail_privacy_floor:
+                    return False
+                eligible = {
+                    difficulty for difficulty in eligible
+                    if self._raid_detail_privacy_epochs.get((identity_prefix, difficulty), 0)
+                    <= expected_publication_epoch
+                    and not newer_raid_detail_evidence(
+                        self._data, identity_prefix=identity_prefix, difficulty=difficulty,
+                        expected_publication_epoch=expected_publication_epoch,
+                    )
+                }
+            if not eligible:
+                return False
+            availability = {key: value for key, value in availability.items() if key in eligible}
+            sanitized = {key: value for key, value in sanitized.items() if key in eligible}
+            private_difficulties.intersection_update(eligible)
+            self._data.pop(not_found_key, None)
             self._data[key] = _CacheEntry(
                 fetched_at=time.time(),
                 raid_boss_details=sanitized,
                 raid_boss_availability=availability,
                 publication_epoch=self._save_epoch + 1,
+                raid_boss_publication_epochs={difficulty: self._save_epoch + 1 for difficulty in eligible},
+            )
+            self._record_raid_privacy_locked(
+                self._key_prefix(name, server_slug, region, spec_id, role),
+                private_difficulties, expected_publication_epoch,
             )
             _cap_entries_data(self._data, self.MAX_ENTRIES)
             self._save_epoch += 1

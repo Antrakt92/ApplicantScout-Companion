@@ -2,6 +2,7 @@
 
 import pytest
 
+from applicant_scout.constants import CURRENT_RAID_ENCOUNTERS
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.state import AppState, Listing, WoWPlayer
 from applicant_scout.wcl import CharacterRanks, WCL_ERROR_SERVER
@@ -296,7 +297,8 @@ def test_shared_party_worker_survives_applicant_removal_and_repeated_clears(
         lambda *_a, **_k: (
             calls.append("network")
             or (
-                {"M": [{"name": "Current boss", "best": 88}]}
+                {"M": [{"encounter_id": CURRENT_RAID_ENCOUNTERS[0][1],
+                         "name": "Current boss", "overall": 88, "ilvl": 77}]}
                 if detail
                 else _ranks_with(raid_heroic=88, mplus_dps=89)
             )
@@ -319,7 +321,8 @@ def test_shared_party_worker_survives_applicant_removal_and_repeated_clears(
         assert calls == ["network"]
         if detail:
             assert member.raid_boss_parses["M"] == [
-                {"name": "Current boss", "best": 88}
+                {"encounter_id": CURRENT_RAID_ENCOUNTERS[0][1],
+                 "name": "Current boss", "overall": 88, "ilvl": 77}
             ]
         else:
             assert member.fetch_status == "ready" and member.raid_heroic == 88
@@ -402,9 +405,9 @@ def test_scope_narrowing_keeps_live_covering_worker(
     )
     calls = []
     rows = {
-        "N": [{"name": "Normal"}],
-        "H": [{"name": "Heroic"}],
-        "M": [{"name": "Mythic"}],
+        difficulty: [{"encounter_id": CURRENT_RAID_ENCOUNTERS[0][1],
+                      "name": name, "overall": 88, "ilvl": 77}]
+        for difficulty, name in (("N", "Normal"), ("H", "Heroic"), ("M", "Mythic"))
     }
     monkeypatch.setattr(
         client,

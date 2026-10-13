@@ -220,7 +220,9 @@ def test_all_columns_fit_940_physical_pixels_at_current_windows_scale(
     assert viewport is not None
     assert bar is not None
     assert visible_width <= viewport.width(), (
-        pixel_ratio, window.width(), viewport.width(), visible_width
+        pixel_ratio, window.width(), viewport.width(), visible_width,
+        [(column, table.columnWidth(column), table.item(0, column).text())
+         for column in range(table.columnCount()) if not table.isColumnHidden(column)],
     )
     assert bar.maximum() == 0
     assert bar.value() == 0

@@ -220,8 +220,8 @@ def test_render_tooltip_wraps_long_text_before_show(qtbot, monkeypatch):
 
 
 def test_column_width_contract_is_compact():
-    assert COLUMN_WIDTHS == [74, 112, 44, 84, 64, 64, 64, 112, 90]
-    assert sum(COLUMN_WIDTHS) == 708
+    assert COLUMN_WIDTHS == [74, 112, 44, 72, 64, 64, 64, 112, 90]
+    assert sum(COLUMN_WIDTHS) == 696
     assert NAME_COLUMN_MAX_WIDTH == 126
     assert DEFAULT_WINDOW_WIDTH == 572
     assert WINDOW_GEOMETRY_LAYOUT_VERSION == 5
@@ -265,7 +265,7 @@ def test_mplus_and_fit_header_tooltips_distinguish_evidence_from_estimates():
     [
         (percentile_colour(95), "#000000"),
         (percentile_colour(80), "#ffffff"),
-        (percentile_colour(60), "#ffffff"),
+        (percentile_colour(60), "#000000"),
         (percentile_colour(30), "#000000"),
         (percentile_colour(10), "#ffffff"),
         ("#222222", "#ffffff"),
@@ -285,7 +285,7 @@ def test_text_colour_for_bg_returns_readable_contrast(bg, fg):
         ("#e5cc80", "#000000"),  # tan/gold top-percentile cells
         ("#e268a8", "#000000"),  # pink/lavender high-percentile cells
         ("#a335ee", "#ffffff"),  # purple cells stay white-on-dark
-        ("#0070ff", "#ffffff"),  # blue cells stay white-on-dark
+        ("#0070ff", "#000000"),  # black gives stronger contrast on blue
         ("#666666", "#ffffff"),  # grey bucket stays white-on-dark
         ("#2a2a33", "#ffffff"),  # dark fallback stays white-on-dark
     ],

@@ -184,12 +184,14 @@ def render_row_cells(
         ("H", env.col_h, applicant.raid_heroic, applicant.raid_heroic_median),
         ("M", env.col_m, applicant.raid_mythic, applicant.raid_mythic_median),
     ]
-    for _raid_key, col, best, median in raid_cells:
+    for raid_key, col, best, median in raid_cells:
         existing = table.item(row, col)
         filled = env.raid_dual_cell(
             best,
             median,
-            applicant.fetch_status,
+            _presenters.wcl_scope_status(
+                applicant, "raid_" + {"N": "normal", "H": "heroic", "M": "mythic"}[raid_key],
+            ),
             item=existing,
         )
         if existing is None:
@@ -282,11 +284,13 @@ def render_row_cells(
         elif column == env.col_fit and isinstance(
             item.data(env.package_text_role), str
         ):
-            package_text = str(item.data(env.package_text_role) or "No data")
-            individual_text = str(
-                item.data(env.individual_text_role) or "No data"
-            )
+            package_text = _presenters.fit_accessible_text(str(item.data(env.package_text_role) or ""))
+            individual_text = _presenters.fit_accessible_text(str(
+                item.data(env.individual_text_role) or ""
+            ))
             value = f"Group package {package_text}; individual {individual_text}"
+        elif column == env.col_fit:
+            value = _presenters.fit_accessible_text(item.text())
         else:
             value = item.text() or "No data"
         # Accessible writes fire OS accessibility events: only rewrite on

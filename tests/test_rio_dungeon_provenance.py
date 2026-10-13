@@ -25,7 +25,7 @@ def test_unknown_or_different_capture_cannot_rebind_raw_dungeon_key(capture):
     row = _row(dungeon=capture)
     target = _listing()
     assert scoring._rio_same_dungeon_key(row, target) == 0
-    assert scoring._mplus_rio_dungeon_key_levels(row, target) == {}
+    assert "dungeonb" not in scoring._mplus_rio_dungeon_key_levels(row, target)
     assert scoring.candidate_fit(row, target).same_dungeon_rio_key == 0
 
 
@@ -53,7 +53,8 @@ def test_same_unmapped_activity_cannot_authorize_unknown_dungeon(capture_name, t
     row = _row(activity_id=999999, dungeon=capture_name)
     target = _listing(activity_id=999999, dungeon=target_name)
     assert scoring._rio_same_dungeon_key(row, target) == 0
-    assert scoring._mplus_rio_dungeon_key_levels(row, target) == {}
+    expected = {"dungeonb": 16} if capture_name == "Dungeon B" else {}
+    assert scoring._mplus_rio_dungeon_key_levels(row, target) == expected
 
 
 def test_canonical_activity_aliases_match_localized_capture():
@@ -67,29 +68,29 @@ def test_conflicting_known_activity_cannot_match_incidental_raw_name():
     row = _row(activity_id=512, dungeon="Temple of Sethraliss")
     target = _listing(activity_id=503, dungeon="Temple of Sethraliss")
     assert scoring._rio_same_dungeon_key(row, target) == 0
-    assert scoring._mplus_rio_dungeon_key_levels(row, target) == {}
+    assert scoring._mplus_rio_dungeon_key_levels(row, target) == {"kingsrest": 16}
 
 
-def test_matching_dungeon_still_requires_matching_capture_key():
+def test_matching_dungeon_preserves_timed_key_when_target_changes():
     row = _row(dungeon="Dungeon B", target=12)
-    assert scoring._rio_same_dungeon_key(row, _listing(target=14)) == 0
+    assert scoring._rio_same_dungeon_key(row, _listing(target=14)) == 16
 
 
 def test_named_dungeon_records_remain_independent_of_raw_capture():
     row = _row(dungeon="Dungeon A", named=[{"name": "Dungeon B", "key_level": 13}])
     target = _listing()
     assert scoring._rio_same_dungeon_key(row, target) == 13
-    assert scoring._mplus_rio_dungeon_key_levels(row, target) == {"dungeonb": 13}
+    assert scoring._mplus_rio_dungeon_key_levels(row, target) == {"dungeona": 16, "dungeonb": 13}
 
 
 def test_synthetic_counts_do_not_fallback_to_unverified_raw_dungeon_best():
     row = _row(raw_key=20)
-    assert scoring._mplus_synthetic_rio_key_levels(row, 12, same_dungeon_key=0) == []
+    assert scoring._mplus_synthetic_rio_key_levels(row, 12) == []
 
 
 def test_generic_overall_best_and_key_relative_counts_remain_usable():
-    row = _row(dungeon="Dungeon A", raw_key=20)
+    row = _row(dungeon="Dungeon A", raw_key=12)
     row.rio_best_key = 15
     row.rio_timed_at_or_above = 2
-    levels = scoring._mplus_rio_key_levels(row, 12, 0, rio_row_key_levels=[])
+    levels = scoring._mplus_rio_key_levels(row, 12, rio_row_key_levels=[])
     assert levels == [15, 12]

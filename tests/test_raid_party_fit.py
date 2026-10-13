@@ -75,8 +75,8 @@ def test_difficulty_refresh_updates_fit_and_resorts_without_switching_tabs(qtbot
     fit = scoring.candidate_fit(first, win._effective_listing())
     assert item.text() == f"~{round(fit.score)}"
     assert item.text() != normal_text
-    assert item.background().color().name() == overlay.FIT_ESTIMATE_BACKGROUND
-    assert item.background().color().name() == normal_colour
+    assert item.background().color().name() == overlay.percentile_colour(round(fit.score))
+    assert item.background().color().name() != normal_colour
     assert win._sort_by_tab["party"] == (overlay.COL_FIT, True)
 
 

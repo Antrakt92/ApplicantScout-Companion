@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .constants import CURRENT_RAID_ENCOUNTERS
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
+from .wcl_availability import METRIC_SCOPES, RAID_DETAIL_SCOPES, normalize_availability
 
 
 @dataclass
@@ -23,6 +24,12 @@ class _CacheEntry:
     # Session-only ordering; loaded entries predate every current request.
     publication_epoch: int = 0
     raid_boss_availability: dict[str, str] | None = None
+    raid_boss_publication_epochs: dict[str, int] | None = None
+
+
+def raid_detail_scope_epoch(entry: _CacheEntry, difficulty: str) -> int:
+    epochs = entry.raid_boss_publication_epochs or {}
+    return epochs.get(difficulty, entry.publication_epoch)
 
 
 def sanitize_raid_evidence(value: object) -> dict[str, dict]:
@@ -66,6 +73,123 @@ def sanitize_raid_evidence(value: object) -> dict[str, dict]:
     return result
 
 
+def retract_private_raid_details(
+    data: dict[str, _CacheEntry],
+    *,
+    identity_prefix: str,
+    difficulties: set[str],
+    publication_epoch: int,
+    expected_publication_epoch: int | None,
+) -> None:
+    """Mark older manual scopes private while preserving other evidence and its TTL."""
+    prefix = f"rb:{identity_prefix}:"
+    for key, entry in list(data.items()):
+        if (
+            not key.startswith(prefix)
+            or not isinstance(entry.raid_boss_details, dict)
+        ):
+            continue
+        availability = normalize_availability(entry.raid_boss_availability, scopes=RAID_DETAIL_SCOPES)
+        affected = difficulties.intersection(set(entry.raid_boss_details) | set(availability))
+        if expected_publication_epoch is not None:
+            affected = {
+                difficulty for difficulty in affected
+                if raid_detail_scope_epoch(entry, difficulty) <= expected_publication_epoch
+            }
+        if not affected:
+            continue
+        rows = dict(entry.raid_boss_details)
+        epochs = {difficulty: raid_detail_scope_epoch(entry, difficulty) for difficulty in availability}
+        for difficulty in affected:
+            rows.pop(difficulty, None)
+            availability[difficulty] = "restricted"
+            epochs[difficulty] = publication_epoch
+        data[key] = replace(
+            entry, raid_boss_details=rows, raid_boss_availability=availability,
+            publication_epoch=publication_epoch,
+            raid_boss_publication_epochs=epochs,
+        )
+
+
+def retract_private_rank_summaries(
+    data: dict[str, _CacheEntry],
+    *,
+    identity_prefix: str,
+    scopes: set[str],
+    expected_publication_epoch: int | None,
+) -> None:
+    """Retract older scalar scopes without renewing other averages or their TTL."""
+    difficulties = {"raid_normal": "N", "raid_heroic": "H", "raid_mythic": "M"}
+    for stored in _ALL_METRIC_PREFERENCE_SCOPES:
+        key = f"{identity_prefix}:{stored.cache_key()}"
+        entry = data.get(key)
+        if (
+            entry is None
+            or not isinstance(entry.ranks, dict)
+            or expected_publication_epoch is not None
+            and entry.publication_epoch > expected_publication_epoch
+        ):
+            continue
+        affected = {scope for scope in scopes if getattr(stored, scope)}
+        if not affected:
+            continue
+        ranks = dict(entry.ranks)
+        availability = normalize_availability(ranks.get("availability"))
+        evidence = sanitize_raid_evidence(ranks.get("raid_evidence"))
+        for scope in affected:
+            availability[scope] = "restricted"
+            if scope == "mplus":
+                for metric in ("dps", "hps"):
+                    field_name = f"mplus_{metric}"
+                    ranks[field_name] = ranks[f"{field_name}_median"] = None
+                    ranks[f"{field_name}_breakdown"] = []
+            else:
+                ranks[scope] = ranks[f"{scope}_median"] = None
+                evidence.pop(difficulties[scope], None)
+        ranks["availability"] = availability
+        ranks["raid_evidence"] = evidence
+        # Keep the original source clock too: hiding H does not make M newer.
+        data[key] = replace(entry, ranks=ranks)
+
+
+def newer_public_raid_detail_evidence(
+    data: dict[str, _CacheEntry],
+    *,
+    identity_prefix: str,
+    difficulties: set[str],
+    expected_publication_epoch: int,
+) -> bool:
+    """An obsolete private response cannot hide newer overlapping public detail."""
+    prefix = f"rb:{identity_prefix}:"
+    for key, entry in data.items():
+        if not key.startswith(prefix):
+            continue
+        availability = normalize_availability(entry.raid_boss_availability, scopes=RAID_DETAIL_SCOPES)
+        if any(
+            availability.get(difficulty) in {"available", "partial"}
+            and raid_detail_scope_epoch(entry, difficulty) > expected_publication_epoch
+            for difficulty in difficulties
+        ):
+            return True
+    return False
+
+
+def newer_raid_detail_evidence(
+    data: dict[str, _CacheEntry],
+    *,
+    identity_prefix: str,
+    difficulty: str,
+    expected_publication_epoch: int,
+) -> bool:
+    prefix = f"rb:{identity_prefix}:"
+    return any(
+        key.startswith(prefix)
+        and difficulty in normalize_availability(entry.raid_boss_availability, scopes=RAID_DETAIL_SCOPES)
+        and raid_detail_scope_epoch(entry, difficulty) > expected_publication_epoch
+        for key, entry in data.items()
+    )
+
+
 def _metric_preference_breadth(metric_preferences: MetricPreferences) -> int:
     return sum(
         (
@@ -89,6 +213,24 @@ _ALL_METRIC_PREFERENCE_SCOPES = tuple(
     for raid_heroic in (False, True)
     for raid_mythic in (False, True)
 )
+
+
+def newer_rank_scope_evidence(
+    data: dict[str, _CacheEntry],
+    *,
+    identity_prefix: str,
+    metric_preferences: MetricPreferences,
+    expected_publication_epoch: int,
+) -> bool:
+    """Check at most 16 query shapes for a newer overlapping summary response."""
+    for stored in _ALL_METRIC_PREFERENCE_SCOPES:
+        overlaps = any(getattr(stored, scope) and getattr(metric_preferences, scope) for scope in METRIC_SCOPES)
+        if not overlaps:
+            continue
+        entry = data.get(f"{identity_prefix}:{stored.cache_key()}")
+        if entry is not None and entry.publication_epoch > expected_publication_epoch:
+            return True
+    return False
 
 # A requested scope has at most 15 broader Boolean supersets. Cache reads use
 # these exact keys instead of scanning every cached character, which keeps GUI-
@@ -258,6 +400,26 @@ def cache_get(
 
     candidates.sort()
     return negative_candidate, tuple(candidate[-1] for candidate in candidates)
+
+
+def raid_detail_candidates(
+    entries: dict[str, _CacheEntry], *, prefix: str, ttl_seconds: float,
+    not_found_ttl_seconds: float, now: float, metric_preferences: MetricPreferences,
+) -> tuple[_CacheEntry, ...]:
+    """Read the bounded preference keys; each may supply independent difficulties."""
+    candidates: list[_CacheEntry] = []
+    for preferences in _ALL_METRIC_PREFERENCE_SCOPES:
+        key = f"{prefix}:{preferences.cache_key()}"
+        entry = entries.get(key)
+        if entry is not None and _entry_is_fresh(
+            key, entry, now=now, ttl_seconds=ttl_seconds,
+            not_found_ttl_seconds=not_found_ttl_seconds,
+        ):
+            if preferences == metric_preferences:
+                candidates.insert(0, entry)
+            else:
+                candidates.append(entry)
+    return tuple(candidates)
 
 
 def cache_put(

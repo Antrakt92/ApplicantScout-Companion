@@ -517,7 +517,7 @@ def test_completed_only_summary_does_not_establish_verified_timed_fit(
     assert fit.primary_key == 0
 
 
-def test_verified_timed_summary_expires_with_its_captured_target() -> None:
+def test_verified_timed_summary_retains_its_original_floors_after_target_changes() -> None:
     applicant = _applicant(12, [], rio=False)
     applicant.mplus_dps_breakdown = []
     applicant.rio_profile = True
@@ -528,8 +528,14 @@ def test_verified_timed_summary_expires_with_its_captured_target() -> None:
     applicant.rio_timed_at_or_above_minus2 = len(DUNGEONS)
     applicant.rio_best_key = 12
 
-    assert candidate_fit(applicant, _listing(12)).is_available
-    assert not candidate_fit(applicant, _listing(13)).is_available
+    current = candidate_fit(applicant, _listing(12))
+    harder = candidate_fit(applicant, _listing(13))
+    easier = candidate_fit(applicant, _listing(11))
+
+    assert current.is_available and harder.is_available and easier.is_available
+    assert harder.score < current.score <= easier.score
+    assert harder.primary_key == current.primary_key == easier.primary_key == 12
+    assert harder.dungeon_count == current.dungeon_count == easier.dungeon_count == len(DUNGEONS)
 
 
 @pytest.mark.parametrize("rating", [0, 1, 1200, 3400, 10000])

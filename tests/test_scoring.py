@@ -5,7 +5,7 @@ from typing import Any, cast
 import pytest
 
 import applicant_scout.scoring as scoring_mod
-from applicant_scout.constants import FIT_ESTIMATE_BACKGROUND, percentile_colour
+from applicant_scout.constants import percentile_colour
 from applicant_scout.scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
@@ -199,9 +199,32 @@ def test_unsupported_raid_difficulty_does_not_get_question_mark_fit_label():
     assert fit.display == ""
 
 
-@pytest.mark.parametrize("score", [24, 54, 73, 84, 96, 99, 100])
-def test_fit_colour_uses_neutral_estimate_palette_for_every_finite_score(score):
-    assert fit_colour(score) == FIT_ESTIMATE_BACKGROUND
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [
+        (0, "#666666"),
+        (24.49, "#666666"),
+        (24.5, "#666666"),
+        (24.51, "#1eff00"),
+        (49.49, "#1eff00"),
+        (49.5, "#0070ff"),
+        (74.5, "#0070ff"),
+        (74.51, "#a335ee"),
+        (94.5, "#a335ee"),
+        (94.51, "#ff8000"),
+        (98.5, "#ff8000"),
+        (98.51, "#e268a8"),
+        (99.5, "#e5cc80"),
+        (100, "#e5cc80"),
+    ],
+)
+def test_fit_colour_matches_the_displayed_rounded_score_rarity_band(score, expected):
+    assert fit_colour(score) == expected
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_fit_colour_is_missing_data(score):
+    assert fit_colour(score) == "#5d5d5d"
 
 
 @pytest.mark.parametrize(
@@ -756,7 +779,7 @@ def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
     assert "+17" in fit.display
 
 
-def test_mplus_scorecard_ignores_compact_rio_summary_for_different_target_key():
+def test_mplus_scorecard_keeps_captured_floors_without_rebasing_them_to_new_target():
     original_target = _listing(key_level=10, dungeon_name="Skyreach")
     current_target = _listing(key_level=16, dungeon_name="Skyreach")
     stale_summary = _app(
@@ -771,14 +794,16 @@ def test_mplus_scorecard_ignores_compact_rio_summary_for_different_target_key():
         rio_dungeon_count=8,
         rio_summary_target_key=original_target.key_level,
     )
-    no_summary = _app(score=3200)
-
     stale_fit = candidate_fit(stale_summary, current_target)
-    baseline_fit = candidate_fit(no_summary, current_target)
 
-    assert stale_fit.score == baseline_fit.score
-    assert stale_fit.primary_key == baseline_fit.primary_key
-    assert stale_fit.best_nearby_key == baseline_fit.best_nearby_key
+    # Eight timed keys at least +10 are not eight timed keys at least +16.
+    # The independently observed global timed +17 still supplies one strong key.
+    assert stale_fit.is_available
+    assert 0 < stale_fit.score < 10
+    assert stale_fit.primary_key == 17
+    assert stale_fit.best_nearby_key == 17
+    assert stale_fit.dungeon_count == 8
+    assert stale_fit.relevant_dungeon_count == 1
     assert stale_fit.same_dungeon_rio_key == 0
 
 

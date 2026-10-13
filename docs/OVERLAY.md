@@ -8,9 +8,12 @@ results belong to the applying specialization. Raid healers use HPS; other raid
 roles and every M+ role use DPS. Displayed percentiles round down so the number
 stays in the same colour band as the underlying result.
 
-Fit uses a neutral badge so it cannot be mistaken for a WCL percentile.
-It is an estimate, not an overall skill rating or a success probability.
-Unknown Fit shows a dash; an observed zero remains a numeric estimate.
+Fit colours help you scan the rounded estimate: grey below 25, green from 25,
+blue from 50, purple from 75, orange from 95, pink from 99 and gold at 100.
+The colour follows the displayed individual or group value. The `~` identifies
+an estimate, not an overall skill rating, WCL percentile or success probability.
+Unknown Fit shows a dash; raid Fit still loading shows an ellipsis. An observed
+zero remains a numeric estimate.
 A grouped application shows `partial` or `unknown` when any member lacks
 an estimate, while each available individual result remains visible.
 
@@ -52,11 +55,17 @@ the matching item-level bracket. Boss details load only when requested.
 **M+ Fit estimates in-time key experience for the target, for every role.**
 It uses only the applying character's verified RaiderIO runs completed within
 the timer: dungeon levels, breadth, experience above the target and the target
-dungeon. Anonymous timed summaries establish conservative level bounds only
-for their captured context, without counting the same dungeon twice. Those
-bounds are not displayed as an exact best key. Untimed completions never
+dungeon. Anonymous timed summaries establish conservative level bounds at the
+captured target level, without counting the same dungeon twice. Those recorded
+facts can be re-evaluated when the target changes. The bounds are not displayed
+as an exact best key. A fresh compact summary can change the precision of those
+bounds; named dungeon history provides more detail. Untimed completions never
 contribute. General character or main rating alone does not produce Fit; if
 timed key history is unavailable, Fit stays unknown.
+
+The current M+ components total at most 89, or 86 without a target dungeon.
+Blue and purple identify stronger target experience on this scale; the bands
+at 95 and above are available to raid estimates.
 
 WCL damage percentiles and logged key levels do not change M+ Fit. A WCL log
 alone does not prove the timer was beaten. Raw results remain visible in the

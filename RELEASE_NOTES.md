@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- Base Mythic+ Fit on verified in-time keys, with neutral badges and visible coverage.
+- Preserve timed experience when targets change or local dungeon rows refresh.
+- Hide unavailable WCL scopes consistently in estimates, cells and sorting.
+- Keep raid details and specialization evidence current during refreshes.
+- Improve badge contrast and table readability on narrow screens.
+- Base Mythic+ Fit on verified in-time keys, with coloured estimates and visible coverage.
 - Keep untimed keys, WCL logs and rating-only profiles out of Mythic+ Fit.
 - Sort applications by their target estimate; preserve one-click WCL and RIO sorting.
 - Keep missing raid evidence and incomplete group estimates explicitly unknown.

@@ -1962,7 +1962,7 @@ def test_raid_listing_separates_fit_from_coloured_raw_parses(
     fit_item = win._table.item(0, COL_FIT)
     assert fit_item.text().startswith("~")
     assert fit_item.text()[1:].isdigit()
-    assert fit_item.background().color().name() == overlay_mod.FIT_ESTIMATE_BACKGROUND
+    assert fit_item.background().color().name() == overlay_mod.percentile_colour(int(fit_item.text()[1:]))
     assert "82/82" in win._table.item(0, COL_H).text()
     assert win._table.item(0, COL_MPLUS).text() == "44 +18"
     _text, _fg, mplus_bg = _mplus_cell_visuals(applicant, win._effective_listing())
@@ -2039,7 +2039,7 @@ def test_raid_listing_forces_disabled_target_column_with_estimated_fit(
     fit_item = win._table.item(0, COL_FIT)
     assert fit_item.text().startswith("~")
     assert fit_item.text()[1:].isdigit()
-    assert fit_item.background().color().name() == overlay_mod.FIT_ESTIMATE_BACKGROUND
+    assert fit_item.background().color().name() == overlay_mod.percentile_colour(int(fit_item.text()[1:]))
     assert win._table.item(0, COL_H).text() == "—"
     assert win._table.item(0, COL_M).text() == "70/60"
     win._on_cell_clicked(0, COL_FIT)

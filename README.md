@@ -92,7 +92,7 @@ Before you click **Create**, the form should look like this:
 
 ## Overlay Data
 
-Fit uses a neutral estimate badge. M+ Fit describes verified in-time experience relative
+Fit uses coloured estimate bands for quick comparison. M+ Fit describes verified in-time experience relative
 to your target key; raid Fit describes available output evidence for the selected
 difficulty. Neither is an overall skill rating, WCL percentile or success
 probability. Missing evidence stays unknown, and grouped applications show a

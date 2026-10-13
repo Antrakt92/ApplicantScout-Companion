@@ -29,8 +29,10 @@ from .scoring import (
     raid_performance_score,
     role_mplus_view,
     safe_percent,
+    wcl_scope_usable,
 )
 from .state import Applicant, Listing
+from .wcl_availability import UNUSABLE_AVAILABILITY_STATES
 
 
 def rio_display_text(applicant: Applicant) -> str:
@@ -91,11 +93,33 @@ def count_phrase(count: int, singular: str, plural: str | None = None) -> str:
     return f"{count} {singular if count == 1 else plural or singular + 's'}"
 
 
+def wcl_scope_status(applicant: Applicant, scope: str) -> str:
+    """Keep stale numbers behind the same availability boundary as their source."""
+    if applicant.fetch_status != "ready":
+        return applicant.fetch_status
+    state = applicant.wcl_availability.get(scope)
+    if state == "restricted":
+        return "restricted"
+    if state == "error":
+        return "error"
+    if not wcl_scope_usable(applicant, scope):
+        return "not_found"
+    return "ready"
+
+
 def package_fit_text(package: PackageFit) -> str:
     if package.is_complete:
         return f"G{package.size} ~{int(round(package.score))}"
     state = "partial" if package.available_count else "unknown"
     return f"G{package.size} {state}"
+
+
+def fit_accessible_text(text: str) -> str:
+    if not text or text == MISSING_DATA_TEXT:
+        return "Target evidence unknown"
+    if text == "…":
+        return "Target evidence loading"
+    return text.replace("~", "approximately ")
 
 
 def fit_badge_context_text(fit: CandidateFit) -> str:
@@ -139,7 +163,7 @@ def fit_evidence_text(fit: CandidateFit) -> str:
 
 
 def text_colour_for_bg(bg_hex: str | None) -> str:
-    """Return readable foreground for saturated percentile/class badges."""
+    """Choose the stronger black/white contrast for percentile and class badges."""
     if not bg_hex or len(bg_hex) != 7 or not bg_hex.startswith("#"):
         return "#ffffff"
     try:
@@ -148,8 +172,13 @@ def text_colour_for_bg(bg_hex: str | None) -> str:
         blue = int(bg_hex[5:7], 16)
     except ValueError:
         return "#ffffff"
-    luminance = (0.299 * red) + (0.587 * green) + (0.114 * blue)
-    return "#000000" if luminance >= 145 else "#ffffff"
+    components = [value / 255 for value in (red, green, blue)]
+    linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+              for value in components]
+    luminance = sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+    black_contrast = (luminance + 0.05) / 0.05
+    white_contrast = 1.05 / (luminance + 0.05)
+    return "#000000" if black_contrast >= white_contrast else "#ffffff"
 
 
 def raid_cell_visuals(
@@ -216,10 +245,7 @@ def raid_fit_evidence_text(
     best_score = -1.0
     for key in candidate_keys:
         scope = {"N": "raid_normal", "H": "raid_heroic", "M": "raid_mythic"}[key]
-        if applicant.wcl_availability.get(scope) in {
-            "restricted", "disabled", "unavailable", "error", "empty",
-        } or (applicant.wcl_metric_preferences is not None
-              and not getattr(applicant.wcl_metric_preferences, scope)):
+        if wcl_scope_status(applicant, scope) != "ready":
             continue
         best, median = raid_values_for_key(applicant, key)
         score = raid_performance_score(best, median)
@@ -282,7 +308,7 @@ def wcl_dungeon_rows_by_name(
     applicant: Applicant, listing: Listing | None
 ) -> dict[str, dict[str, object]]:
     rows: dict[str, dict[str, object]] = {}
-    if applicant.fetch_status != "ready":
+    if wcl_scope_status(applicant, "mplus") != "ready":
         return rows
     fit_rows = mplus_dungeon_fit_rows(applicant, listing)
     if fit_rows:
@@ -393,6 +419,8 @@ def raid_boss_parse_rows_by_encounter(
     applicant: Applicant, difficulty: str
 ) -> dict[int, dict[str, object]]:
     rows: dict[int, dict[str, object]] = {}
+    if applicant.raid_boss_availability.get(difficulty) in UNUSABLE_AVAILABILITY_STATES:
+        return rows
     raw_rows = applicant.raid_boss_parses.get(difficulty, [])
     if not isinstance(raw_rows, list):
         return rows

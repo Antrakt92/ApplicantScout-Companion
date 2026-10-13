@@ -8,13 +8,13 @@ import math
 
 from .constants import (
     MPLUS_ENCOUNTERS,
-    FIT_ESTIMATE_BACKGROUND,
     SPEC_ID_TO_WCL_NAME,
     mplus_dungeon_name_for_activity_id,
     percentile_colour,
 )
 from .state import Applicant, Listing
 from .wcl_cache_store import sanitize_raid_evidence
+from .wcl_availability import METRIC_SCOPES, UNUSABLE_AVAILABILITY_STATES
 
 
 CONTEXT_MPLUS = "mplus"
@@ -172,6 +172,20 @@ def candidate_fit(applicant: Applicant, listing: Listing | None) -> CandidateFit
     return CandidateFit(context=CONTEXT_UNKNOWN)
 
 
+def wcl_scope_usable(applicant: Applicant, scope: str) -> bool:
+    """Apply the same source eligibility to estimates, raw cells and sort keys."""
+    canonical = "mplus" if scope in {"mplus_dps", "mplus_hps"} else scope
+    if canonical not in METRIC_SCOPES:
+        return False
+    if any(
+        applicant.wcl_availability.get(key) in UNUSABLE_AVAILABILITY_STATES
+        for key in {scope, canonical}
+    ):
+        return False
+    preferences = applicant.wcl_metric_preferences
+    return preferences is None or getattr(preferences, canonical)
+
+
 def listing_parse_percentile(
     applicant: Applicant, listing: Listing | None
 ) -> float | None:
@@ -182,9 +196,16 @@ def listing_parse_percentile(
     if context == CONTEXT_MPLUS or (
         context == CONTEXT_UNKNOWN and listing.category_id == 2
     ):
-        return safe_percent(role_mplus_view(applicant)[2])
+        return (
+            safe_percent(role_mplus_view(applicant)[2])
+            if wcl_scope_usable(applicant, "mplus")
+            else None
+        )
     if context == CONTEXT_RAID:
         target = RAID_TARGET_BY_DIFFICULTY_ID.get(listing.difficulty_id, "")
+        scope = "raid_" + {"N": "normal", "H": "heroic", "M": "mythic"}[target]
+        if not wcl_scope_usable(applicant, scope):
+            return None
         return safe_percent(
             {
                 "N": applicant.raid_normal,
@@ -352,20 +373,31 @@ def fit_label(score: float) -> str:
 
 
 def fit_colour(score: float) -> str:
-    """Keep target estimates visually separate from measured WCL percentiles."""
+    """Colour the rounded displayed estimate using the shared rarity bands."""
     if not math.isfinite(score):
         return percentile_colour(None)
-    return FIT_ESTIMATE_BACKGROUND
+    return percentile_colour(round(score))
 
 
 def listing_dungeon_keys(listing: Listing | None) -> set[str]:
     if listing is None:
         return set()
-    keys = {normalise_dungeon_name(listing.dungeon_name)}
-    mapped_name = mplus_dungeon_name_for_activity_id(listing.activity_id)
-    if mapped_name:
-        keys.add(normalise_dungeon_name(mapped_name))
-    return {key for key in keys if key}
+    return _activity_dungeon_keys(listing.activity_id, listing.dungeon_name)
+
+
+def _activity_dungeon_keys(activity_id: int, dungeon_name: object) -> set[str]:
+    # A known activity owns its dungeon identity; stale/localized display text
+    # cannot turn a different dungeon's timed history into target experience.
+    mapped_name = mplus_dungeon_name_for_activity_id(activity_id)
+    key = normalise_dungeon_name(mapped_name or dungeon_name)
+    keys = {key} if key else set()
+    raw_key = normalise_dungeon_name(dungeon_name)
+    known_names = {normalise_dungeon_name(name) for _alias, _eid, name in MPLUS_ENCOUNTERS}
+    # Keep a localized alias, but never a conflicting known dungeon name.
+    if (mapped_name and raw_key not in {"", "mythic", "mythicplus", "unknown", "unknowndungeon"}
+            and raw_key not in known_names):
+        keys.add(raw_key)
+    return keys
 
 
 def _has_specific_mplus_dungeon(listing: Listing) -> bool:
@@ -375,32 +407,49 @@ def _has_specific_mplus_dungeon(listing: Listing) -> bool:
     return bool(normalise_dungeon_name(name)) and name not in {"mythic+", "mythic plus"}
 
 
+def _rio_summary_key_level(value: object) -> int:
+    # The addon normalizes summary and captured target keys to this domain.
+    level = positive_int(value)
+    return level if 2 <= level <= 50 else 0
+
+
+def _rio_summary_profile_available(applicant: Applicant) -> bool:
+    # Local enrichment proves its own rows, never an absent raw QR summary.
+    raw_flag = applicant.rio_transport_profile
+    return (applicant.rio_profile if raw_flag is None else raw_flag) is True
+
+
+def _rio_captured_dungeon_key(applicant: Applicant) -> str:
+    if not _rio_summary_profile_available(applicant):
+        return ""
+    name = (
+        mplus_dungeon_name_for_activity_id(
+            positive_int(applicant.rio_summary_activity_id)
+        )
+        or applicant.rio_summary_dungeon_name
+    )
+    key = normalise_dungeon_name(name)
+    return (
+        "" if key in {"", "mythic", "mythicplus", "unknown", "unknowndungeon"} else key
+    )
+
+
 def _rio_timed_row_key_level(entry: dict) -> int:
-    # Named RIO rows are emitted only for upgraded (in-time) runs. Legacy rows
-    # omit that flag; reject any supplied explicit contradiction.
+    # Local RIO's six-bit key field is independent of the addon's summary cap.
     if "timed" in entry and entry["timed"] is not True:
         return 0
     for field_name in ("chests", "upgrades"):
         if field_name in entry and positive_int(entry[field_name]) <= 0:
             return 0
-    return positive_int(entry.get("key_level"))
+    level = positive_int(entry.get("key_level"))
+    return level if 2 <= level <= 63 else 0
 
 
-def _rio_same_dungeon_key(applicant: Applicant, listing: Listing) -> int:
-    listing_keys = listing_dungeon_keys(listing)
-    best_key = (
-        positive_int(applicant.rio_best_dungeon_key)
-        if _mplus_rio_summary_matches_dungeon(applicant, listing)
-        else 0
-    )
-    for entry in applicant.rio_dungeons:
-        if not isinstance(entry, dict):
-            continue
-        row_key = normalise_dungeon_name(entry.get("name"))
-        if row_key not in listing_keys:
-            continue
-        best_key = max(best_key, _rio_timed_row_key_level(entry))
-    return best_key
+def _rio_same_dungeon_key(
+    applicant: Applicant, listing: Listing, *, rows: dict[str, int] | None = None
+) -> int:
+    rows = _mplus_rio_dungeon_key_levels(applicant, listing) if rows is None else rows
+    return max((rows.get(key, 0) for key in listing_dungeon_keys(listing)), default=0)
 
 
 def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
@@ -424,11 +473,11 @@ def _mplus_scorecard_candidate_fit(
     target_key = listing.key_level
     if target_key <= 0:
         return None
-    same_dungeon_key = _rio_same_dungeon_key(applicant, listing)
     rio_dungeons = _mplus_rio_dungeon_key_levels(applicant, listing)
+    same_dungeon_key = _rio_same_dungeon_key(applicant, listing, rows=rio_dungeons)
     rio_rows = list(rio_dungeons.values())
     levels = _mplus_rio_key_levels(
-        applicant, target_key, same_dungeon_key, rio_row_key_levels=rio_rows
+        applicant, target_key, rio_row_key_levels=rio_rows, rio_dungeon_key_levels=rio_dungeons
     )
     if not levels:
         return None
@@ -436,8 +485,8 @@ def _mplus_scorecard_candidate_fit(
     primary_key = max(
         max(rio_rows, default=0),
         same_dungeon_key,
-        positive_int(applicant.rio_best_key)
-        if _mplus_rio_summary_matches_target(applicant, target_key)
+        _rio_summary_key_level(applicant.rio_best_key)
+        if _rio_summary_profile_available(applicant)
         else 0,
     )
     same_bonus = MPLUS_SCORE_SAME_MAX if same_dungeon_key >= target_key else 0.0
@@ -551,10 +600,10 @@ def _mplus_best_nearby_evidence_key(
     same_dungeon_key: int,
 ) -> int:
     actual_keys = list(rio_row_key_levels)
-    if _mplus_rio_summary_matches_target(applicant, target_key):
+    if _rio_summary_profile_available(applicant):
         actual_keys.extend(
             (
-                positive_int(applicant.rio_best_key),
+                _rio_summary_key_level(applicant.rio_best_key),
                 positive_int(same_dungeon_key),
             )
         )
@@ -565,7 +614,7 @@ def _mplus_best_nearby_evidence_key(
 
 
 def _mplus_rio_dungeon_key_levels(
-    applicant: Applicant, listing: Listing
+    applicant: Applicant, listing: Listing | None
 ) -> dict[str, int]:
     by_dungeon: dict[str, int] = {}
     for entry in applicant.rio_dungeons:
@@ -578,7 +627,20 @@ def _mplus_rio_dungeon_key_levels(
         if level <= 0:
             continue
         by_dungeon[dungeon_key] = max(by_dungeon.get(dungeon_key, 0), level)
-    if _has_specific_mplus_dungeon(listing):
+    captured_key = _rio_captured_dungeon_key(applicant)
+    captured_level = _rio_summary_key_level(applicant.rio_best_dungeon_key)
+    if captured_key:
+        captured_aliases = _activity_dungeon_keys(
+            positive_int(applicant.rio_summary_activity_id), applicant.rio_summary_dungeon_name,
+        ) - {captured_key}
+        for alias in captured_aliases:
+            if alias in by_dungeon:
+                by_dungeon[captured_key] = max(
+                    by_dungeon.get(captured_key, 0), by_dungeon.pop(alias),
+                )
+    if captured_key and captured_level:
+        by_dungeon[captured_key] = max(by_dungeon.get(captured_key, 0), captured_level)
+    if listing is not None and _has_specific_mplus_dungeon(listing):
         target_name = (
             mplus_dungeon_name_for_activity_id(listing.activity_id)
             or listing.dungeon_name
@@ -589,32 +651,23 @@ def _mplus_rio_dungeon_key_levels(
                 by_dungeon[target_key] = max(
                     by_dungeon.get(target_key, 0), by_dungeon.pop(alias)
                 )
-        if _mplus_rio_summary_matches_dungeon(applicant, listing):
-            summary_key = positive_int(applicant.rio_best_dungeon_key)
-            if summary_key > 0:
-                by_dungeon[target_key] = max(by_dungeon.get(target_key, 0), summary_key)
     return by_dungeon
 
 
 def _mplus_rio_key_levels(
     applicant: Applicant,
     target_key: int,
-    same_dungeon_key: int,
     *,
     rio_row_key_levels: list[int],
+    rio_dungeon_key_levels: dict[str, int] | None = None,
 ) -> list[int]:
-    dungeon_count = positive_int(applicant.rio_dungeon_count)
-    expected_rows = min(MPLUS_DUNGEON_COUNT, dungeon_count or MPLUS_DUNGEON_COUNT)
-    if len(rio_row_key_levels) >= expected_rows:
-        return sorted(rio_row_key_levels, reverse=True)[:MPLUS_DUNGEON_COUNT]
-
     synthetic = (
         _mplus_synthetic_rio_key_levels(
             applicant,
             target_key,
-            same_dungeon_key=same_dungeon_key,
+            rio_dungeon_key_levels=rio_dungeon_key_levels,
         )
-        if _mplus_rio_summary_matches_target(applicant, target_key)
+        if _rio_summary_profile_available(applicant)
         else []
     )
     if not synthetic:
@@ -623,36 +676,6 @@ def _mplus_rio_key_levels(
         return synthetic
 
     return _mplus_merge_anonymous_key_bounds(synthetic, rio_row_key_levels)
-
-
-def _mplus_rio_summary_matches_target(applicant: Applicant, target_key: int) -> bool:
-    return (
-        applicant.rio_profile is True
-        and target_key > 0
-        and positive_int(applicant.rio_summary_target_key) == target_key
-    )
-
-
-def _mplus_rio_summary_matches_dungeon(applicant: Applicant, listing: Listing) -> bool:
-    if not _mplus_rio_summary_matches_target(applicant, listing.key_level):
-        return False
-    captured_activity = positive_int(applicant.rio_summary_activity_id)
-    target_activity = positive_int(listing.activity_id)
-    captured_name = (
-        mplus_dungeon_name_for_activity_id(captured_activity)
-        or applicant.rio_summary_dungeon_name
-    )
-    target_name = (
-        mplus_dungeon_name_for_activity_id(target_activity) or listing.dungeon_name
-    )
-    captured_key = normalise_dungeon_name(captured_name)
-    target_key = normalise_dungeon_name(target_name)
-    unknown_names = {"", "mythic", "mythicplus", "unknown", "unknowndungeon"}
-    if captured_key in unknown_names or target_key in unknown_names:
-        return False
-    return (
-        captured_activity > 0 and captured_activity == target_activity
-    ) or captured_key == target_key
 
 
 def _mplus_merge_anonymous_key_bounds(left: list[int], right: list[int]) -> list[int]:
@@ -673,37 +696,54 @@ def _mplus_synthetic_rio_key_levels(
     applicant: Applicant,
     target_key: int,
     *,
-    same_dungeon_key: int,
+    rio_dungeon_key_levels: dict[str, int] | None = None,
 ) -> list[int]:
-    if not applicant.rio_profile or target_key <= 0:
+    if not _rio_summary_profile_available(applicant) or target_key <= 0:
         return []
-    dungeon_count = max(
-        1,
-        min(
-            positive_int(applicant.rio_dungeon_count) or MPLUS_DUNGEON_COUNT,
-            MPLUS_DUNGEON_COUNT,
-        ),
+    captured_target = _rio_summary_key_level(applicant.rio_summary_target_key)
+    dungeon_count = min(
+        positive_int(applicant.rio_dungeon_count) or MPLUS_DUNGEON_COUNT,
+        MPLUS_DUNGEON_COUNT,
     )
-    timed_at = min(nonnegative_int(applicant.rio_timed_at_or_above), dungeon_count)
-    timed_minus1 = min(
-        max(nonnegative_int(applicant.rio_timed_at_or_above_minus1), timed_at),
-        dungeon_count,
-    )
-    timed_minus2 = min(
-        max(nonnegative_int(applicant.rio_timed_at_or_above_minus2), timed_minus1),
-        dungeon_count,
-    )
-    levels = [target_key] * timed_at
-    levels.extend([max(2, target_key - 1)] * (timed_minus1 - timed_at))
-    levels.extend([max(2, target_key - 2)] * (timed_minus2 - timed_minus1))
+    levels: list[int] = []
+    if captured_target:
+        timed_at = min(nonnegative_int(applicant.rio_timed_at_or_above), dungeon_count)
+        timed_minus1 = min(
+            max(nonnegative_int(applicant.rio_timed_at_or_above_minus1), timed_at),
+            dungeon_count,
+        )
+        timed_minus2 = min(
+            max(nonnegative_int(applicant.rio_timed_at_or_above_minus2), timed_minus1),
+            dungeon_count,
+        )
+        # The floors belong to the recorded target, never the requested one.
+        levels = [captured_target] * timed_at
+        levels.extend([max(2, captured_target - 1)] * (timed_minus1 - timed_at))
+        levels.extend([max(2, captured_target - 2)] * (timed_minus2 - timed_minus1))
 
-    best_key = positive_int(applicant.rio_best_key)
-    same_key = positive_int(same_dungeon_key)
-    named_bounds = [max(best_key, same_key)]
-    # Equal best/target-dungeon keys may refer to one run. A strictly higher
-    # overall best proves a second dungeon beyond the target dungeon's best.
-    if best_key > same_key > 0:
-        named_bounds.append(same_key)
+    best_key = _rio_summary_key_level(applicant.rio_best_key)
+    captured_dungeon = _rio_captured_dungeon_key(applicant)
+    captured_same = (
+        _rio_summary_key_level(applicant.rio_best_dungeon_key)
+        if captured_dungeon
+        else 0
+    )
+    named_rows = (
+        _mplus_rio_dungeon_key_levels(applicant, None)
+        if rio_dungeon_key_levels is None else rio_dungeon_key_levels
+    )
+    same_bound = (
+        max(captured_same, named_rows.get(captured_dungeon, 0))
+        if captured_dungeon
+        else 0
+    )
+    # A higher global best in the ORIGINAL capture proves a different dungeon.
+    # Updating that captured dungeon locally must not erase the other run.
+    named_bounds = (
+        [best_key, same_bound]
+        if best_key > captured_same > 0
+        else [max(best_key, same_bound)]
+    )
     return _mplus_merge_anonymous_key_bounds(levels, named_bounds)
 
 
@@ -811,15 +851,7 @@ def _raid_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
     candidates: list[tuple[float, str, str]] = []
     for difficulty, value in raid.items():
         scope = "raid_" + {"N": "normal", "H": "heroic", "M": "mythic"}[difficulty]
-        if (
-            value is None
-            or applicant.wcl_availability.get(scope)
-            in {"restricted", "disabled", "unavailable", "error", "empty"}
-            or (
-                applicant.wcl_metric_preferences is not None
-                and not getattr(applicant.wcl_metric_preferences, scope)
-            )
-        ):
+        if value is None or not wcl_scope_usable(applicant, scope):
             continue
         position = order.index(difficulty)
         factor = 1.0 if position == index else (0.88 if position > index else 0.55)
