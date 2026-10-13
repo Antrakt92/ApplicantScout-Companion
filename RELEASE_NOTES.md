@@ -1,19 +1,26 @@
 # ApplicantScout Companion Release Notes
 
-## Unreleased
+## 0.23.0 - 13-Oct-2026 — Clearer player estimates and dungeon results
 
-- Preserve timed experience when targets change or local dungeon rows refresh.
-- Hide unavailable WCL scopes consistently in estimates, cells and sorting.
-- Keep raid details and specialization evidence current through refreshes and delayed responses.
-- Keep identical players' group estimates and colours consistent with their individual Fit.
-- Improve badge contrast and table readability on narrow screens.
-- Base Mythic+ Fit on verified in-time keys, with coloured estimates and visible coverage.
-- Keep untimed keys, WCL logs and rating-only profiles out of Mythic+ Fit.
-- Sort applications by their target estimate; preserve one-click WCL and RIO sorting.
-- Keep missing raid evidence and incomplete group estimates explicitly unknown.
-- Show recorded dungeon and raid coverage without misleading certainty percentages.
-- Preserve stronger raid evidence when a smaller exact-difficulty result appears.
-- Use the seasonal RaiderIO colour gradient and consistent M+ best/median summaries.
+Paired release with ApplicantScout addon `0.14.1`.
+
+- Combine applying-spec WCL damage near the target key with verified in-time
+  experience in Mythic+ Fit. Show which sources are available and flag limited logs.
+- Match the M+ DPS summary, colours and sorting to the visible dungeon logs,
+  with the selected key range and available best/median results.
+- Preserve timed experience when targets change; untimed completions and rating
+  alone do not establish timed experience.
+- Sort applications by target Fit by default, keeping grouped players together
+  and retaining one-click WCL and RaiderIO sorting.
+- Keep missing evidence unknown, label incomplete groups, and show recorded
+  dungeon/raid coverage and sample counts alongside coloured estimates.
+- Keep raid evidence and specialization results current during refreshes;
+  unavailable or private scopes no longer supply stale cells or estimates.
+- Improve table contrast, seasonal RaiderIO colours and resizing so visible
+  columns keep their space; compact windows retain access to data by scrolling.
+- Accept compatible addon versions without unnecessary update warnings.
+- Update bundled dependencies and original-code reuse terms. Earlier license
+  grants and third-party terms remain in force; see `LICENSE`.
 
 ## 0.22.2 - 02-Oct-2026 — Keyboard sorting and reliability
 

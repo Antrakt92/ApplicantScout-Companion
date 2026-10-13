@@ -1478,8 +1478,25 @@ def test_release_constraints_header_matches_project_version():
     assert constraints_version.group(1) == project_version.group(1)
 
 
-def test_runtime_addon_warning_matches_paired_release_version():
-    assert _minimum_runtime_addon_version() == _paired_addon_version()
+def test_runtime_addon_compatibility_accepts_the_release_pair_and_wire_baseline():
+    from applicant_scout.compatibility import (
+        LATEST_SUPPORTED_ADDON_VERSION,
+        MINIMUM_ADDON_VERSION,
+        PAIRED_ADDON_VERSION,
+        addon_version_warning,
+    )
+
+    assert PAIRED_ADDON_VERSION == _paired_addon_version()
+    assert MINIMUM_ADDON_VERSION == _minimum_runtime_addon_version()
+    versions = [
+        tuple(int(part) for part in version.split("."))
+        for version in (
+            MINIMUM_ADDON_VERSION, PAIRED_ADDON_VERSION, LATEST_SUPPORTED_ADDON_VERSION
+        )
+    ]
+    assert versions[0] <= versions[1] <= versions[2]
+    assert addon_version_warning(MINIMUM_ADDON_VERSION) is None
+    assert addon_version_warning(PAIRED_ADDON_VERSION) is None
 
 
 def test_release_build_refuses_dirty_release_inputs_by_default():
