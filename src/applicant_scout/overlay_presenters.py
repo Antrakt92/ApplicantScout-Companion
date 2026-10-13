@@ -126,8 +126,21 @@ def fit_accessible_text(text: str) -> str:
 def fit_badge_context_text(fit: CandidateFit) -> str:
     """Keep the evidence scope visible beside the estimate itself."""
     if fit.context == CONTEXT_MPLUS:
-        return (f"{fit.dungeon_count}/{len(MPLUS_ENCOUNTERS)} timed dungeons"
-                if fit.dungeon_count else "timed history unknown")
+        total = len(MPLUS_ENCOUNTERS)
+        parts = ([f"WCL {fit.wcl_dungeon_count}/{total}"]
+                 if fit.wcl_score is not None else [])
+        if fit.wcl_score is not None:
+            if fit.wcl_run_count == 1:
+                parts.append("1 log")
+            elif fit.wcl_dungeon_count == 1 and fit.wcl_run_count is None:
+                parts.append("limited WCL")
+        if fit.timed_experience_score is not None:
+            parts.append(f"timed {fit.dungeon_count}/{total}")
+            if fit.wcl_score is None:
+                parts.append("no nearby WCL")
+        else:
+            parts.append("timed unknown")
+        return " · ".join(parts)
     if fit.context == CONTEXT_RAID:
         if not fit.raid_total_bosses:
             return "sample unknown"
@@ -139,11 +152,30 @@ def fit_badge_context_text(fit: CandidateFit) -> str:
 def fit_evidence_text(fit: CandidateFit) -> str:
     """Describe observed evidence without turning completeness into probability."""
     if fit.context == CONTEXT_MPLUS:
-        parts = [
-            f"{fit.dungeon_count}/{len(MPLUS_ENCOUNTERS)} dungeons timed",
-            f"{fit.relevant_dungeon_count} timed at +{max(fit.target_key - 1, 2)} or higher"
-            if fit.target_key else f"{fit.relevant_dungeon_count} relevant timed dungeons",
-        ]
+        parts = []
+        if fit.wcl_score is not None:
+            parts.append(f"{fit.wcl_dungeon_count}/{len(MPLUS_ENCOUNTERS)} nearby WCL dungeons")
+            if fit.wcl_key_min > 0:
+                key_range = (f"+{fit.wcl_key_min}" if fit.wcl_key_min == fit.wcl_key_max
+                             else f"+{fit.wcl_key_min}–{fit.wcl_key_max}")
+                parts.append(f"Fit WCL range {key_range}")
+            parts.append("WCL sample count unknown" if fit.wcl_run_count is None
+                         else count_phrase(fit.wcl_run_count, "WCL sample"))
+            if fit.wcl_all_single_run:
+                parts.append("Each selected bracket has one recorded run")
+            parts.append(f"Contextual WCL component {fit.wcl_score:.1f}/100")
+        else:
+            parts.append("No nearby WCL logs; timed keys only"
+                         if fit.timed_experience_score is not None else "No nearby WCL logs")
+        if fit.timed_experience_score is not None:
+            parts.extend([
+                f"{fit.dungeon_count}/{len(MPLUS_ENCOUNTERS)} dungeons timed",
+                f"{fit.relevant_dungeon_count} timed at +{max(fit.target_key - 1, 2)} or higher"
+                if fit.target_key else f"{fit.relevant_dungeon_count} relevant timed dungeons",
+                f"Timed experience component {fit.timed_experience_score:.1f}/89",
+            ])
+        else:
+            parts.append("Timed history unknown")
     elif fit.context == CONTEXT_RAID:
         parts = (
             [f"{fit.raid_boss_count}/{fit.raid_total_bosses} WCL zone bosses logged",

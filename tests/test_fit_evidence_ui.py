@@ -71,7 +71,7 @@ def test_fit_palette_tracks_target_estimate_separately_from_raw_damage():
         applicant, _listing(), fit=fit,
     )
     assert background == percentile_colour(round(fit.score))
-    assert background != overlay._mplus_cell_visuals(applicant)[2]
+    assert overlay._mplus_cell_visuals(applicant)[2] == percentile_colour(99)
 
 
 @pytest.mark.parametrize("status", ["ready", "pending", "loading", "error", "not_found", "restricted"])
@@ -80,7 +80,7 @@ def test_missing_target_evidence_remains_unavailable_and_neutral(status):
     fit = scoring.candidate_fit(applicant, _listing())
     assert not fit.is_available
     item = overlay._fit_cell(applicant, _listing(), fit=fit)
-    assert item.text() == "—"
+    assert item.text() == ("…" if status in {"pending", "loading"} else "—")
     assert item.background().style() == Qt.BrushStyle.NoBrush
 
 
@@ -149,10 +149,15 @@ def test_factual_evidence_copy_has_counts_and_unknown_raid_coverage():
     mplus = scoring.CandidateFit(
         context=scoring.CONTEXT_MPLUS, dungeon_count=5,
         relevant_dungeon_count=2, evidence_count=3, target_key=16,
+        wcl_score=40, timed_experience_score=20, wcl_dungeon_count=3,
+        wcl_key_min=14, wcl_key_max=16,
     )
     text = overlay_presenters.fit_evidence_text(mplus)
-    assert text == "5/8 dungeons timed · 2 timed at +15 or higher"
-    assert "WCL" not in text
+    assert "5/8 dungeons timed · 2 timed at +15 or higher" in text
+    assert "3/8 nearby WCL dungeons" in text
+    assert "Fit WCL range +14–16" in text
+    assert "WCL sample count unknown" in text
+    assert "one recorded run" not in text
     assert "%" not in text
     raid = scoring.CandidateFit(context=scoring.CONTEXT_RAID)
     assert overlay_presenters.fit_evidence_text(raid) == "WCL zone boss coverage and kill count unknown"
@@ -176,9 +181,9 @@ def test_fit_badge_keeps_observed_coverage_visible_without_opening_tooltip(qtbot
     panel = overlay.ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     panel.setApplicantData(applicant, _listing())
-    assert " · 8/8 timed dungeons" in panel._metric_labels["Fit"].text()
+    assert " · WCL 8/8 · timed 8/8" in panel._metric_labels["Fit"].text()
     assert "8/8 dungeons timed" in panel._metric_labels["Fit"].toolTip()
-    assert "WCL samples" not in panel._metric_labels["Fit"].toolTip()
+    assert "24 WCL samples" in panel._metric_labels["Fit"].toolTip()
 
 
 def test_rating_without_timed_history_has_no_fit_badge(qtbot):
@@ -190,7 +195,7 @@ def test_rating_without_timed_history_has_no_fit_badge(qtbot):
     assert "RIO 4000" in panel._rio_label.text()
 
 
-def test_wcl_only_profile_has_unknown_fit_and_preserves_raw_damage(qtbot):
+def test_far_wcl_only_profile_has_unknown_fit_and_preserves_raw_damage(qtbot):
     applicant = _app("1:1", 20, 24, score=0)
     applicant.rio_dungeons = []
     fit = scoring.candidate_fit(applicant, _listing())
@@ -204,6 +209,90 @@ def test_wcl_only_profile_has_unknown_fit_and_preserves_raw_damage(qtbot):
     panel.setApplicantData(applicant, _listing(), fit=fit)
     assert panel._metric_labels["Fit"].isHidden()
     assert not panel._metric_labels["M+"].isHidden()
+
+
+def test_identical_timed_history_uses_nearby_wcl_to_change_fit_and_default_order(qtbot):
+    weak = _app("1:1", 16, 25)
+    strong = _app("2:1", 16, 95)
+    weak_fit = scoring.candidate_fit(weak, _listing())
+    strong_fit = scoring.candidate_fit(strong, _listing())
+    assert strong_fit.score > weak_fit.score
+    rows, _packages, _fits = overlay_rows.sort_applicants_grouped_with_package_fits(
+        [weak, strong], _listing(),
+    )
+    assert [row.applicant_id for row in rows] == ["2:1", "1:1"]
+    panel = overlay.ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setApplicantData(weak, _listing(), fit=weak_fit)
+    weak_badge = panel._metric_labels["Fit"].text()
+    panel.setApplicantData(strong, _listing(), fit=strong_fit)
+    assert panel._metric_labels["Fit"].text() != weak_badge
+    assert "WCL 8/8" in panel._metric_labels["Fit"].text()
+    assert "timed 8/8" in panel._metric_labels["Fit"].text()
+
+
+def test_nearby_wcl_only_profile_has_numeric_fit_and_discloses_unknown_timing(qtbot):
+    applicant = _app("1:1", 16, 24, score=0)
+    applicant.rio_dungeons = []
+    fit = scoring.candidate_fit(applicant, _listing())
+    assert fit.is_available
+    panel = overlay.ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setApplicantData(applicant, _listing(), fit=fit)
+    assert not panel._metric_labels["Fit"].isHidden()
+    assert "WCL 8/8" in panel._metric_labels["Fit"].text()
+    assert "timed unknown" in panel._metric_labels["Fit"].text()
+    assert "0/8 dungeons timed" not in panel._metric_labels["Fit"].toolTip()
+    assert "WCL DPS" in panel._metric_labels["Fit"].toolTip()
+    assert "timed history unknown" in panel._metric_labels["Fit"].toolTip().lower()
+
+
+def test_fit_tooltip_distinguishes_nearby_wcl_range_from_raw_fallback_logs(qtbot):
+    applicant = _app("1:1", 16, 65)
+    applicant.mplus_dps_breakdown[-1].update(key_level=9, parse_percent=99)
+    panel = overlay.ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setApplicantData(applicant, _listing())
+    fit_tip = panel._metric_labels["Fit"].toolTip()
+    assert "WCL 7/8" in panel._metric_labels["Fit"].text()
+    assert "Fit WCL range +16" in fit_tip
+    assert "Fit WCL range +9" not in fit_tip
+    assert "+9–16" in panel._metric_labels["M+"].text()
+
+
+@pytest.mark.real_display
+@pytest.mark.parametrize("run_count, marker", [(1, "1 log"), (0, "limited WCL")])
+def test_single_dungeon_low_sample_fit_disclosure_stays_visible_at_compact_width(qtbot, run_count, marker):
+    applicant = _app("1:1", 16, 25)
+    applicant.mplus_dps_breakdown = applicant.mplus_dps_breakdown[:1]
+    applicant.mplus_dps_breakdown[0]["run_count"] = run_count
+    panel = overlay.ApplicantInfoPanel(None)
+    qtbot.addWidget(panel)
+    panel.setStyleSheet(overlay._STYLESHEET)
+    panel.setApplicantData(applicant, _listing())
+    badge = panel._metric_labels["Fit"]
+    assert marker in badge.text()
+    assert "WCL 1/8" in badge.text()
+    assert "timed 8/8" in badge.text()
+    if run_count:
+        assert "1 WCL sample" in badge.toolTip()
+        assert "one recorded run" in badge.toolTip()
+    else:
+        assert "WCL sample count unknown" in badge.toolTip()
+        assert "one recorded run" not in badge.toolTip()
+    panel.show()
+    for width in (300, 650, 300):
+        panel.resize(width, panel.height())
+        QApplication.processEvents()
+        panel.setFixedHeight(panel.target_height())
+        QApplication.processEvents()
+        available = badge.contentsRect()
+        text_rect = badge.fontMetrics().boundingRect(
+            QRect(0, 0, available.width(), 10000),
+            Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap, badge.text(),
+        )
+        assert text_rect.width() <= available.width()
+        assert text_rect.height() <= available.height()
 
 
 def test_untimed_completions_cannot_expand_visible_fit_coverage(qtbot):
@@ -223,7 +312,7 @@ def test_untimed_completions_cannot_expand_visible_fit_coverage(qtbot):
     panel = overlay.ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     panel.setApplicantData(untimed, _listing(), fit=fit)
-    assert panel._metric_labels["Fit"].text().endswith(" · 1/8 timed dungeons")
+    assert panel._metric_labels["Fit"].text().endswith(" · WCL 8/8 · timed 1/8")
     assert "1/8 dungeons timed" in panel._metric_labels["Fit"].toolTip()
 
 

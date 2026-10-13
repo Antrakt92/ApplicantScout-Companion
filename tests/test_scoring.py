@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -8,6 +9,8 @@ import applicant_scout.scoring as scoring_mod
 from applicant_scout.constants import percentile_colour
 from applicant_scout.scoring import (
     CONTEXT_MPLUS,
+    CandidateFit,
+    _mplus_timed_experience_fit,
     CONTEXT_RAID,
     CONTEXT_UNKNOWN,
     _package_score_for_member_scores,
@@ -20,6 +23,13 @@ from applicant_scout.scoring import (
     package_fit,
 )
 from applicant_scout.state import Applicant, Listing
+
+
+def _timed_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
+    """Exercise the independent E component; combined output has separate tests."""
+    return _mplus_timed_experience_fit(applicant, listing) or CandidateFit(
+        context=CONTEXT_MPLUS, target_key=listing.key_level,
+    )
 
 
 def _listing(
@@ -264,7 +274,7 @@ def test_mplus_rio_fallback_ignores_lower_main_score():
     ).score
 
 
-def test_mplus_low_damage_keeps_near_target_experience_and_damage_context():
+def test_mplus_timed_component_low_damage_keeps_near_target_experience_and_damage_context():
     target = _listing(key_level=16)
     applicant = _app(
         score=3328,
@@ -280,20 +290,20 @@ def test_mplus_low_damage_keeps_near_target_experience_and_damage_context():
         ],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     clean = _app(score=3328, dps_breakdown=[
         _dungeon(entry["name"], [(entry["key_level"], 80, 80, entry["run_count"])])
         for entry in applicant.mplus_dps_breakdown
     ])
-    assert fit.score == candidate_fit(clean, target).score
+    assert fit.score == _timed_fit(clean, target).score
     assert not fit.is_available
     assert fit.coverage == 0.0
     assert mplus_dungeon_fit_rows(applicant, target)
     assert fit.label == ""
 
 
-def test_mplus_character_key_history_does_not_change_with_main_rating():
+def test_mplus_timed_component_character_key_history_does_not_change_with_main_rating():
     target = _listing(key_level=16, dungeon_name="Windrunner Spire")
     applicant = _app(
         role="HEALER",
@@ -310,16 +320,16 @@ def test_mplus_character_key_history_does_not_change_with_main_rating():
         ],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     applicant.main_score = 0
-    assert fit.score == candidate_fit(applicant, target).score
+    assert fit.score == _timed_fit(applicant, target).score
     assert not fit.is_available
-    assert not candidate_fit(applicant, target).is_available
+    assert not _timed_fit(applicant, target).is_available
     assert fit.label == ""
 
 
-def test_mplus_high_logged_keys_and_target_parses_do_not_prove_timed_readiness():
+def test_mplus_timed_component_high_logged_keys_and_target_parses_do_not_prove_timed_readiness():
     target = _listing(key_level=10)
     overqualified = _app(
         dps_breakdown=[_dungeon("Skyreach", [(20, 31.0, 31.0, 1)])],
@@ -330,15 +340,15 @@ def test_mplus_high_logged_keys_and_target_parses_do_not_prove_timed_readiness()
         score=2600,
     )
 
-    overqualified_fit = candidate_fit(overqualified, target)
-    farm_fit = candidate_fit(farm_parse, target)
+    overqualified_fit = _timed_fit(overqualified, target)
+    farm_fit = _timed_fit(farm_parse, target)
 
     assert not overqualified_fit.is_available
     assert not farm_fit.is_available
     assert mplus_dungeon_fit_rows(overqualified, target)[0].key_level == 20
 
 
-def test_mplus_orange_and_relevant_logged_keys_both_require_timed_confirmation():
+def test_mplus_timed_component_orange_and_relevant_logged_keys_both_require_timed_confirmation():
     target = _listing(key_level=16)
     farm_parse = _app(
         dps_breakdown=[_dungeon("Skyreach", [(10, 99.0, 95.0, 3)])],
@@ -349,15 +359,15 @@ def test_mplus_orange_and_relevant_logged_keys_both_require_timed_confirmation()
         score=3300,
     )
 
-    farm_fit = candidate_fit(farm_parse, target)
-    relevant_fit = candidate_fit(relevant, target)
+    farm_fit = _timed_fit(farm_parse, target)
+    relevant_fit = _timed_fit(relevant, target)
 
     assert not farm_fit.is_available
     assert not relevant_fit.is_available
     assert mplus_dungeon_fit_rows(relevant, target)[0].key_level == 16
 
 
-def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localized():
+def test_mplus_timed_component_same_dungeon_match_uses_activity_id_when_listing_name_is_localized():
     target = _listing(
         activity_id=512,
         key_level=16,
@@ -369,7 +379,7 @@ def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localize
         score=3300,
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert fit.has_same_dungeon_context
     assert fit.same_dungeon_rio_key == 16
@@ -377,7 +387,7 @@ def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localize
     assert mplus_dungeon_fit_rows(applicant, target)[0].best_percent == 88.0
 
 
-def test_mplus_fit_exposes_best_nearby_and_same_dungeon_key_evidence():
+def test_mplus_timed_component_fit_exposes_best_nearby_and_same_dungeon_key_evidence():
     target = _listing(
         activity_id=512,
         key_level=16,
@@ -396,7 +406,7 @@ def test_mplus_fit_exposes_best_nearby_and_same_dungeon_key_evidence():
         ],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert fit.target_key == 16
     assert fit.primary_key == 20
@@ -442,7 +452,7 @@ def test_mplus_unverified_logged_key_stays_raw_context_without_timed_fit():
     assert raw.run_count == 1
 
 
-def test_mplus_raw_dungeon_context_can_show_target_bracket_without_timed_fit():
+def test_mplus_timed_component_raw_dungeon_context_can_show_target_bracket_without_timed_fit():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         dps_breakdown=[
@@ -453,7 +463,7 @@ def test_mplus_raw_dungeon_context_can_show_target_bracket_without_timed_fit():
         ]
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert not fit.is_available
     raw = mplus_dungeon_fit_rows(applicant, target)[0]
@@ -463,7 +473,7 @@ def test_mplus_raw_dungeon_context_can_show_target_bracket_without_timed_fit():
     assert raw.run_count == 2
 
 
-def test_mplus_low_and_high_logged_brackets_do_not_create_timed_fit():
+def test_mplus_timed_component_low_and_high_logged_brackets_do_not_create_timed_fit():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         dps_breakdown=[
@@ -474,7 +484,7 @@ def test_mplus_low_and_high_logged_brackets_do_not_create_timed_fit():
         ]
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert not fit.is_available
     raw = mplus_dungeon_fit_rows(applicant, target)[0]
@@ -483,7 +493,7 @@ def test_mplus_low_and_high_logged_brackets_do_not_create_timed_fit():
     assert raw.run_count == 3
 
 
-def test_mplus_far_low_key_remains_observed_same_dungeon_history():
+def test_mplus_timed_component_far_low_key_remains_observed_same_dungeon_history():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     rio_dungeons = [
         {"name": f"Other Dungeon {index}", "key_level": 16}
@@ -496,8 +506,8 @@ def test_mplus_far_low_key_remains_observed_same_dungeon_history():
         dps_breakdown=[_dungeon("Skyreach", [(10, 10.0, 10.0, 1)])],
     )
 
-    baseline_fit = candidate_fit(baseline, target)
-    ignored_fit = candidate_fit(ignored_log, target)
+    baseline_fit = _timed_fit(baseline, target)
+    ignored_fit = _timed_fit(ignored_log, target)
 
     assert ignored_fit.score == baseline_fit.score
     assert ignored_fit.confidence >= baseline_fit.confidence
@@ -507,7 +517,7 @@ def test_mplus_far_low_key_remains_observed_same_dungeon_history():
     assert baseline_fit.limit_reason == ignored_fit.limit_reason == "no_same_dungeon"
 
 
-def test_mplus_additional_unverified_logged_dungeons_cannot_create_timed_breadth():
+def test_mplus_timed_component_additional_unverified_logged_dungeons_cannot_create_timed_breadth():
     target = _listing(key_level=16)
     strong_with_some_bad = _app(
         dps_breakdown=[
@@ -530,8 +540,8 @@ def test_mplus_additional_unverified_logged_dungeons_cannot_create_timed_breadth
         ],
     )
 
-    assert not candidate_fit(strong_with_more_bad, target).is_available
-    assert not candidate_fit(strong_with_some_bad, target).is_available
+    assert not _timed_fit(strong_with_more_bad, target).is_available
+    assert not _timed_fit(strong_with_some_bad, target).is_available
 
 
 def test_mplus_fit_rows_use_relevant_lower_bracket_when_top_key_is_grey():
@@ -563,11 +573,11 @@ def test_mplus_fit_rows_colour_printed_percentile_not_context_fit():
     assert rows[0].colour == percentile_colour(64.0)
 
 
-def test_mplus_timed_target_profile_is_available_without_wcl_damage():
+def test_mplus_timed_component_timed_target_profile_is_available_without_wcl_damage():
     target = _listing(key_level=15)
     no_logs = _app(score=3270, **_rio_profile([15] * 8, target_key=15))
 
-    fit = candidate_fit(no_logs, target)
+    fit = _timed_fit(no_logs, target)
 
     assert fit.source == "mplus_scorecard"
     assert fit.is_available
@@ -577,7 +587,7 @@ def test_mplus_timed_target_profile_is_available_without_wcl_damage():
     assert all(word not in fit.display for word in ("TOP", "FIT", "OK", "RISK", "RIO"))
 
 
-def test_mplus_timed_target_experience_outranks_lower_logged_key_experience():
+def test_mplus_timed_component_timed_target_experience_outranks_lower_logged_key_experience():
     target = _listing(key_level=15)
     target_no_logs = _app(score=3270, **_rio_profile([15] * 8, target_key=15))
     lower_with_good_logs = _app(
@@ -593,14 +603,14 @@ def test_mplus_timed_target_experience_outranks_lower_logged_key_experience():
         ],
     )
 
-    target_fit = candidate_fit(target_no_logs, target)
-    lower_fit = candidate_fit(lower_with_good_logs, target)
+    target_fit = _timed_fit(target_no_logs, target)
+    lower_fit = _timed_fit(lower_with_good_logs, target)
 
     assert target_fit.score > lower_fit.score
     assert lower_fit.primary_key == 14
 
 
-def test_mplus_same_key_damage_logs_add_evidence_without_changing_experience():
+def test_mplus_timed_component_same_key_damage_logs_add_evidence_without_changing_experience():
     target = _listing(key_level=15)
     no_logs = _app(score=3270, **_rio_profile([15] * 8, target_key=15))
     one_gray = _app(
@@ -621,9 +631,9 @@ def test_mplus_same_key_damage_logs_add_evidence_without_changing_experience():
         ],
     )
 
-    no_log_fit = candidate_fit(no_logs, target)
-    one_gray_fit = candidate_fit(one_gray, target)
-    repeated_gray_fit = candidate_fit(repeated_gray, target)
+    no_log_fit = _timed_fit(no_logs, target)
+    one_gray_fit = _timed_fit(one_gray, target)
+    repeated_gray_fit = _timed_fit(repeated_gray, target)
 
     assert one_gray_fit.score == no_log_fit.score == repeated_gray_fit.score
     assert no_log_fit.confidence == one_gray_fit.confidence == repeated_gray_fit.confidence
@@ -659,7 +669,7 @@ def test_mplus_scorecard_one_big_key_without_breadth_stays_low():
     assert fit.primary_key == 20
 
 
-def test_mplus_scorecard_low_key_logs_do_not_cheese_target_listing():
+def test_mplus_timed_component_scorecard_low_key_logs_do_not_cheese_target_listing():
     target = _listing(key_level=15)
     low_log_spam = _app(
         score=3000,
@@ -670,7 +680,7 @@ def test_mplus_scorecard_low_key_logs_do_not_cheese_target_listing():
         ],
     )
 
-    fit = candidate_fit(low_log_spam, target)
+    fit = _timed_fit(low_log_spam, target)
 
     assert fit.score < 35.0
     assert fit.primary_key == 13
@@ -699,19 +709,19 @@ def test_mplus_broad_target_minus_one_profile_is_ok_not_risk():
     assert fit.score >= 35.0
 
 
-def test_mplus_single_target_minus_one_parse_does_not_overpromote():
+def test_mplus_timed_component_single_target_minus_one_parse_does_not_overpromote():
     target = _listing(key_level=17, dungeon_name="Other Dungeon")
     applicant = _app(
         score=3409,
         dps_breakdown=[_dungeon("Skyreach", [(16, 96.0, 96.0, 1)])],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert fit.score < 55.0
 
 
-def test_mplus_healer_dps_context_ignores_legacy_hps_without_creating_timed_fit():
+def test_mplus_timed_component_healer_dps_context_ignores_legacy_hps_without_creating_timed_fit():
     target = _listing(key_level=16)
     healer = _app(
         role="HEALER",
@@ -720,14 +730,14 @@ def test_mplus_healer_dps_context_ignores_legacy_hps_without_creating_timed_fit(
         score=3300,
     )
 
-    fit = candidate_fit(healer, target)
+    fit = _timed_fit(healer, target)
 
     assert not fit.is_available
     assert mplus_dungeon_fit_rows(healer, target)[0].key_level == 16
     assert fit.score < 80
 
 
-def test_mplus_partial_timed_rio_rows_cannot_be_upgraded_by_unverified_wcl_keys():
+def test_mplus_timed_component_partial_timed_rio_rows_cannot_be_upgraded_by_unverified_wcl_keys():
     target = _listing(key_level=12, dungeon_name="Mythic+", activity_id=0)
     healer = _app(
         role="HEALER",
@@ -746,17 +756,17 @@ def test_mplus_partial_timed_rio_rows_cannot_be_upgraded_by_unverified_wcl_keys(
         ],
     )
 
-    fit = candidate_fit(healer, target)
+    fit = _timed_fit(healer, target)
 
     assert fit.primary_key == 11
     assert fit.is_available
     assert fit.coverage == 2 / 8
-    assert fit.score == candidate_fit(
+    assert fit.score == _timed_fit(
         _app(role="HEALER", score=0, rio_dungeons=healer.rio_dungeons), target
     ).score
 
 
-def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
+def test_mplus_timed_component_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3200,
@@ -771,7 +781,7 @@ def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
         rio_summary_target_key=target.key_level,
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert fit.source == "mplus_scorecard"
     assert 40.0 <= fit.score < 58.0
@@ -807,7 +817,7 @@ def test_mplus_scorecard_keeps_captured_floors_without_rebasing_them_to_new_targ
     assert stale_fit.same_dungeon_rio_key == 0
 
 
-def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
+def test_mplus_timed_component_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
     target = _listing(activity_id=512, key_level=16, dungeon_name="Королевский Покой")
     applicant = _app(
         score=3200,
@@ -823,7 +833,7 @@ def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
         rio_dungeons=[{"name": "Kings' Rest", "key_level": 15}],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert fit.source == "mplus_scorecard"
     assert fit.primary_key == 17
@@ -834,7 +844,7 @@ def test_mplus_scorecard_uses_rio_dungeon_rows_for_same_dungeon_key():
     assert fit.confidence >= 0.55
 
 
-def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
+def test_mplus_timed_component_scorecard_keeps_higher_summary_same_dungeon_key():
     target = _listing(activity_id=512, key_level=16, dungeon_name="Королевский Покой")
     applicant = _app(
         score=3200,
@@ -852,7 +862,7 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
         rio_dungeons=[{"name": "Kings' Rest", "key_level": 15}],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert fit.source == "mplus_scorecard"
     weaker_same_dungeon = _app(
@@ -872,7 +882,7 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
     )
     assert fit.primary_key == 17
     assert "+17" in fit.display
-    weaker_fit = candidate_fit(weaker_same_dungeon, target)
+    weaker_fit = _timed_fit(weaker_same_dungeon, target)
     assert fit.same_dungeon_rio_key == 16
     assert weaker_fit.same_dungeon_rio_key == 15
     # Both profiles can meet the same no-WCL ceiling; the stronger target key
@@ -880,7 +890,7 @@ def test_mplus_scorecard_keeps_higher_summary_same_dungeon_key():
     assert fit.score >= weaker_fit.score
 
 
-def test_mplus_scorecard_rio_summary_rescues_not_found_wcl_status():
+def test_mplus_timed_component_scorecard_rio_summary_rescues_not_found_wcl_status():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3200,
@@ -896,14 +906,14 @@ def test_mplus_scorecard_rio_summary_rescues_not_found_wcl_status():
         fetch_status="not_found",
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert fit.source == "mplus_scorecard"
     assert 40.0 <= fit.score < 58.0
     assert "+17" in fit.display
 
 
-def test_mplus_terminal_wcl_status_ignores_stale_wcl_but_uses_scorecard():
+def test_mplus_timed_component_terminal_wcl_status_ignores_stale_wcl_but_uses_scorecard():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3300,
@@ -920,7 +930,7 @@ def test_mplus_terminal_wcl_status_ignores_stale_wcl_but_uses_scorecard():
         fetch_status="error",
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     assert fit.source == "mplus_scorecard"
     assert fit.score < 92.0
@@ -986,7 +996,7 @@ def test_mplus_scorecard_display_keeps_higher_rio_key_when_wcl_is_lower():
     assert "+18" in fit.display
 
 
-def test_mplus_low_damage_does_not_veto_independent_key_experience():
+def test_mplus_timed_component_low_damage_does_not_veto_independent_key_experience():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3300,
@@ -1002,15 +1012,15 @@ def test_mplus_low_damage_does_not_veto_independent_key_experience():
         dps_breakdown=[_dungeon("Skyreach", [(16, 18.0, 16.0, 3)])],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     applicant.mplus_dps_breakdown = [_dungeon("Skyreach", [(16, 80.0, 80.0, 3)])]
-    assert fit.score == candidate_fit(applicant, target).score
+    assert fit.score == _timed_fit(applicant, target).score
     assert mplus_dungeon_fit_rows(applicant, target)[0].best_percent == 80.0
     assert fit.label == ""
 
 
-def test_mplus_damage_consistency_is_separate_from_same_key_experience():
+def test_mplus_timed_component_damage_consistency_is_separate_from_same_key_experience():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     spike = _app(
         score=3300,
@@ -1023,15 +1033,15 @@ def test_mplus_damage_consistency_is_separate_from_same_key_experience():
         dps_breakdown=[_dungeon("Skyreach", [(16, 85.0, 80.0, 3)])],
     )
 
-    spike_fit = candidate_fit(spike, target)
-    steady_fit = candidate_fit(steady, target)
+    spike_fit = _timed_fit(spike, target)
+    steady_fit = _timed_fit(steady, target)
 
     assert steady_fit.score == spike_fit.score
     assert mplus_dungeon_fit_rows(spike, target)[0].median_percent == 35.0
     assert mplus_dungeon_fit_rows(steady, target)[0].median_percent == 80.0
 
 
-def test_mplus_same_key_low_damage_log_preserves_independent_rio_experience():
+def test_mplus_timed_component_same_key_low_damage_log_preserves_independent_rio_experience():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     no_log = _app(score=3300, **_rio_profile([16] * 8, target_key=16))
     gray_log = _app(
@@ -1040,8 +1050,8 @@ def test_mplus_same_key_low_damage_log_preserves_independent_rio_experience():
         dps_breakdown=[_dungeon("Skyreach", [(16, 35.0, 35.0, 3)])],
     )
 
-    no_log_fit = candidate_fit(no_log, target)
-    gray_fit = candidate_fit(gray_log, target)
+    no_log_fit = _timed_fit(no_log, target)
+    gray_fit = _timed_fit(gray_log, target)
 
     assert gray_fit.score == no_log_fit.score
     assert gray_fit.confidence == no_log_fit.confidence
@@ -1125,7 +1135,7 @@ def test_mplus_improving_wcl_quality_across_thresholds_never_lowers_fit(
     )
 
 
-def test_mplus_logged_dungeon_breadth_is_independent_of_damage_colour():
+def test_mplus_timed_component_logged_dungeon_breadth_is_independent_of_damage_colour():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     broad_gray_target = _app(
         **_rio_profile([16] * 8, target_key=16),
@@ -1147,15 +1157,15 @@ def test_mplus_logged_dungeon_breadth_is_independent_of_damage_colour():
         ],
     )
 
-    broad_gray_fit = candidate_fit(broad_gray_target, target)
-    sparse_clean_fit = candidate_fit(sparse_clean_target, target)
-    clean_target_fit = candidate_fit(clean_target, target)
+    broad_gray_fit = _timed_fit(broad_gray_target, target)
+    sparse_clean_fit = _timed_fit(sparse_clean_target, target)
+    clean_target_fit = _timed_fit(clean_target, target)
 
     assert sparse_clean_fit.score < broad_gray_fit.score == clean_target_fit.score
     assert broad_gray_fit.confidence == clean_target_fit.confidence
 
 
-def test_mplus_damage_thresholds_do_not_change_experience_or_evidence_strength():
+def test_mplus_timed_component_damage_thresholds_do_not_change_experience_or_evidence_strength():
     target = _listing(key_level=16, dungeon_name="Skyreach")
 
     def broad_fit(percentile: float):
@@ -1167,7 +1177,7 @@ def test_mplus_damage_thresholds_do_not_change_experience_or_evidence_strength()
                 for name in MPLUS_DUNGEONS
             ],
         )
-        return candidate_fit(applicant, target)
+        return _timed_fit(applicant, target)
 
     bad = broad_fit(24.0)
     gray_floor = broad_fit(25.0)
@@ -1253,7 +1263,7 @@ def test_mplus_higher_unverified_wcl_bracket_cannot_change_timed_breadth():
     assert gray_higher_fit.coverage == clean_fit.coverage
 
 
-def test_mplus_distinct_dungeon_breadth_beats_repeated_same_dungeon_brackets():
+def test_mplus_timed_component_distinct_dungeon_breadth_beats_repeated_same_dungeon_brackets():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     repeated_same_dungeon = _app(
         rio_dungeons=[{"name": "Skyreach", "key_level": 18}],
@@ -1278,8 +1288,8 @@ def test_mplus_distinct_dungeon_breadth_beats_repeated_same_dungeon_brackets():
         ],
     )
 
-    repeated_fit = candidate_fit(repeated_same_dungeon, target)
-    broad_fit = candidate_fit(broad_profile, target)
+    repeated_fit = _timed_fit(repeated_same_dungeon, target)
+    broad_fit = _timed_fit(broad_profile, target)
 
     assert broad_fit.score > repeated_fit.score
 
@@ -1519,7 +1529,7 @@ def test_mplus_same_dungeon_target_key_outranks_broader_below_target_profile():
     assert exact_fit.score > broad_fit.score
 
 
-def test_mplus_target_key_without_logs_outranks_below_target_parse_spike():
+def test_mplus_timed_component_target_key_without_logs_outranks_below_target_parse_spike():
     target = _listing(key_level=15, dungeon_name="Skyreach")
     completed_target = _app(
         score=3270,
@@ -1553,8 +1563,8 @@ def test_mplus_target_key_without_logs_outranks_below_target_parse_spike():
         ],
     )
 
-    target_fit = candidate_fit(completed_target, target)
-    spike_fit = candidate_fit(below_target_parse_spike, target)
+    target_fit = _timed_fit(completed_target, target)
+    spike_fit = _timed_fit(below_target_parse_spike, target)
 
     assert target_fit.primary_key == 15
     assert spike_fit.primary_key == 15
@@ -1671,7 +1681,7 @@ def test_mplus_duplicate_rio_dungeon_rows_keep_highest_normalized_key_level():
 
 
 @pytest.mark.parametrize("rio_key", [11, 12, 16])
-def test_mplus_overlapping_wcl_cannot_change_verified_rio_readiness(rio_key):
+def test_mplus_timed_component_overlapping_wcl_cannot_change_verified_rio_readiness(rio_key):
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
     logged = _app(score=0, dps_breakdown=[_dungeon("Skyreach", [(12, 80, 80, 3)])])
     timed_only = _app(score=0, rio_dungeons=[{"name": "Skyreach", "key_level": rio_key}])
@@ -1680,13 +1690,13 @@ def test_mplus_overlapping_wcl_cannot_change_verified_rio_readiness(rio_key):
         dps_breakdown=logged.mplus_dps_breakdown,
     )
 
-    assert not candidate_fit(logged, target).is_available
-    assert candidate_fit(timed_only, target).is_available
-    assert candidate_fit(corroborated, target).score == candidate_fit(timed_only, target).score
-    assert candidate_fit(corroborated, target).coverage == candidate_fit(timed_only, target).coverage
+    assert not _timed_fit(logged, target).is_available
+    assert _timed_fit(timed_only, target).is_available
+    assert _timed_fit(corroborated, target).score == _timed_fit(timed_only, target).score
+    assert _timed_fit(corroborated, target).coverage == _timed_fit(timed_only, target).coverage
 
 
-def test_mplus_disjoint_unverified_wcl_cannot_inflate_timed_rio_breadth():
+def test_mplus_timed_component_disjoint_unverified_wcl_cannot_inflate_timed_rio_breadth():
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
     rows = [{"name": "Skyreach", "key_level": 12}]
     overlap = _app(
@@ -1700,8 +1710,8 @@ def test_mplus_disjoint_unverified_wcl_cannot_inflate_timed_rio_breadth():
         dps_breakdown=[_dungeon("Algeth'ar Academy", [(12, 80.0, 80.0, 3)])],
     )
 
-    overlap_fit = candidate_fit(overlap, target)
-    distinct_fit = candidate_fit(distinct, target)
+    overlap_fit = _timed_fit(overlap, target)
+    distinct_fit = _timed_fit(distinct, target)
 
     assert overlap_fit.coverage == 1 / 8
     assert distinct_fit.coverage == 1 / 8
@@ -1896,7 +1906,7 @@ def test_mplus_generic_listing_keeps_summary_identity_unknown(dungeon_name):
 
 @pytest.mark.parametrize("rio_key", [2, 10, 11, 12, 16])
 @pytest.mark.parametrize("same_dungeons", [True, False])
-def test_mplus_verified_rio_readiness_is_independent_of_unverified_logs(rio_key, same_dungeons):
+def test_mplus_timed_component_verified_rio_readiness_is_independent_of_unverified_logs(rio_key, same_dungeons):
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
     logs = [_dungeon(name, [(12, 40.0, 40.0, 3)]) for name in MPLUS_DUNGEONS[:4]]
     logged = _app(score=0, dps_breakdown=logs)
@@ -1905,13 +1915,13 @@ def test_mplus_verified_rio_readiness_is_independent_of_unverified_logs(rio_key,
     with_rio = _app(score=0, dps_breakdown=logs, rio_dungeons=rows)
     duplicated = _app(score=0, dps_breakdown=logs, rio_dungeons=rows + rows)
 
-    logged_fit = candidate_fit(logged, target)
-    with_rio_fit = candidate_fit(with_rio, target)
+    logged_fit = _timed_fit(logged, target)
+    with_rio_fit = _timed_fit(with_rio, target)
 
     assert not logged_fit.is_available
     assert with_rio_fit.is_available
-    assert with_rio_fit.score == candidate_fit(_app(score=0, rio_dungeons=rows), target).score
-    assert candidate_fit(duplicated, target) == with_rio_fit
+    assert with_rio_fit.score == _timed_fit(_app(score=0, rio_dungeons=rows), target).score
+    assert _timed_fit(duplicated, target) == with_rio_fit
 
 
 def test_mplus_higher_unverified_wcl_key_cannot_change_verified_rio_experience():
@@ -1938,7 +1948,7 @@ def test_mplus_higher_unverified_wcl_key_cannot_change_verified_rio_experience()
 
 
 @pytest.mark.parametrize("role", ["DAMAGER", "HEALER", "TANK"])
-def test_mplus_single_damage_log_does_not_prove_timed_readiness_for_any_role(role):
+def test_mplus_timed_component_single_damage_log_does_not_prove_timed_readiness_for_any_role(role):
     target = _listing(key_level=16)
     applicant = _app(
         role=role,
@@ -1946,20 +1956,20 @@ def test_mplus_single_damage_log_does_not_prove_timed_readiness_for_any_role(rol
         dps_breakdown=[_dungeon("Skyreach", [(16, 20.0, 20.0, 3)])],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     positive_damage = _app(
         role=role, score=0,
         dps_breakdown=[_dungeon("Skyreach", [(16, 80.0, 80.0, 3)])],
     )
     assert not fit.is_available
-    assert not candidate_fit(positive_damage, target).is_available
-    assert fit.score == candidate_fit(positive_damage, target).score
+    assert not _timed_fit(positive_damage, target).is_available
+    assert fit.score == _timed_fit(positive_damage, target).score
     assert fit.coverage == 0
     assert mplus_dungeon_fit_rows(applicant, target)[0].best_percent == 20.0
 
 
-def test_mplus_anonymous_timed_summary_is_independent_of_unverified_wcl():
+def test_mplus_timed_component_anonymous_timed_summary_is_independent_of_unverified_wcl():
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
     logs = [_dungeon(name, [(12, 40.0, 40.0, 3)]) for name in MPLUS_DUNGEONS[:4]]
     logged = _app(score=0, dps_breakdown=logs)
@@ -1973,13 +1983,13 @@ def test_mplus_anonymous_timed_summary_is_independent_of_unverified_wcl():
         dps_breakdown=logs,
     )
 
-    assert not candidate_fit(logged, target).is_available
+    assert not _timed_fit(logged, target).is_available
     timed_only = _app(
         score=0, rio_profile=True, rio_summary_target_key=12,
         rio_dungeon_count=8, rio_best_key=10, rio_timed_at_or_above_minus2=4,
     )
-    assert candidate_fit(anonymous, target).is_available
-    assert candidate_fit(anonymous, target).score == candidate_fit(timed_only, target).score
+    assert _timed_fit(anonymous, target).is_available
+    assert _timed_fit(anonymous, target).score == _timed_fit(timed_only, target).score
 
 
 def test_mplus_duplicate_good_wcl_dungeon_rows_do_not_inflate_score_or_confidence():
@@ -2023,7 +2033,7 @@ def test_mplus_same_dungeon_distinct_wcl_key_brackets_do_not_inflate_breadth():
     assert distinct_fit.confidence == single_fit.confidence
 
 
-def test_mplus_duplicate_low_damage_wcl_rows_do_not_duplicate_experience():
+def test_mplus_timed_component_duplicate_low_damage_wcl_rows_do_not_duplicate_experience():
     target = _listing(key_level=15, dungeon_name="Skyreach")
     canonical = _app(
         score=3270,
@@ -2039,10 +2049,10 @@ def test_mplus_duplicate_low_damage_wcl_rows_do_not_duplicate_experience():
         ],
     )
 
-    assert candidate_fit(duplicate, target).score == candidate_fit(canonical, target).score
+    assert _timed_fit(duplicate, target).score == _timed_fit(canonical, target).score
 
 
-def test_mplus_mixed_duplicate_wcl_rows_preserve_experience_and_raw_damage():
+def test_mplus_timed_component_mixed_duplicate_wcl_rows_preserve_experience_and_raw_damage():
     target = _listing(key_level=15, dungeon_name="Skyreach")
     mixed = _app(
         score=3270,
@@ -2063,10 +2073,10 @@ def test_mplus_mixed_duplicate_wcl_rows_preserve_experience_and_raw_damage():
         dps_breakdown=[_dungeon("Skyreach", [(15, 10.0, 10.0, 1)])],
     )
 
-    mixed_fit = candidate_fit(mixed, target)
+    mixed_fit = _timed_fit(mixed, target)
 
-    assert mixed_fit.score == candidate_fit(best_positive, target).score
-    assert mixed_fit.score == candidate_fit(worst_bad, target).score
+    assert mixed_fit.score == _timed_fit(best_positive, target).score
+    assert mixed_fit.score == _timed_fit(worst_bad, target).score
     assert {row.best_percent for row in mplus_dungeon_fit_rows(mixed, target)} == {91, 10}
     assert mplus_dungeon_fit_rows(worst_bad, target)[0].best_percent == 10.0
 
@@ -2090,7 +2100,7 @@ def test_mplus_damage_quality_does_not_change_independent_rio_key_experience():
     )
 
 
-def test_mplus_broad_rio_experience_is_not_reduced_by_low_damage_logs():
+def test_mplus_timed_component_broad_rio_experience_is_not_reduced_by_low_damage_logs():
     target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
     applicant = _app(
         score=3552,
@@ -2103,14 +2113,14 @@ def test_mplus_broad_rio_experience_is_not_reduced_by_low_damage_logs():
         ],
     )
 
-    fit = candidate_fit(applicant, target)
+    fit = _timed_fit(applicant, target)
 
     applicant.mplus_dps_breakdown = []
     assert fit.is_available
-    assert fit.score == candidate_fit(applicant, target).score
+    assert fit.score == _timed_fit(applicant, target).score
 
 
-def test_mplus_healer_damage_stays_separate_from_key_experience():
+def test_mplus_timed_component_healer_damage_stays_separate_from_key_experience():
     target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
     healer = _app(
         role="HEALER",
@@ -2124,13 +2134,13 @@ def test_mplus_healer_damage_stays_separate_from_key_experience():
         ],
     )
 
-    fit = candidate_fit(healer, target)
+    fit = _timed_fit(healer, target)
 
     healer.mplus_dps_breakdown = [
         _dungeon(entry["name"], [(entry["key_level"], 80, 80, entry["run_count"])])
         for entry in healer.mplus_dps_breakdown
     ]
-    assert fit.score == candidate_fit(healer, target).score
+    assert fit.score == _timed_fit(healer, target).score
 
 
 def test_package_fit_penalizes_weak_member_in_multi_member_group():
@@ -2343,7 +2353,17 @@ def test_package_fit_uses_available_independent_evidence_without_access_penalty(
     assert loading_group.confidence == package_fit([ready, ready], target).confidence
     assert error_group.status_penalty == 0.0
     assert error_group.is_complete
-    assert error_group.score == pytest.approx(package_fit([ready] * 3, target).score)
+    # Missing logs retain the independently observed E component. They must
+    # match an otherwise identical no-log profile, not a profile with usable P.
+    missing_error_logs = replace(error, fetch_status="ready", mplus_dps_breakdown=[])
+    missing_not_found_logs = replace(not_found, fetch_status="ready", mplus_dps_breakdown=[])
+    assert error_group.score == pytest.approx(
+        package_fit([ready, missing_error_logs, missing_not_found_logs], target).score
+    )
+    assert [fit.source for fit in error_group.member_fits] == [
+        "mplus_combined", "mplus_timed_only", "mplus_timed_only",
+    ]
+    assert len({fit.timed_experience_score for fit in error_group.member_fits}) == 1
 
 
 def test_package_fit_exposes_role_composition_and_incomplete_member_counts():

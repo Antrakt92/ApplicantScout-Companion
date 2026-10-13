@@ -128,13 +128,27 @@ def test_accessible_fit_values_distinguish_observed_zero_and_unknown(qtbot, tmp_
 
 
 @pytest.mark.parametrize("status", ["pending", "loading"])
-def test_missing_mplus_fit_does_not_wait_on_an_unrelated_wcl_fetch(status):
+def test_missing_mplus_fit_waits_on_relevant_wcl_evidence(status):
     app = _app(known=False)
     app.fetch_status = status
     assert not scoring.candidate_fit(app, _listing()).is_available
     assert overlay._mplus_cell_visuals(app)[0] == "…"
-    assert overlay._fit_cell_visuals(app, _listing())[0] == "—"
+    assert overlay._fit_cell_visuals(app, _listing())[0] == "…"
     assert overlay._fit_cell_visuals(app, _listing("raid"))[0] == "…"
+
+
+@pytest.mark.parametrize("blocked", ["unknown_spec", "disabled", "private"])
+def test_missing_mplus_fit_does_not_spin_for_unusable_wcl_scope(blocked):
+    app = _app(known=False)
+    app.fetch_status = "loading"
+    if blocked == "unknown_spec":
+        app.spec_id = 0
+    elif blocked == "disabled":
+        app.wcl_metric_preferences = MetricPreferences(mplus=False)
+    else:
+        app.wcl_availability = {"mplus": "restricted"}
+    assert not scoring.candidate_fit(app, _listing()).is_available
+    assert overlay._fit_cell_visuals(app, _listing())[0] == "—"
 
 
 def test_restricted_raid_scope_hides_stale_numbers_in_table_and_badges(qtbot, tmp_path):
@@ -753,6 +767,43 @@ def test_inplace_sample_metadata_updates_visible_and_accessible_scope(qtbot, tmp
     window._refresh_table()
     assert "12 recorded kills" in badge.accessibleDescription()
     assert "6 recorded kills" not in badge.toolTip()
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_inplace_nearby_wcl_updates_cached_fit_order_and_pinned_evidence(qtbot, tmp_path, grouped):
+    def with_logs(aid, value):
+        app = _app(aid)
+        app.mplus_dps = app.mplus_dps_median = value
+        app.mplus_dps_breakdown = [
+            dict(name=name, key_level=16, parse_percent=value,
+                 median_percent=value, run_count=3)
+            for _alias, _encounter, name in MPLUS_ENCOUNTERS
+        ]
+        return app
+
+    changing = [with_logs("1:1", 25)]
+    if grouped:
+        changing.append(with_logs("1:2", 25))
+    stable = with_logs("2:1", 80)
+    window = _window(qtbot, tmp_path, [*changing, stable], _listing())
+    window._pinned_id = "1:1"
+    window._sync_delegate_and_panel()
+    badge = window._panel._metric_labels["Fit"]
+    before = badge.text()
+    assert window._id_by_row[0] == "2:1"
+    for app in changing:
+        app.mplus_dps = app.mplus_dps_median = 95
+        for row in app.mplus_dps_breakdown:
+            row.update(parse_percent=95, median_percent=95, run_count=4)
+    window._refresh_table()
+    assert window._id_by_row[0] == "1:1"
+    assert window._pinned_id == "1:1"
+    assert badge.text() != before
+    assert "WCL 8/8" in badge.text()
+    assert "32 WCL samples" in badge.accessibleDescription()
+    assert "24 WCL samples" not in badge.toolTip()
+    expected = scoring.candidate_fit(changing[0], _listing())
+    assert f"~{round(expected.score)}" in badge.text()
 
 
 def test_every_rio_provider_boundary_uses_the_enclosing_band():

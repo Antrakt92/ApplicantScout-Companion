@@ -237,7 +237,7 @@ def test_unavailable_mplus_scope_suppresses_otherwise_ready_cached_evidence(scop
 
 
 @pytest.mark.parametrize("role", ["DAMAGER", "TANK", "HEALER"])
-def test_display_projection_does_not_change_verified_timed_fit_for_any_role(role):
+def test_display_projection_is_pure_while_damage_changes_combined_fit_for_any_role(role):
     applicant = replace(_screenshot_app(), role=role)
     original = deepcopy(applicant)
     expected = scoring.candidate_fit(applicant, _listing())
@@ -252,10 +252,14 @@ def test_display_projection_does_not_change_verified_timed_fit_for_any_role(role
         mplus_dps_breakdown=[_row(name, 10, 0, 0, 3) for name in NAMES],
     )
     assert overlay_presenters.mplus_display_summary(changed_damage, _listing()).best == 0
-    assert scoring.candidate_fit(changed_damage, _listing()) == expected
+    changed_fit = scoring.candidate_fit(changed_damage, _listing())
+    assert changed_fit.timed_experience_score == expected.timed_experience_score
+    assert changed_fit.wcl_score == 0
+    assert changed_fit.score < expected.score
+    assert changed_fit.source == expected.source == "mplus_combined"
 
 
-def test_equal_fit_package_parse_metadata_matches_visible_damage_without_reordering_fit():
+def test_package_fit_uses_same_target_damage_as_visible_parse_metadata():
     stronger_row = _row(NAMES[0], 16, 0, 0, 3)
     stronger_row["brackets"] = [
         _row(NAMES[0], 10, 90, 90, 3), _row(NAMES[0], 16, 0, 0, 3),
@@ -267,7 +271,12 @@ def test_equal_fit_package_parse_metadata_matches_visible_damage_without_reorder
     stronger = replace(_app([stronger_row]), applicant_id="2:1", mplus_dps=0)
     weaker = replace(_app([weaker_row]), applicant_id="1:1", mplus_dps=99)
     listing = _listing()
-    assert scoring.candidate_fit(stronger, listing) == scoring.candidate_fit(weaker, listing)
+    stronger_fit = scoring.candidate_fit(stronger, listing)
+    weaker_fit = scoring.candidate_fit(weaker, listing)
+    assert stronger_fit.timed_experience_score == weaker_fit.timed_experience_score
+    assert (stronger_fit.wcl_score, weaker_fit.wcl_score) == (90, 60)
+    assert stronger_fit.score > weaker_fit.score
+    assert stronger_fit.source == weaker_fit.source == "mplus_combined"
     assert scoring.listing_parse_percentile(stronger, listing) == 90
     assert scoring.listing_parse_percentile(weaker, listing) == 60
     rows, packages, _fits = overlay_rows.sort_applicants_grouped_with_package_fits(
@@ -275,6 +284,7 @@ def test_equal_fit_package_parse_metadata_matches_visible_damage_without_reorder
     )
     assert packages["2"].parse_percentile == 90
     assert packages["1"].parse_percentile == 60
-    # The default Fit order uses timed history and stable identity, so the
-    # corrected damage projection must not introduce a new damage tie-break.
-    assert [row.applicant_id for row in rows] == ["1:1", "2:1"]
+    assert packages["2"].score > packages["1"].score
+    # Nearby output drives Fit even when stored highest-key headlines favor
+    # the other applicant. Timed history remains identical and separate.
+    assert [row.applicant_id for row in rows] == ["2:1", "1:1"]

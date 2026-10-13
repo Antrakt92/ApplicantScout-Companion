@@ -2376,7 +2376,7 @@ def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
     assert "RaiderIO only" in panel._status_label.text()
     assert panel._metric_labels["Fit"].text().startswith("Fit · +16:")
     fit = scoring_mod.candidate_fit(app, listing)
-    assert panel._metric_labels["Fit"].text() == f"Fit · +16: ~{round(fit.score)} · 8/8 timed dungeons"
+    assert panel._metric_labels["Fit"].text() == f"Fit · +16: ~{round(fit.score)} · timed 8/8 · no nearby WCL"
     assert "DPS" not in panel._metric_labels["Fit"].text()
     assert panel._metric_labels["M+"].isHidden()
     assert "RIO" not in panel._metric_labels["Fit"].text()
@@ -2408,12 +2408,13 @@ def test_panel_explains_solo_mplus_observed_coverage_and_source(qtbot):
     assert panel._metric_labels["Fit"].text().startswith("Fit · +16:")
     assert panel._status_label.isHidden()
     assert panel._mplus_fit_status_text(app, listing) in panel._metric_labels["Fit"].toolTip()
-    assert panel._mplus_fit_status_text(app, listing) == (
-        "Target +16 · best nearby +16 · same dungeon RIO timed +16\n"
-        "8/8 dungeons timed · 8 timed at +15 or higher · "
-        "Target-key readiness estimate from verified in-time runs only. "
-        "Untimed completions, WCL logs and general rating do not affect Fit. · RaiderIO in-time keys"
-    )
+    evidence = panel._mplus_fit_status_text(app, listing)
+    assert evidence.startswith("Target +16 · best nearby timed +16 · same dungeon RIO timed +16")
+    assert "Source: RaiderIO in-time keys" in evidence
+    assert "8/8 dungeons timed · 8 timed at +15 or higher" in evidence
+    assert "No nearby WCL logs; timed keys only" in evidence
+    assert "Timed experience component 55.0/89" in evidence
+    assert "WCL logs and general rating do not affect Fit" not in evidence
 
 
 def test_panel_hides_fit_when_rating_has_no_timed_history(qtbot):
@@ -2482,7 +2483,7 @@ def test_zero_fit_keeps_evidence_and_damage_metric_explanation(qtbot, role):
 
     panel.setApplicantData(applicant, listing)
 
-    assert panel._metric_labels["Fit"].text() == "Fit · +16: ~0 · 1/8 timed dungeons"
+    assert panel._metric_labels["Fit"].text() == "Fit · +16: ~0 · timed 1/8 · no nearby WCL"
     assert panel._metric_labels["M+"].text() == "M+ DPS 20/20 +5"
     assert "same dungeon RIO timed +5" in panel._metric_labels["Fit"].toolTip()
     assert "same dungeon WCL" not in panel._metric_labels["Fit"].toolTip()
@@ -2538,11 +2539,12 @@ def test_panel_keeps_grey_same_dungeon_quality_visible(qtbot):
     panel.setApplicantData(app, _listing())
 
     text = panel._metric_labels["Fit"].toolTip()
-    assert "no nearby key evidence" in text
+    assert "no nearby timed key evidence" in text
     assert "same dungeon RIO timed +20" in text
     assert "same dungeon WCL" not in text
-    assert "limit: sparse coverage" in text
-    assert "Damage parses stay separate" in text
+    assert "limit: no nearby WCL logs" in text
+    assert "1/8 dungeons timed" in text
+    assert "Nearby logged performance is primary" in text
     assert panel._dungeon_rows[0][3].text() == "31"
     assert "1 logged run" in panel._dungeon_rows[0][3].toolTip()
     assert panel._dungeon_rows[0][2].text() == "+20"
@@ -2568,7 +2570,7 @@ def test_panel_does_not_label_far_key_as_nearby_and_omits_generic_dungeon(qtbot)
     panel.setApplicantData(app, listing)
 
     text = panel._metric_labels["Fit"].toolTip()
-    assert "no nearby key evidence" in text
+    assert "no nearby timed key evidence" in text
     assert "best evidence" not in text
     assert "same dungeon" not in text
 
@@ -8164,13 +8166,17 @@ def test_metric_column_width_shrinks_after_widest_row_is_removed(qtbot, tmp_path
     try:
         window._refresh_table()
         wide_item = window._table.item(window._row_for_id["10:1"], COL_N)
-        # Exercise content expansion even when the default font fits the base width.
+        # A direct test font override must update the renderer's font signature
+        # and retire its prior measurement, just as a changed source row does.
         wide_font = wide_item.font()
         wide_font.setPointSizeF(18.0)
         wide_item.setFont(wide_font)
+        overlay_mod._stamp_cell_font_sig(wide_item)
+        window._metric_cell_width_cache.get(COL_N, {}).pop("10:1", None)
         window._metric_column_widths_dirty = True
         window._refresh_table()
         wide_width = window._table.columnWidth(COL_N)
+        assert wide_width > overlay_mod.COLUMN_WIDTHS[COL_N]
 
         state.remove("10:1")
         window._refresh_table()

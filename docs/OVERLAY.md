@@ -61,24 +61,36 @@ two Heroic kills recorded by RaiderIO. The **Parse** header tooltip identifies
 boss pairs as **overall / item level**, comparing the result with all matching logs and with
 the matching item-level bracket. Boss details load only when requested.
 
-**M+ Fit estimates in-time key experience for the target, for every role.**
-It uses only the applying character's verified RaiderIO runs completed within
-the timer: dungeon levels, breadth, experience above the target and the target
-dungeon. Anonymous timed summaries establish conservative level bounds at the
-captured target level, without counting the same dungeon twice. Those recorded
-facts can be re-evaluated when the target changes. The bounds are not displayed
-as an exact best key. A fresh compact summary can change the precision of those
-bounds; named dungeon history provides more detail. Untimed completions never
-contribute. General character or main rating alone does not produce Fit; if
-timed key history is unavailable, Fit stays unknown.
+**M+ Fit combines logged performance around the target key with verified
+in-time experience.** WCL damage in the applying spec is the primary component.
+It uses the same selected dungeon brackets as the details, taking only those
+within two levels of the target. Best, available median, sample count and key
+level form a contextual performance component, rather than copying the raw
+damage average. Farther fallback brackets remain visible in M+ DPS and details,
+but do not establish nearby performance for Fit. Its tooltip shows the actual
+Fit log range and sample metadata separately from the damage summary.
 
-The current M+ components total at most 89, or 86 without a target dungeon.
-Blue and purple identify stronger target experience on this scale; the bands
-at 95 and above are available to raid estimates.
+Verified RaiderIO runs completed within the timer provide additional support:
+dungeon levels, breadth, experience above the target and the target dungeon.
+Anonymous timed summaries establish conservative level bounds at their captured
+target, without counting the same dungeon twice. Those facts can be re-evaluated
+when the target changes. The bounds are not displayed as exact best keys.
+Untimed completions and general character or main rating do not contribute.
+WCL logs establish damage evidence, not timer success.
 
-WCL damage percentiles and logged key levels do not change M+ Fit. A WCL log
-alone does not prove the timer was beaten. Raw results remain visible in the
-M+ column and details. An in-time run is a team result and does not prove
+With both sources, the estimate is `P + 0.20 × (E / 89) × (100 − P)`, where
+`P` is contextual WCL performance on a 0–100 scale and `E` is timed experience
+on a 0–89 scale. These are heuristic weights, not a calibrated success
+probability. With only nearby logs, Fit uses `P` and marks timed history unknown.
+With only timed history, it retains `E` and identifies the missing nearby logs.
+Missing sources are not zero-quality results; with neither source, Fit is unknown.
+Observed coverage for WCL and timed keys stays separate and visible.
+A single recorded WCL sample is marked **1 log** beside Fit; one logged dungeon
+with unknown sample count is marked **limited WCL**. Read these estimates with
+their sample limits rather than treating one result as a general player rating.
+
+M+ WCL measures damage for every role; it does not measure healing, survival,
+interrupts or utility. An in-time run is a team result and does not prove
 individual contribution, current-role mastery or future success.
 
 **Raid Fit estimates output for the selected difficulty and applying spec.**

@@ -544,7 +544,7 @@ def test_mplus_same_displayed_fit_sorts_by_observed_coverage_before_hidden_decim
         assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
 
 
-def test_mplus_mixed_wave_orders_target_experience_and_keeps_groups():
+def test_mplus_mixed_wave_orders_comparable_output_and_keeps_groups():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -695,8 +695,8 @@ def test_mplus_mixed_wave_orders_target_experience_and_keeps_groups():
 
     assert [a.applicant_id for a in sorted_apps] == [
         "10:1",
-        "20:1",
         "40:1",
+        "20:1",
         "60:1",
         "30:1",
         "30:2",
@@ -704,7 +704,7 @@ def test_mplus_mixed_wave_orders_target_experience_and_keeps_groups():
     ]
 
 
-def test_mplus_timed_fit_does_not_depend_on_wcl_error_or_stale_parse():
+def test_mplus_unusable_wcl_keeps_timed_fallback_without_ranking_stale_output():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -747,13 +747,19 @@ def test_mplus_timed_fit_does_not_depend_on_wcl_error_or_stale_parse():
 
     sorted_apps = sort_applicants_grouped([sunk_high_fit, ready_lower_fit], listing)
 
-    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
+    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
     fallback = scoring.candidate_fit(sunk_high_fit, listing)
     assert fallback.evidence_count == 0
     assert fallback.evidence_source == "RIO in-time keys"
+    assert fallback.wcl_score is None
+    assert fallback.source == "mplus_timed_only"
+    assert fallback.score == scoring.candidate_fit(
+        replace(sunk_high_fit, mplus_dps_breakdown=[], mplus_dps=None), listing,
+    ).score
+    assert scoring.candidate_fit(ready_lower_fit, listing).wcl_score is not None
 
 
-def test_mplus_stronger_rio_target_experience_precedes_lower_logged_fit():
+def test_mplus_comparable_wcl_output_can_precede_timed_only_experience():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -794,7 +800,13 @@ def test_mplus_stronger_rio_target_experience_precedes_lower_logged_fit():
 
     sorted_apps = sort_applicants_grouped([ready_lower_fit, no_wcl_strong_rio], listing)
 
-    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
+    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
+    output_fit = scoring.candidate_fit(ready_lower_fit, listing)
+    timed_fit = scoring.candidate_fit(no_wcl_strong_rio, listing)
+    assert output_fit.wcl_score is not None and timed_fit.wcl_score is None
+    assert output_fit.timed_experience_score is None
+    assert timed_fit.dungeon_count == 8
+    assert output_fit.score > timed_fit.score
 
 
 def test_mplus_known_rio_experience_can_rank_while_wcl_is_loading():

@@ -11,6 +11,8 @@ from applicant_scout.constants import MPLUS_ENCOUNTERS
 from applicant_scout.overlay_rows import sort_applicants_grouped_with_package_fits
 from applicant_scout.scoring import (
     CONTEXT_MPLUS,
+    CandidateFit,
+    _mplus_timed_experience_fit,
     _package_score_for_member_scores,
     candidate_fit,
     package_fit,
@@ -20,6 +22,13 @@ from applicant_scout.wcl import _process_encounter_ranks
 
 
 DUNGEONS = tuple(display_name for _alias, _encounter, display_name in MPLUS_ENCOUNTERS)
+
+
+def _timed_fit(applicant: Applicant, listing: Listing) -> CandidateFit:
+    """Exercise the independent E component; combined output has separate tests."""
+    return _mplus_timed_experience_fit(applicant, listing) or CandidateFit(
+        context=CONTEXT_MPLUS, target_key=listing.key_level,
+    )
 
 
 def _listing(target: int) -> Listing:
@@ -88,7 +97,10 @@ def test_better_additional_wcl_run_cannot_reduce_fit(target: int) -> None:
     applicant.mplus_dps_breakdown = [asdict(before)]
     improved = replace(applicant, mplus_dps_breakdown=[asdict(after)])
 
-    assert candidate_fit(improved, _listing(target)).score == candidate_fit(
+    assert candidate_fit(improved, _listing(target)).score > candidate_fit(
+        applicant, _listing(target)
+    ).score
+    assert _timed_fit(improved, _listing(target)).score == _timed_fit(
         applicant, _listing(target)
     ).score
 
@@ -103,7 +115,7 @@ def test_same_history_does_not_fit_an_easier_key_less(
         [(target, 10, 10, 3), (target + 2, 80, 80, 3)],
     )
 
-    assert candidate_fit(applicant, _listing(target - easier_by)).score >= candidate_fit(
+    assert _timed_fit(applicant, _listing(target - easier_by)).score >= _timed_fit(
         applicant, _listing(target)
     ).score
 
@@ -121,7 +133,7 @@ def test_unknown_timing_logged_key_cannot_change_verified_timed_readiness(
         [(target, 10, 10, 3), (target + 3, 80, 80, 3)],
     )
 
-    assert candidate_fit(improved, _listing(target)).score == candidate_fit(
+    assert _timed_fit(improved, _listing(target)).score == _timed_fit(
         applicant, _listing(target)
     ).score
 
@@ -145,8 +157,8 @@ def test_unverified_wcl_coverage_does_not_establish_timed_readiness(
         {**entry, "parse_percent": 80, "median_percent": 80}
         for entry in applicant.mplus_dps_breakdown
     ])
-    fit = candidate_fit(applicant, _listing(12))
-    positive_fit = candidate_fit(positive, _listing(12))
+    fit = _timed_fit(applicant, _listing(12))
+    positive_fit = _timed_fit(positive, _listing(12))
 
     assert not fit.is_available
     assert not positive_fit.is_available
@@ -171,7 +183,7 @@ def test_repeated_wcl_logs_do_not_raise_timed_readiness_evidence() -> None:
         {**entry, "run_count": 3} for entry in applicant.mplus_dps_breakdown
     ])
 
-    assert candidate_fit(repeated, _listing(12)).confidence == candidate_fit(
+    assert _timed_fit(repeated, _listing(12)).confidence == _timed_fit(
         applicant, _listing(12)
     ).confidence
 
@@ -254,8 +266,8 @@ def test_mplus_experience_fit_is_independent_of_damage_and_role(
         cls=cls,
         spec_id=spec_id,
     )
-    fit = candidate_fit(applicant, _listing(12))
-    baseline_fit = candidate_fit(baseline, _listing(12))
+    fit = _timed_fit(applicant, _listing(12))
+    baseline_fit = _timed_fit(baseline, _listing(12))
 
     assert fit.is_available
     assert fit.score == baseline_fit.score
@@ -309,8 +321,8 @@ def test_untimed_summary_and_unknown_timing_wcl_cannot_create_timed_readiness() 
     )
 
     for target in (2, 11, 12):
-        assert not candidate_fit(applicant, _listing(target)).is_available
-        assert not candidate_fit(without_summary, _listing(target)).is_available
+        assert not _timed_fit(applicant, _listing(target)).is_available
+        assert not _timed_fit(without_summary, _listing(target)).is_available
 
 
 @pytest.mark.parametrize(
@@ -349,7 +361,7 @@ def test_named_experience_fit_decreases_consistently_across_target_grid(
         }
         for name, key in zip(DUNGEONS, levels, strict=True)
     ]
-    scores = [candidate_fit(applicant, _listing(target)).score for target in range(2, 25)]
+    scores = [_timed_fit(applicant, _listing(target)).score for target in range(2, 25)]
 
     assert all(
         harder <= easier
@@ -425,7 +437,7 @@ def test_seeded_mixed_named_evidence_preserves_experience_invariants() -> None:
             logs.append({"name": name, "brackets": brackets})
         applicant.mplus_dps_breakdown = logs
         scores = [
-            candidate_fit(applicant, _listing(target)).score for target in range(2, 25)
+            _timed_fit(applicant, _listing(target)).score for target in range(2, 25)
         ]
         assert all(
             harder <= easier + 1e-9 for easier, harder in zip(scores, scores[1:])
@@ -440,20 +452,20 @@ def test_seeded_mixed_named_evidence_preserves_experience_invariants() -> None:
         for entry in high_damage.mplus_dps_breakdown:
             for bracket in entry["brackets"]:
                 bracket.update(parse_percent=100, median_percent=100)
-        assert candidate_fit(low_damage, _listing(target)).score == candidate_fit(
+        assert _timed_fit(low_damage, _listing(target)).score == _timed_fit(
             high_damage, _listing(target)
         ).score, (index, "damage")
 
         if logs:
             stronger = deepcopy(applicant)
             stronger.mplus_dps_breakdown[0]["brackets"][0]["key_level"] += 1
-            assert candidate_fit(stronger, _listing(target)).score == candidate_fit(
+            assert _timed_fit(stronger, _listing(target)).score == _timed_fit(
                 applicant, _listing(target)
             ).score, (index, "key")
         if applicant.rio_dungeons:
             stronger_timed = deepcopy(applicant)
             stronger_timed.rio_dungeons[0]["key_level"] += 1
-            assert candidate_fit(stronger_timed, _listing(target)).score + 1e-9 >= candidate_fit(
+            assert _timed_fit(stronger_timed, _listing(target)).score + 1e-9 >= _timed_fit(
                 applicant, _listing(target)
             ).score, (index, "timed key")
 
@@ -580,8 +592,8 @@ def test_arbitrary_untimed_counts_and_wcl_keys_cannot_change_timed_fit(
             for index, name in enumerate(DUNGEONS)
         ],
     )
-    before = candidate_fit(baseline, _listing(12))
-    after = candidate_fit(affected, _listing(12))
+    before = _timed_fit(baseline, _listing(12))
+    after = _timed_fit(affected, _listing(12))
 
     assert after.is_available
     assert after.score == before.score

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 
 from .constants import (
@@ -40,6 +40,14 @@ MPLUS_SCORE_KEY_MAX = 48.0
 MPLUS_SCORE_CARRY_MAX = 34.0
 MPLUS_SCORE_SAME_MAX = 3.0
 MPLUS_SCORE_CONSISTENCY_MAX = 4.0
+MPLUS_TIMED_INDEX_MAX = (
+    MPLUS_SCORE_KEY_MAX + MPLUS_SCORE_CARRY_MAX
+    + MPLUS_SCORE_SAME_MAX + MPLUS_SCORE_CONSISTENCY_MAX
+)
+# Logged output remains primary; timed experience corroborates at most 20%
+# of the remaining score headroom. This is a heuristic, not a probability.
+MPLUS_TIMED_CORROBORATION_MAX = 0.20
+MPLUS_LIMIT_NO_TIMED_HISTORY = "no_timed_history"
 
 FIT_LABEL_BUCKETS: list[tuple[float, str]] = [
     (85.0, "TOP"),
@@ -79,6 +87,13 @@ class CandidateFit:
     raid_kill_count: int = 0
     evidence_note: str = ""
     evidence_source: str = ""
+    wcl_score: float | None = None
+    timed_experience_score: float | None = None
+    wcl_dungeon_count: int = 0
+    wcl_key_min: int = 0
+    wcl_key_max: int = 0
+    wcl_run_count: int | None = None
+    wcl_all_single_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -563,11 +578,86 @@ def _mplus_candidate_fit(applicant: Applicant, listing: Listing) -> CandidateFit
         context=CONTEXT_MPLUS,
         target_key=listing.key_level,
         source="rio",
-        evidence_note="No verified in-time key history available.",
+        evidence_note="No comparable applying-spec WCL output or verified in-time key history available.",
     )
 
 
 def _mplus_scorecard_candidate_fit(
+    applicant: Applicant, listing: Listing
+) -> CandidateFit | None:
+    """Combine comparable applying-spec output with separate timed experience."""
+    timed = _mplus_timed_experience_fit(applicant, listing)
+    rows = (
+        [row for row in mplus_performance_rows(applicant, listing)
+         if row.best_percent is not None
+         and 2 <= row.key_level <= 63
+         and abs(row.key_level - listing.key_level) <= 2]
+        if positive_int(applicant.spec_id) in SPEC_ID_TO_WCL_NAME
+        else []
+    )
+    if not rows:
+        if timed is None:
+            return None
+        return replace(
+            timed,
+            source="mplus_timed_only",
+            timed_experience_score=timed.score,
+            limit_reason=MPLUS_LIMIT_NO_RELEVANT_WCL,
+            evidence_note=(
+                "No comparable applying-spec WCL output within two key levels. "
+                "This estimate uses verified in-time key experience only."
+            ),
+        )
+
+    performance = sum(_clamp(row.score, 0.0, 100.0) for row in rows) / len(rows)
+    experience = timed.score if timed is not None else None
+    score = performance
+    if experience is not None:
+        score += (
+            MPLUS_TIMED_CORROBORATION_MAX * (experience / MPLUS_TIMED_INDEX_MAX)
+            * (100.0 - performance)
+        )
+    base = timed or CandidateFit(context=CONTEXT_MPLUS, target_key=listing.key_level)
+    target_dungeons = listing_dungeon_keys(listing)
+    same_row = next(
+        (row for row in rows if normalise_dungeon_name(row.dungeon_name) in target_dungeons),
+        None,
+    )
+    run_count = sum(row.run_count for row in rows) if all(row.run_count > 0 for row in rows) else None
+    display = str(int(round(score)))
+    if base.primary_key:
+        display += f" +{base.primary_key}"
+    return replace(
+        base,
+        is_available=True,
+        score=score,
+        source="mplus_combined" if timed is not None else "mplus_wcl_only",
+        display=display,
+        colour=fit_colour(score),
+        wcl_score=performance,
+        timed_experience_score=experience,
+        wcl_dungeon_count=len(rows),
+        wcl_key_min=min(row.key_level for row in rows),
+        wcl_key_max=max(row.key_level for row in rows),
+        wcl_run_count=run_count,
+        wcl_all_single_run=all(row.run_count == 1 for row in rows),
+        has_same_dungeon_context=_has_specific_mplus_dungeon(listing),
+        same_dungeon_wcl_key=same_row.key_level if same_row is not None else 0,
+        same_dungeon_wcl_best=same_row.best_percent if same_row is not None else None,
+        same_dungeon_wcl_median=same_row.median_percent if same_row is not None else None,
+        same_dungeon_wcl_run_count=same_row.run_count if same_row is not None else 0,
+        limit_reason=base.limit_reason if timed is not None else MPLUS_LIMIT_NO_TIMED_HISTORY,
+        evidence_source="WCL DPS + RIO in-time keys" if timed is not None else "WCL DPS",
+        evidence_note=(
+            "Applying-spec WCL output within two key levels is primary; verified in-time "
+            "experience corroborates at most 20% of remaining score headroom."
+            if timed is not None else
+            "Applying-spec WCL output within two key levels; timed-key history is unknown."
+        ),
+    )
+
+
+def _mplus_timed_experience_fit(
     applicant: Applicant, listing: Listing
 ) -> CandidateFit | None:
     """Estimate target readiness from the character's verified in-time RIO keys.

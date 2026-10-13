@@ -298,7 +298,8 @@ class DungeonPerf:
 
     brackets: all key-level summaries from the same WCL response. The top-level
     fields stay highest-key/back-compat. These logged performance brackets do
-    not establish in-time completions and do not contribute to readiness Fit."""
+    not establish in-time completions. Nearby brackets supply Fit's output
+    component; verified timer experience comes from RaiderIO."""
 
     name: str
     parse_percent: Optional[float]

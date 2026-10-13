@@ -80,6 +80,7 @@ from .constants import (
     ROLE_COLOURS,
     ROLE_GLYPHS,
     ROLE_LABELS,
+    SPEC_ID_TO_WCL_NAME,
     SPEC_SHORT_NAMES,
     mplus_dungeon_name_for_challenge_map_id,
     percentile_colour,
@@ -105,6 +106,7 @@ from .scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
     MPLUS_LIMIT_BELOW_TARGET,
+    MPLUS_LIMIT_NO_RELEVANT_WCL,
     MPLUS_LIMIT_NO_SAME_DUNGEON,
     MPLUS_LIMIT_SPARSE_COVERAGE,
     CandidateFit,
@@ -118,6 +120,7 @@ from .scoring import (
     positive_int,
     role_mplus_view,
     safe_percent,
+    wcl_scope_usable,
 )
 from .screenshot import is_wire_version_reject_reason
 from .updater import UpdateProgress
@@ -477,7 +480,7 @@ HEADER_TOOLTIPS: list[str] = [
     "WCL best / median averages from the dungeon brackets shown in details, "
     "then their logged key range.\n"
     "Near the target key when available; highest logged keys when there is no target.\n"
-    "DPS for every role, including healers. These logs do not affect M+ Fit.",
+    "DPS for every role, including healers. Nearby selected brackets feed M+ Fit.",
     "Target estimate (0–100); not a WCL percentile, overall skill, or success probability.\n"
     "G3 = 3 players. Group estimate on the left; individual on the right.\n"
     "Partial groups have no combined estimate.",
@@ -485,10 +488,11 @@ HEADER_TOOLTIPS: list[str] = [
 
 
 MPLUS_FIT_EXPLANATION = (
-    "Fit estimates readiness at this key level from verified in-time RaiderIO keys.\n"
-    "Untimed completions, WCL logs and general rating do not affect Fit.\n"
+    "Fit combines applying-spec WCL damage around this key with verified in-time RaiderIO experience.\n"
+    "Nearby logged performance is primary; timed experience provides bounded additional support.\n"
+    "With one source available, the estimate identifies that source. Missing evidence is not a zero result.\n"
+    "Only in-time RaiderIO keys establish successful completions; WCL logs do not establish timer success.\n"
     "It is not a WCL parse percentile or a success probability.\n"
-    "Damage parses stay separate and do not change M+ Fit.\n"
     "M+ parses measure damage, not healing, survival, or utility."
 )
 
@@ -3588,16 +3592,22 @@ class ApplicantInfoPanel(QFrame):
             or not current_fit.display
         ):
             return ""
-        source = "RaiderIO in-time keys"
+        source = current_fit.evidence_source.replace("RIO in-time keys", "RaiderIO in-time keys")
         parts = [f"Target +{current_fit.target_key}"]
         if current_fit.best_nearby_key > 0:
-            parts.append(f"best nearby +{current_fit.best_nearby_key}")
-        else:
-            parts.append("no nearby key evidence")
+            parts.append(f"best nearby timed +{current_fit.best_nearby_key}")
+        elif current_fit.timed_experience_score is not None:
+            parts.append("no nearby timed key evidence")
 
         same_dungeon = []
         if current_fit.same_dungeon_rio_key > 0:
             same_dungeon.append(f"RIO timed +{current_fit.same_dungeon_rio_key}")
+        if current_fit.same_dungeon_wcl_key > 0:
+            metric = _presenters.mplus_metric_display_text(
+                current_fit.same_dungeon_wcl_best, current_fit.same_dungeon_wcl_median,
+                current_fit.same_dungeon_wcl_run_count,
+            )
+            same_dungeon.append(f"WCL +{current_fit.same_dungeon_wcl_key} {metric}")
         if same_dungeon:
             parts.append(f"same dungeon {' / '.join(same_dungeon)}")
         elif (
@@ -3610,10 +3620,12 @@ class ApplicantInfoPanel(QFrame):
             MPLUS_LIMIT_BELOW_TARGET: "best key below target",
             MPLUS_LIMIT_SPARSE_COVERAGE: "sparse coverage",
             MPLUS_LIMIT_NO_SAME_DUNGEON: "no same-dungeon evidence",
+            MPLUS_LIMIT_NO_RELEVANT_WCL: "no nearby WCL logs",
+            "no_timed_history": "timed history unknown",
         }.get(current_fit.limit_reason, "")
         if limit_text:
             parts.append(f"limit: {limit_text}")
-        evidence_line = f"{_presenters.fit_evidence_text(current_fit)} · {source}"
+        evidence_line = f"Source: {source}\n{_presenters.fit_evidence_text(current_fit)}"
         return f"{' · '.join(parts)}\n{evidence_line}"
 
     def _set_detail_row_widths(
@@ -9196,11 +9208,13 @@ def _fit_cell_visuals(
 ) -> tuple[str, str | None, str | None]:
     current_fit = fit or candidate_fit(applicant, listing)
     if current_fit.context not in {CONTEXT_RAID, CONTEXT_MPLUS} or not current_fit.is_available:
-        pending_raid = (
+        pending_evidence = applicant.fetch_status in {"loading", "pending"} and (
             current_fit.context == CONTEXT_RAID
-            and applicant.fetch_status in {"loading", "pending"}
+            or (current_fit.context == CONTEXT_MPLUS
+                and positive_int(applicant.spec_id) in SPEC_ID_TO_WCL_NAME
+                and wcl_scope_usable(applicant, "mplus"))
         )
-        return "…" if pending_raid else "—", "#888", None
+        return "…" if pending_evidence else "—", "#888", None
     text = f"~{int(round(current_fit.score))}"
     background = fit_colour(current_fit.score)
     return text, _text_colour_for_bg(background), background
@@ -9346,7 +9360,7 @@ def _mplus_display_tooltip(applicant: Applicant, listing: Listing | None = None)
         )
     if summary.median is None:
         explanation += "\nNo complete repeat-run median for these selected dungeon samples."
-    explanation += "\nCurrent-specialization damage percentiles for every role; these logs do not change M+ Fit."
+    explanation += "\nCurrent-specialization damage percentiles for every role; selected nearby brackets also feed M+ Fit."
     return explanation
 
 

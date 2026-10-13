@@ -92,17 +92,21 @@ Before you click **Create**, the form should look like this:
 
 ## Overlay Data
 
-Fit uses coloured estimate bands for quick comparison. M+ Fit describes verified in-time experience relative
-to your target key; raid Fit describes available output evidence for the selected
-difficulty. Neither is an overall skill rating, WCL percentile or success
+Fit uses coloured estimate bands for quick comparison. M+ Fit combines applying-spec
+WCL damage around your target key with verified in-time RaiderIO experience;
+raid Fit describes available output evidence for the selected difficulty.
+Neither is an overall skill rating, WCL percentile or success
 probability. Missing evidence stays unknown, and grouped applications show a
 combined estimate only when all members have one.
 
 M+ WCL values measure damage for every role, including healers and tanks. They do
-not measure healing, survival, interrupts or utility, and do not change M+ Fit.
+not measure healing, survival, interrupts or utility. Nearby logged performance is
+the primary part of M+ Fit; timed experience provides additional support.
 With a known target key, the M+ summary and dungeon details use the same logged
-brackets and show their selected key range. Without a target, the summary uses
-each dungeon's highest logged bracket.
+brackets and show their selected key range. Fit uses those selected brackets
+within two levels of the target; farther fallback logs remain visible as context.
+When only one source is available, Fit identifies it. Without a target, the
+summary uses each dungeon's highest logged bracket.
 Raid healers use HPS; other raid roles use DPS. Results belong to the applying
 specialization. Recorded coverage and available sample counts remain visible.
 
