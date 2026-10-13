@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from applicant_scout.compatibility import (
+    LATEST_SUPPORTED_ADDON_VERSION,
     MINIMUM_ADDON_VERSION,
     PAIRED_ADDON_VERSION,
     _parse_semver,
@@ -26,14 +27,14 @@ def test_paired_addon_version_is_accepted():
 
 
 def test_newer_addon_version_warns_to_update_companion():
-    paired = _parse_semver(PAIRED_ADDON_VERSION)
-    assert paired is not None
-    newer = f"{paired[0]}.{paired[1] + 1}.0"
+    supported = _parse_semver(LATEST_SUPPORTED_ADDON_VERSION)
+    assert supported is not None
+    newer = f"{supported[0]}.{supported[1]}.{supported[2] + 1}"
     warning = addon_version_warning(newer)
 
     assert warning is not None
     assert newer in warning
-    assert PAIRED_ADDON_VERSION in warning
+    assert LATEST_SUPPORTED_ADDON_VERSION in warning
     assert "/reload" in warning
 
 

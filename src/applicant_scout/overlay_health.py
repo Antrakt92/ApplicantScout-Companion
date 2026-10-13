@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from . import ui_text
+from .compatibility import COMPANION_UPDATE_ACTION
 from .wcl import (
     WCL_ERROR_AUTH,
     WCL_ERROR_GRAPHQL,
@@ -261,7 +262,7 @@ def health_chip_state(
         if app_update_version and not install_in_progress:
             detail += "\n" + app_update_message(app_update_version)
         return HealthChipState(
-            text="Addon update",
+            text="App update" if COMPANION_UPDATE_ACTION in addon_warning else "Addon update",
             chip_state="warning",
             tooltip=detail,
             accessible=detail,
