@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from applicant_scout.constants import MPLUS_ENCOUNTERS
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from applicant_scout.state import (
     DEFAULT_WINDOW_HEIGHT,
@@ -110,6 +111,11 @@ def _healer_breakdown() -> list[dict]:
     ]
 
 
+def _timed_dungeon_rows(level: int) -> list[dict]:
+    return [{"name": name, "key_level": level, "timed": True}
+            for _alias, _encounter_id, name in MPLUS_ENCOUNTERS]
+
+
 def build_overlay_visual_state() -> AppState:
     state = AppState()
     state.listing = Listing(
@@ -126,6 +132,7 @@ def build_overlay_visual_state() -> AppState:
         _app(
             applicant_id="10:1",
             name="ScoutTank-Example",
+            rio_dungeons=_timed_dungeon_rows(17),
             cls="PALADIN",
             spec_id=66,
             ilvl=662,
@@ -140,6 +147,7 @@ def build_overlay_visual_state() -> AppState:
         _app(
             applicant_id="10:2",
             name="ScoutHealer-Example",
+            rio_dungeons=_timed_dungeon_rows(16),
             cls="DRUID",
             spec_id=105,
             ilvl=660,
@@ -161,6 +169,7 @@ def build_overlay_visual_state() -> AppState:
         _app(
             applicant_id="10:3",
             name="ScoutMage-Example",
+            rio_dungeons=_timed_dungeon_rows(15),
             cls="MAGE",
             spec_id=63,
             ilvl=658,
@@ -171,7 +180,7 @@ def build_overlay_visual_state() -> AppState:
             mplus_dps=88.0,
             mplus_dps_median=75.0,
         ),
-        _app(),
+        _app(rio_dungeons=_timed_dungeon_rows(14)),
         _app(
             applicant_id="30:1",
             name="ScoutQueued-Example",
@@ -312,6 +321,7 @@ def build_raid_listing_visual_state() -> AppState:
         _app(
             applicant_id="10:1",
             name="ScoutTank-Example",
+            rio_dungeons=_timed_dungeon_rows(17),
             cls="PALADIN",
             spec_id=66,
             ilvl=662,
@@ -326,11 +336,14 @@ def build_raid_listing_visual_state() -> AppState:
             mplus_dps_median=66.0,
             raid_boss_parses=_raid_boss_parses(),
             rio_raid_progress=_raid_progress(),
+            raid_evidence={"H": {"boss_count": 4, "total_bosses": 9,
+                                 "sample_known": True, "kill_count": 5}},
             wcl_metric_preferences=prefs,
         ),
         _app(
             applicant_id=VISUAL_FIXTURE_PINNED_ID,
             name="ScoutHealer-Example",
+            rio_dungeons=_timed_dungeon_rows(16),
             cls="DRUID",
             spec_id=105,
             ilvl=660,
@@ -350,11 +363,14 @@ def build_raid_listing_visual_state() -> AppState:
             mplus_hps_breakdown=[],
             raid_boss_parses=_raid_boss_parses(),
             rio_raid_progress=_raid_progress(),
+            raid_evidence={"H": {"boss_count": 4, "total_bosses": 9,
+                                 "sample_known": True, "kill_count": 5}},
             wcl_metric_preferences=prefs,
         ),
         _app(
             applicant_id="10:3",
             name="ScoutMage-Example",
+            rio_dungeons=_timed_dungeon_rows(15),
             cls="MAGE",
             spec_id=63,
             ilvl=658,
@@ -368,6 +384,8 @@ def build_raid_listing_visual_state() -> AppState:
             mplus_dps_median=75.0,
             raid_boss_parses=_raid_boss_parses(),
             rio_raid_progress=_raid_progress(),
+            raid_evidence={"H": {"boss_count": 4, "total_bosses": 9,
+                                 "sample_known": True, "kill_count": 5}},
             wcl_metric_preferences=prefs,
         ),
     ]
@@ -400,6 +418,7 @@ def build_party_visual_state(*, include_listing: bool) -> AppState:
             1,
             applicant_id="party:tank",
             name="PartyTank-Example",
+            rio_dungeons=_timed_dungeon_rows(17),
             cls="PALADIN",
             spec_id=66,
             role="TANK",
@@ -414,6 +433,7 @@ def build_party_visual_state(*, include_listing: bool) -> AppState:
             2,
             applicant_id="party:healer",
             name="ScoutHealer-Example",
+            rio_dungeons=_timed_dungeon_rows(16),
             cls="DRUID",
             spec_id=105,
             role="HEALER",
@@ -429,6 +449,7 @@ def build_party_visual_state(*, include_listing: bool) -> AppState:
             3,
             applicant_id="party:dps",
             name="ScoutMage-Example",
+            rio_dungeons=_timed_dungeon_rows(15),
             cls="MAGE",
             spec_id=63,
             role="DAMAGER",

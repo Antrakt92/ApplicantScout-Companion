@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from applicant_scout import overlay, scoring
-from applicant_scout.constants import percentile_colour
 from applicant_scout.state import AppState, Listing, RosterMember
 
 
@@ -55,7 +54,7 @@ def test_raid_party_without_listing_has_fit_for_selected_difficulty(
     assert win._raid_boss_fetches_in_flight == {}
 
 
-def test_difficulty_refresh_repaints_fit_colour_and_resorts_without_switching_tabs(qtbot, tmp_path):
+def test_difficulty_refresh_updates_fit_and_resorts_without_switching_tabs(qtbot, tmp_path):
     first, second = _member("First-Realm", 14), _member("Second-Realm", 14)
     second.raid_normal, second.raid_normal_median = 10, 10
     second.raid_mythic, second.raid_mythic_median = 99, 99
@@ -76,8 +75,8 @@ def test_difficulty_refresh_repaints_fit_colour_and_resorts_without_switching_ta
     fit = scoring.candidate_fit(first, win._effective_listing())
     assert item.text() == f"~{round(fit.score)}"
     assert item.text() != normal_text
-    assert item.background().color().name() == percentile_colour(round(fit.score))
-    assert item.background().color().name() != normal_colour
+    assert item.background().color().name() == overlay.FIT_ESTIMATE_BACKGROUND
+    assert item.background().color().name() == normal_colour
     assert win._sort_by_tab["party"] == (overlay.COL_FIT, True)
 
 

@@ -40,3 +40,10 @@ and generated visual fixtures.
   [get_mplus_activity_ids.py](../scripts/seasonal/get_mplus_activity_ids.py).
 - Seasonal M+ challenge-map helper:
   [get_mplus_challenge_map_ids.py](../scripts/seasonal/get_mplus_challenge_map_ids.py).
+
+- Seasonal RaiderIO colour refresh: run
+  `./scripts/seasonal/refresh-rio-score-tiers.ps1 -Season <season slug> -SeasonName "<season name>"`.
+  Review the generated palette and update it together with the seasonal constants.
+  Add `-Check` for a public, read-only comparison with the provider; it does not
+  require Warcraft Logs credentials or spend WCL quota. The bundled palette is
+  a dated snapshot, so it can change during a season.

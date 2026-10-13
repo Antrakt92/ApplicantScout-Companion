@@ -259,7 +259,8 @@ def sort_applicants_grouped_with_package_fits(
     candidate_fits: dict[str, CandidateFit] = {}
     group_max: dict[str, int] = {}
     group_fit: dict[str, float] = {}
-    group_confidence: dict[str, float] = {}
+    group_complete: dict[str, bool] = {}
+    group_evidence: dict[str, tuple[int, int]] = {}
     group_parse: dict[str, float | None] = {}
     group_has_ready: dict[str, bool] = {}
     group_has_provisional: dict[str, bool] = {}
@@ -309,33 +310,38 @@ def sort_applicants_grouped_with_package_fits(
                 for member, member_fit in zip(members, fit.member_fits, strict=True):
                     candidate_fits[member.applicant_id] = member_fit
             group_fit[raw_aid] = fit.score
-            group_confidence[raw_aid] = fit.confidence
+            group_complete[raw_aid] = fit.is_complete
+            group_evidence[raw_aid] = (
+                min((member.relevant_dungeon_count or member.raid_boss_count
+                     for member in fit.member_fits), default=0),
+                min((member.evidence_count or member.raid_kill_count
+                     for member in fit.member_fits), default=0),
+            )
             group_parse[raw_aid] = fit.parse_percentile
 
     def _key(applicant: Applicant):
         raw_aid, member_idx = split_composite(applicant.applicant_id)
         group_rio = group_max.get(raw_aid, 0)
         group_score = group_fit.get(raw_aid, 0.0)
-        group_confidence_score = group_confidence.get(raw_aid, 0.0)
+        complete = group_complete.get(raw_aid, False)
+        coverage_count, sample_count = group_evidence.get(raw_aid, (0, 0))
         parse_percentile = group_parse.get(raw_aid)
         all_sunk = not group_has_ready.get(raw_aid, False)
         provisional = group_has_provisional.get(raw_aid, False)
         sunk = applicant.fetch_status in _SUNK_STATES
         if use_fit:
-            no_fit = group_score <= 0.0
             return (
-                parse_percentile is None,
-                -parse_percentile if parse_percentile is not None else 0.0,
-                no_fit,
-                provisional if not no_fit else False,
-                all_sunk if no_fit else False,
-                -int(round(group_score)),
-                -group_confidence_score,
-                -group_score,
-                -group_rio,
+                not complete,
+                -int(round(group_score)) if complete else 0,
+                -coverage_count if complete else 0,
+                -sample_count if complete else 0,
+                -group_score if complete else 0,
+                provisional if not complete else False,
+                all_sunk if not complete else False,
+                -group_rio if not complete else 0,
                 raw_aid,
                 member_idx,
-                sunk,
+                sunk if not complete else False,
             )
         if use_parse:
             return (

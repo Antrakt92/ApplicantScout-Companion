@@ -138,6 +138,11 @@ def _listing() -> Listing:
     )
 
 
+def _timed_app(*, key: int = 14, dungeon: str = "Skyreach", **overrides) -> Applicant:
+    overrides.setdefault("rio_dungeons", [{"name": dungeon, "key_level": key}])
+    return _app(**overrides)
+
+
 def _raid_listing(difficulty_id: int = 16) -> Listing:
     return Listing(
         activity_id=0,
@@ -666,7 +671,7 @@ def test_summary_flow_combines_fit_metrics_and_history(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     panel.setApplicantData(
-        _app(rio_previous_score=3485, rio_previous_season=0),
+        _timed_app(rio_previous_score=3485, rio_previous_season=0),
         _listing(),
     )
 
@@ -2367,13 +2372,13 @@ def test_panel_renders_rio_fit_badge_when_wcl_has_no_logs(qtbot):
     assert "RaiderIO only" in panel._status_label.text()
     assert panel._metric_labels["Fit"].text().startswith("Fit · +16:")
     fit = scoring_mod.candidate_fit(app, listing)
-    assert panel._metric_labels["Fit"].text() == f"Fit · +16: ~{round(fit.score)}"
+    assert panel._metric_labels["Fit"].text() == f"Fit · +16: ~{round(fit.score)} · 8/8 timed dungeons"
     assert "DPS" not in panel._metric_labels["Fit"].text()
     assert panel._metric_labels["M+"].isHidden()
     assert "RIO" not in panel._metric_labels["Fit"].text()
 
 
-def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
+def test_panel_explains_solo_mplus_observed_coverage_and_source(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     listing = _listing()
@@ -2400,12 +2405,14 @@ def test_panel_explains_solo_mplus_fit_confidence_and_source(qtbot):
     assert panel._status_label.isHidden()
     assert panel._mplus_fit_status_text(app, listing) in panel._metric_labels["Fit"].toolTip()
     assert panel._mplus_fit_status_text(app, listing) == (
-        "Target +16 · best nearby +16 · same dungeon RIO +16\n"
-        "Evidence strength 75% · 8/8 qualifying dungeons · RaiderIO only"
+        "Target +16 · best nearby +16 · same dungeon RIO timed +16\n"
+        "8/8 dungeons timed · 8 timed at +15 or higher · "
+        "Target-key readiness estimate from verified in-time runs only. "
+        "Untimed completions, WCL logs and general rating do not affect Fit. · RaiderIO in-time keys"
     )
 
 
-def test_panel_explains_missing_nearby_and_same_dungeon_evidence(qtbot):
+def test_panel_hides_fit_when_rating_has_no_timed_history(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     app = _app(
@@ -2420,23 +2427,24 @@ def test_panel_explains_missing_nearby_and_same_dungeon_evidence(qtbot):
 
     panel.setApplicantData(app, _listing())
 
-    assert "no nearby key evidence" in panel._metric_labels["Fit"].toolTip()
-    assert "no same-dungeon evidence" in panel._metric_labels["Fit"].toolTip()
-    assert "limit: score-only evidence" in panel._metric_labels["Fit"].toolTip()
-    assert "Evidence strength 30%" in panel._metric_labels["Fit"].toolTip()
+    assert panel._metric_labels["Fit"].isHidden()
+    assert panel._metric_labels["Fit"].toolTip() == ""
+    assert panel._metric_labels["Fit"].accessibleDescription() == ""
+    assert panel._rio_label.text() == "RIO 2443"
 
 
 def test_fit_explanation_is_available_to_mouse_and_clears_with_context(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
-    panel.setApplicantData(_app(), _listing())
+    panel.setApplicantData(_timed_app(), _listing())
 
     badge = panel._metric_labels["Fit"]
     assert badge.text().startswith("Fit · +16:")
     assert badge in panel.tooltip_widgets()
     assert "not a WCL parse percentile" in badge.toolTip()
     assert "success probability" in badge.accessibleDescription()
-    assert "\nEvidence strength" in badge.toolTip()
+    assert "dungeons timed" in badge.toolTip()
+    assert "Evidence strength" not in badge.toolTip()
     assert panel._status_label.isHidden()
 
     panel.setApplicantData(_app(), None)
@@ -2455,13 +2463,13 @@ def test_zero_fit_keeps_evidence_and_damage_metric_explanation(qtbot, role):
         score=0,
         main_score=0,
         rio_profile=False,
-        rio_dungeons=[],
+        rio_dungeons=[{"name": "Skyreach", "key_level": 5}],
         rio_best_key=0,
         rio_best_dungeon_key=0,
         mplus_dps=20,
         mplus_dps_median=20,
         mplus_dps_breakdown=[{
-            "name": "Skyreach", "key_level": 16, "parse_percent": 20,
+            "name": "Skyreach", "key_level": 5, "parse_percent": 20,
             "median_percent": 20, "run_count": 3,
         }],
     )
@@ -2470,9 +2478,10 @@ def test_zero_fit_keeps_evidence_and_damage_metric_explanation(qtbot, role):
 
     panel.setApplicantData(applicant, listing)
 
-    assert panel._metric_labels["Fit"].text() == "Fit · +16: ~0"
-    assert panel._metric_labels["M+"].text() == "M+ DPS 20/20 +16"
-    assert "same dungeon WCL +16" in panel._metric_labels["Fit"].toolTip()
+    assert panel._metric_labels["Fit"].text() == "Fit · +16: ~0 · 1/8 timed dungeons"
+    assert panel._metric_labels["M+"].text() == "M+ DPS 20/20 +5"
+    assert "same dungeon RIO timed +5" in panel._metric_labels["Fit"].toolTip()
+    assert "same dungeon WCL" not in panel._metric_labels["Fit"].toolTip()
     assert "limit:" in panel._metric_labels["Fit"].toolTip()
     assert "measure damage" in panel._metric_labels["Fit"].toolTip()
     assert "healing, survival, or utility" in panel._metric_labels["Fit"].toolTip()
@@ -2482,7 +2491,8 @@ def test_group_explanation_uses_overlay_tooltip_routing(qtbot, tmp_path, monkeyp
     client = WCLClient(WCLAuth("client", "secret", tmp_path))
     window = OverlayWindow(AppState(), client, CharacterCache(tmp_path), tmp_path)
     qtbot.addWidget(window)
-    package = PackageFit(score=73.0, display="G2 FIT 73", size=2, confidence=0.68)
+    package = PackageFit(score=73.0, display="G2 FIT 73", size=2,
+                         is_complete=True, available_count=2)
     window._panel.setApplicantData(_app(), package=package)
     label = window._panel._package_label
     rendered = []
@@ -2497,7 +2507,7 @@ def test_group_explanation_uses_overlay_tooltip_routing(qtbot, tmp_path, monkeyp
         assert label in window._action_tooltip_widgets
         assert window.eventFilter(label, event)
         assert rendered == [(label, label.toolTip(), position)]
-        assert "weakest member" in label.toolTip()
+        assert "every member's target evidence" in label.toolTip()
         window._panel.setApplicantData(_app(), package=None)
         assert label.toolTip() == ""
     finally:
@@ -2508,7 +2518,8 @@ def test_group_explanation_uses_overlay_tooltip_routing(qtbot, tmp_path, monkeyp
 def test_panel_keeps_grey_same_dungeon_quality_visible(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
-    app = _app(
+    app = _timed_app(
+        key=20,
         mplus_dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -2524,15 +2535,21 @@ def test_panel_keeps_grey_same_dungeon_quality_visible(qtbot):
 
     text = panel._metric_labels["Fit"].toolTip()
     assert "no nearby key evidence" in text
-    assert "same dungeon WCL +20 31 1 run" in text
-    assert "limit: weak WCL evidence" in text
+    assert "same dungeon RIO timed +20" in text
+    assert "same dungeon WCL" not in text
+    assert "limit: sparse coverage" in text
+    assert "Damage parses stay separate" in text
+    assert panel._dungeon_rows[0][3].text() == "31"
+    assert "1 logged run" in panel._dungeon_rows[0][3].toolTip()
+    assert panel._dungeon_rows[0][2].text() == "+20"
 
 
 def test_panel_does_not_label_far_key_as_nearby_and_omits_generic_dungeon(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     listing = replace(_listing(), activity_id=0, dungeon_name="Mythic+")
-    app = _app(
+    app = _timed_app(
+        key=20, dungeon="Pit of Saron",
         mplus_dps_breakdown=[
             {
                 "name": "Pit of Saron",
@@ -2564,7 +2581,7 @@ def test_panel_accessibility_metadata_tracks_mplus_raid_and_error_status(qtbot):
     )
     qtbot.addWidget(panel)
 
-    panel.setApplicantData(_app(), _listing())
+    panel.setApplicantData(_timed_app(), _listing())
 
     assert panel._status_label.accessibleName() == ""
     assert panel._status_label.isHidden()
@@ -2607,7 +2624,7 @@ def test_panel_omits_mplus_evidence_when_mplus_metric_is_disabled(qtbot):
         display="G2 fit 73",
         colour="#a335ee",
         size=2,
-        confidence=0.68,
+        is_complete=True, available_count=2,
         high_score=91.0,
         average_score=74.0,
         low_score=52.0,
@@ -2627,6 +2644,7 @@ def test_panel_evidence_copy_reflows_at_content_safe_width_with_eight_rows(qtbot
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     app = _app(
+        rio_dungeons=[{"name": f"Dungeon {index}", "key_level": 16} for index in range(8)],
         mplus_dps_breakdown=[
             {
                 "name": f"Dungeon {index}",
@@ -2656,7 +2674,7 @@ def test_panel_evidence_copy_reflows_at_content_safe_width_with_eight_rows(qtbot
         last_bottom = last_name.mapTo(panel, QPoint(0, 0)).y() + last_name.height()
         assert not last_name.isHidden()
         assert panel._status_label.isHidden()
-        assert "Evidence strength" in panel._metric_labels["Fit"].toolTip()
+        assert "dungeons timed" in panel._metric_labels["Fit"].toolTip()
         assert last_bottom <= panel.contentsRect().bottom()
         assert panel.target_height() == target_height
 
@@ -2670,7 +2688,7 @@ def test_panel_renders_group_package_line(qtbot):
         display="G2 FIT 73",
         colour="#a335ee",
         size=2,
-        confidence=0.68,
+        is_complete=True, available_count=2,
         high_score=91.0,
         average_score=74.0,
         low_score=52.0,
@@ -2683,9 +2701,9 @@ def test_panel_renders_group_package_line(qtbot):
     assert panel._package_label.text() == "Group (2) · Fit ~73"
     assert "1T/0H/1DPS" in panel._package_label.toolTip()
     assert "high 91 · avg 74 · low 52" in panel._package_label.toolTip()
-    assert "evidence strength 68%" in panel._package_label.toolTip()
+    assert "2/2 members have target evidence" in panel._package_label.toolTip()
     assert panel._package_label.accessibleName() == ""
-    assert "68 percent" in panel._package_label.accessibleDescription()
+    assert "evidence strength" not in panel._package_label.accessibleDescription()
     assert "not a success probability" in (
         panel._package_label.accessibleDescription()
     )
@@ -2716,10 +2734,12 @@ def test_panel_renders_real_mplus_package_without_blank_label(qtbot):
     }
     leader = _app(
         applicant_id="10:1",
+        rio_dungeons=[{"name": "Skyreach", "key_level": 16}],
         mplus_dps_breakdown=[skyreach_log],
     )
     follower = _app(
         applicant_id="10:2",
+        rio_dungeons=[{"name": "Skyreach", "key_level": 15}],
         mplus_dps_breakdown=[follower_log],
     )
     package = package_fit([leader, follower], listing)
@@ -2729,7 +2749,7 @@ def test_panel_renders_real_mplus_package_without_blank_label(qtbot):
     assert panel._package_label.text() == f"Group (2) · Fit ~{round(package.score)}"
     assert " · hi/avg/low " in panel._package_label.toolTip()
     assert " · 0T/0H/2DPS" in panel._package_label.toolTip()
-    assert " · evidence strength " in panel._package_label.toolTip()
+    assert "2/2 members have target evidence" in panel._package_label.toolTip()
     assert " · this low" in panel._package_label.toolTip()
     assert "Group  " not in panel._package_label.text()
     assert not panel._package_label.isHidden()
@@ -2745,7 +2765,7 @@ def test_panel_explains_incomplete_group_member_statuses(qtbot):
         display="G5 fit 48",
         colour="#1eff00",
         size=5,
-        confidence=0.31,
+        available_count=1, unavailable_count=4,
         high_score=82.0,
         average_score=51.0,
         low_score=0.0,
@@ -6877,10 +6897,10 @@ def test_overlay_grouped_long_error_is_bounded_with_full_accessible_text(
     state = AppState()
     state.listing = _listing()
     state.add_or_update(
-        _app(applicant_id="10:1", name="Tank-Realm", role="TANK")
+        _timed_app(applicant_id="10:1", name="Tank-Realm", role="TANK")
     )
     state.add_or_update(
-        _app(
+        _timed_app(
             applicant_id="10:2",
             name="Healer-Realm",
             role="HEALER",
@@ -6906,13 +6926,14 @@ def test_overlay_grouped_long_error_is_bounded_with_full_accessible_text(
         assert not panel._status_label.isHidden()
         assert len(panel._status_label.text()) <= 120
         assert panel._status_label.text().endswith("…")
-        assert panel._status_label.toolTip() == full_status
-        assert panel._status_label.accessibleDescription() == full_status
+        assert panel._status_label.toolTip() == full_status + " · RaiderIO only"
+        assert panel._status_label.accessibleDescription() == full_status + " · RaiderIO only"
         assert panel._status_label in panel.tooltip_widgets()
         assert panel._status_label.heightForWidth(
             panel._status_label.width()
         ) <= panel._status_label.height()
-        assert panel.target_height() == INFO_PANEL_PREFERRED_HEIGHT
+        assert panel.target_height() >= INFO_PANEL_PREFERRED_HEIGHT
+        assert panel.height() >= panel.target_height()
     finally:
         client.close()
 
@@ -6951,7 +6972,7 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
         display="G2 fit 73",
         colour="#a335ee",
         size=2,
-        confidence=0.68,
+        is_complete=True, available_count=2,
         high_score=91.0,
         average_score=74.0,
         low_score=52.0,
@@ -6984,7 +7005,7 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
             assert label.wordWrap()
             assert label.text() == "Group (2) · Fit ~73"
             assert "1T/1H/0DPS" in label.toolTip()
-            assert "evidence strength 68%" in label.toolTip()
+            assert "2/2 members have target evidence" in label.toolTip()
             assert label.heightForWidth(label.width()) <= label.height()
             assert status.isHidden()
             assert label.geometry().bottom() < window._panel._dungeon_widget.y()
@@ -7188,10 +7209,10 @@ def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
     state = AppState()
     state.listing = _listing()
     state.add_or_update(
-        _app(applicant_id="10:1", name="Tank-Realm", role="TANK")
+        _timed_app(applicant_id="10:1", name="Tank-Realm", role="TANK")
     )
     state.add_or_update(
-        _app(applicant_id="10:2", name="Healer-Realm", role="HEALER")
+        _timed_app(applicant_id="10:2", name="Healer-Realm", role="HEALER")
     )
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
@@ -7228,7 +7249,7 @@ def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
             assert panel.height() >= panel.target_height()
             assert package.text().startswith("Group (2) · Fit ")
             assert "1T/1H/0DPS" in package.toolTip()
-            assert "Evidence strength" in panel._metric_labels["Fit"].toolTip()
+            assert "dungeons timed" in panel._metric_labels["Fit"].toolTip()
             assert status.isHidden()
             assert package.heightForWidth(package.width()) <= package.height()
             assert package.geometry().bottom() < panel._dungeon_widget.y()
@@ -7449,8 +7470,8 @@ def test_package_cell_keeps_package_and_individual_mplus_for_every_group_member(
     cache = CharacterCache(tmp_path)
     state = AppState()
     state.listing = _listing()
-    state.add_or_update(_app(applicant_id="10:2", name="Second-Realm"))
-    state.add_or_update(_app(applicant_id="10:3", name="Third-Realm"))
+    state.add_or_update(_timed_app(applicant_id="10:2", name="Second-Realm"))
+    state.add_or_update(_timed_app(applicant_id="10:3", name="Third-Realm"))
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
 
@@ -7488,9 +7509,9 @@ def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
     cache = CharacterCache(tmp_path)
     state = AppState()
     state.listing = _listing()
-    state.add_or_update(_app(applicant_id="10:1", name="Ready-Realm"))
+    state.add_or_update(_timed_app(applicant_id="10:1", name="Ready-Realm"))
     state.add_or_update(
-        _app(applicant_id="10:2", name="Error-Realm", fetch_status=status)
+        _timed_app(applicant_id="10:2", name="Error-Realm", fetch_status=status)
     )
     window = OverlayWindow(state, client, cache, tmp_path)
     qtbot.addWidget(window)
@@ -7501,7 +7522,8 @@ def test_package_cell_does_not_use_terminal_member_stale_mplus_for_group_score(
         item = window._table.item(error_row, COL_FIT)
 
         assert window._table.item(error_row, COL_MPLUS).text() == placeholder
-        assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == placeholder
+        assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE).startswith("~")
+        assert scoring_mod.candidate_fit(state.applicants["10:2"], state.listing).evidence_count == 0
         assert item.data(MPLUS_PACKAGE_TEXT_ROLE).startswith("G2 ")
     finally:
         client.close()
@@ -7577,7 +7599,7 @@ def test_raid_listing_table_keeps_raw_evidence_coloured_and_fit_separate(
         fit_item = window._table.item(row, COL_FIT)
         assert fit_item.text().startswith("~")
         assert fit_item.text()[1:].isdigit()
-        assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
+        assert fit_item.background().color().name() == overlay_mod.FIT_ESTIMATE_BACKGROUND
         assert fit_item.background().style() != Qt.BrushStyle.NoBrush
         assert window._fetches_in_flight == {}
         assert window._raid_boss_fetches_in_flight == {}
@@ -8477,7 +8499,8 @@ def test_compact_detail_headers_align_and_follow_mode_changes(qtbot, width):
 def test_compact_fit_tooltips_replace_evidence_across_rows_errors_and_loading(qtbot):
     panel = ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
-    first = _app(
+    first = _timed_app(
+        key=18,
         name="First-Realm",
         mplus_dps_breakdown=[dict(
             name="Skyreach", key_level=18, parse_percent=80.0,
@@ -8486,7 +8509,7 @@ def test_compact_fit_tooltips_replace_evidence_across_rows_errors_and_loading(qt
     )
     panel.setApplicantData(first, _listing())
     badge = panel._metric_labels["Fit"]
-    assert "same dungeon WCL +18" in badge.toolTip()
+    assert "same dungeon RIO timed +18" in badge.toolTip()
     assert panel._status_label.isHidden()
 
     second = _app(
@@ -8501,21 +8524,21 @@ def test_compact_fit_tooltips_replace_evidence_across_rows_errors_and_loading(qt
     )
     panel.setApplicantData(second, _listing())
     assert not badge.isHidden()
-    assert "same dungeon RIO +15" in badge.toolTip()
+    assert "same dungeon RIO timed +15" in badge.toolTip()
     assert "WCL +18" not in badge.toolTip()
     assert badge.toolTip() == badge.accessibleDescription()
     assert "quota exhausted" in panel._status_label.text()
     assert not panel._status_label.isHidden()
 
     panel.setApplicantData(replace(second, fetch_status="loading"), _listing())
-    assert badge.isHidden()
-    assert badge.toolTip() == ""
-    assert badge.accessibleDescription() == ""
+    assert not badge.isHidden()
+    assert "same dungeon RIO timed +15" in badge.toolTip()
+    assert "WCL +18" not in badge.toolTip()
     assert "quota exhausted" not in panel._status_label.text()
 
     panel.setApplicantData(first, _listing())
-    assert "WCL +18" in badge.toolTip()
-    assert "RIO +15" not in badge.toolTip()
+    assert "RIO timed +18" in badge.toolTip()
+    assert "RIO timed +15" not in badge.toolTip()
     panel.setPlaceholder()
     assert badge.toolTip() == ""
     assert badge.accessibleDescription() == ""
@@ -8527,15 +8550,16 @@ def test_compact_group_summary_keeps_actionable_status_and_clears_old_tooltip(qt
     partial = PackageFit(
         context=CONTEXT_MPLUS, score=48.0, display="G4 48", size=4,
         tank_count=1, healer_count=1, dps_count=2, loading_count=1, error_count=1,
-        confidence=0.31,
+        available_count=2, unavailable_count=2,
     )
     panel.setApplicantData(_app(), _listing(), package=partial)
     label = panel._package_label
-    assert label.text() == "Group (4) · Fit ~48 · 1 loading · 1 error"
+    assert label.text() == "Group (4) · Partial target evidence · 1 loading · 1 error"
     assert "1T/1H/2DPS" in label.toolTip()
     assert "1 member loading" in label.accessibleDescription()
 
-    ready = replace(partial, loading_count=0, error_count=0)
+    ready = replace(partial, loading_count=0, error_count=0, is_complete=True,
+                    available_count=4, unavailable_count=0)
     panel.setApplicantData(_app(name="Other-Realm"), _listing(), package=ready)
     assert label.text() == "Group (4) · Fit ~48"
     assert "loading" not in label.toolTip()

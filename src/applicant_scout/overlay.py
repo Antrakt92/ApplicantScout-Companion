@@ -77,11 +77,11 @@ from .constants import (
     CLASS_COLOURS,
     CLASS_TEXT_COLOURS,
     CURRENT_RAID_ENCOUNTERS,
+    FIT_ESTIMATE_BACKGROUND,
     ROLE_COLOURS,
     ROLE_GLYPHS,
     ROLE_LABELS,
     SPEC_SHORT_NAMES,
-    MPLUS_ENCOUNTERS,
     mplus_dungeon_name_for_challenge_map_id,
     percentile_colour,
     rio_score_colour,
@@ -106,18 +106,13 @@ from .scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
     MPLUS_LIMIT_BELOW_TARGET,
-    MPLUS_LIMIT_LOW_WCL,
-    MPLUS_LIMIT_NO_RELEVANT_WCL,
     MPLUS_LIMIT_NO_SAME_DUNGEON,
-    MPLUS_LIMIT_SCORE_ONLY,
     MPLUS_LIMIT_SPARSE_COVERAGE,
-    MPLUS_LIMIT_WEAK_WCL,
     CandidateFit,
     PackageFit,
     candidate_fit,
     detect_listing_context,
     effective_rio_score,
-    fit_colour,
     listing_dungeon_keys,
     package_fit,
     positive_int,
@@ -196,6 +191,7 @@ RAID_COMPACT_METRIC_WIDTH = 130
 METRIC_COLUMN_TEXT_PADDING = 14
 COL_SPEC, COL_NAME, COL_ILVL, COL_RIO, COL_N, COL_H, COL_M, COL_MPLUS, COL_FIT = range(9)
 FIT_GROUP_BACKGROUND = "#343946"
+FIT_ESTIMATE_FOREGROUND = "#e3ecf2"
 RAID_COL_BY_TARGET = {"N": COL_N, "H": COL_H, "M": COL_M}
 WINDOW_CHROME_WIDTH = 12
 # Name and raid metric columns grow from rendered content after construction;
@@ -279,7 +275,7 @@ ROW_BASE_ACCESSIBLE_DESCRIPTION_ROLE = Qt.ItemDataRole.UserRole + 30
 # at render time keeps measurement signatures cheap: building them from
 # live item.font().toString() per cell costs as much as the shaping itself.
 CELL_FONT_SIG_ROLE = Qt.ItemDataRole.UserRole + 31
-MPLUS_GROUP_LANE_MAX_WIDTH = 72
+MPLUS_GROUP_LANE_MAX_WIDTH = 96
 MPLUS_GROUP_LANE_MIN_WIDTH = 42
 MPLUS_INDIVIDUAL_LANE_MIN_WIDTH = 40
 MPLUS_TARGET_KEY_MAX = 99
@@ -480,14 +476,17 @@ HEADER_TOOLTIPS: list[str] = [
     _RAID_HEADER_TOOLTIP,
     "WCL best / median averages, then highest logged key.\n"
     "DPS for every role, including healers.",
-    "Fit for this raid/key (0–100); not a WCL percentile or success probability.\n"
-    "G3 = 3 players. Group estimate on the left; individual on the right.",
+    "Target estimate (0–100); not a WCL percentile, overall skill, or success probability.\n"
+    "G3 = 3 players. Group estimate on the left; individual on the right.\n"
+    "Partial groups have no combined estimate.",
 ]
 
 
 MPLUS_FIT_EXPLANATION = (
-    "Fit uses WCL performance and RaiderIO completions for this key.\n"
+    "Fit estimates readiness at this key level from verified in-time RaiderIO keys.\n"
+    "Untimed completions, WCL logs and general rating do not affect Fit.\n"
     "It is not a WCL parse percentile or a success probability.\n"
+    "Damage parses stay separate and do not change M+ Fit.\n"
     "M+ parses measure damage, not healing, survival, or utility."
 )
 
@@ -2355,10 +2354,19 @@ class _BadgeFlowLayout(QLayout):
             if item.isEmpty():
                 continue
             size = item.sizeHint()
-            width = min(size.width(), max(1, rect.width()))
+            natural_width = size.width()
+            widget = item.widget()
+            if isinstance(widget, QLabel) and widget.wordWrap():
+                padding = max(widget.width() - widget.contentsRect().width(), 10)
+                natural_width = widget.fontMetrics().horizontalAdvance(widget.text()) + padding
+            width = min(natural_width, max(1, rect.width()))
             if x > rect.x() and x + width > rect.x() + rect.width():
                 x, y, row_height = rect.x(), y + row_height + self.spacing(), 0
             height = size.height()
+            if item.hasHeightForWidth():
+                wrapped_height = item.heightForWidth(width)
+                if wrapped_height > 0:
+                    height = wrapped_height
             if place:
                 item.setGeometry(QRect(x, y, width, height))
             x += width + self.spacing()
@@ -2477,6 +2485,8 @@ class ApplicantInfoPanel(QFrame):
             key: _GuardedLabel("") for key in ("N", "H", "M", "M+", "Fit")
         }
         self._metric_labels["Fit"].setObjectName("infoMetricBadge")
+        self._metric_labels["Fit"].setMinimumWidth(0)
+        self._metric_labels["Fit"].setWordWrap(True)
         summary_layout.addWidget(self._metric_labels["Fit"])
         self._rio_history_label = _GuardedLabel("")
         self._rio_main_history_label = _GuardedLabel("")
@@ -2904,7 +2914,7 @@ class ApplicantInfoPanel(QFrame):
             return
         member_score = (
             (fit or candidate_fit(applicant, listing)).score
-            if applicant is not None and listing is not None
+            if package.is_complete and applicant is not None and listing is not None
             else None
         )
         member_note = ""
@@ -2914,10 +2924,11 @@ class ApplicantInfoPanel(QFrame):
             and abs(member_score - package.low_score) < 0.5
         ):
             member_note = "this low"
-        package_label = package.label or (
-            "fit" if package.context == CONTEXT_MPLUS else "package"
-        )
-        parts = [f"Group {package_label} {int(round(package.score))}"]
+        parts = [
+            f"Group estimate ~{int(round(package.score))}"
+            if package.is_complete else _presenters.package_fit_text(package),
+            f"{package.available_count}/{package.size} members have target evidence",
+        ]
         role_total = (
             package.tank_count
             + package.healer_count
@@ -2938,13 +2949,13 @@ class ApplicantInfoPanel(QFrame):
             parts.append(f"not found {package.not_found_count}")
         if package.restricted_count > 0:
             parts.append(f"private {package.restricted_count}")
-        if package.context == CONTEXT_MPLUS:
+        if package.is_complete and package.context == CONTEXT_MPLUS:
             parts.append(
                 f"hi/avg/low {int(round(package.high_score))}/"
                 f"{int(round(package.average_score))}/"
                 f"{int(round(package.low_score))}"
             )
-        else:
+        elif package.is_complete:
             parts.extend(
                 (
                     f"high {int(round(package.high_score))}",
@@ -2952,11 +2963,15 @@ class ApplicantInfoPanel(QFrame):
                     f"low {int(round(package.low_score))}",
                 )
             )
-        parts.append(f"evidence strength {int(round(package.confidence * 100))}%")
         if member_note:
             parts.append(member_note)
         text = " · ".join(parts)
-        summary = [f"Group ({package.size})", f"Fit ~{int(round(package.score))}"]
+        summary = [
+            f"Group ({package.size})",
+            f"Fit ~{int(round(package.score))}" if package.is_complete
+            else "Partial target evidence" if package.available_count
+            else "Target evidence unknown",
+        ]
         summary.extend(
             f"{count} {state}"
             for count, state in (
@@ -3010,16 +3025,13 @@ class ApplicantInfoPanel(QFrame):
         if data_status:
             description_parts.append(f"Data status: {', '.join(data_status)}.")
         description_parts.append(
-            f"Group evidence strength is "
-            f"{int(round(package.confidence * 100))} percent. "
-            "It reflects the weakest member and fetch completeness, not a success "
-            "probability."
+            "The group estimate uses every member's target evidence; it is not a success probability."
+            if package.is_complete
+            else "No combined estimate until every member has target evidence."
         )
         description = f"{text}\n\n{' '.join(description_parts)}"
         self._package_label.setAccessibleDescription(description)
-        self._package_label.setToolTip(
-            f"{text}\nEvidence follows the weakest member; not a success probability."
-        )
+        self._package_label.setToolTip(description)
 
     def _set_status_or_data(
         self,
@@ -3046,10 +3058,11 @@ class ApplicantInfoPanel(QFrame):
         self._state_stage.setVisible(False)
         self._bottom_filler.setVisible(True)
         if status in ("loading", "pending"):
+            visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
             visible_rows = self._set_detail_rows(applicant, listing)
             self._show_status(
                 "Fetching from Warcraft Logs…",
-                centered=visible_rows == 0 and not self._package_label.text(),
+                centered=visible_metrics == 0 and visible_rows == 0 and not self._package_label.text(),
                 state_kind="loading",
             )
             return
@@ -3058,7 +3071,7 @@ class ApplicantInfoPanel(QFrame):
             current_fit = fit or candidate_fit(applicant, listing)
             source_note = (
                 " · RaiderIO only"
-                if current_fit.context == CONTEXT_MPLUS and current_fit.score > 0.0
+                if current_fit.context == CONTEXT_MPLUS and current_fit.is_available
                 else ""
             )
             visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
@@ -3079,7 +3092,7 @@ class ApplicantInfoPanel(QFrame):
             current_fit = fit or candidate_fit(applicant, listing)
             source_note = (
                 " · RaiderIO only"
-                if current_fit.context == CONTEXT_MPLUS and current_fit.score > 0.0
+                if current_fit.context == CONTEXT_MPLUS and current_fit.is_available
                 else ""
             )
             visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
@@ -3098,7 +3111,7 @@ class ApplicantInfoPanel(QFrame):
             current_fit = fit or candidate_fit(applicant, listing)
             source_note = (
                 " · RaiderIO only"
-                if current_fit.context == CONTEXT_MPLUS and current_fit.score > 0.0
+                if current_fit.context == CONTEXT_MPLUS and current_fit.is_available
                 else ""
             )
             visible_metrics = self._set_metric_badges(applicant, listing, fit=fit)
@@ -3362,6 +3375,9 @@ class ApplicantInfoPanel(QFrame):
                 text = f"Estimate {text}"
             elif current_fit.source != "raid_exact":
                 text = f"Support {text}"
+            evidence_context = _presenters.fit_badge_context_text(current_fit)
+            if evidence_context:
+                text = f"{text} · {evidence_context}"
             self._set_badge(
                 self._metric_labels["Fit"], f"Fit · {target_name}: {text}", bg,
                 fg or _text_colour_for_bg(bg),
@@ -3376,8 +3392,10 @@ class ApplicantInfoPanel(QFrame):
                 if evidence:
                     explanation = f"{evidence}\n\n{explanation}"
             if current_fit.context == CONTEXT_RAID:
+                explanation += f"\n\n{_presenters.fit_evidence_text(current_fit)}"
                 evidence = _presenters.raid_fit_evidence_text(
-                    applicant, target_raid, current_fit.source
+                    applicant, target_raid, current_fit.source,
+                    selected_difficulty=current_fit.evidence_source,
                 )
                 if evidence:
                     explanation += f"\n\nTarget: {target_name}. Source evidence: {evidence}."
@@ -3406,8 +3424,7 @@ class ApplicantInfoPanel(QFrame):
             or not current_fit.display
         ):
             return ""
-        source = _presenters.mplus_fit_source_text(applicant)
-        coverage = int(round(current_fit.coverage * max(len(MPLUS_ENCOUNTERS), 1)))
+        source = "RaiderIO in-time keys"
         parts = [f"Target +{current_fit.target_key}"]
         if current_fit.best_nearby_key > 0:
             parts.append(f"best nearby +{current_fit.best_nearby_key}")
@@ -3416,14 +3433,7 @@ class ApplicantInfoPanel(QFrame):
 
         same_dungeon = []
         if current_fit.same_dungeon_rio_key > 0:
-            same_dungeon.append(f"RIO +{current_fit.same_dungeon_rio_key}")
-        if current_fit.same_dungeon_wcl_key > 0:
-            metric = _presenters.mplus_metric_display_text(
-                current_fit.same_dungeon_wcl_best,
-                current_fit.same_dungeon_wcl_median,
-                current_fit.same_dungeon_wcl_run_count,
-            )
-            same_dungeon.append(f"WCL +{current_fit.same_dungeon_wcl_key} {metric}")
+            same_dungeon.append(f"RIO timed +{current_fit.same_dungeon_rio_key}")
         if same_dungeon:
             parts.append(f"same dungeon {' / '.join(same_dungeon)}")
         elif (
@@ -3433,20 +3443,13 @@ class ApplicantInfoPanel(QFrame):
             parts.append("no same-dungeon evidence")
 
         limit_text = {
-            MPLUS_LIMIT_SCORE_ONLY: "score-only evidence",
-            MPLUS_LIMIT_NO_RELEVANT_WCL: "no relevant WCL",
-            MPLUS_LIMIT_LOW_WCL: "low WCL evidence",
-            MPLUS_LIMIT_WEAK_WCL: "weak WCL evidence",
             MPLUS_LIMIT_BELOW_TARGET: "best key below target",
             MPLUS_LIMIT_SPARSE_COVERAGE: "sparse coverage",
             MPLUS_LIMIT_NO_SAME_DUNGEON: "no same-dungeon evidence",
         }.get(current_fit.limit_reason, "")
         if limit_text:
             parts.append(f"limit: {limit_text}")
-        evidence_line = (
-            f"Evidence strength {int(round(current_fit.confidence * 100))}% · "
-            f"{coverage}/{max(len(MPLUS_ENCOUNTERS), 1)} qualifying dungeons · {source}"
-        )
+        evidence_line = f"{_presenters.fit_evidence_text(current_fit)} · {source}"
         return f"{' · '.join(parts)}\n{evidence_line}"
 
     def _set_detail_row_widths(
@@ -5078,11 +5081,6 @@ class OverlayWindow(QMainWindow):
         if selected is None:
             return rows
         column, descending = selected
-        unready_groups = {
-            _split_composite(row.applicant_id)[0]
-            for row in rows
-            if row.fetch_status != "ready"
-        }
         if column == COL_FIT and self._active_tab != "party":
             # M8: compute each missing fit ONCE per refresh instead of once
             # per sort probe (plus once more per cell render). value_for
@@ -5114,17 +5112,13 @@ class OverlayWindow(QMainWindow):
                 # callers correct when the dict was not prefilled.
                 raw_aid, _ = _split_composite(applicant.applicant_id)
                 package = package_fits.get(raw_aid)
-                if package is not None and package.display and (
-                    package.context == CONTEXT_MPLUS or raw_aid not in unready_groups
-                ):
-                    return package.score
-                if applicant.fetch_status in {"loading", "pending"}:
-                    return None
+                if package is not None and package.display:
+                    return package.score if package.is_complete else None
                 fit = candidate_fits.get(applicant.applicant_id)
                 if fit is None:
                     fit = candidate_fit(applicant, listing)
                     candidate_fits[applicant.applicant_id] = fit
-                return fit.score if fit.display else None
+                return fit.score if fit.is_available else None
             if applicant.fetch_status != "ready":
                 return None
             if column == COL_MPLUS:
@@ -6894,8 +6888,8 @@ class OverlayWindow(QMainWindow):
         - End with _sync_delegate_and_panel — single bookkeeping point that
           re-applies correct stripe rows + refreshes panel content.
 
-        Sort: M+/raid applications use the displayed context percentile, keeping
-        groups together by their weakest parse. Unknown listings preserve max-RIO order
+        Sort: M+/raid applications use the target Fit estimate, keeping
+        groups together. Unknown listings preserve max-RIO order
         with higher RaiderIO main score folded into the max when available.
 
         Group markers: multi-member-group rows get a per-group hashed-hue
@@ -7380,11 +7374,9 @@ class OverlayWindow(QMainWindow):
         context = detect_listing_context(listing)
         self._table.setColumnHidden(COL_FIT, context not in {CONTEXT_RAID, CONTEXT_MPLUS})
         sort_column = (
-            COL_MPLUS
-            if context == CONTEXT_MPLUS or (
-                context != CONTEXT_RAID and listing is not None and listing.category_id == 2
-            )
-            else target_raid_col if target_raid_col is not None else COL_RIO
+            COL_FIT if context in {CONTEXT_MPLUS, CONTEXT_RAID}
+            else COL_MPLUS if listing is not None and listing.category_id == 2
+            else COL_RIO
         )
         table_header = self._table.horizontalHeader()
         if table_header is not None:
@@ -7977,6 +7969,10 @@ class OverlayWindow(QMainWindow):
             applicant.wcl_metric_preferences = fetched_identity.metric_preferences
             applicant.wcl_availability = dict(ranks.availability)
             applicant.raid_normal = ranks.raid_normal
+            applicant.raid_evidence = {
+                difficulty: dict(evidence)
+                for difficulty, evidence in ranks.raid_evidence.items()
+            }
             applicant.raid_heroic = ranks.raid_heroic
             applicant.raid_mythic = ranks.raid_mythic
             applicant.raid_normal_median = ranks.raid_normal_median
@@ -8684,16 +8680,11 @@ def _fit_cell_visuals(
     *,
     fit: CandidateFit | None = None,
 ) -> tuple[str, str | None, str | None]:
-    if applicant.fetch_status in {"loading", "pending"}:
-        return "…", "#888", None
     current_fit = fit or candidate_fit(applicant, listing)
-    if current_fit.context not in {CONTEXT_RAID, CONTEXT_MPLUS} or not current_fit.display:
-        if applicant.fetch_status == "error":
-            return "?", "#ff5555", None
-        return "—", "#888", None
+    if current_fit.context not in {CONTEXT_RAID, CONTEXT_MPLUS} or not current_fit.is_available:
+        return "…" if applicant.fetch_status in {"loading", "pending"} else "—", "#888", None
     text = f"~{int(round(current_fit.score))}"
-    bg = fit_colour(current_fit.score)
-    return text, _text_colour_for_bg(bg) if bg else None, bg
+    return text, FIT_ESTIMATE_FOREGROUND, FIT_ESTIMATE_BACKGROUND
 
 
 def _fit_cell(
@@ -8823,7 +8814,7 @@ def _mplus_group_cell(
     fit: CandidateFit | None = None,
     item: QTableWidgetItem | None = None,
 ) -> QTableWidgetItem:
-    package_text = f"G{package.size} ~{int(round(package.score))}"
+    package_text = _presenters.package_fit_text(package)
     package_bg = _package_fit_colour(package)
     individual_text, individual_fg, individual_bg = _fit_cell_visuals(
         applicant, listing, fit=fit
@@ -8850,9 +8841,9 @@ def _mplus_group_cell(
 
 
 def _package_fit_colour(package: PackageFit) -> str:
-    if not any(member.display for member in package.member_fits):
+    if not package.is_complete:
         return FIT_GROUP_BACKGROUND
-    return fit_colour(package.score)
+    return FIT_ESTIMATE_BACKGROUND
 
 
 def _app_update_message(latest_version: str) -> str:

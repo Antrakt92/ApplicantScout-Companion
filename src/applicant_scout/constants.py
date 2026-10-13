@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from .rio_score_tiers import RIO_SCORE_BUCKETS
+
+FIT_ESTIMATE_BACKGROUND = "#31404b"
+
 
 # Verified by scripts/seasonal/verify_wcl_season.py against the WCL GraphQL API.
 # Re-run the quota-aware release gate whenever the active season changes.
@@ -137,18 +141,8 @@ def percentile_colour(value: float | None) -> str:
     return "#5d5d5d"
 
 
-# RaiderIO M+ score → tier colour. Mirrors the parse-tier palette used for raid
-# percentile cells so the overlay reads consistently — same gold/purple/blue/
-# green/white visual language. Thresholds are mid-Midnight-S1 approximations
-# (3200+ ≈ top ~1-2% of M+ raters, 2700+ ≈ top ~10%, 2200+ ≈ top ~25%, 1700+
-# ≈ top ~50%); revisit late-season when rating creep shifts the distribution.
-RIO_SCORE_BUCKETS: list[tuple[int, str]] = [
-    (3200, "#e5cc80"),  # gold (legendary)
-    (2700, "#a335ee"),  # purple (epic)
-    (2200, "#0070dd"),  # blue (rare)
-    (1700, "#1eff00"),  # green (uncommon)
-    (0, "#ffffff"),  # white (anyone with a score)
-]
+# Raider.IO's reviewed current-season gradient is bundled for offline use.
+# It is a dated provider palette, not a claim of a fixed population percentile.
 
 
 def rio_score_colour(score: int) -> str:

@@ -92,16 +92,20 @@ Before you click **Create**, the form should look like this:
 
 ## Overlay Data
 
-Fit estimates how the available evidence matches the target key or raid difficulty.
-It is not a success probability or a Warcraft Logs percentile. Missing logs and
-limited run history stay visible as missing or limited evidence.
+Fit uses a neutral estimate badge. M+ Fit describes verified in-time experience relative
+to your target key; raid Fit describes available output evidence for the selected
+difficulty. Neither is an overall skill rating, WCL percentile or success
+probability. Missing evidence stays unknown, and grouped applications show a
+combined estimate only when all members have one.
 
 M+ WCL values measure damage for every role, including healers and tanks. They do
-not measure healing, survival, interrupts or utility. Raid healers use HPS; other
-raid roles use DPS. Results belong to the applying specialization.
+not measure healing, survival, interrupts or utility, and do not change M+ Fit.
+Raid healers use HPS; other raid roles use DPS. Results belong to the applying
+specialization. Recorded coverage and available sample counts remain visible.
 
-Applications sort by the listing's WCL percentile and grouped applicants stay
-together. Fit is a separate estimate. Read [what each column and score means](docs/OVERLAY.md).
+Applications default to the target Fit estimate; click any column heading to
+compare WCL results or RIO instead. Grouped applicants stay together.
+Read [what each column and estimate means](docs/OVERLAY.md).
 
 ## How It Works
 

@@ -164,9 +164,7 @@ def render_row_cells(
     # bold — primary scouting signal alongside name
     rio_item.setFont(env.metric_font(env.table_font(), True))
     env.stamp_cell_font_sig(rio_item)
-    # Tier-band foreground colour (gold/purple/blue/green/white) matches
-    # RaiderIO addon's score-tier visual language, mirrors raid percentile
-    # cell palette so eye-tracking across columns reads consistently.
+    # The dated seasonal RaiderIO gradient uses the effective current score.
     env.set_cell_foreground(rio_item, rio_score_colour(rio_score))
     history_text = _presenters.rio_history_text(applicant)
     history_tip = f"Raider.IO · {history_text}" if history_text else ""
@@ -210,10 +208,6 @@ def render_row_cells(
         and package is not None
         and package.display
         and env.group_size_by_raw.get(raw_aid, 1) >= 2
-        and (
-            listing_context == CONTEXT_MPLUS
-            or env.group_ready_by_raw.get(raw_aid, False)
-        )
     ):
         existing = table.item(row, env.col_fit)
         filled = env.mplus_group_cell(

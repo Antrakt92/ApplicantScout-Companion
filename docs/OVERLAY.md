@@ -8,10 +8,11 @@ results belong to the applying specialization. Raid healers use HPS; other raid
 roles and every M+ role use DPS. Displayed percentiles round down so the number
 stays in the same colour band as the underlying result.
 
-Fit uses the same colour thresholds: grey below 25, green from 25, blue from 50,
-purple from 75, orange from 95, pink from 99, and gold at 100. Its colour follows
-the displayed estimate, including the combined estimate for grouped applicants.
-Changing the target key updates both Fit and its colour. Missing Fit stays neutral.
+Fit uses a neutral badge so it cannot be mistaken for a WCL percentile.
+It is an estimate, not an overall skill rating or a success probability.
+Unknown Fit shows a dash; an observed zero remains a numeric estimate.
+A grouped application shows `partial` or `unknown` when any member lacks
+an estimate, while each available individual result remains visible.
 
 Click any column heading to sort; click it again to reverse the order. Numbers
 start highest first; names and specs start alphabetically. Specs with the same
@@ -26,17 +27,19 @@ Fit uses the combined group estimate. Text columns use the alphabetically first
 member value. If a sorted column is hidden in Settings, the default order applies
 until that column is shown again.
 
-Before a heading is clicked, applications sort by the M+ best percentile for a
-dungeon listing, or by the selected raid difficulty's best percentile.
-Grouped applicants stay together and use their lowest member percentile;
-groups with missing parses follow those with complete results. Fit remains a
-separate estimate and breaks ties or orders applicants without a parse.
+Before a heading is clicked, applications with a complete target estimate sort
+by Fit. Factual dungeon or raid evidence breaks ties. Incomplete applications
+follow complete estimates. Click a WCL or RIO heading to compare that metric
+instead; no-log players are not automatically demoted below every logged parse.
+Joint applications stay together.
 
 The table's parse pairs read **best / median**. Raid values are WCL's performance
 averages across encounters. A missing median stays missing; it does not prove
-there was only one log. M+ summaries show the available numeric result; the
-dungeon value tooltips identify single-run samples when there is no repeat-run median.
-Dungeon columns separate the best completed key, the logged key, and the DPS
+there was only one log. M+ best is the mean of each logged dungeon's best percentile at its highest
+logged key. Its median is shown only when every included dungeon has a repeated
+sample, so the two values describe the same dungeon population. A missing
+median does not establish inconsistency; inspect the individual dungeon samples.
+Dungeon columns separate the best timed key, the logged key, and the DPS
 parse. Hover Fit or the group summary for the evidence behind the estimate.
 The **+key** beside that summary is the highest key represented in those WCL
 results, not necessarily the run that produced the best percentile.
@@ -46,20 +49,42 @@ two Heroic kills recorded by RaiderIO. The **Parse** header tooltip identifies
 boss pairs as **overall / item level**, comparing the result with all matching logs and with
 the matching item-level bracket. Boss details load only when requested.
 
-**M+ Fit is an estimate of how the available evidence matches the target key,
-not a success probability or a Warcraft Logs percentile.** Named dungeon
-evidence from RaiderIO and WCL is combined once per dungeon; unnamed summaries
-are treated conservatively when their overlap is unknown. Hover the Fit badge
-for evidence strength, dungeon coverage and the limits of the estimate. Strong
-evidence can support a low Fit when the completed keys are below the target.
-M+ WCL values measure damage for every role, including tanks and healers; they
-do not assess healing, survival, interrupts, or other utility. A low Fit is a
-limit of the available evidence, not a verdict on the player's overall skill.
+**M+ Fit estimates in-time key experience for the target, for every role.**
+It uses only the applying character's verified RaiderIO runs completed within
+the timer: dungeon levels, breadth, experience above the target and the target
+dungeon. Anonymous timed summaries establish conservative level bounds only
+for their captured context, without counting the same dungeon twice. Those
+bounds are not displayed as an exact best key. Untimed completions never
+contribute. General character or main rating alone does not produce Fit; if
+timed key history is unavailable, Fit stays unknown.
+
+WCL damage percentiles and logged key levels do not change M+ Fit. A WCL log
+alone does not prove the timer was beaten. Raw results remain visible in the
+M+ column and details. An in-time run is a team result and does not prove
+individual contribution, current-role mastery or future success.
+
+**Raid Fit estimates output for the selected difficulty and applying spec.**
+The estimate uses best and median performance averages. A discounted result from
+another difficulty can support the target without being discarded by a smaller
+exact-difficulty result. M+ damage and RIO rating do not modify raid Fit.
+Available recorded boss coverage and explicit kill counts are shown separately;
+unknown sample sizes remain unknown. Logged coverage refers to the WCL zone,
+which may contain more than one raid, and does not certify a specific boss.
+
+Group Fit combines available members conservatively. It is shown only when every
+member has an estimate. Privacy, lookup failures and absent logs do not subtract
+player-quality points. Larger groups do not earn a bonus simply for applying
+together. Inspect the members, roles and missing data before deciding.
+
+Fit tooltips show its sources, observed coverage, samples and limitations. Damage,
+healing throughput, mechanics, survival, interrupts, composition and communication
+are different evidence; these estimates do not replace your judgement.
 
 The RIO column shows the applying character's current score. If the RaiderIO
 addon is installed in WoW and exposes a higher current-season main score for an
 alt, the overlay can display `current [main]` and use the stronger context for
-sorting fallback support. RaiderIO dungeon summaries and highest timed keys
+manual RIO sorting. Its colour follows a dated, bundled RaiderIO seasonal
+gradient, rather than fixed rarity thresholds. RaiderIO dungeon summaries and highest timed keys
 also feed the M+ scorecard and hover/detail context when local RaiderIO data is
 available. When that local database has a past-season score, the RIO cell
 tooltip and player detail show its season and approximate score. A main's

@@ -97,11 +97,12 @@ def test_bold_cell_font_uses_resolved_application_size(qtbot):
 
 
 def test_mplus_dual_cell_keeps_raw_evidence_for_mplus_listing():
-    item = _mplus_dual_cell(_app(), _mplus_listing())
+    applicant = _app(rio_dungeons=[{"name": "Pit of Saron", "key_level": 14}])
+    item = _mplus_dual_cell(applicant, _mplus_listing())
 
     assert item.text() == "80/62 +14"
     assert item.background().color().name() == QColor(percentile_colour(80.0)).name()
-    fit_text = _fit_cell(_app(), _mplus_listing()).text()
+    fit_text = _fit_cell(applicant, _mplus_listing()).text()
     assert fit_text.startswith("~") and fit_text[1:].isdigit()
 
 
@@ -215,22 +216,22 @@ def test_mplus_dual_cell_green_stores_dark_text_role():
     assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
 
 
-def test_fit_cell_orange_stores_dark_text_role():
-    fit = CandidateFit(context=CONTEXT_MPLUS, score=97.0, display="~97")
+def test_high_fit_stores_neutral_background_and_explicit_light_text_role():
+    fit = CandidateFit(context=CONTEXT_MPLUS, score=97.0, display="~97", is_available=True)
     item = _fit_cell(_app(), _mplus_listing(), fit=fit)
 
     assert item.text() == "~97"
-    assert item.background().color().name() == QColor("#ff8000").name()
-    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+    assert item.background().color().name() == QColor("#31404b").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#e3ecf2"
 
 
-def test_fit_cell_green_stores_dark_text_role():
-    fit = CandidateFit(context=CONTEXT_MPLUS, score=42.0, display="~42")
+def test_lower_fit_keeps_the_same_neutral_background_and_text_role():
+    fit = CandidateFit(context=CONTEXT_MPLUS, score=42.0, display="~42", is_available=True)
     item = _fit_cell(_app(), _mplus_listing(), fit=fit)
 
     assert item.text() == "~42"
-    assert item.background().color().name() == QColor("#1eff00").name()
-    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#000000"
+    assert item.background().color().name() == QColor("#31404b").name()
+    assert _explicit_role_colour(item, Qt.ItemDataRole.ForegroundRole) == "#e3ecf2"
 
 
 def test_fit_cell_listing_not_found_can_show_scorecard_fit():

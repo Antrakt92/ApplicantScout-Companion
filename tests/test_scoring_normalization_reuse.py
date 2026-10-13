@@ -114,18 +114,17 @@ def test_generated_signals_reuse_normalization_in_downstream_consumers(monkeypat
     assert len(calls) == count_after_generation
 
 
-def test_mutable_input_rename_is_reflected_in_next_evaluation(monkeypatch):
+def test_mutable_timed_input_rename_is_reflected_in_next_evaluation():
     listing = _listing(key_level=12)
-    evidence = [_dungeon("Skyreach", [(12, 90, 80, 3)])]
-    app = _app(score=0, dps_breakdown=evidence)
+    evidence = [{"name": "Skyreach", "key_level": 12}]
+    app = _app(score=0, rio_dungeons=evidence)
     before = scoring.candidate_fit(app, listing)
     evidence[0]["name"] = "Pit of Saron"
     after = scoring.candidate_fit(app, listing)
     assert after != before
-    assert before.same_dungeon_wcl_best == 90
-    assert after.same_dungeon_wcl_best is None
-    monkeypatch.setattr(scoring, "_mplus_wcl_dungeon_key", _uncached_dungeon_key)
-    assert scoring.candidate_fit(app, listing) == after
+    assert before.same_dungeon_rio_key == 12
+    assert after.same_dungeon_rio_key == 0
+    assert after.score < before.score
 
 
 def test_legacy_direct_signal_construction_keeps_normalization_fallback():

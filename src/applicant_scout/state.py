@@ -98,6 +98,9 @@ class Applicant:
     raid_normal_median: Optional[float] = None
     raid_heroic_median: Optional[float] = None
     raid_mythic_median: Optional[float] = None
+    # Observed matching-spec boss coverage from the existing WCL summary query.
+    # Missing metadata/counts are unknown, never inferred from performance averages.
+    raid_evidence: dict[str, dict] = field(default_factory=dict)
     # M+ headline best/median avg across the 8 dungeons. DPS is populated for
     # every role; legacy HPS slots remain empty to keep state/cache shape stable.
     # Querying one metric saves 8 unneeded WCL encounter queries per applicant.
@@ -144,6 +147,7 @@ class Applicant:
         self.raid_normal_median = None
         self.raid_heroic_median = None
         self.raid_mythic_median = None
+        self.raid_evidence = {}
         self.mplus_dps = None
         self.mplus_hps = None
         self.mplus_dps_median = None
@@ -175,16 +179,19 @@ class Applicant:
         if not metric_preferences.raid_normal:
             self.raid_normal = None
             self.raid_normal_median = None
+            self.raid_evidence.pop("N", None)
             self.raid_boss_parses.pop("N", None)
             self.raid_boss_availability.pop("N", None)
         if not metric_preferences.raid_heroic:
             self.raid_heroic = None
             self.raid_heroic_median = None
+            self.raid_evidence.pop("H", None)
             self.raid_boss_parses.pop("H", None)
             self.raid_boss_availability.pop("H", None)
         if not metric_preferences.raid_mythic:
             self.raid_mythic = None
             self.raid_mythic_median = None
+            self.raid_evidence.pop("M", None)
             self.raid_boss_parses.pop("M", None)
             self.raid_boss_availability.pop("M", None)
         if not metric_preferences.mplus:

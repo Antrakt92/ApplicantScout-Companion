@@ -5,7 +5,7 @@ from typing import Any, cast
 import pytest
 
 import applicant_scout.scoring as scoring_mod
-from applicant_scout.constants import percentile_colour
+from applicant_scout.constants import FIT_ESTIMATE_BACKGROUND, percentile_colour
 from applicant_scout.scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
@@ -199,20 +199,9 @@ def test_unsupported_raid_difficulty_does_not_get_question_mark_fit_label():
     assert fit.display == ""
 
 
-@pytest.mark.parametrize(
-    ("score", "expected"),
-    [
-        (24.0, "#666666"),
-        (54.0, "#0070ff"),
-        (73.0, "#0070ff"),
-        (84.0, "#a335ee"),
-        (96.0, "#ff8000"),
-        (99.0, "#e268a8"),
-        (100.0, "#e5cc80"),
-    ],
-)
-def test_fit_colour_tracks_wcl_palette_for_numeric_score(score, expected):
-    assert fit_colour(score) == expected
+@pytest.mark.parametrize("score", [24, 54, 73, 84, 96, 99, 100])
+def test_fit_colour_uses_neutral_estimate_palette_for_every_finite_score(score):
+    assert fit_colour(score) == FIT_ESTIMATE_BACKGROUND
 
 
 @pytest.mark.parametrize(
@@ -225,7 +214,7 @@ def test_fit_colour_tracks_wcl_palette_for_numeric_score(score, expected):
         (85.0, "TOP"),
     ],
 )
-def test_fit_label_tracks_visible_score_colour_bands(score, expected):
+def test_fit_label_helper_thresholds_do_not_define_the_estimate_palette(score, expected):
     assert fit_label(score) == expected
 
 
@@ -235,14 +224,13 @@ def test_effective_rio_score_uses_higher_of_current_and_main():
     assert effective_rio_score(_app(score=2200, main_score=0)) == 2200
 
 
-def test_mplus_rio_fallback_uses_effective_rio_score():
+def test_mplus_current_and_main_scores_do_not_manufacture_timed_history():
     target = _listing(key_level=16)
     current_only = _app(score=1200, main_score=0)
     alt_with_main = _app(score=1200, main_score=3400)
 
-    assert candidate_fit(alt_with_main, target).score > candidate_fit(
-        current_only, target
-    ).score
+    assert not candidate_fit(alt_with_main, target).is_available
+    assert not candidate_fit(current_only, target).is_available
 
 
 def test_mplus_rio_fallback_ignores_lower_main_score():
@@ -253,7 +241,7 @@ def test_mplus_rio_fallback_ignores_lower_main_score():
     ).score
 
 
-def test_mplus_all_grey_near_target_profile_stays_low_risk():
+def test_mplus_low_damage_keeps_near_target_experience_and_damage_context():
     target = _listing(key_level=16)
     applicant = _app(
         score=3328,
@@ -271,12 +259,18 @@ def test_mplus_all_grey_near_target_profile_stays_low_risk():
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.score < 25.0
-    assert fit.colour == percentile_colour(24.0)
+    clean = _app(score=3328, dps_breakdown=[
+        _dungeon(entry["name"], [(entry["key_level"], 80, 80, entry["run_count"])])
+        for entry in applicant.mplus_dps_breakdown
+    ])
+    assert fit.score == candidate_fit(clean, target).score
+    assert not fit.is_available
+    assert fit.coverage == 0.0
+    assert mplus_dungeon_fit_rows(applicant, target)
     assert fit.label == ""
 
 
-def test_mplus_mostly_grey_healer_is_not_rescued_by_main_rio():
+def test_mplus_character_key_history_does_not_change_with_main_rating():
     target = _listing(key_level=16, dungeon_name="Windrunner Spire")
     applicant = _app(
         role="HEALER",
@@ -295,11 +289,14 @@ def test_mplus_mostly_grey_healer_is_not_rescued_by_main_rio():
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.score < 50.0
+    applicant.main_score = 0
+    assert fit.score == candidate_fit(applicant, target).score
+    assert not fit.is_available
+    assert not candidate_fit(applicant, target).is_available
     assert fit.label == ""
 
 
-def test_mplus_overqualified_key_and_same_key_orange_are_good_for_low_listing():
+def test_mplus_high_logged_keys_and_target_parses_do_not_prove_timed_readiness():
     target = _listing(key_level=10)
     overqualified = _app(
         dps_breakdown=[_dungeon("Skyreach", [(20, 31.0, 31.0, 1)])],
@@ -313,11 +310,12 @@ def test_mplus_overqualified_key_and_same_key_orange_are_good_for_low_listing():
     overqualified_fit = candidate_fit(overqualified, target)
     farm_fit = candidate_fit(farm_parse, target)
 
-    assert overqualified_fit.score > 0.0
-    assert farm_fit.score > overqualified_fit.score
+    assert not overqualified_fit.is_available
+    assert not farm_fit.is_available
+    assert mplus_dungeon_fit_rows(overqualified, target)[0].key_level == 20
 
 
-def test_mplus_low_key_orange_does_not_beat_relevant_high_key_evidence():
+def test_mplus_orange_and_relevant_logged_keys_both_require_timed_confirmation():
     target = _listing(key_level=16)
     farm_parse = _app(
         dps_breakdown=[_dungeon("Skyreach", [(10, 99.0, 95.0, 3)])],
@@ -331,9 +329,9 @@ def test_mplus_low_key_orange_does_not_beat_relevant_high_key_evidence():
     farm_fit = candidate_fit(farm_parse, target)
     relevant_fit = candidate_fit(relevant, target)
 
-    assert farm_fit.score < 25.0
-    assert relevant_fit.score > farm_fit.score
-    assert relevant_fit.primary_key == 16
+    assert not farm_fit.is_available
+    assert not relevant_fit.is_available
+    assert mplus_dungeon_fit_rows(relevant, target)[0].key_level == 16
 
 
 def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localized():
@@ -343,6 +341,7 @@ def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localize
         dungeon_name="Королевский Покой",
     )
     applicant = _app(
+        rio_dungeons=[{"name": "Kings' Rest", "key_level": 16}],
         dps_breakdown=[_dungeon("Kings' Rest", [(16, 88.0, 78.0, 2)])],
         score=3300,
     )
@@ -350,11 +349,9 @@ def test_mplus_same_dungeon_match_uses_activity_id_when_listing_name_is_localize
     fit = candidate_fit(applicant, target)
 
     assert fit.has_same_dungeon_context
-    assert fit.same_dungeon_rio_key == 0
-    assert fit.same_dungeon_wcl_key == 16
-    assert fit.same_dungeon_wcl_best == 88.0
-    assert fit.same_dungeon_wcl_median == 78.0
-    assert fit.same_dungeon_wcl_run_count == 2
+    assert fit.same_dungeon_rio_key == 16
+    assert fit.same_dungeon_wcl_key == 0
+    assert mplus_dungeon_fit_rows(applicant, target)[0].best_percent == 88.0
 
 
 def test_mplus_fit_exposes_best_nearby_and_same_dungeon_key_evidence():
@@ -380,17 +377,16 @@ def test_mplus_fit_exposes_best_nearby_and_same_dungeon_key_evidence():
 
     assert fit.target_key == 16
     assert fit.primary_key == 20
-    assert fit.best_nearby_key == 18
+    assert fit.best_nearby_key == 15
     assert fit.same_dungeon_rio_key == 15
-    assert fit.same_dungeon_wcl_key == 14
-    assert fit.same_dungeon_wcl_best == 82.0
-    assert fit.same_dungeon_wcl_median == 74.0
-    assert fit.same_dungeon_wcl_run_count == 2
+    assert fit.same_dungeon_wcl_key == 0
+    assert fit.same_dungeon_wcl_best is None
 
 
 def test_mplus_fit_does_not_describe_far_key_as_nearby_evidence():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
+        rio_dungeons=[{"name": "Pit of Saron", "key_level": 20}],
         dps_breakdown=[
             _dungeon("Pit of Saron", [(20, 85.0, 78.0, 2)]),
         ]
@@ -404,7 +400,7 @@ def test_mplus_fit_does_not_describe_far_key_as_nearby_evidence():
     assert fit.same_dungeon_wcl_key == 0
 
 
-def test_mplus_fit_keeps_raw_grey_same_dungeon_context_but_caps_key_evidence():
+def test_mplus_unverified_logged_key_stays_raw_context_without_timed_fit():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         dps_breakdown=[
@@ -414,15 +410,16 @@ def test_mplus_fit_keeps_raw_grey_same_dungeon_context_but_caps_key_evidence():
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.primary_key == 16
+    assert not fit.is_available
+    assert fit.primary_key == 0
     assert fit.best_nearby_key == 0
-    assert fit.same_dungeon_wcl_key == 20
-    assert fit.same_dungeon_wcl_best == 31.0
-    assert fit.same_dungeon_wcl_run_count == 1
-    assert fit.limit_reason == "weak_wcl"
+    raw = mplus_dungeon_fit_rows(applicant, target)[0]
+    assert raw.key_level == 20
+    assert raw.best_percent == 31.0
+    assert raw.run_count == 1
 
 
-def test_mplus_fit_same_dungeon_context_uses_selected_representative_bracket():
+def test_mplus_raw_dungeon_context_can_show_target_bracket_without_timed_fit():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         dps_breakdown=[
@@ -435,13 +432,15 @@ def test_mplus_fit_same_dungeon_context_uses_selected_representative_bracket():
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.same_dungeon_wcl_key == 16
-    assert fit.same_dungeon_wcl_best == 82.0
-    assert fit.same_dungeon_wcl_median == 74.0
-    assert fit.same_dungeon_wcl_run_count == 2
+    assert not fit.is_available
+    raw = mplus_dungeon_fit_rows(applicant, target)[0]
+    assert raw.key_level == 16
+    assert raw.best_percent == 82.0
+    assert raw.median_percent == 74.0
+    assert raw.run_count == 2
 
 
-def test_mplus_fit_summary_uses_the_same_score_limiting_wcl_bracket():
+def test_mplus_low_and_high_logged_brackets_do_not_create_timed_fit():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         dps_breakdown=[
@@ -454,14 +453,14 @@ def test_mplus_fit_summary_uses_the_same_score_limiting_wcl_bracket():
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.same_dungeon_wcl_key == 16
-    assert fit.same_dungeon_wcl_best == 10.0
-    assert fit.same_dungeon_wcl_median == 10.0
-    assert fit.same_dungeon_wcl_run_count == 3
-    assert fit.limit_reason == "low_wcl"
+    assert not fit.is_available
+    raw = mplus_dungeon_fit_rows(applicant, target)[0]
+    assert raw.key_level == 16
+    assert raw.best_percent == 10.0
+    assert raw.run_count == 3
 
 
-def test_mplus_fit_does_not_label_ignored_far_low_wcl_as_same_dungeon_evidence():
+def test_mplus_far_low_key_remains_observed_same_dungeon_history():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     rio_dungeons = [
         {"name": f"Other Dungeon {index}", "key_level": 16}
@@ -478,14 +477,14 @@ def test_mplus_fit_does_not_label_ignored_far_low_wcl_as_same_dungeon_evidence()
     ignored_fit = candidate_fit(ignored_log, target)
 
     assert ignored_fit.score == baseline_fit.score
-    assert ignored_fit.confidence == baseline_fit.confidence
+    assert ignored_fit.confidence >= baseline_fit.confidence
     assert ignored_fit.same_dungeon_wcl_key == 0
     assert ignored_fit.same_dungeon_wcl_best is None
     assert ignored_fit.same_dungeon_wcl_run_count == 0
-    assert ignored_fit.limit_reason == baseline_fit.limit_reason == "no_same_dungeon"
+    assert baseline_fit.limit_reason == ignored_fit.limit_reason == "no_same_dungeon"
 
 
-def test_mplus_extra_bad_dungeons_do_not_reduce_sparse_penalty():
+def test_mplus_additional_unverified_logged_dungeons_cannot_create_timed_breadth():
     target = _listing(key_level=16)
     strong_with_some_bad = _app(
         dps_breakdown=[
@@ -508,9 +507,8 @@ def test_mplus_extra_bad_dungeons_do_not_reduce_sparse_penalty():
         ],
     )
 
-    assert candidate_fit(strong_with_more_bad, target).score <= candidate_fit(
-        strong_with_some_bad, target
-    ).score
+    assert not candidate_fit(strong_with_more_bad, target).is_available
+    assert not candidate_fit(strong_with_some_bad, target).is_available
 
 
 def test_mplus_fit_rows_use_relevant_lower_bracket_when_top_key_is_grey():
@@ -542,20 +540,21 @@ def test_mplus_fit_rows_colour_printed_percentile_not_context_fit():
     assert rows[0].colour == percentile_colour(64.0)
 
 
-def test_mplus_scorecard_keeps_no_log_target_profile_unknown_not_good():
+def test_mplus_timed_target_profile_is_available_without_wcl_damage():
     target = _listing(key_level=15)
     no_logs = _app(score=3270, **_rio_profile([15] * 8, target_key=15))
 
     fit = candidate_fit(no_logs, target)
 
     assert fit.source == "mplus_scorecard"
+    assert fit.is_available
     assert 50.0 <= fit.score <= 58.0
     assert fit.display == f"{int(round(fit.score))} +15"
     assert fit.label == ""
     assert all(word not in fit.display for word in ("TOP", "FIT", "OK", "RISK", "RIO"))
 
 
-def test_mplus_scorecard_good_logs_on_lower_keys_beat_unknown_target_keys():
+def test_mplus_timed_target_experience_outranks_lower_logged_key_experience():
     target = _listing(key_level=15)
     target_no_logs = _app(score=3270, **_rio_profile([15] * 8, target_key=15))
     lower_with_good_logs = _app(
@@ -574,12 +573,11 @@ def test_mplus_scorecard_good_logs_on_lower_keys_beat_unknown_target_keys():
     target_fit = candidate_fit(target_no_logs, target)
     lower_fit = candidate_fit(lower_with_good_logs, target)
 
-    assert lower_fit.score > target_fit.score
-    assert 56.0 <= lower_fit.score <= 64.0
+    assert target_fit.score > lower_fit.score
     assert lower_fit.primary_key == 14
 
 
-def test_mplus_scorecard_gray_relevant_logs_are_worse_than_no_logs():
+def test_mplus_same_key_damage_logs_add_evidence_without_changing_experience():
     target = _listing(key_level=15)
     no_logs = _app(score=3270, **_rio_profile([15] * 8, target_key=15))
     one_gray = _app(
@@ -604,9 +602,9 @@ def test_mplus_scorecard_gray_relevant_logs_are_worse_than_no_logs():
     one_gray_fit = candidate_fit(one_gray, target)
     repeated_gray_fit = candidate_fit(repeated_gray, target)
 
-    assert one_gray_fit.score < no_log_fit.score
-    assert repeated_gray_fit.score < one_gray_fit.score
-    assert repeated_gray_fit.score < 40.0
+    assert one_gray_fit.score == no_log_fit.score == repeated_gray_fit.score
+    assert no_log_fit.confidence == one_gray_fit.confidence == repeated_gray_fit.confidence
+    assert one_gray_fit.same_dungeon_wcl_best is None
 
 
 def test_mplus_scorecard_overqualified_no_logs_ramp_without_clamping_sort_score():
@@ -658,6 +656,7 @@ def test_mplus_scorecard_low_key_logs_do_not_cheese_target_listing():
 def test_mplus_broad_target_minus_one_profile_is_ok_not_risk():
     target = _listing(key_level=17, dungeon_name="Algeth'ar Academy")
     applicant = _app(
+        **_rio_profile([16, 16, 16, 16, 16, 16, 16, 15], target_key=17),
         score=3409,
         dps_breakdown=[
             _dungeon("Nexus-Point Xenas", [(16, 96.0, 96.0, 1)]),
@@ -689,7 +688,7 @@ def test_mplus_single_target_minus_one_parse_does_not_overpromote():
     assert fit.score < 55.0
 
 
-def test_mplus_healer_uses_dps_breakdown_and_ignores_legacy_hps():
+def test_mplus_healer_dps_context_ignores_legacy_hps_without_creating_timed_fit():
     target = _listing(key_level=16)
     healer = _app(
         role="HEALER",
@@ -700,11 +699,12 @@ def test_mplus_healer_uses_dps_breakdown_and_ignores_legacy_hps():
 
     fit = candidate_fit(healer, target)
 
-    assert fit.primary_key == 16
+    assert not fit.is_available
+    assert mplus_dungeon_fit_rows(healer, target)[0].key_level == 16
     assert fit.score < 80
 
 
-def test_mplus_partial_rio_rows_do_not_discard_wcl_key_readiness():
+def test_mplus_partial_timed_rio_rows_cannot_be_upgraded_by_unverified_wcl_keys():
     target = _listing(key_level=12, dungeon_name="Mythic+", activity_id=0)
     healer = _app(
         role="HEALER",
@@ -725,8 +725,12 @@ def test_mplus_partial_rio_rows_do_not_discard_wcl_key_readiness():
 
     fit = candidate_fit(healer, target)
 
-    assert fit.primary_key == 12
-    assert fit.score >= 25.0
+    assert fit.primary_key == 11
+    assert fit.is_available
+    assert fit.coverage == 2 / 8
+    assert fit.score == candidate_fit(
+        _app(role="HEALER", score=0, rio_dungeons=healer.rio_dungeons), target
+    ).score
 
 
 def test_mplus_scorecard_rio_summary_rescues_missing_wcl_without_top_rating():
@@ -957,7 +961,7 @@ def test_mplus_scorecard_display_keeps_higher_rio_key_when_wcl_is_lower():
     assert "+18" in fit.display
 
 
-def test_mplus_bad_relevant_wcl_caps_strong_scorecard_evidence():
+def test_mplus_low_damage_does_not_veto_independent_key_experience():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     applicant = _app(
         score=3300,
@@ -969,16 +973,19 @@ def test_mplus_bad_relevant_wcl_caps_strong_scorecard_evidence():
         rio_timed_at_or_above_minus2=8,
         rio_completed_at_or_above_minus1=8,
         rio_dungeon_count=8,
+        rio_summary_target_key=16,
         dps_breakdown=[_dungeon("Skyreach", [(16, 18.0, 16.0, 3)])],
     )
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.score < 62.0
+    applicant.mplus_dps_breakdown = [_dungeon("Skyreach", [(16, 80.0, 80.0, 3)])]
+    assert fit.score == candidate_fit(applicant, target).score
+    assert mplus_dungeon_fit_rows(applicant, target)[0].best_percent == 80.0
     assert fit.label == ""
 
 
-def test_mplus_wcl_quality_prefers_stable_median_over_best_parse_spike():
+def test_mplus_damage_consistency_is_separate_from_same_key_experience():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     spike = _app(
         score=3300,
@@ -994,10 +1001,12 @@ def test_mplus_wcl_quality_prefers_stable_median_over_best_parse_spike():
     spike_fit = candidate_fit(spike, target)
     steady_fit = candidate_fit(steady, target)
 
-    assert steady_fit.score > spike_fit.score
+    assert steady_fit.score == spike_fit.score
+    assert mplus_dungeon_fit_rows(spike, target)[0].median_percent == 35.0
+    assert mplus_dungeon_fit_rows(steady, target)[0].median_percent == 80.0
 
 
-def test_mplus_gray_relevant_wcl_is_weaker_than_no_log_equivalent():
+def test_mplus_same_key_low_damage_log_preserves_independent_rio_experience():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     no_log = _app(score=3300, **_rio_profile([16] * 8, target_key=16))
     gray_log = _app(
@@ -1009,18 +1018,22 @@ def test_mplus_gray_relevant_wcl_is_weaker_than_no_log_equivalent():
     no_log_fit = candidate_fit(no_log, target)
     gray_fit = candidate_fit(gray_log, target)
 
-    assert gray_fit.score < no_log_fit.score
+    assert gray_fit.score == no_log_fit.score
+    assert gray_fit.confidence == no_log_fit.confidence
+    assert mplus_dungeon_fit_rows(gray_log, target)[0].best_percent == 35.0
 
 
-def test_mplus_high_gray_overqualified_breadth_loses_to_clean_target_breadth():
+def test_mplus_higher_key_breadth_provides_more_experience_despite_lower_damage():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     high_gray = _app(
+        **_rio_profile([20] * 8, target_key=16),
         score=0,
         dps_breakdown=[
             _dungeon(name, [(20, 35.0, 35.0, 3)]) for name in MPLUS_DUNGEONS
         ],
     )
     clean_target = _app(
+        **_rio_profile([16] * 8, target_key=16),
         score=0,
         dps_breakdown=[
             _dungeon(name, [(16, 55.0, 55.0, 3)]) for name in MPLUS_DUNGEONS
@@ -1030,10 +1043,11 @@ def test_mplus_high_gray_overqualified_breadth_loses_to_clean_target_breadth():
     high_gray_fit = candidate_fit(high_gray, target)
     clean_target_fit = candidate_fit(clean_target, target)
 
-    assert high_gray_fit.score < clean_target_fit.score
+    assert high_gray_fit.score > clean_target_fit.score
+    assert high_gray_fit.confidence == clean_target_fit.confidence
 
 
-def test_mplus_high_gray_wcl_does_not_display_raw_overqualified_key():
+def test_mplus_low_damage_does_not_rewrite_actual_logged_key():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     high_gray = _app(
         score=0,
@@ -1044,8 +1058,9 @@ def test_mplus_high_gray_wcl_does_not_display_raw_overqualified_key():
 
     fit = candidate_fit(high_gray, target)
 
-    assert fit.primary_key == 16
-    assert fit.display.endswith(" +16")
+    assert not fit.is_available
+    assert fit.primary_key == 0
+    assert mplus_dungeon_fit_rows(high_gray, target)[0].key_level == 20
 
 
 @pytest.mark.parametrize("target_key", [2, 3, 4, 12, 20])
@@ -1085,19 +1100,22 @@ def test_mplus_improving_wcl_quality_across_thresholds_never_lowers_fit(
     )
 
 
-def test_mplus_broad_near_median_gray_wcl_counts_as_weak_completion_evidence():
+def test_mplus_logged_dungeon_breadth_is_independent_of_damage_colour():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     broad_gray_target = _app(
+        **_rio_profile([16] * 8, target_key=16),
         score=0,
         dps_breakdown=[
             _dungeon(name, [(16, 49.0, 49.0, 3)]) for name in MPLUS_DUNGEONS
         ],
     )
     sparse_clean_target = _app(
+        rio_dungeons=[{"name": "Skyreach", "key_level": 16}],
         score=0,
         dps_breakdown=[_dungeon("Skyreach", [(16, 99.0, 95.0, 3)])],
     )
     clean_target = _app(
+        **_rio_profile([16] * 8, target_key=16),
         score=0,
         dps_breakdown=[
             _dungeon(name, [(16, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
@@ -1108,15 +1126,16 @@ def test_mplus_broad_near_median_gray_wcl_counts_as_weak_completion_evidence():
     sparse_clean_fit = candidate_fit(sparse_clean_target, target)
     clean_target_fit = candidate_fit(clean_target, target)
 
-    assert sparse_clean_fit.score < broad_gray_fit.score < clean_target_fit.score
-    assert broad_gray_fit.confidence < clean_target_fit.confidence
+    assert sparse_clean_fit.score < broad_gray_fit.score == clean_target_fit.score
+    assert broad_gray_fit.confidence == clean_target_fit.confidence
 
 
-def test_mplus_gray_wcl_thresholds_are_weak_low_confidence_evidence():
+def test_mplus_damage_thresholds_do_not_change_experience_or_evidence_strength():
     target = _listing(key_level=16, dungeon_name="Skyreach")
 
     def broad_fit(percentile: float):
         applicant = _app(
+            **_rio_profile([16] * 8, target_key=16),
             score=0,
             dps_breakdown=[
                 _dungeon(name, [(16, percentile, percentile, 3)])
@@ -1130,10 +1149,9 @@ def test_mplus_gray_wcl_thresholds_are_weak_low_confidence_evidence():
     near_median = broad_fit(49.0)
     clean_floor = broad_fit(50.0)
 
-    assert bad.score == 0.0
-    assert 0.0 < gray_floor.score < near_median.score < clean_floor.score
-    assert near_median.confidence < clean_floor.confidence
-    assert near_median.coverage == 0.0
+    assert bad.score == gray_floor.score == near_median.score == clean_floor.score
+    assert bad.confidence == gray_floor.confidence == near_median.confidence == clean_floor.confidence
+    assert bad.coverage == gray_floor.coverage == near_median.coverage == 1.0
     assert clean_floor.coverage == 1.0
 
 
@@ -1156,21 +1174,24 @@ def test_mplus_wcl_quality_is_monotonic_when_rio_already_covers_target():
     assert scores == sorted(scores)
 
 
-def test_mplus_high_gray_breadth_is_experience_but_loses_to_clean_target_breadth():
+def test_mplus_higher_logged_key_breadth_outranks_target_and_lower_key_breadth():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     high_gray = _app(
+        **_rio_profile([19] * 8, target_key=16),
         score=0,
         dps_breakdown=[
             _dungeon(name, [(19, 49.0, 49.0, 3)]) for name in MPLUS_DUNGEONS
         ],
     )
     clean_minus_one = _app(
+        **_rio_profile([15] * 8, target_key=16),
         score=0,
         dps_breakdown=[
             _dungeon(name, [(15, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
         ],
     )
     clean_target = _app(
+        **_rio_profile([16] * 8, target_key=16),
         score=0,
         dps_breakdown=[
             _dungeon(name, [(16, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
@@ -1181,17 +1202,19 @@ def test_mplus_high_gray_breadth_is_experience_but_loses_to_clean_target_breadth
     clean_minus_one_fit = candidate_fit(clean_minus_one, target)
     clean_target_fit = candidate_fit(clean_target, target)
 
-    assert clean_minus_one_fit.score < high_gray_fit.score < clean_target_fit.score
-    assert high_gray_fit.confidence < clean_minus_one_fit.confidence
+    assert clean_minus_one_fit.score < clean_target_fit.score < high_gray_fit.score
+    assert high_gray_fit.confidence == clean_minus_one_fit.confidence
 
 
-def test_mplus_same_dungeon_gray_higher_bracket_does_not_raise_clean_target_fit():
+def test_mplus_higher_unverified_wcl_bracket_cannot_change_timed_breadth():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     clean_target = _app(
+        rio_dungeons=[{"name": "Skyreach", "key_level": 16}],
         score=0,
         dps_breakdown=[_dungeon("Skyreach", [(16, 80.0, 75.0, 3)])],
     )
     clean_with_gray_higher = _app(
+        rio_dungeons=[{"name": "Skyreach", "key_level": 16}],
         score=0,
         dps_breakdown=[
             _dungeon("Skyreach", [(16, 80.0, 75.0, 3), (20, 49.0, 49.0, 3)])
@@ -1201,12 +1224,14 @@ def test_mplus_same_dungeon_gray_higher_bracket_does_not_raise_clean_target_fit(
     clean_fit = candidate_fit(clean_target, target)
     gray_higher_fit = candidate_fit(clean_with_gray_higher, target)
 
-    assert gray_higher_fit.score <= clean_fit.score
+    assert gray_higher_fit.score == clean_fit.score
+    assert gray_higher_fit.coverage == clean_fit.coverage
 
 
 def test_mplus_distinct_dungeon_breadth_beats_repeated_same_dungeon_brackets():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     repeated_same_dungeon = _app(
+        rio_dungeons=[{"name": "Skyreach", "key_level": 18}],
         score=0,
         dps_breakdown=[
             _dungeon(
@@ -1220,6 +1245,7 @@ def test_mplus_distinct_dungeon_breadth_beats_repeated_same_dungeon_brackets():
         ],
     )
     broad_profile = _app(
+        rio_dungeons=[{"name": name, "key_level": 16} for name in MPLUS_DUNGEONS[:3]],
         score=0,
         dps_breakdown=[
             _dungeon(name, [(16, 80.0, 76.0, 3)])
@@ -1233,7 +1259,7 @@ def test_mplus_distinct_dungeon_breadth_beats_repeated_same_dungeon_brackets():
     assert broad_fit.score > repeated_fit.score
 
 
-def test_mplus_completed_minus_one_supports_less_than_timed_minus_one():
+def test_mplus_only_in_time_summary_counts_can_raise_verified_readiness():
     target = _listing(key_level=16, dungeon_name="Skyreach")
     no_completion = _app(
         score=3200,
@@ -1276,7 +1302,9 @@ def test_mplus_completed_minus_one_supports_less_than_timed_minus_one():
     completed_fit = candidate_fit(completed_minus_one, target)
     timed_fit = candidate_fit(timed_minus_one, target)
 
-    assert no_completion_fit.score < completed_fit.score < timed_fit.score
+    assert no_completion_fit.score == completed_fit.score < timed_fit.score
+    assert no_completion_fit.dungeon_count == completed_fit.dungeon_count == 1
+    assert timed_fit.dungeon_count == 8
 
 
 def test_mplus_partial_rio_rows_do_not_double_count_summary_best_key():
@@ -1306,67 +1334,32 @@ def test_mplus_partial_rio_rows_do_not_double_count_summary_best_key():
     assert partial.score == explicit.score
 
 
-def test_mplus_score_only_fallback_is_capped_low_confidence_prior():
-    target = _listing(key_level=16, dungeon_name="Skyreach")
-    max_score_only = _app(score=5000)
-    clean_minus_one = _app(
-        score=0,
-        dps_breakdown=[
-            _dungeon(name, [(15, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
-        ],
-    )
-    clean_target = _app(
-        score=0,
-        dps_breakdown=[
-            _dungeon(name, [(16, 50.0, 50.0, 3)]) for name in MPLUS_DUNGEONS
-        ],
-    )
+def test_mplus_scalar_rating_does_not_prove_target_timed_history():
+    target = _listing(key_level=16)
+    rating_only = _app(score=10000, main_score=10000)
+    timed_below = _app(score=0, **_rio_profile([15] * 8, target_key=16))
+    timed_target = _app(score=0, **_rio_profile([16] * 8, target_key=16))
+    fit = candidate_fit(rating_only, target)
 
-    score_only_fit = candidate_fit(max_score_only, target)
-
-    assert score_only_fit.score == 42.0
-    assert score_only_fit.confidence == 0.3
-    assert candidate_fit(clean_minus_one, target).score < score_only_fit.score
-    assert score_only_fit.score < candidate_fit(clean_target, target).score
+    assert not fit.is_available
+    assert fit.display == ""
+    assert fit.colour is None
+    assert candidate_fit(timed_below, target).is_available
+    assert candidate_fit(timed_target, target).score > candidate_fit(timed_below, target).score
 
 
 @pytest.mark.parametrize("target_key", [10, 16, 20])
-def test_mplus_scorecard_calibrates_core_evidence_order_across_key_levels(
-    target_key: int,
-):
+def test_mplus_timed_experience_order_is_consistent_across_key_levels(target_key: int):
     target = _listing(key_level=target_key, dungeon_name="Skyreach")
-
-    def rio_app(key_level: int) -> Applicant:
-        return _app(score=3300, **_rio_profile([key_level] * 8, target_key=target_key))
-
-    def wcl_app(
-        key_level: int,
-        parse: float,
-        median: float,
-        dungeon_count: int = 8,
-    ) -> Applicant:
-        return _app(
-            score=0,
-            dps_breakdown=[
-                _dungeon(name, [(key_level, parse, median, 3)])
-                for name in MPLUS_DUNGEONS[:dungeon_count]
-            ],
-        )
-
-    ordered_applicants = [
-        wcl_app(target_key, 80.0, 75.0),
-        rio_app(target_key + 2),
-        wcl_app(target_key, 55.0, 55.0),
-        rio_app(target_key),
-        wcl_app(target_key + 4, 35.0, 35.0),
-        rio_app(target_key - 1),
-        wcl_app(target_key, 99.0, 95.0, dungeon_count=1),
-        wcl_app(target_key, 10.0, 10.0),
+    ordered = [
+        _app(score=0, **_rio_profile([target_key + delta] * 8, target_key=target_key))
+        for delta in (4, 2, 0, -1, -2, -3)
     ]
+    fits = [candidate_fit(applicant, target) for applicant in ordered]
 
-    scores = [candidate_fit(applicant, target).score for applicant in ordered_applicants]
-
-    assert scores == sorted(scores, reverse=True)
+    assert all(fit.is_available for fit in fits)
+    assert [fit.score for fit in fits] == sorted((fit.score for fit in fits), reverse=True)
+    assert len({fit.score for fit in fits}) == len(fits)
 
 
 def test_mplus_all_minus_one_rio_with_mixed_lower_wcl_does_not_become_top():
@@ -1539,7 +1532,7 @@ def test_mplus_target_key_without_logs_outranks_below_target_parse_spike():
     spike_fit = candidate_fit(below_target_parse_spike, target)
 
     assert target_fit.primary_key == 15
-    assert spike_fit.primary_key == 14
+    assert spike_fit.primary_key == 15
     assert target_fit.score > spike_fit.score
 
 
@@ -1653,25 +1646,22 @@ def test_mplus_duplicate_rio_dungeon_rows_keep_highest_normalized_key_level():
 
 
 @pytest.mark.parametrize("rio_key", [11, 12, 16])
-def test_mplus_overlapping_rio_does_not_duplicate_wcl_completion(rio_key):
+def test_mplus_overlapping_wcl_cannot_change_verified_rio_readiness(rio_key):
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
-    logs = [_dungeon("Skyreach", [(16, 80.0, 80.0, 3)])]
-    logged = _app(score=0, dps_breakdown=logs)
+    logged = _app(score=0, dps_breakdown=[_dungeon("Skyreach", [(12, 80, 80, 3)])])
+    timed_only = _app(score=0, rio_dungeons=[{"name": "Skyreach", "key_level": rio_key}])
     corroborated = _app(
-        score=0,
-        rio_dungeons=[{"name": " SKYREACH ", "key_level": rio_key}],
-        dps_breakdown=logs,
+        score=0, rio_dungeons=timed_only.rio_dungeons,
+        dps_breakdown=logged.mplus_dps_breakdown,
     )
 
-    logged_fit = candidate_fit(logged, target)
-    corroborated_fit = candidate_fit(corroborated, target)
-
-    assert corroborated_fit.score == pytest.approx(logged_fit.score)
-    assert corroborated_fit.coverage == logged_fit.coverage == 1 / 8
-    assert corroborated_fit.confidence == logged_fit.confidence
+    assert not candidate_fit(logged, target).is_available
+    assert candidate_fit(timed_only, target).is_available
+    assert candidate_fit(corroborated, target).score == candidate_fit(timed_only, target).score
+    assert candidate_fit(corroborated, target).coverage == candidate_fit(timed_only, target).coverage
 
 
-def test_mplus_disjoint_rio_and_wcl_dungeons_increase_real_breadth():
+def test_mplus_disjoint_unverified_wcl_cannot_inflate_timed_rio_breadth():
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
     rows = [{"name": "Skyreach", "key_level": 12}]
     overlap = _app(
@@ -1689,9 +1679,9 @@ def test_mplus_disjoint_rio_and_wcl_dungeons_increase_real_breadth():
     distinct_fit = candidate_fit(distinct, target)
 
     assert overlap_fit.coverage == 1 / 8
-    assert distinct_fit.coverage == 2 / 8
-    assert distinct_fit.confidence > overlap_fit.confidence
-    assert distinct_fit.score > overlap_fit.score
+    assert distinct_fit.coverage == 1 / 8
+    assert distinct_fit.confidence == overlap_fit.confidence
+    assert distinct_fit.score == overlap_fit.score
 
 
 def test_mplus_anonymous_summary_does_not_duplicate_best_same_dungeon():
@@ -1783,7 +1773,7 @@ def test_mplus_named_evidence_fusion_is_order_independent():
 
     fit = candidate_fit(original, target)
     assert fit == candidate_fit(reversed_rows, target)
-    assert fit.coverage == 3 / 8
+    assert fit.coverage == 2 / 8
     assert fit.primary_key == 16
 
 
@@ -1854,7 +1844,7 @@ def test_mplus_specific_summary_retains_identity_without_redundant_rows(
     summary_fit = candidate_fit(summary_only, target)
     assert summary_fit == candidate_fit(named, target)
     assert summary_fit == candidate_fit(localized, target)
-    assert summary_fit.coverage == 2 / 8
+    assert summary_fit.coverage == 1 / 8
 
 
 @pytest.mark.parametrize("dungeon_name", ["Mythic+", "?", "??", "---"])
@@ -1881,7 +1871,7 @@ def test_mplus_generic_listing_keeps_summary_identity_unknown(dungeon_name):
 
 @pytest.mark.parametrize("rio_key", [2, 10, 11, 12, 16])
 @pytest.mark.parametrize("same_dungeons", [True, False])
-def test_mplus_rio_evidence_cannot_reduce_weak_log_readiness(rio_key, same_dungeons):
+def test_mplus_verified_rio_readiness_is_independent_of_unverified_logs(rio_key, same_dungeons):
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
     logs = [_dungeon(name, [(12, 40.0, 40.0, 3)]) for name in MPLUS_DUNGEONS[:4]]
     logged = _app(score=0, dps_breakdown=logs)
@@ -1893,19 +1883,21 @@ def test_mplus_rio_evidence_cannot_reduce_weak_log_readiness(rio_key, same_dunge
     logged_fit = candidate_fit(logged, target)
     with_rio_fit = candidate_fit(with_rio, target)
 
-    assert with_rio_fit.score >= logged_fit.score
-    if same_dungeons and rio_key <= 10:
-        assert with_rio_fit.score == pytest.approx(logged_fit.score)
+    assert not logged_fit.is_available
+    assert with_rio_fit.is_available
+    assert with_rio_fit.score == candidate_fit(_app(score=0, rio_dungeons=rows), target).score
     assert candidate_fit(duplicated, target) == with_rio_fit
 
 
-def test_mplus_weaker_extra_bracket_does_not_duplicate_clean_readiness():
+def test_mplus_higher_unverified_wcl_key_cannot_change_verified_rio_experience():
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
     clean = _app(
+        rio_dungeons=[{"name": "Skyreach", "key_level": 12}],
         score=0,
         dps_breakdown=[_dungeon("Skyreach", [(12, 80.0, 80.0, 3)])],
     )
     with_weaker = _app(
+        rio_dungeons=[{"name": "Skyreach", "key_level": 12}],
         score=0,
         dps_breakdown=[
             _dungeon("Skyreach", [(12, 80.0, 80.0, 3), (14, 49.0, 49.0, 3)])
@@ -1915,13 +1907,13 @@ def test_mplus_weaker_extra_bracket_does_not_duplicate_clean_readiness():
     clean_fit = candidate_fit(clean, target)
     weaker_fit = candidate_fit(with_weaker, target)
     assert weaker_fit.score == clean_fit.score
-    assert weaker_fit.primary_key == clean_fit.primary_key
+    assert weaker_fit.primary_key == clean_fit.primary_key == 12
     assert weaker_fit.coverage == clean_fit.coverage
     assert weaker_fit.confidence == clean_fit.confidence
 
 
 @pytest.mark.parametrize("role", ["DAMAGER", "HEALER", "TANK"])
-def test_mplus_zero_fit_explains_low_logs_instead_of_missing_coverage(role):
+def test_mplus_single_damage_log_does_not_prove_timed_readiness_for_any_role(role):
     target = _listing(key_level=16)
     applicant = _app(
         role=role,
@@ -1931,11 +1923,18 @@ def test_mplus_zero_fit_explains_low_logs_instead_of_missing_coverage(role):
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.score == 0
-    assert fit.limit_reason == scoring_mod.MPLUS_LIMIT_LOW_WCL
+    positive_damage = _app(
+        role=role, score=0,
+        dps_breakdown=[_dungeon("Skyreach", [(16, 80.0, 80.0, 3)])],
+    )
+    assert not fit.is_available
+    assert not candidate_fit(positive_damage, target).is_available
+    assert fit.score == candidate_fit(positive_damage, target).score
+    assert fit.coverage == 0
+    assert mplus_dungeon_fit_rows(applicant, target)[0].best_percent == 20.0
 
 
-def test_mplus_anonymous_rio_corroboration_keeps_weak_readiness_support():
+def test_mplus_anonymous_timed_summary_is_independent_of_unverified_wcl():
     target = _listing(key_level=12, activity_id=0, dungeon_name="Mythic+")
     logs = [_dungeon(name, [(12, 40.0, 40.0, 3)]) for name in MPLUS_DUNGEONS[:4]]
     logged = _app(score=0, dps_breakdown=logs)
@@ -1949,7 +1948,13 @@ def test_mplus_anonymous_rio_corroboration_keeps_weak_readiness_support():
         dps_breakdown=logs,
     )
 
-    assert candidate_fit(anonymous, target).score == candidate_fit(logged, target).score
+    assert not candidate_fit(logged, target).is_available
+    timed_only = _app(
+        score=0, rio_profile=True, rio_summary_target_key=12,
+        rio_dungeon_count=8, rio_best_key=10, rio_timed_at_or_above_minus2=4,
+    )
+    assert candidate_fit(anonymous, target).is_available
+    assert candidate_fit(anonymous, target).score == candidate_fit(timed_only, target).score
 
 
 def test_mplus_duplicate_good_wcl_dungeon_rows_do_not_inflate_score_or_confidence():
@@ -1993,7 +1998,7 @@ def test_mplus_same_dungeon_distinct_wcl_key_brackets_do_not_inflate_breadth():
     assert distinct_fit.confidence == single_fit.confidence
 
 
-def test_mplus_duplicate_bad_wcl_dungeon_rows_use_representative_penalty():
+def test_mplus_duplicate_low_damage_wcl_rows_do_not_duplicate_experience():
     target = _listing(key_level=15, dungeon_name="Skyreach")
     canonical = _app(
         score=3270,
@@ -2012,7 +2017,7 @@ def test_mplus_duplicate_bad_wcl_dungeon_rows_use_representative_penalty():
     assert candidate_fit(duplicate, target).score == candidate_fit(canonical, target).score
 
 
-def test_mplus_mixed_duplicate_wcl_rows_use_representative_positive():
+def test_mplus_mixed_duplicate_wcl_rows_preserve_experience_and_raw_damage():
     target = _listing(key_level=15, dungeon_name="Skyreach")
     mixed = _app(
         score=3270,
@@ -2036,10 +2041,12 @@ def test_mplus_mixed_duplicate_wcl_rows_use_representative_positive():
     mixed_fit = candidate_fit(mixed, target)
 
     assert mixed_fit.score == candidate_fit(best_positive, target).score
-    assert mixed_fit.score > candidate_fit(worst_bad, target).score
+    assert mixed_fit.score == candidate_fit(worst_bad, target).score
+    assert {row.best_percent for row in mplus_dungeon_fit_rows(mixed, target)} == {91, 10}
+    assert mplus_dungeon_fit_rows(worst_bad, target)[0].best_percent == 10.0
 
 
-def test_mplus_bad_wcl_ignores_hidden_worse_bracket_when_representative_row_is_good():
+def test_mplus_damage_quality_does_not_change_independent_rio_key_experience():
     target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
     rio_profile = _rio_profile([18, 17, 17, 17, 17, 17, 17, 17], target_key=18)
     representative_good = _app(
@@ -2058,7 +2065,7 @@ def test_mplus_bad_wcl_ignores_hidden_worse_bracket_when_representative_row_is_g
     )
 
 
-def test_mplus_broad_rio_with_bad_representative_wcl_stays_risky_not_zero():
+def test_mplus_broad_rio_experience_is_not_reduced_by_low_damage_logs():
     target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
     applicant = _app(
         score=3552,
@@ -2073,11 +2080,12 @@ def test_mplus_broad_rio_with_bad_representative_wcl_stays_risky_not_zero():
 
     fit = candidate_fit(applicant, target)
 
-    assert fit.score >= 20.0
-    assert fit.score < 40.0
+    applicant.mplus_dps_breakdown = []
+    assert fit.is_available
+    assert fit.score == candidate_fit(applicant, target).score
 
 
-def test_mplus_healer_broad_rio_low_dps_is_warning_not_hard_veto():
+def test_mplus_healer_damage_stays_separate_from_key_experience():
     target = _listing(key_level=18, dungeon_name="Mythic+", activity_id=0)
     healer = _app(
         role="HEALER",
@@ -2093,17 +2101,22 @@ def test_mplus_healer_broad_rio_low_dps_is_warning_not_hard_veto():
 
     fit = candidate_fit(healer, target)
 
-    assert fit.score >= 30.0
-    assert fit.score < 45.0
+    healer.mplus_dps_breakdown = [
+        _dungeon(entry["name"], [(entry["key_level"], 80, 80, entry["run_count"])])
+        for entry in healer.mplus_dps_breakdown
+    ]
+    assert fit.score == candidate_fit(healer, target).score
 
 
 def test_package_fit_penalizes_weak_member_in_multi_member_group():
     target = _listing(key_level=16)
     strong = _app(
+        **_rio_profile([20] * 8, target_key=16),
         dps_breakdown=[_dungeon("Skyreach", [(20, 92.0, 88.0, 3)])],
         score=3600,
     )
     weak = _app(
+        **_rio_profile([10] * 8, target_key=16),
         dps_breakdown=[_dungeon("Skyreach", [(10, 99.0, 95.0, 3)])],
         score=3300,
     )
@@ -2119,6 +2132,7 @@ def test_package_fit_penalizes_weak_member_in_multi_member_group():
 def test_package_fit_solo_uses_individual_score_without_group_display():
     target = _listing(key_level=16)
     applicant = _app(
+        **_rio_profile([16] * 8, target_key=16),
         dps_breakdown=[_dungeon("Skyreach", [(16, 82.0, 74.0, 3)])],
         score=3300,
     )
@@ -2155,6 +2169,7 @@ def test_package_fit_solid_group_has_no_flat_size_penalty():
     target = _listing(key_level=16)
     solid = [
         _app(
+            **_rio_profile([16] * 8, target_key=16),
             dps_breakdown=[_dungeon("Skyreach", [(16, 82.0, 74.0, 3)])],
             score=3300,
         )
@@ -2197,14 +2212,17 @@ def test_package_fit_superstar_with_weak_friend_loses_to_solid_solo():
 def test_package_fit_overqualified_member_helps_but_cannot_hide_deadweight():
     target = _listing(key_level=10)
     overqualified = _app(
+        **_rio_profile([22] * 8, target_key=10),
         dps_breakdown=[_dungeon("Skyreach", [(22, 95.0, 90.0, 3)])],
         score=3900,
     )
     normal_friend = _app(
+        **_rio_profile([10] * 8, target_key=10),
         dps_breakdown=[_dungeon("Skyreach", [(10, 62.0, 56.0, 3)])],
         score=2800,
     )
     deadweight = _app(
+        **_rio_profile([4] * 8, target_key=10),
         dps_breakdown=[_dungeon("Skyreach", [(4, 99.0, 95.0, 3)])],
         score=1900,
     )
@@ -2266,23 +2284,28 @@ def test_package_fit_low_carry_floor_uses_ramp_not_hard_cliff():
     assert at_floor - just_below < 0.5
 
 
-def test_package_fit_status_confidence_and_penalty():
+def test_package_fit_uses_available_independent_evidence_without_access_penalty():
     target = _listing(key_level=16)
+    rio = _rio_profile([16] * 8, target_key=16)
     ready = _app(
+        **rio,
         dps_breakdown=[_dungeon("Skyreach", [(16, 82.0, 74.0, 3)])],
         score=3300,
     )
     loading = _app(
+        **rio,
         dps_breakdown=[_dungeon("Skyreach", [(16, 82.0, 74.0, 3)])],
         score=3300,
         fetch_status="loading",
     )
     error = _app(
+        **rio,
         dps_breakdown=[_dungeon("Skyreach", [(16, 82.0, 74.0, 3)])],
         score=3300,
         fetch_status="error",
     )
     not_found = _app(
+        **rio,
         dps_breakdown=[_dungeon("Skyreach", [(16, 82.0, 74.0, 3)])],
         score=3300,
         fetch_status="not_found",
@@ -2292,20 +2315,21 @@ def test_package_fit_status_confidence_and_penalty():
     error_group = package_fit([ready, error, not_found], target)
 
     assert loading_group.status_penalty == 0.0
-    assert loading_group.confidence < package_fit([ready, ready], target).confidence
-    assert error_group.status_penalty == 10.0
-    assert error_group.score < loading_group.score
+    assert loading_group.confidence == package_fit([ready, ready], target).confidence
+    assert error_group.status_penalty == 0.0
+    assert error_group.is_complete
+    assert error_group.score == pytest.approx(package_fit([ready] * 3, target).score)
 
 
 def test_package_fit_exposes_role_composition_and_incomplete_member_counts():
     target = _listing(key_level=16)
     members = [
-        _app(role="TANK", fetch_status="ready"),
-        _app(role="HEALER", fetch_status="pending"),
-        _app(role="DAMAGER", fetch_status="loading"),
-        _app(role="DAMAGER", fetch_status="error"),
-        _app(role="UNKNOWN", fetch_status="not_found"),
-        _app(role="DAMAGER", fetch_status="restricted"),
+        _app(role="TANK", score=0, fetch_status="ready"),
+        _app(role="HEALER", score=0, fetch_status="pending"),
+        _app(role="DAMAGER", score=0, fetch_status="loading"),
+        _app(role="DAMAGER", score=0, fetch_status="error"),
+        _app(role="UNKNOWN", score=0, fetch_status="not_found"),
+        _app(role="DAMAGER", score=0, fetch_status="restricted"),
     ]
 
     group = package_fit(members, target)
@@ -2324,7 +2348,10 @@ def test_package_fit_exposes_role_composition_and_incomplete_member_counts():
         + group.unknown_role_count
         == group.size
     )
-    assert group.display == "G6 0"
+    assert not group.is_complete
+    assert group.available_count == 0
+    assert group.unavailable_count == 6
+    assert group.display == "G6 unknown"
 
 
 def test_package_fit_terminal_member_does_not_score_from_stale_wcl_metrics():
@@ -2342,7 +2369,12 @@ def test_package_fit_terminal_member_does_not_score_from_stale_wcl_metrics():
 
     group = package_fit([ready, stale_error], target)
 
-    assert group.member_scores[1] == 0.0
+    rating_only = candidate_fit(_app(score=3300, fetch_status="error"), target)
+    assert group.member_scores[1] == rating_only.score
+    assert group.member_fits[1].primary_key == 0
+    assert not group.member_fits[1].is_available
+    assert not group.is_complete
+    assert group.display == "G2 partial"
     assert group.label == ""
     assert group.display.startswith("G2 ")
 
@@ -2358,14 +2390,14 @@ def test_raid_heroic_listing_prioritises_heroic_parse():
     assert candidate_fit(heroic, target).score > candidate_fit(mplus_only, target).score
 
 
-def test_raid_support_uses_effective_rio_score():
+def test_raid_does_not_invent_performance_from_current_or_main_mplus_rating():
     target = _listing(category_id=3, difficulty_id=15)
     current_only = _app(score=1200, main_score=0)
     alt_with_main = _app(score=1200, main_score=3400)
 
-    assert candidate_fit(alt_with_main, target).score > candidate_fit(
-        current_only, target
-    ).score
+    assert not candidate_fit(alt_with_main, target).is_available
+    assert not candidate_fit(current_only, target).is_available
+    assert candidate_fit(alt_with_main, target).display == ""
 
 
 def test_raid_heroic_uses_mythic_as_higher_difficulty_fallback():

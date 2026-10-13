@@ -4,7 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QPoint, QRect
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication
 
@@ -95,7 +95,19 @@ def test_narrow_badges_and_stacked_raid_values_keep_complete_numbers(qtbot, tmp_
     QApplication.processEvents()
     panel = window._panel
     for label in panel._metric_labels.values():
-        assert label.fontMetrics().horizontalAdvance(label.text()) <= label.contentsRect().width()
+        if label.isHidden():
+            continue
+        rect = label.contentsRect()
+        if label.wordWrap():
+            text_rect = label.fontMetrics().boundingRect(
+                QRect(0, 0, rect.width(), 10000),
+                Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap,
+                label.text(),
+            )
+            assert text_rect.width() <= rect.width()
+            assert text_rect.height() <= rect.height()
+        else:
+            assert label.fontMetrics().horizontalAdvance(label.text()) <= rect.width()
     kills, value = panel._dungeon_rows[0][1], panel._dungeon_rows[0][3]
     assert kills.text().splitlines() == ["N×12", "H×12", "M×12"]
     assert all(f"{difficulty}100/100" in value.text() for difficulty in ("N", "H", "M"))
@@ -135,13 +147,13 @@ def test_selected_dungeon_bracket_uses_unrounded_percentile_for_display(qtbot, t
     assert row["colour"] == percentile_colour(49.9)
 
 
-def test_fit_estimate_uses_tilde_and_percentile_palette_without_muting_wcl(qtbot, tmp_path):
+def test_fit_estimate_uses_tilde_and_neutral_palette_without_muting_wcl(qtbot, tmp_path):
     window = _window(qtbot, tmp_path)
     fit_item = window._table.item(0, overlay.COL_FIT)
     raid_item = window._table.item(0, overlay.COL_H)
     assert fit_item.text().startswith("~")
     assert fit_item.text()[1:].isdigit()
-    assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
+    assert fit_item.background().color().name() == overlay.FIT_ESTIMATE_BACKGROUND
     assert raid_item.background().color().name() == percentile_colour(67.9)
     assert window._panel._metric_labels["Fit"].text().startswith("Fit · Heroic: ~")
     assert "estimate" in window._panel._metric_labels["Fit"].accessibleDescription()

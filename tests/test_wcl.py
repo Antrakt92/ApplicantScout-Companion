@@ -5182,10 +5182,9 @@ def test_headline_all_runs_one_excludes_median():
     assert median is None
 
 
-def test_headline_mixed_run_counts_median_uses_only_multi_run():
-    # Explicit construction (no _dp defaults) — proves run_count >= 2 gate.
-    # Two runs=1 entries with REAL median values; one runs=3 entry.
-    # median_avg should equal ONLY the runs=3 entry's median (other two filtered).
+def test_headline_mixed_run_counts_keeps_median_unknown():
+    # A headline pair must summarize the same dungeon population. The one
+    # repeat-run dungeon cannot stand in for two single-run dungeons.
     breakdown = [
         DungeonPerf(
             name="A", parse_percent=80.0, median_percent=75.0, key_level=10, run_count=1
@@ -5199,7 +5198,7 @@ def test_headline_mixed_run_counts_median_uses_only_multi_run():
     ]
     best, median = _compute_mplus_headline(breakdown)
     assert best == pytest.approx((80.0 + 90.0 + 70.0) / 3)
-    assert median == pytest.approx(65.0)  # only C contributes
+    assert median is None
 
 
 def test_headline_single_multi_run_entry():

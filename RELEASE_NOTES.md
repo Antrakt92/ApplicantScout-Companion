@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Base Mythic+ Fit on verified in-time keys, with neutral badges and visible coverage.
+- Keep untimed keys, WCL logs and rating-only profiles out of Mythic+ Fit.
+- Sort applications by their target estimate; preserve one-click WCL and RIO sorting.
+- Keep missing raid evidence and incomplete group estimates explicitly unknown.
+- Show recorded dungeon and raid coverage without misleading certainty percentages.
+- Preserve stronger raid evidence when a smaller exact-difficulty result appears.
+- Use the seasonal RaiderIO colour gradient and consistent M+ best/median summaries.
+
 ## 0.22.2 - 02-Oct-2026 — Keyboard sorting and reliability
 
 Paired release with ApplicantScout addon `0.13.5`.

@@ -7,6 +7,7 @@ import html
 
 from .constants import (
     CURRENT_RAID_ENCOUNTERS,
+    MPLUS_ENCOUNTERS,
     mplus_dungeon_name_for_activity_id,
     percentile_colour,
 )
@@ -14,10 +15,12 @@ from .metric_preferences import MetricPreferences
 from .overlay_rows import mplus_key_level
 from .ui_text import MISSING_DATA_TEXT
 from .scoring import (
+    CONTEXT_MPLUS,
     CONTEXT_RAID,
+    CandidateFit,
+    PackageFit,
     RAID_TARGET_BY_DIFFICULTY_ID,
     detect_listing_context,
-    effective_rio_score,
     mplus_dungeon_fit_rows,
     mplus_metric_text,
     nonnegative_int,
@@ -84,27 +87,55 @@ def rio_panel_text(applicant: Applicant) -> str:
     return f"RIO {applicant.score}" if applicant.score else ""
 
 
-def mplus_fit_source_text(applicant: Applicant) -> str:
-    _metric_label, breakdown, _best, _median = role_mplus_view(applicant)
-    has_wcl = bool(breakdown)
-    has_rio = bool(
-        applicant.rio_profile
-        or applicant.rio_dungeons
-        or applicant.rio_best_key
-        or applicant.rio_timed_at_or_above
-        or effective_rio_score(applicant)
-    )
-    if has_wcl and has_rio:
-        return "WCL + RaiderIO"
-    if has_wcl:
-        return "WCL only"
-    if has_rio:
-        return "RaiderIO only"
-    return "score only"
-
-
 def count_phrase(count: int, singular: str, plural: str | None = None) -> str:
     return f"{count} {singular if count == 1 else plural or singular + 's'}"
+
+
+def package_fit_text(package: PackageFit) -> str:
+    if package.is_complete:
+        return f"G{package.size} ~{int(round(package.score))}"
+    state = "partial" if package.available_count else "unknown"
+    return f"G{package.size} {state}"
+
+
+def fit_badge_context_text(fit: CandidateFit) -> str:
+    """Keep the evidence scope visible beside the estimate itself."""
+    if fit.context == CONTEXT_MPLUS:
+        return (f"{fit.dungeon_count}/{len(MPLUS_ENCOUNTERS)} timed dungeons"
+                if fit.dungeon_count else "timed history unknown")
+    if fit.context == CONTEXT_RAID:
+        if not fit.raid_total_bosses:
+            return "sample unknown"
+        prefix = f"{fit.evidence_source} " if fit.evidence_source else ""
+        return f"{prefix}{fit.raid_boss_count}/{fit.raid_total_bosses} zone bosses"
+    return ""
+
+
+def fit_evidence_text(fit: CandidateFit) -> str:
+    """Describe observed evidence without turning completeness into probability."""
+    if fit.context == CONTEXT_MPLUS:
+        parts = [
+            f"{fit.dungeon_count}/{len(MPLUS_ENCOUNTERS)} dungeons timed",
+            f"{fit.relevant_dungeon_count} timed at +{max(fit.target_key - 1, 2)} or higher"
+            if fit.target_key else f"{fit.relevant_dungeon_count} relevant timed dungeons",
+        ]
+    elif fit.context == CONTEXT_RAID:
+        parts = (
+            [f"{fit.raid_boss_count}/{fit.raid_total_bosses} WCL zone bosses logged",
+             count_phrase(fit.raid_kill_count, "recorded kill")
+             if fit.raid_kill_count else "Repeat sample count unknown"]
+            if fit.raid_total_bosses else ["WCL zone boss coverage and kill count unknown"]
+        )
+        if fit.evidence_source:
+            source = {"N": "Normal", "H": "Heroic", "M": "Mythic"}.get(
+                fit.evidence_source, fit.evidence_source,
+            )
+            parts.append(f"Source difficulty {source}")
+    else:
+        return fit.evidence_note
+    if fit.evidence_note:
+        parts.append(fit.evidence_note)
+    return " · ".join(parts)
 
 
 def text_colour_for_bg(bg_hex: str | None) -> str:
@@ -165,26 +196,40 @@ def raid_metric_text_for_key(applicant: Applicant, key: str) -> str:
     return "" if text == MISSING_DATA_TEXT else text
 
 
-def raid_fit_evidence_text(applicant: Applicant, target: str, source: str) -> str:
-    if source == "raid_exact":
-        return raid_metric_text_for_key(applicant, target)
+def raid_fit_evidence_text(
+    applicant: Applicant, target: str, source: str, *, selected_difficulty: str = "",
+) -> str:
+    if applicant.fetch_status != "ready":
+        return ""
     order = ["N", "H", "M"]
     target_idx = order.index(target) if target in order else -1
     candidate_keys: list[str] = []
-    if source == "raid_higher_fallback" and target_idx >= 0:
+    if selected_difficulty:
+        candidate_keys = [selected_difficulty] if selected_difficulty in order else []
+    elif source == "raid_exact" and target_idx >= 0:
+        candidate_keys = [target]
+    elif source == "raid_higher_fallback" and target_idx >= 0:
         candidate_keys = order[target_idx + 1 :]
     elif source == "raid_lower_fallback" and target_idx >= 0:
-        candidate_keys = list(reversed(order[:target_idx]))
+        candidate_keys = order[:target_idx]
     best_key = ""
     best_score = -1.0
     for key in candidate_keys:
+        scope = {"N": "raid_normal", "H": "raid_heroic", "M": "raid_mythic"}[key]
+        if applicant.wcl_availability.get(scope) in {
+            "restricted", "disabled", "unavailable", "error", "empty",
+        } or (applicant.wcl_metric_preferences is not None
+              and not getattr(applicant.wcl_metric_preferences, scope)):
+            continue
         best, median = raid_values_for_key(applicant, key)
         score = raid_performance_score(best, median)
         if score is not None and score > best_score:
             best_key = key
             best_score = score
     raw = raid_metric_text_for_key(applicant, best_key)
-    return f"{best_key} {raw}" if best_key and raw else ""
+    if not best_key or not raw:
+        return ""
+    return raw if source == "raid_exact" else f"{best_key} {raw}"
 
 
 def raid_target_key_for_listing(listing: Listing | None) -> str:

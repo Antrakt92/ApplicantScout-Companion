@@ -52,6 +52,7 @@ def _app(
     rio_completed_at_or_above_minus1: int = 0,
     rio_dungeon_count: int = 0,
     rio_summary_target_key: int = 0,
+    rio_dungeons: list[dict] | None = None,
 ) -> Applicant:
     return Applicant(
         applicant_id=f"{aid}:{m}",
@@ -75,6 +76,7 @@ def _app(
         rio_completed_at_or_above_minus1=rio_completed_at_or_above_minus1,
         rio_dungeon_count=rio_dungeon_count,
         rio_summary_target_key=rio_summary_target_key,
+        rio_dungeons=rio_dungeons or [],
     )
 
 
@@ -397,6 +399,7 @@ def test_equal_mplus_best_parses_use_context_fit_before_rio():
     relevant = _app(
         aid=1,
         score=3300,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 16}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -424,6 +427,7 @@ def test_equal_mplus_best_parses_use_context_fit_before_rio():
     higher_rio_farm = _app(
         aid=2,
         score=3600,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 10}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -454,6 +458,7 @@ def test_equal_mplus_best_parses_use_package_fit_not_best_member_only():
         aid=10,
         m=1,
         score=3600,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 20}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -468,6 +473,7 @@ def test_equal_mplus_best_parses_use_package_fit_not_best_member_only():
         aid=10,
         m=2,
         score=3300,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 10}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -481,6 +487,7 @@ def test_equal_mplus_best_parses_use_package_fit_not_best_member_only():
     solid_solo = _app(
         aid=20,
         score=3300,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 16}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -499,7 +506,7 @@ def test_equal_mplus_best_parses_use_package_fit_not_best_member_only():
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1", "10:2"]
 
 
-def test_mplus_same_displayed_fit_sorts_by_confidence_before_hidden_decimal(
+def test_mplus_same_displayed_fit_sorts_by_observed_coverage_before_hidden_decimal(
     monkeypatch: pytest.MonkeyPatch,
 ):
     listing = Listing(
@@ -517,10 +524,12 @@ def test_mplus_same_displayed_fit_sorts_by_confidence_before_hidden_decimal(
     # Keep the sorting contract independent of evidence calibration coefficients.
     fits = {
         "10:1": scoring.CandidateFit(
-            context="mplus", score=51.6, confidence=0.75, display="52 +16"
+            context="mplus", score=51.6, display="52 +16", is_available=True,
+            relevant_dungeon_count=8, evidence_count=4,
         ),
         "20:1": scoring.CandidateFit(
-            context="mplus", score=52.4, confidence=0.70, display="52 +16"
+            context="mplus", score=52.4, display="52 +16", is_available=True,
+            relevant_dungeon_count=1, evidence_count=1,
         ),
     }
     monkeypatch.setattr(
@@ -535,7 +544,7 @@ def test_mplus_same_displayed_fit_sorts_by_confidence_before_hidden_decimal(
         assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
 
 
-def test_mplus_mixed_wave_orders_known_parses_before_fallback_and_keeps_groups():
+def test_mplus_mixed_wave_orders_target_experience_and_keeps_groups():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -586,6 +595,7 @@ def test_mplus_mixed_wave_orders_known_parses_before_fallback_and_keeps_groups()
         aid=30,
         m=1,
         score=3900,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 22}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -600,6 +610,7 @@ def test_mplus_mixed_wave_orders_known_parses_before_fallback_and_keeps_groups()
         aid=30,
         m=2,
         score=2500,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 12}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -642,6 +653,7 @@ def test_mplus_mixed_wave_orders_known_parses_before_fallback_and_keeps_groups()
     farm_parse = _app(
         aid=50,
         score=3400,
+        rio_dungeons=[{"name": "Skyreach", "key_level": 10}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -656,6 +668,7 @@ def test_mplus_mixed_wave_orders_known_parses_before_fallback_and_keeps_groups()
         aid=60,
         score=3900,
         fetch_status="error",
+        rio_dungeons=[{"name": "Skyreach", "key_level": 22}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -682,16 +695,16 @@ def test_mplus_mixed_wave_orders_known_parses_before_fallback_and_keeps_groups()
 
     assert [a.applicant_id for a in sorted_apps] == [
         "10:1",
+        "20:1",
         "40:1",
+        "60:1",
         "30:1",
         "30:2",
         "50:1",
-        "20:1",
-        "60:1",
     ]
 
 
-def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
+def test_mplus_timed_fit_does_not_depend_on_wcl_error_or_stale_parse():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -705,6 +718,7 @@ def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
         aid=10,
         score=3600,
         fetch_status="error",
+        rio_dungeons=[{"name": "Skyreach", "key_level": 20}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -719,6 +733,7 @@ def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
         aid=20,
         score=2500,
         fetch_status="ready",
+        rio_dungeons=[{"name": "Skyreach", "key_level": 16}],
         dps_breakdown=[
             {
                 "name": "Skyreach",
@@ -732,10 +747,13 @@ def test_mplus_all_sunk_group_sinks_below_ready_fit_group():
 
     sorted_apps = sort_applicants_grouped([sunk_high_fit, ready_lower_fit], listing)
 
-    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
+    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
+    fallback = scoring.candidate_fit(sunk_high_fit, listing)
+    assert fallback.evidence_count == 0
+    assert fallback.evidence_source == "RIO in-time keys"
 
 
-def test_mplus_known_parse_precedes_stronger_rio_only_fit():
+def test_mplus_stronger_rio_target_experience_precedes_lower_logged_fit():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -776,10 +794,10 @@ def test_mplus_known_parse_precedes_stronger_rio_only_fit():
 
     sorted_apps = sort_applicants_grouped([ready_lower_fit, no_wcl_strong_rio], listing)
 
-    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
+    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
 
 
-def test_mplus_loading_scorecard_fit_stays_below_visible_ready_fit():
+def test_mplus_known_rio_experience_can_rank_while_wcl_is_loading():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -820,10 +838,10 @@ def test_mplus_loading_scorecard_fit_stays_below_visible_ready_fit():
 
     sorted_apps = sort_applicants_grouped([loading_strong_rio, ready_visible_fit], listing)
 
-    assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1"]
+    assert [a.applicant_id for a in sorted_apps] == ["10:1", "20:1"]
 
 
-def test_mplus_zero_fit_all_sunk_still_sinks_below_ready_zero_fit():
+def test_mplus_observed_below_target_zero_precedes_unavailable_fit():
     listing = Listing(
         activity_id=401,
         dungeon_name="Skyreach",
@@ -833,8 +851,10 @@ def test_mplus_zero_fit_all_sunk_still_sinks_below_ready_zero_fit():
         category_id=2,
         difficulty_id=8,
     )
-    all_sunk_no_fit = _app(aid=10, score=3600, fetch_status="error")
-    ready_no_fit = _app(aid=20, score=0, fetch_status="ready")
+    all_sunk_no_fit = _app(aid=10, score=0, fetch_status="error")
+    ready_no_fit = _app(aid=20, score=0, fetch_status="ready", dps_breakdown=[
+        dict(name="Skyreach", key_level=5, parse_percent=0, median_percent=0, run_count=1),
+    ])
 
     sorted_apps = sort_applicants_grouped([all_sunk_no_fit, ready_no_fit], listing)
 
@@ -1008,7 +1028,14 @@ def test_mplus_unknown_key_group_uses_weakest_member_headline():
     assert [a.applicant_id for a in sorted_apps] == ["20:1", "10:1", "10:2"]
 
 
-# Known content contexts rank the same best percentile the table displays.
+# An explicit parse-column sort ranks the percentile the table displays.
+def sort_parse_column(applicants, listing):
+    rows = sorted(applicants, key=lambda app: _split_composite(app.applicant_id))
+    from applicant_scout.overlay_rows import sort_rows_by_value
+    return sort_rows_by_value(
+        rows, value_for=lambda app: scoring.listing_parse_percentile(app, listing),
+        descending=True, grouped=True,
+    )
 def _parse_listing(context):
     raid = isinstance(context, int)
     return Listing(
@@ -1037,7 +1064,7 @@ def _parse_row(aid, best, context, *, member=1, score=0, status="ready", median=
 
 
 @pytest.mark.parametrize("role", ["DAMAGER", "TANK", "HEALER"])
-def test_visible_mplus_best_parse_overrides_opposing_fit_and_rio(role):
+def test_manual_mplus_parse_sort_can_override_target_fit_and_rio(role):
     listing = _parse_listing("mplus")
     high_parse_low_fit = replace(
         _parse_row(10, 95.0, "mplus", median=10), role=role, mplus_hps=1,
@@ -1045,6 +1072,7 @@ def test_visible_mplus_best_parse_overrides_opposing_fit_and_rio(role):
             name="Skyreach", key_level=6, parse_percent=95,
             median_percent=10, run_count=2,
         )],
+        rio_dungeons=[{"name": "Skyreach", "key_level": 6}],
     )
     lower_parse_high_fit = replace(
         _parse_row(20, 45.0, "mplus", score=3500, median=45), role=role, mplus_hps=99,
@@ -1052,18 +1080,19 @@ def test_visible_mplus_best_parse_overrides_opposing_fit_and_rio(role):
             name="Skyreach", key_level=16, parse_percent=75,
             median_percent=70, run_count=8,
         )],
+        rio_dungeons=[{"name": "Skyreach", "key_level": 16}],
     )
     assert scoring.candidate_fit(high_parse_low_fit, listing).score < (
         scoring.candidate_fit(lower_parse_high_fit, listing).score
     )
 
-    result = sort_applicants_grouped([lower_parse_high_fit, high_parse_low_fit], listing)
+    result = sort_parse_column([lower_parse_high_fit, high_parse_low_fit], listing)
 
     assert [app.applicant_id for app in result] == ["10:1", "20:1"]
 
 
 @pytest.mark.parametrize("difficulty", [14, 15, 16])
-def test_visible_raid_best_parse_beats_median_fit_and_other_difficulties(difficulty):
+def test_manual_raid_parse_sort_uses_best_percentile_not_context_fit(difficulty):
     listing = _parse_listing(difficulty)
     high_best = replace(
         _parse_row(10, 90.0, difficulty, median=0),
@@ -1084,7 +1113,7 @@ def test_visible_raid_best_parse_beats_median_fit_and_other_difficulties(difficu
         scoring.candidate_fit(low_best, listing).score
     )
 
-    result = sort_applicants_grouped([low_best, high_best], listing)
+    result = sort_parse_column([low_best, high_best], listing)
 
     assert [app.applicant_id for app in result] == ["10:1", "20:1"]
 
@@ -1095,7 +1124,7 @@ def test_valid_zero_best_parse_precedes_missing_or_invalid_best(context, invalid
     zero = _parse_row(20, 0.0, context, median=0)
     missing = _parse_row(10, invalid, context, score=4000, median=100)
 
-    result = sort_applicants_grouped([missing, zero], _parse_listing(context))
+    result = sort_parse_column([missing, zero], _parse_listing(context))
 
     assert [app.applicant_id for app in result] == ["20:1", "10:1"]
 
@@ -1106,7 +1135,7 @@ def test_hidden_stale_parse_cannot_outrank_visible_ready_zero(context, status):
     stale = _parse_row(10, 100.0, context, status=status, score=4000, median=100)
     zero = _parse_row(20, 0.0, context, median=0)
 
-    result = sort_applicants_grouped([stale, zero], _parse_listing(context))
+    result = sort_parse_column([stale, zero], _parse_listing(context))
 
     assert [app.applicant_id for app in result] == ["20:1", "10:1"]
 
@@ -1119,7 +1148,7 @@ def test_parse_sorted_groups_use_weakest_best_and_keep_member_order(context):
     balanced_friend = _parse_row(20, 50.0, context, member=2)
     solo = _parse_row(30, 55.0, context)
 
-    result = sort_applicants_grouped(
+    result = sort_parse_column(
         [weak_friend, balanced_friend, solo, superstar, balanced_lead],
         _parse_listing(context),
     )
@@ -1134,6 +1163,6 @@ def test_one_unknown_member_makes_package_parse_unknown_without_splitting(contex
     unknown_friend = _parse_row(10, best, context, member=2, status=status, score=4000)
     solo_zero = _parse_row(20, 0.0, context, median=0)
 
-    result = sort_applicants_grouped([unknown_friend, leader, solo_zero], _parse_listing(context))
+    result = sort_parse_column([unknown_friend, leader, solo_zero], _parse_listing(context))
 
     assert [app.applicant_id for app in result] == ["20:1", "10:1", "10:2"]

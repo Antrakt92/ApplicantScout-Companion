@@ -64,6 +64,7 @@ def test_tab_click_preserves_supplied_fit_instead_of_recomputing(qtbot, roundtri
     panel.show()
     fit = CandidateFit(
         context=CONTEXT_MPLUS,
+        is_available=True,
         score=91,
         label="TOP",
         display="91",

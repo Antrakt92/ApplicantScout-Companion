@@ -11,7 +11,6 @@ from PySide6.QtWidgets import QApplication
 from applicant_scout import overlay as overlay_mod
 
 from applicant_scout.__main__ import StateMachine
-from applicant_scout.constants import percentile_colour
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.overlay import (
     APPLICANT_ROW_HEIGHT,
@@ -157,6 +156,7 @@ def _member(
 def _ready_mplus_member(member_id: str = "dps-realm") -> RosterMember:
     member = _member(member_id, "Dps-Realm", "DAMAGER")
     member.fetch_status = "ready"
+    member.rio_dungeons = [{"name": "Pit of Saron", "key_level": 10}]
     member.mplus_dps = 90.0
     member.mplus_dps_median = 80.0
     member.mplus_dps_breakdown = [
@@ -270,11 +270,13 @@ def _sorting_window(qtbot, tmp_path, source):
     low = _ready_mplus_member("1:1")
     low.name, low.spec_id, low.ilvl, low.score = "Alpha-Realm", 71, 310, 1500
     low.raid_normal, low.raid_heroic, low.raid_mythic, low.mplus_dps = 9, 12, 3, 10
+    low.rio_dungeons = [{"name": "Pit of Saron", "key_level": 5}]
     low.mplus_dps_median = 8
     low.mplus_dps_breakdown = [{"key_level": 5, "parse_percent": 10, "run_count": 3}]
     high = _ready_mplus_member("2:1")
     high.name, high.spec_id, high.ilvl, high.score = "Zeta-Realm", 62, 340, 3300
     high.raid_normal, high.raid_heroic, high.raid_mythic, high.mplus_dps = 99, 88, 90, 95
+    high.rio_dungeons = [{"name": "Pit of Saron", "key_level": 15}]
     high.mplus_dps_median = 90
     high.mplus_dps_breakdown = [{"key_level": 15, "parse_percent": 95, "run_count": 3}]
     target = state.applicants if source == "applicants" else state.party_members
@@ -368,6 +370,7 @@ def test_parse_header_keeps_unavailable_rows_last(qtbot, tmp_path, column):
     unknown = _app("3:1", "Missing-Realm")
     unknown.raid_normal = unknown.raid_heroic = unknown.raid_mythic = unknown.mplus_dps = 100
     unknown.fetch_status = "loading"
+    unknown.score = unknown.main_score = 0
     state.applicants[unknown.applicant_id] = unknown
     win.on_applicant_added(unknown)
     win._flush_overlay_refresh()
@@ -428,6 +431,9 @@ def test_fit_sort_uses_only_the_group_estimate_that_is_displayed(qtbot, tmp_path
     partner.score = 3300
     partner.fetch_status = "loading"
     state.applicants[partner.applicant_id] = partner
+    if not raid:
+        # WCL loading cannot hide the separately verified timed RIO history.
+        partner.rio_dungeons = [{"name": "Pit of Saron", "key_level": 15}]
     if raid:
         state.listing = _listing(key_level=0, category_id=3, difficulty_id=15)
         win.on_listing_changed()
@@ -438,8 +444,9 @@ def test_fit_sort_uses_only_the_group_estimate_that_is_displayed(qtbot, tmp_path
 
     group_text = win._table.item(win._row_for_id[high.applicant_id], COL_FIT).text()
     if raid:
-        assert not group_text.startswith("G2")
-        assert win._table.item(win._row_for_id[partner.applicant_id], COL_FIT).text() == "…"
+        assert group_text.startswith("G2 partial | ")
+        assert "~" not in group_text.split("|")[0]
+        assert win._table.item(win._row_for_id[partner.applicant_id], COL_FIT).text() == "G2 partial | …"
         assert win._id_by_row == [low.applicant_id, high.applicant_id, partner.applicant_id]
     else:
         assert group_text.startswith("G2")
@@ -1955,7 +1962,7 @@ def test_raid_listing_separates_fit_from_coloured_raw_parses(
     fit_item = win._table.item(0, COL_FIT)
     assert fit_item.text().startswith("~")
     assert fit_item.text()[1:].isdigit()
-    assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
+    assert fit_item.background().color().name() == overlay_mod.FIT_ESTIMATE_BACKGROUND
     assert "82/82" in win._table.item(0, COL_H).text()
     assert win._table.item(0, COL_MPLUS).text() == "44 +18"
     _text, _fg, mplus_bg = _mplus_cell_visuals(applicant, win._effective_listing())
@@ -2032,7 +2039,7 @@ def test_raid_listing_forces_disabled_target_column_with_estimated_fit(
     fit_item = win._table.item(0, COL_FIT)
     assert fit_item.text().startswith("~")
     assert fit_item.text()[1:].isdigit()
-    assert fit_item.background().color().name() == percentile_colour(int(fit_item.text()[1:]))
+    assert fit_item.background().color().name() == overlay_mod.FIT_ESTIMATE_BACKGROUND
     assert win._table.item(0, COL_H).text() == "—"
     assert win._table.item(0, COL_M).text() == "70/60"
     win._on_cell_clicked(0, COL_FIT)

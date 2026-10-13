@@ -41,6 +41,7 @@ def _window(qtbot, tmp_path, tab, group_size, context, *, boundary_values=False)
         ilvl=310,
         score=2700,
         fetch_status="ready",
+        rio_dungeons=[dict(name="Pit of Saron", key_level=16)],
         raid_normal=87.0,
         raid_normal_median=82.0,
         raid_heroic=67.0,
@@ -82,6 +83,7 @@ def _window(qtbot, tmp_path, tab, group_size, context, *, boundary_values=False)
                 raid_mythic_median=100.0,
                 mplus_dps=100.0,
                 mplus_dps_median=100.0,
+                rio_dungeons=[dict(name="Pit of Saron", key_level=99)],
                 mplus_dps_breakdown=[
                     dict(
                         name="Pit of Saron",
@@ -240,11 +242,21 @@ class _TextRecordingPainter(QPainter):
 
 
 @pytest.mark.parametrize("context", ["raid", "mplus"])
+@pytest.mark.parametrize("group_size,state", [(4, "complete"), (2, "partial"),
+                                             (5, "partial"), (2, "unknown"),
+                                             (5, "unknown")])
 @pytest.mark.real_display
-def test_group_fit_paints_complete_scores_at_940_physical_pixels(
-    qtbot, tmp_path, context
+def test_group_fit_paints_scores_and_incomplete_states_at_940_physical_pixels(
+    qtbot, tmp_path, context, group_size, state,
 ):
-    window = _window(qtbot, tmp_path, "applicants", 4, context)
+    window = _window(qtbot, tmp_path, "applicants", group_size, context)
+    if state != "complete":
+        for index, member in enumerate(window._state.applicants.values()):
+            if state == "partial" and index == 0:
+                continue
+            member.clear_wcl_data(fetch_status="not_found")
+            member.score = member.main_score = 0
+            member.rio_dungeons = []
     window.show()
     QApplication.processEvents()
     pixel_ratio = window.devicePixelRatioF()
@@ -273,6 +285,8 @@ def test_group_fit_paints_complete_scores_at_940_physical_pixels(
         painter.end()
 
     assert expected_groups and None not in expected_groups
+    if state != "complete":
+        assert expected_groups == {f"G{group_size} {state}"}
     for group_text in expected_groups:
         assert group_text in painter.drawn_text, painter.drawn_text
     for score in set(expected_individuals):
@@ -402,6 +416,7 @@ def test_content_growth_during_reorder_preserves_hover_pin_and_cached_fits(
     monkeypatch.setattr(overlay, "candidate_fit", counted_fallback)
     window._state.applicants[second.applicant_id] = replace(
         second, name="Mmmmmmmmmmmm-Realm", mplus_dps=99.0,
+        rio_dungeons=[dict(name="Pit of Saron", key_level=18)],
     )
 
     # A visible window at its ceiling resizes synchronously inside this batch.

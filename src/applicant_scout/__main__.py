@@ -1079,6 +1079,7 @@ class StateMachine(QObject):
         target.raid_normal_median = source.raid_normal_median
         target.raid_heroic_median = source.raid_heroic_median
         target.raid_mythic_median = source.raid_mythic_median
+        target.raid_evidence = {key: dict(value) for key, value in source.raid_evidence.items()}
         target.mplus_dps = source.mplus_dps
         target.mplus_hps = source.mplus_hps
         target.mplus_dps_median = source.mplus_dps_median

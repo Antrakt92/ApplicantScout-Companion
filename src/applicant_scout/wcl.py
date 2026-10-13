@@ -45,6 +45,7 @@ from .wcl_cache_store import (
     cache_evict,
     cache_get,
     cache_put,
+    sanitize_raid_evidence,
 )
 
 
@@ -313,9 +314,9 @@ class CharacterRanks:
 
     mplus_dps_breakdown: per-dungeon detail (DungeonPerf list, top-key only).
     mplus_dps: avg of per-dungeon best % across all dungeons with data.
-    mplus_dps_median: avg of per-dungeon median % across only dungeons with
-        run_count >= 2 (single-run medians = same as best, not informative).
-        None if all dungeons have run_count == 1.
+    mplus_dps_median: avg of per-dungeon median % across the same dungeons as
+        mplus_dps, only when all have run_count >= 2 and a numeric median.
+        Otherwise None; different populations cannot describe consistency.
     mplus_hps fields: legacy empty slots retained for stable serialization."""
 
     raid_normal: Optional[float]
@@ -337,6 +338,7 @@ class CharacterRanks:
     error_kind: str = ""
 
     availability: dict[str, str] = field(default_factory=dict)
+    raid_evidence: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def empty(
@@ -951,6 +953,13 @@ def _ranks_from_graphql(
         mplus_dps_median=median_avg,
         mplus_hps_median=None,
         mplus_dps_breakdown=breakdown,
+        raid_evidence={
+            key: evidence
+            for key, zone in (
+                ("N", raid_normal_data), ("H", raid_heroic_data), ("M", raid_mythic_data)
+            )
+            if (evidence := _raid_evidence_from_zone(zone, spec_name))
+        },
         mplus_hps_breakdown=[],
         availability=availability,
         error=_PRIVATE_RANKINGS_USER_MESSAGE if restricted else "",
@@ -1581,10 +1590,20 @@ def _project_ranks_to_metric_preferences(
             error, error_kind = _PRIVATE_RANKINGS_USER_MESSAGE, WCL_ERROR_RESTRICTED
         elif error_kind == WCL_ERROR_RESTRICTED:
             error, error_kind = "", ""
-    return replace(projected, availability=availability, error=error, error_kind=error_kind)
+    selected_difficulties = _raid_difficulty_keys_for_preferences(metric_preferences)
+    raid_evidence = {
+        key: row for key, row in sanitize_raid_evidence(projected.raid_evidence).items()
+        if key in selected_difficulties
+        and availability.get({"N": "raid_normal", "H": "raid_heroic", "M": "raid_mythic"}[key])
+        != "restricted"
+    }
+    return replace(
+        projected, availability=availability, error=error, error_kind=error_kind,
+        raid_evidence=raid_evidence,
+    )
 
 
-def _spec_norm(s: str) -> str:
+def _spec_norm(s: object) -> str:
     """Normalises spec-name strings for comparison (case-insensitive, no spaces).
 
     WCL returns `spec` field as display form ("Beast Mastery" with space, or
@@ -1677,7 +1696,7 @@ def _process_encounter_ranks(
 
     Algorithm:
     1. Filter ranks[] to entries matching applicant's spec (norm comparison).
-    2. Find max bracketData (= player's highest timed key in this dungeon, IN
+    2. Find max bracketData (= player's highest logged key in this dungeon, IN
        this spec).
     3. Filter again to ranks at that exact key level.
     4. Compute best (max rankPercent), median across that subset.
@@ -1773,25 +1792,77 @@ def _compute_mplus_headline(
 
     best_avg: mean of per-dungeon best % across ALL dungeons with data —
         represents player's ceiling. Computed even from N=1 dungeons.
-    median_avg: mean of per-dungeon median % across ONLY dungeons with N >= 2
-        — single-run medians equal best (no info), excluding them gives the
-        verified-stable signal. Returns None if NO dungeon has N >= 2.
+    median_avg: mean over the same logged dungeons as best_avg, only when every
+        included dungeon has N >= 2 and a usable median. A partial repeat-run
+        population must not be presented as the median of the whole headline.
 
     Both None if breakdown is empty."""
     if not breakdown:
         return None, None
 
-    bests = [d.parse_percent for d in breakdown if d.parse_percent is not None]
+    included = [(d, _safe_cache_percent(d.parse_percent)) for d in breakdown]
+    included = [(d, best) for d, best in included if best is not None]
+    bests = [best for _d, best in included]
     best_avg = (sum(bests) / len(bests)) if bests else None
 
-    medians = [
-        d.median_percent
-        for d in breakdown
-        if d.median_percent is not None and d.run_count >= 2
-    ]
-    median_avg = (sum(medians) / len(medians)) if medians else None
+    medians: list[float] = []
+    for dungeon, _best in included:
+        median = _safe_cache_percent(dungeon.median_percent)
+        if _safe_nonnegative_cache_int(dungeon.run_count) < 2 or median is None:
+            return best_avg, None
+        medians.append(median)
+    median_avg = sum(medians) / len(medians) if medians else None
 
     return best_avg, median_avg
+
+
+def _raid_evidence_from_zone(zone_data: object, spec_name: str) -> dict:
+    """Read optional summary boss rows without additional queries or invented kills."""
+    if (
+        not isinstance(zone_data, dict)
+        or _is_private_rankings_payload(zone_data)
+        or spec_name not in SPEC_ID_TO_WCL_NAME.values()
+    ):
+        return {}
+    rows = zone_data.get("rankings")
+    if not isinstance(rows, list):
+        return {}
+    known_encounters = {eid for _alias, eid, _name in CURRENT_RAID_ENCOUNTERS}
+    wanted_spec = _spec_norm(spec_name)
+    kills_by_boss: dict[int, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # The query filters specName. Reject explicit contradictory row identity;
+        # a missing row spec can only inherit that already-known request scope.
+        if "spec" in row and _spec_norm(row.get("spec")) != wanted_spec:
+            continue
+        encounter = row.get("encounter")
+        if not isinstance(encounter, dict):
+            continue
+        encounter_id = _safe_nonnegative_cache_int(encounter.get("id"))
+        if encounter_id not in known_encounters:
+            continue
+        kills = _safe_nonnegative_cache_int(row.get("totalKills"))
+        if kills <= 0 and _safe_cache_percent(row.get("rankPercent")) is None:
+            continue
+        kills_by_boss[encounter_id] = max(kills_by_boss.get(encounter_id, 0), kills)
+    if rows and not kills_by_boss:
+        return {}
+    kill_count = sum(kills_by_boss.values())
+    sample_known = (
+        bool(kills_by_boss)
+        and all(kills > 0 for kills in kills_by_boss.values())
+        and kill_count.bit_length() <= 63
+    )
+    evidence = {
+        "boss_count": len(kills_by_boss),
+        "total_bosses": len(known_encounters),
+        "sample_known": sample_known,
+    }
+    if sample_known:
+        evidence["kill_count"] = kill_count
+    return evidence
 
 
 def _zone_avg(
@@ -2008,7 +2079,8 @@ class _CacheSaveSnapshot:
 # v8 = raid summaries filter to the applying spec; pre-v8 raid aggregates
 # combine specs even though their cache keys already contain a spec ID.
 # v9 = scope availability distinguishes private rankings from accessible empty data.
-_CACHE_VERSION = 9
+# v10 = raid summary coverage is retained; M+ best/median share a dungeon population.
+_CACHE_VERSION = 10
 
 
 def _quarantine_corrupt_file(path: Path) -> Path | None:
@@ -2629,6 +2701,7 @@ class CharacterCache:
                 elif not isinstance(ranks_dict[fld], expected_type):
                     return None
             ranks_dict["availability"] = normalize_availability(ranks_dict.get("availability"))
+            ranks_dict["raid_evidence"] = sanitize_raid_evidence(ranks_dict.get("raid_evidence"))
             return CharacterRanks(**ranks_dict)
         except (TypeError, ValueError):
             return None

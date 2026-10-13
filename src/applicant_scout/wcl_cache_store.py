@@ -11,6 +11,7 @@ import math
 import time
 from dataclasses import dataclass
 
+from .constants import CURRENT_RAID_ENCOUNTERS
 from .metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 
 
@@ -22,6 +23,47 @@ class _CacheEntry:
     # Session-only ordering; loaded entries predate every current request.
     publication_epoch: int = 0
     raid_boss_availability: dict[str, str] | None = None
+
+
+def sanitize_raid_evidence(value: object) -> dict[str, dict]:
+    """Keep observed coverage and complete repeat counts; invalid fields stay unknown."""
+    if not isinstance(value, dict):
+        return {}
+    total_bosses = len(CURRENT_RAID_ENCOUNTERS)
+    result: dict[str, dict] = {}
+    for difficulty in ("N", "H", "M"):
+        raw = value.get(difficulty)
+        if not isinstance(raw, dict):
+            continue
+        boss_count = raw.get("boss_count")
+        raw_total = raw.get("total_bosses")
+        if (
+            isinstance(boss_count, bool)
+            or not isinstance(boss_count, int)
+            or not 0 <= boss_count <= total_bosses
+            or isinstance(raw_total, bool)
+            or not isinstance(raw_total, int)
+            or raw_total != total_bosses
+        ):
+            continue
+        row: dict = {
+            "boss_count": boss_count,
+            "total_bosses": total_bosses,
+            "sample_known": False,
+        }
+        kill_count = raw.get("kill_count")
+        if (
+            raw.get("sample_known") is True
+            and boss_count > 0
+            and not isinstance(kill_count, bool)
+            and isinstance(kill_count, int)
+            and kill_count.bit_length() <= 63
+            and kill_count >= boss_count
+        ):
+            row["kill_count"] = kill_count
+            row["sample_known"] = True
+        result[difficulty] = row
+    return result
 
 
 def _metric_preference_breadth(metric_preferences: MetricPreferences) -> int:
