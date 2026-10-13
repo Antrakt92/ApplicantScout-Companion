@@ -145,7 +145,7 @@ class MPlusDungeonFit:
 def detect_listing_context(listing: Listing | None) -> str:
     if listing is None:
         return CONTEXT_UNKNOWN
-    if listing.key_level > 0:
+    if type(listing.key_level) is int and 2 <= listing.key_level <= 50:
         return CONTEXT_MPLUS
     if listing.difficulty_id in RAID_TARGET_BY_DIFFICULTY_ID:
         return CONTEXT_RAID
@@ -416,12 +416,33 @@ def _rio_summary_key_level(value: object) -> int:
 def _rio_summary_profile_available(applicant: Applicant) -> bool:
     # Local enrichment proves its own rows, never an absent raw QR summary.
     raw_flag = applicant.rio_transport_profile
-    return (applicant.rio_profile if raw_flag is None else raw_flag) is True
+    if (applicant.rio_profile if raw_flag is None else raw_flag) is not True:
+        return False
+    best = _rio_summary_key_level(applicant.rio_best_key)
+    if (best and _rio_captured_dungeon_identity(applicant)
+            and _rio_summary_key_level(applicant.rio_best_dungeon_key) > best):
+        return False
+    captured_target = _rio_summary_key_level(applicant.rio_summary_target_key)
+    if best and captured_target:
+        floors = (
+            (applicant.rio_timed_at_or_above, captured_target),
+            (applicant.rio_timed_at_or_above_minus1, max(2, captured_target - 1)),
+            (applicant.rio_timed_at_or_above_minus2, max(2, captured_target - 2)),
+        )
+        # An explicit maximum cannot be below the same capture's timed floors.
+        # Missing maxima remain unknown; independent named history stays usable.
+        if any(nonnegative_int(count) > 0 and best < floor for count, floor in floors):
+            return False
+    return True
 
 
 def _rio_captured_dungeon_key(applicant: Applicant) -> str:
     if not _rio_summary_profile_available(applicant):
         return ""
+    return _rio_captured_dungeon_identity(applicant)
+
+
+def _rio_captured_dungeon_identity(applicant: Applicant) -> str:
     name = (
         mplus_dungeon_name_for_activity_id(
             positive_int(applicant.rio_summary_activity_id)
@@ -1007,6 +1028,9 @@ def _package_score_for_member_scores(
         return 0.0
     if len(scores) == 1:
         return scores[0]
+    # Preserve equal inputs exactly at display/colour rounding boundaries.
+    if all(score == scores[0] for score in scores[1:]):
+        return scores[0] - status_penalty
     params = _package_params(context)
     # A nonlinear mean preserves weak-member influence. The transformed
     # values describe the aggregation shape; they are not calibrated success

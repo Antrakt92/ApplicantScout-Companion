@@ -7814,7 +7814,9 @@ def test_snapshot_apply_queue_preserves_complementary_authoritative_domains(
         [True, True] if snapshots == "full_then_roster_partial" else [True]
     )
     assert decoded == [burst[-1]]
-    assert len(applied) == (2 if snapshots.startswith("full_then") else 1)
+    # Different authoritative surfaces settle producer context separately before
+    # later rows use fallback. They still share one GUI drain and newest decode.
+    assert len(applied) == 2
     assert cached == list(burst)
     cached_full = [
         snap

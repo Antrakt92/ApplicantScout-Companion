@@ -4,7 +4,8 @@
 
 - Preserve timed experience when targets change or local dungeon rows refresh.
 - Hide unavailable WCL scopes consistently in estimates, cells and sorting.
-- Keep raid details and specialization evidence current during refreshes.
+- Keep raid details and specialization evidence current through refreshes and delayed responses.
+- Keep identical players' group estimates and colours consistent with their individual Fit.
 - Improve badge contrast and table readability on narrow screens.
 - Base Mythic+ Fit on verified in-time keys, with coloured estimates and visible coverage.
 - Keep untimed keys, WCL logs and rating-only profiles out of Mythic+ Fit.

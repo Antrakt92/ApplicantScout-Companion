@@ -127,9 +127,9 @@ def _row_continuity_signature(snap: Snapshot, *, roster: bool) -> tuple:
             f"{row.applicant_id}:{row.member_idx}"
             if isinstance(row, DecodedApplicant) else name.lower()
         )
-        # Name, spec and metric-role transitions retire enrichment. Gear must
-        # survive a later unknown read, but class and score use newest authority.
-        by_id[row_id] = (row.name, row.spec_id, row.ilvl, row.role)
+        # Class transitions also retire spec/gear fallback and enrichment, even
+        # when a subsequent partial row returns to the previous class.
+        by_id[row_id] = (row.name, row.class_id, row.spec_id, row.ilvl, row.role)
     return tuple(sorted(by_id.items()))
 
 
@@ -153,10 +153,14 @@ def snapshot_semantic_segments(
                     incoming["version"] = (
                         snap.version.player_name, snap.version.region_id,
                         snap.producer_version_history,
+                        # Resolve partial identity updates before another
+                        # surface gains authority and uses existing fallback.
+                        snapshot_authority_mask(snap),
                     )
-                elif "version" not in observed:
-                    # Rows captured before the first producer observation must
-                    # not be rebound to a later character by a merged frame.
+                else:
+                    # Identity resolution must settle before a later partial
+                    # row uses fallback, just as in sequential application.
+                    # Earlier unbound rows must also retain their own step.
                     incoming["version"] = None
                 if not snap.lfg_unavailable or snap.listing is not None:
                     incoming["listing_seed"] = snap.listing

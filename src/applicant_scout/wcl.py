@@ -53,6 +53,7 @@ from .wcl_cache_store import (
     retract_private_rank_summaries,
     raid_detail_candidates,
     raid_detail_scope_epoch,
+    record_publication_proofs,
     sanitize_raid_evidence,
 )
 
@@ -2196,13 +2197,16 @@ class CharacterCache:
         self._write_lock = threading.Lock()
         self._save_epoch = 0
         self._generation = 0
-        # Pending manual requests must not outlive a privacy proof just because
-        # TTL eviction removes its cache entry. Session barriers are bounded;
-        # retired barriers advance a conservative floor for older publishers.
+        # Source order outlives cached rows. Histories stay separated by
+        # capability; retired proofs conservatively reject older publishers.
         self._raid_detail_privacy_epochs: dict[tuple[str, str], int] = {}
         self._raid_detail_privacy_floor = 0
         self._raid_summary_privacy_epochs: dict[tuple[str, str], int] = {}
         self._raid_summary_privacy_floor = 0
+        self._character_positive_epochs: dict[tuple[str, str], int] = {}
+        self._character_positive_floor = 0
+        self._character_negative_epochs: dict[tuple[str, str], int] = {}
+        self._character_negative_floor = 0
         self._closing = False
         self._close_done = threading.Event()
         self._close_result: bool | None = None
@@ -2587,6 +2591,10 @@ class CharacterCache:
                 self._raid_detail_privacy_floor = 0
                 self._raid_summary_privacy_epochs.clear()
                 self._raid_summary_privacy_floor = 0
+                self._character_positive_epochs.clear()
+                self._character_positive_floor = 0
+                self._character_negative_epochs.clear()
+                self._character_negative_floor = 0
                 snapshot = self._snapshot_for_save_locked()
             if timer is not None and timer.is_alive():
                 timer.cancel()
@@ -2656,6 +2664,8 @@ class CharacterCache:
         spec_id: int = 0,
         role: str = "DAMAGER",
         metric_preferences: MetricPreferences = DEFAULT_METRIC_PREFERENCES,
+        *,
+        publication_receipt: list[int] | None = None,
     ) -> Optional[CharacterRanks]:
         prefix = self._key_prefix(name, server_slug, region, spec_id, role)
         not_found_key = self._not_found_key(name, server_slug, region)
@@ -2681,6 +2691,12 @@ class CharacterCache:
                 if snapshot.generation != self._generation:
                     return None
                 if snapshot.publication_epoch == self._save_epoch:
+                    if result is not None and publication_receipt is not None:
+                        # The read watermark includes scope privacy amendments;
+                        # character negatives retain their exact retirement clock.
+                        receipt = (negative.publication_epoch if result.not_found and negative is not None
+                                   else snapshot.publication_epoch)
+                        publication_receipt.append(receipt)
                     return result
         return None
 
@@ -2703,59 +2719,84 @@ class CharacterCache:
         Row identity, operation ownership and request-generation checks stay with
         the caller; this read-only guard checks chronological source evidence.
         """
-        if expected_publication_epoch is None:
-            return True
         prefix = self._key_prefix(name, server_slug, region, spec_id, role)
         negative_key = self._not_found_key(name, server_slug, region)
+        with self._lock:
+            return self._source_response_current_locked(
+                prefix, negative_key, metric_preferences, expected_publication_epoch,
+                raid_details=raid_details, not_found=not_found,
+            )
+
+    def _source_response_current_locked(
+        self, prefix: str, negative_key: str, metric_preferences: MetricPreferences,
+        expected_publication_epoch: int | None, *, raid_details: bool, not_found: bool,
+    ) -> bool:
+        if expected_publication_epoch is None:
+            return True
+        negative = self._data.get(negative_key)
+        if (
+            expected_publication_epoch < self._character_negative_floor
+            or self._character_negative_epochs.get((negative_key, "not_found"), 0) > expected_publication_epoch
+            or negative is not None and negative.publication_epoch > expected_publication_epoch
+        ):
+            return False
+        if not_found:
+            character_prefix = f"{negative_key.removeprefix('nf:')}:"
+            return not (
+                expected_publication_epoch < self._character_positive_floor
+                or self._character_positive_epochs.get((negative_key, "present"), 0) > expected_publication_epoch
+                or any(
+                    entry.publication_epoch > expected_publication_epoch
+                    for key, entry in self._data.items()
+                    if key.startswith((character_prefix, f"rb:{character_prefix}"))
+                )
+            )
         selected_scopes = (
             set(_raid_difficulty_keys_for_preferences(metric_preferences)) if raid_details
             else {scope for scope in METRIC_SCOPES if getattr(metric_preferences, scope)}
         )
-        with self._lock:
-            negative = self._data.get(negative_key)
-            if negative is not None and negative.publication_epoch > expected_publication_epoch:
-                return False
-            if not_found:
-                character_prefix = f"{region}:{server_slug}:{name.lower()}:"
-                if any(
-                    entry.publication_epoch > expected_publication_epoch
-                    for key, entry in self._data.items()
-                    if key.startswith((character_prefix, f"rb:{character_prefix}"))
-                ):
-                    return False
-                return (
-                    expected_publication_epoch >= max(
-                        self._raid_detail_privacy_floor, self._raid_summary_privacy_floor,
-                    )
-                    and not any(
-                        epoch > expected_publication_epoch
-                        for epochs in (self._raid_detail_privacy_epochs, self._raid_summary_privacy_epochs)
-                        for (identity, _difficulty), epoch in epochs.items()
-                        if identity.startswith(character_prefix)
-                    )
-                )
-            privacy_epochs = self._raid_detail_privacy_epochs if raid_details else self._raid_summary_privacy_epochs
-            privacy_floor = self._raid_detail_privacy_floor if raid_details else self._raid_summary_privacy_floor
-            if selected_scopes and (
-                expected_publication_epoch < privacy_floor
-                or any(
-                    privacy_epochs.get((prefix, scope), 0) > expected_publication_epoch
-                    for scope in selected_scopes
-                )
-            ):
-                return False
-            if raid_details:
-                return not any(
-                    newer_raid_detail_evidence(
-                        self._data, identity_prefix=prefix, difficulty=difficulty,
-                        expected_publication_epoch=expected_publication_epoch,
-                    )
-                    for difficulty in selected_scopes
-                )
-            return not newer_rank_scope_evidence(
+        proofs = self._raid_detail_privacy_epochs if raid_details else self._raid_summary_privacy_epochs
+        floor = self._raid_detail_privacy_floor if raid_details else self._raid_summary_privacy_floor
+        if selected_scopes and (
+            expected_publication_epoch < floor
+            or any(proofs.get((prefix, scope), 0) > expected_publication_epoch for scope in selected_scopes)
+        ):
+            return False
+        if raid_details:
+            return not any(
+                newer_raid_detail_evidence(
+                    self._data, identity_prefix=prefix, difficulty=difficulty,
+                    expected_publication_epoch=expected_publication_epoch,
+                ) for difficulty in selected_scopes
+            )
+        exact = self._data.get(f"{prefix}:{metric_preferences.cache_key()}")
+        return not (
+            exact is not None and exact.publication_epoch > expected_publication_epoch
+            or newer_rank_scope_evidence(
                 self._data, identity_prefix=prefix, metric_preferences=metric_preferences,
                 expected_publication_epoch=expected_publication_epoch,
             )
+        )
+
+    def current_not_found_publication_epoch(self, name: str, server_slug: str, region: str) -> int | None:
+        """Return an exact current negative receipt, including accepted evicted negatives."""
+        key = self._not_found_key(name, server_slug, region)
+        with self._lock:
+            epoch = self._character_negative_epochs.get((key, "not_found"))
+            if epoch is None:
+                entry = self._data.get(key)
+                if (entry is not None and isinstance(entry.ranks, dict)
+                        and entry.ranks.get("not_found") is True
+                        and _entry_is_fresh_raw(
+                            key, entry.fetched_at, now=time.time(), ttl_seconds=self._ttl_seconds,
+                            not_found_ttl_seconds=self._not_found_ttl_seconds(),
+                        )):
+                    epoch = entry.publication_epoch
+            if epoch is None or epoch < max(self._character_negative_floor, self._character_positive_floor):
+                return None
+            if self._character_positive_epochs.get((key, "present"), 0) > epoch:
+                return None
+            return epoch
 
     def get_raid_boss_details(
         self,
@@ -2890,7 +2931,10 @@ class CharacterCache:
         if expected_publication_epoch is not None:
             difficulties = {
                 difficulty for difficulty in difficulties
-                if not newer_public_raid_detail_evidence(
+                if expected_publication_epoch >= self._raid_detail_privacy_floor
+                and self._raid_detail_privacy_epochs.get((identity_prefix, difficulty), 0)
+                <= expected_publication_epoch
+                and not newer_public_raid_detail_evidence(
                     self._data, identity_prefix=identity_prefix, difficulties={difficulty},
                     expected_publication_epoch=expected_publication_epoch,
                 )
@@ -2901,7 +2945,6 @@ class CharacterCache:
             expected_publication_epoch=expected_publication_epoch,
         )
         for difficulty in difficulties:
-            self._raid_detail_privacy_epochs[(identity_prefix, difficulty)] = self._save_epoch + 1
             preferences = MetricPreferences(
                 mplus=False, raid_normal=difficulty == "N", raid_heroic=difficulty == "H",
                 raid_mythic=difficulty == "M",
@@ -2915,11 +2958,11 @@ class CharacterCache:
                 raid_boss_publication_epochs={difficulty: self._save_epoch + 1},
             )
         _cap_entries_data(self._data, self.MAX_ENTRIES)
-        while len(self._raid_detail_privacy_epochs) > self.MAX_ENTRIES * len(RAID_DETAIL_SCOPES):
-            oldest = min(self._raid_detail_privacy_epochs, key=lambda key: self._raid_detail_privacy_epochs[key])
-            self._raid_detail_privacy_floor = max(
-                self._raid_detail_privacy_floor, self._raid_detail_privacy_epochs.pop(oldest),
-            )
+        self._raid_detail_privacy_floor = record_publication_proofs(
+            self._raid_detail_privacy_epochs, identity=identity_prefix, scopes=difficulties,
+            publication_epoch=self._save_epoch + 1, max_entries=self.MAX_ENTRIES * len(RAID_DETAIL_SCOPES),
+            retired_floor=self._raid_detail_privacy_floor,
+        )
 
     def put(
         self,
@@ -2934,6 +2977,7 @@ class CharacterCache:
         expected_generation: int | None = None,
         expected_operation: FetchOperation | None = None,
         expected_publication_epoch: int | None = None,
+        publication_receipt: list[int] | None = None,
     ) -> bool:
         if self._close_requested.is_set():
             return False
@@ -2950,29 +2994,15 @@ class CharacterCache:
                 and expected_generation != self._generation
             ):
                 return False
+            source_prefix = self._key_prefix(name, server_slug, region, spec_id, role)
+            if not self._source_response_current_locked(
+                source_prefix, not_found_key, metric_preferences, expected_publication_epoch,
+                raid_details=False, not_found=ranks.not_found,
+            ):
+                return False
             if ranks.not_found:
                 identity_prefix = f"{region}:{server_slug}:{name.lower()}:"
                 raid_boss_identity_prefix = f"rb:{identity_prefix}"
-                if expected_publication_epoch is not None and (
-                    expected_publication_epoch < max(
-                        self._raid_summary_privacy_floor, self._raid_detail_privacy_floor,
-                    ) or any(
-                        epoch > expected_publication_epoch
-                        for epochs in (self._raid_summary_privacy_epochs, self._raid_detail_privacy_epochs)
-                        for (identity, _difficulty), epoch in epochs.items()
-                        if identity.startswith(identity_prefix)
-                    )
-                ):
-                    return False
-                # A negative sweeps every spec/scope, so newer evidence anywhere
-                # for this character wins even when both requests remain active.
-                if expected_publication_epoch is not None and any(
-                    entry.publication_epoch > expected_publication_epoch
-                    for stored_key, entry in self._data.items()
-                    if stored_key.startswith((identity_prefix, raid_boss_identity_prefix))
-                    or stored_key == not_found_key
-                ):
-                    return False
                 cache_put(
                     self._data,
                     key=key,
@@ -2985,27 +3015,12 @@ class CharacterCache:
                     sweep_prefixes=(identity_prefix, raid_boss_identity_prefix),
                     max_entries=self.MAX_ENTRIES,
                 )
+                self._character_negative_floor = record_publication_proofs(
+                    self._character_negative_epochs, identity=not_found_key, scopes={"not_found"},
+                    publication_epoch=self._save_epoch + 1, max_entries=self.MAX_ENTRIES,
+                    retired_floor=self._character_negative_floor,
+                )
             else:
-                if expected_publication_epoch is not None:
-                    identity_prefix = self._key_prefix(name, server_slug, region, spec_id, role)
-                    selected_scopes = {scope for scope in METRIC_SCOPES if getattr(metric_preferences, scope)}
-                    if selected_scopes and (
-                        expected_publication_epoch < self._raid_summary_privacy_floor
-                        or any(
-                            self._raid_summary_privacy_epochs.get((identity_prefix, scope), 0)
-                            > expected_publication_epoch for scope in selected_scopes
-                        )
-                    ):
-                        return False
-                    if any(
-                        entry is not None and entry.publication_epoch > expected_publication_epoch
-                        for entry in (self._data.get(key), self._data.get(not_found_key))
-                    ) or newer_rank_scope_evidence(
-                        self._data, identity_prefix=identity_prefix,
-                        metric_preferences=metric_preferences,
-                        expected_publication_epoch=expected_publication_epoch,
-                    ):
-                        return False
                 cache_put(
                     self._data,
                     key=key,
@@ -3016,6 +3031,17 @@ class CharacterCache:
                     ),
                     max_entries=self.MAX_ENTRIES,
                 )
+                self._raid_summary_privacy_floor = record_publication_proofs(
+                    self._raid_summary_privacy_epochs, identity=source_prefix,
+                    scopes={scope for scope in METRIC_SCOPES if getattr(metric_preferences, scope)},
+                    publication_epoch=self._save_epoch + 1, max_entries=self.MAX_ENTRIES * len(METRIC_SCOPES),
+                    retired_floor=self._raid_summary_privacy_floor,
+                )
+                self._character_positive_floor = record_publication_proofs(
+                    self._character_positive_epochs, identity=not_found_key, scopes={"present"},
+                    publication_epoch=self._save_epoch + 1, max_entries=self.MAX_ENTRIES,
+                    retired_floor=self._character_positive_floor,
+                )
                 private_scopes = {scope for scope in METRIC_SCOPES if ranks.availability.get(scope) == "restricted"}
                 if private_scopes:
                     identity_prefix = self._key_prefix(name, server_slug, region, spec_id, role)
@@ -3025,14 +3051,6 @@ class CharacterCache:
                         scopes=private_scopes,
                         expected_publication_epoch=expected_publication_epoch,
                     )
-                    for scope in private_scopes:
-                        self._raid_summary_privacy_epochs[(identity_prefix, scope)] = self._save_epoch + 1
-                    while len(self._raid_summary_privacy_epochs) > self.MAX_ENTRIES * len(METRIC_SCOPES):
-                        oldest = min(self._raid_summary_privacy_epochs,
-                                     key=lambda item: self._raid_summary_privacy_epochs[item])
-                        self._raid_summary_privacy_floor = max(
-                            self._raid_summary_privacy_floor, self._raid_summary_privacy_epochs.pop(oldest),
-                        )
                     self._record_raid_privacy_locked(
                         identity_prefix,
                         {difficulty for difficulty, scope in
@@ -3040,6 +3058,10 @@ class CharacterCache:
                          if scope in private_scopes}, expected_publication_epoch,
                     )
             self._save_epoch += 1
+            # Persistence may overlap later publications; capture this response's
+            # accepted clock while the publication lock still owns it.
+            if publication_receipt is not None:
+                publication_receipt.append(self._save_epoch)
             flush_now = self._schedule_save_locked()
         if flush_now:
             self.flush()
@@ -3058,9 +3080,21 @@ class CharacterCache:
         expected_generation: int | None = None,
         expected_operation: FetchOperation | None = None,
         expected_publication_epoch: int | None = None,
+        publication_receipts: dict[str, int] | None = None,
     ) -> bool:
         if self._close_requested.is_set():
             return False
+        if isinstance(rows, RaidBossDetails) and rows.not_found:
+            negative_receipt: list[int] | None = [] if publication_receipts is not None else None
+            accepted = self.put(
+                name, server_slug, region, spec_id, CharacterRanks.empty(not_found=True),
+                role, metric_preferences, expected_generation=expected_generation,
+                expected_operation=expected_operation, expected_publication_epoch=expected_publication_epoch,
+                publication_receipt=negative_receipt,
+            )
+            if accepted and publication_receipts is not None and negative_receipt:
+                publication_receipts["not_found"] = negative_receipt[0]
+            return accepted
         key = self._raid_boss_key(
             name,
             server_slug,
@@ -3070,8 +3104,6 @@ class CharacterCache:
             metric_preferences,
         )
         sanitized = _sanitize_raid_boss_detail_rows(rows, metric_preferences)
-        if isinstance(rows, RaidBossDetails) and rows.not_found:
-            return False
         availability = (
             dict(rows.availability) if isinstance(rows, RaidBossDetails)
             else {key: "available" for key in _raid_difficulty_keys_for_preferences(metric_preferences)}
@@ -3092,22 +3124,16 @@ class CharacterCache:
             ):
                 return False
             not_found_key = self._not_found_key(name, server_slug, region)
-            negative = self._data.get(not_found_key)
-            if (expected_publication_epoch is not None and negative is not None
-                    and negative.publication_epoch > expected_publication_epoch):
-                return False
             identity_prefix = self._key_prefix(name, server_slug, region, spec_id, role)
             eligible = set(_raid_difficulty_keys_for_preferences(metric_preferences)).intersection(availability)
             if expected_publication_epoch is not None:
-                if expected_publication_epoch < self._raid_detail_privacy_floor:
-                    return False
                 eligible = {
                     difficulty for difficulty in eligible
-                    if self._raid_detail_privacy_epochs.get((identity_prefix, difficulty), 0)
-                    <= expected_publication_epoch
-                    and not newer_raid_detail_evidence(
-                        self._data, identity_prefix=identity_prefix, difficulty=difficulty,
-                        expected_publication_epoch=expected_publication_epoch,
+                    if self._source_response_current_locked(
+                        identity_prefix, not_found_key,
+                        MetricPreferences(mplus=False, raid_normal=difficulty == "N",
+                                          raid_heroic=difficulty == "H", raid_mythic=difficulty == "M"),
+                        expected_publication_epoch, raid_details=True, not_found=False,
                     )
                 }
             if not eligible:
@@ -3127,8 +3153,20 @@ class CharacterCache:
                 self._key_prefix(name, server_slug, region, spec_id, role),
                 private_difficulties, expected_publication_epoch,
             )
+            self._raid_detail_privacy_floor = record_publication_proofs(
+                self._raid_detail_privacy_epochs, identity=identity_prefix, scopes=eligible,
+                publication_epoch=self._save_epoch + 1, max_entries=self.MAX_ENTRIES * len(RAID_DETAIL_SCOPES),
+                retired_floor=self._raid_detail_privacy_floor,
+            )
+            self._character_positive_floor = record_publication_proofs(
+                self._character_positive_epochs, identity=not_found_key, scopes={"present"},
+                publication_epoch=self._save_epoch + 1, max_entries=self.MAX_ENTRIES,
+                retired_floor=self._character_positive_floor,
+            )
             _cap_entries_data(self._data, self.MAX_ENTRIES)
             self._save_epoch += 1
+            if publication_receipts is not None:
+                publication_receipts.update({difficulty: self._save_epoch for difficulty in eligible})
             flush_now = self._schedule_save_locked()
         if flush_now:
             self.flush()

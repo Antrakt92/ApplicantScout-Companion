@@ -32,6 +32,19 @@ def raid_detail_scope_epoch(entry: _CacheEntry, difficulty: str) -> int:
     return epochs.get(difficulty, entry.publication_epoch)
 
 
+def record_publication_proofs(
+    proofs: dict[tuple[str, str], int], *, identity: str, scopes: set[str],
+    publication_epoch: int, max_entries: int, retired_floor: int,
+) -> int:
+    """Retain bounded session order independently of cache row eviction and TTL."""
+    for scope in scopes:
+        proofs[(identity, scope)] = publication_epoch
+    while len(proofs) > max_entries:
+        oldest = min(proofs, key=lambda key: proofs[key])
+        retired_floor = max(retired_floor, proofs.pop(oldest))
+    return retired_floor
+
+
 def sanitize_raid_evidence(value: object) -> dict[str, dict]:
     """Keep observed coverage and complete repeat counts; invalid fields stay unknown."""
     if not isinstance(value, dict):

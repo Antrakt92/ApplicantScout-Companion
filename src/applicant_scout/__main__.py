@@ -1369,7 +1369,8 @@ class StateMachine(QObject):
                     region_identity_changed=region_identity_changed,
                     default_realm_changed=default_realm_changed,
                 )
-                self._preserve_known_transport_fields(existing, member)
+                if local_rio_identity_stable:
+                    self._preserve_known_transport_fields(existing, member)
                 needs_refetch = (
                     existing.spec_id != member.spec_id
                     or self._transport_class_changed(existing, member.cls)
