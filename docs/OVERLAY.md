@@ -113,8 +113,8 @@ sorting.
 
 Party view can use the current group leader's keystone as the automatic Mythic+
 target key. A manual Party key override still takes priority, raid contexts
-ignore leader-key calibration. Changing the target key recalculates Fit; WCL
-parse values and colours stay unchanged.
+ignore leader-key calibration. Changing the target key recalculates Fit and
+selects the M+ damage brackets shown in the summary and dungeon details.
 
 For raid groups, Party uses the raid difficulty selected in WoW: Normal,
 Heroic, or Mythic. Inside a raid, the instance's actual difficulty takes
