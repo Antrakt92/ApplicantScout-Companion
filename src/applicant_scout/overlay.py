@@ -4319,6 +4319,10 @@ class OverlayWindow(QMainWindow):
         h.setStretchLastSection(True)
         self._max_name_width_px = COLUMN_WIDTHS[COL_NAME]
         self._content_width_limit = MIN_VISIBLE_WINDOW_WIDTH
+        self._metric_intrinsic_widths: dict[int, int] = {}
+        self._metric_width_reserve = WINDOW_CHROME_WIDTH
+        self._metric_minimum_geometry_ready = False
+        self._metric_minimum_width_basis: tuple[int, int] | None = None
         self._width_layout_key: tuple | None = None
         self._column_measurement_key: tuple | None = None
         self._column_remeasure_pending = False
@@ -4502,6 +4506,9 @@ class OverlayWindow(QMainWindow):
                 y,
             )
         self.setGeometry(x, y, w, h)
+        self._metric_minimum_geometry_ready = True
+        self._apply_metric_minimum_width()
+        self._sync_metric_stretch_mode()
         self.show_launcher_only()
         # show_launcher_only ends any visible session (clearing the tab flag),
         # but construction is not a session end — restore the count-driven
@@ -6492,6 +6499,7 @@ class OverlayWindow(QMainWindow):
             # Finish the deferred Qt layout while painting is still suspended.
             # Otherwise the resized card can briefly cover the old table bounds.
             root_layout.activate()
+            self._sync_metric_stretch_mode()
         finally:
             self._adjusting_panel_geometry = False
             if updates_enabled:
@@ -6575,6 +6583,7 @@ class OverlayWindow(QMainWindow):
                     screen.availableGeometryChanged.connect(self._on_screen_topology_changed)
                 self._width_limit_screen = screen
             available_width = screen.availableGeometry().width() if screen is not None else self._content_width_limit
+            self._apply_metric_minimum_width()
             limit = min(self._content_width_limit, max(USER_MIN_WINDOW_WIDTH, available_width))
             if self.maximumWidth() != limit:
                 was_at_limit = self.width() >= self.maximumWidth()
@@ -6589,6 +6598,7 @@ class OverlayWindow(QMainWindow):
                         self.resize(limit, self.height())
                 finally:
                     self._suppress_geometry_persist = suppressed
+            self._sync_metric_stretch_mode()
         finally:
             self._syncing_width_limit = False
 
@@ -7363,10 +7373,12 @@ class OverlayWindow(QMainWindow):
             if item is not None:
                 self._table.setRowHeight(row, self._rio_cell_height(item))
         required_width = 0
+        intrinsic_widths: dict[int, int] = {}
         for col in range(self._table.columnCount()):
             if self._table.isColumnHidden(col):
                 continue
             width = self._metric_column_required_width(col)
+            intrinsic_widths[col] = width
             required_width += width
             if self._table.columnWidth(col) != width:
                 self._table.setColumnWidth(col, width)
@@ -7374,6 +7386,8 @@ class OverlayWindow(QMainWindow):
         # keyboard focus cannot oscillate the window's maximum width.
         scrollbar = self._table.verticalScrollBar()
         scroll_width = scrollbar.sizeHint().width() if scrollbar is not None else 0
+        self._metric_intrinsic_widths = intrinsic_widths
+        self._metric_width_reserve = scroll_width + WINDOW_CHROME_WIDTH
         natural_width = max(MIN_VISIBLE_WINDOW_WIDTH, required_width + scroll_width + WINDOW_CHROME_WIDTH)
         # Keep a content high-water mark within a view: a disappearing group or
         # background result must not shrink the window under the user's pointer.
@@ -7600,7 +7614,57 @@ class OverlayWindow(QMainWindow):
         self._apply_metric_minimum_width()
 
     def _apply_metric_minimum_width(self) -> None:
-        self.setMinimumWidth(USER_MIN_WINDOW_WIDTH)
+        if not self._metric_minimum_geometry_ready:
+            return
+        needed = self._measured_metric_window_width()
+        if needed is None:
+            return
+        screen = self.screen()
+        available = max(USER_MIN_WINDOW_WIDTH,
+                        screen.availableGeometry().width() if screen is not None else needed)
+        full_width = min(needed, available)
+        basis = (needed, available)
+        # Background refreshes must not ratchet a compact window after each
+        # partially widened drag. Protect full width once it has been reached.
+        if basis == self._metric_minimum_width_basis and self.width() < full_width:
+            return
+        self._metric_minimum_width_basis = basis
+        floor = max(USER_MIN_WINDOW_WIDTH, min(full_width, self.width()))
+        if self.minimumWidth() != floor:
+            self.setMinimumWidth(floor)
+
+    def _measured_metric_window_width(self) -> int | None:
+        visible = [column for column in range(self._table.columnCount())
+                   if not self._table.isColumnHidden(column)]
+        if not visible or any(column not in self._metric_intrinsic_widths for column in visible):
+            return None
+        return max(USER_MIN_WINDOW_WIDTH,
+                   sum(self._metric_intrinsic_widths[column] for column in visible) + self._metric_width_reserve)
+
+    def _sync_metric_stretch_mode(self) -> None:
+        """Stretch only when intrinsic columns fit; compact views scroll full values."""
+        needed = self._measured_metric_window_width()
+        header = self._table.horizontalHeader()
+        viewport = self._table.viewport()
+        if needed is None or header is None or viewport is None or viewport.width() <= 0:
+            return
+        visible = [column for column in range(self._table.columnCount())
+                   if not self._table.isColumnHidden(column)]
+        intrinsic = sum(self._metric_intrinsic_widths[column] for column in visible)
+        fits = viewport.width() >= intrinsic
+        if header.stretchLastSection() != fits:
+            header.setStretchLastSection(fits)
+        mode = (QHeaderView.ResizeMode.Stretch if fits and COL_MPLUS in visible
+                else QHeaderView.ResizeMode.Interactive)
+        if header.sectionResizeMode(COL_MPLUS) != mode:
+            header.setSectionResizeMode(COL_MPLUS, mode)
+        fill_column = max(visible, key=header.visualIndex) if fits else None
+        for column in visible:
+            if column == fill_column:
+                continue
+            width = self._metric_intrinsic_widths[column]
+            if self._table.columnWidth(column) != width:
+                self._table.setColumnWidth(column, width)
 
     def _retire_inapplicable_fetches(self, applicant: Applicant) -> None:
         row_source = self._row_source_for(applicant)
@@ -8883,6 +8947,13 @@ class OverlayWindow(QMainWindow):
         self._handling_resize = True
         try:
             super().resizeEvent(event)
+            if hasattr(self, "_metric_minimum_geometry_ready") and self._metric_minimum_geometry_ready:
+                needed = self._measured_metric_window_width()
+                screen = self.screen()
+                available = screen.availableGeometry().width() if screen is not None else self.width()
+                if needed is not None and self.width() >= min(needed, max(USER_MIN_WINDOW_WIDTH, available)):
+                    self._apply_metric_minimum_width()
+                self._sync_metric_stretch_mode()
             if hasattr(self, "_status_layout"):
                 self._reflow_status_row(event.size().width())
             if hasattr(self, "_panel"):

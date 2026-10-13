@@ -41,7 +41,9 @@ from applicant_scout.screenshot import (
     DecodedVersion,
     Snapshot,
 )
-from applicant_scout.state import AppState, Applicant, LeaderKey, Listing, RosterMember
+from applicant_scout.state import (
+    AppState, Applicant, LeaderKey, Listing, RosterMember, WindowGeometry, save_geometry,
+)
 
 
 class _FakeWCLClient:
@@ -475,6 +477,7 @@ def test_parse_sort_keeps_partially_missing_application_last(qtbot, tmp_path):
 def test_source_controls_fit_minimum_window_and_restore_on_resize(
     qtbot, tmp_path, applicants, party, stale, key_level
 ):
+    save_geometry(tmp_path, WindowGeometry(w=300))
     state = AppState()
     state.listing = _listing()
     win = _window(tmp_path, qtbot, state)

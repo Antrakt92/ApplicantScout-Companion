@@ -1,4 +1,4 @@
-"""All enabled raid and M+ columns fit the reported 940-pixel overlay width."""
+"""Visible raid and M+ values remain readable near the reported overlay width."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QStyleOptionViewItem
 
 from applicant_scout import overlay, scoring
 from applicant_scout.metric_preferences import MetricPreferences
-from applicant_scout.state import AppState, Applicant, Listing, RosterMember
+from applicant_scout.state import AppState, Applicant, Listing, RosterMember, WindowGeometry, save_geometry
 
 
 class _Client:
@@ -161,6 +161,7 @@ def test_all_raid_and_mplus_columns_fit_at_maximum_width_without_hiding_roles(
 def test_roles_return_after_narrow_scrolled_table_expands_to_maximum_width(
     qtbot, tmp_path, context
 ):
+    save_geometry(tmp_path, WindowGeometry(w=500, h=700))
     window = _window(qtbot, tmp_path, "applicants", 4, context)
     window.show()
     window.resize(500, 700)
@@ -187,7 +188,7 @@ def test_roles_return_after_narrow_scrolled_table_expands_to_maximum_width(
 @pytest.mark.parametrize("context", ["raid", "mplus"])
 @pytest.mark.parametrize("boundary_values", [False, True])
 @pytest.mark.real_display
-def test_all_columns_fit_940_physical_pixels_at_current_windows_scale(
+def test_columns_keep_full_values_near_940_physical_pixels_at_current_windows_scale(
     qtbot, tmp_path, context, boundary_values
 ):
     window = _window(
@@ -215,8 +216,10 @@ def test_all_columns_fit_940_physical_pixels_at_current_windows_scale(
         assert table.item(0, overlay.COL_MPLUS).text() == "100/100 +99"
         for column in (overlay.COL_N, overlay.COL_H, overlay.COL_M):
             assert table.item(0, column).text() == "100/100"
-    assert window.width() == target_width
-    assert window.width() * pixel_ratio <= 941
+    assert window.width() == max(target_width, window.minimumWidth())
+    if target_width >= window.minimumWidth():
+        assert window.width() * pixel_ratio <= 941
+    assert table.columnWidth(overlay.COL_MPLUS) >= window._metric_column_required_width(overlay.COL_MPLUS)
     assert viewport is not None
     assert bar is not None
     assert visible_width <= viewport.width(), (
@@ -342,7 +345,7 @@ def test_content_width_limit_does_not_follow_stretched_columns_or_repeated_refre
         window._refresh_table()
         QApplication.processEvents()
         assert window.maximumWidth() == natural_limit
-        assert window.width() == min(requested_width, natural_limit)
+        assert window.width() == max(window.minimumWidth(), min(requested_width, natural_limit))
 
 
 @pytest.mark.parametrize("context", ["raid", "mplus"])

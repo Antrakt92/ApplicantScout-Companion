@@ -58,6 +58,9 @@ def _config(tmp_path: Path) -> Config:
 
 
 def _overlay(tmp_path: Path, qtbot) -> tuple[OverlayWindow, WCLClient]:
+    # Geometry recovery also applies to an existing compact layout.
+    if not (tmp_path / "window.json").exists():
+        save_geometry(tmp_path, WindowGeometry(w=610, h=520))
     client = WCLClient(WCLAuth("client", "secret", tmp_path))
     window = OverlayWindow(
         AppState(),
@@ -315,11 +318,12 @@ def test_overlay_restored_width_preserves_compact_size_and_caps_large_geometry(
 def test_overlay_resize_caps_width_without_adding_height_cap(qtbot, tmp_path: Path):
     window, client = _overlay(tmp_path, qtbot)
     try:
+        window.show()
         window.resize(5000, 1200)
         assert window.width() == window.maximumWidth()
         assert window.height() == 1200
         window.resize(610, 520)
-        assert window.width() == 610
+        assert window.width() == max(610, window.minimumWidth())
         assert window.height() == 520
     finally:
         window.close()

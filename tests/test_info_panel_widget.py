@@ -67,6 +67,8 @@ from applicant_scout.state import (
     Applicant,
     Listing,
     RosterMember,
+    WindowGeometry,
+    save_geometry,
 )
 from applicant_scout.wcl import (
     WCL_ERROR_MALFORMED,
@@ -857,6 +859,7 @@ def test_inline_load_button_keeps_accessibility_and_header_balance(
 def test_narrow_raid_header_keeps_manual_action_readable(
     qtbot, tmp_path, pinned, monkeypatch
 ):
+    save_geometry(tmp_path, WindowGeometry(w=300, h=800))
     prefs = MetricPreferences(
         mplus=True, raid_normal=False, raid_heroic=False, raid_mythic=True
     )
@@ -883,7 +886,7 @@ def test_narrow_raid_header_keeps_manual_action_readable(
         for width in (300, 388, 650, 300):
             window.resize(width, 800)
             qtbot.wait(1)
-            assert window.width() == min(width, window.maximumWidth())
+            assert window.width() == max(window.minimumWidth(), min(width, window.maximumWidth()))
             assert button.text() == "Load boss details"
             assert button.width() >= button.sizeHint().width()
             assert button.mapTo(panel, QPoint()).x() + button.width() <= panel.width() - 10
@@ -3152,7 +3155,8 @@ def test_panel_external_text_labels_use_plain_text(qtbot):
     assert panel._dungeon_rows[0][0].text() == "<script>Dungeon"
 
 
-def test_overlay_window_minimum_size_allows_user_compact_resize(qtbot, tmp_path):
+def test_overlay_window_minimum_size_preserves_saved_compact_resize(qtbot, tmp_path):
+    save_geometry(tmp_path, WindowGeometry(w=320, h=240))
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -3180,6 +3184,7 @@ def test_overlay_window_minimum_size_allows_user_compact_resize(qtbot, tmp_path)
 
 @pytest.mark.real_display
 def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
+    save_geometry(tmp_path, WindowGeometry(w=300, h=240))
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -3237,7 +3242,7 @@ def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
                     text_width = label.fontMetrics().horizontalAdvance(label.text())
                     assert text_width <= label.contentsRect().width()
                     assert label.sizeHint().width() <= label.width()
-                if width < overlay_mod.STATUS_ROW_SINGLE_LINE_MIN_WIDTH:
+                if window.width() < overlay_mod.STATUS_ROW_SINGLE_LINE_MIN_WIDTH:
                     assert window._status_row_compact is True
                     assert window._status_label.geometry().right() < (
                         window._health_label.geometry().left()
@@ -3278,6 +3283,7 @@ def test_footer_chips_and_resize_grip_do_not_clip_or_overlap(qtbot, tmp_path):
 
 
 def test_compact_metric_table_exposes_horizontal_overflow_scrollbar(qtbot, tmp_path):
+    save_geometry(tmp_path, WindowGeometry(w=320, h=240))
     prefs = MetricPreferences(
         mplus=True,
         raid_normal=True,
@@ -4805,6 +4811,7 @@ def test_collapse_to_launcher_keeps_pending_geometry_save_async(qtbot, tmp_path)
 
     try:
         window.setGeometry(188, 211, 430, 260)
+        expected_width = window.width()
         window.show()
         qtbot.waitUntil(window.isVisible, timeout=1000)
         window._save_timer.setInterval(1)
@@ -4817,7 +4824,7 @@ def test_collapse_to_launcher_keeps_pending_geometry_save_async(qtbot, tmp_path)
         saved = json.loads((tmp_path / "window.json").read_text(encoding="utf-8"))
         assert saved["x"] == 188
         assert saved["y"] == 211
-        assert saved["w"] == 430
+        assert saved["w"] == expected_width
         assert saved["h"] == 260
     finally:
         client.close()
@@ -6723,7 +6730,7 @@ def test_default_launcher_position_uses_window_top_right_when_in_bounds(qtbot, t
 
         pos = window._default_launcher_position()
 
-        assert pos == QPoint(window.geometry().x() + 320 - LAUNCHER_SIZE, window.geometry().y())
+        assert pos == QPoint(window.geometry().right() + 1 - LAUNCHER_SIZE, window.geometry().y())
     finally:
         client.close()
 
@@ -6775,6 +6782,7 @@ def test_partial_applicant_surface_marks_accessible_tab_and_health(
 
 
 def test_overlay_table_mplus_column_consumes_right_edge(qtbot, tmp_path):
+    save_geometry(tmp_path, WindowGeometry(w=320))
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -6942,6 +6950,7 @@ def test_overlay_grouped_long_error_is_bounded_with_full_accessible_text(
 def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
     qtbot, tmp_path
 ):
+    save_geometry(tmp_path, WindowGeometry(w=300))
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -7018,6 +7027,7 @@ def test_overlay_group_package_copy_wraps_without_clipping_at_supported_widths(
 def test_overlay_mplus_detail_rows_reflow_across_supported_widths(
     qtbot, tmp_path, monkeypatch
 ):
+    save_geometry(tmp_path, WindowGeometry(w=300))
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -7044,7 +7054,6 @@ def test_overlay_mplus_detail_rows_reflow_across_supported_widths(
     qtbot.addWidget(window)
 
     try:
-        window.resize(650, window.height())
         window.show()
         qtbot.waitUntil(window.isVisible, timeout=1000)
         window._refresh_table()
@@ -7053,7 +7062,7 @@ def test_overlay_mplus_detail_rows_reflow_across_supported_widths(
         QApplication.processEvents()
         render_key = window._panel_render_key
 
-        for width in (650, 300, 650):
+        for width in (300, 650, 300):
             window.resize(width, window.height())
             QApplication.processEvents()
             window._panel.layout().activate()
@@ -7064,7 +7073,7 @@ def test_overlay_mplus_detail_rows_reflow_across_supported_widths(
             labels = panel._dungeon_rows[0]
             rects = [label.geometry() for label in labels]
             grid_rect = panel._dungeon_widget.contentsRect()
-            assert window.width() == min(width, window.maximumWidth())
+            assert window.width() == max(window.minimumWidth(), min(width, window.maximumWidth()))
             assert panel._dungeon_widget.width() == grid_rect.width()
             assert all(label.text() for label in labels)
             assert rects[0].left() >= grid_rect.left()
@@ -7084,7 +7093,7 @@ def test_overlay_mplus_detail_rows_reflow_across_supported_widths(
             assert name_label.toolTip() == (
                 full_name if expected_name != full_name else ""
             )
-            if width == 650:
+            if window.width() >= 650:
                 assert [label.width() for label in labels] == [
                     DUNGEON_NAME_WIDTH,
                     DUNGEON_KEY_WIDTH,
@@ -7115,6 +7124,7 @@ def test_overlay_mplus_detail_rows_reflow_across_supported_widths(
 
 
 def test_overlay_multi_raid_detail_rows_fit_supported_widths(qtbot, tmp_path):
+    save_geometry(tmp_path, WindowGeometry(w=300))
     preferences = MetricPreferences(
         mplus=True,
         raid_normal=False,
@@ -7163,7 +7173,6 @@ def test_overlay_multi_raid_detail_rows_fit_supported_widths(qtbot, tmp_path):
     qtbot.addWidget(window)
 
     try:
-        window.resize(650, window.height())
         window.show()
         qtbot.waitUntil(window.isVisible, timeout=1000)
         window._refresh_table()
@@ -7171,7 +7180,7 @@ def test_overlay_multi_raid_detail_rows_fit_supported_widths(qtbot, tmp_path):
         window._sync_delegate_and_panel()
         QApplication.processEvents()
 
-        for width in (650, 300, 650):
+        for width in (300, 650, 300):
             window.resize(width, window.height())
             QApplication.processEvents()
             window._panel.layout().activate()
@@ -7189,7 +7198,8 @@ def test_overlay_multi_raid_detail_rows_fit_supported_widths(qtbot, tmp_path):
             )
             assert rects[-1].right() <= grid_rect.right()
             assert labels[0].width() > 0
-            if width == 650:
+            assert window.width() == max(window.minimumWidth(), min(width, window.maximumWidth()))
+            if window.width() >= 650:
                 assert labels[0].width() == RAID_NAME_WIDTH
                 assert labels[1].width() == RAID_KILL_WIDTH
                 assert labels[3].width() == RAID_METRIC_WIDTH
@@ -7204,6 +7214,7 @@ def test_overlay_multi_raid_detail_rows_fit_supported_widths(qtbot, tmp_path):
 def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
     qtbot, tmp_path
 ):
+    save_geometry(tmp_path, WindowGeometry(w=300))
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth)
     cache = CharacterCache(tmp_path)
@@ -7260,6 +7271,7 @@ def test_overlay_sparse_ready_group_reflows_without_clipping_or_table_jump(
 
 
 def test_metric_layout_refresh_does_not_expand_user_resized_window(qtbot, tmp_path):
+    save_geometry(tmp_path, WindowGeometry(w=320, h=240))
     auth = WCLAuth("client", "secret", tmp_path)
     client = WCLClient(auth, metric_preferences=DEFAULT_METRIC_PREFERENCES)
     cache = CharacterCache(tmp_path)

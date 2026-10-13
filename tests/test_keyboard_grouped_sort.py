@@ -7,13 +7,15 @@ from PySide6.QtWidgets import QApplication, QMenu
 
 from applicant_scout.metric_preferences import MetricPreferences
 from applicant_scout.overlay import COL_H, COL_ILVL, COL_NAME, USER_MIN_WINDOW_WIDTH
-from applicant_scout.state import AppState
+from applicant_scout.state import AppState, WindowGeometry, save_geometry
 from test_overlay_tabs import _app, _member
 from test_overlay_fetch_identity import _ShutdownPool, _window
 
 
 @pytest.fixture
-def sort_window(qtbot, tmp_path):
+def sort_window(qtbot, tmp_path, request):
+    if hasattr(request, "param"):
+        save_geometry(tmp_path, WindowGeometry(w=request.param))
     state = AppState()
     for aid, name, ilvl, status in (
         ("1:1", "Bravo-Realm", 200, "ready"),
@@ -212,17 +214,18 @@ def test_hiding_overlay_closes_native_popup(sort_window, qtbot):
 
 
 @pytest.mark.parametrize("role", ["TANK", "HEALER", "DAMAGER"])
+@pytest.mark.parametrize("sort_window", [USER_MIN_WINDOW_WIDTH], indirect=True)
 def test_minimum_width_active_filter_preserves_buttons_and_wide_status(
     sort_window, qtbot, role
 ):
     window = sort_window
-    window.resize(900, window.height())
     QApplication.processEvents()
     bar = window._role_filter_bar
-    full_texts = {key: button.text() for key, button in bar._buttons.items()}
+    full_texts = dict(bar._role_button_text)
     qtbot.mouseClick(window._role_filter_bar._buttons[role], Qt.MouseButton.LeftButton)
     window.resize(USER_MIN_WINDOW_WIDTH, window.height())
     QApplication.processEvents()
+    assert window.width() == USER_MIN_WINDOW_WIDTH
     bar = window._role_filter_bar
     bar.layout().activate()
     buttons = [*bar._buttons.values(), bar._reset_btn, window._sort_button]

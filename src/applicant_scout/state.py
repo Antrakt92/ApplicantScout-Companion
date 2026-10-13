@@ -330,8 +330,8 @@ class AppState:
 class WindowGeometry:
     x: int = 100
     y: int = 100
-    # Compact QWidget scout-card layout default. OverlayWindow minimum uses
-    # DEFAULT_WINDOW_WIDTH x 370; default height keeps table headroom on launch.
+    # Default geometry keeps table headroom; the overlay adapts width bounds
+    # to its visible content and screen while preserving saved compact layouts.
     w: int = DEFAULT_WINDOW_WIDTH
     h: int = DEFAULT_WINDOW_HEIGHT
     layout_version: int = WINDOW_GEOMETRY_LAYOUT_VERSION

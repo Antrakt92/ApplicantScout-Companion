@@ -17,6 +17,11 @@ zero remains a numeric estimate.
 A grouped application shows `partial` or `unknown` when any member lacks
 an estimate, while each available individual result remains visible.
 
+Drag the lower-right corner to resize the window. A wide window stops shrinking
+before its visible columns are squeezed below their content width. Hidden
+columns reduce the space required. Saved compact layouts and small screens
+retain horizontal scrolling so the last column remains readable.
+
 Click any column heading to sort; click it again to reverse the order. Numbers
 start highest first; names and specs start alphabetically. Specs with the same
 label are separated by class. The arrow shows the
