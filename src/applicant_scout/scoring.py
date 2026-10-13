@@ -142,6 +142,17 @@ class MPlusDungeonFit:
     run_count: int = 0
 
 
+@dataclass(frozen=True)
+class MPlusPerformanceSummary:
+    best: float | None = None
+    median: float | None = None
+    key_min: int = 0
+    key_max: int = 0
+    all_single_run: bool = False
+    target_key: int = 0
+    is_contextual: bool = False
+
+
 def detect_listing_context(listing: Listing | None) -> str:
     if listing is None:
         return CONTEXT_UNKNOWN
@@ -197,7 +208,7 @@ def listing_parse_percentile(
         context == CONTEXT_UNKNOWN and listing.category_id == 2
     ):
         return (
-            safe_percent(role_mplus_view(applicant)[2])
+            mplus_performance_summary(applicant, listing).best
             if wcl_scope_usable(applicant, "mplus")
             else None
         )
@@ -363,6 +374,79 @@ def mplus_dungeon_fit_rows(
             rows.append(best_row)
     rows.sort(key=lambda row: (-row.score, -row.key_level, row.dungeon_name))
     return rows
+
+
+def mplus_performance_rows(
+    applicant: Applicant, listing: Listing | None
+) -> list[MPlusDungeonFit]:
+    """One canonical logged bracket per displayed dungeon, shared by all views."""
+    if applicant.fetch_status != "ready" or not wcl_scope_usable(applicant, "mplus"):
+        return []
+    rows = mplus_dungeon_fit_rows(applicant, listing)
+    if not rows:
+        _label, breakdown, _best, _median = role_mplus_view(applicant)
+        entries = sorted(
+            [entry for entry in breakdown if isinstance(entry, dict)],
+            key=lambda entry: (-positive_int(entry.get("key_level")), str(entry.get("name") or "")),
+        )
+        for entry in entries:
+            name = str(entry.get("name") or "").strip()
+            best = safe_percent(entry.get("parse_percent"))
+            rows.append(MPlusDungeonFit(
+                dungeon_name=name,
+                key_level=positive_int(entry.get("key_level")),
+                score=best if best is not None else 0.0,
+                text=_bracket_metric_text(entry),
+                colour=percentile_colour(best) if best is not None else "#2a2a33",
+                best_percent=best,
+                median_percent=safe_percent(entry.get("median_percent")),
+                run_count=nonnegative_int(entry.get("run_count")),
+            ))
+    # Match the detail table's canonical names and duplicate resolution exactly.
+    canonical: dict[str, MPlusDungeonFit] = {}
+    for row in rows:
+        key = normalise_dungeon_name(row.dungeon_name)
+        if key:
+            canonical[key] = row
+    return list(canonical.values())
+
+
+def mplus_performance_summary(
+    applicant: Applicant, listing: Listing | None
+) -> MPlusPerformanceSummary:
+    """Contextual damage averages use exactly the displayed dungeon brackets."""
+    if applicant.fetch_status != "ready" or not wcl_scope_usable(applicant, "mplus"):
+        return MPlusPerformanceSummary()
+    rows = [row for row in mplus_performance_rows(applicant, listing)
+            if row.best_percent is not None]
+    contextual = (
+        detect_listing_context(listing) == CONTEXT_MPLUS
+        and listing is not None
+        and bool(rows)
+        and any(row.key_level > 0 for row in rows)
+    )
+    if not contextual:
+        _label, breakdown, best, median = role_mplus_view(applicant)
+        highest = max(
+            (positive_int(entry.get("key_level")) for entry in breakdown if isinstance(entry, dict)),
+            default=0,
+        )
+        return MPlusPerformanceSummary(
+            best=best, median=median, key_min=highest, key_max=highest,
+            all_single_run=bool(rows) and all(row.run_count == 1 for row in rows),
+        )
+    bests = [row.best_percent for row in rows if row.best_percent is not None]
+    median = None
+    if all(row.run_count >= 2 and row.median_percent is not None for row in rows):
+        medians = [row.median_percent for row in rows if row.median_percent is not None]
+        median = sum(medians) / len(medians)
+    keys = [row.key_level for row in rows if row.key_level > 0]
+    return MPlusPerformanceSummary(
+        best=sum(bests) / len(bests), median=median,
+        key_min=min(keys), key_max=max(keys),
+        all_single_run=all(row.run_count == 1 for row in rows),
+        target_key=listing.key_level if listing is not None else 0, is_contextual=True,
+    )
 
 
 def fit_label(score: float) -> str:

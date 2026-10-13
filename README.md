@@ -100,6 +100,9 @@ combined estimate only when all members have one.
 
 M+ WCL values measure damage for every role, including healers and tanks. They do
 not measure healing, survival, interrupts or utility, and do not change M+ Fit.
+With a known target key, the M+ summary and dungeon details use the same logged
+brackets and show their selected key range. Without a target, the summary uses
+each dungeon's highest logged bracket.
 Raid healers use HPS; other raid roles use DPS. Results belong to the applying
 specialization. Recorded coverage and available sample counts remain visible.
 

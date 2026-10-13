@@ -21,13 +21,14 @@ from .scoring import (
     PackageFit,
     RAID_TARGET_BY_DIFFICULTY_ID,
     detect_listing_context,
-    mplus_dungeon_fit_rows,
+    MPlusPerformanceSummary,
+    mplus_performance_rows,
+    mplus_performance_summary,
     mplus_metric_text,
     nonnegative_int,
     normalise_dungeon_name,
     positive_int,
     raid_performance_score,
-    role_mplus_view,
     safe_percent,
     wcl_scope_usable,
 )
@@ -310,36 +311,26 @@ def wcl_dungeon_rows_by_name(
     rows: dict[str, dict[str, object]] = {}
     if wcl_scope_status(applicant, "mplus") != "ready":
         return rows
-    fit_rows = mplus_dungeon_fit_rows(applicant, listing)
-    if fit_rows:
-        for row in fit_rows:
-            row_key = normalise_dungeon_name(row.dungeon_name)
-            if row_key:
-                rows[row_key] = {
-                    "name": row.dungeon_name,
-                    "key_level": row.key_level,
-                    "text": mplus_metric_display_text(row.best_percent, row.median_percent, row.run_count),
-                    "colour": row.colour,
-                }
-        return rows
-
-    _metric_label, breakdown, _best, _median = role_mplus_view(applicant)
-    for entry in sorted(
-        [entry for entry in breakdown if isinstance(entry, dict)],
-        key=mplus_sort_key,
-    ):
-        name = str(entry.get("name") or "").strip()
-        row_key = normalise_dungeon_name(name)
-        if not name or not row_key:
-            continue
-        best = safe_percent(entry.get("parse_percent"))
+    for row in mplus_performance_rows(applicant, listing):
+        row_key = normalise_dungeon_name(row.dungeon_name)
         rows[row_key] = {
-            "name": name,
-            "key_level": mplus_key_level(entry),
-            "text": mplus_dungeon_metric_text(entry),
-            "colour": percentile_colour(best) if best is not None else "#2a2a33",
+            "name": row.dungeon_name,
+            "key_level": row.key_level,
+            "text": mplus_metric_display_text(row.best_percent, row.median_percent, row.run_count),
+            "colour": row.colour,
+            "best_percent": row.best_percent,
+            "median_percent": row.median_percent,
+            "run_count": row.run_count,
         }
     return rows
+
+
+def mplus_display_summary(
+    applicant: Applicant, listing: Listing | None
+) -> MPlusPerformanceSummary:
+    if wcl_scope_status(applicant, "mplus") != "ready":
+        return MPlusPerformanceSummary()
+    return mplus_performance_summary(applicant, listing)
 
 
 def enabled_raid_difficulty_keys(metric_preferences: MetricPreferences) -> list[str]:

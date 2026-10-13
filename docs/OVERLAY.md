@@ -38,14 +38,18 @@ Joint applications stay together.
 
 The table's parse pairs read **best / median**. Raid values are WCL's performance
 averages across encounters. A missing median stays missing; it does not prove
-there was only one log. M+ best is the mean of each logged dungeon's best percentile at its highest
-logged key. Its median is shown only when every included dungeon has a repeated
-sample, so the two values describe the same dungeon population. A missing
-median does not establish inconsistency; inspect the individual dungeon samples.
-Dungeon columns separate the best timed key, the logged key, and the DPS
-parse. Hover Fit or the group summary for the evidence behind the estimate.
-The **+key** beside that summary is the highest key represented in those WCL
-results, not necessarily the run that produced the best percentile.
+there was only one log. With a known M+ target, the M+ summary averages the same
+logged brackets shown in the dungeon details. One bracket is selected per
+dungeon, within two levels of the target when available; otherwise another
+logged bracket is used. The suffix shows their actual levels, such as
+**+8–12**, rather than implying that every result came from one key level.
+Its median is shown only when every included dungeon has a repeated sample
+and a known median. A missing median does not establish inconsistency.
+Without an M+ target, the summary retains each dungeon's highest logged bracket;
+the suffix then identifies the maximum logged key. Hover the M+ cell for its
+selection context. These averages describe the selected logs, not an overall
+player percentile. Dungeon columns separate the best timed key, the selected
+logged key, and the DPS parse. Hover Fit for the evidence behind its estimate.
 
 In the boss details, **N / H / M** mean Normal / Heroic / Mythic. **H×2** means
 two Heroic kills recorded by RaiderIO. The **Parse** header tooltip identifies

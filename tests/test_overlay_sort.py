@@ -1060,7 +1060,13 @@ def _parse_row(aid, best, context, *, member=1, score=0, status="ready", median=
     if isinstance(context, int):
         field = {14: "raid_normal", 15: "raid_heroic", 16: "raid_mythic"}[context]
         return replace(app, **{field: best, field + "_median": median})
-    return replace(app, mplus_dps=best, mplus_dps_median=median)
+    return replace(
+        app, mplus_dps=best, mplus_dps_median=median,
+        mplus_dps_breakdown=[dict(
+            name="Skyreach", key_level=16, parse_percent=best,
+            median_percent=median, run_count=3,
+        )],
+    )
 
 
 @pytest.mark.parametrize("role", ["DAMAGER", "TANK", "HEALER"])

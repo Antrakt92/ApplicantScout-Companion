@@ -474,8 +474,10 @@ HEADER_TOOLTIPS: list[str] = [
     _RAID_HEADER_TOOLTIP,
     _RAID_HEADER_TOOLTIP,
     _RAID_HEADER_TOOLTIP,
-    "WCL best / median averages, then highest logged key.\n"
-    "DPS for every role, including healers.",
+    "WCL best / median averages from the dungeon brackets shown in details, "
+    "then their logged key range.\n"
+    "Near the target key when available; highest logged keys when there is no target.\n"
+    "DPS for every role, including healers. These logs do not affect M+ Fit.",
     "Target estimate (0–100); not a WCL percentile, overall skill, or success probability.\n"
     "G3 = 3 players. Group estimate on the left; individual on the right.\n"
     "Partial groups have no combined estimate.",
@@ -2817,6 +2819,7 @@ class ApplicantInfoPanel(QFrame):
             *self._detail_headers,
             *(labels[0] for labels in self._dungeon_rows),
             *(labels[1] for labels in self._dungeon_rows),
+            *(labels[2] for labels in self._dungeon_rows),
             *(labels[3] for labels in self._dungeon_rows),
         )
 
@@ -3514,12 +3517,18 @@ class ApplicantInfoPanel(QFrame):
                     bg,
                     _text_colour_for_bg(bg),
                 )
-                self._metric_labels["M+"].setToolTip("")
+                explanation = _mplus_display_tooltip(applicant, listing)
+                self._metric_labels["M+"].setToolTip(explanation)
+                self._metric_labels["M+"].setAccessibleDescription(explanation)
                 shown += 1
             else:
                 self._metric_labels["M+"].setVisible(False)
+                self._metric_labels["M+"].setToolTip("")
+                self._metric_labels["M+"].setAccessibleDescription("")
         else:
             self._metric_labels["M+"].setVisible(False)
+            self._metric_labels["M+"].setToolTip("")
+            self._metric_labels["M+"].setAccessibleDescription("")
         text, fg, bg = _fit_cell_visuals(applicant, listing, fit=fit)
         if bg is not None:
             target_name = dict(N="Normal", H="Heroic", M="Mythic").get(target_raid, "")
@@ -3776,6 +3785,7 @@ class ApplicantInfoPanel(QFrame):
                     label.setText("")
                     label.setVisible(False)
                     label.setToolTip("")
+                    label.setAccessibleDescription("")
                 name_label.setProperty("detailFullName", None)
                 continue
             row_key = row_keys[row_idx]
@@ -3804,11 +3814,18 @@ class ApplicantInfoPanel(QFrame):
                 value_label.setTextFormat(Qt.TextFormat.PlainText)
                 visible_text = wcl_text.removesuffix(" 1 run")
                 value_label.setText(visible_text)
-                sample_note = (
-                    f"DPS percentile {visible_text}. "
-                    "1 logged run; no repeat-run median."
-                    if wcl_text.endswith(" 1 run") else ""
-                )
+                sample_note = f"WCL DPS percentile {visible_text} at selected logged key +{wcl_key}."
+                if detect_listing_context(listing) == CONTEXT_MPLUS and listing is not None:
+                    sample_note += (
+                        f" Target +{listing.key_level}: a bracket near the target is selected "
+                        "when available, otherwise another logged bracket."
+                    )
+                else:
+                    sample_note += " Highest logged bracket in this dungeon."
+                if wcl_text.endswith(" 1 run"):
+                    sample_note += " 1 logged run; no repeat-run median."
+                wcl_key_label.setToolTip(sample_note)
+                wcl_key_label.setAccessibleDescription(sample_note)
                 value_label.setToolTip(sample_note)
                 value_label.setAccessibleDescription(sample_note)
                 bg = str(wcl_row.get("colour") or "#2a2a33")
@@ -3820,8 +3837,12 @@ class ApplicantInfoPanel(QFrame):
             else:
                 wcl_key_label.setText("")
                 wcl_key_label.setStyleSheet("")
+                wcl_key_label.setToolTip("")
+                wcl_key_label.setAccessibleDescription("")
                 value_label.setText("")
                 value_label.setStyleSheet("")
+                value_label.setToolTip("")
+                value_label.setAccessibleDescription("")
             for label in labels:
                 label.setVisible(True)
         visible = len(row_keys)
@@ -3975,8 +3996,10 @@ class ApplicantInfoPanel(QFrame):
              "Warcraft Logs boss percentile: overall / item level")
             if raid else (
                 "Mythic+ dungeon", "Highest completed key from RaiderIO",
-                "Highest key represented in Warcraft Logs",
-                "WCL DPS percentile: best / median.",
+                "Key of the selected Warcraft Logs bracket: near the target key "
+                "when available, otherwise another logged bracket. "
+                "With no target, the highest logged key is shown.",
+                "WCL DPS percentile: best / median for the selected logged key.",
             )
         )
         self._set_detail_row_widths(
@@ -5279,7 +5302,7 @@ class OverlayWindow(QMainWindow):
             if column == COL_MPLUS:
                 if _presenters.wcl_scope_status(applicant, "mplus") != "ready":
                     return None
-                return role_mplus_view(applicant)[2]
+                return _presenters.mplus_display_summary(applicant, listing).best
             scope = {COL_N: "raid_normal", COL_H: "raid_heroic", COL_M: "raid_mythic"}.get(column)
             if scope is not None and _presenters.wcl_scope_status(applicant, scope) != "ready":
                 return None
@@ -8742,6 +8765,11 @@ class OverlayWindow(QMainWindow):
                     if item is not None:
                         tip = item.toolTip()
                 return _render_tooltip(obj, tip, event.globalPos())
+            # M+ cells explain the selected dungeon population through the
+            # same screen-parented path as the panel and column legends.
+            if obj is self._table.viewport() and self._table.columnAt(event.pos().x()) == COL_MPLUS:
+                item = self._table.itemAt(event.pos())
+                return _render_tooltip(obj, item.toolTip() if item is not None else "", event.globalPos())
             # Branch B — title-bar label (listing tooltip). Independent from
             # Branch A: only one matches per call by `obj is` identity.
             if obj is self._title_bar.title_label:
@@ -9173,8 +9201,8 @@ def _mplus_cell_visuals(
     *,
     fit: CandidateFit | None = None,
 ) -> tuple[str, str | None, str | None]:
-    """Return raw WCL evidence, independent of the compatible context arguments."""
-    del listing, fit
+    """Summarize the same WCL brackets selected for the dungeon details."""
+    del fit
     status = _presenters.wcl_scope_status(applicant, "mplus")
     if status in {"loading", "pending"}:
         return "…", "#888", None
@@ -9184,25 +9212,71 @@ def _mplus_cell_visuals(
     if status in {"not_found", "restricted"}:
         return "—", "#5d5d5d", None
 
-    _metric_label, breakdown, best, median = role_mplus_view(applicant)
+    summary = _presenters.mplus_display_summary(applicant, listing)
+    best, median = summary.best, summary.median
     if best is None and median is None:
         return "—", "#5d5d5d", None
 
     if median is not None:
         headline_run_count = 2
-    elif _presenters.mplus_breakdown_all_single_run(breakdown):
+    elif summary.all_single_run:
         headline_run_count = 1
     else:
         headline_run_count = 0
     text = _presenters.mplus_metric_display_text(best, median, headline_run_count, headline=True)
 
-    highest_key = _overlay_rows.highest_mplus_key_level(breakdown)
-    if highest_key > 0:
-        text = f"{text} +{highest_key}"
+    key_range = _mplus_logged_key_range(summary.key_min, summary.key_max)
+    if key_range:
+        text = f"{text} {key_range}"
 
     bg = percentile_colour(best) if best is not None else None
     fg = _text_colour_for_bg(bg) if bg is not None else None
     return text, fg, bg
+
+
+def _mplus_logged_key_range(key_min: object, key_max: object) -> str:
+    lower, upper = positive_int(key_min), positive_int(key_max)
+    if upper <= 0:
+        return ""
+    return f"+{lower}–{upper}" if 0 < lower < upper else f"+{upper}"
+
+
+def _mplus_display_tooltip(applicant: Applicant, listing: Listing | None = None) -> str:
+    if _presenters.wcl_scope_status(applicant, "mplus") != "ready":
+        return ""
+    summary = _presenters.mplus_display_summary(applicant, listing)
+    if summary.best is None and summary.median is None:
+        return ""
+    key_range = _mplus_logged_key_range(summary.key_min, summary.key_max)
+    if summary.is_contextual:
+        explanation = (
+            "WCL DPS averages the same selected dungeon brackets shown in details.\n"
+            f"Target +{summary.target_key}: selects one bracket per dungeon within two key levels "
+            "when available; otherwise uses another logged bracket.\n"
+            f"Selected logged key range: {key_range or 'unknown'}."
+        )
+        highest = _presenters.mplus_display_summary(applicant, None)
+        if highest.best is not None:
+            raw_text = _presenters.mplus_metric_display_text(
+                highest.best, highest.median,
+                2 if highest.median is not None else 1 if highest.all_single_run else 0,
+                headline=True,
+            )
+            highest_key = _mplus_logged_key_range(highest.key_min, highest.key_max)
+            explanation += (
+                f"\nHighest-key overview: {raw_text} {highest_key}. "
+                "Uses each dungeon's highest logged bracket; its suffix is the maximum logged key."
+            )
+    else:
+        explanation = (
+            "WCL DPS averages each dungeon's highest logged bracket.\n"
+            f"Maximum logged key: {key_range or 'unknown'}. "
+            "The dungeon brackets can have different key levels."
+        )
+    if summary.median is None:
+        explanation += "\nNo complete repeat-run median for these selected dungeon samples."
+    explanation += "\nCurrent-specialization damage percentiles for every role; these logs do not change M+ Fit."
+    return explanation
 
 
 def _mplus_dual_cell(
@@ -9223,6 +9297,9 @@ def _mplus_dual_cell(
     _set_cell_background(item, bg)
     item.setFont(_metric_cell_font(item.font(), bold=bg is not None))
     _stamp_cell_font_sig(item)
+    explanation = _mplus_display_tooltip(applicant, listing)
+    if item.toolTip() != explanation:
+        item.setToolTip(explanation)
     return item
 
 

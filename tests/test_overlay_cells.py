@@ -96,12 +96,12 @@ def test_bold_cell_font_uses_resolved_application_size(qtbot):
     assert result.pointSize() > 0 or result.pixelSize() > 0
 
 
-def test_mplus_dual_cell_keeps_raw_evidence_for_mplus_listing():
+def test_mplus_dual_cell_uses_the_selected_dungeon_evidence_for_mplus_listing():
     applicant = _app(rio_dungeons=[{"name": "Pit of Saron", "key_level": 14}])
     item = _mplus_dual_cell(applicant, _mplus_listing())
 
-    assert item.text() == "80/62 +14"
-    assert item.background().color().name() == QColor(percentile_colour(80.0)).name()
+    assert item.text() == "100/80 +14"
+    assert item.background().color().name() == QColor(percentile_colour(100.0)).name()
     fit_text = _fit_cell(applicant, _mplus_listing()).text()
     assert fit_text.startswith("~") and fit_text[1:].isdigit()
 

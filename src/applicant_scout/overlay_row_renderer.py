@@ -92,9 +92,8 @@ def render_row_cells(
     """Write applicant data into an existing table row. Caller manages
     row creation / position — used by _refresh_table after sort.
 
-    Per-cell tooltips removed: applicant data now lives in the top
-    ApplicantInfoPanel which is row-hover/pin driven. Cell items are
-    plain text + colour only.
+    Applicant data lives in the row-hover/pin driven ApplicantInfoPanel.
+    M+ cells also explain their selected dungeon population in a tooltip.
 
     Items are updated in place when the row already exists: re-rendering
     a changed row rewrites text/roles without reallocating 9 items and
@@ -177,8 +176,8 @@ def render_row_cells(
     listing_context = detect_listing_context(listing)
     package = env.package_fit_by_raw.get(raw_aid)
 
-    # Raw WCL evidence keeps the same meaning and palette in every listing.
-    # Contextual recommendations have a separate cell.
+    # WCL percentiles keep their own palette. M+ selects the same dungeon
+    # brackets as the panel; contextual recommendations have a separate cell.
     raid_cells = [
         ("N", env.col_n, applicant.raid_normal, applicant.raid_normal_median),
         ("H", env.col_h, applicant.raid_heroic, applicant.raid_heroic_median),
@@ -270,11 +269,6 @@ def render_row_cells(
         and applicant.applicant_id == env.keyboard_id
     ):
         interaction_state = f"{interaction_state} Keyboard preview.".strip()
-    expected_description = (
-        f"{description} {interaction_state}"
-        if interaction_state
-        else description
-    )
     for column, header in enumerate(accessible_headers):
         item = table.item(row, column)
         if item is None:
@@ -300,7 +294,14 @@ def render_row_cells(
             Qt.ItemDataRole.AccessibleTextRole,
             f"{header}: {value}",
         )
-        set_data(item, env.row_base_role, description)
+        column_description = description
+        if column == env.col_mplus and item.toolTip():
+            column_description += " " + item.toolTip().replace("\n", " ")
+        expected_description = (
+            f"{column_description} {interaction_state}"
+            if interaction_state else column_description
+        )
+        set_data(item, env.row_base_role, column_description)
         set_data(
             item, Qt.ItemDataRole.AccessibleDescriptionRole, expected_description
         )

@@ -354,8 +354,8 @@ def test_mplus_cell_visuals_dps_appends_highest_key():
 def test_mplus_cell_visuals_listing_keeps_raw_percentile_palette():
     text, fg, bg = _mplus_cell_visuals(_app(role="DAMAGER"), _mplus_listing())
 
-    assert text == "80/62 +14"
-    assert bg == percentile_colour(80.0)
+    assert text == "85 +12\u201314"
+    assert bg == percentile_colour(85.0)
     assert fg == _text_colour_for_bg(bg)
 
 

@@ -2184,8 +2184,9 @@ def test_single_run_value_tooltip_routes_and_clears_on_reuse(qtbot, tmp_path, mo
         ):
             panel.setApplicantData(_app(mplus_dps_breakdown=[entry | updates]), listing)
             assert value.text() == expected
-            assert value.toolTip() == ""
-            assert value.accessibleDescription() == ""
+            assert "1 logged run" not in value.toolTip()
+            assert "selected logged key +16" in value.toolTip()
+            assert value.accessibleDescription() == value.toolTip()
 
         panel.setApplicantData(app, listing)
         panel.setApplicantData(_app(), _raid_listing())
@@ -7491,7 +7492,7 @@ def test_package_cell_keeps_package_and_individual_mplus_for_every_group_member(
             app = state.applicants[window._id_by_row[row]]
             expected = overlay_mod._fit_cell_visuals(app, state.listing)[0]
             assert item.data(MPLUS_INDIVIDUAL_TEXT_ROLE) == expected
-            assert window._table.item(row, COL_MPLUS).text() == "80/62 +14"
+            assert window._table.item(row, COL_MPLUS).text() == "85 +12\u201314"
         assert owner_item.data(MPLUS_INDIVIDUAL_BG_ROLE)
         assert follower_item.data(MPLUS_INDIVIDUAL_BG_ROLE)
         assert window._delegate._group_marker_by_row[owner_row].first_visible
@@ -8095,6 +8096,10 @@ def test_metric_column_widths_skip_noop_but_measure_changed_parse_text(
         assert measured == []
 
         state.applicants["10:1"].mplus_dps = 91.0
+        window._refresh_table()
+        assert measured == []
+
+        state.applicants["10:1"].mplus_dps_breakdown[0]["parse_percent"] = 91.0
         window._refresh_table()
         assert measured == visible_columns
 
