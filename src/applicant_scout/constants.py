@@ -7,13 +7,13 @@ from .rio_score_tiers import RIO_SCORE_BUCKETS
 # Verified by scripts/seasonal/verify_wcl_season.py against the WCL GraphQL API.
 # Re-run the quota-aware release gate whenever the active season changes.
 CURRENT_MPLUS_ZONE_ID = 55  # Midnight Season 2
-CURRENT_RAID_ZONE_ID = 53  # The Venomous Abyss + Tidebound Grotto
+CURRENT_RAID_ZONE_ID = 53  # The Venomous Abyss + seasonal lairs
 CURRENT_RAID_ENCOUNTER_ZONE_IDS: tuple[int, ...] = (CURRENT_RAID_ZONE_ID,)
 SEASON_NAME = "Midnight Season 2"
 
-# WCL exposes the eight-boss Venomous Abyss raid and Nymrissa Wavecaller from
-# the Tidebound Grotto under one seasonal raid zone. Keep the main raid first
-# and the separate lair encounter last in the detail panel.
+# WCL groups the eight-boss Venomous Abyss raid, Tidebound Grotto, and
+# The Unbinding of Kith'ix under one seasonal zone. Keep the main raid first
+# and the lairs in their provider order in the detail panel.
 CURRENT_RAID_ENCOUNTERS: list[tuple[str, int, str]] = [
     ("nz", 3470, "Nek'zali the Soulcoiler"),
     ("es", 3445, "Entombed Sentinels"),
@@ -24,7 +24,16 @@ CURRENT_RAID_ENCOUNTERS: list[tuple[str, int, str]] = [
     ("ca", 3429, "The Coiled Altar"),
     ("ut", 3492, "Ula'tek"),
     ("nw", 3379, "Nymrissa Wavecaller"),
+    ("ki", 3513, "Kith'ix"),
 ]
+
+# RaiderIO provider raid IDs identify separate lairs even when a former lair
+# moves out of currentRaids. WCL combines these encounters in one zone.
+RAIDERIO_RAID_ENCOUNTER_IDS: dict[int, tuple[int, ...]] = {
+    16915: (3470, 3445, 3497, 3455, 3420, 3421, 3429, 3492),
+    16671: (3379,),
+    17059: (3513,),
+}
 
 
 # WoW class file tokens (locale-stable English) → hex colours from Blizzard's RAID_CLASS_COLORS.

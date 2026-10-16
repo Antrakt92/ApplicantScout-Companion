@@ -76,7 +76,9 @@ def test_devourer_spec_mapping_is_known():
 
 
 def test_current_raid_encounters_include_tidebound_grotto_nymrissa():
-    assert CURRENT_RAID_ENCOUNTERS[-1] == ("nw", 3379, "Nymrissa Wavecaller")
+    assert CURRENT_RAID_ENCOUNTERS[-2:] == [
+        ("nw", 3379, "Nymrissa Wavecaller"), ("ki", 3513, "Kith'ix"),
+    ]
 
 
 def test_mplus_activity_id_mapping_covers_current_season_dungeons():

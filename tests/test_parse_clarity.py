@@ -188,7 +188,7 @@ def test_single_run_summary_stays_numeric_and_details_keep_sample_count():
 def test_boss_kills_and_overall_ilvl_parses_have_distinct_notation():
     encounter = CURRENT_RAID_ENCOUNTERS[0][1]
     app = _app(
-        rio_raid_progress={"N": {"boss_kills": [2]}, "H": {"boss_kills": [1]}},
+        rio_raid_progress={"N": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:1]], "boss_kills": [2]}, "H": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:1]], "boss_kills": [1]}},
         raid_boss_parses={
             "N": [{"encounter_id": encounter, "overall": 91, "ilvl": 80}]
         },

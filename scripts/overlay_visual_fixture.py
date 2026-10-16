@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from applicant_scout.constants import MPLUS_ENCOUNTERS
+from applicant_scout.constants import CURRENT_RAID_ENCOUNTERS, MPLUS_ENCOUNTERS
 from applicant_scout.metric_preferences import DEFAULT_METRIC_PREFERENCES, MetricPreferences
 from applicant_scout.state import (
     DEFAULT_WINDOW_HEIGHT,
@@ -285,17 +285,17 @@ def _raid_progress() -> dict[str, dict]:
         "N": {
             "killed": 9,
             "total": 9,
-            "boss_kills": [12, 3, 2, 2, 1, 1, 1, 1, 1],
+            "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [12, 3, 2, 2, 1, 1, 1, 1, 1],
         },
         "H": {
             "killed": 4,
             "total": 9,
-            "boss_kills": [2, 1, 1, 0, 0, 0, 0, 0, 0],
+            "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [2, 1, 1, 0, 0, 0, 0, 0, 0],
         },
         "M": {
             "killed": 1,
             "total": 9,
-            "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
+            "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
         },
     }
 

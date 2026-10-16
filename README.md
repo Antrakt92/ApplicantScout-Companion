@@ -17,11 +17,9 @@ experience in one table, with missing data clearly marked.
 [ApplicantScout WoW addon](https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay).
 You need both installed and running to receive group data.**
 
-For current WoW Retail: Midnight. The addon also includes PTR interface metadata,
-but in-game PTR testing is still pending. Supported Interfaces are listed on the
-[addon page](https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay).
-For PTR, install the addon in that
-client's AddOns folder and select its `Screenshots` folder in Companion Settings.
+For WoW Retail Midnight 12.1.5, including The Unbinding of Kith'ix.
+Install the addon in the active client's AddOns folder and select its
+`Screenshots` folder in Companion Settings.
 The companion watches one selected client at a time.
 
 **[Download the Windows installer](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest)**

@@ -8,7 +8,7 @@ from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtWidgets import QApplication
 
 from applicant_scout import overlay, overlay_presenters, overlay_rows, scoring
-from applicant_scout.constants import MPLUS_ENCOUNTERS, percentile_colour
+from applicant_scout.constants import CURRENT_RAID_ENCOUNTERS, MPLUS_ENCOUNTERS, percentile_colour
 from applicant_scout.state import Applicant, Listing
 
 
@@ -330,8 +330,8 @@ def test_untimed_summary_without_timed_runs_has_no_fit(qtbot):
 
 @pytest.mark.parametrize("metadata,expected", [
     ({}, "sample unknown"),
-    ({"H": {"boss_count": 3, "total_bosses": 9,
-            "sample_known": True, "kill_count": 6}}, "H 3/9 zone bosses"),
+    ({"H": {"boss_count": 3, "total_bosses": len(CURRENT_RAID_ENCOUNTERS),
+            "sample_known": True, "kill_count": 6}}, f"H 3/{len(CURRENT_RAID_ENCOUNTERS)} zone bosses"),
 ])
 def test_raid_fit_badge_keeps_sample_scope_visible(qtbot, metadata, expected):
     applicant = _app("1:1", 0, None, score=0)
@@ -351,7 +351,7 @@ def test_visible_raid_source_badge_fits_at_minimum_supported_width(qtbot, covera
     applicant.raid_heroic = applicant.raid_heroic_median = 82
     if coverage_known:
         applicant.raid_evidence = {
-            "H": {"boss_count": 3, "total_bosses": 9,
+            "H": {"boss_count": 3, "total_bosses": len(CURRENT_RAID_ENCOUNTERS),
                   "sample_known": True, "kill_count": 6},
         }
     listing = Listing(0, "Raid", "Mythic", "", category_id=3, difficulty_id=16)

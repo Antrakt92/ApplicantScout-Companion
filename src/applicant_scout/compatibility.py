@@ -7,9 +7,9 @@ import re
 
 
 MINIMUM_ADDON_VERSION = "0.13.5"
-PAIRED_ADDON_VERSION = "0.14.1"
+PAIRED_ADDON_VERSION = "0.14.2"
 # Supported QR versions may extend beyond the historical release pair.
-LATEST_SUPPORTED_ADDON_VERSION = "0.14.1"
+LATEST_SUPPORTED_ADDON_VERSION = "0.14.2"
 COMPANION_UPDATE_ACTION = "Update the companion app, then /reload."
 _SEMVER_RE = re.compile(r"^v?([0-9]+)\.([0-9]+)\.([0-9]+)$")
 _log = logging.getLogger("applicant_scout.compatibility")

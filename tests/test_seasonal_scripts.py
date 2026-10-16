@@ -334,9 +334,7 @@ def _valid_wcl_season_payload() -> dict[str, Any]:
         (encounter_id, name)
         for _alias, encounter_id, name in CURRENT_RAID_ENCOUNTERS
     ]
-    assert raid_rows[-1][0] == 3379
-    # WCL publishes 12.1.5 PTR metadata before the encounter is live in 12.1.0.
-    raid_rows.append((3513, "Kith'ix"))
+    assert raid_rows[-1] == (3513, "Kith'ix")
     return {
         "data": {
             "rateLimitData": {
@@ -378,7 +376,7 @@ def test_wcl_season_query_requests_quota_and_each_zone_once():
         assert query.count(f"zone_{zone_id}: zone(id: {zone_id})") == 1
 
 
-def test_wcl_season_payload_matches_current_constants_with_known_ptr_encounter():
+def test_wcl_season_payload_matches_current_constants_with_live_kithix():
     zone_ids = verify_wcl_season.seasonal_zone_ids()
 
     zones, quota = verify_wcl_season.extract_payload(
@@ -390,7 +388,7 @@ def test_wcl_season_payload_matches_current_constants_with_known_ptr_encounter()
     assert quota.remaining_points == pytest.approx(3574.5)
 
 
-def test_wcl_season_payload_rejects_renamed_ptr_encounter():
+def test_wcl_season_payload_rejects_renamed_kithix_encounter():
     payload = _valid_wcl_season_payload()
     encounters = payload["data"]["worldData"][f"zone_{CURRENT_RAID_ZONE_ID}"]["encounters"]
     encounters[-1]["name"] = "Kithix"

@@ -32,7 +32,7 @@ def _window(qtbot, tmp_path):
                          for _, encounter, name in CURRENT_RAID_ENCOUNTERS]
             for difficulty in ("N", "H", "M")
         },
-        rio_raid_progress={difficulty: dict(boss_kills=[12] * 9) for difficulty in ("N", "H", "M")},
+        rio_raid_progress={difficulty: dict(boss_encounter_ids=[row[1] for row in CURRENT_RAID_ENCOUNTERS], boss_kills=[12] * len(CURRENT_RAID_ENCOUNTERS)) for difficulty in ("N", "H", "M")},
     )
     state.applicants = {"1:1": first, "2:1": replace(first, applicant_id="2:1", name="Second-Realm")}
     client = SimpleNamespace(region="EU", last_quota=None, quota_reset_remaining_seconds=lambda: None)
@@ -68,7 +68,7 @@ def test_short_card_scrolls_without_covering_table_or_fighting_resize(qtbot, tmp
     assert scroll.verticalScrollBar().maximum() > 0
     scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
     QApplication.processEvents()
-    last = window._panel._dungeon_rows[8][3]
+    last = window._panel._dungeon_rows[len(CURRENT_RAID_ENCOUNTERS) - 1][3]
     assert scroll.viewport().rect().intersects(QRect(last.mapTo(scroll.viewport(), QPoint()), last.size()))
     assert window.height() == height
 

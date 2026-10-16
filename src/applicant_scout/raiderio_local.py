@@ -21,7 +21,7 @@ from .atomic_io import (
     apply_private_file_mode,
     atomic_write_bytes,
 )
-from .constants import MPLUS_RAIDERIO_DUNGEON_ORDER
+from .constants import MPLUS_RAIDERIO_DUNGEON_ORDER, RAIDERIO_RAID_ENCOUNTER_IDS
 from .screenshots_path_probe import WOW_CLIENT_ROOT_NAMES
 
 
@@ -127,6 +127,7 @@ class _ProviderIdentity:
 class _RaidInfo:
     name: str
     boss_count: int
+    raid_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -979,17 +980,32 @@ def _parse_provider_identity(text: str) -> _ProviderIdentity:
 
 def _parse_provider_raids(text: str, key: str) -> list[_RaidInfo]:
     table = _extract_lua_table(text, key)
-    if table is None:
+    if table is None or re.fullmatch(r"\{\s*\}", table):
         return []
     raids: list[_RaidInfo] = []
     for match in re.finditer(r"\{([^{}]*)\}", table):
         body = match.group(1)
-        boss_count = _lua_number_field(body, "bossCount")
-        if boss_count is None:
-            continue
+        boss_count = _raid_integer_field(body, "bossCount")
+        if boss_count is None or boss_count <= 0:
+            raise ValueError("RaiderIO raid bossCount must be one positive integer")
         name = _lua_string_field(body, "name") or "Raid"
-        raids.append(_RaidInfo(name=name, boss_count=boss_count))
+        raids.append(_RaidInfo(
+            name=name, boss_count=boss_count,
+            raid_id=_raid_integer_field(body, "id") or 0,
+        ))
     return raids
+
+
+def _raid_integer_field(body: str, key: str) -> int | None:
+    # Split only outside quoted values: a raid name may itself contain commas
+    # or text resembling a field. Reject duplicates and partial numeric tokens.
+    fields = re.findall(r'''(?:[^,"']|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')+''', body)
+    prefix = re.compile(rf'^\s*(?:\["{re.escape(key)}"\]|{re.escape(key)})\s*=\s*(.*?)\s*$')
+    values = [match.group(1) for field in fields if (match := prefix.fullmatch(field))]
+    if len(values) != 1 or re.fullmatch(r"[0-9]{1,10}", values[0]) is None:
+        return None
+    value = int(values[0])
+    return value if value <= 2**31 - 1 else None
 
 
 def _extract_lua_table(text: str, key: str) -> str | None:
@@ -1649,6 +1665,15 @@ def _decode_raid_progress(
             "boss_kills": boss_kills,
             "raid_name": " / ".join(raid_names),
         }
+        encounter_ids: list[int] = []
+        for raid in current_raids:
+            mapped = RAIDERIO_RAID_ENCOUNTER_IDS.get(raid.raid_id, ())
+            # Unknown/changed provider rosters must not borrow another boss's
+            # progress merely because the packed array has the same offset.
+            encounter_ids.extend(
+                mapped if len(mapped) == raid.boss_count else [0] * raid.boss_count
+            )
+        progress[difficulty]["boss_encounter_ids"] = encounter_ids
     return progress
 
 

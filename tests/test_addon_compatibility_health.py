@@ -17,7 +17,7 @@ def _chip(warning: str | None, app_update_version: str | None = None) -> HealthC
     )
 
 
-@pytest.mark.parametrize("version", ["0.13.5", "0.13.6", "0.13.99", "0.14.0", "0.14.1", "v0.14.1", " 0.14.1 "])
+@pytest.mark.parametrize("version", ["0.13.5", "0.13.6", "0.13.99", "0.14.0", "0.14.1", "0.14.2", "v0.14.2", " 0.14.2 "])
 def test_tested_compatible_addon_range_does_not_request_an_unneeded_update(version):
     warning = compatibility.addon_version_warning(version)
     assert warning is None
@@ -26,16 +26,16 @@ def test_tested_compatible_addon_range_does_not_request_an_unneeded_update(versi
 
 def test_release_pair_advances_without_raising_the_wire_compatibility_baseline():
     assert compatibility.MINIMUM_ADDON_VERSION == "0.13.5"
-    assert compatibility.PAIRED_ADDON_VERSION == "0.14.1"
-    assert compatibility.LATEST_SUPPORTED_ADDON_VERSION == "0.14.1"
+    assert compatibility.PAIRED_ADDON_VERSION == "0.14.2"
+    assert compatibility.LATEST_SUPPORTED_ADDON_VERSION == "0.14.2"
 
 
-@pytest.mark.parametrize("version", ["0.14.2", "0.15.0", "1.0.0"])
+@pytest.mark.parametrize("version", ["0.14.3", "0.15.0", "1.0.0"])
 def test_untested_future_addon_requests_companion_update_and_correct_footer(version):
     warning = compatibility.addon_version_warning(version)
     assert warning is not None
     assert version in warning
-    assert "0.14.1" in warning
+    assert "0.14.2" in warning
     assert "Update the companion app" in warning
     assert "Update the WoW addon" not in warning
     chip = _chip(warning)
@@ -56,7 +56,7 @@ def test_outdated_addon_still_requests_addon_update_and_preserves_lower_bound():
 
 
 def test_future_addon_and_available_app_update_have_one_truthful_component_label():
-    warning = compatibility.addon_version_warning("0.14.2")
+    warning = compatibility.addon_version_warning("0.14.3")
     assert warning is not None
     chip = _chip(warning, "0.23.0")
     assert (chip.text, chip.chip_state) == ("App update", "warning")

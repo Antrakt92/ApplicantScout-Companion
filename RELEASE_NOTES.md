@@ -1,5 +1,14 @@
 # ApplicantScout Companion Release Notes
 
+## 0.24.0 - 16-Oct-2026 — Kith'ix and Retail 12.1.5
+
+Paired release with ApplicantScout addon `0.14.2`.
+
+- Add Kith'ix to Warcraft Logs raid results, logged coverage and manual boss details.
+- Refresh saved Warcraft Logs results for the expanded raid roster.
+- Keep RaiderIO Kith'ix kills on the correct boss when its current raid roster changes.
+- Update compatibility information for Retail 12.1.5.
+
 ## 0.23.0 - 13-Oct-2026 — Clearer player estimates and dungeon results
 
 Paired release with ApplicantScout addon `0.14.1`.

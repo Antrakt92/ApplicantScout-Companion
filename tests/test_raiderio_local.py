@@ -617,12 +617,14 @@ def test_reader_decodes_current_raid_progress_from_local_raiderio_db(tmp_path: P
             "killed": 2,
             "total": 3,
             "boss_kills": [2, 0, 1],
+            "boss_encounter_ids": [0, 0, 0],
             "raid_name": "Test Raid",
         },
         "H": {
             "killed": 3,
             "total": 3,
             "boss_kills": [1, 1, 1],
+            "boss_encounter_ids": [0, 0, 0],
             "raid_name": "Test Raid",
         },
     }
@@ -660,12 +662,14 @@ def test_decoder_preserves_boss_offsets_across_current_raids():
             "killed": 1,
             "total": 10,
             "boss_kills": [0] * 9 + [3],
+            "boss_encounter_ids": [0] * 10,
             "raid_name": "Sporefall",
         },
         "M": {
             "killed": 1,
             "total": 10,
             "boss_kills": [0] * 9 + [4],
+            "boss_encounter_ids": [0] * 10,
             "raid_name": "Sporefall",
         },
     }
@@ -711,12 +715,14 @@ def test_reader_keeps_raid_available_when_mplus_db_is_invalid(tmp_path: Path):
             "killed": 2,
             "total": 3,
             "boss_kills": [2, 0, 1],
+            "boss_encounter_ids": [0, 0, 0],
             "raid_name": "Test Raid",
         },
         "H": {
             "killed": 3,
             "total": 3,
             "boss_kills": [1, 1, 1],
+            "boss_encounter_ids": [0, 0, 0],
             "raid_name": "Test Raid",
         },
     }

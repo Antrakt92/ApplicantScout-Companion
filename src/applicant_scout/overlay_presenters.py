@@ -384,15 +384,25 @@ def raid_boss_rows_for_display(
         key: raid_boss_parse_rows_by_encounter(applicant, key)
         for key in difficulty_keys
     }
-    boss_kills_by_difficulty: dict[str, list[object]] = {}
+    boss_kills_by_difficulty: dict[str, dict[int, int]] = {}
     for key in difficulty_keys:
         progress = applicant.rio_raid_progress.get(key, {})
         boss_kills = progress.get("boss_kills") if isinstance(progress, dict) else None
-        boss_kills_by_difficulty[key] = (
-            boss_kills if isinstance(boss_kills, list) else []
-        )
+        encounter_ids = progress.get("boss_encounter_ids") if isinstance(progress, dict) else None
+        mapped: dict[int, int] = {}
+        if (isinstance(encounter_ids, list) and isinstance(boss_kills, list)
+                and len(encounter_ids) == len(boss_kills)):
+            for boss_id, count in zip(encounter_ids, boss_kills):
+                if (type(boss_id) is not int or boss_id < 0
+                        or type(count) is not int or count < 0 or count.bit_length() > 63
+                        or boss_id > 0 and boss_id in mapped):
+                    mapped = {}
+                    break
+                if boss_id > 0:
+                    mapped[boss_id] = count
+        boss_kills_by_difficulty[key] = mapped
     rows: list[dict[str, object]] = []
-    for idx, (_alias, encounter_id, name) in enumerate(CURRENT_RAID_ENCOUNTERS):
+    for _alias, encounter_id, name in CURRENT_RAID_ENCOUNTERS:
         kill_parts: list[str] = []
         parse_parts: list[str] = []
         parse_segments: list[dict[str, str]] = []
@@ -404,9 +414,7 @@ def raid_boss_rows_for_display(
             overall = safe_percent(parse_row.get("overall"))
             ilvl = safe_percent(parse_row.get("ilvl"))
             value = raid_parse_pair_text(overall, ilvl)
-            kills = 0
-            if idx < len(boss_kills):
-                kills = nonnegative_int(boss_kills[idx])
+            kills = boss_kills.get(encounter_id, 0)
             if kills > 0:
                 kill_parts.append(f"{difficulty}×{kills}")
             if value:

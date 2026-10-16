@@ -26,9 +26,8 @@ and extract it so the file is at
 `_retail_\Interface\AddOns\ApplicantScout\ApplicantScout.toc`.
 GitHub's automatic **Source code** ZIP is not the install package.
 
-The addon package includes Retail 12.1.0 and PTR 12.1.5 interface metadata.
-In-game PTR testing is still pending. For PTR, use its
-`_ptr_\Interface\AddOns` or `_xptr_\Interface\AddOns` folder instead.
+The addon package supports Retail Midnight 12.1.5. Keep the addon and companion
+on their latest releases for Kith'ix raid results.
 
 ## 2. Connect Warcraft Logs
 

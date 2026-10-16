@@ -204,7 +204,7 @@ def test_private_boss_scope_excludes_stale_parse_but_keeps_rio_progress():
     boss_id = CURRENT_RAID_ENCOUNTERS[0][1]
     app.raid_boss_parses = {"H": [dict(encounter_id=boss_id, overall=99, ilvl=99)]}
     app.raid_boss_availability = {"H": "restricted"}
-    app.rio_raid_progress = {"H": dict(boss_kills=[3])}
+    app.rio_raid_progress = {"H": dict(boss_encounter_ids=[row[1] for row in CURRENT_RAID_ENCOUNTERS[:1]], boss_kills=[3])}
     row = overlay_presenters.raid_boss_rows_for_display(app, ["H"])[0]
     assert row["rio_text"] == "H×3"
     assert row["value"] == "" and row["segments"] == []
@@ -219,7 +219,7 @@ def test_new_aggregate_privacy_revokes_old_detail_route_but_later_manual_data_ca
     boss_id = CURRENT_RAID_ENCOUNTERS[0][1]
     app.raid_boss_parses = {"H": [dict(encounter_id=boss_id, overall=99, ilvl=99)]}
     app.raid_boss_availability = {"H": "available"}
-    app.rio_raid_progress = {"H": dict(boss_kills=[3])}
+    app.rio_raid_progress = {"H": dict(boss_encounter_ids=[row[1] for row in CURRENT_RAID_ENCOUNTERS[:1]], boss_kills=[3])}
     window = _window(qtbot, tmp_path, [app], _listing("raid"))
     resolved = overlay._fetch_identity_for_applicant(
         app, window._state.player.full_name, "EU", window._metric_preferences,
@@ -759,9 +759,9 @@ def test_inplace_sample_metadata_updates_visible_and_accessible_scope(qtbot, tmp
     window._sync_delegate_and_panel()
     badge = window._panel._metric_labels["Fit"]
     assert badge.text().endswith("sample unknown")
-    app.raid_evidence["H"] = dict(boss_count=3, total_bosses=9, sample_known=True, kill_count=6)
+    app.raid_evidence["H"] = dict(boss_count=3, total_bosses=len(CURRENT_RAID_ENCOUNTERS), sample_known=True, kill_count=6)
     window._refresh_table()
-    assert badge.text().endswith("H 3/9 zone bosses")
+    assert badge.text().endswith(f"H 3/{len(CURRENT_RAID_ENCOUNTERS)} zone bosses")
     assert "6 recorded kills" in badge.accessibleDescription()
     app.raid_evidence["H"]["kill_count"] = 12
     window._refresh_table()
@@ -836,7 +836,7 @@ def test_inplace_rio_boundary_updates_table_and_panel_colour(qtbot, tmp_path, sc
 def test_large_fit_badge_reflows_without_losing_numbers_or_scope(qtbot, context):
     app = _app(context=context, value=99)
     if context == "raid":
-        app.raid_evidence = {"H": dict(boss_count=3, total_bosses=9, sample_known=True, kill_count=6)}
+        app.raid_evidence = {"H": dict(boss_count=3, total_bosses=len(CURRENT_RAID_ENCOUNTERS), sample_known=True, kill_count=6)}
     panel = overlay.ApplicantInfoPanel(None)
     qtbot.addWidget(panel)
     panel.setStyleSheet(overlay._STYLESHEET)

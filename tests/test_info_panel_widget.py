@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 import applicant_scout.overlay as overlay_mod
 import applicant_scout.scoring as scoring_mod
 from applicant_scout.compatibility import MINIMUM_ADDON_VERSION
-from applicant_scout.constants import percentile_colour
+from applicant_scout.constants import CURRENT_RAID_ENCOUNTERS, percentile_colour
 from applicant_scout.overlay import (
     APPLICANT_ROW_HEIGHT,
     COL_FIT,
@@ -271,7 +271,7 @@ def test_raid_listing_panel_defaults_to_raid_boss_rows(qtbot):
                 "M": {
                     "killed": 1,
                     "total": 9,
-                    "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
+                    "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
                 }
             },
             raid_boss_parses={
@@ -326,12 +326,12 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
                 "M": {
                     "killed": 1,
                     "total": 9,
-                    "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
+                    "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
                 },
                 "H": {
                     "killed": 1,
                     "total": 9,
-                    "boss_kills": [1, 0, 0, 0, 0, 0, 0, 0, 0],
+                    "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [1, 0, 0, 0, 0, 0, 0, 0, 0],
                 },
             },
             raid_boss_parses={
@@ -377,13 +377,13 @@ def test_raid_panel_combines_enabled_difficulties_without_selector(qtbot):
     assert panel._dungeon_rows[8][3].textFormat() == Qt.TextFormat.RichText
     assert "M 55 / 66" in panel._dungeon_rows[8][3].text()
     assert panel._dungeon_rows[8][3].styleSheet() == ""
-    assert panel._visible_detail_rows == 9
+    assert panel._visible_detail_rows == len(CURRENT_RAID_ENCOUNTERS)
     target_height = panel.target_height()
     assert target_height >= INFO_PANEL_PREFERRED_HEIGHT
     panel.resize(650, target_height)
     panel.show()
     QApplication.processEvents()
-    last_name = panel._dungeon_rows[8][0]
+    last_name = panel._dungeon_rows[len(CURRENT_RAID_ENCOUNTERS) - 1][0]
     last_bottom = last_name.mapTo(panel, QPoint(0, 0)).y() + last_name.height()
     assert not last_name.isHidden()
     assert last_bottom <= panel.contentsRect().bottom()
@@ -404,11 +404,11 @@ def test_raid_panel_places_tidebound_progress_on_nymrissa(qtbot):
     app = _app(
         rio_raid_progress={
             "H": {
-                "boss_kills": [0] * 8 + [3],
+                "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [0] * 8 + [3],
                 "raid_name": "The Tidebound Grotto",
             },
             "M": {
-                "boss_kills": [0] * 8 + [4],
+                "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [0] * 8 + [4],
                 "raid_name": "The Tidebound Grotto",
             },
         },
@@ -436,8 +436,8 @@ def test_raid_panel_colours_each_difficulty_parse_segment(qtbot):
     qtbot.addWidget(panel)
     app = _app(
         rio_raid_progress={
-            "H": {"boss_kills": [1]},
-            "M": {"boss_kills": [1]},
+            "H": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:1]], "boss_kills": [1]},
+            "M": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:1]], "boss_kills": [1]},
         },
         raid_boss_parses={
             "H": [
@@ -488,9 +488,9 @@ def test_mplus_detail_widths_restore_after_raid_detail(qtbot):
     qtbot.addWidget(panel)
     app = _app(
         rio_raid_progress={
-            "N": {"boss_kills": [5, 0, 0, 0, 0, 0, 0, 0, 0]},
-            "H": {"boss_kills": [3, 0, 0, 0, 0, 0, 0, 0, 0]},
-            "M": {"boss_kills": [1, 0, 0, 0, 0, 0, 2, 0, 0]},
+            "N": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [5, 0, 0, 0, 0, 0, 0, 0, 0]},
+            "H": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [3, 0, 0, 0, 0, 0, 0, 0, 0]},
+            "M": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [1, 0, 0, 0, 0, 0, 2, 0, 0]},
         },
         raid_boss_parses={
             "N": [{"encounter_id": 3470, "overall": 91.0, "ilvl": 78.0}],
@@ -723,7 +723,7 @@ def test_single_segment_raid_parse_renders_text_hugging_span(qtbot):
                 "M": {
                     "killed": 1,
                     "total": 9,
-                    "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
+                    "boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0],
                 }
             },
             raid_boss_parses={
@@ -7142,8 +7142,8 @@ def test_overlay_multi_raid_detail_rows_fit_supported_widths(qtbot, tmp_path):
         _app(
             applicant_id="10:1",
             rio_raid_progress={
-                "H": {"boss_kills": [1, 0, 0, 0, 0, 0, 0, 0, 0]},
-                "M": {"boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0]},
+                "H": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [1, 0, 0, 0, 0, 0, 0, 0, 0]},
+                "M": {"boss_encounter_ids": [row[1] for row in CURRENT_RAID_ENCOUNTERS[:9]], "boss_kills": [2, 0, 0, 0, 0, 0, 0, 0, 0]},
             },
             raid_boss_parses={
                 "H": [
