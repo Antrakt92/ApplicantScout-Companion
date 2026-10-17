@@ -1203,7 +1203,9 @@ def test_installer_process_control_reports_probe_and_termination_failures():
     assert "$terminateResult = Invoke-CimMethod" in inno_script
     assert "if ($terminateResult.ReturnValue -ne 0) { exit 3 }" in inno_script
     assert (
-        inno_script.count("Get-CimInstance Win32_Process -OperationTimeoutSec 5") == 2
+        inno_script.count(
+            "Get-CimInstance Win32_Process -Filter $processFilter -OperationTimeoutSec 20"
+        ) == 2
     )
     assert inno_script.count("-MethodName Terminate -OperationTimeoutSec 5") == 2
     assert (
@@ -1217,7 +1219,7 @@ def test_installer_process_control_reports_probe_and_termination_failures():
         == 1
     )
     assert "WindowsIdentity]::GetCurrent().User.Value" in inno_script
-    assert "-MethodName GetOwnerSid -OperationTimeoutSec 5" in inno_script
+    assert "-MethodName GetOwnerSid -OperationTimeoutSec 20" in inno_script
     assert "$owner.ReturnValue -ne 0" in inno_script
     assert "$candidate.SessionId -eq $currentSessionId" in inno_script
     assert "'.apscout-backup\\ApplicantScout.exe'" not in inno_script
@@ -3938,8 +3940,8 @@ def test_installer_closes_renamed_portable_companion_process():
     assert "{app}\\.apscout-backup\\ApplicantScoutCompanion.exe" in inno_script
     assert "{app}\\.apscout-next\\ApplicantScoutCompanion.exe" in inno_script
     assert (
-        "$_.Name -ieq ''ApplicantScout.exe'' "
-        "-or $_.Name -ieq ''ApplicantScoutCompanion.exe''" in inno_script
+        "Name = ''''ApplicantScout.exe'''' OR "
+        "Name = ''''ApplicantScoutCompanion.exe''''" in inno_script
     )
     assert (
         "CompanionCurrentExe := ExpandConstant("

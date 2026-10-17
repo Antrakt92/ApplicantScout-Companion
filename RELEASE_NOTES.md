@@ -1,6 +1,14 @@
 # ApplicantScout Companion Release Notes
 
-## 0.24.1 - 17-Oct-2026 — Missing raid kills
+## 0.24.2 - 18-Oct-2026 — Raid progress and installation fixes
+
+Paired release with ApplicantScout addon `0.14.4`.
+
+- Restore recorded Nymrissa Wavecaller kills when RaiderIO moves her raid out of its current raid list.
+- Keep seasonal boss progress matched to the correct raid and reject duplicate raid records.
+- Avoid false running-app errors when Windows process checks are slow during installation.
+
+## 0.24.1 - 17-Oct-2026 — Missing raid kills (not published)
 
 Paired release with ApplicantScout addon `0.14.3`.
 

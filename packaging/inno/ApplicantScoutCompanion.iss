@@ -163,6 +163,8 @@ begin
   CompanionCurrentTarget := PowerShellSingleQuoted(ExpandConstant('{app}\current\ApplicantScoutCompanion.exe'));
   CompanionLegacyTarget := PowerShellSingleQuoted(ExpandConstant('{app}\ApplicantScoutCompanion.exe'));
   CompanionNextTarget := PowerShellSingleQuoted(ExpandConstant('{app}\.apscout-next\ApplicantScoutCompanion.exe'));
+  { Filter inside WMI: enumerating every process can exhaust the probe timeout
+    before an absent companion can be confirmed on a busy system. }
   Result :=
     '-NoProfile -ExecutionPolicy Bypass -Command "' +
     '$ErrorActionPreference = ''Stop''; try { ' +
@@ -171,10 +173,10 @@ begin
     '[System.IO.Path]::GetFullPath($_) }; ' +
     '$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; ' +
     '$currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId; ' +
-    '$candidates = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 | Where-Object { ' +
-    '$_.Name -ieq ''ApplicantScout.exe'' -or $_.Name -ieq ''ApplicantScoutCompanion.exe'' }); ' +
+    '$processFilter = ''Name = ''''ApplicantScout.exe'''' OR Name = ''''ApplicantScoutCompanion.exe''''''; ' +
+    '$candidates = @(Get-CimInstance Win32_Process -Filter $processFilter -OperationTimeoutSec 20); ' +
     '$owned = @(); foreach ($candidate in $candidates) { ' +
-    'try { $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid -OperationTimeoutSec 5 } ' +
+    'try { $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid -OperationTimeoutSec 20 } ' +
     'catch { $owner = $null }; ' +
     'if (-not $owner -or $owner.ReturnValue -ne 0 -or -not $owner.Sid) { ' +
     'if ($candidate.SessionId -eq $currentSessionId -or ($candidate.ExecutablePath -and ($targets -icontains ' +
@@ -775,8 +777,8 @@ begin
     '$sourcePid = ' + SourcePid + '; ' +
     'if ($sourcePid -le 0 -or [string]::IsNullOrWhiteSpace($target)) { exit 2 }; ' +
     '$fullTarget = [System.IO.Path]::GetFullPath($target); ' +
-    '$candidates = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 | Where-Object { ' +
-    '$_.ProcessId -eq $sourcePid }); ' +
+    '$processFilter = ''ProcessId = '' + $sourcePid; ' +
+    '$candidates = @(Get-CimInstance Win32_Process -Filter $processFilter -OperationTimeoutSec 20); ' +
     'if ($candidates | Where-Object { -not $_.ExecutablePath }) { exit 2 }; ' +
     '$procs = @($candidates | Where-Object { ' +
     '([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $fullTarget) ' +
