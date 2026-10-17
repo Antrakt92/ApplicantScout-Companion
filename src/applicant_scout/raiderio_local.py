@@ -1134,6 +1134,14 @@ def _raid_encoding_field_width(
 def _validate_raid_encoding_plan(
     meta: _ProviderMeta, current_raids: list[_RaidInfo], previous_raids: list[_RaidInfo]
 ) -> None:
+    for raids in (current_raids, previous_raids):
+        seen: set[int] = set()
+        for raid in raids:
+            if raid.raid_id <= 0:
+                continue
+            if raid.raid_id in seen:
+                raise ValueError(f"duplicate RaiderIO raid ID {raid.raid_id}")
+            seen.add(raid.raid_id)
     bit_budget = sum(
         _raid_encoding_field_width(field, current_raids, previous_raids)
         for field in meta.encoding_order
@@ -1614,24 +1622,33 @@ def _decode_raid_progress(
     previous_raids: list[_RaidInfo],
 ) -> dict[str, dict]:
     bit_offset = 0
+    # A seasonal lair can move to previousRaids while still belonging to the
+    # displayed WCL season. Retain only known, unchanged rosters from that group.
+    current_ids = {raid.raid_id for raid in current_raids}
+    retained_previous = {
+        len(current_raids) + index: raid
+        for index, raid in enumerate(previous_raids)
+        if raid.raid_id not in current_ids
+        and len(RAIDERIO_RAID_ENCOUNTER_IDS.get(raid.raid_id, ())) == raid.boss_count
+    }
+    display_raids = dict(enumerate(current_raids)) | retained_previous
     rows_by_difficulty: dict[str, dict[int, dict]] = {}
     for field_id in encoding_order:
-        if field_id == 1:
-            for raid_index, raid in enumerate(current_raids):
-                for _idx in range(2):
+        if field_id in (1, 2):
+            raids = current_raids if field_id == 1 else previous_raids
+            for index, raid in enumerate(raids):
+                raid_index = index if field_id == 1 else len(current_raids) + index
+                for _idx in range(2 if field_id == 1 else 1):
                     row, bit_offset = _read_full_raid_progress(
                         record, bit_offset, raid
                     )
-                    if row is None:
+                    if row is None or raid_index not in display_raids:
                         continue
                     key = row.pop("difficulty")
                     rows_for_difficulty = rows_by_difficulty.setdefault(key, {})
                     existing = rows_for_difficulty.get(raid_index)
                     if existing is None or row["killed"] > existing.get("killed", 0):
                         rows_for_difficulty[raid_index] = row
-        elif field_id == 2:
-            for raid in previous_raids:
-                _, bit_offset = _read_full_raid_progress(record, bit_offset, raid)
         elif field_id == 3:
             bit_offset = _skip_summary_raid_progress(
                 record, bit_offset, len(previous_raids) * 2
@@ -1647,7 +1664,7 @@ def _decode_raid_progress(
     for difficulty, rows_by_raid in rows_by_difficulty.items():
         boss_kills: list[int] = []
         raid_names: list[str] = []
-        for raid_index, raid in enumerate(current_raids):
+        for raid_index, raid in display_raids.items():
             row = rows_by_raid.get(raid_index)
             if row is None:
                 boss_kills.extend([0] * raid.boss_count)
@@ -1666,7 +1683,7 @@ def _decode_raid_progress(
             "raid_name": " / ".join(raid_names),
         }
         encounter_ids: list[int] = []
-        for raid in current_raids:
+        for raid in display_raids.values():
             mapped = RAIDERIO_RAID_ENCOUNTER_IDS.get(raid.raid_id, ())
             # Unknown/changed provider rosters must not borrow another boss's
             # progress merely because the packed array has the same offset.
