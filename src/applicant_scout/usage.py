@@ -414,6 +414,10 @@ class UsageClient:
         except FileNotFoundError:
             self._loaded_state_missing = True
             return None
+        except UnicodeError as exc:
+            _log.warning("Ignoring corrupt usage state %s: %s", self._path, exc)
+            _quarantine_corrupt_file(self._path)
+            raise
         try:
             if len(raw.encode("utf-8")) > _MAX_STATE_BYTES:
                 raise ValueError("Usage state is too large")
