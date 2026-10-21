@@ -20,7 +20,7 @@ Missing-license placeholders are never accepted as release license coverage.
 | Component | Purpose | License surface |
 |---|---|---|
 | CPython | Embedded Python interpreter and standard library | Python Software Foundation License; shipped at `licenses/CPython/LICENSE.txt` |
-| PySide6, PySide6-Essentials and PySide6-Addons | Qt for Python bindings and Qt runtime for the desktop UI | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only, with component-specific Qt terms |
+| PySide6-Essentials | Qt for Python bindings and Qt runtime for the desktop UI | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only, with component-specific Qt terms |
 | shiboken6 | Qt for Python binding support | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only |
 | pyzbar / zbar | QR decoding and native zbar library | MIT / LGPL-2.1 |
 | libiconv | Character-set conversion used by ZBar | GNU Library GPL v2 or later |
@@ -37,6 +37,8 @@ GPL-3.0-only alternatives. The verified Qt for Python source archive supplies
 the license texts copied to `licenses/native/QtForPython-LICENSE-*.txt`. Qt libraries
 and their embedded components also have their own notices and conditions.
 The build excludes Qt Virtual Keyboard, which this application does not use.
+Only PySide6-Essentials and shiboken6 supply Qt runtime dependencies; Qt PDF
+and Qt WebEngine are not installed or included in the application payload.
 
 ## Source access
 
@@ -58,8 +60,8 @@ older release, use its tagged constraints and source notice.
 
 | Component | Source route |
 | --- | --- |
-| PySide6 6.11.2, Essentials, Addons and shiboken6 | [Qt for Python 6.11.2 source archive](https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/pyside-setup-everywhere-src-6.11.2.tar.xz) and [Qt source evidence](docs/NATIVE-QT-SOURCES.md). |
-| Qt 6.11.2 | [Complete Qt 6.11.2 source archive](https://download.qt.io/archive/qt/6.11/6.11.2/single/qt-everywhere-src-6.11.2.tar.xz). |
+| PySide6-Essentials 6.12.0 and shiboken6 | [Qt for Python 6.12.0 source archive](https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.12.0-src/pyside-setup-everywhere-src-6.12.0.tar.xz) and [Qt source evidence](docs/NATIVE-QT-SOURCES.md). |
+| Qt 6.12.0 | [Complete Qt 6.12.0 source archive](https://download.qt.io/official_releases/qt/6.12/6.12.0/single/qt-everywhere-src-6.12.0.tar.xz). |
 | pyzbar 0.1.9 | [Tagged wrapper source](https://github.com/NaturalHistoryMuseum/pyzbar/tree/v0.1.9). Its [build script](https://github.com/NaturalHistoryMuseum/pyzbar/blob/v0.1.9/build.sh) identifies the Windows DLL download. |
 | ZBar Windows DLL | [ZBarWin64 source commit](https://github.com/NaturalHistoryMuseum/ZBarWin64/tree/720e4577eedf6d6173c146f8494db75583503d94), whose v0.10 release wheel contains the same DLL bytes; includes the VS2013/x64 build project. |
 | libiconv Windows DLL | [Retained GNU sources, generated configuration and build receipt](packaging/native/libiconv/README.md) for the controlled Windows build. |
@@ -83,7 +85,7 @@ source checker binds that replacement to its build input and packaged bytes.
 Incomplete or changed records block release and publication; license texts
 alone do not satisfy the check.
 
-Qt component, QtPdf, Mesa, LLVM and libiconv source notices are included under
+Qt component, Mesa, LLVM and libiconv source notices are included under
 `licenses/native/`. Mesa/LLVM's original
 compiler flags and PySide's original compiler invocation remain reproduction
 limits, as described in the Qt evidence. No byte-for-byte source rebuild is

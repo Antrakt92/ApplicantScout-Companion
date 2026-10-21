@@ -12,9 +12,8 @@ files. Build tooling copies this directory into the packaged `licenses/` tree.
 | `LLVM-3.6.2-ADDITIONAL-NOTICES.txt` | Support library attribution, OpenBSD regex notices, Todd Miller's string-copy code, Solar Designer's MD5 implementation, Unicode conversion code, and the ARM contribution grant. |
 | `libiconv-1.14-COPYING.LIB.txt` | Upstream Library GPL version 2 license text. |
 | `libiconv-1.14-NOTICES.txt` | GNU library copyright and version-2-or-later notices from the conversion, relocation and locale-support sources. |
-| `Qt-6.11.2-NOTICES.txt` | 49 third-party attribution records from the official QtBase, QtSvg and QtImageFormats binary SPDX dependency graph, with their 42 referenced license files. |
-| `QtPdf-6.11.2-NOTICES.txt` | The nine third-party components listed by Qt PDF, plus the IJG and FreeType component notices referenced by their license files. |
-| `QtForPython-LICENSE-LGPL-3.0-only.txt`, `QtForPython-LICENSE-GPL-2.0-only.txt`, `QtForPython-LICENSE-GPL-3.0-only.txt` | Verbatim open-source license alternatives from the verified Qt for Python 6.11.2 source archive's `LICENSES/` directory; apply to the PySide6 and Shiboken wheels as their metadata states. |
+| `Qt-6.12.0-NOTICES.txt` | 89 source attribution records from QtBase, QtSvg and QtImageFormats, with their 50 referenced license files. This conservatively includes optional platform, test and build components. |
+| `QtForPython-LICENSE-LGPL-3.0-only.txt`, `QtForPython-LICENSE-GPL-2.0-only.txt`, `QtForPython-LICENSE-GPL-3.0-only.txt` | Verbatim open-source license alternatives from the verified Qt for Python 6.12.0 source archive's `LICENSES/` directory; apply to the PySide6 and Shiboken wheels as their metadata states. |
 
 The upstream archives used for these notices are:
 
@@ -23,8 +22,8 @@ The upstream archives used for these notices are:
 | [Mesa 11.2.2](https://archive.mesa3d.org/older-versions/11.x/11.2.2/mesa-11.2.2.tar.xz) | `40e148812388ec7c6d7b6657d5a16e2e8dabba8b97ddfceea5197947647bdfb4` |
 | [LLVM 3.6.2](https://releases.llvm.org/3.6.2/llvm-3.6.2.src.tar.xz) | `f60dc158bfda6822de167e87275848969f0558b3134892ff54fced87e4667b94` |
 | [GNU libiconv 1.14](https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.14.tar.gz) | `72b24ded17d687193c3366d0ebe7cde1e6b18f0df8c55438ac95be39e8a30613` |
-| [Qt 6.11.2](https://download.qt.io/archive/qt/6.11/6.11.2/single/qt-everywhere-src-6.11.2.tar.xz) | `6dcfbca271d76a6502741a2c0dc6fc98ef7dd0b7b4cfd0abcebb285a86a26f33` |
-| [Qt for Python 6.11.2](https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/pyside-setup-everywhere-src-6.11.2.tar.xz) | `cba47efbaad1bedd529725cbc14e21f156c7a19366f07b3edfbb076ffd7afdf8` |
+| [Qt 6.12.0](https://download.qt.io/official_releases/qt/6.12/6.12.0/single/qt-everywhere-src-6.12.0.tar.xz) | `98ff4f44bac6ec3e1e62ee2a4316ae0e3d15badb015d753cc0268a20db52f165` |
+| [Qt for Python 6.12.0](https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.12.0-src/pyside-setup-everywhere-src-6.12.0.tar.xz) | `099c1a597cf33c1b000e11cf68a0b82d216fb802bf81726efc720394f10c7751` |
 
 The Mesa collection follows the source groups referenced by
 `src/gallium/targets/libgl-gdi/SConscript` and `src/mesa/SConscript`: Mesa core,
@@ -43,23 +42,16 @@ endings are normalized, and legacy text encodings are represented as UTF-8. The 
 its license notice. Mesa's historical `docs/COPYING` is not used to assign a
 single license to the whole renderer.
 
-The Qt collection follows `DEPENDS_ON` and `CONTAINS` relationships in the
-official Windows MSVC 2022 module SPDX files for the DLLs and plugins included
-in the application. Each entry names its source `qt_attribution.json` record
-and the license files reproduced in the collection. The general LGPL license
-in the Qt wheel does not replace these component notices. The two Platform
-CMake attributions remain as conservative additions to the runtime collection.
+The Qt collection preserves the source `qt_attribution.json` records from
+QtBase, QtSvg and QtImageFormats and each referenced license file. It includes
+optional platforms, test support and build tooling conservatively; it does not
+claim that all source components were linked into the shipped libraries.
+The general LGPL license in the Qt wheel does not replace component notices.
 The binary and source mapping is documented in
 [Native Qt sources](../../docs/NATIVE-QT-SOURCES.md).
 
-Qt PDF's binary SPDX file does not enumerate its embedded PDFium dependencies.
-Its separate collection therefore uses Qt's
-[published third-party list](https://doc.qt.io/qt-6/qtpdf-licensing.html):
-Abseil, FreeType, PDFium, Chromium, fast_float, ICU, libjpeg-turbo, libpng and
-zlib. The texts are retained from the same Qt source archive; the collection
-also follows libjpeg-turbo's reference to the IJG terms and FreeType's
-references to component licenses. This is a notices collection for the
-packaged Qt modules, not a copy of every license in the Chromium source tree.
+Qt PDF and Qt WebEngine are excluded from this application payload. Their
+historical notices remain available in the matching older source tags.
 
 This software uses the [FreeType Project](https://www.freetype.org/).
 This software is based in part on the work of the Independent JPEG Group.

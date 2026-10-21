@@ -6,7 +6,7 @@ import pytest
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QFontMetrics
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QStyleFactory
 
 from applicant_scout import overlay as overlay_mod
 
@@ -469,11 +469,20 @@ def test_parse_sort_keeps_partially_missing_application_last(qtbot, tmp_path):
         assert win._id_by_row == [low.applicant_id, high.applicant_id, partner.applicant_id]
 
 
+@pytest.fixture(params=QStyleFactory.keys())
+def source_control_style(qapp, request):
+    original_style = qapp.style().objectName()
+    qapp.setStyle(request.param)
+    yield
+    qapp.setStyle(original_style)
+
+
 @pytest.mark.parametrize(
     "applicants,party,stale", [(0, 0, False), (99, 40, True), (200, 40, True)]
 )
 @pytest.mark.parametrize("key_level", [0, MPLUS_TARGET_KEY_MAX])
 @pytest.mark.real_display
+@pytest.mark.usefixtures("source_control_style")
 def test_source_controls_fit_minimum_window_and_restore_on_resize(
     qtbot, tmp_path, applicants, party, stale, key_level
 ):
@@ -503,9 +512,20 @@ def test_source_controls_fit_minimum_window_and_restore_on_resize(
     assert bar._key_spin.width() >= bar._key_spin.minimumSizeHint().width()
     key_editor = bar._key_spin.lineEdit()
     assert key_editor is not None
-    assert key_editor.contentsRect().width() >= key_editor.fontMetrics().horizontalAdvance(
-        bar._key_spin.text()
+    text_margins = key_editor.textMargins()
+    required_text_width = (
+        text_margins.left() + text_margins.right()
+        + key_editor.fontMetrics().horizontalAdvance(bar._key_spin.text())
     )
+    assert key_editor.contentsRect().width() >= required_text_width
+    win.activateWindow()
+    bar._key_spin.setFocus()
+    qtbot.waitUntil(bar._key_spin.hasFocus)
+    assert bar._key_control.property("keyFocused") is True
+    assert key_editor.contentsRect().width() >= required_text_width
+    bar._key_up_button.setFocus()
+    qtbot.waitUntil(lambda: not bar._key_spin.hasFocus())
+    assert bar._key_control.property("keyFocused") is False
     assert bar._key_spin.value() == key_level
     assert str(applicants) in bar._buttons["applicants"].text()
     assert str(party) in bar._buttons["party"].text()

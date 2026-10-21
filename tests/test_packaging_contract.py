@@ -1363,9 +1363,7 @@ def test_release_build_uses_pinned_constraints():
 
     text = constraints.read_text(encoding="utf-8")
     for package in (
-        "PySide6",
         "PySide6-Essentials",
-        "PySide6-Addons",
         "shiboken6",
         "PyInstaller",
         "pyinstaller-hooks-contrib",
