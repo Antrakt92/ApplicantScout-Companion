@@ -30,6 +30,8 @@ _ERROR_NO_MORE_FILES = 18
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _ARGUMENT_LIST_SEPARATOR = "\x1f"
 _CURRENT_SESSION_WATCHER: subprocess.Popen | None = None
+_CURRENT_SESSION_WATCHER_START: object | None = None
+_RETIRED_SESSION_WATCHERS: list[subprocess.Popen] = []
 _CURRENT_SESSION_WATCHER_LOCK = threading.Lock()
 
 
@@ -542,36 +544,81 @@ def start_wow_sync_watcher(
     spec = companion_launch_spec()
     executable = executable_path or spec.executable
     launch_arguments = arguments if arguments is not None else spec.arguments
-    global _CURRENT_SESSION_WATCHER
+    global _CURRENT_SESSION_WATCHER, _CURRENT_SESSION_WATCHER_START
     with _CURRENT_SESSION_WATCHER_LOCK:
+        if _RETIRED_SESSION_WATCHERS:
+            raise RuntimeError("A previous WoW lifecycle watcher still requires shutdown")
         current = _CURRENT_SESSION_WATCHER
-        if current is not None and current.poll() is None:
+        if _CURRENT_SESSION_WATCHER_START is not None or (
+            current is not None and current.poll() is None
+        ):
             return None
         _CURRENT_SESSION_WATCHER = None
-    if check_existing and is_wow_sync_watcher_running(
-        executable_path=executable,
-        arguments=launch_arguments,
-    ):
+        launch_owner = object()
+        _CURRENT_SESSION_WATCHER_START = launch_owner
+    try:
+        if check_existing and is_wow_sync_watcher_running(
+            executable_path=executable,
+            arguments=launch_arguments,
+        ):
+            return None
+        with _CURRENT_SESSION_WATCHER_LOCK:
+            if _CURRENT_SESSION_WATCHER_START is not launch_owner:
+                return None
+        process = subprocess.Popen(
+            [str(executable), *launch_arguments, WATCH_WOW_ARG],
+            cwd=str(executable.parent),
+            close_fds=True,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        with _CURRENT_SESSION_WATCHER_LOCK:
+            if _CURRENT_SESSION_WATCHER_START is launch_owner:
+                _CURRENT_SESSION_WATCHER = process
+                return process
+        # A disable/shutdown can retire this launch while Popen is outside the
+        # lock. Reap its own process without touching a newer launch's owner.
+        if process is not None and not _stop_owned_session_watcher(process, timeout=2.0):
+            raise RuntimeError("Could not stop a retired WoW lifecycle watcher")
         return None
-    process = subprocess.Popen(
-        [str(executable), *launch_arguments, WATCH_WOW_ARG],
-        cwd=str(executable.parent),
-        close_fds=True,
-        creationflags=_CREATE_NO_WINDOW,
-    )
-    with _CURRENT_SESSION_WATCHER_LOCK:
-        _CURRENT_SESSION_WATCHER = process
-    return process
+    finally:
+        with _CURRENT_SESSION_WATCHER_LOCK:
+            if _CURRENT_SESSION_WATCHER_START is launch_owner:
+                _CURRENT_SESSION_WATCHER_START = None
 
 
 def stop_current_session_watcher(*, timeout: float = 2.0) -> bool:
     """Stop the helper launched for this settings session, if it is still live."""
-    global _CURRENT_SESSION_WATCHER
+    global _CURRENT_SESSION_WATCHER, _CURRENT_SESSION_WATCHER_START
     with _CURRENT_SESSION_WATCHER_LOCK:
         process = _CURRENT_SESSION_WATCHER
         _CURRENT_SESSION_WATCHER = None
-    if process is None:
-        return True
+        _CURRENT_SESSION_WATCHER_START = None
+        if process is not None and not any(item is process for item in _RETIRED_SESSION_WATCHERS):
+            _RETIRED_SESSION_WATCHERS.append(process)
+        processes = tuple(_RETIRED_SESSION_WATCHERS)
+    stopped = True
+    for process in processes:
+        if not _stop_owned_session_watcher(process, timeout=timeout):
+            stopped = False
+    return stopped
+
+
+def _stop_owned_session_watcher(process: subprocess.Popen, *, timeout: float) -> bool:
+    # Retain failed terminations so a later disable/shutdown can retry rather
+    # than reporting success after losing the only handle to a live helper.
+    with _CURRENT_SESSION_WATCHER_LOCK:
+        if not any(item is process for item in _RETIRED_SESSION_WATCHERS):
+            _RETIRED_SESSION_WATCHERS.append(process)
+    stopped = _stop_session_watcher_process(process, timeout=timeout)
+    if stopped:
+        with _CURRENT_SESSION_WATCHER_LOCK:
+            _RETIRED_SESSION_WATCHERS[:] = [
+                item for item in _RETIRED_SESSION_WATCHERS if item is not process
+            ]
+    return stopped
+
+
+def _stop_session_watcher_process(process: subprocess.Popen, *, timeout: float) -> bool:
     try:
         if process.poll() is not None:
             return True
