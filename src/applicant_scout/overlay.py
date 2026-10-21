@@ -2070,6 +2070,13 @@ class SourceTabBar(QWidget):
         self._key_spin.setSpecialValueText("—")
         self._key_spin.setPrefix("+")
         self._key_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        # Qt's stylesheet box geometry collapses NoButtons editors in 6.12.
+        # Keep spacing native and draw keyboard focus on the surrounding control.
+        self._key_spin.setFrame(False)
+        key_editor = self._key_spin.lineEdit()
+        if key_editor is not None:
+            key_editor.setTextMargins(6, 0, 0, 0)
+        self._key_spin.installEventFilter(self)
         self._key_spin.setFixedWidth(64)
         self._key_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._key_spin.setAccessibleName("Manual Mythic Plus target key")
@@ -2210,6 +2217,16 @@ class SourceTabBar(QWidget):
         # WHY: A newly constructed hidden child still has placeholder geometry.
         self._layout_ready = True
         self._sync_compact_layout()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self._key_spin and event.type() in (
+            QEvent.Type.FocusIn, QEvent.Type.FocusOut,
+        ):
+            self._key_control.setProperty("keyFocused", event.type() == QEvent.Type.FocusIn)
+            self._key_control.style().unpolish(self._key_control)
+            self._key_control.style().polish(self._key_control)
+            self._key_control.update()
+        return super().eventFilter(watched, event)
 
     def set_active(self, key: str, *, emit: bool = True) -> None:
         if key not in self._buttons:
@@ -9494,8 +9511,7 @@ _STYLESHEET = """
 #roleFilterBar QPushButton:focus,
 #infoDetailTabs QPushButton:focus,
 #infoUnpinButton:focus,
-#infoWclRetryButton:focus,
-#targetKeySpin:focus {
+#infoWclRetryButton:focus {
     border: 2px solid #e5cc80;
     border-radius: 4px;
 }
@@ -9605,9 +9621,10 @@ _STYLESHEET = """
 #targetKeySpin {
     color: #fff7e8;
     background-color: transparent;
-    border: none;
     font-weight: bold;
-    padding-left: 6px;
+}
+#targetKeyControl[keyFocused="true"] {
+    border-color: #e5cc80;
 }
 #targetKeyStepUp, #targetKeyStepDown {
     color: #e8ded0;

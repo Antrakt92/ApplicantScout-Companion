@@ -4,6 +4,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from packaging.requirements import Requirement
 from packaging.version import Version
 
@@ -70,27 +72,30 @@ def test_security_policy_documents_python_and_lua_coverage_boundary():
     assert "ApplicantScout-Addon" in policy
 
 
-def test_image_decoder_requires_security_fixed_pillow():
-    # Pillow 12.3.0 fixes malformed-image memory-safety and parser-loop issues.
-    safe_floor = Version("12.3.0")
+@pytest.mark.parametrize("package,safe_floor", [
+    ("pillow", Version("13.0.0")),
+    ("certifi", Version("2026.10.19")),
+])
+def test_runtime_requires_security_fixed_dependencies(package, safe_floor):
+    # Keep source installs and frozen builds above the reviewed advisory floors.
     project = tomllib.loads(_read("pyproject.toml"))["project"]
     requirements = [Requirement(value) for value in project["dependencies"]]
-    pillow = next(value for value in requirements if value.name.lower() == "pillow")
+    requirement = next(value for value in requirements if value.name.lower() == package)
     assert any(
         item.operator == ">=" and Version(item.version) >= safe_floor
-        for item in pillow.specifier
-    ), "Source installs must require a security-fixed Pillow version"
+        for item in requirement.specifier
+    ), f"Source installs must require a security-fixed {package} version"
 
     constraints = [
         Requirement(line)
         for line in _read("constraints-release.txt").splitlines()
         if line and not line.startswith("#")
     ]
-    pinned = next(value for value in constraints if value.name.lower() == "pillow")
+    pinned = next(value for value in constraints if value.name.lower() == package)
     assert any(
         item.operator == "==" and Version(item.version) >= safe_floor
         for item in pinned.specifier
-    ), "Release builds must pin a security-fixed Pillow version"
+    ), f"Release builds must pin a security-fixed {package} version"
 
 
 def test_dependency_advisories_checks_exact_pins_without_installs_or_write_permissions():

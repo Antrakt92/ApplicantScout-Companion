@@ -43,119 +43,115 @@
       "unresolved": []
     },
     {
-      "name": "Qt 6.11.2 libraries and plugins (PySide6 Essentials)",
+      "name": "Qt 6.12.0 libraries and plugins (PySide6 Essentials)",
       "package": "PySide6-Essentials",
-      "version": "6.11.2",
+      "version": "6.12.0",
       "binaries": [
         {
           "path": "PySide6/plugins/generic/qtuiotouchplugin.dll",
-          "sha256": "aa9080fa8b1c3cf4d3790c1eecf4a1f5c796ce58f31f80910357578f20fd80ac"
+          "sha256": "8565656807db29cfb6170e6803181f24e0bed3aa1b14684d29694e375cc5ee96"
         },
         {
           "path": "PySide6/plugins/iconengines/qsvgicon.dll",
-          "sha256": "5bb97b6f114682ae0b5f42b23b6818aece6499bad88dac80a138efa8a88c12bc"
+          "sha256": "f9e21af351bd5d5629bc00e8e3796b552eca92d1a9645438c865b9c53af1714f"
         },
         {
           "path": "PySide6/plugins/imageformats/qgif.dll",
-          "sha256": "d301d7e9a68327692e4c76faa6b125517730b22c68f4de7f09fda9d4ac0ddee1"
+          "sha256": "77782de4aa4f7b75a7cc4d3f24aee49da935c312ea13d25f4cda3a98d180145c"
         },
         {
           "path": "PySide6/plugins/imageformats/qicns.dll",
-          "sha256": "49db148fea9f01e9953fd0a771d16cfaf364599f07aab3634d4f5c7c25abd78a"
+          "sha256": "93e2e588cd1036af3c6300b539d648b3825625788e59a3f0f1863d9901c9759f"
         },
         {
           "path": "PySide6/plugins/imageformats/qico.dll",
-          "sha256": "1684fd56f1758167f7b3ac011264ae5859b3cf6113e381626ec3dc1d3122fe52"
+          "sha256": "a0e4d0d0319e075f6cc5f774084bf390f7af83600f38685c6bc9c407681cc22c"
         },
         {
           "path": "PySide6/plugins/imageformats/qjpeg.dll",
-          "sha256": "6517345ac19f5c489daeadc029d0018bbdc09d8e1031c60d714557972f22c6d4"
-        },
-        {
-          "path": "PySide6/plugins/imageformats/qpdf.dll",
-          "sha256": "541350d584d990b8dcccb6726a4cb2169b901b90b6221273f813a13256570705"
+          "sha256": "dd42bdcd229744a9515db82ba9a802c74b6589cc508c3e85fb30f06ba24b9da6"
         },
         {
           "path": "PySide6/plugins/imageformats/qsvg.dll",
-          "sha256": "4b7d65ba39be58cb469b54b5fdee2987871d67e5050cd70724016e09966e54f6"
+          "sha256": "b63f97ed0ae60aa5bc332c37e429c1f31154e1eee358352b2c49598c5269843b"
         },
         {
           "path": "PySide6/plugins/imageformats/qtga.dll",
-          "sha256": "6b0381150070fcd4224597fe73c68b47055b30b418aa14794c94c5007d14ca5d"
+          "sha256": "ce95aa019d940533341b4f08a10ddd3b0393162678c47904251da77aeadfd34e"
         },
         {
           "path": "PySide6/plugins/imageformats/qtiff.dll",
-          "sha256": "3d6ea04da215ee2a9459399fb9f6d73cad8787944b9d450399025bcd39d020b5"
+          "sha256": "ce696a2dd2e57b8852f7d01834725f54a4d0be66c3d2c491df60fd907fece907"
         },
         {
           "path": "PySide6/plugins/imageformats/qwbmp.dll",
-          "sha256": "1a4596509987e9557edda69ed13cdd0d33f4ebda72e464ddc00a566bec05f151"
+          "sha256": "e118243bd3528aa5fe6378a8839abe0efc200e891af06ee369b97b2ff239b89c"
         },
         {
           "path": "PySide6/plugins/imageformats/qwebp.dll",
-          "sha256": "6b2c53cc4423140c29a6a1eb6dd908016e09d794b5739a05a3a39c8c49a0df8a"
+          "sha256": "02ae5555b688f78aade5cedcd66c646b73d519460c008c23e75ad408bd152668"
         },
         {
           "path": "PySide6/plugins/networkinformation/qnetworklistmanager.dll",
-          "sha256": "e571a4b4e582738cd1bc4889cb2896635c2543baff408442701b6706a1b4a86e"
+          "sha256": "2bd047476183c76004221fb44adb7ada9b4b6ce5c2929d63ff67a5305b430f1a"
         },
         {
           "path": "PySide6/plugins/platforms/qdirect2d.dll",
-          "sha256": "56f41ad523d016fe2cf2c90fae158e21766d1fcd021bced1a3704c6da0f00c98"
+          "sha256": "18213464be5a5a1d39af6a2c876ce21a6bb6a634c814651d09f0ef7e4719edc2"
         },
         {
           "path": "PySide6/plugins/platforms/qminimal.dll",
-          "sha256": "768a9c6dbb1c86abbefa2ff9d7e98cdfb4fdc9292eb8d64195bb6d23939a5344"
+          "sha256": "c9025bc5f4653c5aadac87f06ab391763e82adf792f6759c6027a78a5efcaf5c"
         },
         {
           "path": "PySide6/plugins/platforms/qoffscreen.dll",
-          "sha256": "e776251668440169ed18a2fe1b236762d514ef5244639cbb559b5a77ddd38954"
+          "sha256": "d24ef380ab0882d39f21539dcf57ab4213875a6fc658a53012f2d2fd275c6f69"
         },
         {
           "path": "PySide6/plugins/platforms/qwindows.dll",
-          "sha256": "bf6dbc3009f386fa22f0ced560bea6bbf3e0e0b4442d2fb855db67cffce49dbf"
+          "sha256": "ddd5cf6a96f058cfafcbc901ddeb5df010d755f0716beacfb557f8b27b733afe"
         },
         {
           "path": "PySide6/plugins/styles/qmodernwindowsstyle.dll",
-          "sha256": "a7a6424c23bf371bd28a404a196b210971726f6f2a87b63aac185a5e6e40da71"
+          "sha256": "74d4c47b56a942afb3723bb105900501bb8f91a46a8b592fa722cc4fdb2ce9bf"
         },
         {
           "path": "PySide6/plugins/tls/qcertonlybackend.dll",
-          "sha256": "67be4d333a0f489d02714169a6ec54eaa80efa649d733fcbeb81881ecb02b4f3"
+          "sha256": "87574d467b6f9640a15e37bf4183179c6a7cefc4dc84346b8f4cffb989cf1e12"
         },
         {
           "path": "PySide6/plugins/tls/qopensslbackend.dll",
-          "sha256": "7a0727417b8e21e64d9a7cf0f390bc85b3e337b4eef5ac977f49659d97e6b552"
+          "sha256": "94b3492bc4087da2818e2749a5a03f7d810611b2e3648bd8d580ad087363046f"
         },
         {
           "path": "PySide6/plugins/tls/qschannelbackend.dll",
-          "sha256": "14abc5b245c0f2e03f7bc0b474a8db2ecb441c7300a8a8b16fb865eaf2674619"
+          "sha256": "2915a86a2531e65fd4905f0cc1c8dc353772a4f52aeda5100725dd9249db54d1"
         },
         {
           "path": "PySide6/Qt6Core.dll",
-          "sha256": "d6a3c37c5263c5d418fc0e80b722bc9fca7c0859e6f635f9624a2fde00bdc653"
+          "sha256": "f57ed38afd95d0306cca9d88d997f639f70c7628a4f1f064eae291d579487121"
         },
         {
           "path": "PySide6/Qt6Gui.dll",
-          "sha256": "ae29b005f51b6850bf57fa06fced0dc8c7039fd6fafc3bfbcfe76e38adc7abf1"
+          "sha256": "abd20026e190e8cc69667d1bea042db05cd353cc05e7da74b063c20b7da3f6cd"
         },
         {
           "path": "PySide6/Qt6Network.dll",
-          "sha256": "dd3512d1c5ed062d30c98426cd0a850f13e0cf31437afb5b0b474132b9c52922"
+          "sha256": "1c7c393b264ae78f4dee211656377a086c4be714bf768d3135f94f11c1d0be61"
         },
         {
           "path": "PySide6/Qt6Svg.dll",
-          "sha256": "1eac8f7415b311a88cb3cb4e25c3098d0e059c24c831fbbb13f43a80f0df06b7"
+          "sha256": "8f1de5b28aab1eedb415c751c81f9cfaa2804242868c0ceea5f3fdb4b2babca4"
         },
         {
           "path": "PySide6/Qt6Widgets.dll",
-          "sha256": "ff0df9e2e6827e035f0731a4cedfc6333f4602bca00775e56346f27032406b74"
+          "sha256": "2f62cbe2869fff4e20df7369c2786e1ec7ec290d5a63d1371b7f70cf06909c3f"
         }
       ],
       "sources": [
         {
-          "url": "https://download.qt.io/archive/qt/6.11/6.11.2/single/qt-everywhere-src-6.11.2.tar.xz",
-          "sha256": "6dcfbca271d76a6502741a2c0dc6fc98ef7dd0b7b4cfd0abcebb285a86a26f33"
+          "url": "https://download.qt.io/official_releases/qt/6.12/6.12.0/single/qt-everywhere-src-6.12.0.tar.xz",
+          "sha256": "98ff4f44bac6ec3e1e62ee2a4316ae0e3d15badb015d753cc0268a20db52f165"
         }
       ],
       "build_instructions": "docs/NATIVE-QT-SOURCES.md",
@@ -164,11 +160,11 @@
     {
       "name": "Mesa 11.2.2 and LLVM 3.6.2 software OpenGL (PySide6)",
       "package": "PySide6-Essentials",
-      "version": "6.11.2",
+      "version": "6.12.0",
       "binaries": [
         {
           "path": "PySide6/opengl32sw.dll",
-          "sha256": "34b444c016289b560662ff896deceb7f4b2c0723aed3d319ae167c9186ce42b3"
+          "sha256": "18aedc7a4b610f53bcc7b7a5c5ed9293c7e86f030e3273ad54ed3bb1ebd36702"
         }
       ],
       "sources": [
@@ -187,60 +183,37 @@
     {
       "name": "PySide6 Essentials bindings",
       "package": "PySide6-Essentials",
-      "version": "6.11.2",
+      "version": "6.12.0",
       "binaries": [
         {
           "path": "PySide6/pyside6.abi3.dll",
-          "sha256": "d0b5c701fb3a8ea839e72b602058f3960935156ebeca084893c54c99e54dd707"
+          "sha256": "d5b87ccb0a7c305854bd120242b0a75002d0b50a35532d0f6171e4ed0f3cc82a"
         },
         {
           "path": "PySide6/QtCore.pyd",
-          "sha256": "74f96322c5e9cea73aefd2ed5870e5275336b31f552fcd32f12fc81d23f1bc6f"
+          "sha256": "6486f6f0a2fec42fc8c652c0b76bb3ad0d44eaccad9c72e577116a075681eebb"
         },
         {
           "path": "PySide6/QtGui.pyd",
-          "sha256": "7bef20046045199c037b7cbfedaa1c5464730fa948b2c9ec8afbf718e63774d4"
+          "sha256": "9ac544d1bcf8a26c408c63090d05506f8382d5378ee3a204e29a3ac5449c5b2b"
         },
         {
-   "path": "PySide6/QtNetwork.pyd",
-   "sha256": "c5038bb71fc9d57330fa2d8eeec65aab69fcf02687cc8f54dbfb5995cfec6a71"
-  },
-  {
-   "path": "PySide6/QtSvg.pyd",
-   "sha256": "2d128bbd2839aaad93f96d4d0705912065d2dcc20c92cb028f0441979bdb7280"
-  },
-  {
-   "path": "PySide6/QtWidgets.pyd",
-          "sha256": "f12f4ca641998e5706d5f7b0023147d573f0f2d2361e26dadf31bdbf05fbfd1d"
+          "path": "PySide6/QtNetwork.pyd",
+          "sha256": "22bffdb2a431b5a986de255f7eb0fcd1fd7d9e85c53967978e2ab479b33a13c5"
+        },
+        {
+          "path": "PySide6/QtSvg.pyd",
+          "sha256": "c9bdacf14ce30f4de75179f999ff20d7a8856126dbebd3a518a5e1c2916a3a6d"
+        },
+        {
+          "path": "PySide6/QtWidgets.pyd",
+          "sha256": "a8e323e56a93c1a8a70981c36a409c0a2546e7a08da5be8ca4e03dfd27febc2a"
         }
       ],
       "sources": [
         {
-          "url": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/pyside-setup-everywhere-src-6.11.2.tar.xz",
-          "sha256": "cba47efbaad1bedd529725cbc14e21f156c7a19366f07b3edfbb076ffd7afdf8"
-        }
-      ],
-      "build_instructions": "docs/NATIVE-QT-SOURCES.md",
-      "unresolved": []
-    },
-    {
-      "name": "PySide6 Addons Qt PDF runtime",
-      "package": "PySide6-Addons",
-      "version": "6.11.2",
-      "binaries": [
-        {
-          "path": "PySide6/Qt6Pdf.dll",
-          "sha256": "6fc87c84a723b05a0a3d7dce87083d25d23b1558e8806ff1cc7952bb9c5c9779"
-        }
-      ],
-      "sources": [
-        {
-          "url": "https://download.qt.io/archive/qt/6.11/6.11.2/single/qt-everywhere-src-6.11.2.tar.xz",
-          "sha256": "6dcfbca271d76a6502741a2c0dc6fc98ef7dd0b7b4cfd0abcebb285a86a26f33"
-        },
-        {
-          "url": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/pyside-setup-everywhere-src-6.11.2.tar.xz",
-          "sha256": "cba47efbaad1bedd529725cbc14e21f156c7a19366f07b3edfbb076ffd7afdf8"
+          "url": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.12.0-src/pyside-setup-everywhere-src-6.12.0.tar.xz",
+          "sha256": "099c1a597cf33c1b000e11cf68a0b82d216fb802bf81726efc720394f10c7751"
         }
       ],
       "build_instructions": "docs/NATIVE-QT-SOURCES.md",
@@ -249,21 +222,21 @@
     {
       "name": "Shiboken6 runtime",
       "package": "shiboken6",
-      "version": "6.11.2",
+      "version": "6.12.0",
       "binaries": [
         {
           "path": "shiboken6/Shiboken.pyd",
-          "sha256": "2f6f3a694f675b1dafdae26903191613c02866ab48e02591ae34ca1a3b1284f1"
+          "sha256": "8ccf415b2cefb5b6462504581ab1993fb41afe04e415931d8a72049f1c79b267"
         },
         {
           "path": "shiboken6/shiboken6.abi3.dll",
-          "sha256": "de3c6b2ed5f75c9ac0de4a6844b653b3b9d09263ce68c2b5fc25a96c5c3e8469"
+          "sha256": "07c318c02be5a3a9f1475f5a2d0cd438f4d4ea3288c28e2e10bc5ebbbec8de86"
         }
       ],
       "sources": [
         {
-          "url": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/pyside-setup-everywhere-src-6.11.2.tar.xz",
-          "sha256": "cba47efbaad1bedd529725cbc14e21f156c7a19366f07b3edfbb076ffd7afdf8"
+          "url": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.12.0-src/pyside-setup-everywhere-src-6.12.0.tar.xz",
+          "sha256": "099c1a597cf33c1b000e11cf68a0b82d216fb802bf81726efc720394f10c7751"
         }
       ],
       "build_instructions": "docs/NATIVE-QT-SOURCES.md",

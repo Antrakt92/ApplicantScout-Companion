@@ -127,9 +127,9 @@ See [Qt source and build evidence](https://github.com/Antrakt92/ApplicantScout-C
 for the Qt and Qt for Python source archives, installed wheel byte mapping and
 known build limits. The software OpenGL library is a separate Mesa/LLVM build.
 
-## Pillow 12.3.0: accepted native-provenance gap
+## Pillow 13.0.0: accepted native-provenance gap
 
-Pillow is a pinned release dependency (`Pillow==12.3.0`) used for screenshot
+Pillow is a pinned release dependency (`Pillow==13.0.0`) used for screenshot
 image loading, but its Windows wheel native modules (`PIL/*.pyd`, bundling
 upstream codec builds) have no entry in
 `packaging/native-source-provenance.json`: the original wheel file is not

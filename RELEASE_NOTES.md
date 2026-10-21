@@ -1,5 +1,10 @@
 # ApplicantScout Companion Release Notes
 
+## Unreleased
+
+- Update screenshot decoding and trusted certificates to address dependency security advisories.
+- Update Qt and keep the target key readable in the compact overlay controls.
+
 ## 0.24.2 - 18-Oct-2026 — Raid progress and installation fixes
 
 Paired release with ApplicantScout addon `0.14.4`.
