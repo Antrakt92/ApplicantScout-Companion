@@ -1228,10 +1228,10 @@ def _parse_lookup_payload_for_character_layout(
         payload_cache_dir=payload_cache_dir,
         payload_cache_generation=payload_cache_generation,
     )
-    if payload_cache_dir is None:
-        return payload
     if _lookup_payload_covers_character_layout(payload, character_layout):
         return payload
+    if payload_cache_dir is None:
+        raise ValueError("RaiderIO lookup payload shorter than character layout")
     payload = _parse_lookup_payload(
         text,
         source_path=source_path,

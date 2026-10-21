@@ -1764,7 +1764,7 @@ def _process_encounter_ranks(
     by_key: dict[int, list[float]] = {}
     for r in spec_runs:
         bd = r.get("bracketData")
-        if isinstance(bd, bool) or not isinstance(bd, int) or bd <= 0:
+        if not isinstance(bd, int) or _safe_nonnegative_cache_int(bd) <= 0:
             continue
         rp = r.get("rankPercent")
         if isinstance(rp, bool) or not isinstance(rp, (int, float)):
