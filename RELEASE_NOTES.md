@@ -4,6 +4,10 @@
 
 - Update screenshot decoding and trusted certificates to address dependency security advisories.
 - Update Qt and keep the target key readable in the compact overlay controls.
+- Keep WoW sync helpers under control when enabling, disabling or closing the app during a launch.
+- Recover safely from damaged sharing settings without enabling reporting.
+- Reject incomplete RaiderIO databases and invalid Warcraft Logs key levels.
+- Preserve the player's realm when captures temporarily cannot read their name.
 
 ## 0.24.2 - 18-Oct-2026 — Raid progress and installation fixes
 
