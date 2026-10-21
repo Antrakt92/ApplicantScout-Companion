@@ -21,6 +21,116 @@ class _CurrentGate:
         return generation == 0
 
 
+@pytest.mark.parametrize("terminal_name", ["?", "Host", None])
+@pytest.mark.parametrize("followup", [False, True])
+def test_terminal_clear_preserves_only_pending_producer_fallback(
+    terminal_name, followup
+):
+    version = DecodedVersion("0.14.4", "12.1.5", 3, "Host-Realm")
+    first = Snapshot(
+        listing=DecodedListing(100, 12, "Dungeon", "Listing", ""),
+        version=version,
+        applicants=[DecodedApplicant(1, 8, 62, 200, 2000, 2, "Old-Realm")],
+    )
+    terminal = Snapshot(
+        listing=None,
+        version=replace(version, player_name=terminal_name, region_id=0)
+        if terminal_name is not None else None,
+        terminal_clear=True,
+    )
+    snapshots = [first, terminal]
+    if followup:
+        snapshots.append(Snapshot(
+            listing=first.listing,
+            version=replace(version, player_name="Host", region_id=0),
+            applicants=[DecodedApplicant(2, 8, 62, 200, 2000, 2, "New")],
+            roster_unavailable=True,
+        ))
+    sequential, coalesced = AppState(), AppState()
+    expected, actual = StateMachine(sequential), StateMachine(coalesced)
+    callbacks = []
+    cached = []
+    queue = SnapshotApplyQueue(
+        actual, object(), lambda *_args: None,
+        signal_gate=_CurrentGate(), generation=0, scheduler=callbacks.append,
+        live_snapshot_cache_writer=SimpleNamespace(submit=cached.append),
+    )
+    for snap in snapshots:
+        expected.apply_snapshot(snap)
+        queue.enqueue_snapshot(snap)
+    while callbacks:
+        callbacks.pop(0)()
+    assert coalesced.player == sequential.player
+    assert coalesced.player.full_name == "Host-Realm"
+    assert coalesced.player.region_id == 3
+    assert coalesced.applicants == sequential.applicants
+    assert coalesced.listing == sequential.listing
+    assert all(row.name != "Old-Realm" for row in coalesced.applicants.values())
+    assert len(cached) == len(snapshots) - 1
+    assert all(left is right for left, right in zip(cached, snapshots[1:]))
+
+
+def test_explicit_terminal_producer_reset_discards_pending_fallback():
+    first = Snapshot(None, DecodedVersion("1", "12", 3, "Host-Realm"))
+    assert first.version is not None
+    reset = Snapshot(
+        None, DecodedVersion("1", "12", 0, "?"), terminal_clear=True,
+        reset_producer_identity=True,
+        producer_version_history=(first.version,),
+    )
+    state = AppState()
+    callbacks = []
+    queue = SnapshotApplyQueue(
+        StateMachine(state), object(), lambda *_args: None,
+        signal_gate=_CurrentGate(), generation=0, scheduler=callbacks.append,
+    )
+    queue.enqueue_snapshot(first)
+    queue.enqueue_snapshot(reset)
+    callbacks.pop(0)()
+    assert state.player.full_name == ""
+    assert state.player.region_id == 0
+
+
+@pytest.mark.parametrize("boundary", [
+    "repeated-clear", "character-switch", "region-switch", "versionless-rows",
+])
+def test_terminal_producer_fallback_keeps_sequential_identity_boundaries(boundary):
+    version = DecodedVersion("1", "12", 3, "Host-Realm")
+    first = Snapshot(None, version)
+    terminal_version = replace(version, player_name="?", region_id=0)
+    if boundary == "character-switch":
+        terminal_version = replace(terminal_version, player_name="Other")
+    elif boundary == "region-switch":
+        terminal_version = replace(version, region_id=1)
+    snapshots = [first, Snapshot(None, terminal_version, terminal_clear=True)]
+    if boundary == "repeated-clear":
+        snapshots.append(Snapshot(None, None, terminal_clear=True))
+    if boundary == "versionless-rows":
+        snapshots.append(Snapshot(
+            DecodedListing(100, 12, "Dungeon", "Listing", ""), None,
+            applicants=[DecodedApplicant(1, 8, 62, 200, 2000, 2, "Mage")],
+        ))
+    snapshots.append(Snapshot(None, replace(version, player_name="Host", region_id=0)))
+    expected_state, actual_state = AppState(), AppState()
+    expected, actual = StateMachine(expected_state), StateMachine(actual_state)
+    callbacks = []
+    observed_players = []
+    actual.applicantAdded.connect(lambda _row: observed_players.append(actual_state.player))
+    expected_players = []
+    expected.applicantAdded.connect(lambda _row: expected_players.append(expected_state.player))
+    queue = SnapshotApplyQueue(
+        actual, object(), lambda *_args: None,
+        signal_gate=_CurrentGate(), generation=0, scheduler=callbacks.append,
+    )
+    for snap in snapshots:
+        expected.apply_snapshot(snap)
+        queue.enqueue_snapshot(snap)
+    while callbacks:
+        callbacks.pop(0)()
+    assert vars(actual_state) == vars(expected_state)
+    assert observed_players == expected_players
+
+
 @pytest.mark.parametrize("already_applied", [False, True])
 def test_listing_roundtrip_does_not_restore_departed_applicants(already_applied):
     full = Snapshot(

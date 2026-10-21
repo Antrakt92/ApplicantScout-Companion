@@ -193,10 +193,8 @@ def append_pending_snapshot(
     pending: tuple[object, ...],
     snap: object,
 ) -> tuple[object, ...]:
-    # A clear invalidates every earlier state event, but must itself survive a
-    # later partial/full frame so listing-session and waiter cleanup still runs.
-    if bool(getattr(snap, "terminal_clear", False)):
-        return (snap,)
+    # A clear invalidates earlier rows and listings. Producer fallback is still
+    # needed when its own name/realm/region read is incomplete.
     history = tuple(
         version
         for previous in pending
@@ -213,6 +211,22 @@ def append_pending_snapshot(
         if name and realm and region is not None:
             history = history[index:]
             break
+    if bool(getattr(snap, "terminal_clear", False)):
+        if isinstance(snap, Snapshot) and snap.reset_producer_identity:
+            return (replace(snap, producer_version_history=()),)
+        if (
+            not isinstance(snap, Snapshot)
+            or not history
+        ):
+            return (snap,)
+        terminal_version = snap.version
+        if terminal_version is None:
+            terminal_version = history[-1]
+            history = history[:-1]
+        return (replace(
+            snap, version=terminal_version,
+            producer_version_history=history + snap.producer_version_history,
+        ),)
     player = WoWPlayer()
     for version in history:
         player = resolve_transport_player(player, version)
@@ -375,7 +389,20 @@ def snapshot_application_plan(
             cache_terminal = (cache_segment[0],)
             cache_segment = cache_segment[1:]
         planned_terminal = terminal
-        if segment and any(snap.version is not None for snap in segment):
+        if segment and segment[0].version is not None:
+            # Suppress an obsolete terminal VERSION signal while resolving the
+            # next producer against its fallback, just as sequential apply does.
+            first = segment[0]
+            if terminal.version is not None:
+                first = replace(
+                    first,
+                    producer_version_history=(
+                        *terminal.producer_version_history,
+                        terminal.version,
+                        *first.producer_version_history,
+                    ),
+                )
+                segment = (first, *segment[1:])
             planned_terminal = replace(terminal, version=None)
         steps.append((planned_terminal, cache_terminal))
     if segment:
