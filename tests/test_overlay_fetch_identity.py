@@ -440,7 +440,7 @@ def test_auth_chip_maps_secret_free_status_copy_and_accessibility(qtbot, tmp_pat
         for error_kind, expected_text, expected_state, expected_detail in (
             (WCL_ERROR_AUTH, "Auth failed", "critical", "rejected"),
             (WCL_ERROR_NETWORK, "Auth offline", "warning", "internet access"),
-            (WCL_ERROR_SERVER, "Auth issue", "warning", "unavailable"),
+            (WCL_ERROR_SERVER, "WCL offline", "warning", "unavailable"),
             (WCL_ERROR_RATE_LIMITED, "Auth issue", "warning", "limiting"),
             (WCL_ERROR_MALFORMED, "Auth issue", "warning", "unexpected response"),
             ("", "Auth issue", "warning", "validation failed"),
@@ -3275,7 +3275,7 @@ def test_auth_chip_for_covers_every_state_byte_identical():
         ("error", WCL_ERROR_NETWORK, "Auth offline", "warning",
          "Could not reach Warcraft Logs. Check internet access; displayed "
          "applicant data may be cached."),
-        ("error", WCL_ERROR_SERVER, "Auth issue", "warning",
+        ("error", WCL_ERROR_SERVER, "WCL offline", "warning",
          "Warcraft Logs is temporarily unavailable. Applicant requests "
          "will retry automatically."),
         ("error", WCL_ERROR_RATE_LIMITED, "Auth issue", "warning",

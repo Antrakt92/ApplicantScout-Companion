@@ -81,7 +81,7 @@ AUTH_CHIP_STATES: Mapping[tuple[str, str], ChipState] = {
         ),
     ),
     ("error", WCL_ERROR_SERVER): ChipState(
-        text="Auth issue",
+        text="WCL offline",
         chip_state="warning",
         detail=(
             "Warcraft Logs is temporarily unavailable. Applicant requests "
