@@ -1,0 +1,44 @@
+name: Checksum upgrade smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Exact prepared Companion release tag'
+        required: true
+        type: string
+      release_run_id:
+        description: 'Successful Build and release run containing final release assets'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  smoke:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exercise latest stable to exact candidate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          .\scripts\smoke-checksum-upgrade.ps1 -Tag $env:RELEASE_TAG -ReleaseRunId $env:RELEASE_RUN_ID
+      - name: Retain hash-bound smoke receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: checksum-upgrade-smoke-receipt
+          path: ${{ runner.temp }}/checksum-upgrade-smoke-receipt.json
+          if-no-files-found: error
+          retention-days: 30

@@ -199,6 +199,25 @@ the queue to publish multiple drafts.
    Record the SHA-256 of the exact installer exercised by the smoke test; the
    publish gate requires it to match the authoritative manifest and GitHub's
    server-reported asset digest.
+   An isolated runner can produce this evidence with the manual **Checksum
+   upgrade smoke** workflow (`checksum-upgrade-smoke.yml`), supplying the exact
+   candidate `tag` and successful `release_run_id`. It installs the latest
+   immutable stable baseline, then exercises the checksum-verified candidate
+   from the final retained Release bundle. The receipt records both installer
+   hashes, startup probes, and preservation of configuration and usage opt-out.
+   It does not exercise draft discovery through the normal update feed.
+
+   ```powershell
+   gh workflow run checksum-upgrade-smoke.yml --ref main -f tag=v<companion version> -f release_run_id=<run ID>
+   ```
+
+   Require a successful run and inspect its `checksum-upgrade-smoke-receipt`
+   artifact before using its baseline and candidate SHA below. Read-only
+   credentials cannot see draft assets: the normal publication writer still
+   independently matches that same candidate hash to the draft's actual bytes
+   and server digest. The receipt supplies evidence for the existing manual
+   attestation; it does not bypass publication validation.
+
 4. Run the manual `Publish release` GitHub Actions workflow with:
    - `tag`: `v<companion version>`
    - `release_run_id`: the successful `Build and release` run ID from step 2
