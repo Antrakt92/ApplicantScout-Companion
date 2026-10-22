@@ -181,7 +181,7 @@ Essential commands (`/apscout help`):
 Advanced commands (`/apscout help all`):
 
 ```text
-/apscout status diag    show detailed QR diagnostics
+/apscout status diag    open detailed diagnostics to scroll and copy
 /apscout qrvisible      toggle persistent QR always-visible mode; off clears it
 /apscout qrmove         toggle QR move mode (Alt+drag QR frame)
 /apscout qrreset        reset QR frame position to top-left

@@ -1,13 +1,30 @@
 # ApplicantScout Companion Release Notes
 
-## Unreleased
+## 0.24.3 - 22-Oct-2026 — Security and reliability
 
-- Update screenshot decoding and trusted certificates to address dependency security advisories.
-- Update Qt and keep the target key readable in the compact overlay controls.
+Paired release with ApplicantScout addon `0.14.5`.
+
+### Fixed
+
+- Update bundled screenshot decoding, trusted certificates and Qt to address dependency security advisories and remove unused Qt components.
+- Keep the target key readable in the compact overlay controls.
+- Label temporary Warcraft Logs server outages as **WCL offline**, separately from rejected credentials.
+- Preserve player realm information when queued captures temporarily lose identity data.
 - Keep WoW sync helpers under control when enabling, disabling or closing the app during a launch.
-- Recover safely from damaged sharing settings without enabling reporting.
-- Reject incomplete RaiderIO databases and invalid Warcraft Logs key levels.
-- Preserve the player's realm when captures temporarily cannot read their name.
+- Recover damaged usage preferences safely without enabling reporting.
+- Reject incomplete RaiderIO databases and invalid Warcraft Logs key levels instead of using unreliable results.
+
+### Paired addon
+
+- Copy detailed diagnostics from a scrollable in-game window, including long reports and unusual listing text.
+- Distinguish an unavailable group count from an empty group.
+- Retry capture setup when WoW does not accept the required screenshot settings, and preserve settings restoration.
+- Keep setup and settings windows layered correctly alongside other addons.
+- The addon capture format is unchanged.
+
+### License
+
+- Let authors choose their positive reward share when reusing original code. Earlier permissions and third-party terms remain valid.
 
 ## 0.24.2 - 18-Oct-2026 — Raid progress and installation fixes
 
