@@ -1,94 +1,24 @@
-Antrakt Attribution and CurseForge Rewards License 1.3
+Antrakt Attribution and CurseForge Rewards License 1.4
 Custom license based on MIT; not the standard MIT License.
-
 Copyright (c) 2026 Antrakt
 Project: ApplicantScout Companion
 Original project: https://github.com/Antrakt92/ApplicantScout-Companion
-Source: https://github.com/Antrakt92/ApplicantScout-Companion
-CurseForge rewards recipient: antrakt92
 
-You may use, copy, modify, merge, publish, distribute, sublicense and sell
-the original code and accompanying material owned by Antrakt/Antrakt92
-in this project under these conditions. No prior contact or approval is needed.
-Third-party material identified in THIRD-PARTY-NOTICES.md or carrying its
-own notice is excluded and retains its own license.
+You may use, copy, modify, merge, publish, distribute, sublicense and sell my original code and accompanying material under these conditions. Permission is automatic; no prior contact or approval is required.
 
-1. Notices and credit
+1. Keep this license and copyright notice in copies or substantial portions. For public substantial reuse, credit antrakt92, name and link to ApplicantScout Companion, identify your changes, and retain these conditions when redistributing or sublicensing the covered work.
 
-Keep this license and the applicable copyright notices in copies or
-substantial portions of the covered work. When publicly distributing a
-project that substantially reuses it, credit antrakt92, name ApplicantScout Companion,
-link to the original project above and identify your changes. Keep these
-conditions when redistributing or sublicensing the covered work.
+2. Substantial reuse means redistributing the whole project or incorporating or adapting its original implementation of a meaningful user-facing feature, judged by functionality rather than line count. Isolated lines, incidental helpers, standard constructs and API calls require no reward share or additional public credit.
 
-2. Substantial reuse
+3. If such a derivative earns CurseForge Reward Points, maintain a positive share of that derivative's points for antrakt92 through CurseForge's Members reward allocation while it uses the covered work and earns points. You choose the percentage based on the extent and significance of the reused work; there is no fixed minimum. One share per derivative covers all my works reused in it. No points means no payment; other projects, account earnings, donations and other revenue are excluded. Send the required member invitation and enable the share when accepted; a pending invitation awaiting my acceptance does not block permission. CurseForge's rules still apply.
 
-Substantial reuse means redistributing the project as a whole, including
-a fork or port, or incorporating or adapting its original implementation
-of a meaningful user-facing feature. Functionality, rather than a line
-count or percentage of your code, determines this.
+4. Ordinary use, recommendations, links, dependencies and collections referencing the original download require no share. Independent implementations, translations and compatibility patches require no share or additional public credit unless they substantially reuse the covered implementation.
 
-Isolated lines, incidental helpers, standard programming constructs and
-API calls require no reward share or additional public credit. Source
-credit is appreciated where appropriate.
+These terms cover only my original work. Third-party material retains its own terms and source-access obligations, including LGPL modification and debugging rights. No rights to third-party trademarks or game assets are granted.
 
-3. CurseForge Reward Points
+This version applies to copies distributed with it. Earlier copies and material obtained from them retain their grants. For my earlier custom licenses, I waive fixed-minimum and additional-per-source reward shares: the single positive share chosen by you above satisfies those clauses without approval. Other conditions remain unchanged; no new conditions apply to MIT copies or third-party material.
 
-If such a derivative project earns CurseForge Reward Points, allocate a
-positive share of that project's points to antrakt92 through CurseForge's
-Members reward allocation. You choose the percentage yourself, taking into
-account the extent and significance of the covered work used in your project.
-There is no fixed minimum percentage. Maintain your chosen share while the
-project uses the covered work and earns points. A single share to antrakt92
-per derivative project satisfies the reward-sharing requirement for all
-Antrakt/Antrakt92 projects reused in it. Reusing several source projects does
-not require separate shares. Each separate derivative project is assessed
-separately. The share concerns that derivative project only, not account
-earnings, other projects, donations or other revenue. No points earned means
-no payment.
-
-These permissions apply automatically when you meet the conditions. No prior
-contact, permission request, negotiation or approval is required; contacting
-the author is optional. Send the member invitation required by CurseForge and
-enable your chosen share when it is accepted and the platform permits it.
-A pending invitation awaiting the author's acceptance does not block these
-permissions or by itself breach this condition. CurseForge's own rules still
-apply.
-
-4. Uses that require no share
-
-Installation, gameplay, recommendations, links, dependency references and
-collections that reference the original download require no reward share.
-Independently written implementations, translations and compatibility
-patches also require no reward share or additional public credit unless
-they substantially reuse the covered implementation.
-
-Third-party licenses and their source-access obligations remain in force.
-These terms do not restrict replacing or modifying LGPL libraries, or
-reverse engineering for debugging those modifications. They grant no
-rights in third-party trademarks, game assets or data.
-
-Version 1.3 applies to copies explicitly distributed with it. Earlier copies,
-including MIT and earlier custom-license versions, and material obtained from
-them retain their original grants, subject to the additional permission below.
-New original contributions first offered solely under version 1.3 are covered
-by these terms.
-
-As an additional permission from Antrakt/Antrakt92, the reward-sharing terms
-in section 3 replace and waive this author's fixed-minimum and separate-share
-requirements in all earlier custom-license versions, including 1.0, 1.1 and 1.2.
-A single positive share chosen by you under section 3 satisfies those earlier
-reward-sharing requirements. All other terms of those earlier grants remain
-unchanged. This additional permission applies automatically without contacting
-the author or obtaining approval. It imposes no new conditions on MIT copies
-or third-party material.
 The earlier MIT source snapshot remains under its recorded license:
 https://github.com/Antrakt92/ApplicantScout-Companion/tree/49d448979145d4b33ff5f38ee9e43fffa4a4cb48
 
-THE COVERED MATERIAL IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE COVERED MATERIAL
-OR THE USE OR OTHER DEALINGS IN THE COVERED MATERIAL.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
