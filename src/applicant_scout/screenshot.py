@@ -620,17 +620,25 @@ def _normalized_top_left_qr(img: Image.Image) -> Image.Image | None:
     pass. This is only candidate recovery; APS1 parsing and CRC remain the
     ownership boundary used by callers.
     """
-    gray = img.convert("L")
+    # WHY: reject ordinary screenshots using only the measured edge pixels;
+    # converting an entire 4K frame allocates work unrelated to QR recovery.
+    with img.crop((0, 0, img.width, min(2, img.height))) as edge:
+        with edge.convert("L") as gray_edge:
+            width = _white_edge_extent(gray_edge, horizontal=True)
+    if width is None:
+        return None
+    with img.crop((0, 0, min(2, img.width), img.height)) as edge:
+        with edge.convert("L") as gray_edge:
+            height = _white_edge_extent(gray_edge, horizontal=False)
+    if height is None:
+        return None
+    side = min(width, height)
+    if side < _QR_RECOVERY_MIN_SIDE_PX or abs(width - height) > max(2, side // 100):
+        return None
+    with img.crop((0, 0, side, side)) as square_source:
+        gray = square_source.convert("L")
     best: tuple[tuple[int, int, int], Image.Image] | None = None
     try:
-        width = _white_edge_extent(gray, horizontal=True)
-        height = _white_edge_extent(gray, horizontal=False)
-        if width is None or height is None:
-            return None
-        side = min(width, height)
-        if side < _QR_RECOVERY_MIN_SIDE_PX or abs(width - height) > max(2, side // 100):
-            return None
-
         with gray.crop((0, 0, side, side)) as square:
             # M3: versions iterate ascending, so the first zero-error
             # (finder + timing) candidate is the global minimum — no later
