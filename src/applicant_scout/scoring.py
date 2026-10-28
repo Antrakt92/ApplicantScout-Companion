@@ -490,7 +490,13 @@ def _activity_dungeon_keys(activity_id: int, dungeon_name: object) -> set[str]:
     mapped_name = mplus_dungeon_name_for_activity_id(activity_id)
     key = normalise_dungeon_name(mapped_name or dungeon_name)
     keys = {key} if key else set()
+    # The common canonical-name case needs no scan of unrelated encounters.
+    # Only a distinct localized alias requires the conflicting-name check.
+    if not mapped_name:
+        return keys
     raw_key = normalise_dungeon_name(dungeon_name)
+    if raw_key == key:
+        return keys
     known_names = {normalise_dungeon_name(name) for _alias, _eid, name in MPLUS_ENCOUNTERS}
     # Keep a localized alias, but never a conflicting known dungeon name.
     if (mapped_name and raw_key not in {"", "mythic", "mythicplus", "unknown", "unknowndungeon"}
