@@ -1751,6 +1751,11 @@ def _read_bits(record: bytes, bit_offset: int, width: int) -> tuple[int, int]:
             f"bit read past record: offset={bit_offset} width={width} "
             f"record_bits={len(record) * 8}"
         )
+    if bit_offset >= 0 and width > 0:
+        end = bit_offset + width
+        # Packed fields are little-endian, including fields spanning bytes.
+        packed = int.from_bytes(record[bit_offset // 8 : (end + 7) // 8], "little")
+        return (packed >> (bit_offset % 8)) & ((1 << width) - 1), end
     value = 0
     for idx in range(width):
         absolute = bit_offset + idx
