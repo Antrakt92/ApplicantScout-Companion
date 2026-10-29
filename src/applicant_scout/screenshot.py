@@ -2703,6 +2703,7 @@ class ScreenshotWatcher(QObject):
         self._cleanup_lock = threading.RLock()
         self._cleanup_pending: dict[str, tuple[Path, SnapshotSource, int, float]] = {}
         self._cleanup_failed: dict[str, SnapshotSource] = {}
+        self._cleanup_active: dict[str, tuple[SnapshotSource, object]] = {}
         self._cleanup_error = ""
         self._cleanup_last_status: str | None = None
         self._historical_candidates: Iterator[Path] | None = None
@@ -3219,36 +3220,79 @@ class ScreenshotWatcher(QObject):
         if self._stopped.is_set() or source is None:
             return False
         key = _normalized_work_path(path)
-        error = None
-        try:
-            removed = _unlink_if_source_matches(path, source)
-        except OSError as exc:
-            removed = False
-            error = str(exc)
         with self._cleanup_lock:
             pending = self._cleanup_pending.get(key)
-            # A delayed old attempt cannot discard a newer generation's retry.
-            if pending is not None and self._same_cleanup_source(pending[1], source):
+            active = self._cleanup_active.get(key)
+            tracked_source = pending[1] if pending is not None else active[0] if active is not None else None
+        if tracked_source is not None and not self._same_cleanup_source(tracked_source, source):
+            # A new generation may supersede an older queued failure. A stale
+            # callback must not supersede the new queue entry in the other direction.
+            try:
+                current = self._source_from_stat(path, path.stat())
+            except OSError:
+                return False
+            if not self._same_cleanup_source(current, source):
+                return False
+        token = object()
+        with self._cleanup_lock:
+            if self._stopped.is_set():
+                return False
+            pending = self._cleanup_pending.get(key)
+            if attempt:
+                if (pending is None or pending[2] != attempt
+                        or not self._same_cleanup_source(pending[1], source)):
+                    return False
+            elif pending is not None:
+                if self._same_cleanup_source(pending[1], source):
+                    return False  # The scheduled retry owns this generation.
                 self._cleanup_pending.pop(key, None)
-            if error is not None and not self._stopped.is_set():
-                if attempt < len(_CLEANUP_RETRY_DELAYS) and (
-                    pending is None or self._same_cleanup_source(pending[1], source)
-                ) and len(self._cleanup_pending) < _CLEANUP_PENDING_LIMIT:
-                    self._cleanup_pending[key] = (
-                        path, source, attempt + 1,
-                        time.monotonic() + _CLEANUP_RETRY_DELAYS[attempt],
-                    )
-                else:
-                    if len(self._cleanup_failed) < _CLEANUP_PENDING_LIMIT:
-                        self._cleanup_failed[key] = source
-                    self._cleanup_error = error
-            elif self._same_cleanup_source(self._cleanup_failed.get(key), source):
-                self._cleanup_failed.pop(key, None)
-        if error is not None:
-            _log.warning("could not delete owned screenshot %s (attempt %d): %s",
-                         path.name, attempt + 1, error)
-        self._publish_cleanup_status()
-        return removed
+            active = self._cleanup_active.get(key)
+            if active is not None and self._same_cleanup_source(active[0], source):
+                return False
+            self._cleanup_active[key] = source, token
+        error = None
+        try:
+            try:
+                removed = _unlink_if_source_matches(path, source)
+            except OSError as exc:
+                removed = False
+                error = str(exc)
+            with self._cleanup_lock:
+                active = self._cleanup_active.get(key)
+                if active is None or active[1] is not token:
+                    return removed  # A newer operation owns all queue/status changes.
+                pending = self._cleanup_pending.get(key)
+                if pending is not None and self._same_cleanup_source(pending[1], source):
+                    self._cleanup_pending.pop(key, None)
+                if error is not None and not self._stopped.is_set():
+                    if (attempt < len(_CLEANUP_RETRY_DELAYS)
+                            and len(self._cleanup_pending) < _CLEANUP_PENDING_LIMIT):
+                        self._cleanup_pending[key] = (
+                            path, source, attempt + 1,
+                            time.monotonic() + _CLEANUP_RETRY_DELAYS[attempt],
+                        )
+                    else:
+                        if key in self._cleanup_failed or len(self._cleanup_failed) < _CLEANUP_PENDING_LIMIT:
+                            self._cleanup_failed[key] = source
+                        self._cleanup_error = error
+                elif self._same_cleanup_source(self._cleanup_failed.get(key), source):
+                    self._cleanup_failed.pop(key, None)
+            if error is not None:
+                _log.warning("could not delete owned screenshot %s (attempt %d): %s",
+                             path.name, attempt + 1, error)
+            self._publish_cleanup_status()
+            return removed
+        finally:
+            with self._cleanup_lock:
+                active = self._cleanup_active.get(key)
+                if active is not None and active[1] is token:
+                    self._cleanup_active.pop(key, None)
+
+    def _historical_cleanup_should_yield(self) -> bool:
+        if self._stopped.is_set() or time.monotonic() - self._last_live_activity < 1.0:
+            return True
+        backlog = self._backlog_thread
+        return backlog is not None and backlog.is_alive()
 
     def _cleanup_tick(self) -> None:
         """Supervisor-only, bounded background work; never applies old snapshots."""
@@ -3256,7 +3300,12 @@ class ScreenshotWatcher(QObject):
             return
         now = time.monotonic()
         with self._cleanup_lock:
-            failed = list(self._cleanup_failed.items())
+            failed = list(self._cleanup_failed.items())[:_BACKLOG_HISTORICAL_CLEANUP_LIMIT]
+            # Rotate bounded work so a permanently locked file cannot starve
+            # status recovery for the rest of the warning set.
+            for key, source in failed:
+                self._cleanup_failed.pop(key)
+                self._cleanup_failed[key] = source
         for key, source in failed:
             try:
                 current = self._source_from_stat(Path(source.file_id), Path(source.file_id).stat())
@@ -3275,10 +3324,7 @@ class ScreenshotWatcher(QObject):
             self._delete_owned_screenshot(path, source, attempt=attempt)
         # Live captures and startup restoration always have priority. One native
         # image scan already in progress cannot be interrupted safely.
-        if now - self._last_live_activity < 1.0:
-            return
-        backlog = self._backlog_thread
-        if backlog is not None and backlog.is_alive():
+        if self._historical_cleanup_should_yield():
             return
         if self._historical_candidates is None:
             if now < self._historical_next_sweep:
@@ -3287,7 +3333,8 @@ class ScreenshotWatcher(QObject):
         deadline = time.monotonic() + _BACKLOG_PHASE_SECONDS
         decoded = 0
         for _ in range(_BACKLOG_EXAMINED_LIMIT):
-            if (self._stopped.is_set() or decoded >= _BACKLOG_HISTORICAL_CLEANUP_LIMIT
+            if (self._historical_cleanup_should_yield()
+                    or decoded >= _BACKLOG_HISTORICAL_CLEANUP_LIMIT
                     or time.monotonic() >= deadline):
                 break
             try:
