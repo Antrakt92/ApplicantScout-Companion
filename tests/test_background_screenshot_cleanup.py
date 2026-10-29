@@ -122,9 +122,9 @@ def test_historical_replacement_during_decode_is_preserved(monkeypatch, tmp_path
 
     monkeypatch.setattr(mod, "_decode_screenshot_result", decode)
     retries = []
-    monkeypatch.setattr(watcher, "_schedule_generation_retry", retries.append)
+    monkeypatch.setattr(watcher, "_request_backlog_rescan_after_deferred_resolution", lambda: retries.append(True))
     watcher._cleanup_tick()
-    assert retries == [path]
+    assert retries == [True]
     assert path.read_bytes() == b"manual photograph"
     assert not watcher._cleanup_pending
 
@@ -272,7 +272,7 @@ def test_fresh_replacement_reaches_live_consumer_before_deletion(monkeypatch, tm
     retries = []
     received = []
     watcher.snapshotReceived.connect(received.append)
-    monkeypatch.setattr(watcher, "_schedule_generation_retry", retries.append)
+    monkeypatch.setattr(watcher, "_request_backlog_rescan_after_deferred_resolution", lambda: retries.append(True))
     monkeypatch.setattr(mod, "_wait_for_stable_size", lambda _path: True)
     monkeypatch.setattr(mod, "_decode_screenshot_result",
                         lambda _path: mod.DecodeResult(mod.Snapshot(None, None), True))
@@ -304,7 +304,7 @@ def test_fresh_replacement_reaches_live_consumer_before_deletion(monkeypatch, tm
     watcher._cleanup_tick()
     assert path.exists()
     assert received == []
-    assert retries == [path]
-    watcher._on_new_file(path)
+    assert retries == [True]
+    watcher._scan_recent_backlog()
     assert len(received) == 1
     assert not path.exists()

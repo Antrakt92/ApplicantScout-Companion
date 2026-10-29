@@ -3976,12 +3976,22 @@ def _connect_screenshot_watcher(
     _connect_direct(watcher.decodeFailed, _decode_failed_if_current)
     cleanup_signal = getattr(watcher, "cleanupStatus", None)
     if cleanup_signal is not None:
+        def _cleanup_status_failed(exc: Exception) -> None:
+            watcher.retry_cleanup_status()
+            log.warning("Could not deliver screenshot cleanup status: %s", exc)
+
         def _cleanup_status_if_current(message: str) -> None:
             def apply_status() -> None:
                 if signal_gate.is_current(generation):
-                    window.note_screenshot_cleanup_status(message)
+                    try:
+                        window.note_screenshot_cleanup_status(message)
+                    except Exception as exc:  # noqa: BLE001 - retry the status, not Qt inline
+                        _cleanup_status_failed(exc)
             if signal_gate.is_current(generation):
-                (scheduler or _schedule_snapshot_apply)(apply_status)
+                try:
+                    (scheduler or _schedule_snapshot_apply)(apply_status)
+                except Exception as exc:  # noqa: BLE001 - retain the next background handoff
+                    _cleanup_status_failed(exc)
         _connect_direct(cleanup_signal, _cleanup_status_if_current)
     return apply_queue
 

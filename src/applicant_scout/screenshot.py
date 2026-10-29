@@ -2701,6 +2701,7 @@ class ScreenshotWatcher(QObject):
         ] = {}
         self._consecutive_incomplete_scans = 0
         self._cleanup_lock = threading.RLock()
+        self._cleanup_notification_lock = threading.RLock()
         self._cleanup_pending: dict[str, tuple[Path, SnapshotSource, int, float]] = {}
         self._cleanup_failed: dict[str, SnapshotSource] = {}
         self._cleanup_active: dict[str, tuple[SnapshotSource, object]] = {}
@@ -3196,18 +3197,32 @@ class ScreenshotWatcher(QObject):
         return (left is not None and left == right
                 and left.file_identity == right.file_identity)
 
-    def _publish_cleanup_status(self) -> None:
+    def retry_cleanup_status(self) -> None:
+        """Retry a failed GUI handoff on the next supervisor tick."""
         with self._cleanup_lock:
-            count = len(self._cleanup_failed)
-            count_label = f"{count}+" if count >= _CLEANUP_PENDING_LIMIT else str(count)
-            message = (
-                f"Could not remove {count_label} confirmed ApplicantScout screenshot(s). "
-                f"{self._cleanup_error} Background cleanup will try again later."
-                if count else ""
-            )
-            if message != self._cleanup_last_status and not self._stopped.is_set():
+            self._cleanup_last_status = None
+
+    def _publish_cleanup_status(self) -> None:
+        # Serialize delivery without holding the lifecycle/queue lock across a
+        # receiver callback. Cancellation must not wait for GUI scheduling.
+        with self._cleanup_notification_lock:
+            with self._cleanup_lock:
+                count = len(self._cleanup_failed)
+                count_label = f"{count}+" if count >= _CLEANUP_PENDING_LIMIT else str(count)
+                message = (
+                    f"Could not remove {count_label} confirmed ApplicantScout screenshot(s). "
+                    f"{self._cleanup_error} Background cleanup will try again later."
+                    if count else ""
+                )
+                if message == self._cleanup_last_status or self._stopped.is_set():
+                    return
                 self._cleanup_last_status = message
-                self.cleanupStatus.emit(message)
+            try:
+                if not self._stopped.is_set():
+                    self.cleanupStatus.emit(message)
+            except Exception:
+                self.retry_cleanup_status()
+                raise
 
     def _delete_owned_screenshot(
         self, path: Path, source: SnapshotSource | None, *, attempt: int = 0,
@@ -3386,10 +3401,12 @@ class ScreenshotWatcher(QObject):
                     break
             finally:
                 claim.release()
-                if retry_live:
-                    self._work_claims.forget_recent_generation(claim.key)
                 if (retry_live or claim.retry_requested) and not self._stopped.is_set():
-                    self._schedule_generation_retry(path)
+                    self._work_claims.forget_recent_generation(claim.key)
+                    # A replacement can itself be historical, or become so
+                    # before the callback runs. The backlog owner checks age
+                    # again and never publishes an old capture as live state.
+                    self._request_backlog_rescan_after_deferred_resolution()
 
     def _delete_retired_fragment_files(
         self, files: tuple[_RetainedFragmentFile, ...],
