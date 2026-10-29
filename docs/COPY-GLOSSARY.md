@@ -1,8 +1,7 @@
 # Copy Glossary — ApplicantScout Companion
 
-Approved user-facing terms. Use the left column everywhere: overlay,
-dialogs, tooltips, docs, and release notes. The right column lists
-banned variants that must not appear in outward copy.
+Use these terms for UI labels and documentation. Keep names consistent with
+the controls players see.
 
 | Use | Do not use |
 |---|---|
@@ -24,5 +23,4 @@ Notes:
   `src/applicant_scout/ui_text.py` as `MISSING_DATA_TEXT`.
 - `src/applicant_scout/ui_text.py` is the single home for shared
   user-facing strings (`format_age`, `format_duration`,
-  `format_percent`, updater progress messages). Phase 1 is plain
-  centralization; there is no Qt translation infrastructure yet.
+  `format_percent`, updater progress messages). The companion does not yet have Qt translation support.

@@ -1695,13 +1695,14 @@ def test_release_checklist_documents_optional_signing_gate():
     assert "unsigned" in checklist.lower()
 
 
-def test_contributor_guide_explains_signing_ready_but_unsigned_until_certificate():
+def test_contributor_guide_links_build_signing_requirements():
     assert "(CONTRIBUTING.md)" in _read_repo_text("README.md")
-    readme = _read_repo_text("CONTRIBUTING.md")
+    assert "(docs/BUILDING.md)" in _read_repo_text("CONTRIBUTING.md")
+    readme = _read_repo_text("docs/BUILDING.md")
 
-    assert "signing-ready release pipeline" in readme
     assert "APSCOUT_SIGNING_CERT_SHA1" in readme
     assert "unsigned until a code-signing certificate is configured" in readme
+    assert "before generating its checksum" in readme
 
 
 def test_release_checklist_requires_local_strict_visual_and_media_export_gate():

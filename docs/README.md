@@ -14,7 +14,8 @@
 
 ## For contributors
 
-Start with [source setup, checks and Windows builds](../CONTRIBUTING.md).
+Start with [source setup and checks](../CONTRIBUTING.md).
+See [Windows builds and signing](BUILDING.md) for installer requirements.
 Maintainers can use the [release checklist](../RELEASE_CHECKLIST.md).
 
 ### Visual checks and media

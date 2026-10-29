@@ -5,7 +5,7 @@
 <h1 align="center">ApplicantScout Companion</h1>
 
 <p align="center">
-  A clearer view of applicants and your current group.
+  Warcraft Logs and RaiderIO for WoW applicants and groups.
 </p>
 
 <p align="center">
@@ -20,8 +20,6 @@
   <img src="https://img.shields.io/badge/WoW%20addon-required-f59e0b" alt="WoW addon: required">
 </p>
 
-**Warcraft Logs and RaiderIO beside your WoW Group Finder.**
-
 Compare Mythic+ and raid applicants, inspect players who applied together, and
 review your current party or raid. ApplicantScout puts their logs, scores, and
 experience in one table, with missing data clearly marked.
@@ -34,9 +32,6 @@ For WoW Retail Midnight 12.1.5, including The Unbinding of Kith'ix.
 Install the addon in the active client's AddOns folder and select its
 `Screenshots` folder in Companion Settings.
 The companion watches one selected client at a time.
-
-**[Download the Windows installer](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest)**
-· **[Setup guide](docs/GETTING_STARTED.md)**
 
 On the release page, use **Windows installer** near the top. The portable ZIP
 is there too if you prefer to unpack and run the app yourself. Open its
