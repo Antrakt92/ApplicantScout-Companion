@@ -165,18 +165,14 @@ def test_unavailable_collection_preserves_real_default_or_saved_checkbox_and_all
         assert dialog.usage_check.isChecked() is (saved_consent is True)
         assert path.read_bytes() == initial_bytes
         assert not usage.record("addon_received")
-        dialog.usage_check.click()
-        assert dialog.usage_check.isChecked() is (saved_consent is not True)
         expected_consent = saved_consent is not True
+        # Native private-file setup can outlast two seconds on Windows. Wait
+        # for the worker acknowledgement, then require the exact saved choice.
+        with qtbot.waitSignal(dialog.usageConsentChanged, timeout=10_000) as completed:
+            dialog.usage_check.click()
+            assert dialog.usage_check.isChecked() is expected_consent
+        assert completed.args == [expected_consent]
 
-        def _consent_saved() -> bool:
-            try:
-                return json.loads(path.read_text())["consent"] is expected_consent
-            except (OSError, ValueError):
-                # The background write may hold the file briefly on Windows.
-                return False
-
-        qtbot.waitUntil(_consent_saved, timeout=2000)
         assert json.loads(path.read_text())["consent"] is expected_consent
         assert usage._thread is None
     finally:
@@ -233,3 +229,41 @@ def test_first_run_actions_stay_visible_while_small_window_scrolls(qtbot, tmp_pa
     assert dialog.usage_check.isChecked()
     dialog.usage_check.click()
     assert not dialog.usage_check.isChecked()
+
+
+def test_slow_consent_revocation_stops_reporting_before_persistence(qtbot, tmp_path, monkeypatch):
+    from applicant_scout import usage as usage_mod
+
+    path = tmp_path / "config" / "usage.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"schema": 1, "consent": True}), encoding="utf-8")
+    usage = UsageClient(path.parent, "0.17.1", endpoint="")
+    started = threading.Event()
+    release = threading.Event()
+    real_write = usage_mod.atomic_write_text
+
+    def delayed_write(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(usage_mod, "atomic_write_text", delayed_write)
+    try:
+        dialog = dialog_for(qtbot, tmp_path, usage)
+        with qtbot.waitSignal(dialog.usageConsentChanged, timeout=10_000) as completed:
+            dialog.usage_check.click()
+            assert started.wait(2)
+            assert not usage.consent_enabled
+            assert not usage.record("addon_received")
+            # Exercise a legitimate background save beyond the old poll deadline
+            # while allowing the GUI event loop to keep processing events.
+            qtbot.wait(2100)
+            assert json.loads(path.read_text())["consent"] is True
+            assert not dialog.usage_check.isChecked()
+            release.set()
+        assert completed.args == [False]
+        assert json.loads(path.read_text())["consent"] is False
+        assert usage._thread is None
+    finally:
+        release.set()
+        usage.close()
