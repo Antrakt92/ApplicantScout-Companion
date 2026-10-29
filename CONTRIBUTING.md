@@ -1,5 +1,7 @@
 # Contributing
 
+[Overview](README.md) · [Setup & checks](#set-up-a-windows-checkout) · [Documentation](docs/README.md) · [Security](SECURITY.md)
+
 Report bugs with the companion/addon versions, Windows version, expected result
 and steps to reproduce. Redact credentials and player data using the
 [diagnostic guide](docs/REFERENCE.md#trust-and-local-data). For vulnerabilities,

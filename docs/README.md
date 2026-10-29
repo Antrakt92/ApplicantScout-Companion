@@ -1,15 +1,24 @@
-# ApplicantScout Companion Docs
+# ApplicantScout Companion documentation
 
-This folder holds setup instructions, privacy information, contributor docs
-and generated visual fixtures.
+[Back to the overview](../README.md) · [Download](https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest) · [Get help](https://github.com/Antrakt92/ApplicantScout-Companion/issues)
 
-- [Overview and support](../README.md).
-- [Contributor setup and Windows builds](../CONTRIBUTING.md).
-- [Overlay columns and estimates](OVERLAY.md).
-- [Settings, troubleshooting and protocol reference](REFERENCE.md).
-- [Step-by-step setup](GETTING_STARTED.md).
-- [Optional usage statistics and privacy](PRIVACY.md).
-- [Release history](../RELEASE_NOTES.md) and [release checklist](../RELEASE_CHECKLIST.md).
+## For players
+
+| I want to… | Start here |
+|---|---|
+| Install the addon and companion, then connect Warcraft Logs | [Illustrated setup guide](GETTING_STARTED.md) |
+| Understand columns, colours and Fit estimates | [Overlay guide](OVERLAY.md) |
+| Change settings, use keyboard controls or troubleshoot a problem | [Reference and troubleshooting](REFERENCE.md) |
+| Understand optional usage statistics | [Privacy](PRIVACY.md) |
+| See what changed | [Release history](../RELEASE_NOTES.md) |
+
+## For contributors
+
+Start with [source setup, checks and Windows builds](../CONTRIBUTING.md).
+Maintainers can use the [release checklist](../RELEASE_CHECKLIST.md).
+
+### Visual checks and media
+
 - Overlay visual baselines: `visual/overlay-polish-fixture*.png`. From the
   repository root, check all scenarios with
   `.\.venv\Scripts\python scripts\render_overlay_fixture.py --check --all`;
@@ -31,6 +40,9 @@ and generated visual fixtures.
   `.\.venv\Scripts\python scripts\export_public_visual_assets.py --addon-root ..\ApplicantScout-Addon --check`;
   refresh them with the same command without `--check` after intentional
   baseline changes and visual inspection.
+
+### Data and seasonal helpers
+
 - Manual WCL fetch helper: [manual_wcl_fetch.py](../scripts/manual_wcl_fetch.py).
 - Seasonal WCL verification and encounter tuple helper:
   [verify_wcl_season.py](../scripts/seasonal/verify_wcl_season.py). Live calls require

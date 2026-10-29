@@ -1,10 +1,23 @@
-# ApplicantScout Companion
+<p align="center">
+  <img src="src/applicant_scout/assets/app_icon-256.png" alt="ApplicantScout Companion logo" width="112" height="112">
+</p>
 
-<p>
-  <a href="https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest"><img alt="Latest companion release" src="https://img.shields.io/github/v/release/Antrakt92/ApplicantScout-Companion?style=for-the-badge"></a>
-  <a href="https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay"><img alt="WoW addon required" src="https://img.shields.io/badge/WoW%20addon-required-ff5e7a?style=for-the-badge"></a>
-  <img alt="Windows overlay" src="https://img.shields.io/badge/Windows-overlay-00b8ff?style=for-the-badge">
-  <img alt="Warcraft Logs plus RaiderIO" src="https://img.shields.io/badge/WCL%20%2B%20RaiderIO-context-7c5cff?style=for-the-badge">
+<h1 align="center">ApplicantScout Companion</h1>
+
+<p align="center">
+  A clearer view of applicants and your current group.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Antrakt92/ApplicantScout-Companion/releases/latest"><strong>Download for Windows</strong></a>
+  · <a href="https://www.curseforge.com/wow/addons/applicantscout-lfg-overlay"><strong>Get the WoW addon</strong></a>
+  · <a href="docs/GETTING_STARTED.md"><strong>Setup guide</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Antrakt92/ApplicantScout-Companion/releases"><img src="https://img.shields.io/github/v/release/Antrakt92/ApplicantScout-Companion?label=release&amp;color=22c55e" alt="Latest stable release"></a>
+  <img src="https://img.shields.io/badge/Platform-Windows-3b82f6" alt="Platform: Windows">
+  <img src="https://img.shields.io/badge/WoW%20addon-required-f59e0b" alt="WoW addon: required">
 </p>
 
 **Warcraft Logs and RaiderIO beside your WoW Group Finder.**
@@ -36,9 +49,27 @@ The guide shows how to create them. ApplicantScout does not ask for your
 Blizzard password.
 
 <p align="center">
-  <img src="docs/visual/overlay-polish-fixture.png" alt="Windows companion: Mythic+ applicants with individual results and grouped applications" width="45%">
-  <img src="docs/visual/overlay-polish-fixture-party-manual-key.png" alt="Windows companion: Party view with current group members and a chosen target key" width="45%">
+  <a href="#quick-start">Quick start</a>
+  · <a href="#overlay-data">Overlay data</a>
+  · <a href="#trust-and-local-data">Privacy</a>
+  · <a href="#support">Help</a>
+  · <a href="docs/README.md">Documentation</a>
 </p>
+
+<p align="center">
+  <img src="docs/visual/overlay-polish-fixture.png" alt="Windows companion: Mythic+ applicants with individual results and grouped applications" width="100%">
+</p>
+
+<details>
+<summary>Party view and a chosen target key</summary>
+
+<p align="center">
+  <img src="docs/visual/overlay-polish-fixture-party-manual-key.png" alt="Windows companion: Party view with current group members and a chosen target key" width="100%">
+</p>
+
+</details>
+
+*Anonymized interface examples showing applicants and Party view.*
 
 ## What You Can Check
 
@@ -194,6 +225,14 @@ opts you in silently; see [what is sent and retained](docs/PRIVACY.md). You can
 change the choice in Settings at any time.
 
 </details>
+
+## More by Antrakt
+
+| Addon | What it does |
+|---|---|
+| [StatsPro](https://github.com/Antrakt92/StatsPro) | Character stats and gear HUD for Retail and Forever beta. |
+| [Dungeon Pro](https://github.com/Antrakt92/DungeonPro) | Dungeon quest preparation and navigation for Forever beta. |
+| [Do You Need It?](https://github.com/Antrakt92/Do-You-Need-It-) | Group loot comparisons, history and optional whispers for Retail and Forever beta. |
 
 ## License
 
