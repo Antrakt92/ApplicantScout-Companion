@@ -145,16 +145,19 @@ WIRE_VERSION_REJECT_REASON = "unsupported wire version"
 
 
 # Cap each startup-cleanup pass at the most-recent N unknown screenshots.
-# Manual fingerprints persist, so later starts advance through older files without
-# letting one pathological folder consume minutes of CPU beside WoW.
+# Manual fingerprints persist. Later starts and the background sweep advance
+# through older files without monopolizing decoding beside WoW.
 _BACKLOG_CLEANUP_LIMIT = 500
 _BACKLOG_EXAMINED_LIMIT = 500
 _BACKLOG_PHASE_SECONDS = 1.0
 # Recent frames retain the larger envelope above because a fresh fragmented
 # snapshot may need many files to reassemble. Historical files are cleanup-only:
-# keep their native QR/JPG work to a small slice per launch so starting the
-# companion beside WoW cannot spend tens of seconds decoding stale captures.
+# keep startup and supervisor slices small so old QR/JPG work yields to live
+# captures instead of occupying the decoder for a whole folder.
 _BACKLOG_HISTORICAL_CLEANUP_LIMIT = 4
+_HISTORICAL_SWEEP_INTERVAL_SECONDS = 600.0
+_CLEANUP_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 16.0)
+_CLEANUP_PENDING_LIMIT = 256
 _BACKLOG_INCOMPLETE_SCAN_LIMIT = 4
 # The live observer can remain healthy after an unexpected startup backlog
 # failure, so it will not trigger the normal observer-restart rescan. Keep one
@@ -2650,6 +2653,7 @@ class ScreenshotWatcher(QObject):
 
     snapshotReceived = Signal(object)  # Snapshot
     decodeFailed = Signal(str, str, object)  # path, reason, SnapshotSource | None
+    cleanupStatus = Signal(str)
 
     def __init__(
         self,
@@ -2696,6 +2700,14 @@ class ScreenshotWatcher(QObject):
             tuple[_ScreenshotWorkKey, Any],
         ] = {}
         self._consecutive_incomplete_scans = 0
+        self._cleanup_lock = threading.RLock()
+        self._cleanup_pending: dict[str, tuple[Path, SnapshotSource, int, float]] = {}
+        self._cleanup_failed: dict[str, SnapshotSource] = {}
+        self._cleanup_error = ""
+        self._cleanup_last_status: str | None = None
+        self._historical_candidates: Iterator[Path] | None = None
+        self._historical_next_sweep = 0.0
+        self._last_live_activity = float("-inf")
 
     @staticmethod
     def _observer_is_healthy(observer: Any | None) -> bool:
@@ -2850,6 +2862,15 @@ class ScreenshotWatcher(QObject):
                     logger=_log,
                     exc_info=_log.isEnabledFor(logging.DEBUG),
                 )
+            try:
+                self._cleanup_tick()
+            except Exception:  # noqa: BLE001 - preserve files and retry next tick
+                _log_throttle.warn_once_per_interval(
+                    "screenshot.background_cleanup",
+                    "could not complete background screenshot cleanup",
+                    logger=_log,
+                    exc_info=_log.isEnabledFor(logging.DEBUG),
+                )
 
     def start(self) -> None:
         with self._observer_lock:
@@ -2892,6 +2913,8 @@ class ScreenshotWatcher(QObject):
     def request_stop(self) -> None:
         # Publish cancellation before waiting for short state bookkeeping.
         self._stopped.set()
+        with self._cleanup_lock:
+            self._cleanup_pending.clear()
         with self._fragment_expiry_lock:
             self._fragment_expiry_token += 1
             timer = self._fragment_expiry_timer
@@ -3168,18 +3191,163 @@ class ScreenshotWatcher(QObject):
         return replace(fragment, source=source)
 
     @staticmethod
-    def _delete_retired_fragment_files(
-        files: tuple[_RetainedFragmentFile, ...],
-    ) -> int:
-        deleted = 0
-        for retained in files:
-            path = retained.path
+    def _same_cleanup_source(left: SnapshotSource | None, right: SnapshotSource) -> bool:
+        return (left is not None and left == right
+                and left.file_identity == right.file_identity)
+
+    def _publish_cleanup_status(self) -> None:
+        with self._cleanup_lock:
+            count = len(self._cleanup_failed)
+            count_label = f"{count}+" if count >= _CLEANUP_PENDING_LIMIT else str(count)
+            message = (
+                f"Could not remove {count_label} confirmed ApplicantScout screenshot(s). "
+                f"{self._cleanup_error} Background cleanup will try again later."
+                if count else ""
+            )
+            if message != self._cleanup_last_status and not self._stopped.is_set():
+                self._cleanup_last_status = message
+                self.cleanupStatus.emit(message)
+
+    def _delete_owned_screenshot(
+        self, path: Path, source: SnapshotSource | None, *, attempt: int = 0,
+    ) -> bool:
+        """Only call after APS1 ownership and snapshot/fragment retirement gates.
+
+        Every retry retains the original native identity, size and timestamp;
+        a replacement never inherits permission to delete from this queue.
+        """
+        if self._stopped.is_set() or source is None:
+            return False
+        key = _normalized_work_path(path)
+        error = None
+        try:
+            removed = _unlink_if_source_matches(path, source)
+        except OSError as exc:
+            removed = False
+            error = str(exc)
+        with self._cleanup_lock:
+            pending = self._cleanup_pending.get(key)
+            # A delayed old attempt cannot discard a newer generation's retry.
+            if pending is not None and self._same_cleanup_source(pending[1], source):
+                self._cleanup_pending.pop(key, None)
+            if error is not None and not self._stopped.is_set():
+                if attempt < len(_CLEANUP_RETRY_DELAYS) and (
+                    pending is None or self._same_cleanup_source(pending[1], source)
+                ) and len(self._cleanup_pending) < _CLEANUP_PENDING_LIMIT:
+                    self._cleanup_pending[key] = (
+                        path, source, attempt + 1,
+                        time.monotonic() + _CLEANUP_RETRY_DELAYS[attempt],
+                    )
+                else:
+                    if len(self._cleanup_failed) < _CLEANUP_PENDING_LIMIT:
+                        self._cleanup_failed[key] = source
+                    self._cleanup_error = error
+            elif self._same_cleanup_source(self._cleanup_failed.get(key), source):
+                self._cleanup_failed.pop(key, None)
+        if error is not None:
+            _log.warning("could not delete owned screenshot %s (attempt %d): %s",
+                         path.name, attempt + 1, error)
+        self._publish_cleanup_status()
+        return removed
+
+    def _cleanup_tick(self) -> None:
+        """Supervisor-only, bounded background work; never applies old snapshots."""
+        if self._stopped.is_set():
+            return
+        now = time.monotonic()
+        with self._cleanup_lock:
+            failed = list(self._cleanup_failed.items())
+        for key, source in failed:
             try:
-                if _unlink_if_source_matches(path, retained.source):
-                    deleted += 1
-            except OSError as exc:
-                _log.warning("could not delete retired fragment %s: %s", path.name, exc)
-        return deleted
+                current = self._source_from_stat(Path(source.file_id), Path(source.file_id).stat())
+            except FileNotFoundError:
+                current = None
+            except OSError:
+                continue
+            if not self._same_cleanup_source(current, source):
+                with self._cleanup_lock:
+                    if self._same_cleanup_source(self._cleanup_failed.get(key), source):
+                        self._cleanup_failed.pop(key, None)
+        self._publish_cleanup_status()
+        with self._cleanup_lock:
+            due = [entry for entry in self._cleanup_pending.values() if entry[3] <= now]
+        for path, source, attempt, _due in due[:_BACKLOG_HISTORICAL_CLEANUP_LIMIT]:
+            self._delete_owned_screenshot(path, source, attempt=attempt)
+        # Live captures and startup restoration always have priority. One native
+        # image scan already in progress cannot be interrupted safely.
+        if now - self._last_live_activity < 1.0:
+            return
+        backlog = self._backlog_thread
+        if backlog is not None and backlog.is_alive():
+            return
+        if self._historical_candidates is None:
+            if now < self._historical_next_sweep:
+                return
+            self._historical_candidates = _iter_screenshot_candidates(self._dir)
+        deadline = time.monotonic() + _BACKLOG_PHASE_SECONDS
+        decoded = 0
+        for _ in range(_BACKLOG_EXAMINED_LIMIT):
+            if (self._stopped.is_set() or decoded >= _BACKLOG_HISTORICAL_CLEANUP_LIMIT
+                    or time.monotonic() >= deadline):
+                break
+            try:
+                path = next(self._historical_candidates)
+            except StopIteration:
+                self._historical_candidates = None
+                self._historical_next_sweep = time.monotonic() + _HISTORICAL_SWEEP_INTERVAL_SECONDS
+                self._manual_index.flush()
+                break
+            try:
+                stat_result = path.stat()
+            except OSError:
+                continue
+            # Keep recent snapshots and all potentially live fragment assemblies
+            # with the publication owner. This worker only retires historical files.
+            if stat_result.st_mtime >= time.time() - APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS:
+                continue
+            key = _work_key_from_stat(path, stat_result)
+            if self._manual_index.contains(key):
+                continue
+            with self._cleanup_lock:
+                if _normalized_work_path(path) in self._cleanup_pending:
+                    continue
+            claim = self._work_claims.try_claim(path)
+            if claim is None:
+                continue
+            retry_live = False
+            try:
+                # Recheck after claiming: a historical pathname may already
+                # refer to a fresh capture that must reach the live consumer.
+                if claim.stat_result.st_mtime >= time.time() - APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS:
+                    retry_live = True
+                    continue
+                decoded += 1
+                result = self._decode_current_claim(path, claim)
+                if result is None:
+                    continue
+                image, source, _elapsed = result
+                if source.mtime_ns >= int((time.time() - APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS) * 1e9):
+                    retry_live = True
+                    continue
+                if image.has_marker and not image.scan_incomplete and not image.decoder_unavailable:
+                    self._delete_owned_screenshot(path, source)
+                if image.decoder_unavailable:
+                    # Avoid repeatedly loading a missing native decoder for a
+                    # whole folder; the next sweep can retry after repair.
+                    self._historical_candidates = None
+                    self._historical_next_sweep = time.monotonic() + _HISTORICAL_SWEEP_INTERVAL_SECONDS
+                    break
+            finally:
+                claim.release()
+                if retry_live:
+                    self._work_claims.forget_recent_generation(claim.key)
+                if (retry_live or claim.retry_requested) and not self._stopped.is_set():
+                    self._schedule_generation_retry(path)
+
+    def _delete_retired_fragment_files(
+        self, files: tuple[_RetainedFragmentFile, ...],
+    ) -> int:
+        return sum(self._delete_owned_screenshot(item.path, item.source) for item in files)
 
     def _scan_recent_backlog(self) -> None:
         """Restore recent state, then advance bounded historical cleanup.
@@ -3532,20 +3700,8 @@ class ScreenshotWatcher(QObject):
             if self._stopped.is_set():
                 outcome.terminate = True
                 return outcome
-            try:
-                if _unlink_if_source_matches(path, source):
-                    ctx.deleted += 1
-                else:
-                    _log.debug(
-                        "backlog preserved replacement screenshot: %s",
-                        path.name,
-                    )
-            except OSError as exc:
-                _log.warning(
-                    "backlog could not delete %s: %s",
-                    path.name,
-                    exc,
-                )
+            if self._delete_owned_screenshot(path, source):
+                ctx.deleted += 1
         if (
             generation_current
             and ctx.authority_blocked
@@ -3812,6 +3968,7 @@ class ScreenshotWatcher(QObject):
         return True
 
     def _on_new_file(self, path: Path) -> None:
+        self._last_live_activity = time.monotonic()
         try:
             self._on_new_file_guarded(path)
         except Exception:  # noqa: BLE001 - never kill watchdog's dispatcher thread
@@ -4048,14 +4205,7 @@ class ScreenshotWatcher(QObject):
             )
         if self._stopped.is_set():
             return
-        try:
-            if not _unlink_if_source_matches(path, source):
-                _log.debug(
-                    "preserved replacement screenshot after decode: %s",
-                    path.name,
-                )
-        except OSError as exc:
-            _log.warning("could not delete %s: %s", path.name, exc)
+        self._delete_owned_screenshot(path, source)
 
     def _decode_current_claim(
         self,

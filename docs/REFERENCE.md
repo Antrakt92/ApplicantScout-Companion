@@ -215,10 +215,15 @@ Advanced commands (`/apscout help all`):
   position.
 - WCL cells stay empty: open Settings and use Test WCL.
 - Screenshot cleanup is marker-safe: the watcher deletes only screenshots that
-  decode to an ApplicantScout `APS1` payload. Manual screenshots and unrelated
-  QR screenshots are left alone. QR screenshots may remain if the companion is
-  absent, interrupted, pointed at the wrong folder, or the Screenshots folder is
-  synced/shared before cleanup.
+  decode to an ApplicantScout `APS1` payload. Screenshots without that marker,
+  including unrelated or unreadable QR codes, are left alone. A manual capture
+  showing a readable ApplicantScout QR is also treated as a transport screenshot.
+  Older captures are
+  checked in small background batches while the companion runs. Temporary
+  deletion failures are retried, with the same file identity checked each time.
+  If deletion still fails, the screenshot status shows a cleanup warning with
+  details in its tooltip. Captures can remain while the companion is absent,
+  interrupted, pointed at the wrong folder, or unable to read its QR code.
 
 ## Version Compatibility
 

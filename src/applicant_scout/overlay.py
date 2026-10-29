@@ -5953,6 +5953,10 @@ class OverlayWindow(QMainWindow):
             self._wire_version_rejects += 1
         self._refresh_health_label()
 
+    def note_screenshot_cleanup_status(self, message: str) -> None:
+        self._screenshot_cleanup_warning = message
+        self._refresh_health_label()
+
     def set_update_available(self, latest_version: str | None) -> None:
         """Mirror the tray/settings update badge onto the health indicator."""
         self._pending_app_update_version = latest_version
@@ -6084,6 +6088,14 @@ class OverlayWindow(QMainWindow):
             install_in_progress=self._install_in_progress,
             install_percent=self._install_percent,
         )
+        cleanup_warning = getattr(self, "_screenshot_cleanup_warning", "")
+        if cleanup_warning:
+            chip = _overlay_health.HealthChipState(
+                text="Cleanup" if chip.chip_state == "neutral" else chip.text,
+                chip_state="warning" if chip.chip_state == "neutral" else chip.chip_state,
+                tooltip=f"{chip.tooltip}\n\n{cleanup_warning}",
+                accessible=f"{chip.accessible}. {cleanup_warning}",
+            )
         self._set_status_chip_text(
             self._health_label, chip.text, chip.tooltip, chip.accessible
         )

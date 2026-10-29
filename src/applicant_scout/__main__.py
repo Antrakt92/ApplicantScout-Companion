@@ -3974,6 +3974,15 @@ def _connect_screenshot_watcher(
     # retained the snapshot.
     _connect_direct(watcher.snapshotReceived, _snapshot_if_current)
     _connect_direct(watcher.decodeFailed, _decode_failed_if_current)
+    cleanup_signal = getattr(watcher, "cleanupStatus", None)
+    if cleanup_signal is not None:
+        def _cleanup_status_if_current(message: str) -> None:
+            def apply_status() -> None:
+                if signal_gate.is_current(generation):
+                    window.note_screenshot_cleanup_status(message)
+            if signal_gate.is_current(generation):
+                (scheduler or _schedule_snapshot_apply)(apply_status)
+        _connect_direct(cleanup_signal, _cleanup_status_if_current)
     return apply_queue
 
 

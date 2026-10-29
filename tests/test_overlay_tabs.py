@@ -2588,3 +2588,29 @@ def test_flush_overlay_refresh_drops_pending_work_after_window_teardown(
     assert not win._refresh_flush_pending
     assert not win._refresh_needs_title
     assert not win._refresh_needs_show
+
+
+def test_screenshot_cleanup_warning_is_visible_and_clears(tmp_path, qtbot):
+    win = _window(tmp_path, qtbot, AppState())
+    previous = win._health_label.text()
+    win.note_screenshot_cleanup_status("Could not remove 2 confirmed ApplicantScout screenshots: access denied")
+    assert win._health_label.text() == "Cleanup"
+    assert win._health_label.property("statusState") == "warning"
+    assert "access denied" in win._health_label.toolTip()
+    win.note_screenshot_cleanup_status("")
+    assert win._health_label.text() == previous
+    assert "access denied" not in win._health_label.toolTip()
+
+
+def test_cleanup_warning_preserves_installer_and_decode_failure_status(tmp_path, qtbot):
+    win = _window(tmp_path, qtbot, AppState())
+    win.note_screenshot_cleanup_status("cleanup failure")
+    win._install_in_progress = True
+    win._install_percent = 50
+    win._refresh_health_label()
+    assert win._health_label.text() == "Installing… 50%"
+    assert "cleanup failure" in win._health_label.toolTip()
+    win.note_decode_failed("shot.jpg", "could not decode")
+    assert win._health_label.text() == "Shot failed"
+    assert win._health_label.property("statusState") == "critical"
+    assert "cleanup failure" in win._health_label.toolTip()
