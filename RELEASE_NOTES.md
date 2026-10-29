@@ -1,5 +1,25 @@
 # ApplicantScout Companion Release Notes
 
+## 0.24.4 - 29-Oct-2026 — Faster overlay updates
+
+Paired release with ApplicantScout addon `0.14.6`.
+
+### Improved
+
+- Reduce CPU work when calculating Mythic+ Fit and decoding local RaiderIO profiles.
+- Avoid unnecessary full-screen image conversion during QR recovery.
+- Update build dependencies and automated security checks.
+
+### Paired addon
+
+- Avoid processing the same pending snapshot twice in one update.
+- Apply the always-visible QR setting immediately.
+- The addon capture format is unchanged.
+
+### License
+
+- Simplify the wording of the reuse license.
+
 ## 0.24.3 - 22-Oct-2026 — Security and reliability
 
 Paired release with ApplicantScout addon `0.14.5`.
