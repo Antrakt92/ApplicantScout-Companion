@@ -85,12 +85,22 @@ def test_cleanup_blocks_inplace_write_after_handle_inspection(monkeypatch, tmp_p
 
     def mutate_after_inspection(fd):
         value = real_fstat(fd)
+        # Capture backends also inspect descriptors; only the claimed screenshot
+        # handle authorizes this concurrent-write probe.
+        if (value.st_dev, value.st_ino) != expected.file_identity:
+            return value
         with pytest.raises(PermissionError):
             path.write_bytes(b"manual replacement")
         attempted.append(True)
         return value
 
     monkeypatch.setattr(os, "fstat", mutate_after_inspection)
+    unrelated = tmp_path / "capture-like.tmp"
+    unrelated.write_bytes(b"unrelated descriptor")
+    with unrelated.open("rb") as other:
+        os.fstat(other.fileno())
+    assert attempted == []
+    assert path.read_bytes() == b"old transport"
     assert screenshot_mod._unlink_if_source_matches(path, expected) is True
     assert attempted == [True]
     assert not path.exists()
