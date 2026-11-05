@@ -1,8 +1,8 @@
 # ApplicantScout Companion Release Notes
 
-## 0.24.7 - 05-Nov-2026 — Dependency maintenance
+## 0.24.8 - 05-Nov-2026 — Dependency maintenance
 
-Paired release with ApplicantScout addon `0.14.9`.
+Paired release with ApplicantScout addon `0.14.10`.
 
 - Update bundled certificate data and build dependencies.
 - Keep the existing screenshot and QR capture format.

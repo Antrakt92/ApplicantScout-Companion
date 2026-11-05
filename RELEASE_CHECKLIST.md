@@ -10,7 +10,10 @@ proves the immutable public copy and assets.
 ## Prepare
 
 1. Update `pyproject.toml`, `src/applicant_scout/__init__.py`,
-   `RELEASE_NOTES.md`, and README wire-compatibility copy. Keep exact paired
+   `constraints-release.txt`'s version header, `RELEASE_NOTES.md`, and README
+   wire-compatibility copy. In `src/applicant_scout/compatibility.py`, align
+   `PAIRED_ADDON_VERSION` and `LATEST_SUPPORTED_ADDON_VERSION` with the new
+   supported pair; preserve `MINIMUM_ADDON_VERSION` unless the wire baseline changes. Keep exact paired
    release versions in `RELEASE_NOTES.md`; README install links should continue
    to use `releases/latest`.
    Keep all version history in `RELEASE_NOTES.md` and packaged copies. The
