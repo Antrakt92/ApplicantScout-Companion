@@ -1,5 +1,17 @@
 # ApplicantScout Companion Release Notes
 
+## 0.24.7 - 05-Nov-2026 — Dependency maintenance
+
+Paired release with ApplicantScout addon `0.14.9`.
+
+- Update bundled certificate data and build dependencies.
+- Keep the existing screenshot and QR capture format.
+
+### Paired addon
+
+- Keep window controls above their parent when opening or raising addon windows.
+- Group ApplicantScout under Antrakt92 in the AddOns list and simplify the setup guide.
+
 ## 0.24.6 - 29-Oct-2026 — Screenshot cleanup
 
 Paired release with ApplicantScout addon `0.14.8`.
