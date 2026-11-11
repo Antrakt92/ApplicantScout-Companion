@@ -1459,15 +1459,27 @@ class StateMachine(QObject):
         self.cleared.emit()
         self.rosterChanged.emit()
 
-    def _resolve_snapshot_player(self, snap: Snapshot) -> WoWPlayer | None:
+    def _resolve_snapshot_identity(
+        self, snap: Snapshot
+    ) -> tuple[WoWPlayer | None, IdentityDelta]:
         if snap.version is None:
-            return None
+            return None, self._compute_identity_delta(None)
         player = self._state.player
         # Producer barriers retire old rows, but omitted region/realm fields
         # still resolve in chronological order without applying old row data.
-        for version in (*snap.producer_version_history, snap.version):
+        prior_identity_changed = False
+        for version in snap.producer_version_history:
             player = resolve_transport_player(player, version)
-        return player
+            prior_identity_changed |= self._compute_identity_delta(
+                player
+            ).player_identity_changed
+        player = resolve_transport_player(player, snap.version)
+        identity = self._compute_identity_delta(player)
+        # A terminal clear may fold a switch away from the current character
+        # and back to its bare name. The intervening switch retires its realm.
+        if prior_identity_changed:
+            identity = replace(identity, player_identity_changed=True)
+        return player, identity
 
     def _compute_identity_delta(
         self, resolved_player: WoWPlayer | None
@@ -1809,8 +1821,7 @@ class StateMachine(QObject):
             self._producer_player_name = ""
             self._producer_player_realm = ""
             self._producer_region = None
-        resolved_player = self._resolve_snapshot_player(snap)
-        identity = self._compute_identity_delta(resolved_player)
+        resolved_player, identity = self._resolve_snapshot_identity(snap)
         version = self._apply_version_block(snap, resolved_player, identity)
         region_identity_changed = version.region_identity_changed
         default_realm_changed = version.default_realm_changed

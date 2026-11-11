@@ -8,6 +8,7 @@ from applicant_scout.__main__ import StateMachine
 from applicant_scout.screenshot import (
     DecodedApplicant,
     DecodedListing,
+    DecodedRosterMember,
     DecodedVersion,
     Snapshot,
     SnapshotSource,
@@ -89,6 +90,76 @@ def test_explicit_terminal_producer_reset_discards_pending_fallback():
     callbacks.pop(0)()
     assert state.player.full_name == ""
     assert state.player.region_id == 0
+
+
+def test_terminal_clear_does_not_restore_a_previous_character_realm():
+    host = DecodedVersion("0.14.10", "12.1.5", 3, "Host-OldRealm")
+    initial = Snapshot(None, host)
+    other = Snapshot(None, replace(host, player_name="Other-Realm"))
+    returned_host = replace(host, player_name="Host")
+    terminal = Snapshot(None, returned_host, terminal_clear=True)
+    roster = Snapshot(
+        None, returned_host,
+        roster=[DecodedRosterMember(1, 1, 1, 8, 62, 685, 2200, 0,
+                                    role=2, name="Mage-Realm")],
+    )
+    realm_resolved = Snapshot(
+        None, replace(host, player_name="Host-NewRealm"),
+        lfg_unavailable=True, roster_unavailable=True,
+    )
+    expected_state, actual_state = AppState(), AppState()
+    expected, actual = StateMachine(expected_state), StateMachine(actual_state)
+    expected.apply_snapshot(initial)
+    actual.apply_snapshot(initial)
+    callbacks: list[Callable[[], None]] = []
+    queue = SnapshotApplyQueue(
+        actual, object(), lambda *_args: None,
+        signal_gate=_CurrentGate(), generation=0, scheduler=callbacks.append,
+    )
+    for snapshots in ((other, terminal), (roster,), (realm_resolved,)):
+        for snap in snapshots:
+            expected.apply_snapshot(snap)
+            queue.enqueue_snapshot(snap)
+        callbacks.pop(0)()
+
+    assert actual_state.player == expected_state.player
+    assert expected_state.party_members
+    assert actual_state.party_members == expected_state.party_members
+
+
+def test_partial_producer_region_resolves_against_already_applied_player():
+    host = DecodedVersion("0.14.10", "12.1.5", 3, "Host")
+    listing = DecodedListing(401, 12, "Dungeon", "Listing", "")
+    initial = Snapshot(None, replace(host, player_name="Other-Realm", region_id=1))
+    pending = (
+        Snapshot(
+            None, replace(host, player_name="Host-OldRealm", region_id=0),
+            lfg_unavailable=True, roster_unavailable=True,
+        ),
+        Snapshot(None, host),
+        Snapshot(listing, host),
+        Snapshot(
+            None, replace(host, player_name="Host-NewRealm"),
+            lfg_unavailable=True, roster_unavailable=True,
+        ),
+    )
+    expected_state, actual_state = AppState(), AppState()
+    expected, actual = StateMachine(expected_state), StateMachine(actual_state)
+    expected.apply_snapshot(initial)
+    actual.apply_snapshot(initial)
+    callbacks: list[Callable[[], None]] = []
+    queue = SnapshotApplyQueue(
+        actual, object(), lambda *_args: None,
+        signal_gate=_CurrentGate(), generation=0, scheduler=callbacks.append,
+    )
+    for snap in pending:
+        expected.apply_snapshot(snap)
+        queue.enqueue_snapshot(snap)
+    callbacks.pop(0)()
+
+    assert expected_state.listing is not None
+    assert actual_state.listing == expected_state.listing
+    assert actual_state.player == expected_state.player
 
 
 @pytest.mark.parametrize("boundary", [

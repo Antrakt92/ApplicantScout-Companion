@@ -206,10 +206,12 @@ def append_pending_snapshot(
     )
     # A fully specified identity/region makes older fallback context redundant.
     # Keep only its suffix so ordinary character-switch bursts stay bounded.
+    history_has_seed = False
     for index in range(len(history) - 1, -1, -1):
         name, realm, region = version_producer_identity(history[index])
         if name and realm and region is not None:
             history = history[index:]
+            history_has_seed = True
             break
     if bool(getattr(snap, "terminal_clear", False)):
         if isinstance(snap, Snapshot) and snap.reset_producer_identity:
@@ -227,27 +229,26 @@ def append_pending_snapshot(
             snap, version=terminal_version,
             producer_version_history=history + snap.producer_version_history,
         ),)
-    player = WoWPlayer()
-    for version in history:
-        player = resolve_transport_player(player, version)
-    incoming_player = (
-        resolve_transport_player(player, snap.version)
-        if isinstance(snap, Snapshot) and snap.version is not None else player
-    )
-    if normalized_producer_identities_conflict(
-        normalize_producer_identity(player.full_name, player.region_id),
-        normalize_producer_identity(incoming_player.full_name, incoming_player.region_id),
-    ):
-        # Keep the reset even if the producer switches back before GUI apply.
-        # This is an in-memory barrier; cache writes retain the original frames.
-        assert isinstance(snap, Snapshot)
-        return (
-            Snapshot(
-                listing=None, version=None, terminal_clear=True,
-                reset_producer_identity=True,
-            ),
-            replace(snap, producer_version_history=history + snap.producer_version_history),
-        )
+    # Partial identities can resolve differently against the already applied
+    # player. Without a complete seed, leave the decision to the state machine.
+    if history_has_seed and isinstance(snap, Snapshot) and snap.version is not None:
+        player = WoWPlayer()
+        for version in history:
+            player = resolve_transport_player(player, version)
+        incoming_player = resolve_transport_player(player, snap.version)
+        if normalized_producer_identities_conflict(
+            normalize_producer_identity(player.full_name, player.region_id),
+            normalize_producer_identity(incoming_player.full_name, incoming_player.region_id),
+        ):
+            # Keep the reset even if the producer switches back before GUI apply.
+            # Cache writes retain the original frames.
+            return (
+                Snapshot(
+                    listing=None, version=None, terminal_clear=True,
+                    reset_producer_identity=True,
+                ),
+                replace(snap, producer_version_history=history + snap.producer_version_history),
+            )
     if pending and bool(getattr(pending[0], "terminal_clear", False)):
         return (pending[0],) + compact_snapshot_segment(pending[1:] + (snap,))
     return compact_snapshot_segment(pending + (snap,))
