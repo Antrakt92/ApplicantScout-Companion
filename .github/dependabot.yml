@@ -13,6 +13,9 @@ updates:
       # https://build.pypa.io/en/stable/changelog.html
       - dependency-name: "build"
         versions: ["1.6.0"]
+      # Windows read failures can stop the internal reader while the emitter stays alive.
+      - dependency-name: "watchdog"
+        versions: ["7.0.0", "7.1.0"]
     groups:
       python-dependencies:
         patterns:
