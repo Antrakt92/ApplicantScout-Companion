@@ -128,10 +128,11 @@ separate history badges. Missing values are omitted
 from both views; historical scores do not change Fit or
 sorting.
 
-Party view can use the current group leader's keystone as the automatic Mythic+
-target key. A manual Party key override still takes priority, raid contexts
-ignore leader-key calibration. Changing the target key recalculates Fit and
-selects the M+ damage brackets shown in the summary and dungeon details.
+An active Mythic+ listing supplies the automatic target for Applicants and
+Party. Without a listing, Party can use the current group leader's keystone.
+A manual target overrides either source in Mythic+ contexts. Changing the
+target recalculates Fit and selects the M+ damage brackets shown in the summary
+and dungeon details.
 
 For raid groups, Party uses the raid difficulty selected in WoW: Normal,
 Heroic, or Mythic. Inside a raid, the instance's actual difficulty takes

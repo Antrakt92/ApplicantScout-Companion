@@ -33,7 +33,7 @@ from applicant_scout.overlay import (
     WIRE_VERSION_REJECT_MESSAGE,
     WIRE_VERSION_REJECT_THRESHOLD,
 )
-from applicant_scout.scoring import CONTEXT_RAID, detect_listing_context
+from applicant_scout.scoring import CONTEXT_RAID, CONTEXT_UNKNOWN, detect_listing_context
 from applicant_scout.screenshot import (
     DecodedApplicant,
     DecodedListing,
@@ -1800,6 +1800,58 @@ def test_manual_target_key_overrides_leader_key(qtbot, tmp_path):
     assert listing.key_level == 16
     assert listing.dungeon_name == "Kings' Rest"
     assert win._tab_bar._key_spin.value() == 16
+
+
+@pytest.mark.parametrize("target", [0, 16])
+def test_active_listing_controls_target_in_both_views(qtbot, tmp_path, target):
+    state = AppState()
+    state.listing = _listing(key_level=target, difficulty_id=8)
+    state.leader_key = LeaderKey(
+        key_level=17, challenge_map_id=249, player_name="Leader-Realm"
+    )
+    state.party_members["dps-realm"] = _ready_mplus_member()
+    win = _window(tmp_path, qtbot, state)
+
+    for tab in ("applicants", "party"):
+        win._active_tab = tab
+        win._update_title()
+        assert win._effective_listing() == state.listing
+        assert win._tab_bar._key_spin.value() == target
+
+    win._tab_bar._key_spin.setValue(15)
+    manual_listing = win._effective_listing()
+    assert manual_listing is not None and manual_listing.key_level == 15
+    state.leader_key = LeaderKey(
+        key_level=18, challenge_map_id=249, player_name="Leader-Realm"
+    )
+    win.on_listing_changed()
+    win._flush_overlay_refresh()
+    assert win._effective_listing() == manual_listing
+    assert win._tab_bar._key_spin.value() == 15
+    win._tab_bar._key_spin.setValue(0)
+    assert win._effective_listing() == state.listing
+
+
+@pytest.mark.parametrize(("category", "difficulty"), [(2, 23), (6, 0)])
+@pytest.mark.parametrize("raw_key", [0, 17])
+def test_non_keystone_listing_cannot_acquire_target_key(
+    qtbot, tmp_path, category, difficulty, raw_key
+):
+    state = AppState()
+    state.listing = _listing(
+        key_level=raw_key, category_id=category, difficulty_id=difficulty
+    )
+    state.leader_key = LeaderKey(
+        key_level=17, challenge_map_id=249, player_name="Leader-Realm"
+    )
+    win = _window(tmp_path, qtbot, state)
+    win._update_title()
+
+    assert detect_listing_context(win._effective_listing()) == CONTEXT_UNKNOWN
+    assert win._tab_bar._key_control.isHidden()
+    assert win._title_bar.title_label.text().startswith("Applicants")
+    win._on_target_key_changed(15)
+    assert win._effective_listing() == state.listing
 
 
 def test_manual_target_key_above_30_is_preserved_and_steps(qtbot, tmp_path):

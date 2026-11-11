@@ -77,11 +77,13 @@ from .constants import (
     CLASS_COLOURS,
     CLASS_TEXT_COLOURS,
     CURRENT_RAID_ENCOUNTERS,
+    MPLUS_CATEGORY_ID,
     ROLE_COLOURS,
     ROLE_GLYPHS,
     ROLE_LABELS,
     SPEC_ID_TO_WCL_NAME,
     SPEC_SHORT_NAMES,
+    can_be_keystone_listing,
     mplus_dungeon_name_for_challenge_map_id,
     percentile_colour,
     rio_score_colour,
@@ -1138,7 +1140,6 @@ def _render_tooltip(parent_widget, tip: str, global_pos) -> bool:
 # so the pure sort fn can see it without rebuilding per state change.
 _SUNK_STATES = _overlay_rows._SUNK_STATES
 _PROVISIONAL_STATES = _overlay_rows._PROVISIONAL_STATES
-_MPLUS_CATEGORY_ID = _overlay_rows._MPLUS_CATEGORY_ID
 
 
 def _split_composite(composite_id: str) -> tuple[str, int]:
@@ -4067,6 +4068,7 @@ class OverlayWindow(QMainWindow):
         super().__init__()
 
         self._state = state
+        self._observed_listing_key = _listing_render_key(state.listing)
         self.usage_activity: UsageActivity | None = None
         self._wcl_client = wcl_client
         self._cache = cache
@@ -5397,16 +5399,9 @@ class OverlayWindow(QMainWindow):
         listing = self._state.listing
         if listing is None:
             return self._last_raid_listing is None
-        if detect_listing_context(listing) == CONTEXT_RAID:
-            return False
-        return listing.category_id in (0, _MPLUS_CATEGORY_ID)
+        return can_be_keystone_listing(listing.category_id, listing.difficulty_id)
 
     def _leader_target_key(self) -> int:
-        listing = self._state.listing
-        if listing is not None and detect_listing_context(listing) == CONTEXT_RAID:
-            return 0
-        if self._party_roster_is_raid():
-            return 0
         leader_key = getattr(self._state, "leader_key", None)
         return positive_int(getattr(leader_key, "key_level", 0))
 
@@ -5425,7 +5420,7 @@ class OverlayWindow(QMainWindow):
             listing_name="",
             comment="",
             key_level=key_level,
-            category_id=_MPLUS_CATEGORY_ID,
+            category_id=MPLUS_CATEGORY_ID,
         )
 
     def _party_roster_is_raid(self) -> bool:
@@ -5448,14 +5443,6 @@ class OverlayWindow(QMainWindow):
         # Mixed or explicitly unavailable context must not revive a previous
         # raid difficulty while a roster refresh is incomplete.
         return 0
-
-    def _should_show_target_key_control(self) -> bool:
-        listing = self._state.listing
-        if listing is not None and detect_listing_context(listing) == CONTEXT_RAID:
-            return False
-        if listing is None and self._last_raid_listing is not None:
-            return False
-        return not self._party_roster_is_raid()
 
     def _reevaluate_source_tab_for_show(self) -> None:
         # Show/restore entry points re-run the count-driven selection while
@@ -5590,6 +5577,9 @@ class OverlayWindow(QMainWindow):
 
     def on_listing_changed(self) -> None:
         listing = self._state.listing
+        listing_key = _listing_render_key(listing)
+        listing_changed = listing_key != self._observed_listing_key
+        self._observed_listing_key = listing_key
         if self._party_roster_is_raid() and self._party_raid_difficulty_id() == 0:
             self._last_raid_listing = None
         elif detect_listing_context(listing) == CONTEXT_RAID:
@@ -5600,13 +5590,10 @@ class OverlayWindow(QMainWindow):
             self._initialize_source_tab()
         if (
             self._manual_target_key is not None
-            and listing is not None
-            and listing.key_level > 0
-        ):
-            self._clear_manual_target_key()
-        elif (
-            self._manual_target_key is not None
-            and not self._can_apply_manual_target_key()
+            and (
+                not self._can_apply_manual_target_key()
+                or (listing_changed and listing is not None and listing.key_level > 0)
+            )
         ):
             self._clear_manual_target_key()
         self._schedule_overlay_refresh(
@@ -6285,33 +6272,28 @@ class OverlayWindow(QMainWindow):
             if detect_listing_context(self._state.listing) == CONTEXT_RAID:
                 return self._state.listing
             return self._last_raid_listing
-        leader_target_key = self._leader_target_key()
-        if self._manual_target_key is None or not self._can_apply_manual_target_key():
-            if self._state.listing is not None and leader_target_key > 0:
-                return replace(self._state.listing, key_level=leader_target_key)
-            if self._state.listing is None and leader_target_key > 0:
-                return self._synthetic_mplus_listing(leader_target_key)
-            if self._state.listing is None and self._state.party_members:
-                return self._last_raid_listing
-            return self._state.listing
-        if self._state.listing is not None:
-            return replace(self._state.listing, key_level=self._manual_target_key)
-        return self._synthetic_mplus_listing(self._manual_target_key)
+        listing = self._state.listing
+        if self._can_apply_manual_target_key():
+            if listing is not None:
+                if self._manual_target_key is not None:
+                    return replace(listing, key_level=self._manual_target_key)
+                # The addon resolves any compatible keystone fallback in the
+                # listing itself. A separate leader key only targets a party.
+                return listing
+            target_key = self._manual_target_key or self._leader_target_key()
+            if target_key > 0:
+                return self._synthetic_mplus_listing(target_key)
+        if listing is None and self._state.party_members:
+            return self._last_raid_listing
+        return listing
 
     def _sync_target_key_control(self) -> None:
-        show_key_control = self._should_show_target_key_control()
+        show_key_control = self._can_apply_manual_target_key()
         self._tab_bar.set_target_key_visible(show_key_control)
         if not show_key_control:
             self._tab_bar.set_target_key(0)
             return
-        if self._manual_target_key is not None:
-            self._tab_bar.set_target_key(self._manual_target_key)
-            return
-        leader_target_key = self._leader_target_key()
-        if leader_target_key > 0:
-            self._tab_bar.set_target_key(leader_target_key)
-            return
-        listing = self._state.listing
+        listing = self._effective_listing()
         self._tab_bar.set_target_key(listing.key_level if listing is not None else 0)
 
     def _resolve_visible_id(self) -> str | None:
@@ -8712,7 +8694,7 @@ class OverlayWindow(QMainWindow):
             _listing_render_key(self._last_raid_listing),
             roles,
             self._manual_target_key,
-            self._leader_target_key(),
+            self._can_apply_manual_target_key(),
             tuple(sorted(self._role_filter)),
         )
 
@@ -8739,7 +8721,10 @@ class OverlayWindow(QMainWindow):
                 count_str = f"({n})"
             listing = self._effective_listing()
             if listing is not None:
-                level = f" +{listing.key_level}" if listing.key_level > 0 else ""
+                level = (
+                    f" +{listing.key_level}"
+                    if detect_listing_context(listing) == CONTEXT_MPLUS else ""
+                )
                 dn = listing.dungeon_name
                 generic = (
                     (not dn)
@@ -8771,11 +8756,11 @@ class OverlayWindow(QMainWindow):
             count_str = f"({n})"
         if listing is not None:
             listing_context = detect_listing_context(listing)
-            title_prefix = (
-                "Raid Applicants"
-                if listing_context == CONTEXT_RAID
-                else "M+ Applicants"
-            )
+            title_prefix = "Applicants"
+            if listing_context == CONTEXT_RAID:
+                title_prefix = "Raid Applicants"
+            elif can_be_keystone_listing(listing.category_id, listing.difficulty_id):
+                title_prefix = "M+ Applicants"
             level = (
                 f" +{listing.key_level}"
                 if listing_context == CONTEXT_MPLUS and listing.key_level > 0

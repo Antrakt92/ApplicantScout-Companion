@@ -643,11 +643,7 @@ def test_state_machine_applies_lua_generated_aps1_v8_golden_snapshot(fixture_ste
         == applicant_expected["rio_completed_at_or_above_minus1"]
     )
     assert applicant.rio_dungeon_count == applicant_expected["rio_dungeon_count"]
-    expected_target_key = (
-        expected["leader_key"]["key_level"]
-        if expected.get("leader_key") is not None
-        else expected["listing"]["key_level"]
-    )
+    expected_target_key = expected["listing"]["key_level"]
     assert applicant.rio_summary_target_key == expected_target_key
 
     assert set(state.party_members) == {

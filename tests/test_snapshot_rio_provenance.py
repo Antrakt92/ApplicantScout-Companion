@@ -95,6 +95,16 @@ def test_raw_listing_key_precedes_unrelated_owned_key(surface):
     ]
 
 
+def test_unknown_listing_key_does_not_take_capture_context_from_bag():
+    first = _full()
+    assert first.listing is not None
+    state = _apply([replace(first, listing=replace(first.listing, key_level=0))])
+    _assert_context(
+        state, applicants=[(0, 401, "Capture dungeon")],
+        roster=[(0, 401, "Capture dungeon")],
+    )
+
+
 @pytest.mark.parametrize("mode", ["sequential", "merged", "plan", "queue"])
 def test_preserved_applicants_do_not_gain_later_owned_key(mode):
     first = _full()

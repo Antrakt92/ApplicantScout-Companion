@@ -53,6 +53,7 @@ from watchdog.observers import Observer
 
 from . import log_throttle as _log_throttle
 from .atomic_io import atomic_write_text
+from .constants import can_be_keystone_listing
 from .producer_identity import is_placeholder_transport_identity
 from .verified_file_cleanup import unlink_verified_file
 
@@ -359,8 +360,11 @@ def snapshot_rio_context(snap: Snapshot, *, roster: bool = False) -> RioSummaryC
     if preserved is not None:
         return preserved
     listing = snap.listing
-    key_level = listing.key_level if listing is not None else 0
-    if key_level <= 0 and snap.leader_key is not None:
+    key_level = 0
+    if listing is not None:
+        if can_be_keystone_listing(listing.category_id, listing.difficulty_id):
+            key_level = listing.key_level
+    elif snap.leader_key is not None:
         key_level = snap.leader_key.key_level
     return RioSummaryContext(
         key_level=max(0, key_level),

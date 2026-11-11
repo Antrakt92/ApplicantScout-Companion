@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 import math
 
-from .constants import group_id_colour
+from .constants import MPLUS_CATEGORY_ID, group_id_colour
 from .scoring import (
     CONTEXT_MPLUS,
     CONTEXT_RAID,
@@ -23,7 +23,6 @@ from .state import Applicant, Listing
 _CANONICAL_PACKAGE_FIT = package_fit
 _SUNK_STATES: frozenset[str] = frozenset({"error", "not_found", "restricted"})
 _PROVISIONAL_STATES: frozenset[str] = frozenset({"loading", "pending"})
-_MPLUS_CATEGORY_ID = 2
 
 #: Applicant fields excluded from row render keys. `raid_boss_parses` feeds
 #: only the info-panel raid detail view, never table cells; `rio_transport_*`
@@ -265,7 +264,7 @@ def sort_applicants_grouped_with_package_fits(
     group_has_ready: dict[str, bool] = {}
     group_has_provisional: dict[str, bool] = {}
     use_fit = detect_listing_context(listing) in (CONTEXT_MPLUS, CONTEXT_RAID)
-    use_parse = use_fit or (listing is not None and listing.category_id == _MPLUS_CATEGORY_ID)
+    use_parse = use_fit or (listing is not None and listing.category_id == MPLUS_CATEGORY_ID)
     group_members: dict[str, list[Applicant]] = {}
     for applicant in apps:
         raw_aid, _ = split_composite(applicant.applicant_id)

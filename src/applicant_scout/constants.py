@@ -11,6 +11,18 @@ CURRENT_RAID_ZONE_ID = 53  # The Venomous Abyss + seasonal lairs
 CURRENT_RAID_ENCOUNTER_ZONE_IDS: tuple[int, ...] = (CURRENT_RAID_ZONE_ID,)
 SEASON_NAME = "Midnight Season 2"
 
+MPLUS_CATEGORY_ID = 2
+MYTHIC_KEYSTONE_DIFFICULTY_ID = 8
+
+
+def can_be_keystone_listing(category_id: int, difficulty_id: int) -> bool:
+    # Zero means an unknown field in older or partial snapshots.
+    return (
+        category_id in (0, MPLUS_CATEGORY_ID)
+        and difficulty_id in (0, MYTHIC_KEYSTONE_DIFFICULTY_ID)
+    )
+
+
 # WCL groups the eight-boss Venomous Abyss raid, Tidebound Grotto, and
 # The Unbinding of Kith'ix under one seasonal zone. Keep the main raid first
 # and the lairs in their provider order in the detail panel.

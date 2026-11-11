@@ -9,6 +9,7 @@ import math
 from .constants import (
     MPLUS_ENCOUNTERS,
     SPEC_ID_TO_WCL_NAME,
+    can_be_keystone_listing,
     mplus_dungeon_name_for_activity_id,
     percentile_colour,
 )
@@ -171,7 +172,11 @@ class MPlusPerformanceSummary:
 def detect_listing_context(listing: Listing | None) -> str:
     if listing is None:
         return CONTEXT_UNKNOWN
-    if type(listing.key_level) is int and 2 <= listing.key_level <= 50:
+    if (
+        can_be_keystone_listing(listing.category_id, listing.difficulty_id)
+        and type(listing.key_level) is int
+        and 2 <= listing.key_level <= 50
+    ):
         return CONTEXT_MPLUS
     if listing.difficulty_id in RAID_TARGET_BY_DIFFICULTY_ID:
         return CONTEXT_RAID
