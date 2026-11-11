@@ -18,6 +18,30 @@ from applicant_scout.screenshot import (
 from applicant_scout.state import AppState
 
 
+def test_fragment_generation_override_preserves_filesystem_high_water():
+    gate = main_mod._SnapshotSourceGate()
+    older_clock = SnapshotSource(100, "lower-clock.jpg", 10)
+    first = SnapshotSource(200, "first.jpg", 10)
+
+    assert gate.accept(first, fragment_order=(0, 17, 10))
+    # A validated newer wire generation also wins if its file metadata ties.
+    assert gate.accept(first, fragment_order=(0, 17, 11))
+    assert gate.accept(older_clock, fragment_order=(0, 17, 12))
+    assert not gate.accept(
+        SnapshotSource(250, "late.jpg", 10), fragment_order=(0, 17, 11),
+    )
+    assert not gate.accept(older_clock, fragment_order=(1, 17, 13))
+    assert not gate.accept(older_clock, fragment_order=(0, 18, 13))
+    assert not gate.accept(older_clock)
+    assert not gate.accept(SnapshotSource(150, "delayed-error.jpg", 10), advance=False)
+
+    assert gate.accept(SnapshotSource(201, "whole.jpg", 10))
+    assert not gate.accept(older_clock, fragment_order=(0, 17, 13))
+    assert gate.accept(
+        SnapshotSource(202, "new-watcher.jpg", 10), fragment_order=(1, 17, 1),
+    )
+
+
 @pytest.mark.parametrize("kind", ["full", "restricted", "terminal", "unstamped"])
 @pytest.mark.parametrize("retire_generation", [False, True])
 @pytest.mark.usefixtures("qapp")

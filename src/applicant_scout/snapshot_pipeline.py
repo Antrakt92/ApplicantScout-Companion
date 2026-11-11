@@ -444,6 +444,7 @@ class SnapshotApplyQueue:
         self._pending: tuple[str, tuple[object, ...]] | None = None
         self._pending_cache_snapshots: tuple[Snapshot, ...] = ()
         self._retained_decode_failure: tuple[str, str, object | None] | None = None
+        self._last_enqueued_source_key: tuple[int, str, int, int] | None = None
         self._last_applied_source_key: tuple[int, str, int, int] | None = None
         self._last_reported_failure_key: tuple[int, str, int, int] | None = None
         self._flush_pending = False
@@ -457,6 +458,14 @@ class SnapshotApplyQueue:
     def _enqueue_snapshot_locked(self, snap: object) -> None:
         if self._pending is None and not self._flush_pending:
             self._apply_retry_attempted = False
+        source_key = self._source_order_key(getattr(snap, "source", None))
+        if source_key is not None and (
+            self._last_enqueued_source_key is None
+            or source_key > self._last_enqueued_source_key
+        ):
+            # Coalescing may discard the highest physical timestamp when a
+            # later v10 generation arrived after the file clock moved back.
+            self._last_enqueued_source_key = source_key
         pending_snapshots: tuple[object, ...] = ()
         if self._pending is not None and self._pending[0] == "snapshot":
             pending_snapshots = self._pending[1]
@@ -479,20 +488,6 @@ class SnapshotApplyQueue:
         source: object | None,
     ) -> tuple[int, str, int, int] | None:
         return snapshot_source_order_key(source)
-
-    @classmethod
-    def _failure_is_newer_than_snapshot(
-        cls,
-        failure: tuple[str, str, object | None],
-        snap: object,
-    ) -> bool:
-        failure_key = cls._source_order_key(failure[2])
-        snapshot_key = cls._source_order_key(getattr(snap, "source", None))
-        return bool(
-            failure_key is not None
-            and snapshot_key is not None
-            and failure_key > snapshot_key
-        )
 
     def enqueue_decode_failed(
         self,
@@ -586,6 +581,7 @@ class SnapshotApplyQueue:
     ) -> None:
         """Apply one dequeued snapshot batch; snapshot state machine."""
         latest_snap = args[-1]
+        source_high_water = self._last_enqueued_source_key
         try:
             getattr(self._window, "note_decode", lambda *_args: None)(latest_snap)
         except Exception:  # noqa: BLE001 - UI health must not drop state
@@ -620,18 +616,21 @@ class SnapshotApplyQueue:
         if not self._signal_gate.is_current(self._generation):
             return
         self._apply_retry_attempted = False
-        latest_source_key = self._source_order_key(
-            getattr(latest_snap, "source", None)
-        )
-        if latest_source_key is not None and (
+        if source_high_water is not None and (
             self._last_applied_source_key is None
-            or latest_source_key > self._last_applied_source_key
+            or source_high_water > self._last_applied_source_key
         ):
-            self._last_applied_source_key = latest_source_key
+            self._last_applied_source_key = source_high_water
         retained = self._retained_decode_failure
         if retained is None:
             return
-        if self._failure_is_newer_than_snapshot(retained, latest_snap):
+        failure_key = self._source_order_key(retained[2])
+        if (
+            failure_key is not None
+            and self._last_applied_source_key is not None
+            and self._source_order_key(getattr(latest_snap, "source", None)) is not None
+            and failure_key > self._last_applied_source_key
+        ):
             self._report_decode_failure(retained)
             return
         self._retained_decode_failure = None

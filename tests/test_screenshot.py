@@ -3132,6 +3132,53 @@ def test_fragment_assembler_newer_generation_supersedes_incomplete_old():
     assert outcome.snapshot is not None
 
 
+@pytest.mark.parametrize("second_mtime", [900, 1000], ids=["clock-rewind", "equal-mtime"])
+@pytest.mark.usefixtures("qapp")
+def test_same_stream_newer_fragment_generation_reaches_the_gui(
+    tmp_path: Path, second_mtime: int,
+):
+    from applicant_scout import __main__ as main_mod
+
+    watcher = ScreenshotWatcher(tmp_path)
+    applied: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    scheduled = []
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        SimpleNamespace(apply_snapshot=applied.append),
+        object(),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=main_mod._WatcherSignalGate(),
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=scheduled.append,
+    )
+    watcher.decodeFailed.emit(
+        "old-error.jpg", "old decoder error",
+        screenshot_mod.SnapshotSource(950, "old-error.jpg", 10),
+    )
+    try:
+        for generation, mtime, rows, prefix in (
+            (10, 1000, 24, "z-old"),
+            (11, second_mtime, 25, "a-new"),
+        ):
+            frames = _wrap_fragments(_large_v9_payload(rows), generation=generation)
+            for index, raw in enumerate(frames):
+                path = tmp_path / f"{prefix}-{index}.jpg"
+                fragment = _fragment_with_source(
+                    _parse_fragment(raw), path=path, mtime_ns=mtime + index,
+                )
+                outcome, alive = watcher._accept_fragment_for_publication(fragment, path)
+                assert alive
+            assert outcome.accepted and outcome.snapshot is not None
+        while scheduled:
+            scheduled.pop(0)()
+        assert len(applied[-1].applicants) == 25
+        assert failures == []
+    finally:
+        watcher.request_stop()
+
+
 def test_fragment_assembler_terminal_barrier_blocks_older_late_chunks():
     fragments = [
         _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())

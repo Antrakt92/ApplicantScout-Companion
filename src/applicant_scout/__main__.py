@@ -3241,27 +3241,47 @@ class _SnapshotSourceGate:
         self._lock = threading.Lock()
         self._latest_source_key: tuple[int, str, int, int] | None = None
         self._latest_source: object | None = None
+        self._fragment_order: tuple[int, int, int] | None = None
 
-    def accept(self, source: object | None, *, advance: bool = True) -> bool:
+    def accept(
+        self,
+        source: object | None,
+        *,
+        advance: bool = True,
+        fragment_order: tuple[int, int, int] | None = None,
+    ) -> bool:
         with self._lock:
-            return self._accept_locked(source, advance=advance)
+            return self._accept_locked(source, advance=advance, fragment_order=fragment_order)
 
-    def _accept_locked(self, source: object | None, *, advance: bool) -> bool:
+    def _accept_locked(
+        self,
+        source: object | None,
+        *,
+        advance: bool,
+        fragment_order: tuple[int, int, int] | None,
+    ) -> bool:
         source_key = snapshot_source_order_key(source)
         if source_key is None:
+            if advance:
+                self._fragment_order = None
             return True
-        if same_snapshot_source_generation(source, self._latest_source):
-            return False
+        newer_file = self._latest_source_key is None or source_key > self._latest_source_key
+        same_file = same_snapshot_source_generation(source, self._latest_source)
         if not advance:
-            return (
-                self._latest_source_key is None
-                or source_key > self._latest_source_key
-            )
-        if self._latest_source_key is None or source_key > self._latest_source_key:
+            return newer_file and not same_file
+        previous = self._fragment_order
+        # The assembler verified the generation within this watcher and stream.
+        # Keep the physical high-water for whole frames, other streams and errors.
+        if previous is not None and fragment_order is not None and fragment_order[:2] == previous[:2]:
+            if fragment_order[2] <= previous[2]:
+                return False
+        elif not newer_file or same_file:
+            return False
+        self._fragment_order = fragment_order
+        if newer_file:
             self._latest_source_key = source_key
             self._latest_source = source
-            return True
-        return False
+        return True
 
 
 class _SnapshotApplier(Protocol):
@@ -3952,7 +3972,9 @@ def _connect_screenshot_watcher(
         with handoff_lock:
             if not signal_gate.is_current(generation):
                 return
-            if not source_gate.accept(getattr(snap, "source", None)):
+            fragment = snap.fragment_identity if isinstance(snap, Snapshot) else None
+            order = (generation, *fragment) if fragment is not None else None
+            if not source_gate.accept(getattr(snap, "source", None), fragment_order=order):
                 return
             apply_queue.enqueue_snapshot(snap)
 

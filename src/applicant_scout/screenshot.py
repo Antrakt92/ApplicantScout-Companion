@@ -351,6 +351,10 @@ class Snapshot:
         default=(), compare=False, repr=False
     )
     reset_producer_identity: bool = field(default=False, compare=False, repr=False)
+    # Validated in-memory v10 stream and generation, separate from file identity.
+    fragment_identity: tuple[int, int] | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 def snapshot_rio_context(snap: Snapshot, *, roster: bool = False) -> RioSummaryContext:
@@ -2578,7 +2582,11 @@ class _SnapshotFragmentAssembler:
                         parsed = None
                         error = "nested v10 fragment payload is not allowed"
                     elif parsed is not None:
-                        parsed = replace(parsed, source=pending.newest_source)
+                        parsed = replace(
+                            parsed,
+                            source=pending.newest_source,
+                            fragment_identity=(fragment.stream_id, fragment.generation),
+                        )
             except (struct.error, TypeError, ValueError) as exc:
                 parsed, error = None, f"assembled v10 payload is invalid: {exc}"
 
