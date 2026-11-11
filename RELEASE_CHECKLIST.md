@@ -47,7 +47,12 @@ proves the immutable public copy and assets.
    baselines enabled; this local strict visual baselines check is the approval
    gate for committed media. Do not use `-VisualMode Smoke` for this local release gate;
    CI/release smoke is only a render-health check and does not approve committed
-   baseline or public-media updates. `-SeasonalOnlineChecks` validates
+   baseline or public-media updates. The reference images were captured at 125%.
+   On a Windows desktop at 100%, set `$env:QT_SCALE_FACTOR = '1.25'` in the shell
+   used for the strict render checks. The weekly workflow records the full Qt
+   rendering environment.
+
+   `-SeasonalOnlineChecks` validates
    `MPLUS_ACTIVITY_ID_TO_DUNGEON_NAME` against Wago's GroupFinderActivity data
    and `MPLUS_CHALLENGE_MAP_ID_TO_DUNGEON_NAME` against Wago's
    MythicPlusSeasonTrackedMap / MapChallengeMode data before seasonal release
