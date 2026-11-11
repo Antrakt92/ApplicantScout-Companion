@@ -1,5 +1,12 @@
 # ApplicantScout Companion Release Notes
 
+## Unreleased
+
+- Use the posted Mythic+ level for Fit and keep manual targets when the leader's key changes.
+- Keep ordinary dungeon listings out of Mythic+ scoring.
+- Preserve group updates through rapid character changes and delayed realm information.
+- Update Python networking and development dependencies.
+
 ## 0.24.8 - 05-Nov-2026 — Dependency maintenance
 
 Paired release with ApplicantScout addon `0.14.10`.
