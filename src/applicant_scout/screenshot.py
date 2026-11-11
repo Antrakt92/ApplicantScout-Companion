@@ -1820,20 +1820,30 @@ class _ScreenshotWorkClaim:
         # A same-path replacement arriving during signal dispatch remains new work.
         self._release_keys_override = {decoded_key}
 
+    def defer_unprocessed_generation(self) -> None:
+        # A rotated backlog pass can skip a claim without decoding it. Keep
+        # that generation eligible for the next scan or a live event.
+        self._release_keys_override = set()
+
     def release(self) -> None:
         if self._released:
             return
-        if self._release_keys_override is None:
-            self.refresh()
-        elif not self.retry_requested:
-            current_stat = self.refresh()
-            if current_stat is not None and self.key not in self._release_keys_override:
-                self.retry_requested = True
         self._released = True
-        self._owner._release(
-            self.path_key,
-            self._release_keys_override or self._seen_keys,
+        seen_keys = self._seen_keys.copy()
+        recent_keys = (
+            seen_keys
+            if self._release_keys_override is None
+            else self._release_keys_override
         )
+        self._owner._release(self.path_key, recent_keys)
+        # Check after releasing the path. An event that arrived while this
+        # claim was active may have been the replacement's only notification.
+        if (
+            not self.retry_requested
+            and self.refresh() is not None
+            and self.key not in (recent_keys or seen_keys)
+        ):
+            self.retry_requested = True
 
 
 class _ScreenshotWorkClaims:
@@ -3857,11 +3867,11 @@ class ScreenshotWatcher(QObject):
                     self._classify_backlog_candidate(path, claim, ctx)
                     is BacklogAction.SKIP
                 ):
-                    continue
-                ctx.remaining -= 1
-                decoded_key = claim.key
-                decoded = self._decode_claim_generation(path, claim, decoded_key)
-                if decoded is None:
+                    claim.defer_unprocessed_generation()
+                else:
+                    ctx.remaining -= 1
+                    decoded_key = claim.key
+                    decoded = self._decode_claim_generation(path, claim, decoded_key)
                     if self._stopped.is_set():
                         return (
                             ctx.remaining,
@@ -3870,33 +3880,25 @@ class ScreenshotWatcher(QObject):
                             ctx.deleted,
                             True,
                         )
-                    continue
-                result, decode_succeeded = decoded
-                if self._stopped.is_set():
-                    return (
-                        ctx.remaining,
-                        ctx.apply_closed,
-                        ctx.authority_blocked,
-                        ctx.deleted,
-                        True,
-                    )
-                outcome = self._handle_decoded_generation(
-                    claim,
-                    decoded_key,
-                    result,
-                    decode_succeeded,
-                    ctx,
-                )
-                if outcome.terminate:
-                    return (
-                        ctx.remaining,
-                        ctx.apply_closed,
-                        ctx.authority_blocked,
-                        ctx.deleted,
-                        True,
-                    )
-                stop_scan = outcome.stop_scan
-                retry_owned_generation = outcome.retry_owned_generation
+                    if decoded is not None:
+                        result, decode_succeeded = decoded
+                        outcome = self._handle_decoded_generation(
+                            claim,
+                            decoded_key,
+                            result,
+                            decode_succeeded,
+                            ctx,
+                        )
+                        if outcome.terminate:
+                            return (
+                                ctx.remaining,
+                                ctx.apply_closed,
+                                ctx.authority_blocked,
+                                ctx.deleted,
+                                True,
+                            )
+                        stop_scan = outcome.stop_scan
+                        retry_owned_generation = outcome.retry_owned_generation
             finally:
                 claim.release()
             if retry_owned_generation is not None:

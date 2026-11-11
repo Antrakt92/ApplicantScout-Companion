@@ -5563,6 +5563,48 @@ def test_backlog_retries_persisted_incomplete_snapshot_after_process_restart(
     assert persisted["deferred"] == []
 
 
+def test_backlog_retry_window_does_not_cache_a_skipped_screenshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    newer = tmp_path / "WoWScrnShot_newer.jpg"
+    intervening = tmp_path / "WoWScrnShot_intervening.jpg"
+    older = tmp_path / "WoWScrnShot_older.jpg"
+    for path, timestamp in ((newer, 999), (intervening, 998), (older, 997)):
+        path.write_bytes(b"screenshot")
+        os.utime(path, (timestamp, timestamp))
+
+    watcher = ScreenshotWatcher(tmp_path)
+    deferred_key = screenshot_mod._work_key_from_stat(newer, newer.stat())
+    watcher._manual_index.note_deferred(deferred_key, flush=False)
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(screenshot_mod, "_BACKLOG_INCOMPLETE_SCAN_LIMIT", 2)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    decoded: list[Path] = []
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        decoded.append(path)
+        if path == older:
+            return screenshot_mod.DecodeResult(Snapshot(listing=None, version=None), True)
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._scan_recent_backlog()
+    assert decoded == [newer, intervening]
+    assert not watcher._manual_index.is_deferred(deferred_key)
+    assert older.exists()
+    assert snapshots == []
+
+    # A deferred-authority resolution immediately requests a coalesced
+    # rescan. The deliberately skipped older file must still be eligible.
+    watcher._scan_recent_backlog()
+    assert decoded == [newer, intervening, older]
+    assert len(snapshots) == 1
+    assert not older.exists()
+
+
 def test_observer_and_backlog_share_single_in_flight_decode_claim(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -5596,6 +5638,87 @@ def test_observer_and_backlog_share_single_in_flight_decode_claim(
     assert not observer_thread.is_alive()
     assert decoded == [image_path]
     assert image_path.exists()
+
+
+def test_backlog_claim_recovers_replacement_observed_during_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"old manual screenshot")
+    os.utime(image_path, (998, 998))
+    replacement = tmp_path / "incoming.tmp"
+    replacement.write_bytes(b"new transport")
+    os.utime(replacement, (999, 999))
+    watcher = ScreenshotWatcher(tmp_path)
+    decoded: list[bytes] = []
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    release = watcher._work_claims._release
+
+    def replace_at_release(path_key, seen_keys):
+        if replacement.exists():
+            replacement.replace(image_path)
+            # The observer sees the replacement while the backlog still
+            # owns the pathname, so this callback cannot claim it yet.
+            watcher._on_new_file(image_path)
+        release(path_key, seen_keys)
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        contents = path.read_bytes()
+        decoded.append(contents)
+        if contents == b"new transport":
+            return screenshot_mod.DecodeResult(Snapshot(listing=None, version=None), True)
+        return screenshot_mod.DecodeResult(None, False)
+
+    monkeypatch.setattr(watcher._work_claims, "_release", replace_at_release)
+    monkeypatch.setattr(screenshot_mod.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    watcher._scan_recent_backlog()
+
+    assert decoded == [b"old manual screenshot", b"new transport"]
+    assert len(snapshots) == 1
+    assert not image_path.exists()
+
+
+def test_backlog_skipped_claim_recovers_a_later_live_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_0001.jpg"
+    image_path.write_bytes(b"old deferred")
+    replacement = tmp_path / "incoming.tmp"
+    replacement.write_bytes(b"new transport")
+    watcher = ScreenshotWatcher(tmp_path)
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    release = watcher._work_claims._release
+
+    def replace_at_release(path_key, seen_keys):
+        if replacement.exists():
+            replacement.replace(image_path)
+            watcher._on_new_file(image_path)
+        release(path_key, seen_keys)
+
+    def decode(path: Path) -> screenshot_mod.DecodeResult:
+        assert path.read_bytes() == b"new transport"
+        return screenshot_mod.DecodeResult(Snapshot(listing=None, version=None), True)
+
+    monkeypatch.setattr(watcher._work_claims, "_release", replace_at_release)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(screenshot_mod, "_decode_screenshot_result", decode)
+
+    remaining, _, authority_blocked, _, _ = watcher._scan_backlog_phase(
+        [(image_path, image_path.stat())],
+        recent=True, remaining=1, apply_closed=False, authority_blocked=False,
+        retry_window_active=True, selected_deferred_keys=set(),
+        snapshot_apply_cutoff_ns=0,
+    )
+
+    assert authority_blocked
+    assert remaining == 1
+    assert len(snapshots) == 1
+    assert not image_path.exists()
 
 
 def test_watcher_retries_changed_generation_without_deleting_replacement(
