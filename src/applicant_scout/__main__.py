@@ -87,6 +87,7 @@ from .screenshot import (
     cleanup_appscout_screenshots,
     format_screenshot_cleanup_summary,
     positive_int_arg,
+    snapshot_ordering_source,
     snapshot_source_order_key,
     same_snapshot_source_generation,
     snapshot_rio_context,
@@ -3974,7 +3975,7 @@ def _connect_screenshot_watcher(
                 return
             fragment = snap.fragment_identity if isinstance(snap, Snapshot) else None
             order = (generation, *fragment) if fragment is not None else None
-            if not source_gate.accept(getattr(snap, "source", None), fragment_order=order):
+            if not source_gate.accept(snapshot_ordering_source(snap), fragment_order=order):
                 return
             apply_queue.enqueue_snapshot(snap)
 

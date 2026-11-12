@@ -355,6 +355,18 @@ class Snapshot:
     fragment_identity: tuple[int, int] | None = field(
         default=None, compare=False, repr=False
     )
+    # File frontier proven by the fragment assembler. Keep source bound to
+    # this snapshot's actual file generation for ownership and diagnostics.
+    fragment_order_source: SnapshotSource | None = field(
+        default=None, compare=False, repr=False
+    )
+
+
+def snapshot_ordering_source(snap: object) -> object | None:
+    if isinstance(snap, Snapshot) and snap.fragment_identity is not None:
+        if snap.fragment_order_source is not None:
+            return snap.fragment_order_source
+    return getattr(snap, "source", None)
 
 
 def snapshot_rio_context(snap: Snapshot, *, roster: bool = False) -> RioSummaryContext:
@@ -2596,6 +2608,7 @@ class _SnapshotFragmentAssembler:
                             parsed,
                             source=pending.newest_source,
                             fragment_identity=(fragment.stream_id, fragment.generation),
+                            fragment_order_source=self._frontier_source,
                         )
             except (struct.error, TypeError, ValueError) as exc:
                 parsed, error = None, f"assembled v10 payload is invalid: {exc}"

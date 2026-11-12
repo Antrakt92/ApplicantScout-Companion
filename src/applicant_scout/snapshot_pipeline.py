@@ -20,6 +20,7 @@ from .screenshot import (
     DecodedApplicant,
     RioSummaryContext,
     Snapshot,
+    snapshot_ordering_source,
     snapshot_rio_context,
     snapshot_source_order_key,
 )
@@ -458,7 +459,7 @@ class SnapshotApplyQueue:
     def _enqueue_snapshot_locked(self, snap: object) -> None:
         if self._pending is None and not self._flush_pending:
             self._apply_retry_attempted = False
-        source_key = self._source_order_key(getattr(snap, "source", None))
+        source_key = self._source_order_key(snapshot_ordering_source(snap))
         if source_key is not None and (
             self._last_enqueued_source_key is None
             or source_key > self._last_enqueued_source_key
@@ -628,7 +629,7 @@ class SnapshotApplyQueue:
         if (
             failure_key is not None
             and self._last_applied_source_key is not None
-            and self._source_order_key(getattr(latest_snap, "source", None)) is not None
+            and self._source_order_key(snapshot_ordering_source(latest_snap)) is not None
             and failure_key > self._last_applied_source_key
         ):
             self._report_decode_failure(retained)

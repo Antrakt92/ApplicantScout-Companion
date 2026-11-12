@@ -3133,9 +3133,10 @@ def test_fragment_assembler_newer_generation_supersedes_incomplete_old():
 
 
 @pytest.mark.parametrize("second_mtime", [900, 1000], ids=["clock-rewind", "equal-mtime"])
+@pytest.mark.parametrize("first_complete", [True, False], ids=["complete-stream", "partial-stream"])
 @pytest.mark.usefixtures("qapp")
 def test_same_stream_newer_fragment_generation_reaches_the_gui(
-    tmp_path: Path, second_mtime: int,
+    tmp_path: Path, second_mtime: int, first_complete: bool,
 ):
     from applicant_scout import __main__ as main_mod
 
@@ -3158,11 +3159,21 @@ def test_same_stream_newer_fragment_generation_reaches_the_gui(
         screenshot_mod.SnapshotSource(950, "old-error.jpg", 10),
     )
     try:
+        if not first_complete:
+            whole = Snapshot(
+                None, None,
+                source=screenshot_mod.SnapshotSource(1000, "whole.jpg", 10),
+            )
+            assert watcher._accept_snapshot_for_publication(whole)[0].accepted
+            scheduled.pop(0)()
         for generation, mtime, rows, prefix in (
-            (10, 1000, 24, "z-old"),
+            (10, 1000 if first_complete else 1100, 24, "z-old"),
             (11, second_mtime, 25, "a-new"),
         ):
             frames = _wrap_fragments(_large_v9_payload(rows), generation=generation)
+            complete = generation == 11 or first_complete
+            if not complete:
+                frames = frames[:1]
             for index, raw in enumerate(frames):
                 path = tmp_path / f"{prefix}-{index}.jpg"
                 fragment = _fragment_with_source(
@@ -3170,11 +3181,27 @@ def test_same_stream_newer_fragment_generation_reaches_the_gui(
                 )
                 outcome, alive = watcher._accept_fragment_for_publication(fragment, path)
                 assert alive
-            assert outcome.accepted and outcome.snapshot is not None
+            assert outcome.accepted and (outcome.snapshot is not None) == complete
+        if not first_complete:
+            watcher.decodeFailed.emit(
+                "between.jpg", "older than the stream ingress",
+                screenshot_mod.SnapshotSource(1050, "between.jpg", 10),
+            )
         while scheduled:
             scheduled.pop(0)()
         assert len(applied[-1].applicants) == 25
         assert failures == []
+        if not first_complete:
+            assert applied[-1].source is not None
+            assert applied[-1].source.mtime_ns < 1100
+            # A whole frame or fault between the old GUI stamp and the proven
+            # stream ingress must remain stale after the clock moved backwards.
+            stale_whole = Snapshot(
+                None, None,
+                source=screenshot_mod.SnapshotSource(1050, "stale-whole.jpg", 10),
+            )
+            watcher.snapshotReceived.emit(stale_whole)
+            assert not scheduled
     finally:
         watcher.request_stop()
 
