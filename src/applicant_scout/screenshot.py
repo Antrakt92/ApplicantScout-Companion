@@ -295,6 +295,7 @@ class SnapshotSource:
     size: int
     file_identity: tuple[int, int] | None = field(default=None, compare=False, repr=False)
     observation_order: int = field(default=0, compare=False, repr=False)
+    fragment_timeout: bool = field(default=False, compare=False, repr=False)
 
 
 def _unlink_if_source_matches(
@@ -3079,11 +3080,13 @@ class ScreenshotWatcher(QObject):
                         and not self._fragment_degraded_reported
                     ):
                         self._fragment_degraded_reported = True
+                        source = outcome.diagnostic_source
                         failure = _FragmentTimeoutNotification(
                             token,
                             outcome.diagnostic_path or self._dir,
                             outcome.error_reason,
-                            outcome.diagnostic_source,
+                            replace(source, fragment_timeout=True)
+                            if source is not None else None,
                         )
                     self._fragment_expiry_identity = None
         # File generations were detached atomically, but deletion may stall on

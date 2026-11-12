@@ -3206,6 +3206,158 @@ def test_same_stream_newer_fragment_generation_reaches_the_gui(
         watcher.request_stop()
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected_failures"),
+    [
+        ("forward", 1),
+        ("rewind", 1),
+        ("rewind-with-pending-apply", 1),
+        ("newer-whole", 0),
+        ("newer-fragment", 0),
+        ("newer-decode-failure", 1),
+        ("older-decode-failure", 1),
+        ("newer-decode-failure-first", 1),
+        ("newer-decode-failure-already-reported", 1),
+        ("older-decode-failure-first", 1),
+        ("older-decode-failure-after-report", 1),
+        ("newer-decode-failure-after-report", 2),
+        ("snapshot-clears-earlier-failure", 2),
+        ("superseded-timeout", 0),
+        ("replaced-watcher", 0),
+    ],
+)
+@pytest.mark.usefixtures("qapp")
+def test_watcher_reports_only_current_fragment_timeout_to_gui(
+    tmp_path: Path, scenario: str, expected_failures: int,
+):
+    from applicant_scout import __main__ as main_mod
+
+    clock = _FakeClock()
+    timers = _FakeTimerFactory()
+    watcher = ScreenshotWatcher(
+        tmp_path, fragment_clock=clock, fragment_timer_factory=timers,
+    )
+    signal_gate = main_mod._WatcherSignalGate()
+    applied: list[Snapshot] = []
+    failures: list[tuple[str, str]] = []
+    scheduled = []
+    main_mod._connect_screenshot_watcher(
+        watcher,
+        SimpleNamespace(apply_snapshot=applied.append),
+        SimpleNamespace(note_screenshot_cleanup_status=lambda _message: None),
+        lambda path, reason: failures.append((path, reason)),
+        signal_gate=signal_gate,
+        source_gate=main_mod._SnapshotSourceGate(),
+        generation=0,
+        scheduler=scheduled.append,
+    )
+
+    def submit_fragments(generation: int, mtime: int, *, complete: bool) -> None:
+        frames = _wrap_fragments(_large_v9_payload(24), generation=generation)
+        if not complete:
+            frames = frames[:1]
+        for index, frame in enumerate(frames):
+            path = tmp_path / f"g{generation}-{index}.jpg"
+            fragment = _fragment_with_source(
+                _parse_fragment(frame), path=path, mtime_ns=mtime + index,
+            )
+            outcome, alive = watcher._accept_fragment_for_publication(fragment, path)
+            assert outcome.accepted and alive
+        assert (outcome.snapshot is not None) == complete
+
+    def flush() -> None:
+        while scheduled:
+            scheduled.pop(0)()
+
+    def submit_decode_failure(mtime: int) -> None:
+        watcher.decodeFailed.emit(
+            "decode-error.jpg", "CRC mismatch",
+            screenshot_mod.SnapshotSource(mtime, "decode-error.jpg", 10),
+        )
+
+    def submit_whole(mtime: int = 1300) -> None:
+        whole = Snapshot(
+            None, None, source=screenshot_mod.SnapshotSource(mtime, "whole.jpg", 10),
+        )
+        assert watcher._accept_snapshot_for_publication(whole)[0].accepted
+
+    try:
+        submit_fragments(10, 1100, complete=True)
+        if scenario != "rewind-with-pending-apply":
+            flush()
+
+        incomplete_mtime = (
+            1200 if scenario == "forward" or scenario.startswith("older-decode-failure")
+            else 900
+        )
+        incomplete_generation = 11
+        if scenario == "snapshot-clears-earlier-failure":
+            submit_decode_failure(1400)
+            flush()
+            submit_whole(1600)
+            submit_fragments(11, 1700, complete=False)
+            incomplete_generation = 12
+        submit_fragments(incomplete_generation, incomplete_mtime, complete=False)
+        timer = timers.timers[-1]
+        if scenario == "superseded-timeout":
+            submit_whole()
+        elif scenario in {"newer-decode-failure-first", "newer-decode-failure-already-reported"}:
+            submit_decode_failure(1400)
+            if scenario == "newer-decode-failure-already-reported":
+                flush()
+        elif scenario == "older-decode-failure-first":
+            submit_decode_failure(1150)
+
+        clock.advance(screenshot_mod.APS1_FRAGMENT_ASSEMBLY_TTL_SECONDS + 0.1)
+        timer.fire()
+
+        if scenario == "newer-whole":
+            submit_whole()
+        elif scenario == "newer-fragment":
+            submit_fragments(12, 850, complete=True)
+        elif scenario == "replaced-watcher":
+            signal_gate.commit(signal_gate.prepare_next())
+        elif scenario == "newer-decode-failure":
+            submit_decode_failure(1400)
+        elif scenario == "older-decode-failure":
+            submit_decode_failure(1150)
+        elif scenario.endswith("after-report"):
+            flush()
+            submit_decode_failure(1400 if scenario.startswith("newer") else 1150)
+
+        watcher.decodeFailed.emit(
+            "old.jpg", "stale decoder error",
+            screenshot_mod.SnapshotSource(1000, "old.jpg", 10),
+        )
+        flush()
+
+        assert applied
+        assert len(failures) == expected_failures
+        timeout = (
+            str(tmp_path / f"g{incomplete_generation}-0.jpg"),
+            "v10 fragment assembly timed out",
+        )
+        decode_failure = ("decode-error.jpg", "CRC mismatch")
+        if scenario == "newer-decode-failure-after-report":
+            assert failures == [timeout, decode_failure]
+        elif scenario == "snapshot-clears-earlier-failure":
+            assert failures == [decode_failure, timeout]
+            assert applied[-1].fragment_identity is None
+        elif scenario.startswith("newer-decode-failure"):
+            assert failures == [decode_failure]
+        elif expected_failures:
+            assert failures == [timeout]
+            assert applied[-1].fragment_identity is not None
+            assert applied[-1].fragment_identity[1] == 10
+        elif scenario in {"newer-whole", "superseded-timeout"}:
+            assert applied[-1].fragment_identity is None
+        elif scenario == "newer-fragment":
+            assert applied[-1].fragment_identity is not None
+            assert applied[-1].fragment_identity[1] == 12
+    finally:
+        watcher.request_stop()
+
+
 def test_fragment_assembler_terminal_barrier_blocks_older_late_chunks():
     fragments = [
         _parse_fragment(frame) for frame in _wrap_fragments(_large_v9_payload())

@@ -445,6 +445,8 @@ class SnapshotApplyQueue:
         self._pending: tuple[str, tuple[object, ...]] | None = None
         self._pending_cache_snapshots: tuple[Snapshot, ...] = ()
         self._retained_decode_failure: tuple[str, str, object | None] | None = None
+        self._pending_fragment_timeout: tuple[str, str] | None = None
+        self._fragment_timeout_source_key: tuple[int, str, int, int] | None = None
         self._last_enqueued_source_key: tuple[int, str, int, int] | None = None
         self._last_applied_source_key: tuple[int, str, int, int] | None = None
         self._last_reported_failure_key: tuple[int, str, int, int] | None = None
@@ -457,6 +459,10 @@ class SnapshotApplyQueue:
             self._enqueue_snapshot_locked(snap)
 
     def _enqueue_snapshot_locked(self, snap: object) -> None:
+        # A later valid publication supersedes any queued assembly timeout,
+        # including a same-stream generation with a lower file timestamp.
+        self._pending_fragment_timeout = None
+        self._fragment_timeout_source_key = None
         if self._pending is None and not self._flush_pending:
             self._apply_retry_attempted = False
         source_key = self._source_order_key(snapshot_ordering_source(snap))
@@ -490,6 +496,36 @@ class SnapshotApplyQueue:
     ) -> tuple[int, str, int, int] | None:
         return snapshot_source_order_key(source)
 
+    def enqueue_fragment_timeout(self, path: str, reason: str, source: object) -> None:
+        with self._lock:
+            timeout_key = self._source_order_key(source)
+            retained = self._retained_decode_failure
+            retained_key = self._source_order_key(retained[2]) if retained is not None else None
+            if retained_key is not None:
+                latest_snapshot = self._last_enqueued_source_key
+                if (latest_snapshot is None or retained_key > latest_snapshot) and (
+                    timeout_key is None or retained_key > timeout_key
+                ):
+                    return
+                self._retained_decode_failure = None
+                pending = self._pending
+                if (
+                    pending is not None
+                    and pending[0] == "decode_failed"
+                    and self._source_order_key(pending[1][2]) is not None
+                ):
+                    self._pending = None
+
+            # Keep the diagnostic frontier across GUI flushes. It never
+            # participates in snapshot acceptance or file ownership.
+            if timeout_key is not None and (
+                self._fragment_timeout_source_key is None
+                or timeout_key > self._fragment_timeout_source_key
+            ):
+                self._fragment_timeout_source_key = timeout_key
+            self._pending_fragment_timeout = (path, reason)
+            self._schedule_flush()
+
     def enqueue_decode_failed(
         self,
         path: str,
@@ -510,6 +546,11 @@ class SnapshotApplyQueue:
         # only a source-stamped failure that may prove newer after apply.
         failure = (path, reason, source)
         failure_key = self._source_order_key(source)
+        if failure_key is not None and self._fragment_timeout_source_key is not None:
+            if failure_key <= self._fragment_timeout_source_key:
+                return
+            self._pending_fragment_timeout = None
+            self._fragment_timeout_source_key = None
         retained = self._retained_decode_failure
         retained_key = (
             self._source_order_key(retained[2]) if retained is not None else None
@@ -560,20 +601,24 @@ class SnapshotApplyQueue:
         decode-failure events go to ``_flush_failure_event_locked``. The two
         state machines stay separate on purpose; no unified abstraction.
         """
-        if self._pending is None:
-            self._flush_pending = False
-            return
-        kind, args = self._pending
-        cache_snapshots = self._pending_cache_snapshots
+        pending, cache_snapshots = self._pending, self._pending_cache_snapshots
         self._pending = None
         self._pending_cache_snapshots = ()
         self._flush_pending = False
         if not self._signal_gate.is_current(self._generation):
+            self._pending_fragment_timeout = None
+            self._fragment_timeout_source_key = None
             return
-        if kind == "snapshot":
-            self._flush_snapshot_locked(args, cache_snapshots)
-        else:
-            self._flush_failure_event_locked(args)
+        if pending is not None:
+            kind, args = pending
+            if kind == "snapshot":
+                self._flush_snapshot_locked(args, cache_snapshots)
+            else:
+                self._flush_failure_event_locked(args)
+        if self._pending is None and self._pending_fragment_timeout is not None:
+            timeout, self._pending_fragment_timeout = self._pending_fragment_timeout, None
+            if self._signal_gate.is_current(self._generation):
+                self._notify_decode_failure(*timeout)
 
     def _flush_snapshot_locked(
         self,
@@ -774,6 +819,9 @@ class SnapshotApplyQueue:
     ) -> None:
         path, reason, _source = failure
         self._last_reported_failure_key = self._source_order_key(_source)
+        self._notify_decode_failure(path, reason)
+
+    def _notify_decode_failure(self, path: str, reason: str) -> None:
         try:
             self._decode_failed_callback(str(path), str(reason))
         except Exception:  # noqa: BLE001 - one observer must not suppress another

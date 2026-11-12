@@ -83,6 +83,7 @@ from .screenshot import (
     RioSummaryContext,
     ScreenshotWatcher,
     Snapshot,
+    SnapshotSource,
     clear_screenshot_manual_indexes,
     cleanup_appscout_screenshots,
     format_screenshot_cleanup_summary,
@@ -3987,9 +3988,12 @@ def _connect_screenshot_watcher(
         with handoff_lock:
             if not signal_gate.is_current(generation):
                 return
-            if not source_gate.accept(source, advance=False):
-                return
-            apply_queue.enqueue_decode_failed(path, reason, source)
+            if isinstance(source, SnapshotSource) and source.fragment_timeout:
+                # The assembler expiry token and watcher publication queue
+                # already order this timeout against valid snapshots.
+                apply_queue.enqueue_fragment_timeout(path, reason, source)
+            elif source_gate.accept(source, advance=False):
+                apply_queue.enqueue_decode_failed(path, reason, source)
 
     def _connect_direct(signal: object, callback: Callable[..., None]) -> None:
         connect = getattr(signal, "connect")
