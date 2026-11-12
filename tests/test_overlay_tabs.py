@@ -252,7 +252,8 @@ def _window(tmp_path, qtbot, state: AppState) -> OverlayWindow:
     win = OverlayWindow(state, _FakeWCLClient(), _FakeCache(), tmp_path)
     win._launch_fetch = lambda _applicant: None
     win._launch_raid_boss_fetch_if_needed = lambda _applicant: False
-    qtbot.addWidget(win)
+    # Closing the overlay collapses it to the tray. Stop its workers before deletion.
+    qtbot.addWidget(win, before_close_func=lambda window: window.shutdown_fetches())
     qtbot.addWidget(win._launcher)
     return win
 

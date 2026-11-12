@@ -109,7 +109,8 @@ def _window(qtbot, tmp_path, tab, group_size, context, *, boundary_values=False)
             mplus=True, raid_normal=True, raid_heroic=True, raid_mythic=True
         ),
     )
-    qtbot.addWidget(window)
+    # Closing the overlay collapses it to the tray. Stop its workers before deletion.
+    qtbot.addWidget(window, before_close_func=lambda widget: widget.shutdown_fetches())
     qtbot.addWidget(window._launcher)
     window._launch_fetch = lambda _applicant: None
     window._launch_raid_boss_fetch_if_needed = lambda _applicant: False
