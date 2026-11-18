@@ -263,23 +263,26 @@ def foreground_window_handle() -> int | None:
     if sys.platform != "win32":
         return None
     try:
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        get_foreground_window = ctypes.windll.user32.GetForegroundWindow
+        get_foreground_window.argtypes = ()
+        get_foreground_window.restype = wintypes.HWND
+        hwnd = get_foreground_window()
     except (AttributeError, OSError):
         return None
     return int(hwnd) if hwnd else None
 
 
-def foreground_process_id() -> int | None:
-    """Return the process id for the foreground window on Windows."""
-    if sys.platform != "win32":
+def foreground_process_id(hwnd: int) -> int | None:
+    """Return the process ID for the captured foreground window on Windows."""
+    if sys.platform != "win32" or not hwnd:
         return None
     try:
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
-        if not hwnd:
-            return None
+        get_window_process = ctypes.windll.user32.GetWindowThreadProcessId
+        get_window_process.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        get_window_process.restype = wintypes.DWORD
         pid = wintypes.DWORD()
-        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        return int(pid.value) if pid.value else None
+        thread_id = get_window_process(hwnd, ctypes.byref(pid))
+        return int(pid.value) if thread_id and pid.value else None
     except (AttributeError, OSError):
         return None
 
@@ -323,7 +326,7 @@ def foreground_state(
     hwnd = foreground_window_handle()
     if not hwnd:
         return "unknown"
-    pid = foreground_process_id()
+    pid = foreground_process_id(hwnd)
     if pid is None:
         return "unknown"
     return classify_foreground_state(
@@ -335,31 +338,35 @@ def process_name_for_pid(pid: int) -> str | None:
     """Return the executable basename for a Windows process id."""
     if sys.platform != "win32" or pid <= 0:
         return None
-    handle = None
     try:
-        handle = ctypes.windll.kernel32.OpenProcess(
-            _PROCESS_QUERY_LIMITED_INFORMATION,
-            False,
-            pid,
+        kernel32 = ctypes.windll.kernel32
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        open_process.restype = wintypes.HANDLE
+        query_image_name = kernel32.QueryFullProcessImageNameW
+        query_image_name.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
         )
+        query_image_name.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+        handle = open_process(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return None
-        size = wintypes.DWORD(32768)
-        buffer = ctypes.create_unicode_buffer(size.value)
-        ok = ctypes.windll.kernel32.QueryFullProcessImageNameW(
-            handle,
-            0,
-            buffer,
-            ctypes.byref(size),
-        )
-        if not ok:
-            return None
-        return Path(buffer.value).name
+        try:
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not query_image_name(handle, 0, buffer, ctypes.byref(size)):
+                return None
+            return Path(buffer.value).name
+        finally:
+            close_handle(handle)
     except (AttributeError, OSError, ValueError):
         return None
-    finally:
-        if handle:
-            ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def is_wow_foreground(process_names: tuple[str, ...] = WOW_PROCESS_NAMES) -> bool:
@@ -377,25 +384,28 @@ def is_wow_sync_watcher_running(
     spec = companion_launch_spec()
     executable = executable_path or spec.executable
     expected_arguments = arguments if arguments is not None else spec.arguments
-    expected_argument_text = _ARGUMENT_LIST_SEPARATOR.join(expected_arguments)
     pid = os.getpid() if current_pid is None else current_pid
-    target = str(executable).casefold()
+    # Windows PowerShell joins trailing -Command arguments into the script.
+    # Pass paths and argument text through the child environment as data.
+    query_env = dict(
+        os.environ,
+        APSCOUT_WATCH_QUERY_EXE=str(executable),
+        APSCOUT_WATCH_QUERY_PID=str(pid),
+        APSCOUT_WATCH_QUERY_MODE=WATCH_WOW_ARG,
+        APSCOUT_WATCH_QUERY_ARGS=_ARGUMENT_LIST_SEPARATOR.join(expected_arguments),
+    )
     try:
         completed = subprocess.run(
             [
                 "powershell",
                 "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
+                "-NonInteractive",
                 "-Command",
                 (
-                    "& { param("
-                    "[string]$target, "
-                    "[int]$currentPid, "
-                    "[string]$watchArg, "
-                    "[string]$needleText"
-                    ") "
-                    "$targetFull = [System.IO.Path]::GetFullPath($target); "
+                    "$targetFull = [System.IO.Path]::GetFullPath($env:APSCOUT_WATCH_QUERY_EXE); "
+                    "$currentPid = [int]$env:APSCOUT_WATCH_QUERY_PID; "
+                    "$watchArg = $env:APSCOUT_WATCH_QUERY_MODE; "
+                    "$needleText = $env:APSCOUT_WATCH_QUERY_ARGS; "
                     "$needles = if ($needleText) { "
                     "$needleText -split [char]31 "
                     "} else { @() }; "
@@ -418,22 +428,18 @@ def is_wow_sync_watcher_running(
                     "$_.ProcessId -ne $currentPid -and $matchesTarget -and $matchesArgs "
                     "}; "
                     "if ($found) { exit 0 } else { exit 1 }"
-                    " }"
                 ),
-                str(executable),
-                str(pid),
-                WATCH_WOW_ARG,
-                expected_argument_text,
             ],
             check=False,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=_CREATE_NO_WINDOW,
             timeout=5,
+            env=query_env,
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return completed.returncode == 0 and bool(target)
+    return completed.returncode == 0
 
 
 def _ps_single_quoted(value: str) -> str:

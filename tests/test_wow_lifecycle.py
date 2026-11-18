@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import ctypes
+from ctypes import wintypes
 import os
 from pathlib import Path
+import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,6 +65,11 @@ def test_windows_process_image_names_contains_current_process():
 
     assert names is not None
     assert Path(sys.executable).name.casefold() in {name.casefold() for name in names}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process lookup only")
+def test_process_name_for_pid_matches_current_process():
+    assert wow_lifecycle.process_name_for_pid(os.getpid()) == Path(sys.executable).name
 
 
 def test_is_wow_running_detects_retail_process(
@@ -183,8 +192,50 @@ def test_is_wow_running_can_report_unknown_on_nonzero_tasklist_exit(
     assert wow_lifecycle.is_wow_running(unknown_on_error=True) is None
 
 
-def test_is_wow_foreground_accepts_wow_process(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda: 123)
+@pytest.fixture
+def _foreground_window(monkeypatch: pytest.MonkeyPatch) -> int:
+    hwnd = 0x1234
+    monkeypatch.setattr(wow_lifecycle.sys, "platform", "win32")
+    monkeypatch.setattr(wow_lifecycle, "foreground_window_handle", lambda: hwnd)
+    return hwnd
+
+
+def test_foreground_poll_classifies_its_captured_window(monkeypatch: pytest.MonkeyPatch):
+    game_window, other_window = 0x1234, 0x5678
+    foreground = iter((game_window, other_window))
+
+    def get_foreground_window() -> int:
+        return next(foreground)
+
+    def get_window_process_id(hwnd: int, pid_out) -> int:
+        pid = ctypes.cast(pid_out, ctypes.POINTER(wintypes.DWORD))
+        pid[0] = 101 if hwnd == game_window else 202
+        return 1
+
+    user32 = SimpleNamespace(
+        GetForegroundWindow=get_foreground_window,
+        GetWindowThreadProcessId=get_window_process_id,
+    )
+    monkeypatch.setattr(wow_lifecycle.sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=user32), raising=False)
+    monkeypatch.setattr(
+        wow_lifecycle, "process_name_for_pid", {101: "Wow.exe", 202: "other.exe"}.get,
+    )
+
+    assert wow_lifecycle.foreground_state() == "game"
+    assert next(foreground) == other_window
+
+
+def test_is_wow_foreground_accepts_wow_process(
+    monkeypatch: pytest.MonkeyPatch, _foreground_window: int
+):
+    queried_windows: list[int] = []
+
+    def window_pid(hwnd: int) -> int:
+        queried_windows.append(hwnd)
+        return 123
+
+    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", window_pid)
     monkeypatch.setattr(
         wow_lifecycle,
         "process_name_for_pid",
@@ -192,12 +243,13 @@ def test_is_wow_foreground_accepts_wow_process(monkeypatch: pytest.MonkeyPatch):
     )
 
     assert wow_lifecycle.is_wow_foreground()
+    assert queried_windows == [_foreground_window]
 
 
 def test_is_wow_foreground_rejects_classic_process_name(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, _foreground_window: int
 ):
-    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda: 123)
+    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda _hwnd: 123)
     monkeypatch.setattr(
         wow_lifecycle,
         "process_name_for_pid",
@@ -208,16 +260,18 @@ def test_is_wow_foreground_rejects_classic_process_name(
 
 
 def test_is_wow_foreground_rejects_current_companion_process(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, _foreground_window: int
 ):
-    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", os.getpid)
+    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda _hwnd: os.getpid())
     monkeypatch.setattr(wow_lifecycle, "process_name_for_pid", lambda _pid: "python.exe")
 
     assert not wow_lifecycle.is_wow_foreground()
 
 
-def test_is_wow_foreground_rejects_other_process(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda: 456)
+def test_is_wow_foreground_rejects_other_process(
+    monkeypatch: pytest.MonkeyPatch, _foreground_window: int
+):
+    monkeypatch.setattr(wow_lifecycle, "foreground_process_id", lambda _hwnd: 456)
     monkeypatch.setattr(wow_lifecycle, "process_name_for_pid", lambda _pid: "chrome.exe")
 
     assert not wow_lifecycle.is_wow_foreground()
@@ -228,21 +282,22 @@ def test_is_wow_sync_watcher_running_excludes_current_pid_from_query(
 ):
     exe = tmp_path / "ApplicantScout.exe"
     exe.write_text("", encoding="utf-8")
-    captured: list[list[str]] = []
+    captured = []
 
     monkeypatch.setattr(wow_lifecycle.os, "getpid", lambda: 4321)
 
-    def fake_run(args, **_kwargs):
-        captured.append(args)
+    def fake_run(args, **kwargs):
+        captured.append((args, kwargs["env"]))
         return _Completed(returncode=1)
 
     monkeypatch.setattr(wow_lifecycle.subprocess, "run", fake_run)
 
     assert not wow_lifecycle.is_wow_sync_watcher_running(executable_path=exe)
     assert captured
-    command = captured[0][captured[0].index("-Command") + 1]
+    args, env = captured[0]
+    command = args[args.index("-Command") + 1]
     assert "ProcessId" in command
-    assert "4321" in captured[0]
+    assert env["APSCOUT_WATCH_QUERY_PID"] == "4321"
 
 
 def test_dev_launch_spec_runs_python_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -269,12 +324,12 @@ def test_is_wow_sync_watcher_running_matches_python_module_command(
     python_exe = tmp_path / ".venv" / "Scripts" / "python.exe"
     python_exe.parent.mkdir(parents=True)
     python_exe.write_text("", encoding="utf-8")
-    captured: list[list[str]] = []
+    captured = []
 
     monkeypatch.setattr(wow_lifecycle.os, "getpid", lambda: 4321)
 
-    def fake_run(args, **_kwargs):
-        captured.append(args)
+    def fake_run(args, **kwargs):
+        captured.append((args, kwargs["env"]))
         return _Completed(returncode=0)
 
     monkeypatch.setattr(wow_lifecycle.subprocess, "run", fake_run)
@@ -283,14 +338,36 @@ def test_is_wow_sync_watcher_running_matches_python_module_command(
         executable_path=python_exe,
         arguments=("-m", "applicant_scout"),
     )
-    command = captured[0][captured[0].index("-Command") + 1]
-    assert "param(" in command
+    args, env = captured[0]
+    command = args[args.index("-Command") + 1]
     assert "Select-Object -Skip" not in command
     assert "$_.Name -ieq 'ApplicantScout.exe'" not in command
     assert "CommandLine" in command
     assert "IndexOf($target" not in command
     assert "[System.IO.Path]::GetFullPath($exe)" in command
-    assert "\x1f".join(("-m", "applicant_scout")) in captured[0]
+    assert env["APSCOUT_WATCH_QUERY_ARGS"] == "\x1f".join(("-m", "applicant_scout"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Uses Windows PowerShell argument binding")
+def test_watcher_probe_passes_paths_with_spaces_as_data(monkeypatch: pytest.MonkeyPatch):
+    exe = Path(r"C:\Program Files\ApplicantScout\ApplicantScout.exe")
+    real_run = subprocess.run
+
+    def run_with_process_fixture(args, **kwargs):
+        script_index = args.index("-Command") + 1
+        args[script_index] = (
+            "function Get-CimInstance { [pscustomobject]@{ "
+            "ExecutablePath = $env:APSCOUT_TEST_FAKE_EXE; ProcessId = 4322; "
+            "CommandLine = ('\"' + $env:APSCOUT_TEST_FAKE_EXE + '\" --watch-wow') } }; "
+            + args[script_index]
+        )
+        kwargs["env"] = dict(kwargs.get("env", os.environ), APSCOUT_TEST_FAKE_EXE=str(exe))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_with_process_fixture)
+    assert wow_lifecycle.is_wow_sync_watcher_running(
+        executable_path=exe, arguments=(), current_pid=4321,
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows process enumeration only")

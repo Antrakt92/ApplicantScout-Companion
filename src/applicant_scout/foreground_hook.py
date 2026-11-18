@@ -26,6 +26,8 @@ from collections.abc import Callable
 from ctypes import wintypes
 from typing import cast
 
+from . import wow_lifecycle
+
 _log = logging.getLogger("applicant_scout.foreground_hook")
 
 EVENT_SYSTEM_FOREGROUND = 0x0003
@@ -47,25 +49,14 @@ def default_is_game_window(hwnd: int) -> bool:
     :func:`applicant_scout.wow_lifecycle.is_wow_foreground`: HWND →
     process id → :func:`process_name_for_pid` → ``WOW_PROCESS_NAMES``.
     """
-    if sys.platform != "win32" or not hwnd:
+    pid = wow_lifecycle.foreground_process_id(hwnd)
+    if pid is None:
         return False
-    try:
-        pid = wintypes.DWORD()
-        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if not pid.value:
-            return False
-        from . import wow_lifecycle
-
-        name = wow_lifecycle.process_name_for_pid(int(pid.value))
-    except (AttributeError, OSError, ValueError):
-        return False
-    if not name:
-        return False
-    from . import wow_lifecycle as _lifecycle
-
-    return any(
-        name.casefold() == process_name.casefold()
-        for process_name in _lifecycle.WOW_PROCESS_NAMES
+    return (
+        wow_lifecycle.classify_foreground_state(
+            hwnd, pid, wow_lifecycle.process_name_for_pid(pid)
+        )
+        == "game"
     )
 
 
