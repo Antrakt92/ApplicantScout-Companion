@@ -2,22 +2,32 @@
   "schema_version": 1,
   "components": [
     {
-      "name": "ZBar 0.10 Windows fork",
+      "name": "ZBar 0.23.95 controlled Windows QR decoder",
       "package": "pyzbar",
       "version": "0.1.9",
       "binaries": [
         {
           "path": "pyzbar/libzbar-64.dll",
-          "sha256": "43ecda0a3e803ffadeab912f5ecaa2655a8a51c6af1c4286bf9ef21cc90a4b04"
+          "sha256": "c444e165a20cb72e545008f311378a4e830bf0e950141a39369cc044e7a40feb",
+          "build_input": "packaging/native/zbar/libzbar-64.dll",
+          "installed_sha256": "43ecda0a3e803ffadeab912f5ecaa2655a8a51c6af1c4286bf9ef21cc90a4b04"
         }
       ],
       "sources": [
         {
-          "url": "https://codeload.github.com/NaturalHistoryMuseum/ZBarWin64/tar.gz/720e4577eedf6d6173c146f8494db75583503d94",
-          "sha256": "248611c3da46a77cca2d2ddf91b1cd7f4f9512a0ddb4b32bc579fec08d3e98e6"
+          "url": "https://codeload.github.com/mchehab/zbar/tar.gz/dc19fcc7da58e8cf84ba1ec417e24b04609feb23",
+          "sha256": "ad6949bfa9287cba1dc2f4b4ed8c1402ceec3feffe8a74dc8d1c76e3d45f24fa"
+        },
+        {
+          "url": "https://deb.debian.org/debian/pool/main/m/mingw-w64/mingw-w64_12.0.0.orig.tar.bz2",
+          "sha256": "cc41898aac4b6e8dd5cffd7331b9d9515b912df4420a3a612b5ea2955bbeed2f"
+        },
+        {
+          "url": "https://deb.debian.org/debian/pool/main/m/mingw-w64/mingw-w64_12.0.0-5.debian.tar.xz",
+          "sha256": "27513ca9c5730bc58eadda089022979b40fa1a5c05893ca3e339345d8c832dba"
         }
       ],
-      "build_instructions": "docs/NATIVE-SOURCES.md",
+      "build_instructions": "packaging/native/zbar/README.md",
       "unresolved": []
     },
     {

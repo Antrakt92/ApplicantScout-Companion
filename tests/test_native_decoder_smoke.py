@@ -229,7 +229,7 @@ def test_cli_missing_file_is_json_failure(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Real DLL baseline needs Windows")
-def test_retained_replacement_matches_real_installed_baseline(pytestconfig):
+def test_packaged_decoder_pair_matches_real_installed_baseline(pytestconfig):
     import importlib.metadata
 
     package = importlib.metadata.distribution("pyzbar")
@@ -252,11 +252,18 @@ def test_retained_replacement_matches_real_installed_baseline(pytestconfig):
     assert len(report["runs"][0]["qr"]) >= 20
     assert report["runs"][0]["loaded"]["libiconv.dll"]["sha256"] == before[0]
     assert (smoke.digest(iconv), smoke.digest(zbar)) == before
-    replacement = ROOT / "packaging/native/libiconv/libiconv.dll"
-    assert replacement.is_file()
-    replacement_hash = smoke.digest(replacement)
-    rebuilt = smoke.run_smoke(replacement, zbar, encoder, Path(lua))
-    assert rebuilt["runs"][0]["conversions"] == report["runs"][0]["conversions"]
-    assert rebuilt["runs"][0]["qr"] == report["runs"][0]["qr"]
-    assert smoke.digest(replacement) == replacement_hash
+    packaged_iconv = ROOT / "packaging/native/libiconv/libiconv.dll"
+    packaged_zbar = ROOT / "packaging/native/zbar/libzbar-64.dll"
+    assert packaged_iconv.is_file() and packaged_zbar.is_file()
+    packaged_hashes = (smoke.digest(packaged_iconv), smoke.digest(packaged_zbar))
+    assert packaged_hashes[1] == "c444e165a20cb72e545008f311378a4e830bf0e950141a39369cc044e7a40feb"
+    assert packaged_hashes[1] != before[1]
+    rebuilt = smoke.run_smoke(packaged_iconv, packaged_zbar, encoder, Path(lua))
+    assert rebuilt["passed"] is True
+    for wheel_run, packaged_run in zip(report["runs"], rebuilt["runs"], strict=True):
+        assert packaged_run["conversions"] == wheel_run["conversions"]
+        assert packaged_run["qr"] == wheel_run["qr"]
+        assert packaged_run["loaded"]["libiconv.dll"]["sha256"] == packaged_hashes[0]
+        assert packaged_run["loaded"]["libzbar-64.dll"]["sha256"] == packaged_hashes[1]
+    assert (smoke.digest(packaged_iconv), smoke.digest(packaged_zbar)) == packaged_hashes
     assert (smoke.digest(iconv), smoke.digest(zbar)) == before

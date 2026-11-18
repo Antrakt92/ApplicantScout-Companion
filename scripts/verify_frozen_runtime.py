@@ -525,6 +525,7 @@ def verify_frozen_runtime(
             toc_dir / "ApplicantScout.exe",
             toc_dir / "base_library.zip",
             repo_root / "packaging" / "native" / "libiconv" / "libiconv.dll",
+            repo_root / "packaging" / "native" / "zbar" / "libzbar-64.dll",
         ),
         forbidden_roots=(
             base_prefix / "Lib" / "site-packages",

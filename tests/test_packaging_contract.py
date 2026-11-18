@@ -777,9 +777,11 @@ def test_frozen_build_isolates_dll_discovery_and_probes_real_startup_imports():
     assert "Assert-FrozenStartupImports -Exe $Exe" in build_script
     assert "--collect-all pyzbar" not in build_script
     assert 'Join-Path $RepoRoot "packaging\\native\\libiconv\\libiconv.dll"' in build_script
-    assert '"libzbar-64.dll"' in build_script
+    assert '$PyzbarZbar = Join-Path $RepoRoot "packaging\\native\\zbar\\libzbar-64.dll"' in build_script
     assert '--add-binary "$PyzbarIconv;pyzbar"' in build_script
     assert '--add-binary "$PyzbarZbar;pyzbar"' in build_script
+    verifier = _read_repo_text("scripts/verify_frozen_runtime.py")
+    assert 'repo_root / "packaging" / "native" / "zbar" / "libzbar-64.dll"' in verifier
     for module in (
         "_pytest",
         "altgraph",

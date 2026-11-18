@@ -41,9 +41,43 @@ obtaining and retaining the sources
 when preparing a release. Preserve the complete source archives, license texts,
 patches and referenced build instructions together.
 
-## ZBar supplied by pyzbar 0.1.9
+## ZBar 0.23.95 for the Windows packages
 
-The Windows x64 `libzbar-64.dll` is identical to `libzbar64-0.dll` in the
+The portable Windows package and installer use the x64 DLL built for QR decoding
+and retained under `packaging/native/zbar/`. The packaged
+`pyzbar/libzbar-64.dll` has SHA-256
+`c444e165a20cb72e545008f311378a4e830bf0e950141a39369cc044e7a40feb`.
+
+It was built from [ZBar 0.23.95 at commit `dc19fcc7da58e8cf84ba1ec417e24b04609feb23`](https://github.com/mchehab/zbar/tree/dc19fcc7da58e8cf84ba1ec417e24b04609feb23).
+The [pinned source archive](https://codeload.github.com/mchehab/zbar/tar.gz/dc19fcc7da58e8cf84ba1ec417e24b04609feb23)
+has SHA-256 `ad6949bfa9287cba1dc2f4b4ed8c1402ceec3feffe8a74dc8d1c76e3d45f24fa`.
+The [build record](https://github.com/Antrakt92/ApplicantScout-Companion/tree/main/packaging/native/zbar)
+provides the exact toolchain, configuration, Windows portability changes and
+rebuild instructions. For a released build, open that directory at its release
+tag.
+
+The build enables QR decoding and links to the controlled libiconv DLL described
+below. The MinGW-w64 runtime and Winpthreads clock code come from Debian
+`mingw-w64-x86-64-dev` 12.0.0-5. The [upstream source archive](https://deb.debian.org/debian/pool/main/m/mingw-w64/mingw-w64_12.0.0.orig.tar.bz2)
+has SHA-256 `cc41898aac4b6e8dd5cffd7331b9d9515b912df4420a3a612b5ea2955bbeed2f`.
+The [Debian build files and patches](https://deb.debian.org/debian/pool/main/m/mingw-w64/mingw-w64_12.0.0-5.debian.tar.xz)
+have SHA-256 `27513ca9c5730bc58eadda089022979b40fa1a5c05893ca3e339345d8c832dba`.
+The DLL imports `GDI32.dll`, `KERNEL32.dll`, `msvcrt.dll`, `USER32.dll` and
+`libiconv.dll`. The ZBar and toolchain runtime notices ship under `licenses/native/`.
+
+Two isolated Windows runs each verified the loaded DLL paths and hashes,
+22 QR fixtures from the paired addon encoder and 18 libiconv conversion cases.
+The packaged startup probe separately exercises the frozen application's regular
+decoder loader.
+
+## ZBar supplied by pyzbar 0.1.9 in the development environment
+
+A normal Windows launch from the pinned `.venv` uses the original wheel DLL.
+Packaging selects the separately built ZBar and libiconv DLLs without modifying the
+wheel installation. The source checker verifies the wheel input hashes before
+building and checks the replacement hashes in the final frozen payload.
+
+The wheel's Windows x64 `libzbar-64.dll` is identical to `libzbar64-0.dll` in the
 [Natural History Museum ZBarWin64 v0.10 wheel](https://github.com/NaturalHistoryMuseum/ZBarWin64/releases/tag/v0.10):
 
 ```text
@@ -73,8 +107,7 @@ project and has not been used here to reproduce the historical DLL. The project
 also imports optional user property sheets, whose original contents are unknown.
 
 The generic ZBar 0.10 tarball does not contain the same Windows source tree.
-Use the pinned fork. The packaged libiconv dependency is built separately as
-described below.
+Use the pinned fork when inspecting the original wheel DLL.
 
 ## libiconv 1.14: controlled Windows build
 
@@ -108,13 +141,13 @@ replacement, then verifies that the replacement reached the frozen payload.
 
 The replacement preserves the original nine exports and ordinals. Isolated
 runtime checks cover conversion results, errors and buffer boundaries,
-independent descriptors and real QR decoding with the unchanged ZBar DLL.
+independent descriptors and real QR decoding with the packaged ZBar DLL pair.
 They do not replace the application's release and installer acceptance checks.
 
 To repeat the decoder check in the pinned Windows development environment:
 
 ```powershell
-.\.venv\Scripts\python scripts\smoke_native_decoder.py --libiconv packaging/native/libiconv/libiconv.dll --zbar .venv/Lib/site-packages/pyzbar/libzbar-64.dll
+.\.venv\Scripts\python scripts\smoke_native_decoder.py --libiconv packaging/native/libiconv/libiconv.dll --zbar packaging/native/zbar/libzbar-64.dll
 ```
 
 The script also needs the paired addon's QR encoder and Lua 5.1; pass

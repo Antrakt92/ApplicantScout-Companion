@@ -392,9 +392,8 @@ function Invoke-WithIsolatedBuildEnvironment {
 }
 
 function Invoke-PyInstaller {
-    $PyzbarDir = Join-Path $RepoRoot ".venv\Lib\site-packages\pyzbar"
     $PyzbarIconv = Join-Path $RepoRoot "packaging\native\libiconv\libiconv.dll"
-    $PyzbarZbar = Join-Path $PyzbarDir "libzbar-64.dll"
+    $PyzbarZbar = Join-Path $RepoRoot "packaging\native\zbar\libzbar-64.dll"
     foreach ($NativeDecoder in @($PyzbarIconv, $PyzbarZbar)) {
         if (-not (Test-Path -LiteralPath $NativeDecoder -PathType Leaf)) {
             throw "Missing pinned pyzbar native runtime: $NativeDecoder"

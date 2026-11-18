@@ -10,6 +10,11 @@ files. Build tooling copies this directory into the packaged `licenses/` tree.
 | `Mesa-11.2.2-COMPONENT-NOTICES.txt` | Copyright and permission blocks from Mesa's Windows software-renderer source components and headers. Includes the generated Bison parsers' skeleton exception, C11 thread emulation's Boost terms, and component-specific attributions. |
 | `LLVM-3.6.2-LICENSE.txt` | Upstream `LICENSE.TXT`: University of Illinois/NCSA license. |
 | `LLVM-3.6.2-ADDITIONAL-NOTICES.txt` | Support library attribution, OpenBSD regex notices, Todd Miller's string-copy code, Solar Designer's MD5 implementation, Unicode conversion code, and the ARM contribution grant. |
+| `ZBar-0.23.95-COPYING.txt`, `ZBar-0.23.95-LICENSE.md` | Upstream copyright and component notices for ZBar and the QR reader, plus the GNU LGPL 2.1 text. |
+| `ZBar-0.23.95-XIPH-LICENSE-NOTICES.txt` | Supplemental Xiph.Org BSD terms from the source projects credited for the QR bit stream reader. The file records both source revisions and hashes. |
+| `MinGW-w64-12.0.0-COPYING.txt`, `MinGW-w64-12.0.0-PUBLIC-DOMAIN-NOTICE.txt`, `Winpthreads-12.0.0-COPYING.txt` | Upstream MinGW-w64 and Winpthreads notices, including the public-domain disclaimer referenced by the Winpthreads clock source. |
+| `MinGW-w64-12.0.0-5-DEBIAN-COPYRIGHT-NOTICE.txt` | Debian source package attribution and per-file license map. It also describes components outside the ZBar build. |
+| `GCC-14.2.0-RUNTIME-LICENSE-GPL-3.0.txt`, `GCC-14.2.0-RUNTIME-LICENSE-EXCEPTION.txt` | GPLv3 and GCC Runtime Library Exception 3.1 texts from GCC 14.2.0 for applicable GCC runtime code linked into the ZBar DLL. |
 | `libiconv-1.14-COPYING.LIB.txt` | Upstream Library GPL version 2 license text. |
 | `libiconv-1.14-NOTICES.txt` | GNU library copyright and version-2-or-later notices from the conversion, relocation and locale-support sources. |
 | `Qt-6.12.0-NOTICES.txt` | 89 source attribution records from QtBase, QtSvg and QtImageFormats, with their 50 referenced license files. This conservatively includes optional platform, test and build components. |
@@ -21,9 +26,18 @@ The upstream archives used for these notices are:
 | --- | --- |
 | [Mesa 11.2.2](https://archive.mesa3d.org/older-versions/11.x/11.2.2/mesa-11.2.2.tar.xz) | `40e148812388ec7c6d7b6657d5a16e2e8dabba8b97ddfceea5197947647bdfb4` |
 | [LLVM 3.6.2](https://releases.llvm.org/3.6.2/llvm-3.6.2.src.tar.xz) | `f60dc158bfda6822de167e87275848969f0558b3134892ff54fced87e4667b94` |
+| [ZBar 0.23.95 source](https://codeload.github.com/mchehab/zbar/tar.gz/dc19fcc7da58e8cf84ba1ec417e24b04609feb23) | `ad6949bfa9287cba1dc2f4b4ed8c1402ceec3feffe8a74dc8d1c76e3d45f24fa` |
+| [MinGW-w64 12.0.0 source](https://deb.debian.org/debian/pool/main/m/mingw-w64/mingw-w64_12.0.0.orig.tar.bz2) | `cc41898aac4b6e8dd5cffd7331b9d9515b912df4420a3a612b5ea2955bbeed2f` |
+| [MinGW-w64 12.0.0-5 Debian package source](https://deb.debian.org/debian/pool/main/m/mingw-w64/mingw-w64_12.0.0-5.debian.tar.xz) | `27513ca9c5730bc58eadda089022979b40fa1a5c05893ca3e339345d8c832dba` |
 | [GNU libiconv 1.14](https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.14.tar.gz) | `72b24ded17d687193c3366d0ebe7cde1e6b18f0df8c55438ac95be39e8a30613` |
 | [Qt 6.12.0](https://download.qt.io/official_releases/qt/6.12/6.12.0/single/qt-everywhere-src-6.12.0.tar.xz) | `98ff4f44bac6ec3e1e62ee2a4316ae0e3d15badb015d753cc0268a20db52f165` |
 | [Qt for Python 6.12.0](https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.12.0-src/pyside-setup-everywhere-src-6.12.0.tar.xz) | `099c1a597cf33c1b000e11cf68a0b82d216fb802bf81726efc720394f10c7751` |
+
+The GCC notices come from `COPYING3` and `COPYING.RUNTIME` at
+[the GCC 14.2.0 source commit](https://gcc.gnu.org/git/?p=gcc.git;a=tree;h=04696df09633baf97cdbbdd6e9929b9d472161d3).
+The ZBar and Windows toolchain notices preserve the upstream wording. In the
+MinGW-w64 and supplemental Xiph notices and in the GCC exception, trailing
+whitespace is normalized.
 
 The Mesa collection follows the source groups referenced by
 `src/gallium/targets/libgl-gdi/SConscript` and `src/mesa/SConscript`: Mesa core,
