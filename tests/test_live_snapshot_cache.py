@@ -98,6 +98,52 @@ def test_save_and_load_live_snapshot_round_trips_without_source(tmp_path):
     assert not restored.snapshot.applicants_unavailable
 
 
+@pytest.mark.parametrize("guard", ["listing", "producer"])
+@pytest.mark.parametrize("failure", ["unreadable", "expired-but-locked"])
+def test_conditional_cache_clear_retries_after_io_failure(
+    tmp_path, monkeypatch, guard, failure,
+):
+    original = _live_snapshot()
+    assert save_live_snapshot(tmp_path, original, now=100.0)
+    assert original.listing is not None and original.version is not None
+    if guard == "listing":
+        incoming = replace(
+            original,
+            listing=replace(original.listing, key_level=original.listing.key_level + 1),
+            applicants=[],
+            applicants_unavailable=True,
+        )
+    else:
+        incoming = replace(
+            original,
+            listing=None,
+            version=replace(original.version, player_name="Different-Realm"),
+            applicants=[],
+            lfg_unavailable=True,
+        )
+    method = "read_text" if failure == "unreadable" else "unlink"
+    now = 101.0 if failure == "unreadable" else 100.0 + LIVE_SNAPSHOT_CACHE_TTL_SECONDS + 1.0
+    writer = LiveSnapshotCacheWriter(tmp_path, save_debounce_seconds=3600.0)
+    writer.submit(incoming, now=now)
+    cache_path = _cache_path(tmp_path)
+    path_type = type(cache_path)
+    original_method = getattr(path_type, method)
+
+    def fail_cache_access(path, *args, **kwargs):
+        if path == cache_path:
+            raise PermissionError("temporary cache sharing violation")
+        return original_method(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(path_type, method, fail_cache_access)
+        assert not writer.flush()
+        assert cache_path.exists()
+
+    assert writer.flush()
+    assert not cache_path.exists()
+    assert writer.close()
+
+
 @pytest.mark.parametrize("write_mode", ["sync", "writer"])
 @pytest.mark.parametrize("operation_kind", ["partial", "clear"])
 @pytest.mark.parametrize("now", [float("nan"), pytest.param(10**400, id="oversized-integer")])

@@ -325,13 +325,13 @@ def _clear_live_snapshot_if_context_differs(
     source_id: str,
     now: float | None,
 ) -> bool:
-    restored = load_live_snapshot(
+    restored, read_completed = _load_live_snapshot(
         cache_dir,
         expected_source_id=source_id,
         now=now,
     )
     if restored is None:
-        return True
+        return read_completed
     if _snapshot_context(restored.snapshot) == expected_context:
         return True
     return clear_live_snapshot(cache_dir)
@@ -344,13 +344,13 @@ def _clear_live_snapshot_if_producer_differs(
     source_id: str,
     now: float | None,
 ) -> bool:
-    restored = load_live_snapshot(
+    restored, read_completed = _load_live_snapshot(
         cache_dir,
         expected_source_id=source_id,
         now=now,
     )
     if restored is None:
-        return True
+        return read_completed
     if not _producer_contexts_conflict(
         _snapshot_producer_context(restored.snapshot),
         incoming_producer,
@@ -916,18 +916,30 @@ def load_live_snapshot(
     expected_source_id: str | None = None,
     now: float | None = None,
 ) -> RestoredLiveSnapshot | None:
+    restored, _ = _load_live_snapshot(
+        cache_dir, expected_source_id=expected_source_id, now=now,
+    )
+    return restored
+
+
+def _load_live_snapshot(
+    cache_dir: Path,
+    *,
+    expected_source_id: str | None,
+    now: float | None,
+) -> tuple[RestoredLiveSnapshot | None, bool]:
+    """Read the snapshot and report whether inspection or removal completed."""
     path = live_snapshot_cache_path(cache_dir)
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return None
+        return None, True
     except UnicodeDecodeError as exc:
         _log.warning("Discarding invalid live snapshot cache %s: %s", path, exc)
-        clear_live_snapshot(cache_dir)
-        return None
+        return None, clear_live_snapshot(cache_dir)
     except OSError as exc:
         _log.warning("Failed to read live snapshot cache %s: %s", path, exc)
-        return None
+        return None, False
     try:
         data = json.loads(raw)
         if not isinstance(data, dict):
@@ -939,15 +951,13 @@ def load_live_snapshot(
             expected_source_id is not None
             and source_id != _coerce_source_id(expected_source_id)
         ):
-            clear_live_snapshot(cache_dir)
-            return None
+            return None, clear_live_snapshot(cache_dir)
         current_time = _coerce_timestamp(time.time() if now is None else now)
         saved_at = _strict_timestamp_field(data, "saved_at")
         if saved_at > current_time + 1.0:
             raise ValueError("saved_at is in the future")
         if current_time - saved_at > LIVE_SNAPSHOT_CACHE_TTL_SECONDS:
-            clear_live_snapshot(cache_dir)
-            return None
+            return None, clear_live_snapshot(cache_dir)
         snapshot_data = _required_field(data, "snapshot")
         if not isinstance(snapshot_data, dict):
             raise ValueError("snapshot is not an object")
@@ -958,11 +968,10 @@ def load_live_snapshot(
             snapshot=snap,
             saved_at=saved_at,
             source_id=source_id,
-        )
+        ), True
     except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         _log.warning("Discarding invalid live snapshot cache %s: %s", path, exc)
-        clear_live_snapshot(cache_dir)
-        return None
+        return None, clear_live_snapshot(cache_dir)
 
 
 @_serialized_live_snapshot_io
