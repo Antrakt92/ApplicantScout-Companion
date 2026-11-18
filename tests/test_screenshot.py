@@ -3506,6 +3506,62 @@ def test_watcher_start_cleans_observer_when_backlog_thread_start_raises(
     assert watcher._backlog_thread is None
 
 
+def test_watcher_replays_precommit_move_outside_backlog_apply_window(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    image_path = tmp_path / "WoWScrnShot_moved.jpg"
+    image_path.write_bytes(b"fixture")
+    os.utime(image_path, (1, 1))
+    watcher = ScreenshotWatcher(tmp_path, cache_dir=tmp_path / "cache")
+    ready = threading.Event()
+    watcher._startup_ingestion_ready = ready
+    snapshots: list[Snapshot] = []
+    watcher.snapshotReceived.connect(snapshots.append)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod,
+        "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(Snapshot(None, None), True),
+    )
+
+    watcher._on_new_file(image_path)
+    assert image_path.exists()
+    assert not snapshots
+    ready.set()
+    watcher._run_backlog_scans()
+
+    assert len(snapshots) == 1
+    assert not image_path.exists()
+
+
+@pytest.mark.parametrize("stop_before_commit", [False, True])
+def test_watcher_bounds_and_deduplicates_precommit_notifications(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stop_before_commit: bool,
+):
+    watcher = ScreenshotWatcher(tmp_path, cache_dir=tmp_path / "cache")
+    ready = threading.Event()
+    watcher._startup_ingestion_ready = ready
+    processed: list[Path] = []
+    monkeypatch.setattr(screenshot_mod, "_STARTUP_FILE_EVENT_LIMIT", 2)
+    monkeypatch.setattr(watcher, "_on_new_file_guarded", processed.append)
+    first, second, third = (tmp_path / f"WoWScrnShot_{i}.jpg" for i in range(3))
+    for path in (first, second, first, third):
+        watcher._on_new_file(path)
+    assert not processed
+
+    if stop_before_commit:
+        watcher.request_stop()
+    else:
+        ready.set()
+    assert ready.is_set()
+    watcher._run_backlog_scans()
+
+    assert processed == ([] if stop_before_commit else [first, third])
+
+
 def test_watcher_stop_suppresses_direct_file_signals(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "WoWScrnShot_0001.jpg"
     image_path.write_bytes(b"x")
@@ -3597,6 +3653,86 @@ def test_watcher_supervisor_restarts_dead_observer_and_rescans_backlog(
 
     watcher.stop()
     assert watcher.ensure_running() is False
+
+
+def test_watcher_restart_allows_inflight_dispatch_to_finish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    watcher = ScreenshotWatcher(tmp_path)
+    dispatcher_lock = threading.Lock()
+    dispatch_ready = threading.Event()
+    restart_stopping = threading.Event()
+    stop_completed = threading.Event()
+
+    class FailedObserver:
+        emitters = (SimpleNamespace(is_alive=lambda: False),)
+
+        def is_alive(self) -> bool:
+            return True
+
+        def stop(self) -> None:
+            # Watchdog stops by taking the same lock it holds while dispatching.
+            restart_stopping.set()
+            if dispatcher_lock.acquire(timeout=1.0):
+                dispatcher_lock.release()
+                stop_completed.set()
+
+        def join(self, timeout: float | None = None) -> None:
+            dispatcher.join(timeout=timeout)
+
+    def finish_dispatch() -> None:
+        with dispatcher_lock:
+            dispatch_ready.set()
+            if restart_stopping.wait(timeout=2.0):
+                watcher._request_backlog_rescan_after_deferred_resolution()
+
+    watcher._observer = FailedObserver()
+    monkeypatch.setattr(watcher, "_start_observer_locked", lambda: None)
+    dispatcher = threading.Thread(target=finish_dispatch, daemon=True)
+    dispatcher.start()
+    try:
+        assert dispatch_ready.wait(timeout=2.0)
+        assert watcher.ensure_running()
+        assert stop_completed.is_set()
+    finally:
+        dispatcher.join(timeout=2.0)
+        watcher.stop()
+
+
+def test_shutdown_cancels_an_observer_restart_while_teardown_is_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    watcher = ScreenshotWatcher(tmp_path)
+    stop_started = threading.Event()
+    finish_stop = threading.Event()
+    replacements: list[bool] = []
+    results: list[bool] = []
+
+    class FailedObserver:
+        def is_alive(self) -> bool:
+            return False
+
+        def stop(self) -> None:
+            stop_started.set()
+            finish_stop.wait(timeout=2.0)
+
+    watcher._observer = FailedObserver()
+    monkeypatch.setattr(watcher, "_start_observer_locked", lambda: replacements.append(True))
+    restart = threading.Thread(target=lambda: results.append(watcher.ensure_running()), daemon=True)
+    restart.start()
+    try:
+        assert stop_started.wait(timeout=2.0)
+        assert not watcher.ensure_running()
+        watcher.request_stop()
+    finally:
+        finish_stop.set()
+        restart.join(timeout=2.0)
+        watcher.stop()
+
+    assert results == [False]
+    assert not replacements
 
 
 def test_watcher_coalesces_backlog_rescan_requests_into_one_worker(tmp_path: Path):

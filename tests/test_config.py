@@ -9031,6 +9031,162 @@ def test_replace_watcher_aborts_without_inline_gui_work_when_scheduler_fails(
     assert created[0].stopped is True
 
 
+def test_rolled_back_watcher_callback_cannot_apply_after_successful_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    callbacks: list[Callable[[], None]] = []
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = FakeSignal()
+            self.cleanupStatus = FakeSignal()
+
+        def start(self) -> None:
+            self.snapshotReceived.emit(self.path.name)
+            if self.path.name == "failed":
+                self.cleanupStatus.emit("old cleanup status")
+
+        def stop(self) -> None:
+            pass
+
+    def partially_schedule(callback: Callable[[], None]) -> None:
+        if callbacks:
+            raise RuntimeError("GUI scheduler unavailable")
+        callbacks.append(callback)
+
+    machine = FakeMachine()
+    gate = main_mod._WatcherSignalGate()
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", partially_schedule)
+
+    with pytest.raises(RuntimeError, match="GUI scheduler unavailable"):
+        main_mod._replace_screenshot_watcher(
+            None, tmp_path / "failed", machine, object(), lambda *_args: None,
+            signal_gate=gate,
+        )
+    assert not machine.snapshots
+
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", callbacks.append)
+    main_mod._replace_screenshot_watcher(
+        None, tmp_path / "retry", machine, object(), lambda *_args: None,
+        signal_gate=gate,
+    )
+
+    for callback in callbacks:
+        callback()
+    assert machine.snapshots == ["retry"]
+
+
+def test_failed_watcher_signal_connection_retires_prepared_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    gate = main_mod._WatcherSignalGate()
+    stopped = []
+
+    class BrokenSignal:
+        def connect(self, *_args: object) -> None:
+            raise RuntimeError("cannot connect watcher signal")
+
+    class FakeWatcher:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.snapshotReceived = FakeSignal()
+            self.decodeFailed = BrokenSignal()
+
+        def start(self) -> None:
+            pytest.fail("watcher started without complete signal connections")
+
+        def stop(self) -> None:
+            stopped.append(self.path)
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", FakeWatcher)
+    path = tmp_path / "new"
+    with pytest.raises(RuntimeError, match="cannot connect watcher signal"):
+        main_mod._replace_screenshot_watcher(
+            None, path, FakeMachine(), object(), lambda *_args: None,
+            signal_gate=gate,
+        )
+
+    assert gate.is_current(0)
+    assert not gate.is_current(1)
+    assert stopped == [path]
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_watcher_leaves_screenshots_untouched_until_source_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    qtbot,
+    rollback: bool,
+):
+    first = tmp_path / "WoWScrnShot_pending.jpg"
+    first.write_bytes(b"fixture")
+    second = tmp_path / "WoWScrnShot_live.jpg"
+    machine = FakeMachine()
+    gate = main_mod._WatcherSignalGate()
+    callbacks: list[Callable[[], None]] = []
+    precommit_source_preserved: list[bool] = []
+    backlog_workers: list[threading.Thread] = []
+
+    class StartingWatcher(screenshot_mod.ScreenshotWatcher):
+        def start(self) -> None:
+            self._on_new_file(first)
+            precommit_source_preserved.append(first.exists())
+            super().start()
+            assert self._backlog_thread is not None
+            backlog_workers.append(self._backlog_thread)
+
+    def fail_scheduler_commit(_scheduler) -> None:
+        raise RuntimeError("cannot commit screenshot scheduler")
+
+    monkeypatch.setattr(main_mod, "ScreenshotWatcher", StartingWatcher)
+    monkeypatch.setattr(main_mod, "_schedule_snapshot_apply", callbacks.append)
+    monkeypatch.setattr(screenshot_mod, "_wait_for_stable_size", lambda _path: True)
+    monkeypatch.setattr(
+        screenshot_mod, "_decode_screenshot_result",
+        lambda _path: screenshot_mod.DecodeResult(Snapshot(None, None), True),
+    )
+
+    def replace_watcher():
+        return main_mod._replace_screenshot_watcher(
+            None, tmp_path, machine,
+            SimpleNamespace(note_screenshot_cleanup_status=lambda _message: None),
+            lambda *_args: None, signal_gate=gate,
+        )
+
+    if rollback:
+        monkeypatch.setattr(
+            main_mod._PreparedWatcherSignalScheduler, "commit", fail_scheduler_commit,
+        )
+        with pytest.raises(RuntimeError, match="cannot commit screenshot scheduler"):
+            replace_watcher()
+        backlog_workers[0].join(timeout=2.0)
+        assert not backlog_workers[0].is_alive()
+        assert first.exists()
+        assert not callbacks
+        assert gate.generation == 0
+        return
+
+    watcher = replace_watcher()
+    try:
+        assert precommit_source_preserved == [True]
+        qtbot.waitUntil(lambda: not first.exists(), timeout=3000)
+        while callbacks:
+            callbacks.pop(0)()
+        assert len(machine.snapshots) == 1
+        second.write_bytes(b"next fixture")
+        qtbot.waitUntil(lambda: not second.exists(), timeout=3000)
+        while callbacks:
+            callbacks.pop(0)()
+        assert len(machine.snapshots) == 2
+    finally:
+        watcher.stop()
+
+
 def test_snapshot_apply_dispatcher_runs_worker_submission_on_gui_thread():
     script = r"""
 import os

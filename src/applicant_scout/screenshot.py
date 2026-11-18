@@ -151,6 +151,7 @@ WIRE_VERSION_REJECT_REASON = "unsupported wire version"
 _BACKLOG_CLEANUP_LIMIT = 500
 _BACKLOG_EXAMINED_LIMIT = 500
 _BACKLOG_PHASE_SECONDS = 1.0
+_STARTUP_FILE_EVENT_LIMIT = 500
 # Recent frames retain the larger envelope above because a fresh fragmented
 # snapshot may need many files to reassemble. Historical files are cleanup-only:
 # keep startup and supervisor slices small so old QR/JPG work yields to live
@@ -2709,9 +2710,14 @@ class ScreenshotWatcher(QObject):
         self._backlog_thread: Optional[threading.Thread] = None
         self._backlog_rescan_requested = False
         self._observer_lock = threading.RLock()
+        self._observer_restarting = False
         self._supervisor_thread: Optional[threading.Thread] = None
         self._observer_restart_count = 0
         self._stopped = threading.Event()
+        self._startup_ingestion_ready: threading.Event | None = None
+        self._startup_events_replayed = threading.Event()
+        self._startup_files_lock = threading.Lock()
+        self._startup_files: OrderedDict[Path, None] = OrderedDict()
         self._work_claims = _ScreenshotWorkClaims()
         self._manual_index = _manual_index_for(screenshots_dir, cache_dir)
         self._fragment_assembler = _SnapshotFragmentAssembler()
@@ -2795,28 +2801,18 @@ class ScreenshotWatcher(QObject):
         # gets routed through _on_new_file. Both paths share _work_claims, so
         # only one may decode a given file generation.
         observer = Observer()
-        try:
-            observer.schedule(
-                _Handler(self._on_new_file),
-                str(self._dir),
-                recursive=False,
-            )
-            observer.start()
-            self._observer = observer
-            _log.info("watching %s", self._dir)
-            # Backlog scan on a background thread — for users with hundreds of
-            # historical WoWScrnShot JPG/TGA files, the synchronous scan was the
-            # dominant startup-latency contributor (~30-80 ms per file × 500 file
-            # cap = up to ~30s). Overlay now appears immediately. snapshotReceived
-            # is a Qt Signal — emits cross thread are queued safely to the GUI
-            # thread by Qt's signal/slot machinery.
-            self._request_backlog_scan_locked()
-        except Exception:
-            self._observer = None
-            self._backlog_thread = None
-            self._backlog_rescan_requested = False
-            self._stop_observer(observer)
-            raise
+        # Transfer even a partially started observer to the caller's rollback.
+        self._observer = observer
+        observer.schedule(
+            _Handler(self._on_new_file),
+            str(self._dir),
+            recursive=False,
+        )
+        observer.start()
+        _log.info("watching %s", self._dir)
+        # Decode historical screenshots off the GUI thread so the overlay can
+        # appear immediately even when the folder contains hundreds of images.
+        self._request_backlog_scan_locked()
 
     def _request_backlog_scan_locked(self) -> None:
         self._backlog_rescan_requested = True
@@ -2849,6 +2845,19 @@ class ScreenshotWatcher(QObject):
             self._request_backlog_scan_locked()
 
     def _run_backlog_scans(self) -> None:
+        startup_ready = self._startup_ingestion_ready
+        if startup_ready is not None:
+            startup_ready.wait()
+            with self._startup_files_lock:
+                startup_files = tuple(self._startup_files)
+                self._startup_files.clear()
+            # Handle observed file events as live work. A time-limited backlog
+            # pass can skip them or only clean up their stale timestamps.
+            for path in startup_files:
+                if self._stopped.is_set():
+                    break
+                self._on_new_file(path)
+            self._startup_events_replayed.set()
         retry_delay = _BACKLOG_SCAN_RETRY_INITIAL_SECONDS
         while True:
             with self._observer_lock:
@@ -2900,6 +2909,9 @@ class ScreenshotWatcher(QObject):
                     logger=_log,
                     exc_info=_log.isEnabledFor(logging.DEBUG),
                 )
+            startup_ready = self._startup_ingestion_ready
+            if startup_ready is not None and not self._startup_events_replayed.is_set():
+                continue
             try:
                 self._cleanup_tick()
             except Exception:  # noqa: BLE001 - preserve files and retry next tick
@@ -2911,46 +2923,67 @@ class ScreenshotWatcher(QObject):
                 )
 
     def start(self) -> None:
-        with self._observer_lock:
-            self._stopped.clear()
-            try:
-                self._start_observer_locked()
-                supervisor = threading.Thread(
-                    target=self._supervise_observer,
-                    name="ApplicantScoutScreenshotSupervisor",
-                    daemon=True,
-                )
-                supervisor.start()
-                self._supervisor_thread = supervisor
-            except Exception:
-                self._stopped.set()
-                observer = self._observer
-                self._observer = None
-                self._supervisor_thread = None
-                self._stop_observer(observer)
-                raise
+        failed_observer = None
+        try:
+            with self._observer_lock:
+                self._stopped.clear()
+                try:
+                    self._start_observer_locked()
+                    supervisor = threading.Thread(
+                        target=self._supervise_observer,
+                        name="ApplicantScoutScreenshotSupervisor",
+                        daemon=True,
+                    )
+                    supervisor.start()
+                    self._supervisor_thread = supervisor
+                except Exception:
+                    self._stopped.set()
+                    failed_observer, self._observer = self._observer, None
+                    self._supervisor_thread = None
+                    raise
+        finally:
+            self._stop_observer(failed_observer)
 
     def ensure_running(self) -> bool:
         """Restart a dead watchdog dispatcher/emitter and rescan recent files."""
         with self._observer_lock:
-            if self._stopped.is_set():
+            if self._stopped.is_set() or self._observer_restarting:
                 return False
             if self._observer_is_healthy(self._observer):
                 return True
-            failed_observer = self._observer
-            self._observer = None
+            failed_observer, self._observer = self._observer, None
+            self._observer_restarting = True
+        failed_replacement = None
+        try:
+            # Watchdog stops under its dispatch lock. An in-flight handler can
+            # request a backlog rescan and needs our observer lock to finish.
             self._stop_observer(failed_observer)
-            self._start_observer_locked()
-            self._observer_restart_count += 1
-            _log.warning(
-                "restarted failed screenshot observer (restart %d)",
-                self._observer_restart_count,
-            )
-            return True
+            with self._observer_lock:
+                if self._stopped.is_set():
+                    return False
+                try:
+                    self._start_observer_locked()
+                except Exception:
+                    failed_replacement, self._observer = self._observer, None
+                    raise
+                self._observer_restart_count += 1
+                _log.warning(
+                    "restarted failed screenshot observer (restart %d)",
+                    self._observer_restart_count,
+                )
+                return True
+        finally:
+            self._stop_observer(failed_replacement)
+            with self._observer_lock:
+                self._observer_restarting = False
 
     def request_stop(self) -> None:
         # Publish cancellation before waiting for short state bookkeeping.
         self._stopped.set()
+        with self._startup_files_lock:
+            self._startup_files.clear()
+        if self._startup_ingestion_ready is not None:
+            self._startup_ingestion_ready.set()
         with self._cleanup_lock:
             self._cleanup_pending.clear()
         with self._fragment_expiry_lock:
@@ -4062,6 +4095,20 @@ class ScreenshotWatcher(QObject):
         return True
 
     def _on_new_file(self, path: Path) -> None:
+        startup_ready = self._startup_ingestion_ready
+        if startup_ready is not None and not startup_ready.is_set():
+            with self._startup_files_lock:
+                # Once activated, the backlog worker can already be draining
+                # the queue. Check again under the same lock before buffering.
+                if not startup_ready.is_set():
+                    if not self._stopped.is_set():
+                        self._startup_files[path] = None
+                        self._startup_files.move_to_end(path)
+                        if len(self._startup_files) > _STARTUP_FILE_EVENT_LIMIT:
+                            self._startup_files.popitem(last=False)
+                    return
+        if self._stopped.is_set():
+            return
         self._last_live_activity = time.monotonic()
         try:
             self._on_new_file_guarded(path)

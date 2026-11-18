@@ -3153,43 +3153,44 @@ def _stop_current_session_watcher_best_effort() -> None:
 
 class _WatcherSignalGate:
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._generation = 0
         self._pending_generation: int | None = None
+        self._last_issued_generation = 0
 
     @property
     def generation(self) -> int:
-        return self._generation
+        with self._lock:
+            return self._generation
 
     def prepare_next(self) -> int:
-        self._pending_generation = self._generation + 1
-        return self._pending_generation
+        with self._lock:
+            # A failed replacement may already have queued GUI work. Restoring
+            # the old active generation must never make the failed ID reusable.
+            self._last_issued_generation += 1
+            self._pending_generation = self._last_issued_generation
+            return self._pending_generation
 
     def _replace_generation(self, generation: int) -> None:
-        self._generation = generation
-        self._pending_generation = None
+        with self._lock:
+            self._generation = generation
+            self._pending_generation = None
 
     def commit(self, generation: int) -> None:
         self._replace_generation(generation)
-
-    def cancel(self, generation: int) -> None:
-        if self._pending_generation == generation:
-            self._pending_generation = None
 
     def restore(self, generation: int) -> None:
         self._replace_generation(generation)
 
     def invalidate(self) -> None:
-        self._generation = (
-            max(
-                self._generation,
-                self._pending_generation or self._generation,
-            )
-            + 1
-        )
-        self._pending_generation = None
+        with self._lock:
+            self._last_issued_generation += 1
+            self._generation = self._last_issued_generation
+            self._pending_generation = None
 
     def is_current(self, generation: int) -> bool:
-        return generation == self._generation or generation == self._pending_generation
+        with self._lock:
+            return generation == self._generation or generation == self._pending_generation
 
 
 class _PreparedWatcherSignalScheduler:
@@ -3231,9 +3232,8 @@ class _PreparedWatcherSignalScheduler:
 
     def cancel(self) -> None:
         with self._lock:
-            if self._state == "prepared":
-                self._state = "cancelled"
-                self._pending = []
+            self._state = "cancelled"
+            self._pending = []
 
 
 class _SnapshotSourceGate:
@@ -4058,28 +4058,34 @@ def _replace_screenshot_watcher(
     else:
         new_watcher = ScreenshotWatcher(screenshots_dir, cache_dir=cache_dir)
     setattr(new_watcher, _RETIRED_WATCHER_TRACKER_ATTR, retired_watchers)
-    generation = signal_gate.prepare_next()
+    # Starting the native observer can fail. Keep precommit files on disk
+    # for the backlog pass until the source and its GUI scheduler are owned.
+    startup_ingestion_ready = threading.Event()
+    new_watcher._startup_ingestion_ready = startup_ingestion_ready
     source_gate = _SnapshotSourceGate()
     prepared_scheduler = _PreparedWatcherSignalScheduler()
-    apply_queue = _connect_screenshot_watcher(
-        new_watcher,
-        machine,
-        window,
-        decode_failed_callback,
-        signal_gate=signal_gate,
-        source_gate=source_gate,
-        generation=generation,
-        live_snapshot_cache_writer=live_snapshot_cache_writer,
-        scheduler=prepared_scheduler.schedule,
-    )
-    setattr(new_watcher, "_applicant_scout_apply_queue", apply_queue)
-    setattr(
-        new_watcher,
-        "_applicant_scout_source_id",
-        live_snapshot_source_identity(screenshots_dir),
-    )
+    generation = signal_gate.prepare_next()
     try:
+        apply_queue = _connect_screenshot_watcher(
+            new_watcher,
+            machine,
+            window,
+            decode_failed_callback,
+            signal_gate=signal_gate,
+            source_gate=source_gate,
+            generation=generation,
+            live_snapshot_cache_writer=live_snapshot_cache_writer,
+            scheduler=prepared_scheduler.schedule,
+        )
+        setattr(new_watcher, "_applicant_scout_apply_queue", apply_queue)
+        setattr(
+            new_watcher,
+            "_applicant_scout_source_id",
+            live_snapshot_source_identity(screenshots_dir),
+        )
         new_watcher.start()
+        signal_gate.commit(generation)
+        prepared_scheduler.commit()
     except Exception:
         prepared_scheduler.cancel()
         signal_gate.restore(previous_generation)
@@ -4087,19 +4093,6 @@ def _replace_screenshot_watcher(
             new_watcher.stop()
         except Exception as cleanup_exc:  # noqa: BLE001
             log.warning("Could not clean up failed screenshot watcher: %s", cleanup_exc)
-        raise
-    signal_gate.commit(generation)
-    try:
-        prepared_scheduler.commit()
-    except Exception:
-        signal_gate.restore(previous_generation)
-        try:
-            new_watcher.stop()
-        except Exception as cleanup_exc:  # noqa: BLE001
-            log.warning(
-                "Could not clean up screenshot watcher after GUI schedule failure: %s",
-                cleanup_exc,
-            )
         raise
     if on_committed is not None:
         try:
@@ -4114,6 +4107,7 @@ def _replace_screenshot_watcher(
                 "Screenshot watcher committed, but its runtime source hook failed",
                 exc_info=log.isEnabledFor(logging.DEBUG),
             )
+    startup_ingestion_ready.set()
     if current_watcher is not None:
         # WHY: watchdog Observer.stop()+join can block for seconds on Windows
         # storage paths. The generation gate above already ignores stale signals.
