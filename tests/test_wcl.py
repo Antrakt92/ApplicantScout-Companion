@@ -814,7 +814,7 @@ def test_fetch_character_raid_boss_details_503_sets_server_retry_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._http.close()
     http = _FakeHTTP({"error": "unavailable"}, status_code=503)
@@ -858,7 +858,7 @@ def test_fetch_character_raid_boss_details_network_timeout_sets_short_retry_bloc
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._http.close()
     http = _TimeoutHTTP()
@@ -902,7 +902,7 @@ def test_fetch_character_raid_boss_details_oauth_timeout_sets_short_retry_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class FlakyAuth(_FakeAuth):
         calls = 0
@@ -949,7 +949,7 @@ def test_fetch_character_raid_boss_details_oauth_503_uses_retryable_server_kind(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class ServerFailingAuth(_FakeAuth):
         calls = 0
@@ -997,7 +997,7 @@ def test_fetch_character_raid_boss_details_stale_oauth_timeout_does_not_set_retr
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class ReconfiguredTimeoutAuth(_FakeAuth):
         def get_token(self) -> str:
@@ -1340,7 +1340,7 @@ def test_network_exception_sets_cooldown_until_retry_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ):
     now = 1_000.0
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: now)
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
 
     class RaisingHTTP:
@@ -1613,7 +1613,7 @@ def test_reconfigure_auth_ignores_stale_429_from_in_flight_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ):
     now = 1_000.0
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: now)
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: now)
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
 
     class ReconfigureThenRateLimitHTTP:
@@ -1667,7 +1667,7 @@ def test_quota_snapshot_near_limit_does_not_soft_block_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ):
     now = 1_000.0
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: now + 10.0)
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: now + 10.0)
     client, http = _client_for_payload(_wcl_payload(_character_with_empty_mplus()))
     client._record_quota_snapshot(
         RateLimitInfo(limit_per_hour=100.0, points_spent=90.0, reset_in_seconds=60.0),
@@ -1684,7 +1684,7 @@ def test_429_sets_cooldown_and_short_circuits_until_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._http.close()
     http = _FakeHTTP(_wcl_payload(_character()), status_code=429)
@@ -1706,7 +1706,7 @@ def test_503_sets_short_retry_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._http.close()
     http = _FakeHTTP({"error": "unavailable"}, status_code=503)
@@ -1729,7 +1729,7 @@ def test_network_timeout_sets_short_retry_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
     client = WCLClient(_FakeAuth(), region="EU")  # type: ignore[arg-type]
     client._http.close()
     http = _TimeoutHTTP()
@@ -1752,7 +1752,7 @@ def test_oauth_refresh_network_error_sets_short_retry_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class FlakyAuth(_FakeAuth):
         calls = 0
@@ -1794,7 +1794,7 @@ def test_second_oauth_refresh_network_error_sets_short_retry_after_401(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class TimeoutAfterInvalidateAuth(_FakeAuth):
         calls = 0
@@ -1827,7 +1827,7 @@ def test_fetch_character_ranks_oauth_429_sets_rate_limit_block_and_short_circuit
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class RateLimitedAuth(_FakeAuth):
         calls = 0
@@ -1865,7 +1865,7 @@ def test_fetch_character_ranks_oauth_503_sets_server_retry_block_and_short_circu
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class ServerFailingAuth(_FakeAuth):
         calls = 0
@@ -1903,7 +1903,7 @@ def test_second_oauth_refresh_503_sets_short_retry_after_401(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class ServerErrorAfterInvalidateAuth(_FakeAuth):
         calls = 0
@@ -1939,7 +1939,7 @@ def test_stale_oauth_refresh_network_error_does_not_set_retry_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class ReconfiguredTimeoutAuth(_FakeAuth):
         def get_token(self) -> str:
@@ -1960,7 +1960,7 @@ def test_stale_oauth_503_after_reconfigure_does_not_set_retry_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
 
     class ReconfiguredServerErrorAuth(_FakeAuth):
         def get_token(self) -> str:
@@ -2013,7 +2013,7 @@ def test_retry_block_remaining_seconds_uses_max_remaining_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current = [1_000.0]
-    monkeypatch.setattr(wcl_mod.time, "time", lambda: current[0])
+    monkeypatch.setattr(wcl_mod, "monotonic", lambda: current[0])
     client, _http = _client_for_payload(_wcl_payload(_character()))
     client._record_quota_snapshot(
         RateLimitInfo(limit_per_hour=100.0, points_spent=90.0, reset_in_seconds=60.0),
@@ -4557,6 +4557,7 @@ def test_oauth_http_400_remains_non_retryable_auth_error(
         auth.get_token()
 
     assert excinfo.value.error_kind == WCL_ERROR_AUTH
+    assert str(excinfo.value) == "OAuth failed (HTTP 400)"
 
 
 def test_oauth_malformed_200_is_classified_for_safe_status_copy(

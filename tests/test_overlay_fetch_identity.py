@@ -1223,7 +1223,7 @@ def test_retry_failed_wcl_fetches_skips_before_cooldown(qtbot, tmp_path):
         wcl_error_kind=WCL_ERROR_RATE_LIMITED,
     )
     state.add_or_update(app)
-    client._rate_limited_until = time.time() + 60.0
+    client._rate_limited_until = time.monotonic() + 60.0
 
     try:
         assert window._retry_failed_wcl_fetches() == 0
@@ -1245,7 +1245,7 @@ def test_retry_failed_wcl_fetches_skips_server_error_before_cooldown(
         wcl_error_kind=WCL_ERROR_SERVER,
     )
     state.add_or_update(app)
-    client._server_retry_until = time.time() + 30.0
+    client._server_retry_until = time.monotonic() + 30.0
 
     try:
         assert window._retry_failed_wcl_fetches() == 0
@@ -1306,7 +1306,7 @@ def test_retry_failed_wcl_fetches_skips_network_error_before_cooldown(
         wcl_error_kind=WCL_ERROR_NETWORK,
     )
     state.add_or_update(app)
-    client._network_retry_until = time.time() + 30.0
+    client._network_retry_until = time.monotonic() + 30.0
 
     try:
         assert window._retry_failed_wcl_fetches() == 0
