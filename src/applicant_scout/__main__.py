@@ -2817,8 +2817,6 @@ def _check_updates(
         blocked_layout_reason = in_app_exe_update_blocked_reason()
         if blocked_layout_reason is not None:
             raise RuntimeError(blocked_layout_reason)
-        if status != "available":
-            return str(message)
         if not update_result_has_installable_asset(result):
             raise RuntimeError(str(message))
         installer = (

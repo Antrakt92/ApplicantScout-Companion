@@ -395,17 +395,6 @@ def _semver_text(version: str) -> str | None:
     return f"{key[0]}.{key[1]}.{key[2]}"
 
 
-def _version_tuple(version: str) -> tuple[int, int, int]:
-    return _semver_key(version) or (0, 0, 0)
-
-
-def _is_newer(latest: str, current: str) -> bool:
-    latest_key = _semver_key(latest)
-    if latest_key is None:
-        return False
-    return latest_key > _version_tuple(current)
-
-
 def _asset_download_url(asset: dict[str, Any]) -> str | None:
     value = asset.get("browser_download_url")
     if not isinstance(value, str):
@@ -448,8 +437,10 @@ def _select_asset(
     return None, None, None, None
 
 
-def _select_latest_stable_release(releases: list[Any]) -> dict[str, Any] | None:
-    candidates: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+def _select_latest_stable_release(
+    releases: list[Any],
+) -> tuple[tuple[int, int, int], str, dict[str, Any]] | None:
+    candidates: list[tuple[tuple[int, int, int], str, dict[str, Any]]] = []
     for release in releases:
         if (
             not isinstance(release, dict)
@@ -463,10 +454,8 @@ def _select_latest_stable_release(releases: list[Any]) -> dict[str, Any] | None:
         version_key = _semver_key(tag_name)
         if version_key is None:
             continue
-        candidates.append((version_key, release))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1]
+        candidates.append((version_key, tag_name, release))
+    return max(candidates, key=lambda item: item[0], default=None)
 
 
 def check_for_update(
@@ -476,7 +465,8 @@ def check_for_update(
     client: httpx.Client | None = None,
 ) -> UpdateResult:
     """Return latest immutable, non-prerelease GitHub Release status."""
-    if _semver_key(current_version) is None:
+    current_key = _semver_key(current_version)
+    if current_key is None:
         return UpdateResult(
             status="unavailable",
             message=(
@@ -530,15 +520,14 @@ def check_for_update(
                 message="GitHub update check returned an unexpected response.",
                 reason="unexpected_response",
             )
-        latest = _select_latest_stable_release(releases)
-        if latest is None:
+        selected_release = _select_latest_stable_release(releases)
+        if selected_release is None:
             return UpdateResult(
                 status="unavailable",
                 message="No stable semantic GitHub Releases are published yet.",
                 reason="no_stable_releases",
             )
-        tag_name = latest.get("tag_name")
-        latest_version = tag_name if isinstance(tag_name, str) else ""
+        latest_key, latest_version, latest = selected_release
         # The checksum is published beside the installer, so it proves only
         # that those two downloaded assets agree. Releases are unsigned: checksum
         # agreement is the only update trust signal. Require GitHub's immutable
@@ -552,15 +541,9 @@ def check_for_update(
                     "automatic update is disabled."
                 ),
                 reason="release_not_immutable",
-                latest_version=latest_version or None,
+                latest_version=latest_version,
             )
-        if not latest_version:
-            return UpdateResult(
-                status="unavailable",
-                message="Latest GitHub Release has no version tag.",
-                reason="missing_version_tag",
-            )
-        if not _is_newer(latest_version, current_version):
+        if latest_key <= current_key:
             return UpdateResult(
                 status="up_to_date",
                 message=f"ApplicantScout Companion is up to date ({current_version}).",
@@ -572,11 +555,7 @@ def check_for_update(
             [asset for asset in assets if isinstance(asset, dict)],
             latest_version,
         )
-        if (
-            asset_name
-            and _is_setup_asset_name(asset_name)
-            and (checksum_name is None or checksum_url is None)
-        ):
+        if asset_name and (checksum_name is None or checksum_url is None):
             return UpdateResult(
                 status="blocked",
                 message=(
