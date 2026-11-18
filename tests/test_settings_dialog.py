@@ -909,6 +909,39 @@ def test_settings_dialog_path_probes_supersede_stuck_same_volume_paths(
         dialog._cancel_screenshots_validation_process()
 
 
+def test_prepare_quit_waits_for_path_after_unrelated_autosave(qtbot, tmp_path, monkeypatch):
+    dialog = SettingsDialog(_cfg(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog._screenshots_warning_timer.stop()
+    monkeypatch.setattr(settings_mod, "QProcess", FakeProbeProcess)
+    recorded = []
+    dialog.valuesChanged.connect(recorded.append)
+    previous_path = dialog.screenshots_edit.text()
+    pending_path = str(tmp_path / "new" / "_retail_" / "Screenshots")
+
+    try:
+        dialog.screenshots_edit.setText(pending_path)
+        dialog.region_combo.setCurrentText("US")
+        assert dialog.flush_pending_values()
+        assert [(values.region, values.screenshots_path) for values in recorded] == [
+            ("US", previous_path)
+        ]
+        assert dialog._screenshots_validation_process is not None
+
+        assert not dialog.prepare_quit()
+        assert dialog.status_label.text() == settings_mod.SCREENSHOTS_VALIDATION_PENDING_MESSAGE
+        assert len(recorded) == 1
+
+        dialog._finish_screenshots_validation(settings_mod._ScreenshotsValidationResult(
+            dialog._screenshots_validation_generation, pending_path, None,
+        ))
+        assert recorded[-1].screenshots_path == pending_path
+        assert dialog.prepare_quit()
+        assert len(recorded) == 2
+    finally:
+        dialog._cancel_screenshots_validation_process()
+
+
 def test_settings_dialog_path_probe_timeout_is_determinate(
     qtbot,
     tmp_path: Path,

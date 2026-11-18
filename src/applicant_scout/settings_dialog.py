@@ -1930,6 +1930,16 @@ class SettingsDialog(QDialog):
             self._set_status(WCL_CREDENTIAL_TEST_BUSY_MESSAGE, error=True)
             return False
         if not self._autosave_timer.isActive():
+            if require_screenshots_ready:
+                # An unrelated autosave can succeed with the previous path
+                # while the current path still needs its own validation.
+                error = self._hard_validation_error(
+                    self.values(), require_screenshots_ready=True
+                )
+                if error is not None:
+                    pending = error == SCREENSHOTS_VALIDATION_PENDING_MESSAGE
+                    self._set_status(error, warning=pending, error=not pending)
+                    return False
             return self._last_values_apply_succeeded
         self._autosave_timer.stop()
         return self._emit_values_changed_if_valid(
@@ -1950,7 +1960,10 @@ class SettingsDialog(QDialog):
         if self.flush_pending_values(require_screenshots_ready=needs_screenshots_gate):
             return True
         status_after = self.status_label.text()
-        if not status_after or status_after == status_before:
+        if not status_after or (
+            status_after == status_before
+            and status_after != SCREENSHOTS_VALIDATION_PENDING_MESSAGE
+        ):
             self._set_status(SETTINGS_QUIT_BLOCKED_MESSAGE, error=True)
         return False
 
