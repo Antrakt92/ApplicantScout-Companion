@@ -40,21 +40,28 @@ def test_runtime_close_bounds_native_write_and_releases_downstream_client(tmp_pa
     monkeypatch.setattr(wcl, "atomic_write_text", blocked)
     window = SimpleNamespace(shutdown_fetches=lambda: True)
     client = SimpleNamespace(close=client_closed.set)
+    writer = Thread(target=cache.flush, daemon=True)
     caller = Thread(target=lambda: (main._shutdown_runtime(None, window, cache, None, client), done.set()), daemon=True)
     try:
-        caller.start()
+        # Establish an in-flight write before starting the real shutdown budget.
+        writer.start()
         assert entered.wait(1)
+        caller.start()
         assert done.wait(0.5), "native cache persistence blocked runtime cleanup"
         assert client_closed.is_set()
         assert cache.close() is False
         assert calls == [True]
         assert not _put(cache)
         release.set()
+        writer.join(3)
+        assert not writer.is_alive()
         _join_owner(cache)
         assert cache.close() is True
     finally:
         release.set()
-        caller.join(3)
+        if caller.ident is not None:
+            caller.join(3)
+        writer.join(3)
         _join_owner(cache)
 
 
