@@ -154,14 +154,11 @@ class _HalfCacheState:
 @dataclass(frozen=True)
 class _RegionCacheEntry:
     db: _RegionDB | None
-    db_fingerprint: _RegionDBFingerprint | None
     observed_fingerprint: _RegionDBFingerprint
     observed_stat: _RegionDBStat
-    last_attempt_at: float
     last_content_audit_at: float
-    fallback_since: float | None = None
-    mplus: _HalfCacheState | None = None
-    raid: _HalfCacheState | None = None
+    mplus: _HalfCacheState
+    raid: _HalfCacheState
 
 
 class RaiderIOLocalReader:
@@ -285,23 +282,12 @@ class RaiderIOLocalReader:
             fingerprint[3:], now,
         )
         db = _RegionDB.from_halves(mplus_data, raid_data)
-        failure_starts = [
-            state.fallback_since for state in (mplus_state, raid_state)
-            if state.fallback_since is not None
-        ]
         with self._lock:
             self._cache[token] = _RegionCacheEntry(
                 db=db,
-                db_fingerprint=(
-                    (mplus_state.db_fingerprint or fingerprint[:3])
-                    + (raid_state.db_fingerprint or fingerprint[3:])
-                    if db is not None else None
-                ),
                 observed_fingerprint=fingerprint,
                 observed_stat=observed_stat,
-                last_attempt_at=now,
                 last_content_audit_at=now,
-                fallback_since=min(failure_starts) if failure_starts else None,
                 mplus=mplus_state,
                 raid=raid_state,
             )
@@ -328,14 +314,14 @@ class RaiderIOLocalReader:
                     reuse_mplus=(
                         previous.db._mplus_data
                         if previous is not None and previous.db is not None
-                        and previous.mplus is not None and previous.mplus.available
+                        and previous.mplus.available
                         and previous.mplus.db_fingerprint == fingerprint[:3]
                         else None
                     ),
                     reuse_raid=(
                         previous.db._raid_data
                         if previous is not None and previous.db is not None
-                        and previous.raid is not None and previous.raid.available
+                        and previous.raid.available
                         and previous.raid.db_fingerprint == fingerprint[3:]
                         else None
                     ),
@@ -813,35 +799,16 @@ def _cache_entry_is_stale(
 
 
 def _cache_entry_retry_due(entry: _RegionCacheEntry, now: float) -> bool:
-    if entry.mplus is not None and entry.raid is not None:
-        for state, data_available in (
-            (entry.mplus, entry.db is not None and entry.db._mplus_data.available),
-            (entry.raid, entry.db is not None and entry.db._raid_data.available),
+    for state, data_available in (
+        (entry.mplus, entry.db is not None and entry.db._mplus_data.available),
+        (entry.raid, entry.db is not None and entry.db._raid_data.available),
+    ):
+        if not state.available and (
+            now - state.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
+            or (data_available and _half_grace_expired(state, now))
         ):
-            if not state.available and (
-                now - state.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
-                or (data_available and _half_grace_expired(state, now))
-            ):
-                return True
-        return False
-    if entry.db is not None:
-        return entry.fallback_since is not None and (
-            now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
-            or _positive_fallback_grace_expired(entry, now)
-        )
-    return now - entry.last_attempt_at >= _NEGATIVE_CACHE_TTL_SECONDS
-
-
-def _positive_fallback_grace_expired(
-    entry: _RegionCacheEntry,
-    now: float,
-) -> bool:
-    return (
-        entry.db is not None
-        and entry.fallback_since is not None
-        and now - entry.fallback_since
-        >= _POSITIVE_CACHE_FAILURE_GRACE_SECONDS
-    )
+            return True
+    return False
 
 
 def _region_db_fingerprint(retail_root: Path, token: str) -> _RegionDBFingerprint:

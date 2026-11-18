@@ -1965,16 +1965,16 @@ def test_positive_cache_reload_failure_grace_does_not_renew(
     reader = RaiderIOLocalReader(tmp_path)
     first = reader.lookup_profile("Chinie", "Ragnaros", "EU")
     assert first is not None
-    successful_fingerprint = reader._cache["eu"].db_fingerprint
+    successful_fingerprint = reader._cache["eu"].mplus.db_fingerprint
 
     for path in raiderio_local_mod._region_db_paths(tmp_path, "eu"):
         path.unlink(missing_ok=True)
     clock[0] = 110.0
     assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == first
     failed_entry = reader._cache["eu"]
-    assert failed_entry.db_fingerprint == successful_fingerprint
-    assert failed_entry.observed_fingerprint != successful_fingerprint
-    assert failed_entry.fallback_since == 110.0
+    assert failed_entry.mplus.db_fingerprint == successful_fingerprint
+    assert failed_entry.observed_fingerprint[:3] != successful_fingerprint
+    assert failed_entry.mplus.fallback_since == 110.0
 
     for changed_at, score in ((120.0, 3333), (130.0, 3555)):
         clock[0] = changed_at
@@ -1985,8 +1985,8 @@ def test_positive_cache_reload_failure_grace_does_not_renew(
         )
         assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == first
         churned_entry = reader._cache["eu"]
-        assert churned_entry.db_fingerprint == successful_fingerprint
-        assert churned_entry.fallback_since == 110.0
+        assert churned_entry.mplus.db_fingerprint == successful_fingerprint
+        assert churned_entry.mplus.fallback_since == 110.0
 
     clock[0] = 140.0
 
@@ -2007,7 +2007,7 @@ def test_positive_cache_reload_failure_grace_does_not_renew(
         path.unlink(missing_ok=True)
     clock[0] = 160.0
     assert reader.lookup_profile("Chinie", "Ragnaros", "EU") == recovered
-    assert reader._cache["eu"].fallback_since == 160.0
+    assert reader._cache["eu"].mplus.fallback_since == 160.0
 
 
 def test_expired_positive_reload_fallback_is_not_used_by_hot_lookup(
@@ -2080,9 +2080,9 @@ def test_positive_cache_reload_recovers_within_failure_grace(
     assert recovered.current_score == 3333
     assert recovered.dungeons == [{"name": "Pit of Saron", "key_level": 16}]
     recovered_entry = reader._cache["eu"]
-    assert recovered_entry.db_fingerprint == recovered_entry.observed_fingerprint
-    assert recovered_entry.last_attempt_at == 120.0
-    assert recovered_entry.fallback_since is None
+    assert recovered_entry.mplus.db_fingerprint == recovered_entry.observed_fingerprint[:3]
+    assert recovered_entry.mplus.last_attempt_at == 120.0
+    assert recovered_entry.mplus.fallback_since is None
 
 
 def test_lookup_profile_retries_malformed_db_when_files_become_valid(tmp_path: Path):
