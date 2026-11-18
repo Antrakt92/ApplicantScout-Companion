@@ -149,7 +149,8 @@ information. Missing historical data stays hidden; it does not affect Fit.
 Updates pause in combat, throughout an active Mythic+ run and during raid boss
 encounters. You can recruit between raid pulls. Screenshot settings are restored
 after each capture; the companion cleans up screenshots it recognizes as
-ApplicantScout data. See [transport and cleanup details](docs/REFERENCE.md).
+ApplicantScout data. The paired releases continue to use the existing
+screenshot and QR data format. See [transport and cleanup details](docs/REFERENCE.md).
 
 ## Trust And Local Data
 

@@ -1,13 +1,27 @@
 # ApplicantScout Companion Release Notes
 
-## Unreleased
+## 0.24.9 - 18-Nov-2026 — Reliable screenshot and overlay updates
 
-- Use the posted Mythic+ level for Fit and keep manual targets when the leader's key changes.
-- Keep ordinary dungeon listings out of Mythic+ scoring.
+Paired release with ApplicantScout addon `0.14.11`.
+
+### Fixed
+
+- Use the posted Mythic+ level for Fit, preserve manual targets and keep ordinary dungeon listings out of Mythic+ scoring.
 - Preserve group updates through rapid character changes and delayed realm information.
-- Recover captures replaced during the screenshot scan and retry eligible skipped captures.
-- Keep newer multipart captures when the file clock moves backwards.
-- Update Python networking and development dependencies.
+- Recover captures skipped or replaced during a scan. Keep newer multipart captures when file timestamps move backwards, and report incomplete captures for the current group.
+- Reuse the active watcher for equivalent screenshot paths and recover monitoring after a path change. Finish saving screenshot settings before quitting.
+- Keep WoW foreground and process detection consistent, and expire incomplete local control requests.
+- Respect Warcraft Logs retry delays and keep authentication error details private.
+
+### Windows packaging
+
+- Ship a QR-only ZBar 0.23.95 build. The screenshot and QR data format remains compatible with previous supported versions.
+- Update AnyIO from 4.15.1 to 4.16.0, PyInstaller hooks from 2026.9 to 2026.10, nodeenv from 1.11.1 to 1.12.0 and Ruff from 0.17.3 to 0.17.5.
+
+### Paired addon
+
+- Send the party roster sooner after joining. Specializations and item levels follow as they become available.
+- Preserve screenshot preferences, avoid repeated Auto Hi greetings during roster loading and reject conflicting group data.
 
 ## 0.24.8 - 05-Nov-2026 — Dependency maintenance
 
