@@ -773,3 +773,35 @@ def test_p1_quit_pipeline_flush_is_one_shot(qtbot, monkeypatch: pytest.MonkeyPat
     pipeline.flush()
     pipeline.flush()
     qtbot.waitUntil(lambda: calls == ["quiesce"], timeout=1000)
+
+
+def test_quit_quiesces_watcher_published_by_settings_drain():
+    from applicant_scout import app_bootstrap as bootstrap
+
+    calls: list[str] = []
+    original = SimpleNamespace(request_stop=lambda: calls.append("stop original"))
+    replacement = SimpleNamespace(request_stop=lambda: calls.append("stop replacement"))
+    watcher = original
+    signal_gate = main_mod._WatcherSignalGate()
+
+    def drain() -> bool:
+        nonlocal watcher
+        calls.append("drain settings")
+        signal_gate.commit(signal_gate.prepare_next())
+        watcher = replacement
+        return True
+
+    pipeline = bootstrap.make_quit_pipeline(
+        app=object(),
+        update_quit_gate=main_mod._UpdateQuitGate(),
+        watcher_signal_gate=signal_gate,
+        get_settings_dialog=lambda: None,
+        get_window=lambda: SimpleNamespace(flush_geometry=lambda: calls.append("flush geometry")),
+        get_watcher=lambda: watcher,
+        get_active_update_control=lambda: None,
+        get_tray_controller=lambda: None,
+    )
+    pipeline.__dict__["settings_drain_holder"]["drain"] = drain
+    pipeline.flush()
+
+    assert calls == ["stop original", "drain settings", "stop replacement", "flush geometry"]

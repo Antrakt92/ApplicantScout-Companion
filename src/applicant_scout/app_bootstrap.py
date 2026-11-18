@@ -180,8 +180,9 @@ def make_quit_pipeline(
         )
 
     def _flush_before_quit_impl() -> None:
+        watcher = get_watcher()
         _main._quiesce_screenshot_ingestion(
-            get_watcher(),
+            watcher,
             watcher_signal_gate,
         )
         dialog = get_settings_dialog()
@@ -190,11 +191,14 @@ def make_quit_pipeline(
         drain = drain_holder["drain"]
         if drain is not None and not drain():
             log.warning("Settings apply did not finish before quit; continuing.")
+        # Applying a new screenshot path can publish a watcher during the drain.
+        current_watcher = get_watcher()
+        if current_watcher is not None and current_watcher is not watcher:
+            _main._quiesce_screenshot_ingestion(current_watcher, watcher_signal_gate)
         window = get_window()
         if window is not None:
             window.flush_geometry()
 
-    # The watcher gate is main's own gate (same object, same order). No lazy copy.
     _flush_before_quit = _main._make_one_shot_callback(_flush_before_quit_impl)
 
     def _quit_application() -> None:
