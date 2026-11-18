@@ -43,6 +43,7 @@ CONTROL_OWNER_NAME = f"Global\\{CONTROL_SERVER_NAME}.Owner"
 CONTROL_QUIT_COMMAND = b"quit"
 CONTROL_SHOW_SETTINGS_COMMAND = b"show-settings"
 CONTROL_FRAME_MAX_BYTES = 64
+CONTROL_FRAME_TIMEOUT_MS = 2000
 CONTROL_RESPONSE_TIMEOUT_MS = 500
 
 
@@ -365,6 +366,15 @@ class _ControlFrameReader:
         self._buffer = bytearray()
         self._complete = False
 
+    def expire(self) -> None:
+        if self._complete:
+            return
+        self._complete = True
+        self._socket.disconnectFromServer()
+
+    def retire(self) -> None:
+        self._complete = True
+
     def __call__(self) -> None:
         if self._complete:
             return
@@ -414,7 +424,9 @@ def drain_control_connections(
 
         consume_frame = _ControlFrameReader(socket, dispatch_frame)
         socket.readyRead.connect(consume_frame)
+        socket.disconnected.connect(consume_frame.retire)
         socket.disconnected.connect(socket.deleteLater)
+        QTimer.singleShot(CONTROL_FRAME_TIMEOUT_MS, socket, consume_frame.expire)
         if socket.bytesAvailable() > 0:
             consume_frame()
 

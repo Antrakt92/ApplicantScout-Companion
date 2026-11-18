@@ -95,6 +95,17 @@ def _handle_control_command_with_immediate_schedule(
     )
 
 
+@pytest.fixture(autouse=True)
+def control_frame_deadlines(monkeypatch: pytest.MonkeyPatch):
+    deadlines: list[Any] = []
+    monkeypatch.setattr(
+        runtime_control,
+        "QTimer",
+        SimpleNamespace(singleShot=lambda _ms, _context, callback: deadlines.append(callback)),
+    )
+    return deadlines
+
+
 def test_control_server_waits_for_a_complete_fragmented_command_frame():
     socket = _ServerSocket()
     calls: list[str] = []
@@ -122,7 +133,7 @@ def test_control_server_waits_for_a_complete_fragmented_command_frame():
     ]
 
 
-def test_control_server_buffers_fragmented_show_settings_command():
+def test_control_server_buffers_fragmented_show_settings_command(control_frame_deadlines):
     socket = _ServerSocket()
     calls: list[str] = []
     runtime_control.drain_control_connections(
@@ -134,9 +145,11 @@ def test_control_server_buffers_fragmented_show_settings_command():
 
     socket.feed(b"show-")
     socket.feed(b"settings\n")
+    assert len(control_frame_deadlines) == 1
+    control_frame_deadlines[0]()
 
     assert calls == ["show"]
-    assert socket.calls[:3] == ["write:ok", "flush", "wait-written:100"]
+    assert socket.calls == ["write:ok", "flush", "wait-written:100", "disconnect", "delete"]
 
 
 def test_control_server_accepts_existing_crlf_command_bytes_on_connect():
@@ -176,7 +189,7 @@ def test_control_server_keeps_fragment_buffers_isolated_per_connection():
     assert settings_socket.calls[0] == "write:ok"
 
 
-def test_control_server_does_not_dispatch_an_incomplete_disconnected_frame():
+def test_control_server_does_not_dispatch_an_incomplete_disconnected_frame(control_frame_deadlines):
     socket = _ServerSocket()
     calls: list[str] = []
     runtime_control.drain_control_connections(
@@ -188,9 +201,28 @@ def test_control_server_does_not_dispatch_an_incomplete_disconnected_frame():
 
     socket.feed(b"quit")
     socket.disconnected.emit()
+    control_frame_deadlines[0]()
 
     assert calls == []
     assert socket.calls == ["delete"]
+
+
+def test_control_server_retires_a_connection_at_its_frame_deadline(control_frame_deadlines):
+    socket = _ServerSocket()
+    calls: list[str] = []
+    runtime_control.drain_control_connections(
+        _Server(socket),
+        lambda: calls.append("quit"),
+        lambda: calls.append("show"),
+        handle_command=_handle_control_command_with_immediate_schedule,
+    )
+
+    control_frame_deadlines[0]()
+    socket.readyRead.emit()
+
+    assert calls == []
+    assert socket.calls == ["disconnect", "delete"]
+    assert socket.read_limits == []
 
 
 @pytest.mark.parametrize(
