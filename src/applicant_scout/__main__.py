@@ -4962,6 +4962,7 @@ def _commit_settings_apply(ctx: SettingsApplyCtx) -> _SettingsApplyResult:
     new_wow_exit_timer = ctx.wow_exit_timer
     wow_sync_changed = old_cfg.sync_with_wow != new_cfg.sync_with_wow
     new_watcher = ctx.watcher
+    current_screenshots_dir = ctx.current_screenshots_dir
     try:
         if wow_sync_changed:
             new_wow_exit_timer = _apply_wow_sync_runtime(
@@ -4973,7 +4974,10 @@ def _commit_settings_apply(ctx: SettingsApplyCtx) -> _SettingsApplyResult:
                 prepare_quit=ctx.prepare_quit,
                 configure_startup=False,
             )
-        if ctx.watcher is None or new_screenshots_dir != ctx.current_screenshots_dir:
+        if ctx.watcher is None or (
+            live_snapshot_source_identity(new_screenshots_dir)
+            != live_snapshot_source_identity(current_screenshots_dir)
+        ):
             new_watcher = _replace_screenshots_runtime(
                 ctx.watcher,
                 new_screenshots_dir,
@@ -4984,6 +4988,7 @@ def _commit_settings_apply(ctx: SettingsApplyCtx) -> _SettingsApplyResult:
                 signal_gate=ctx.signal_gate,
                 live_snapshot_cache_writer=ctx.live_snapshot_cache_writer,
             )
+            current_screenshots_dir = new_screenshots_dir
     except Exception:
         if wow_sync_changed:
             try:
@@ -5038,7 +5043,7 @@ def _commit_settings_apply(ctx: SettingsApplyCtx) -> _SettingsApplyResult:
         cfg=new_cfg,
         auth=new_auth,
         watcher=new_watcher,
-        current_screenshots_dir=new_screenshots_dir,
+        current_screenshots_dir=current_screenshots_dir,
         wow_exit_timer=new_wow_exit_timer,
         overrides=_settings_env_override_keys(),
     )

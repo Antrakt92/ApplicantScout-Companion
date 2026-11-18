@@ -2171,6 +2171,67 @@ def test_settings_change_keeps_committed_watcher_when_rio_preload_fails(
     assert next_reader.calls == 1
 
 
+@pytest.mark.parametrize("watcher_running", [True, False])
+def test_settings_change_keeps_running_watcher_for_equivalent_screenshot_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, watcher_running: bool,
+):
+    root = _retail_root(tmp_path)
+    addons = root / "Interface" / "AddOns"
+    addons.mkdir(parents=True)
+    screenshots = root / "Screenshots"
+    screenshots.mkdir()
+    equivalent = addons / ".." / ".." / "Screenshots"
+    assert equivalent != screenshots
+    assert equivalent.samefile(screenshots)
+    cfg = _cfg(tmp_path, screenshots_path=screenshots)
+    values = SimpleNamespace(
+        wcl_client_id=cfg.wcl_client_id,
+        wcl_client_secret=cfg.wcl_client_secret,
+        region=cfg.region,
+        screenshots_path=str(equivalent),
+        metric_preferences=cfg.metric_preferences,
+        sync_with_wow=cfg.sync_with_wow,
+    )
+    current_watcher = object() if watcher_running else None
+    replacement = object()
+    replaced_paths: list[Path] = []
+
+    def replace_watcher(_watcher, path: Path, *_args, **_kwargs):
+        replaced_paths.append(path)
+        return replacement
+
+    monkeypatch.setattr(main_mod, "_replace_screenshots_runtime", replace_watcher)
+    monkeypatch.setattr(main_mod, "_persist_settings_values", lambda *_args, **_kwargs: None)
+    result = main_mod._apply_settings_change(
+        app=object(),
+        cfg=cfg,
+        values=values,
+        apply_credentials=False,
+        auth=object(),
+        wcl_client=SimpleNamespace(region=cfg.region),
+        region_runtime=main_mod._WCLRegionRuntime(cfg.region),
+        window=SimpleNamespace(apply_metric_preferences=lambda _prefs: None),
+        watcher=current_watcher,
+        current_screenshots_dir=screenshots,
+        machine=object(),
+        decode_failed_callback=lambda *_args: None,
+        signal_gate=main_mod._WatcherSignalGate(),
+        wow_exit_timer=None,
+        quit_app=lambda: None,
+        can_quit=lambda: True,
+    )
+
+    assert result.cfg.screenshots_path == equivalent
+    if watcher_running:
+        assert not replaced_paths
+        assert result.watcher is current_watcher
+        assert result.current_screenshots_dir == screenshots
+    else:
+        assert replaced_paths == [equivalent]
+        assert result.watcher is replacement
+        assert result.current_screenshots_dir == equivalent
+
+
 def test_settings_change_rolls_back_config_when_wow_sync_runtime_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
